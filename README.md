@@ -1,7 +1,9 @@
-# Zyx - open source tensor library.
+# Zyx
 
-The main idea is to define generic traits for operations that can be performed
-with tensors and generic tensor, that can use any datatype as buffer, provided
+Zyx is open source tensor library.
+
+It defines generic traits for operations that can be performed
+with tensors and generic tensor struct, that can use any datatype as buffer, provided
 that this datatype implements those operations, that are called on the tensor.
 
 That is, if you don't use some operations, there is no need to implement them
@@ -20,8 +22,8 @@ for your datatype.
    for parallel computing, but some functions, notably matmul aren't currently optimized.
 
 3. Graph of neural network is defined dynamically by user, but is statically compiled
-   into the type system. Thus there is virtually zero overhead from using dynamic graphs.
-   backward() is just a function call that call all the operations in reverse without creation
+   into the type system. Thus there is virtually zero overhead using dynamic graphs.
+   backward() is just a function call that calls all the operations in reverse without creation
    of the graph at runtime.
 
 ## Example of usage
