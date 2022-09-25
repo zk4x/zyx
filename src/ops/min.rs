@@ -1,0 +1,40 @@
+use super::Min;
+use duplicate::duplicate_item;
+
+#[duplicate_item(
+    dtype;
+    [f32];
+    [f64];
+)]
+
+impl Min for dtype
+{
+    type Output = Self;
+    fn min(self, _: &[i32]) -> Self::Output {
+        dtype::MIN
+    }
+}
+
+#[duplicate_item(
+    dtypei;
+    [i8];
+    [i16];
+    [i32];
+    [i64];
+    [i128];
+    [u8];
+    [u16];
+    [u32];
+    [u64];
+    [u128];
+    [isize];
+    [usize];
+)]
+
+impl Min for dtypei
+{
+    type Output = Self;
+    fn min(self, _: &[i32]) -> Self::Output {
+        dtypei::MIN
+    }
+}
