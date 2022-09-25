@@ -1,5 +1,9 @@
 # Zyx
 
+[![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
+[![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
+[![Build Status](https://travis-ci.org/btwiuse/zyx.svg?branch=master)](https://travis-ci.org/btwiuse/zyx)
+
 Zyx is open source tensor library.
 
 It defines generic traits for operations that can be performed
@@ -104,3 +108,7 @@ Therefore this library can not be yet considered stable.
 With that said, the most important stuff is implemented and working
 as inteded, so you can build for example linear and recurrent models.
 Convolution is in the works.
+
+## Installation
+
+The library is available on crates.io: https://crates.io/crates/zyx
