@@ -5,28 +5,34 @@
 // variadic templates would be useful
 
 use std::rc::Rc;
+use crate::tensor::TensorGrad;
 
-pub(crate) trait OptimizableTensor<S> {
-    fn update_data(&self, f: &dyn Fn(&mut Rc<S>) -> Rc<S>);
-    fn zero_grad(&self);
-}
-
-trait Optimizer<'a, S> {
-    fn parameters(&self) -> &Vec<&'a dyn OptimizableTensor<S>>;
+pub trait Optimizer<'a, S> {
+    fn parameters(&self) -> &[&'a TensorGrad<S>];
     fn step(&self);
     fn zero_grad(&self);
 }
 
 pub struct SGD<'a, S> {
-    parameters: Vec<&'a dyn OptimizableTensor<S>>,
-    learning_rate: f64,
+    parameters: Vec<&'a TensorGrad<S>>,
+    learning_rate: f32,
+}
+
+impl<'a, S> SGD<'a, S> {
+    pub fn new(parameters: &[&'a TensorGrad<S>]) -> Self {
+        Self {
+            parameters: parameters.to_vec(),
+            learning_rate: 0.01,
+        }
+    }
 }
 
 impl<'a, S> Optimizer<'a, S> for SGD<'a, S>
 where
-    for<'b> &'b S: std::ops::Mul<f64, Output = S>,
+    S: Default,
+    for<'b> &'b S: std::ops::Mul<f32, Output = S>,
 {
-    fn parameters(&self) -> &Vec<&'a dyn OptimizableTensor<S>> {
+    fn parameters(&self) -> &[&'a TensorGrad<S>] {
         &self.parameters
     }
 

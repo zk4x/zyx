@@ -2,7 +2,7 @@
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
 
-use crate::{module::Module, ops, tensor::{Tensor, TensorGrad}};
+use crate::{module::Module, ops, tensor::{Tensor, TensorGrad}, prelude::ModuleParams};
 
 #[derive(Debug)]
 pub struct ReLU;
@@ -14,6 +14,12 @@ where
     type Output = Input::Output;
     fn forward(self, x: Input) -> Self::Output {
         x.relu()
+    }
+}
+
+impl<'a, S> ModuleParams<'a, S> for ReLU {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
     }
 }
 
@@ -30,6 +36,12 @@ where
     }
 }
 
+impl<'a, S> ModuleParams<'a, S> for Exp {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct Ln;
 
@@ -43,6 +55,12 @@ where
     }
 }
 
+impl<'a, S> ModuleParams<'a, S> for Ln {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct Tanh;
 
@@ -53,6 +71,12 @@ where
     type Output = Input::Output;
     fn forward(self, x: Input) -> Self::Output {
         x.tanh()
+    }
+}
+
+impl<'a, S> ModuleParams<'a, S> for Tanh {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
     }
 }
 
@@ -71,6 +95,12 @@ where
     }
 }
 
+impl<'a, S> ModuleParams<'a, S> for Sum<'a> {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct Max<'a> {
     pub dims: &'a [i32],
@@ -86,6 +116,12 @@ where
     }
 }
 
+impl<'a, S> ModuleParams<'a, S> for Max<'a> {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct Min<'a> {
     pub dims: &'a [i32],
@@ -98,6 +134,12 @@ where
     type Output = Input::Output;
     fn forward(self, x: Input) -> Self::Output {
         x.min(self.dims)
+    }
+}
+
+impl<'a, S> ModuleParams<'a, S> for Min<'a> {
+    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+        Vec::new()
     }
 }
 
@@ -131,5 +173,11 @@ where
     fn forward(self, x: Input) -> Self::Output
     {
         x.matmul(&self.w) + &self.b
+    }
+}
+
+impl<'a, S> ModuleParams<'a, S> for Linear<S> {
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        vec![&self.w, &self.b]
     }
 }

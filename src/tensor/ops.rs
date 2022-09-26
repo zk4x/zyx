@@ -171,7 +171,7 @@ where
         + std::ops::Add<Output = S>
         + ops::Pow<Output = S>
         + std::ops::Neg<Output = S>,
-    S: ops::Ones + std::fmt::Display,
+    S: ops::Ones,
 {
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn ln(self) -> Self::Output {
@@ -189,7 +189,7 @@ impl<S, F> ops::Ln for TensorFunc<S, F>
 where
     F: FnOnce(S),
     for<'a> &'a S: ops::Ln<Output = S> + std::ops::Mul<Output = S> + ops::Pow<Output = S> + std::ops::Neg<Output = S>,
-    S: ops::Ones + std::fmt::Display,
+    S: ops::Ones,
 {
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn ln(self) -> Self::Output {
@@ -996,7 +996,6 @@ impl<'g, S> ops::MatMul<&'g TensorGrad<S>> for Tensor<S>
 where
     S: 'g,
     for<'a> &'a S: ops::MatMul<Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
-    S: std::fmt::Display + GetShape,
 {
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn matmul(self, rhs: &'g TensorGrad<S>) -> Self::Output {
@@ -1023,6 +1022,129 @@ where
         TensorFunc {
             data: Rc::new(self_data.as_ref().matmul(rhs.data.as_ref())),
             func: move |res_grad| rhs_func(self_data.as_ref().transpose().matmul(&res_grad)),
+        }
+    }
+}
+
+impl<'g, S> ops::MatMul<Tensor<S>> for &'g TensorGrad<S>
+where
+    S: 'g,
+    for<'a> &'a S: ops::MatMul<&'a S, Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
+{
+    type Output = TensorFunc<S, impl FnOnce(S)>;
+    fn matmul(self, rhs: Tensor<S>) -> Self::Output {
+        let rhs_data = rhs.data;
+        let self_grad = &self.grad;
+        TensorFunc {
+            data: Rc::new(self.data.borrow().as_ref().matmul(rhs_data.as_ref())),
+            func: move |res_grad: S| {
+                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(rhs_data.as_ref()));
+            },
+        }
+    }
+}
+
+impl<'g, S> ops::MatMul<&'g TensorGrad<S>> for &'g TensorGrad<S>
+where
+    S: 'g,
+    for<'a> &'a S: ops::MatMul<Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
+{
+    type Output = TensorFunc<S, impl FnOnce(S)>;
+    fn matmul(self, rhs: &'g TensorGrad<S>) -> Self::Output {
+        let self_data = self.data.borrow().clone();
+        let rhs_data = rhs.data.borrow().clone();
+        let self_grad = &self.grad;
+        let rhs_grad = &rhs.grad;
+        TensorFunc {
+            data: Rc::new(self_data.as_ref().matmul(rhs.data.borrow().as_ref())),
+            func: move |res_grad: S| {
+                rhs_grad.replace_with(|grad| &*grad + &self_data.as_ref().transpose().matmul(&res_grad));
+                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(rhs_data.as_ref()));
+            },
+        }
+    }
+}
+
+impl<'g, S, F> ops::MatMul<TensorFunc<S, F>> for &'g TensorGrad<S>
+where
+    S: 'g,
+    for<'a> &'a S: ops::MatMul<Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
+    F: FnOnce(S),
+{
+    type Output = TensorFunc<S, impl FnOnce(S)>;
+    fn matmul(self, rhs: TensorFunc<S, F>) -> Self::Output {
+        let self_data = self.data.borrow().clone();
+        let rhs_data = rhs.data;
+        let self_grad = &self.grad;
+        let rhs_func = rhs.func;
+        TensorFunc {
+            data: Rc::new(self_data.as_ref().matmul(rhs_data.as_ref())),
+            func: move |res_grad| {
+                rhs_func(self_data.as_ref().transpose().matmul(&res_grad));
+                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(rhs_data.as_ref()));
+            },
+        }
+    }
+}
+
+impl<S, F> ops::MatMul<Tensor<S>> for TensorFunc<S, F>
+where
+    F: FnOnce(S),
+    for<'a> &'a S: ops::MatMul<&'a S, Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
+{
+    type Output = TensorFunc<S, impl FnOnce(S)>;
+    fn matmul(self, rhs: Tensor<S>) -> Self::Output {
+        let rhs_data = rhs.data;
+        let self_func = self.func;
+        TensorFunc {
+            data: Rc::new(self.data.as_ref().matmul(rhs_data.as_ref())),
+            func: move |res_grad: S| {
+                self_func(res_grad.transpose().matmul(rhs_data.as_ref()));
+            },
+        }
+    }
+}
+
+impl<'g, S, F> ops::MatMul<&'g TensorGrad<S>> for TensorFunc<S, F>
+where
+    S: 'g,
+    F: FnOnce(S),
+    for<'a> &'a S: ops::MatMul<Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
+{
+    type Output = TensorFunc<S, impl FnOnce(S)>;
+    fn matmul(self, rhs: &'g TensorGrad<S>) -> Self::Output {
+        let self_data = self.data;
+        let rhs_data = rhs.data.borrow().clone();
+        let self_func = self.func;
+        let rhs_grad = &rhs.grad;
+        TensorFunc {
+            data: Rc::new(self_data.as_ref().matmul(rhs.data.borrow().as_ref())),
+            func: move |res_grad: S| {
+                self_func(res_grad.transpose().matmul(rhs_data.as_ref()));
+                rhs_grad.replace_with(|grad| &*grad + &self_data.as_ref().transpose().matmul(&res_grad));
+            },
+        }
+    }
+}
+
+impl<S, F2, F> ops::MatMul<TensorFunc<S, F2>> for TensorFunc<S, F>
+where
+    F: FnOnce(S),
+    F2: FnOnce(S),
+    for<'a> &'a S: ops::MatMul<Output = S> + ops::Transpose<Output = S> + std::ops::Add<Output = S>,
+{
+    type Output = TensorFunc<S, impl FnOnce(S)>;
+    fn matmul(self, rhs: TensorFunc<S, F2>) -> Self::Output {
+        let self_data = self.data;
+        let rhs_data = rhs.data;
+        let self_func = self.func;
+        let rhs_func = rhs.func;
+        TensorFunc {
+            data: Rc::new(self_data.as_ref().matmul(rhs_data.as_ref())),
+            func: move |res_grad: S| {
+                self_func(res_grad.transpose().matmul(rhs_data.as_ref()));
+                rhs_func(self_data.as_ref().transpose().matmul(&res_grad));
+            },
         }
     }
 }

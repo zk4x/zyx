@@ -6,6 +6,12 @@
 //! input.apply(module) notation
 //! 
 
+use crate::tensor::TensorGrad;
+
+pub trait ModuleParams<'a, S> {
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>>;
+}
+
 pub trait Module<Input> {
     type Output;
     fn forward(self, x: Input) -> Self::Output;
@@ -44,6 +50,17 @@ where
     }
 }
 
+impl<'a, S, M0, M1> ModuleParams<'a, S> for (M0, M1)
+where
+    M0: ModuleParams<'a, S>,
+    M1: ModuleParams<'a, S>,
+{
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        self.0.parameters().into_iter()
+            .chain(self.1.parameters().into_iter()).collect()
+    }
+}
+
 impl<'a, Input, M0, M1, M2> Module<Input> for &'a (M0, M1, M2)
 where
     &'a M0: Module<Input>,
@@ -56,33 +73,171 @@ where
     }
 }
 
-// TODO write these in similar way as the previous ones:
-/*impl<Input, M0, M1, M2, M3> Module<Input> for (M0, M1, M2, M3)
+impl<'a, S, M0, M1, M2> ModuleParams<'a, S> for (M0, M1, M2)
 where
-    M0: Module<Input>,
-    M1: Module<M0::Output>,
-    M2: Module<M1::Output>,
-    M3: Module<M2::Output>,
+    M0: ModuleParams<'a, S>,
+    M1: ModuleParams<'a, S>,
+    M2: ModuleParams<'a, S>,
 {
-    type Output = M3::Output;
-    fn forward(self, x: Input) -> Self::Output {
-        x.apply(self.0).apply(self.1).apply(self.2).apply(self.3)
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        self.0.parameters().into_iter()
+            .chain(self.1.parameters().into_iter())
+            .chain(self.2.parameters().into_iter()).collect()
     }
 }
 
-impl<Input, M0, M1, M2, M3, M4> Module<Input> for (M0, M1, M2, M3, M4)
+impl<'a, Input, M0, M1, M2, M3> Module<Input> for &'a (M0, M1, M2, M3)
 where
-    M0: Module<Input>,
-    M1: Module<M0::Output>,
-    M2: Module<M1::Output>,
-    M3: Module<M2::Output>,
-    M4: Module<M3::Output>,
+    &'a M0: Module<Input>,
+    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
+    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
+    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
 {
-    type Output = M4::Output;
+    type Output = <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output;
     fn forward(self, x: Input) -> Self::Output {
-        x.apply(self.0).apply(self.1).apply(self.2).apply(self.3).apply(self.4)
+        self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))
     }
-}*/
+}
+
+impl<'a, S, M0, M1, M2, M3> ModuleParams<'a, S> for (M0, M1, M2, M3)
+where
+    M0: ModuleParams<'a, S>,
+    M1: ModuleParams<'a, S>,
+    M2: ModuleParams<'a, S>,
+    M3: ModuleParams<'a, S>,
+{
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        self.0.parameters().into_iter()
+            .chain(self.1.parameters().into_iter())
+            .chain(self.2.parameters().into_iter())
+            .chain(self.3.parameters().into_iter()).collect()
+    }
+}
+
+impl<'a, Input, M0, M1, M2, M3, M4> Module<Input> for &'a (M0, M1, M2, M3, M4)
+where
+    &'a M0: Module<Input>,
+    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
+    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
+    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
+    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
+{
+    type Output = <&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output;
+    fn forward(self, x: Input) -> Self::Output {
+        self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x)))))
+    }
+}
+
+impl<'a, Input, M0, M1, M2, M3, M4, M5> Module<Input> for &'a (M0, M1, M2, M3, M4, M5)
+where
+    &'a M0: Module<Input>,
+    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
+    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
+    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
+    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
+    &'a M5: Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
+{
+    type Output = <&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
+    fn forward(self, x: Input) -> Self::Output {
+        self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))))
+    }
+}
+
+impl<'a, S, M0, M1, M2, M3, M4, M5> ModuleParams<'a, S> for (M0, M1, M2, M3, M4, M5)
+where
+    M0: ModuleParams<'a, S>,
+    M1: ModuleParams<'a, S>,
+    M2: ModuleParams<'a, S>,
+    M3: ModuleParams<'a, S>,
+    M4: ModuleParams<'a, S>,
+    M5: ModuleParams<'a, S>,
+{
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        self.0.parameters().into_iter()
+            .chain(self.1.parameters().into_iter())
+            .chain(self.2.parameters().into_iter())
+            .chain(self.3.parameters().into_iter())
+            .chain(self.4.parameters().into_iter())
+            .chain(self.5.parameters().into_iter()).collect()
+    }
+}
+
+impl<'a, Input, M0, M1, M2, M3, M4, M5, M6> Module<Input> for &'a (M0, M1, M2, M3, M4, M5, M6)
+where
+    &'a M0: Module<Input>,
+    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
+    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
+    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
+    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
+    &'a M5: Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    &'a M6: Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
+{
+    type Output = <&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
+    fn forward(self, x: Input) -> Self::Output {
+        self.6.forward(self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x)))))))
+    }
+}
+
+impl<'a, S, M0, M1, M2, M3, M4, M5, M6> ModuleParams<'a, S> for (M0, M1, M2, M3, M4, M5, M6)
+where
+    M0: ModuleParams<'a, S>,
+    M1: ModuleParams<'a, S>,
+    M2: ModuleParams<'a, S>,
+    M3: ModuleParams<'a, S>,
+    M4: ModuleParams<'a, S>,
+    M5: ModuleParams<'a, S>,
+    M6: ModuleParams<'a, S>,
+{
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        self.0.parameters().into_iter()
+            .chain(self.1.parameters().into_iter())
+            .chain(self.2.parameters().into_iter())
+            .chain(self.3.parameters().into_iter())
+            .chain(self.4.parameters().into_iter())
+            .chain(self.5.parameters().into_iter())
+            .chain(self.6.parameters().into_iter()).collect()
+    }
+}
+
+impl<'a, Input, M0, M1, M2, M3, M4, M5, M6, M7> Module<Input> for &'a (M0, M1, M2, M3, M4, M5, M6, M7)
+where
+    &'a M0: Module<Input>,
+    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
+    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
+    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
+    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
+    &'a M5: Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    &'a M6: Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    &'a M7: Module<<&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
+{
+    type Output = <&'a M7 as Module<<&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
+    fn forward(self, x: Input) -> Self::Output {
+        self.7.forward(self.6.forward(self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))))))
+    }
+}
+
+impl<'a, S, M0, M1, M2, M3, M4, M5, M6, M7> ModuleParams<'a, S> for (M0, M1, M2, M3, M4, M5, M6, M7)
+where
+    M0: ModuleParams<'a, S>,
+    M1: ModuleParams<'a, S>,
+    M2: ModuleParams<'a, S>,
+    M3: ModuleParams<'a, S>,
+    M4: ModuleParams<'a, S>,
+    M5: ModuleParams<'a, S>,
+    M6: ModuleParams<'a, S>,
+    M7: ModuleParams<'a, S>,
+{
+    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+        self.0.parameters().into_iter()
+            .chain(self.1.parameters().into_iter())
+            .chain(self.2.parameters().into_iter())
+            .chain(self.3.parameters().into_iter())
+            .chain(self.4.parameters().into_iter())
+            .chain(self.5.parameters().into_iter())
+            .chain(self.6.parameters().into_iter())
+            .chain(self.7.parameters().into_iter()).collect()
+    }
+}
 
 // Arrays of modules are modules (although inputs and outputs must be the same type)
 impl<Input, M0, const N: usize> Module<Input> for [M0; N]

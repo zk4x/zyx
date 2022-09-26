@@ -449,6 +449,20 @@ where
     }
 }
 
+impl<T> std::ops::Mul<f32> for &Buffer<T>
+where
+    T: Clone + Sync + Send + std::ops::Mul<f32, Output = T>,
+{
+    type Output = Buffer<T>;
+    fn mul(self, rhs: f32) -> Self::Output {
+        use rayon::prelude::*;
+        Buffer {
+            shape: self.shape.clone(),
+            data: self.data.par_iter().map(|x| x.clone() * rhs).collect(),
+        }
+    }
+}
+
 impl<T> std::ops::Div for &Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Div<Output = T>,

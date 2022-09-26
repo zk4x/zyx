@@ -219,14 +219,16 @@ impl<S> TensorGrad<S> {
     }
 }
 
+impl<S> TensorGrad<S> {
+    pub fn update_data(&self, f: &dyn Fn(&mut Rc<S>) -> Rc<S>) {
+        self.data.replace_with(f);
+    }
+}
+
 impl<S> TensorGrad<S>
 where
     S: Default,
 {
-    pub fn update_data(&self, f: &dyn Fn(&mut Rc<S>) -> Rc<S>) {
-        self.data.replace_with(f);
-    }
-
     pub fn zero_grad(&self) {
         self.grad.replace(S::default());
     }
