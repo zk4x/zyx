@@ -31,29 +31,29 @@ where
     }
 }
 
-impl<S> ops::GetShape for Tensor<S>
+impl<S> ops::GetShape for &Tensor<S>
 where
-    S: GetShape,
+    for<'a> &'a S: GetShape,
 {
-    fn shape(&self) -> Vec<usize> {
+    fn shape(self) -> Vec<usize> {
         self.data().shape()
     }
 }
 
-impl<S> ops::GetShape for TensorGrad<S>
+impl<S> ops::GetShape for &TensorGrad<S>
 where
-    S: GetShape,
+    for<'a> &'a S: GetShape,
 {
-    fn shape(&self) -> Vec<usize> {
+    fn shape(self) -> Vec<usize> {
         self.data().shape()
     }
 }
 
-impl<S, F> ops::GetShape for TensorFunc<S, F>
+impl<S, F> ops::GetShape for &TensorFunc<S, F>
 where
-    S: GetShape,
+    for<'a> &'a S: GetShape,
 {
-    fn shape(&self) -> Vec<usize> {
+    fn shape(self) -> Vec<usize> {
         self.data().shape()
     }
 }
@@ -130,7 +130,7 @@ where
         let data = Rc::new(self.data().exp());
         TensorFunc {
             data: data.clone(),
-            func: move |res_grad| { self_grad.replace_with(|grad| &*grad + &(&res_grad * data.as_ref())); },
+            func: move |res_grad| { self_grad.replace_with(|grad| &*grad + &(&res_grad * &data)); },
         }
     }
 }
@@ -146,7 +146,7 @@ where
         let data = Rc::new(self.data.exp());
         TensorFunc {
             data: data.clone(),
-            func: move |res_grad| self_func(&res_grad * data.as_ref()),
+            func: move |res_grad| self_func(&res_grad * &data),
         }
     }
 }
@@ -338,7 +338,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn sum(self, dims: &[i32]) -> Self::Output {
         let self_grad = &self.grad;
-        let self_shape = self.data.borrow().as_ref().shape();
+        let self_shape = self.data.borrow().shape();
         use ops::Expand;
         TensorFunc {
             data: Rc::new(self.data.borrow().sum(dims)),
@@ -355,7 +355,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn sum(self, dims: &[i32]) -> Self::Output {
         let self_func = self.func;
-        let self_shape = self.data.as_ref().shape();
+        let self_shape = self.data.shape();
         use ops::Expand;
         TensorFunc {
             data: Rc::new(self.data.sum(dims)),
@@ -384,7 +384,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn max(self, dims: &[i32]) -> Self::Output {
         let self_grad = &self.grad;
-        let self_shape = self.data.borrow().as_ref().shape();
+        let self_shape = self.data.borrow().shape();
         use ops::Expand;
         TensorFunc {
             data: Rc::new(self.data.borrow().max(dims)),
@@ -401,7 +401,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn max(self, dims: &[i32]) -> Self::Output {
         let self_func = self.func;
-        let self_shape = self.data.as_ref().shape();
+        let self_shape = self.data.shape();
         use ops::Expand;
         TensorFunc {
             data: Rc::new(self.data.max(dims)),
@@ -430,7 +430,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn min(self, dims: &[i32]) -> Self::Output {
         let self_grad = &self.grad;
-        let self_shape = self.data.borrow().as_ref().shape();
+        let self_shape = self.data.borrow().shape();
         use ops::Expand;
         TensorFunc {
             data: Rc::new(self.data.borrow().min(dims)),
@@ -447,7 +447,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn min(self, dims: &[i32]) -> Self::Output {
         let self_func = self.func;
-        let self_shape = self.data.as_ref().shape();
+        let self_shape = self.data.shape();
         use ops::Expand;
         TensorFunc {
             data: Rc::new(self.data.min(dims)),
@@ -476,7 +476,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn reshape(self, shape: &[usize]) -> Self::Output {
         let self_grad = &self.grad;
-        let self_shape = self.data.borrow().as_ref().shape();
+        let self_shape = self.data.borrow().shape();
         TensorFunc {
             data: Rc::new(self.data().reshape(shape)),
             func: move |res_grad: S| { self_grad.replace_with(|grad| &*grad + &res_grad.reshape(&self_shape)); },
@@ -492,7 +492,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn reshape(self, shape: &[usize]) -> Self::Output {
         let self_func = self.func;
-        let self_shape = self.data.as_ref().shape();
+        let self_shape = self.data.shape();
         TensorFunc {
             data: Rc::new(self.data.reshape(shape)),
             func: move |res_grad: S| self_func(res_grad.reshape(&self_shape)),
@@ -521,7 +521,7 @@ where
     fn expand(self, shape: &[usize]) -> Self::Output {
         // TODO: is max correct reduce for expand backward?
         let self_grad = &self.grad;
-        let dims: Vec<i32> = self.data.borrow().as_ref().shape().iter().zip(shape.iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
+        let dims: Vec<i32> = self.data.borrow().shape().iter().zip(shape.iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
         use ops::Max;
         TensorFunc {
             data: Rc::new(self.data().expand(shape)),
@@ -538,7 +538,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn expand(self, shape: &[usize]) -> Self::Output {
         let self_func = self.func;
-        let dims: Vec<i32> = self.data.as_ref().shape().iter().zip(shape.iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
+        let dims: Vec<i32> = self.data.shape().iter().zip(shape.iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
         use ops::Max;
         TensorFunc {
             data: Rc::new(self.data.expand(shape)),
@@ -987,7 +987,7 @@ where
     type Output = Tensor<S>;
     fn matmul(self, rhs: Tensor<S>) -> Self::Output {
         Tensor {
-            data: Rc::new(self.data.as_ref().matmul(rhs.data.as_ref())),
+            data: Rc::new(self.data.matmul(&rhs.data)),
         }
     }
 }
@@ -1002,9 +1002,9 @@ where
         let self_data = self.data;
         let rhs_grad = &rhs.grad;
         TensorFunc {
-            data: Rc::new(self_data.as_ref().matmul(rhs.data().as_ref())),
+            data: Rc::new(self_data.matmul(&rhs.data())),
             func: move |res_grad: S| {
-                rhs_grad.replace_with(|grad| &*grad + &self_data.as_ref().transpose().matmul(&res_grad));
+                rhs_grad.replace_with(|grad| &*grad + &self_data.transpose().matmul(&res_grad));
             },
         }
     }
@@ -1020,8 +1020,8 @@ where
         let self_data = self.data;
         let rhs_func = rhs.func;
         TensorFunc {
-            data: Rc::new(self_data.as_ref().matmul(rhs.data.as_ref())),
-            func: move |res_grad| rhs_func(self_data.as_ref().transpose().matmul(&res_grad)),
+            data: Rc::new(self_data.matmul(&rhs.data)),
+            func: move |res_grad| rhs_func(self_data.transpose().matmul(&res_grad)),
         }
     }
 }
@@ -1036,9 +1036,9 @@ where
         let rhs_data = rhs.data;
         let self_grad = &self.grad;
         TensorFunc {
-            data: Rc::new(self.data.borrow().as_ref().matmul(rhs_data.as_ref())),
+            data: Rc::new(self.data.borrow().matmul(&rhs_data)),
             func: move |res_grad: S| {
-                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(rhs_data.as_ref()));
+                self_grad.replace_with(|grad| &*grad + &res_grad.matmul(&rhs_data.transpose()));
             },
         }
     }
@@ -1056,10 +1056,10 @@ where
         let self_grad = &self.grad;
         let rhs_grad = &rhs.grad;
         TensorFunc {
-            data: Rc::new(self_data.as_ref().matmul(rhs.data.borrow().as_ref())),
+            data: Rc::new(self_data.matmul(&rhs.data.borrow())),
             func: move |res_grad: S| {
-                rhs_grad.replace_with(|grad| &*grad + &self_data.as_ref().transpose().matmul(&res_grad));
-                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(rhs_data.as_ref()));
+                rhs_grad.replace_with(|grad| &*grad + &self_data.transpose().matmul(&res_grad));
+                self_grad.replace_with(|grad| &*grad + &res_grad.matmul(&rhs_data.transpose()));
             },
         }
     }
@@ -1078,10 +1078,10 @@ where
         let self_grad = &self.grad;
         let rhs_func = rhs.func;
         TensorFunc {
-            data: Rc::new(self_data.as_ref().matmul(rhs_data.as_ref())),
+            data: Rc::new(self_data.matmul(&rhs_data)),
             func: move |res_grad| {
-                rhs_func(self_data.as_ref().transpose().matmul(&res_grad));
-                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(rhs_data.as_ref()));
+                rhs_func(self_data.transpose().matmul(&res_grad));
+                self_grad.replace_with(|grad| &*grad + &res_grad.transpose().matmul(&rhs_data));
             },
         }
     }
@@ -1097,9 +1097,9 @@ where
         let rhs_data = rhs.data;
         let self_func = self.func;
         TensorFunc {
-            data: Rc::new(self.data.as_ref().matmul(rhs_data.as_ref())),
+            data: Rc::new(self.data.matmul(&rhs_data)),
             func: move |res_grad: S| {
-                self_func(res_grad.transpose().matmul(rhs_data.as_ref()));
+                self_func(rhs_data.transpose().matmul(&res_grad));
             },
         }
     }
@@ -1118,10 +1118,10 @@ where
         let self_func = self.func;
         let rhs_grad = &rhs.grad;
         TensorFunc {
-            data: Rc::new(self_data.as_ref().matmul(rhs.data.borrow().as_ref())),
+            data: Rc::new(self_data.matmul(&rhs.data.borrow())),
             func: move |res_grad: S| {
-                self_func(res_grad.transpose().matmul(rhs_data.as_ref()));
-                rhs_grad.replace_with(|grad| &*grad + &self_data.as_ref().transpose().matmul(&res_grad));
+                self_func(res_grad.matmul(&rhs_data.transpose()));
+                rhs_grad.replace_with(|grad| &*grad + &self_data.transpose().matmul(&res_grad));
             },
         }
     }
@@ -1140,10 +1140,10 @@ where
         let self_func = self.func;
         let rhs_func = rhs.func;
         TensorFunc {
-            data: Rc::new(self_data.as_ref().matmul(rhs_data.as_ref())),
+            data: Rc::new(self_data.matmul(&rhs_data)),
             func: move |res_grad: S| {
-                self_func(res_grad.transpose().matmul(rhs_data.as_ref()));
-                rhs_func(self_data.as_ref().transpose().matmul(&res_grad));
+                self_func(res_grad.matmul(&rhs_data.transpose()));
+                rhs_func(self_data.transpose().matmul(&res_grad));
             },
         }
     }

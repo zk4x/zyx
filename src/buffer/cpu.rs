@@ -99,8 +99,8 @@ impl<T> ops::FromVec<T> for Buffer<T> {
     }
 }
 
-impl<T> ops::GetShape for Buffer<T> {
-    fn shape(&self) -> Vec<usize> {
+impl<T> ops::GetShape for &Buffer<T> {
+    fn shape(self) -> Vec<usize> {
         self.shape.clone()
     }
 }
@@ -493,9 +493,12 @@ where
         // TODO: this is about 20x slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
         let ndim = self.shape.len();
-        debug_assert_eq!(ndim, rhs.shape.len());
-        debug_assert_eq!(self.shape[0..ndim-2], rhs.shape[0..ndim-2]);
-        debug_assert_eq!(self.shape.index(-1), rhs.shape.index(-2));
+        if ndim != rhs.shape.len() {
+            panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
+        }
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
+        }
         use ops::Transpose;
         let ty = rhs.transpose();
         use rayon::prelude::*;

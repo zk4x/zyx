@@ -27,7 +27,6 @@ impl ReLU for &dtype {
     }
 }
 
-
 #[duplicate_item(
     dtypei;
     [i32];
@@ -38,5 +37,18 @@ impl ReLU for dtypei {
     type Output = Self;
     fn relu(self) -> Self::Output {
         self.max(0)
+    }
+}
+
+#[duplicate_item(
+    dtypei;
+    [i32];
+    [i64];
+)]
+
+impl ReLU for &dtypei {
+    type Output = dtypei;
+    fn relu(self) -> Self::Output {
+        (*self).max(0)
     }
 }

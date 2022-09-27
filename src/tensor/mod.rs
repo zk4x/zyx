@@ -126,7 +126,6 @@ where
 impl<S, F> std::fmt::Display for TensorFunc<S, F>
 where
     S: std::fmt::Display,
-    F: 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(&format!(
@@ -139,7 +138,7 @@ where
 
 impl<S> TensorGrad<S>
 where
-    S: GetShape,
+    for<'a> &'a S: GetShape,
 {
     pub fn backward(&self)
     where
@@ -153,7 +152,7 @@ where
 
 impl<S, F> TensorFunc<S, F>
 where
-    S: GetShape,
+    for<'a> &'a S: GetShape,
 {
     pub fn backward(self)
     where
@@ -168,7 +167,8 @@ where
 impl<S> Tensor<S> {
     pub fn with_grad(&self) -> TensorGrad<S>
     where
-        S: crate::ops::Zeros + GetShape,
+        S: crate::ops::Zeros,
+        for<'a> &'a S: GetShape,
     {
         TensorGrad {
             data: RefCell::new(self.data.clone()),

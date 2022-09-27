@@ -74,7 +74,7 @@ pub trait FromVec<T> {
 /// assert_eq!(y, [3]);
 /// ```
 pub trait GetShape {
-    fn shape(&self) -> Vec<usize>;
+    fn shape(self) -> Vec<usize>;
 }
 
 // Unary ops

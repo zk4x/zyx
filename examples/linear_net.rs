@@ -20,11 +20,12 @@ fn main() {
     let mse_loss = |x, y| { x - y };
     let optimizer = optim::SGD::new(&network.parameters());
 
-    for i in 0..100000 {
-        let x = Tensor::from([i as f32 / 10.]);
+    for i in 0..10000 {
+        let x = Tensor::from([[i as f32 / 10.]]);
         let y = Tensor::from([[(i as f32).sin()]]);
         let y_predicted = network.forward(x);
         let loss = mse_loss(y_predicted, y);
+        //println!("Loss: {}", loss);
         loss.backward();
         optimizer.step();
         optimizer.zero_grad();
