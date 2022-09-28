@@ -225,11 +225,13 @@ mod tensor {
             use crate::{tensor::Tensor, ops::ToVec, ops::Exp};
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let vec2 = vec![4., 2., 2., 4., 1., -2., 4., 3., 7.];
+
             // test Tensor
             let x = Tensor::from_vec(vec.clone(), &[9]);
             let y = Tensor::from_vec(vec2.clone(), &[9]);
             let z = x.clone() + y.clone();
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
+
             // test TensorGrad
             let x = Tensor::from_vec(vec.clone(), &[9]);
             let y = Tensor::from_vec(vec2.clone(), &[9]).with_grad();
@@ -295,25 +297,22 @@ mod tensor {
 
         #[test]
         fn sub() {
-            use crate::prelude::*;
-            use crate::tensor::Tensor;
-            let x = Tensor::from_vec(vec![3, 5, 2], &[3]).with_grad();
-            let z = &mut x.relu();
-            //z.backward();
-            println!("{}", z);
-            //panic!();
+            // TODO
         }
 
         #[test]
         fn div() {
+            // TODO
         }
 
         #[test]
         fn mul() {
+            // TODO
         }
 
         #[test]
         fn pow() {
+            // TODO
         }
 
         #[test]
