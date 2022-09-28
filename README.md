@@ -31,12 +31,14 @@ for your datatype.
 
 ## Example of usage
 
+For examples of linear and recurrent neural networks, look at examples directory.
+
 ```rust
 use zyx::tensor::Tensor;
 use zyx::buffer::cpu;
 use zyx::prelude::*; // includes traits for operations
 
-// Create Tensor using many methods, for more, look at zyx::tensor::init.rs
+// Tensors can be created using many methods, for more, look at zyx::tensor::init.rs
 let x = Tensor::from([1., 2., 3.]);
 let x = Tensor::<cpu::Buffer<f32>>::randn(&[2, 3, 1, 4]);
 let x = Tensor::<cpu::Buffer<f32>>::uniform(&[2, 3, 1, 4], 0., 1.);

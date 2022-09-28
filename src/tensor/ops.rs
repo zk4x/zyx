@@ -2,7 +2,7 @@ use crate::{
     ops::{self, Transpose, GetShape},
     tensor::{Tensor, TensorFunc, TensorGrad},
 };
-use std::{rc::Rc};
+use std::rc::Rc;
 
 impl<S, T> ops::ToVec<T> for Tensor<S>
 where
@@ -133,9 +133,9 @@ where
     fn relu(self) -> Self::Output {
         use ops::DReLU;
         let self_func = self.func;
-        let self_data = self.data.clone();
+        let self_data = self.data;
         TensorFunc {
-            data: Rc::new(self.data.relu()),
+            data: Rc::new(self_data.relu()),
             func: move |res_grad| self_func(&res_grad * &self_data.drelu()),
         }
     }
@@ -161,9 +161,9 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn exp(self) -> Self::Output {
         let self_grad = &self.grad;
-        let data = Rc::new(self.data().exp());
+        let data = Rc::new(self.data.borrow().exp());
         TensorFunc {
-            data: data.clone(),
+            data: Rc::clone(&data),
             func: move |res_grad| { self_grad.replace_with(|grad| &*grad + &(&res_grad * &data)); },
         }
     }
@@ -179,7 +179,7 @@ where
         let self_func = self.func;
         let data = Rc::new(self.data.exp());
         TensorFunc {
-            data: data.clone(),
+            data: Rc::clone(&data),
             func: move |res_grad| self_func(&res_grad * &data),
         }
     }
@@ -262,10 +262,10 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn tanh(self) -> Self::Output {
         let self_grad = &self.grad;
-        let data = Rc::new(self.data().tanh());
+        let data = Rc::new(self.data.borrow().tanh());
         use crate::ops::Pow;
         TensorFunc {
-            data: data.clone(),
+            data: Rc::clone(&data),
             func: move |res_grad| {
                 self_grad.replace_with(|grad| &*grad + &(&res_grad * &(&-&data.pow(&(&S::ones(&[1]) + &S::ones(&[1]))) + &S::ones(&[1]))));
             },
@@ -289,7 +289,7 @@ where
         let data = Rc::new(self.data.tanh());
         use crate::ops::Pow;
         TensorFunc {
-            data: data.clone(),
+            data: Rc::clone(&data),
             func: move |res_grad| self_func(&res_grad * &(&-&data.pow(&(&S::ones(&[1]) + &S::ones(&[1]))) + &S::ones(&[1]))),
         }
     }
@@ -1085,8 +1085,8 @@ where
 {
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn matmul(self, rhs: &'g TensorGrad<S>) -> Self::Output {
-        let self_data = self.data.borrow().clone();
-        let rhs_data = rhs.data.borrow().clone();
+        let self_data = self.data.borrow();
+        let rhs_data = rhs.data.borrow();
         let self_grad = &self.grad;
         let rhs_grad = &rhs.grad;
         TensorFunc {
@@ -1107,7 +1107,7 @@ where
 {
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn matmul(self, rhs: TensorFunc<S, F>) -> Self::Output {
-        let self_data = self.data.borrow().clone();
+        let self_data = self.data.borrow();
         let rhs_data = rhs.data;
         let self_grad = &self.grad;
         let rhs_func = rhs.func;
@@ -1148,7 +1148,7 @@ where
     type Output = TensorFunc<S, impl FnOnce(S)>;
     fn matmul(self, rhs: &'g TensorGrad<S>) -> Self::Output {
         let self_data = self.data;
-        let rhs_data = rhs.data.borrow().clone();
+        let rhs_data = rhs.data.borrow();
         let self_func = self.func;
         let rhs_grad = &rhs.grad;
         TensorFunc {

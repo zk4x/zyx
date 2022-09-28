@@ -72,7 +72,7 @@ pub struct TensorFunc<S, F> {
 impl<S> Clone for Tensor<S> {
     fn clone(&self) -> Self {
         Self {
-            data: self.data.clone(),
+            data: Rc::clone(&self.data),
         }
     }
 }
@@ -83,7 +83,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            data: self.data.clone(),
+            data: RefCell::new(Rc::clone(&self.data.borrow())),
             grad: self.grad.clone(),
         }
     }
@@ -95,7 +95,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            data: self.data.clone(),
+            data: Rc::clone(&self.data),
             func: self.func.clone(),
         }
     }
@@ -171,7 +171,7 @@ impl<S> Tensor<S> {
         for<'a> &'a S: GetShape,
     {
         TensorGrad {
-            data: RefCell::new(self.data.clone()),
+            data: RefCell::new(Rc::clone(&self.data)),
             grad: RefCell::new(S::zeros(&self.data.shape())),
         }
     }
@@ -181,7 +181,7 @@ impl<S> Tensor<S> {
 impl<S> TensorGrad<S> {
     pub fn detach(&self) -> Tensor<S> {
         Tensor {
-            data: self.data.borrow().clone(),
+            data: Rc::clone(&self.data.borrow()),
         }
     }
 }
@@ -190,26 +190,26 @@ impl<S> TensorGrad<S> {
 impl<S, F> TensorFunc<S, F> {
     pub fn detach(&self) -> Tensor<S> {
         Tensor {
-            data: self.data.clone(),
+            data: Rc::clone(&self.data),
         }
     }
 }
 
 impl<S> Tensor<S> {
     pub fn data(&self) -> Rc<S> {
-        self.data.clone()
+        Rc::clone(&self.data)
     }
 }
 
 impl<S> TensorGrad<S> {
     pub fn data(&self) -> Rc<S> {
-        self.data.borrow().clone()
+        Rc::clone(&self.data.borrow())
     }
 }
 
 impl<S, F> TensorFunc<S, F> {
     pub fn data(&self) -> Rc<S> {
-        self.data.clone()
+        Rc::clone(&self.data)
     }
 }
 
