@@ -2,7 +2,6 @@
 
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
-[![Build Status](https://travis-ci.org/btwiuse/zyx.svg?branch=master)](https://travis-ci.org/btwiuse/zyx)
 
 Zyx is open source tensor library.
 
