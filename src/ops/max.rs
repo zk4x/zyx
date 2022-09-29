@@ -16,7 +16,21 @@ impl Max for dtype
 }
 
 #[duplicate_item(
-    dtypei;
+    dtype;
+    [f32];
+    [f64];
+)]
+
+impl Max for &dtype
+{
+    type Output = dtype;
+    fn max(self, _: &[i32]) -> Self::Output {
+        dtype::MAX
+    }
+}
+
+#[duplicate_item(
+    dtype;
     [i8];
     [i16];
     [i32];
@@ -31,10 +45,34 @@ impl Max for dtype
     [usize];
 )]
 
-impl Max for dtypei
+impl Max for dtype
 {
     type Output = Self;
     fn max(self, _: &[i32]) -> Self::Output {
-        dtypei::MAX
+        dtype::MAX
+    }
+}
+
+#[duplicate_item(
+    dtype;
+    [i8];
+    [i16];
+    [i32];
+    [i64];
+    [i128];
+    [u8];
+    [u16];
+    [u32];
+    [u64];
+    [u128];
+    [isize];
+    [usize];
+)]
+
+impl Max for &dtype
+{
+    type Output = dtype;
+    fn max(self, _: &[i32]) -> Self::Output {
+        dtype::MAX
     }
 }

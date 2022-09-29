@@ -62,7 +62,7 @@ impl DReLU for &dtype {
 }
 
 #[duplicate_item(
-    dtypeu;
+    dtype;
     [u8];
     [u16];
     [u32];
@@ -71,8 +71,25 @@ impl DReLU for &dtype {
     [usize];
 )]
 
-impl DReLU for dtypeu {
+impl DReLU for dtype {
     type Output = Self;
+    fn drelu(self) -> Self::Output {
+        1
+    }
+}
+
+#[duplicate_item(
+    dtype;
+    [u8];
+    [u16];
+    [u32];
+    [u64];
+    [u128];
+    [usize];
+)]
+
+impl DReLU for &dtype {
+    type Output = dtype;
     fn drelu(self) -> Self::Output {
         1
     }

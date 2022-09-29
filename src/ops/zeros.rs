@@ -14,7 +14,7 @@ impl Zeros for dtype {
 }
 
 #[duplicate_item(
-    dtypei;
+    dtype;
     [i8];
     [i16];
     [i32];
@@ -29,7 +29,7 @@ impl Zeros for dtype {
     [usize];
 )]
 
-impl Zeros for dtypei {
+impl Zeros for dtype {
     fn zeros(_: &[usize]) -> Self {
         0
     }

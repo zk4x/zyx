@@ -14,7 +14,7 @@ impl Ones for dtype {
 }
 
 #[duplicate_item(
-    dtypei;
+    dtype;
     [i8];
     [i16];
     [i32];
@@ -29,7 +29,7 @@ impl Ones for dtype {
     [usize];
 )]
 
-impl Ones for dtypei {
+impl Ones for dtype {
     fn ones(_: &[usize]) -> Self {
         1
     }
