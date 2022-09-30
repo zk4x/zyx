@@ -13,7 +13,7 @@ where
     }
 }
 
-impl<'g, S> Add<&'g TensorGrad<S>> for Tensor<S>
+/*impl<'g, S> Add<&'g TensorGrad<S>> for Tensor<S>
 where
     S: 'g,
     for<'a> &'a S: Add<Output = S>,
@@ -113,7 +113,7 @@ where
             func: self_func,
         }
     }
-}
+}*/
 
 #[derive(Debug)]
 pub struct AddBackwardFG<'g, S, XF> {

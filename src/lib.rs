@@ -121,8 +121,6 @@
 //! This is module, which is expected to get most stuff added. This module will contain functors, layers, models, cells, simply averything that can have .forward(input) function.
 //! 
 
-#![feature(type_alias_impl_trait)]
-
 pub mod tensor;
 pub mod buffer;
 pub mod ops;

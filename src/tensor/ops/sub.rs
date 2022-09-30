@@ -1,4 +1,4 @@
-use crate::{tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
+use crate::{tensor::{Tensor, TensorFunc, Backward}};
 use std::{rc::Rc, ops::{Add, Sub, Neg}};
 
 impl<S> Sub<Tensor<S>> for Tensor<S>
@@ -13,7 +13,7 @@ where
     }
 }
 
-impl<'g, S> Sub<&'g TensorGrad<S>> for Tensor<S>
+/*impl<'g, S> Sub<&'g TensorGrad<S>> for Tensor<S>
 where
     S: 'g,
     for<'a> &'a S: Sub<Output = S>,
@@ -99,7 +99,7 @@ where
             },
         }
     }
-}
+}*/
 
 #[derive(Debug)]
 pub struct SubBackwardFT<XF> {
@@ -130,7 +130,7 @@ where
     }
 }
 
-impl<'g, S, F> Sub<&'g TensorGrad<S>> for TensorFunc<S, F>
+/*impl<'g, S, F> Sub<&'g TensorGrad<S>> for TensorFunc<S, F>
 where
     S: 'g,
     for<'a> &'a S: Sub<Output = S>,
@@ -148,7 +148,7 @@ where
             },
         }
     }
-}
+}*/
 
 #[derive(Debug)]
 pub struct SubBackwardFF<XF, YF> {
