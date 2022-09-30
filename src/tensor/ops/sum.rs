@@ -1,5 +1,5 @@
-use crate::{ops::{Sum, Expand, GetShape}, tensor::{Tensor, TensorGrad, TensorFunc}};
-use std::{rc::Rc, ops::Add};
+use crate::{ops::{Sum, Expand, GetShape}, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
+use std::{rc::Rc, ops::Add, cell::RefCell};
 
 impl<S> Sum for Tensor<S>
 where
@@ -27,34 +27,66 @@ where
     }
 }*/
 
+#[derive(Debug)]
+pub struct SumBackwardG<'g, S> {
+    grad: &'g RefCell<S>,
+    shape: Vec<usize>,
+}
+
+impl<'g, S> Backward<S> for SumBackwardG<'g, S>
+where
+    for<'a> &'a S: Add<Output = S> + Expand<Output = S> + GetShape,
+{
+    fn backward(self, res_grad: S) {
+        self.grad.replace_with(|grad| &*grad + &res_grad.expand(&self.shape));
+    }
+}
+
 impl<'g, S> Sum for &'g TensorGrad<S>
 where
     S: 'g,
-    for<'a> &'a S: Sum<Output = S> + Add<Output = S> + Expand<Output = S> + GetShape,
+    for<'a> &'a S: Sum<Output = S> + GetShape,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, SumBackwardG<'g, S>>;
     fn sum(self, dims: &[i32]) -> Self::Output {
-        let self_grad = &self.grad;
-        let self_shape = self.data.borrow().shape();
         TensorFunc {
             data: Rc::new(self.data.borrow().sum(dims)),
-            func: move |res_grad: S| { self_grad.replace_with(|grad| &*grad + &res_grad.expand(&self_shape)); },
+            func: SumBackwardG {
+                grad: &self.grad,
+                shape: self.data.borrow().shape(),
+            }
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct SumBackwardF<F> {
+    func: F,
+    shape: Vec<usize>,
+}
+
+impl<S, F> Backward<S> for SumBackwardF<F>
+where
+    for<'a> &'a S: Add<Output = S> + Expand<Output = S> + GetShape,
+    F: Backward<S>,
+{
+    fn backward(self, res_grad: S) {
+        self.func.backward(res_grad.expand(&self.shape));
     }
 }
 
 impl<S, F> Sum for TensorFunc<S, F>
 where
-    for<'a> &'a S: Sum<Output = S> + Add<Output = S> + Expand<Output = S> + GetShape,
-    F: FnOnce(S),
+    for<'a> &'a S: Sum<Output = S> + GetShape,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, SumBackwardF<F>>;
     fn sum(self, dims: &[i32]) -> Self::Output {
-        let self_func = self.func;
-        let self_shape = self.data.shape();
         TensorFunc {
             data: Rc::new(self.data.sum(dims)),
-            func: move |res_grad: S| self_func(res_grad.expand(&self_shape)),
+            func: SumBackwardF {
+                func: self.func,
+                shape: self.data.shape(),
+            }
         }
     }
 }

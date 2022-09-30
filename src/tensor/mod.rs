@@ -1,9 +1,9 @@
 //! Description of generic tensor types. All tensors are immutable!
 //! Mutability is allowed only for calculating gradients and optimizer parameters.
 //! There are three tensor types.
-//! 1. Tensor     - only stores datatype inside Rc
-//! 2. TensorGrad - stores datatype and also it's gradient
-//! 3. TensorFunc - stores datatype and function necessary to calculate gradient of TensorGrad
+//! 1. Tensor     - only stores datatype inside Rc, passed around by cloning
+//! 2. TensorGrad - stores datatype and also it's gradient, passed around by reference
+//! 3. TensorFunc - stores datatype and function necessary to calculate gradient of TensorGrad, passed around by cloning
 //!
 //! Tensor and TensorGrad are leaf tensors. TensorFunc is strictly non-leaf and therefore it doesn't store it's gradient.
 //! 
@@ -138,29 +138,28 @@ where
 
 impl<S> TensorGrad<S>
 where
-    for<'a> &'a S: GetShape,
+    S: crate::ops::Ones,
+    for<'a> &'a S: GetShape + std::ops::Add<Output = S>,
 {
-    pub fn backward(&self)
-    where
-        S: crate::ops::Ones,
-        for<'a> &'a S: std::ops::Add<Output = S>,
-    {
+    pub fn backward(&self) {
         self.grad
             .replace_with(|grad| &*grad + &S::ones(&self.data().shape()));
     }
 }
 
+pub trait Backward<S> {
+    fn backward(self, res_grad: S);
+}
+
 impl<S, F> TensorFunc<S, F>
 where
     for<'a> &'a S: GetShape,
+    S: crate::ops::Ones,
+    F: Backward<S>,
 {
-    pub fn backward(self)
-    where
-        S: crate::ops::Ones,
-        F: FnOnce(S),
-    {
+    pub fn backward(self) {
         let shape = self.data.shape();
-        (self.func)(S::ones(&shape));
+        self.func.backward(S::ones(&shape));
     }
 }
 

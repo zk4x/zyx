@@ -1,5 +1,5 @@
-use crate::{tensor::{Tensor, TensorGrad, TensorFunc}};
-use std::{rc::Rc, ops::{Add, Sub}};
+use crate::{tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
+use std::{rc::Rc, ops::{Add, Sub, Neg}};
 
 impl<S> Sub<Tensor<S>> for Tensor<S>
 where
@@ -101,18 +101,30 @@ where
     }
 }
 
-impl<S, F> Sub<Tensor<S>> for TensorFunc<S, F>
+#[derive(Debug)]
+pub struct SubBackwardFT<XF> {
+    xfunc: XF,
+}
+
+impl<S, XF> Backward<S> for SubBackwardFT<XF>
+where
+    XF: Backward<S>,
+{
+    fn backward(self, res_grad: S) {
+        self.xfunc.backward(res_grad);
+    }
+}
+
+impl<S, XF> Sub<Tensor<S>> for TensorFunc<S, XF>
 where
     for<'a> &'a S: Sub<Output = S>,
-    F: FnOnce(S),
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, SubBackwardFT<XF>>;
     fn sub(self, rhs: Tensor<S>) -> Self::Output {
-        let self_func = self.func;
         TensorFunc {
             data: Rc::new(self.data.as_ref() - rhs.data.as_ref()),
-            func: move |res_grad| {
-                self_func(res_grad);
+            func: SubBackwardFT {
+                xfunc: self.func,
             },
         }
     }
@@ -138,22 +150,37 @@ where
     }
 }
 
-impl<S, F1, F2> Sub<TensorFunc<S, F2>> for TensorFunc<S, F1>
+#[derive(Debug)]
+pub struct SubBackwardFF<XF, YF> {
+    xfunc: XF,
+    yfunc: YF,
+}
+
+impl<S, XF, YF> Backward<S> for SubBackwardFF<XF, YF>
 where
-    F1: FnOnce(S),
-    F2: FnOnce(S),
+    S: Clone,
+    for<'a> &'a S: Add<Output = S> + Neg<Output = S>,
+    XF: Backward<S>,
+    YF: Backward<S>,
+{
+    fn backward(self, res_grad: S) {
+        self.xfunc.backward(-&res_grad);
+        self.yfunc.backward(res_grad);
+    }
+}
+
+impl<S, XF, YF> Sub<TensorFunc<S, YF>> for TensorFunc<S, XF>
+where
     for<'a> &'a S: Sub<Output = S>,
     for<'b> &'b S: std::ops::Neg<Output = S>,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
-    fn sub(self, rhs: TensorFunc<S, F2>) -> Self::Output {
-        let self_func = self.func;
-        let rhs_func = rhs.func;
+    type Output = TensorFunc<S, SubBackwardFF<XF, YF>>;
+    fn sub(self, rhs: TensorFunc<S, YF>) -> Self::Output {
         TensorFunc {
             data: Rc::new(self.data.as_ref() - rhs.data.as_ref()),
-            func: move |res_grad: S| {
-                rhs_func(-&res_grad);
-                self_func(res_grad);
+            func: SubBackwardFF {
+                xfunc: self.func,
+                yfunc: rhs.func,
             },
         }
     }

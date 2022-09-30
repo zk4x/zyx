@@ -16,10 +16,10 @@ impl DType for i64 {}
 impl DType for i128 {}
 impl DType for bool {}
 
-// #[cfg(Default)]
 type Storage<T> = cpu::Buffer<T>;
-// #[cfg(Opencl)]
-//type Storage<T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> = opencl::Buffer<T, D3, D2, D1, D0>;
+// Different accelerators can be supported with either config flags similar to this, or with calls like Tensor::<opencl::Buffer<f32>>::convert_from(other_tensor)
+//#[cfg(Opencl)]
+//type Storage<T> = opencl::Buffer<T>;
 
 impl<T> Tensor<Storage<T>>
 where
