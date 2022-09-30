@@ -1,5 +1,4 @@
-use super::{Tensor, TensorGrad, TensorFunc};
-use crate::ops;
+use crate::{ops, tensor::{Tensor, TensorGrad, TensorFunc}};
 use std::rc::Rc;
 
 impl<S> ops::ReLU for Tensor<S>
