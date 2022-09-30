@@ -27,7 +27,14 @@ for your datatype.
 3. Graph of neural network is defined dynamically by user, but is statically compiled
    into the type system. Thus there is virtually zero overhead using dynamic graphs.
    backward() is just a function call that calls all the operations in reverse without creation
-   of the graph at runtime.
+   of the graph at runtime. No dyn keyword used, Vecs of operations are not created.
+
+4. Accelerator code is just 500 lines. Implementing custom accelerators should be simple.
+   Tensor is just generic over any datatype and will not compile if try to use an operation
+   not supported by the used accelerator.
+
+5. Tensors are basically zero cost abstractions over underlying accelerator. At compile time
+   they just remeber the operation used and call appropriate functions to calculate the derivatives.
 
 ## Example of usage
 
