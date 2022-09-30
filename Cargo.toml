@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Generic tensor library and extensions."
@@ -14,4 +14,3 @@ readme = "README.md"
 rand = "0.8.5"
 rayon = "1.5.3"
 duplicate = "0.4.1"
-derivative = "2.2.0"
