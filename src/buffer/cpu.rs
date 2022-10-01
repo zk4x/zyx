@@ -483,7 +483,8 @@ where
     }
 }
 
-/*impl<T> ops::MatMul for &Buffer<T>
+#[cfg(not(feature = "matrixmultiply"))]
+impl<T> ops::MatMul for &Buffer<T>
 where
     T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum,
     for<'a> &'a Buffer<T>: ops::Transpose<Output = Buffer<T>>,
@@ -528,9 +529,10 @@ where
             data,
         }.transpose()
     }
-}*/
+}
 
 // Let's just use matrixmultiply crate for f32 and f64
+#[cfg(feature = "matrixmultiply")]
 impl ops::MatMul for &Buffer<f32> {
     type Output = Buffer<f32>;
     fn matmul(self, rhs: &Buffer<f32>) -> Self::Output {
@@ -547,8 +549,9 @@ impl ops::MatMul for &Buffer<f32> {
         let m = self.shape.index(-2);
         let k = self.shape.index(-1);
         let n = rhs.shape.index(-1);
-        let mut data = vec![0.; m*n];
+        let mut data = Vec::with_capacity(m*n);
         unsafe {
+            data.set_len(m*n);
             matrixmultiply::sgemm(m, k, n, 1.,
                 self.data.as_ptr(), k as isize, 1,
                 rhs.data.as_ptr(), n as isize, 1, 0.,
@@ -562,6 +565,7 @@ impl ops::MatMul for &Buffer<f32> {
     }
 }
 
+#[cfg(feature = "matrixmultiply")]
 impl ops::MatMul for &Buffer<f64> {
     type Output = Buffer<f64>;
     fn matmul(self, rhs: &Buffer<f64>) -> Self::Output {
@@ -578,8 +582,9 @@ impl ops::MatMul for &Buffer<f64> {
         let m = self.shape.index(-2);
         let k = self.shape.index(-1);
         let n = rhs.shape.index(-1);
-        let mut data = vec![0.; m*n];
+        let mut data = Vec::with_capacity(m*n);
         unsafe {
+            data.set_len(m*n);
             matrixmultiply::dgemm(m, k, n, 1.,
                 self.data.as_ptr(), k as isize, 1,
                 rhs.data.as_ptr(), n as isize, 1, 0.,

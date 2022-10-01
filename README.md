@@ -20,7 +20,9 @@ That is, if you don't use some operations, there is no need to implement them fo
    The library then calculates gradients for you automatically.
 
 2. Provided is basic implementation of multidimensional buffer. It is using rayon
-   for parallel computing, but some functions, notably matmul aren't currently optimized.
+   for parallel computing, but some functions, notably matmul aren't currently optimized,
+   but you can use --features=matrixmultiply to use matrixmultiply crate, but in that case
+   only f32 and f64 multiplication is supported.
 
 3. Graph of neural network is defined dynamically by user, but is statically compiled
    into the type system. Thus there is virtually zero overhead using dynamic graphs.

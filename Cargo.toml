@@ -13,5 +13,10 @@ readme = "README.md"
 [dependencies]
 rand = "0.8.5"
 rayon = "1.5.3"
-matrixmultiply = { version="0.3.2", features=["threading"] }
 duplicate = "0.4.1"
+
+# optional dependencies
+matrixmultiply = { version = "0.3.2", features = ["threading"], optional = true }
+
+[features]
+matrixmultiply = ["dep:matrixmultiply"]
