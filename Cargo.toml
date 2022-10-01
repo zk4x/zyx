@@ -17,6 +17,9 @@ duplicate = "0.4.1"
 
 # optional dependencies
 matrixmultiply = { version = "0.3.2", features = ["threading"], optional = true }
+cblas-sys = { version = "0.1.4", optional = true }
+blas-src = { version = "0.8", features = ["blis"], optional = true }
 
 [features]
 matrixmultiply = ["dep:matrixmultiply"]
+cblas = ["dep:cblas-sys", "dep:blas-src"]
