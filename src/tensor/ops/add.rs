@@ -45,7 +45,6 @@ where
 
 impl<S, F> Add<TensorFunc<S, F>> for Tensor<S>
 where
-    F: FnOnce(S),
     for<'a> &'a S: Add<Output = S>,
 {
     type Output = TensorFunc<S, F>;
@@ -140,7 +139,6 @@ where
 impl<'g, S, F> Add<TensorFunc<S, F>> for &'g TensorGrad<S>
 where
     S: 'g,
-    F: FnOnce(S),
     for<'a> &'a S: Add<Output = S>,
 {
     type Output = TensorFunc<S, AddBackwardGF<'g, S, F>>;
@@ -158,7 +156,6 @@ where
 impl<S, F> Add<Tensor<S>> for TensorFunc<S, F>
 where
     for<'a> &'a S: Add<Output = S>,
-    F: FnOnce(S),
 {
     type Output = TensorFunc<S, F>;
     fn add(self, rhs: Tensor<S>) -> Self::Output {

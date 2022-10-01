@@ -225,7 +225,7 @@ mod tensor {
 
         #[test]
         fn add() {
-            /*use crate::{tensor::Tensor, ops::ToVec, ops::Exp};
+            use crate::{tensor::Tensor, ops::ToVec, ops::Exp};
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let vec2 = vec![4., 2., 2., 4., 1., -2., 4., 3., 7.];
 
@@ -295,7 +295,7 @@ mod tensor {
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &x.grad().borrow().to_vec());
-            cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().borrow().to_vec());*/
+            cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().borrow().to_vec());
         }
 
         #[test]

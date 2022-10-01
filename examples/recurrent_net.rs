@@ -27,7 +27,7 @@ fn main() {
     let mse_loss = |x, y| { x - y };
     let optimizer = optim::SGD::new(&params);
 
-    for i in 0..1000 {
+    for i in 0..30000 {
         let i_f32 = i as f32;
         let data = vec![i_f32*1., i_f32*2., i_f32*3.];
         let y = Tensor::from_vec(data.iter().map(|x| (*x as f32).sin()).collect(), &[1, input_size]);
