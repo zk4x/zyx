@@ -373,8 +373,8 @@ pub trait Pow<Rhs = Self> {
 /// use zyx::tensor::Tensor;
 /// use zyx::prelude::*;
 /// 
-/// let x = Tensor::from([[3, 2, 4], [1, 4, 2]]);
-/// let y = Tensor::from([[3, 2], [4, 1], [4, 2]]);
+/// let x = Tensor::from([[3., 2., 4.], [1., 4., 2.]]);
+/// let y = Tensor::from([[3., 2.], [4., 1.], [4., 2.]]);
 /// let z = x.matmul(y);
 /// println!("{}", z);
 /// ```

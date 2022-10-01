@@ -41,8 +41,8 @@
 //! use zyx::buffer::cpu;
 //! use zyx::tensor::Tensor;
 //! 
-//! let x = Tensor::uniform(&[2, 3, 1, 1], -1., 1.).with_grad();
-//! let y = Tensor::<cpu::Buffer<f32>>::randn(&[2, 3, 1, 4]).with_grad();
+//! let x = Tensor::uniform(&[20, 30], -1., 1.).with_grad();
+//! let y = Tensor::<cpu::Buffer<f32>>::randn(&[30, 15]).with_grad();
 //! 
 //! x.matmul(&y).sum(&[]).backward();
 //! 

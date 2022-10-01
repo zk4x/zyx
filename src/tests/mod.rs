@@ -321,32 +321,32 @@ mod tensor {
         #[test]
         fn matmul() {
             use crate::{tensor::Tensor, ops::ToVec, ops::MatMul};
-            let x = Tensor::from([[2, 3, 4]]);
-            let y = Tensor::from([[2, 3], [3, 4], [5, 3]]);
+            let x = Tensor::from([[2., 3., 4.]]);
+            let y = Tensor::from([[2., 3.], [3., 4.], [5., 3.]]);
             let z = x.clone().matmul(y.clone());
-            assert_eq!(z.data().to_vec(), [33, 30]);
+            assert_eq!(z.data().to_vec(), [33., 30.]);
 
             let x = x;
             let y = y.with_grad();
             let z = x.clone().matmul(&y);
-            assert_eq!(z.data().to_vec(), [33, 30]);
+            assert_eq!(z.data().to_vec(), [33., 30.]);
             z.backward();
-            assert_eq!(y.grad().borrow().to_vec(), [2, 2, 3, 3, 4, 4].to_vec());
+            assert_eq!(y.grad().borrow().to_vec(), [2., 2., 3., 3., 4., 4.].to_vec());
 
             let x = x.with_grad();
-            let y = Tensor::from([[2, 3], [3, 4], [5, 3]]);
+            let y = Tensor::from([[2., 3.], [3., 4.], [5., 3.]]);
             let z = x.matmul(y.clone());
-            assert_eq!(z.data().to_vec(), [33, 30]);
+            assert_eq!(z.data().to_vec(), [33., 30.]);
             z.backward();
-            assert_eq!(x.grad().borrow().to_vec(), [5, 7, 8].to_vec());
+            assert_eq!(x.grad().borrow().to_vec(), [5., 7., 8.].to_vec());
 
-            let x = Tensor::from([[2, 3, 4]]).with_grad();
-            let y = Tensor::from([[2, 3], [3, 4], [5, 3]]).with_grad();
+            let x = Tensor::from([[2., 3., 4.]]).with_grad();
+            let y = Tensor::from([[2., 3.], [3., 4.], [5., 3.]]).with_grad();
             let z = x.matmul(&y);
-            assert_eq!(z.data().to_vec(), [33, 30]);
+            assert_eq!(z.data().to_vec(), [33., 30.]);
             z.backward();
-            assert_eq!(x.grad().borrow().to_vec(), [5, 7, 8].to_vec());
-            assert_eq!(y.grad().borrow().to_vec(), [2, 2, 3, 3, 4, 4].to_vec());
+            assert_eq!(x.grad().borrow().to_vec(), [5., 7., 8.].to_vec());
+            assert_eq!(y.grad().borrow().to_vec(), [2., 2., 3., 3., 4., 4.].to_vec());
         }
 
         #[test]

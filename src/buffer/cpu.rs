@@ -483,14 +483,14 @@ where
     }
 }
 
-impl<T> ops::MatMul for &Buffer<T>
+/*impl<T> ops::MatMul for &Buffer<T>
 where
     T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum,
     for<'a> &'a Buffer<T>: ops::Transpose<Output = Buffer<T>>,
 {
     type Output = Buffer<T>;
     fn matmul(self, rhs: &Buffer<T>) -> Self::Output {
-        // TODO: this is about 20x slower than it should be, because it is not cache optimized.
+        // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
         let ndim = self.shape.len();
         if ndim != rhs.shape.len() {
@@ -527,6 +527,69 @@ where
             shape,
             data,
         }.transpose()
+    }
+}*/
+
+// Let's just use matrixmultiply crate for f32 and f64
+impl ops::MatMul for &Buffer<f32> {
+    type Output = Buffer<f32>;
+    fn matmul(self, rhs: &Buffer<f32>) -> Self::Output {
+        let ndim = self.shape.len();
+        if ndim != 2 {
+            panic!("Only operations on buffers with 2 dimensions are supported.");
+        }
+        if ndim != rhs.shape.len() {
+            panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
+        }
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
+        }
+        let m = self.shape.index(-2);
+        let k = self.shape.index(-1);
+        let n = rhs.shape.index(-1);
+        let mut data = vec![0.; m*n];
+        unsafe {
+            matrixmultiply::sgemm(m, k, n, 1.,
+                self.data.as_ptr(), k as isize, 1,
+                rhs.data.as_ptr(), n as isize, 1, 0.,
+                data.as_mut_ptr(), n as isize, 1);
+        }
+
+        Buffer {
+            data,
+            shape: vec![m, n],
+        }
+    }
+}
+
+impl ops::MatMul for &Buffer<f64> {
+    type Output = Buffer<f64>;
+    fn matmul(self, rhs: &Buffer<f64>) -> Self::Output {
+        let ndim = self.shape.len();
+        if ndim != 2 {
+            panic!("Only operations on buffers with 2 dimensions are supported.");
+        }
+        if ndim != rhs.shape.len() {
+            panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
+        }
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
+        }
+        let m = self.shape.index(-2);
+        let k = self.shape.index(-1);
+        let n = rhs.shape.index(-1);
+        let mut data = vec![0.; m*n];
+        unsafe {
+            matrixmultiply::dgemm(m, k, n, 1.,
+                self.data.as_ptr(), k as isize, 1,
+                rhs.data.as_ptr(), n as isize, 1, 0.,
+                data.as_mut_ptr(), n as isize, 1);
+        }
+
+        Buffer {
+            data,
+            shape: vec![m, n],
+        }
     }
 }
 
