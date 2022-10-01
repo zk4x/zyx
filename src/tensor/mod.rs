@@ -63,9 +63,9 @@ pub struct TensorGrad<S> {
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TensorFunc<S, F> {
+pub struct TensorFunc<S, GradFn> {
     pub data: Rc<S>,
-    func: F, // Cell needed for .backward() freeing of buffers by making func None
+    func: GradFn, // Cell needed for .backward() freeing of buffers by making func None
 }
 
 // Automatic implementations of Clone trait try to clone underlying S instead of cloning Rc
@@ -89,9 +89,9 @@ where
     }
 }
 
-impl<S, F> Clone for TensorFunc<S, F>
+impl<S, GradFn> Clone for TensorFunc<S, GradFn>
 where
-    F: Clone,
+    GradFn: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -123,15 +123,16 @@ where
     }
 }
 
-impl<S, F> std::fmt::Display for TensorFunc<S, F>
+impl<S, GradFn> std::fmt::Display for TensorFunc<S, GradFn>
 where
     S: std::fmt::Display,
+    GradFn: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(&format!(
-            "{} with_func {}",
+            "{} with_func {:?}",
             self.data,
-            std::any::type_name::<F>()
+            self.func,
         ))
     }
 }
@@ -151,11 +152,11 @@ pub trait Backward<S> {
     fn backward(self, res_grad: S);
 }
 
-impl<S, F> TensorFunc<S, F>
+impl<S, GradFn> TensorFunc<S, GradFn>
 where
     for<'a> &'a S: GetShape,
     S: crate::ops::Ones,
-    F: Backward<S>,
+    GradFn: Backward<S>,
 {
     pub fn backward(self) {
         let shape = self.data.shape();
@@ -163,6 +164,7 @@ where
     }
 }
 
+/// Create new tensor that requires gradient
 impl<S> Tensor<S> {
     pub fn with_grad(&self) -> TensorGrad<S>
     where
@@ -186,7 +188,7 @@ impl<S> TensorGrad<S> {
 }
 
 /// Drop tensor's gradient
-impl<S, F> TensorFunc<S, F> {
+impl<S, GradFn> TensorFunc<S, GradFn> {
     pub fn detach(&self) -> Tensor<S> {
         Tensor {
             data: Rc::clone(&self.data),
@@ -194,27 +196,110 @@ impl<S, F> TensorFunc<S, F> {
     }
 }
 
+/// Access tensor's data buffer
 impl<S> Tensor<S> {
     pub fn data(&self) -> Rc<S> {
         Rc::clone(&self.data)
     }
 }
 
+/// Access tensor's data buffer
 impl<S> TensorGrad<S> {
     pub fn data(&self) -> Rc<S> {
         Rc::clone(&self.data.borrow())
     }
 }
 
-impl<S, F> TensorFunc<S, F> {
+/// Access tensor's data buffer
+impl<S, GradFn> TensorFunc<S, GradFn> {
     pub fn data(&self) -> Rc<S> {
         Rc::clone(&self.data)
     }
 }
 
+/// Access tensor's grad buffer
 impl<S> TensorGrad<S> {
     pub fn grad(&self) -> &RefCell<S> {
         &self.grad
+    }
+}
+
+/// Access tensor's backward function
+impl<S, GradFn> TensorFunc<S, GradFn> {
+    pub fn grad_fn(&self) -> &GradFn {
+        &self.func
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GradHookG<'g, S, Hook> {
+    grad: &'g RefCell<S>,
+    hook: Hook,
+}
+
+impl<'g, S, HOOK> Backward<S> for GradHookG<'g, S, HOOK>
+where
+    for<'a> &'a S: std::ops::Add<Output = S>,
+    HOOK: FnOnce(S),
+{
+    fn backward(self, res_grad: S) {
+        self.grad.replace_with(|grad| &*grad + &res_grad);
+        (self.hook)(res_grad);
+    }
+}
+
+/// Add custom FnOnce closure that will receive tensor's gradient during backward pass
+/// The hook is stored in the result, so make sure to do all operations on this result,
+/// otherwise your hook will not be called.
+impl<S> TensorGrad<S> {
+    pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> TensorFunc<S, GradHookG<'g, S, HOOK>>
+    where
+        S: 'g,
+        HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
+    {
+        TensorFunc {
+            data: Rc::clone(&self.data.borrow()),
+            func: GradHookG {
+                grad: &self.grad,
+                hook,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GradHookF<GradFn, HOOK> {
+    func: GradFn,
+    hook: HOOK,
+}
+
+impl<S, GradFn, HOOK> Backward<S> for GradHookF<GradFn, HOOK>
+where
+    GradFn: Backward<S>,
+    HOOK: FnOnce(S),
+    S: Clone,
+{
+    fn backward(self, res_grad: S) {
+        (self.hook)(res_grad.clone());
+        self.func.backward(res_grad);
+    }
+}
+
+/// Add custom FnOnce closure that will receive tensor's gradient during backward pass
+/// The hook is stored in the result, so make sure to do all operations on this result,
+/// otherwise your hook will not be called.
+impl<S, GradFn> TensorFunc<S, GradFn> {
+    pub fn register_hook<HOOK>(self, hook: HOOK) -> TensorFunc<S, GradHookF<GradFn, HOOK>>
+    where
+        HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
+    {
+        TensorFunc {
+            data: Rc::clone(&self.data),
+            func: GradHookF {
+                func: self.func,
+                hook,
+            },
+        }
     }
 }
 
@@ -262,11 +347,11 @@ where
 // We usually don't want to move across devices inside the model, but we want want to implement changing dtypes,
 // so here is an implementation of ConvertFrom, but keep in mind the performance implications of calling
 // this function, especially if you are changing devices on the fly.
-impl<S, S2, F> crate::ops::ConvertFrom<TensorFunc<S2, F>> for TensorFunc<S, F>
+impl<S, S2, GradFn> crate::ops::ConvertFrom<TensorFunc<S2, GradFn>> for TensorFunc<S, GradFn>
 where
     for<'a> S: crate::ops::ConvertFrom<&'a S2>,
 {
-    fn convert_from(x: TensorFunc<S2, F>) -> Self {
+    fn convert_from(x: TensorFunc<S2, GradFn>) -> Self {
         Self {
             data: Rc::new(S::convert_from(x.data.as_ref())),
             func: x.func,

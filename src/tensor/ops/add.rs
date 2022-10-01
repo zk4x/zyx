@@ -13,18 +13,32 @@ where
     }
 }
 
-/*impl<'g, S> Add<&'g TensorGrad<S>> for Tensor<S>
+#[derive(Debug, Clone)]
+pub struct AddBackwardTG<'g, S> {
+    ygrad: &'g RefCell<S>,
+}
+
+impl<'g, S> Backward<S> for AddBackwardTG<'g, S>
+where
+    for<'a> &'a S: Add<Output = S>,
+{
+    fn backward(self, res_grad: S) {
+        self.ygrad.replace_with(|grad| &*grad + &res_grad);
+    }
+}
+
+impl<'g, S> Add<&'g TensorGrad<S>> for Tensor<S>
 where
     S: 'g,
     for<'a> &'a S: Add<Output = S>,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, AddBackwardTG<'g, S>>;
     fn add(self, rhs: &'g TensorGrad<S>) -> Self::Output {
-        let rhs_grad = &rhs.grad;
         TensorFunc {
             data: Rc::new(self.data.as_ref() + rhs.data().as_ref()),
-            func: move |res_grad| { rhs_grad.replace_with(|grad| &*grad + &res_grad);
-            },
+            func: AddBackwardTG {
+                ygrad: &rhs.grad,
+            }
         }
     }
 }
@@ -34,15 +48,26 @@ where
     F: FnOnce(S),
     for<'a> &'a S: Add<Output = S>,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, F>;
     fn add(self, rhs: TensorFunc<S, F>) -> Self::Output {
-        let rhs_func = rhs.func;
         TensorFunc {
             data: Rc::new(self.data.as_ref() + rhs.data.as_ref()),
-            func: move |res_grad| {
-                rhs_func(res_grad);
-            },
+            func: rhs.func,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AddBackwardGT<'g, S> {
+    xgrad: &'g RefCell<S>,
+}
+
+impl<'g, S> Backward<S> for AddBackwardGT<'g, S>
+where
+    for<'a> &'a S: Add<Output = S>,
+{
+    fn backward(self, res_grad: S) {
+        self.xgrad.replace_with(|grad| &*grad + &res_grad);
     }
 }
 
@@ -51,13 +76,30 @@ where
     S: 'g,
     for<'a> &'a S: Add<Output = S>,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, AddBackwardGT<'g, S>>;
     fn add(self, rhs: Tensor<S>) -> Self::Output {
-        let self_grad = &self.grad;
         TensorFunc {
             data: Rc::new(self.data().as_ref() + rhs.data.as_ref()),
-            func: move |res_grad| { self_grad.replace_with(|grad| &*grad + &res_grad); },
+            func: AddBackwardGT {
+                xgrad: &self.grad,
+            }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AddBackwardGG<'g, S> {
+    xgrad: &'g RefCell<S>,
+    ygrad: &'g RefCell<S>,
+}
+
+impl<'g, S> Backward<S> for AddBackwardGG<'g, S>
+where
+    for<'a> &'a S: Add<Output = S>,
+{
+    fn backward(self, res_grad: S) {
+        self.xgrad.replace_with(|grad| &*grad + &res_grad);
+        self.ygrad.replace_with(|grad| &*grad + &res_grad);
     }
 }
 
@@ -66,17 +108,32 @@ where
     S: 'g,
     for<'a> &'a S: Add<Output = S>,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, AddBackwardGG<'g, S>>;
     fn add(self, rhs: &'g TensorGrad<S>) -> Self::Output {
-        let self_grad = &self.grad;
-        let rhs_grad = &rhs.grad;
         TensorFunc {
             data: Rc::new(self.data().as_ref() + rhs.data().as_ref()),
-            func: move |res_grad| {
-                self_grad.replace_with(|grad| &*grad + &res_grad);
-                rhs_grad.replace_with(|grad| &*grad + &res_grad);
-            },
+            func: AddBackwardGG {
+                xgrad: &self.grad,
+                ygrad: &rhs.grad,
+            }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AddBackwardGF<'g, S, YF> {
+    xgrad: &'g RefCell<S>,
+    yfunc: YF,
+}
+
+impl<'g, S, YF> Backward<S> for AddBackwardGF<'g, S, YF>
+where
+    for<'a> &'a S: Add<Output = S>,
+    YF: Backward<S>,
+{
+    fn backward(self, res_grad: S) {
+        self.xgrad.replace_with(|grad| &*grad + &res_grad);
+        self.yfunc.backward(res_grad);
     }
 }
 
@@ -86,16 +143,14 @@ where
     F: FnOnce(S),
     for<'a> &'a S: Add<Output = S>,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, AddBackwardGF<'g, S, F>>;
     fn add(self, rhs: TensorFunc<S, F>) -> Self::Output {
-        let self_grad = &self.grad;
-        let rhs_func = rhs.func;
         TensorFunc {
             data: Rc::new(self.data().as_ref() + rhs.data.as_ref()),
-            func: move |res_grad| {
-                self_grad.replace_with(|grad| &*grad + &res_grad);
-                rhs_func(res_grad);
-            },
+            func: AddBackwardGF {
+                xgrad: &self.grad,
+                yfunc: rhs.func,
+            }
         }
     }
 }
@@ -105,15 +160,14 @@ where
     for<'a> &'a S: Add<Output = S>,
     F: FnOnce(S),
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
+    type Output = TensorFunc<S, F>;
     fn add(self, rhs: Tensor<S>) -> Self::Output {
-        let self_func = self.func;
         TensorFunc {
             data: Rc::new(self.data.as_ref() + rhs.data.as_ref()),
-            func: self_func,
+            func: self.func,
         }
     }
-}*/
+}
 
 #[derive(Debug)]
 pub struct AddBackwardFG<'g, S, XF> {
