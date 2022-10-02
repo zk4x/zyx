@@ -1,19 +1,7 @@
-use crate::{ops::{Reshape, GetShape}, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
-use std::{rc::Rc, ops::Add, cell::RefCell};
+use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::Add, cell::RefCell};
 
-impl<S> Reshape for Tensor<S>
-where
-    for<'a> &'a S: Reshape<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn reshape(self, shape: &[usize]) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.reshape(shape)),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReshapeBackwardG<'g, S> {
     grad: &'g RefCell<S>,
     shape: Vec<usize>,
@@ -21,31 +9,31 @@ pub struct ReshapeBackwardG<'g, S> {
 
 impl<'g, S> Backward<S> for ReshapeBackwardG<'g, S>
 where
-    for<'a> &'a S: Reshape<Output = S> + Add<Output = S>,
+    S: Default + Reshape<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_with(|grad| &*grad + &res_grad.reshape(&self.shape));
+        self.grad.replace_take(|grad| grad + res_grad.reshape(&self.shape));
     }
 }
 
-impl<'g, S> Reshape for &'g TensorGrad<S>
+impl<'g, S> Reshape for &'g Variable<S>
 where
-    S: 'g,
-    for<'a> &'a S: Reshape<Output = S> + GetShape,
+    S: 'g + Clone + Reshape<Output = S>,
+    S: GetShape,
 {
-    type Output = TensorFunc<S, ReshapeBackwardG<'g, S>>;
+    type Output = Tensor<S, ReshapeBackwardG<'g, S>>;
     fn reshape(self, shape: &[usize]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data().reshape(shape)),
+        Tensor {
+            data: (*self.data()).clone().reshape(shape),
             func: ReshapeBackwardG {
                 grad: &self.grad,
-                shape: self.data.borrow().shape(),
+                shape: self.data().shape(),
             }
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReshapeBackwardF<F> {
     func: F,
     shape: Vec<usize>,
@@ -53,7 +41,7 @@ pub struct ReshapeBackwardF<F> {
 
 impl<S, F> Backward<S> for ReshapeBackwardF<F>
 where
-    for<'a> &'a S: Reshape<Output = S>,
+    S: Reshape<Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -61,17 +49,18 @@ where
     }
 }
 
-impl<S, F> Reshape for TensorFunc<S, F>
+impl<S, F> Reshape for Tensor<S, F>
 where
-    for<'a> &'a S: Reshape<Output = S> + GetShape,
+    S: Reshape<Output = S> + GetShape,
 {
-    type Output = TensorFunc<S, ReshapeBackwardF<F>>;
-    fn reshape(self, shape: &[usize]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.reshape(shape)),
+    type Output = Tensor<S, ReshapeBackwardF<F>>;
+    fn reshape(self, res_shape: &[usize]) -> Self::Output {
+        let shape = self.data.shape();
+        Tensor {
+            data: self.data.reshape(res_shape),
             func: ReshapeBackwardF {
                 func: self.func,
-                shape: self.data.shape(),
+                shape,
             }
         }
     }

@@ -1,28 +1,19 @@
-use crate::{ops::GetShape, tensor::{Tensor, TensorGrad, TensorFunc}};
+use crate::{ops::GetShape, tensor::{Variable, Tensor}};
 
-impl<S> GetShape for &Tensor<S>
+impl<S> GetShape for Variable<S>
 where
-    for<'a> &'a S: GetShape,
+    S: GetShape,
 {
-    fn shape(self) -> Vec<usize> {
+    fn shape(&self) -> Vec<usize> {
         self.data().shape()
     }
 }
 
-impl<S> GetShape for &TensorGrad<S>
+impl<S, F> GetShape for Tensor<S, F>
 where
-    for<'a> &'a S: GetShape,
+    S: GetShape,
 {
-    fn shape(self) -> Vec<usize> {
-        self.data().shape()
-    }
-}
-
-impl<S, F> GetShape for &TensorFunc<S, F>
-where
-    for<'a> &'a S: GetShape,
-{
-    fn shape(self) -> Vec<usize> {
+    fn shape(&self) -> Vec<usize> {
         self.data().shape()
     }
 }

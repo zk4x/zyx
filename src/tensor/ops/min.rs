@@ -1,19 +1,7 @@
-use crate::{ops::{Min, Expand, GetShape}, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
-use std::{rc::Rc, ops::Add, cell::RefCell};
+use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::Add, cell::RefCell};
 
-impl<S> Min for Tensor<S>
-where
-    for<'a> &'a S: Min<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn min(self, dims: &[i32]) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.min(dims)),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MinBackwardG<'g, S> {
     grad: &'g RefCell<S>,
     shape: Vec<usize>,
@@ -21,22 +9,22 @@ pub struct MinBackwardG<'g, S> {
 
 impl<'g, S> Backward<S> for MinBackwardG<'g, S>
 where
-    for<'a> &'a S: Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_with(|grad| &*grad + &res_grad.expand(&self.shape));
+        self.grad.replace_take(|grad| grad + res_grad.expand(&self.shape));
     }
 }
 
-impl<'g, S> Min for &'g TensorGrad<S>
+impl<'g, S> Min for &'g Variable<S>
 where
-    S: 'g,
-    for<'a> &'a S: Min<Output = S> + GetShape,
+    S: 'g + Clone + Min<Output = S>,
+    S: GetShape,
 {
-    type Output = TensorFunc<S, MinBackwardG<'g, S>>;
+    type Output = Tensor<S, MinBackwardG<'g, S>>;
     fn min(self, dims: &[i32]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.borrow().min(dims)),
+        Tensor {
+            data: (*self.data.borrow()).clone().min(dims),
             func: MinBackwardG {
                 grad: &self.grad,
                 shape: self.data.borrow().shape(),
@@ -45,7 +33,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MinBackwardF<F> {
     func: F,
     shape: Vec<usize>,
@@ -53,7 +41,7 @@ pub struct MinBackwardF<F> {
 
 impl<S, F> Backward<S> for MinBackwardF<F>
 where
-    for<'a> &'a S: Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Expand<Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -61,18 +49,19 @@ where
     }
 }
 
-impl<S, F> Min for TensorFunc<S, F>
+impl<S, F> Min for Tensor<S, F>
 where
-    for<'a> &'a S: Min<Output = S> + GetShape,
+    S: Min<Output = S> + GetShape,
     F: FnOnce(S),
 {
-    type Output = TensorFunc<S, MinBackwardF<F>>;
+    type Output = Tensor<S, MinBackwardF<F>>;
     fn min(self, dims: &[i32]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.min(dims)),
+        let shape = self.data.shape();
+        Tensor {
+            data: self.data.min(dims),
             func: MinBackwardF {
                 func: self.func,
-                shape: self.data.shape(),
+                shape,
             }
         }
     }

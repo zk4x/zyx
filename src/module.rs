@@ -6,10 +6,10 @@
 //! input.apply(module) notation
 //! 
 
-use crate::tensor::TensorGrad;
+use crate::tensor::Variable;
 
 pub trait ModuleParams<'a, S> {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>>;
+    fn parameters(&'a self) -> Vec<&'a Variable<S>>;
 }
 
 pub trait Module<Input> {
@@ -55,7 +55,7 @@ where
     M0: ModuleParams<'a, S>,
     M1: ModuleParams<'a, S>,
 {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         self.0.parameters().into_iter()
             .chain(self.1.parameters().into_iter()).collect()
     }
@@ -79,7 +79,7 @@ where
     M1: ModuleParams<'a, S>,
     M2: ModuleParams<'a, S>,
 {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         self.0.parameters().into_iter()
             .chain(self.1.parameters().into_iter())
             .chain(self.2.parameters().into_iter()).collect()
@@ -106,7 +106,7 @@ where
     M2: ModuleParams<'a, S>,
     M3: ModuleParams<'a, S>,
 {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         self.0.parameters().into_iter()
             .chain(self.1.parameters().into_iter())
             .chain(self.2.parameters().into_iter())
@@ -152,7 +152,7 @@ where
     M4: ModuleParams<'a, S>,
     M5: ModuleParams<'a, S>,
 {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         self.0.parameters().into_iter()
             .chain(self.1.parameters().into_iter())
             .chain(self.2.parameters().into_iter())
@@ -188,7 +188,7 @@ where
     M5: ModuleParams<'a, S>,
     M6: ModuleParams<'a, S>,
 {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         self.0.parameters().into_iter()
             .chain(self.1.parameters().into_iter())
             .chain(self.2.parameters().into_iter())
@@ -227,7 +227,7 @@ where
     M6: ModuleParams<'a, S>,
     M7: ModuleParams<'a, S>,
 {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         self.0.parameters().into_iter()
             .chain(self.1.parameters().into_iter())
             .chain(self.2.parameters().into_iter())

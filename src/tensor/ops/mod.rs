@@ -15,71 +15,21 @@ mod add;
 mod sub;
 mod matmul;
 
-/*impl<S> ops::Pow for Tensor<S>
-where
-    for<'a> &'a S: ops::Pow<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn pow(self, exponent: i32) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.pow(exponent)),
-        }
-    }
+// We need custom implementation of replace_take() for RefCell that has F: FnOnce(T) -> T instead of F: FnOnce(&mut T) -> T
+pub(super) trait RefCellReplaceTake<T, F> {
+    fn replace_take(&self, f: F);
 }
 
-impl<S> ops::Pow for TensorGrad<S>
+// This requires T to be Default
+// However we would like to make it so that it is not needed.
+// There should be unsafe way to simply move the data from RefCell and leave
+// it filled with zeros
+impl<T, F> RefCellReplaceTake<T, F> for std::cell::RefCell<T>
 where
-    for<'a> &'a S: ops::Pow<Output = S>
-        + std::ops::Mul<Output = S>
-        + Add<Output = S>
-        + ops::Pow<Output = S>
-        + std::ops::Mul<i32, Output = S>,
+    T: Default,
+    F: FnOnce(T) -> T,
 {
-    type Output = TensorFunc<S, impl FnOnce(S)>;
-    fn pow(self, exponent: i32) -> Self::Output {
-        let self_grad = Rc::downgrade(&self.grad);
-        let self_data = self.data();
-        TensorFunc {
-            data: Rc::new(self_data.pow(exponent)),
-            func: move |res_grad: | {
-                
-                    self_grad.replace_with(|grad| {
-                        Rc::new(
-                            grad.as_ref()
-                                + &(res_grad.as_ref() * &(&self_data.pow(exponent - 1) * exponent)),
-                        )
-                    });
-                }
-            }))),
-        }
+    fn replace_take(&self, f: F) {
+        self.replace(f(self.take()));
     }
 }
-
-impl<S, F> ops::Pow for TensorFunc<S, F>
-where
-    F: FnOnce(S),
-    for<'a> &'a S: ops::Pow<Output = S>
-        + std::ops::Mul<Output = S>
-        + ops::Pow<Output = S>
-        + std::ops::Mul<i32, Output = S>,
-{
-    type Output = TensorFunc<S, impl FnOnce(S)>;
-    fn pow(self, exponent: i32) -> Self::Output {
-        let self_func = Rc::downgrade(&self.func);
-        let self_data = self.data.clone();
-        TensorFunc {
-            data: Rc::new(self.data.pow(exponent)),
-            func: move |res_grad: | {
-                if let Some(func) = self_func
-                    .upgrade()
-                    .unwrap_or_else(|| Rc::new(Cell::new(None)))
-                    .take()
-                {
-                    func(Rc::new(
-                        res_grad.as_ref() * &(&self_data.pow(exponent - 1) * exponent),
-                    ));
-                }
-            }))),
-        }
-    }
-}*/

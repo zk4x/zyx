@@ -3,17 +3,17 @@
 //! [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 //! [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
 //! 
-//! Zyx is open source tensor library.
+//! Zyx is open source Buffer library.
 //! 
 //! It defines generic traits for operations that can be performed
-//! with tensors and generic tensor struct, that can use any custom accelerator as buffer, provided
-//! that this accelerator implements those operations, that are called on the tensor.
+//! with Buffers and generic Buffer struct, that can use any custom accelerator as buffer, provided
+//! that this accelerator implements those operations, that are called on the Buffer.
 //! 
 //! That is, if you don't use some operations, there is no need to implement them for your accelerator.
 //! 
 //! ## Features
 //! 
-//! 1. Tensor is generic abstraction over underlying type. That is,
+//! 1. Buffer is generic abstraction over underlying type. That is,
 //!    it is incredibly simple to provide your own accelerators
 //!    and data types. You just need to implement those ops for your datatype, that you
 //!    will use and don't need to care about implementing anything else.
@@ -26,7 +26,7 @@
 //!    into the type system. Thus there is virtually zero overhead using dynamic graphs.
 //!    backward() is just a function call that calls all the operations in reverse without creation
 //!    of the graph at runtime. No dyn keyword used, Vecs of operations are not created.
-//!    Tensors are basically zero cost abstractions over underlying accelerator. At compile time
+//!    Buffers are basically zero cost abstractions over underlying accelerator. At compile time
 //!    they just remeber the operation used and call appropriate functions to calculate the derivatives.
 //! 
 //! 4. Accelerator code is just 500 lines in one file. Implementing custom accelerators should be simple.
@@ -38,16 +38,15 @@
 //! 
 //! ```rust
 //! use zyx::prelude::*;
-//! use zyx::buffer::cpu;
-//! use zyx::tensor::Tensor;
+//! use zyx::accel::cpu::Buffer;
 //! 
-//! let x = Tensor::uniform(&[20, 30], -1., 1.).with_grad();
-//! let y = Tensor::<cpu::Buffer<f32>>::randn(&[30, 15]).with_grad();
+//! let x = Buffer::uniform(&[20, 30], -1., 1.).with_grad();
+//! let y = Buffer::<f32>::randn(&[30, 15]).with_grad();
 //! 
 //! x.matmul(&y).sum(&[]).backward();
 //! 
-//! println!("{}", x.grad().borrow());
-//! println!("{}", y.grad().borrow());
+//! println!("{}", x.grad());
+//! println!("{}", y.grad());
 //! ```
 //! 
 //! ## Installation
@@ -73,31 +72,31 @@
 //! 
 //! ### Ops
 //! 
-//! This module contains definitions of operations that can be performed on tensors. The operations should be performable with basic datatypes (those implementations
-//! are in this module), all custom accelerators in buffer module and all tensors (implemented in tensor::ops module).
-//! 
-//! ### Tensor
-//! 
-//! The primary component of the library is tensor module. It contains definition of Tensor, TensorGrad and TensorFunc.
-//! Tensor is just an Rc over storage buffer S, so it does not require gradient.
-//! By calling .with_grad() on Tensor, you get TensorGrad, which stores it's gradient.
-//! These two are called leaf tensors and they are created explicitly by the user.
-//! 
-//! TensorFunc is a tensor, that is a result of some computation where at least one of the operands is TensorGrad.
-//! TensorFunc is not a leaf tensor, TensorFunc does not store it's gradient. This simplifies calculations and saves memory.
-//! TensorFunc stores references to TensorGrad's gradients and Rc pointers to some data buffers used during gradient
-//! calculation.
-//! 
-//! tensor::self contains tensor definitions, getters and setters for tensors.
-//! tensor::ops contains tensor implementations of operations defined in ops module.
-//! tensor::init contains initialization methods for tensors.
+//! This module contains definitions of operations that can be performed on Buffers. The operations should be performable with basic datatypes (those implementations
+//! are in this module), all custom accelerators in buffer module and all Buffers (implemented in Buffer::ops module).
 //! 
 //! ### Buffer
 //! 
-//! Buffer module contains implementations of accelerators. The default accelerator is cpu::Buffer. This accelerators is complete, but not optimized.
+//! The primary component of the library is Buffer module. It contains definition of Buffer, Variable and Tensor.
+//! Buffer is just an Rc over storage buffer S, so it does not require gradient.
+//! By calling .with_grad() on Buffer, you get Variable, which stores it's gradient.
+//! These two are called leaf Buffers and they are created explicitly by the user.
+//! 
+//! Tensor is a Buffer, that is a result of some computation where at least one of the operands is Variable.
+//! Tensor is not a leaf Buffer, Tensor does not store it's gradient. This simplifies calculations and saves memory.
+//! Tensor stores references to Variable's gradients and Rc pointers to some data buffers used during gradient
+//! calculation.
+//! 
+//! Buffer::self contains Buffer definitions, getters and setters for Buffers.
+//! Buffer::ops contains Buffer implementations of operations defined in ops module.
+//! Buffer::init contains initialization methods for Buffers.
+//! 
+//! ### Buffer
+//! 
+//! Buffer module contains implementations of accelerators. The default accelerator is Cpu. This accelerators is complete, but not optimized.
 //! You can define your own accelerators by simply creating a new module in this buffer directory.
 //! 
-//! These three modules represent the foundation upon which this library stands. There should be minimal to none API changes to ops and tensor modules.
+//! These three modules represent the foundation upon which this library stands. There should be minimal to none API changes to ops and Buffer modules.
 //! As for the buffer module, new accelerators should be added and existing accelerators should become faster, however removal of existing features is not going to be accepted.
 //! 
 //! ### Optim
@@ -112,7 +111,7 @@
 //! 
 //! ### Shape
 //! 
-//! This module defines Shape and Dims traits. These are implemented for &[usize] and &[i32] respectively. Shape stores the size of tensor's dimensions
+//! This module defines Shape and Dims traits. These are implemented for &[usize] and &[i32] respectively. Shape stores the size of Buffer's dimensions
 //! while Dims stores dimension's order, that can also be negative (-1 is last dimension). Dims is used as input into functions as Permute or Sum, when
 //! we need to define along which dimensions we want to perform these operations.
 //! 
@@ -122,15 +121,16 @@
 //! 
 
 pub mod tensor;
-pub mod buffer;
+pub mod accel;
 pub mod ops;
 pub mod shape;
 pub mod module;
 pub mod nn;
 pub mod optim;
 pub mod prelude;
+pub mod init;
 
 #[cfg(test)]
 mod tests;
 
-// TODO: saving of models and tensors
+// TODO: saving of models and Buffers

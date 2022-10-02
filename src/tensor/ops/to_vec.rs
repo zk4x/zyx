@@ -1,15 +1,6 @@
-use crate::{ops::ToVec, tensor::{Tensor, TensorGrad, TensorFunc}};
+use crate::{ops::ToVec, tensor::{Variable, Tensor}};
 
-impl<S, T> ToVec<T> for Tensor<S>
-where
-    S: ToVec<T>,
-{
-    fn to_vec(&self) -> Vec<T> {
-        self.data.to_vec()
-    }
-}
-
-impl<S, T> ToVec<T> for TensorGrad<S>
+impl<S, T> ToVec<T> for Variable<S>
 where
     S: ToVec<T>,
 {
@@ -18,7 +9,7 @@ where
     }
 }
 
-impl<S, F, T> ToVec<T> for TensorFunc<S, F>
+impl<S, F, T> ToVec<T> for Tensor<S, F>
 where
     S: ToVec<T>,
 {

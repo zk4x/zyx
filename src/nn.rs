@@ -2,7 +2,7 @@
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
 
-use crate::{module::Module, ops, ops::MatMul, tensor::{Tensor, TensorGrad}, prelude::ModuleParams};
+use crate::{module::Module, ops, ops::MatMul, tensor::Variable, prelude::ModuleParams, init::UniformInit};
 use std::ops::Add;
 
 #[derive(Debug)]
@@ -19,7 +19,7 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for ReLU {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -38,7 +38,7 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for Exp {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -57,7 +57,7 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for Ln {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -76,7 +76,7 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for Tanh {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -93,12 +93,12 @@ where
     type Output = <<<Input as std::ops::Neg>::Output as ops::Exp>::Output as std::ops::Div>::Output;
     fn forward(self, x: Input) -> Self::Output {
         use crate::ops::Ones;
-        Tensor::ones(&[])/(Tensor::ones(&[])+(-x).exp())
+        Buffer::ones(&[])/(Buffer::ones(&[])+(-x).exp())
     }
 }*/
 
 impl<'a, S> ModuleParams<'a, S> for Sigmoid {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -119,7 +119,7 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for Sum<'a> {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -140,7 +140,7 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for Max<'a> {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
@@ -161,87 +161,85 @@ where
 }
 
 impl<'a, S> ModuleParams<'a, S> for Min<'a> {
-    fn parameters(&self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
 
 #[derive(Debug)]
 pub struct Linear<S> {
-    w: TensorGrad<S>,
-    b: TensorGrad<S>,
+    w: Variable<S>,
+    b: Variable<S>,
 }
 
 impl<S> Linear<S> {
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
-        for<'a> S: ops::ConvertFrom<&'a crate::buffer::cpu::Buffer<T>>,
+        S: ops::FromVec<T> + ops::Zeros,
         T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
-        use ops::ConvertFrom;
         Self {
-            w: TensorGrad::<S>::convert_from(Tensor::uniform(&[in_features, out_features], T::zeros(&[]), T::ones(&[])).with_grad()),
-            b: TensorGrad::<S>::convert_from(Tensor::uniform(&[1, out_features], T::zeros(&[]), T::ones(&[])).with_grad()),
+            w: Variable::<S>::uniform(&[in_features, out_features], T::zeros(&[]), T::ones(&[])),
+            b: Variable::<S>::uniform(&[1, out_features], T::zeros(&[]), T::ones(&[])),
         }
     }
 }
 
 impl<'a, S, Input> Module<Input> for &'a Linear<S>
 where
-    Input: ops::MatMul<&'a TensorGrad<S>>,
-    <Input as ops::MatMul<&'a TensorGrad<S>>>::Output: std::ops::Add<&'a TensorGrad<S>>,
+    Input: ops::MatMul<&'a Variable<S>>,
+    <Input as ops::MatMul<&'a Variable<S>>>::Output: std::ops::Add<&'a Variable<S>>,
 {
-    type Output = <<Input as ops::MatMul<&'a TensorGrad<S>>>::Output as std::ops::Add<&'a TensorGrad<S>>>::Output;
+    type Output = <<Input as ops::MatMul<&'a Variable<S>>>::Output as std::ops::Add<&'a Variable<S>>>::Output;
     fn forward(self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
     }
 }
 
 impl<'a, S> ModuleParams<'a, S> for Linear<S> {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         vec![&self.w, &self.b]
     }
 }
 
 pub struct RNNCell<S> {
-    wih: TensorGrad<S>,
-    bih: TensorGrad<S>,
-    whh: TensorGrad<S>,
-    bhh: TensorGrad<S>,
+    wih: Variable<S>,
+    bih: Variable<S>,
+    whh: Variable<S>,
+    bhh: Variable<S>,
 }
 
 impl<S> RNNCell<S> {
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
-        for<'a> S: ops::ConvertFrom<&'a crate::buffer::cpu::Buffer<T>>,
+        S: ops::FromVec<T> + ops::Zeros,
         T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
-        use ops::ConvertFrom;
         Self {
-            wih: TensorGrad::<S>::convert_from(Tensor::uniform(&[input_size, hidden_size], T::zeros(&[]), T::ones(&[])).with_grad()),
-            bih: TensorGrad::<S>::convert_from(Tensor::uniform(&[1, hidden_size], T::zeros(&[]), T::ones(&[])).with_grad()),
-            whh: TensorGrad::<S>::convert_from(Tensor::uniform(&[hidden_size, hidden_size], T::zeros(&[]), T::ones(&[])).with_grad()),
-            bhh: TensorGrad::<S>::convert_from(Tensor::uniform(&[1, hidden_size], T::zeros(&[]), T::ones(&[])).with_grad()),
+            wih: Variable::<S>::uniform(&[input_size, hidden_size], T::zeros(&[]), T::ones(&[])),
+            bih: Variable::<S>::uniform(&[1, hidden_size], T::zeros(&[]), T::ones(&[])),
+            whh: Variable::<S>::uniform(&[hidden_size, hidden_size], T::zeros(&[]), T::ones(&[])),
+            bhh: Variable::<S>::uniform(&[1, hidden_size], T::zeros(&[]), T::ones(&[])),
         }
     }
 }
 
 impl<'a, S, X, H> Module<(X, H)> for &'a RNNCell<S>
 where
-    X: MatMul<&'a TensorGrad<S>>,
-    H: MatMul<&'a TensorGrad<S>>,
-    <X as MatMul<&'a TensorGrad<S>>>::Output: Add<&'a TensorGrad<S>>,
-    <<X as MatMul<&'a TensorGrad<S>>>::Output as Add<&'a TensorGrad<S>>>::Output: Add<<H as MatMul<&'a TensorGrad<S>>>::Output>,
-    <<<X as MatMul<&'a TensorGrad<S>>>::Output as Add<&'a TensorGrad<S>>>::Output as Add<<H as MatMul<&'a TensorGrad<S>>>::Output>>::Output: Add<&'a TensorGrad<S>>,
+    X: MatMul<&'a Variable<S>>,
+    H: MatMul<&'a Variable<S>>,
+    <X as MatMul<&'a Variable<S>>>::Output: Add<&'a Variable<S>>,
+    <<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output: Add<<H as MatMul<&'a Variable<S>>>::Output>,
+    <<<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output as Add<<H as MatMul<&'a Variable<S>>>::Output>>::Output: Add<&'a Variable<S>>,
 {
-    type Output = <<<<X as MatMul<&'a TensorGrad<S>>>::Output as Add<&'a TensorGrad<S>>>::Output as Add<<H as MatMul<&'a TensorGrad<S>>>::Output>>::Output as Add<&'a TensorGrad<S>>>::Output;
+    type Output = <<<<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output as Add<<H as MatMul<&'a Variable<S>>>::Output>>::Output as Add<&'a Variable<S>>>::Output;
     fn forward(self, x: (X, H)) -> Self::Output {
         x.0.matmul(&self.wih) + &self.bih + x.1.matmul(&self.whh) + &self.bhh
     }
 }
 
 impl<'a, S> ModuleParams<'a, S> for RNNCell<S> {
-    fn parameters(&'a self) -> Vec<&'a TensorGrad<S>> {
+    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
         vec![&self.wih, &self.bih, &self.whh, &self.bhh]
     }
 }

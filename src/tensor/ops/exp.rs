@@ -1,52 +1,30 @@
-use crate::{ops::Exp, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
-use std::{rc::Rc, ops::{Add, Mul}, cell::RefCell};
+use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::{Add, Mul}, cell::RefCell};
 
-impl<S> Exp for Tensor<S>
-where
-    for<'a> &'a S: Exp<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn exp(self) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.exp()),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExpBackwardG<'g, S> {
     grad: &'g RefCell<S>,
-    data: Rc<S>,
-}
-
-impl<'g, S> Clone for ExpBackwardG<'g, S> {
-    fn clone(&self) -> Self {
-        Self {
-            grad: self.grad,
-            data: Rc::clone(&self.data),
-        }
-    }
+    data: S,
 }
 
 impl<'g, S> Backward<S> for ExpBackwardG<'g, S>
 where
-    for<'a> &'a S: Exp<Output = S> + Mul<Output = S> + Add<Output = S>,
+    S: Default + Exp<Output = S> + Mul<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_with(|grad| &*grad + &(&res_grad * &self.data));
+        self.grad.replace_take(|grad| grad + res_grad * self.data);
     }
 }
 
-impl<'g, S> Exp for &'g TensorGrad<S>
+impl<'g, S> Exp for &'g Variable<S>
 where
-    S: 'g,
-    for<'a> &'a S: Exp<Output = S>,
+    S: 'g + Clone + Exp<Output = S>,
 {
-    type Output = TensorFunc<S, ExpBackwardG<'g, S>>;
+    type Output = Tensor<S, ExpBackwardG<'g, S>>;
     fn exp(self) -> Self::Output {
-        let data = Rc::new(self.data.borrow().exp());
-        TensorFunc {
-            data: Rc::clone(&data),
+        let data = (*self.data()).clone().exp();
+        Tensor {
+            data: data.clone(),
             func: ExpBackwardG {
                 grad: &self.grad,
                 data,
@@ -55,44 +33,31 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExpBackwardF<S, F> {
     func: F,
-    data: Rc<S>,
-}
-
-impl<S, F> Clone for ExpBackwardF<S, F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            func: self.func.clone(),
-            data: Rc::clone(&self.data),
-        }
-    }
+    data: S,
 }
 
 impl<S, F> Backward<S> for ExpBackwardF<S, F>
 where
-    for<'a> &'a S: Exp<Output = S> + Mul<Output = S>,
+    S: Exp<Output = S> + Mul<Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(&res_grad * &self.data);
+        self.func.backward(res_grad * self.data);
     }
 }
 
-impl<S, F> Exp for TensorFunc<S, F>
+impl<S, F> Exp for Tensor<S, F>
 where
-    for<'a> &'a S: Exp<Output = S>,
-    F: Backward<S>,
+    S: Clone + Exp<Output = S>,
 {
-    type Output = TensorFunc<S, ExpBackwardF<S, F>>;
+    type Output = Tensor<S, ExpBackwardF<S, F>>;
     fn exp(self) -> Self::Output {
-        let data = Rc::new(self.data.exp());
-        TensorFunc {
-            data: Rc::clone(&data),
+        let data = self.data.exp();
+        Tensor {
+            data: data.clone(),
             func: ExpBackwardF {
                 func: self.func,
                 data,

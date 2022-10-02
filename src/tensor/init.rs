@@ -1,8 +1,8 @@
-//! Methods for tensor initialization
+//! Methods for Buffer initialization
 //! 
 
-use crate::{buffer::cpu, tensor::Tensor, ops, shape::Shape};
-use std::rc::Rc;
+use crate::{tensor::Variable, ops::{self, FromVec, ConvertFrom}, shape::Shape};
+use std::cell::RefCell;
 
 pub trait DType {}
 
@@ -16,123 +16,104 @@ impl DType for i64 {}
 impl DType for i128 {}
 impl DType for bool {}
 
-type Storage<T> = cpu::Buffer<T>;
-// Different accelerators can be supported with either config flags similar to this, or with calls like Tensor::<opencl::Buffer<f32>>::convert_from(other_tensor)
+// Different accelerators can be supported with either config flags similar to this, or with calls like Buffer::<opencl::Buffer<f32>>::convert_from(other_Buffer)
 //#[cfg(Opencl)]
 //type Storage<T> = opencl::Buffer<T>;
 
-impl<T> Tensor<Storage<T>>
+impl<S, T> ops::FromVec<T> for Variable<S>
 where
-    T: Default,
+    S: FromVec<T> + ops::Zeros,
 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl<T> Tensor<Storage<T>>
-{
-    pub fn from_vec(data: Vec<T>, shape: &[usize]) -> Self {
+    fn from_vec(data: Vec<T>, shape: &[usize]) -> Self {
         debug_assert_eq!(data.len(), shape.numel());
-        use ops::FromVec;
         Self {
-            data: Rc::new(Storage::from_vec(data, shape)),
+            data: RefCell::new(S::from_vec(data, shape)),
+            grad: RefCell::new(S::zeros(shape)),
         }
     }
 }
 
-impl<T> Tensor<Storage<T>>
+impl<S> ops::Zeros for Variable<S>
 where
-    rand::distributions::Standard: rand::prelude::Distribution<T>,
-{
-    pub fn randn(shape: &[usize]) -> Self {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        Self::from_vec(std::iter::repeat(0).take(shape.numel()).map(|_| rng.gen()).collect(), shape)
-    }
-}
-
-impl<T> Tensor<Storage<T>>
-where
-    T: rand::distributions::uniform::SampleUniform,
-{
-    pub fn uniform(shape: &[usize], low: T, high: T) -> Self {
-        use rand::distributions::Distribution;
-        let mut rng = rand::thread_rng();
-        let dist = rand::distributions::Uniform::new(low, high);
-        Self::from_vec(std::iter::repeat(0).take(shape.numel()).map(|_| dist.sample(&mut rng)).collect(), shape)
-    }
-}
-
-impl<T> ops::Zeros for Tensor<Storage<T>>
-where
-    T: ops::Zeros + Clone,
+    S: ops::Zeros,
 {
     fn zeros(shape: &[usize]) -> Self {
-        Self::from_vec(vec![T::zeros(&[]); shape.numel()], shape)
+        Self {
+            data: RefCell::new(S::zeros(shape)),
+            grad: RefCell::new(S::zeros(shape)),
+        }
     }
 }
 
-impl<T> ops::Ones for Tensor<Storage<T>>
+impl<S> ops::Ones for Variable<S>
 where
-    T: ops::Ones + Clone,
+    S: ops::Ones + ops::Zeros,
 {
     fn ones(shape: &[usize]) -> Self {
-        Self::from_vec(vec![T::ones(&[]); shape.numel()], shape)
+        Self {
+            data: RefCell::new(S::ones(shape)),
+            grad: RefCell::new(S::zeros(shape)),
+        }
     }
 }
 
-impl<F, T> From<(F, &[usize])> for Tensor<Storage<T>>
+impl<S, F, T> ConvertFrom<(F, &[usize])> for S
 where
     T: Clone,
+    S: FromVec<T>,
     F: FnMut() -> T,
 {
-    fn from(mut f: (F, &[usize])) -> Self {
-        Self::from_vec(std::iter::repeat(0).take(f.1.numel()).map(|_| f.0()).collect(), f.1)
+    fn cfrom(mut f: (F, &[usize])) -> Self {
+        S::from_vec(std::iter::repeat(0).take(f.1.numel()).map(|_| f.0()).collect(), f.1)
     }
 }
 
-impl<T, const D0: usize> From<[T; D0]> for Tensor<Storage<T>>
+impl<S, T, const D0: usize> ConvertFrom<[T; D0]> for S
 where
-    T: DType + Clone
+    S: FromVec<T>,
+    T: DType + Clone,
 {
-    fn from(x: [T; D0]) -> Self {
-        Self::from_vec(x.to_vec(), &[D0])
+    fn cfrom(x: [T; D0]) -> Self {
+        S::from_vec(x.to_vec(), &[D0])
     }
 }
 
-impl<T, const D1: usize, const D0: usize> From<[[T; D0]; D1]> for Tensor<Storage<T>>
+impl<S, T, const D1: usize, const D0: usize> ConvertFrom<[[T; D0]; D1]> for S
 where
-    T: DType + Clone
+    S: FromVec<T>,
+    T: DType + Clone,
 {
-    fn from(x: [[T; D0]; D1]) -> Self {
-        Self::from_vec(x.into_iter().flatten().collect(), &[D1, D0])
+    fn cfrom(x: [[T; D0]; D1]) -> Self {
+        S::from_vec(x.into_iter().flatten().collect(), &[D1, D0])
     }
 }
 
-impl<T, const D2: usize, const D1: usize, const D0: usize> From<[[[T; D0]; D1]; D2]> for Tensor<Storage<T>>
+impl<S, T, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[T; D0]; D1]; D2]> for S
 where
+    S: FromVec<T>,
     T: DType + Clone
 {
-    fn from(x: [[[T; D0]; D1]; D2]) -> Self {
-        Self::from_vec(x.into_iter().flatten().flatten().collect(), &[D2, D1, D0])
+    fn cfrom(x: [[[T; D0]; D1]; D2]) -> Self {
+        S::from_vec(x.into_iter().flatten().flatten().collect(), &[D2, D1, D0])
     }
 }
 
-impl<T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> From<[[[[T; D0]; D1]; D2]; D3]> for Tensor<Storage<T>>
+impl<S, T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[T; D0]; D1]; D2]; D3]> for S
 where
+    S: FromVec<T>,
     T: DType + Clone
 {
-    fn from(x: [[[[T; D0]; D1]; D2]; D3]) -> Self {
-        Self::from_vec(x.into_iter().flatten().flatten().flatten().collect(), &[D3, D2, D1, D0])
+    fn cfrom(x: [[[[T; D0]; D1]; D2]; D3]) -> Self {
+        S::from_vec(x.into_iter().flatten().flatten().flatten().collect(), &[D3, D2, D1, D0])
     }
 }
 
-impl<T, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> From<[[[[[T; D0]; D1]; D2]; D3]; D4]> for Tensor<Storage<T>>
+impl<S, T, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[[T; D0]; D1]; D2]; D3]; D4]> for S
 where
+    S: FromVec<T>,
     T: DType + Clone
 {
-    fn from(x: [[[[[T; D0]; D1]; D2]; D3]; D4]) -> Self {
+    fn cfrom(x: [[[[[T; D0]; D1]; D2]; D3]; D4]) -> Self {
         Self::from_vec(x.into_iter().flatten().flatten().flatten().flatten().collect(), &[D4, D3, D2, D1, D0])
     }
 }

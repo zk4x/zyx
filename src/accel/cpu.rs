@@ -4,6 +4,12 @@
 
 use crate::{ops, shape::{Shape, Dims}};
 
+// It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
+// If it creates shallow copy, it needs to do the necessary reference counting
+
+// Now Buffer can be passed by value and can implement inplace operations,
+// because tensor::Variable ensures that it will not be mutated in wrong ways
+// If needed, Rc can be change to Arc and RefCell to Mutex/RwLock
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Buffer<T> {
     shape: Vec<usize>,
@@ -12,19 +18,20 @@ pub struct Buffer<T> {
 
 impl<T> Buffer<T> {
     pub fn est_mem_size(&self) -> usize {
-        self.data.len() * std::mem::size_of::<T>()
+        self.data.len() * std::mem::size_of::<T>() + self.shape.len() * std::mem::size_of::<usize>()
     }
 }
 
-impl<T, T2> ops::ConvertFrom<&Buffer<T2>> for Buffer<T>
+impl<T, T2> ops::ConvertFrom<Buffer<T2>> for Buffer<T>
 where
-    T: From<T2>,
-    T2: Clone,
+    T: From<T2> + Send,
+    T2: Clone + Send,
 {
-    fn convert_from(x: &Buffer<T2>) -> Self {
+    fn cfrom(x: Buffer<T2>) -> Self {
+        use rayon::prelude::*;
         Self {
             shape: x.shape.clone(),
-            data: x.data.iter().map(|x| x.clone().into()).collect(),
+            data: x.data.into_par_iter().map(|x| x.into()).collect(),
         }
     }
 }
@@ -99,8 +106,8 @@ impl<T> ops::FromVec<T> for Buffer<T> {
     }
 }
 
-impl<T> ops::GetShape for &Buffer<T> {
-    fn shape(self) -> Vec<usize> {
+impl<T> ops::GetShape for Buffer<T> {
+    fn shape(&self) -> Vec<usize> {
         self.shape.clone()
     }
 }
@@ -129,22 +136,21 @@ where
     }
 }
 
-fn unary_op<T, F>(x: &Buffer<T>, f: F) -> Buffer<T>
+fn unary_op<T, F>(x: Buffer<T>, f: F) -> Buffer<T>
 where
     T: Sync + Send,
-    F: Fn(&T) -> T + Sync + Send,
+    F: Fn(T) -> T + Sync + Send,
 {
     use rayon::prelude::*;
     Buffer {
         shape: x.shape.clone(),
-        data: x.data.par_iter().map(f).collect(),
+        data: x.data.into_par_iter().map(f).collect(),
     }
 }
 
-impl<T> ops::ReLU for &Buffer<T>
+impl<T> ops::ReLU for Buffer<T>
 where
-    T: Sync + Send,
-    for<'a> &'a T: ops::ReLU<Output = T>,
+    T: Sync + Send + ops::ReLU<Output = T>,
 {
     type Output = Buffer<T>;
     fn relu(self) -> Self::Output {
@@ -152,10 +158,9 @@ where
     }
 }
 
-impl<T> ops::DReLU for &Buffer<T>
+impl<T> ops::DReLU for Buffer<T>
 where
-    T: Sync + Send,
-    for<'a> &'a T: ops::DReLU<Output = T>,
+    T: Sync + Send + ops::DReLU<Output = T>,
 {
     type Output = Buffer<T>;
     fn drelu(self) -> Self::Output {
@@ -163,10 +168,9 @@ where
     }
 }
 
-impl<T> ops::Exp for &Buffer<T>
+impl<T> ops::Exp for Buffer<T>
 where
-    T: Sync + Send,
-    for<'a> &'a T: ops::Exp<Output = T>,
+    T: Sync + Send + ops::Exp<Output = T>,
 {
     type Output = Buffer<T>;
     fn exp(self) -> Self::Output {
@@ -174,10 +178,9 @@ where
     }
 }
 
-impl<T> ops::Ln for &Buffer<T>
+impl<T> ops::Ln for Buffer<T>
 where
-    T: Sync + Send,
-    for<'a> &'a T: ops::Ln<Output = T>,
+    T: Sync + Send + ops::Ln<Output = T>,
 {
     type Output = Buffer<T>;
     fn ln(self) -> Self::Output {
@@ -185,10 +188,9 @@ where
     }
 }
 
-impl<T> ops::Tanh for &Buffer<T>
+impl<T> ops::Tanh for Buffer<T>
 where
-    T: Sync + Send,
-    for<'a> &'a T: ops::Tanh<Output = T>,
+    T: Sync + Send + ops::Tanh<Output = T>,
 {
     type Output = Buffer<T>;
     fn tanh(self) -> Self::Output {
@@ -196,18 +198,18 @@ where
     }
 }
 
-impl<T> std::ops::Neg for &Buffer<T>
+impl<T> std::ops::Neg for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Neg<Output = T>,
 {
     type Output = Buffer<T>;
     fn neg(self) -> Self::Output {
-        unary_op(self, |x| x.clone().neg())
+        unary_op(self, |x| x.neg())
     }
 }
 
 impl<T> Buffer<T> {
-    fn reduce<F>(&self, dims: &[i32], init: T, mut f: F) -> Buffer<T>
+    fn reduce<F>(self, dims: &[i32], init: T, mut f: F) -> Buffer<T>
     where
         T: Clone,
         F: FnMut(T, T) -> T,
@@ -254,7 +256,7 @@ impl<T> Buffer<T> {
     }
 }
 
-impl<T> ops::Sum for &Buffer<T>
+impl<T> ops::Sum for Buffer<T>
 where
     T: Clone + ops::Zeros + std::ops::Add<Output = T>,
 {
@@ -264,7 +266,7 @@ where
     }
 }
 
-impl<T> ops::Max for &Buffer<T>
+impl<T> ops::Max for Buffer<T>
 where
     T: Clone + Default + ops::Min<Output = T> + PartialOrd,
 {
@@ -274,7 +276,7 @@ where
     }
 }
 
-impl<T> ops::Min for &Buffer<T>
+impl<T> ops::Min for Buffer<T>
 where
     T: Clone + Default + ops::Max<Output = T> + PartialOrd,
 {
@@ -284,7 +286,7 @@ where
     }
 }
 
-impl<T> ops::Reshape for &Buffer<T>
+impl<T> ops::Reshape for Buffer<T>
 where
     T: Clone,
 {
@@ -294,12 +296,12 @@ where
         debug_assert_eq!(self.shape.numel(), shape.numel());
         Buffer {
             shape: shape.to_vec(),
-            data: self.data.clone(),
+            data: self.data,
         }
     }
 }
 
-impl<T> ops::Expand for &Buffer<T>
+impl<T> ops::Expand for Buffer<T>
 where
     T: Clone,
 {
@@ -309,7 +311,7 @@ where
         let res_shape = res_shape.dims();
         let n = shape.numel();
         let ndims = shape.len();
-        let mut data = self.data.clone();
+        let mut data = self.data;
 
         let copy_dim = |data: Vec<T>, width, times| {
             let mut res_data = Vec::with_capacity(res_shape.numel());
@@ -346,7 +348,7 @@ where
     }
 }
 
-impl<T> ops::Permute for &Buffer<T>
+impl<T> ops::Permute for Buffer<T>
 where
     T: Clone + ops::Zeros,
 {
@@ -400,56 +402,57 @@ where
     }
 }*/
 
-fn binary_op<T, F>(x: &Buffer<T>, y: &Buffer<T>, f: F) -> Buffer<T>
+fn binary_op<T, F>(x: Buffer<T>, y: Buffer<T>, f: F) -> Buffer<T>
 where
     T: Sync + Send + Clone,
-    F: Fn((&T, &T)) -> T + Sync + Send,
+    F: Fn((T, T)) -> T + Sync + Send,
 {
     use rayon::prelude::*;
     use ops::Expand;
     use std::cmp::Ordering;
+    let shape = x.shape.clone();
     let data = match x.shape.numel().cmp(&y.shape.numel()) {
-        Ordering::Greater => x.data.par_iter().zip(y.expand(&x.shape).data.par_iter()).map(f).collect(),
-        Ordering::Less => x.expand(&y.shape).data.par_iter().zip(y.data.par_iter()).map(f).collect(),
-        Ordering::Equal => x.data.par_iter().zip(y.data.par_iter()).map(f).collect(),
+        Ordering::Greater => x.data.into_par_iter().zip(y.expand(&x.shape).data.into_par_iter()).map(f).collect(),
+        Ordering::Less => x.expand(&y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
+        Ordering::Equal => x.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
     };
     Buffer {
-        shape: x.shape.clone(),
+        shape,
         data,
     }
 }
 
-impl<T> std::ops::Add for &Buffer<T>
+impl<T> std::ops::Add for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Add<Output = T>,
 {
     type Output = Buffer<T>;
-    fn add(self, rhs: &Buffer<T>) -> Self::Output {
-        binary_op(self, rhs, |(a, b)| a.clone() + b.clone())
+    fn add(self, rhs: Buffer<T>) -> Self::Output {
+        binary_op(self, rhs, |(a, b)| a + b)
     }
 }
 
-impl<T> std::ops::Sub for &Buffer<T>
+impl<T> std::ops::Sub for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Sub<Output = T>,
 {
     type Output = Buffer<T>;
-    fn sub(self, rhs: &Buffer<T>) -> Self::Output {
-        binary_op(self, rhs, |(a, b)| a.clone() - b.clone())
+    fn sub(self, rhs: Buffer<T>) -> Self::Output {
+        binary_op(self, rhs, |(a, b)| a - b)
     }
 }
 
-impl<T> std::ops::Mul for &Buffer<T>
+impl<T> std::ops::Mul for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Mul<Output = T>,
 {
     type Output = Buffer<T>;
-    fn mul(self, rhs: &Buffer<T>) -> Self::Output {
-        binary_op(self, rhs, |(a, b)| a.clone() * b.clone())
+    fn mul(self, rhs: Buffer<T>) -> Self::Output {
+        binary_op(self, rhs, |(a, b)| a * b)
     }
 }
 
-impl<T> std::ops::Mul<f32> for &Buffer<T>
+impl<T> std::ops::Mul<f32> for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Mul<f32, Output = T>,
 {
@@ -457,40 +460,40 @@ where
     fn mul(self, rhs: f32) -> Self::Output {
         use rayon::prelude::*;
         Buffer {
-            shape: self.shape.clone(),
-            data: self.data.par_iter().map(|x| x.clone() * rhs).collect(),
+            shape: self.shape,
+            data: self.data.into_par_iter().map(|x| x * rhs).collect(),
         }
     }
 }
 
-impl<T> std::ops::Div for &Buffer<T>
+impl<T> std::ops::Div for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Div<Output = T>,
 {
     type Output = Buffer<T>;
-    fn div(self, rhs: &Buffer<T>) -> Self::Output {
-        binary_op(self, rhs, |(a, b)| a.clone() / b.clone())
+    fn div(self, rhs: Buffer<T>) -> Self::Output {
+        binary_op(self, rhs, |(a, b)| a / b)
     }
 }
 
-impl<T> ops::Pow for &Buffer<T>
+impl<T> ops::Pow for Buffer<T>
 where
-    T: Clone + Sync + Send + ops::Pow<Output = T>,
+    T: Sync + Send + Clone + ops::Pow<Output = T>,
 {
     type Output = Buffer<T>;
-    fn pow(self, rhs: &Buffer<T>) -> Self::Output {
-        binary_op(self, rhs, |(a, b)| a.clone().pow(b.clone()))
+    fn pow(self, rhs: Buffer<T>) -> Self::Output {
+        binary_op(self, rhs, |(a, b)| a.pow(b))
     }
 }
 
 #[cfg(not(any(feature = "matrixmultiply", feature = "cblas")))]
-impl<T> ops::MatMul for &Buffer<T>
+impl<T> ops::MatMul for Buffer<T>
 where
     T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum,
-    for<'a> &'a Buffer<T>: ops::Transpose<Output = Buffer<T>>,
+    Buffer<T>: ops::Transpose<Output = Buffer<T>>,
 {
     type Output = Buffer<T>;
-    fn matmul(self, rhs: &Buffer<T>) -> Self::Output {
+    fn matmul(self, rhs: Buffer<T>) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
         let ndim = self.shape.len();
@@ -501,10 +504,12 @@ where
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
         }
         use ops::Transpose;
+        let m = self.shape.index(-2);
+        let k = self.shape.index(-1);
+        let n = rhs.shape.index(-1);
         let ty = rhs.transpose();
         use rayon::prelude::*;
         const NUM: usize = 16; // basically SIMD length
-        let k = rhs.shape.index(-2);
         let data: Vec<T> = ty.data
                 .par_chunks(k)
                 .map(|y_row| {
@@ -520,9 +525,9 @@ where
                 .flatten()
                 .collect();
         
-        let mut shape = self.shape.clone();
-        shape[ndim-1] = self.shape.index(-2);
-        shape[ndim-2] = rhs.shape.index(-1);
+        let mut shape = self.shape;
+        shape[ndim-1] = m;
+        shape[ndim-2] = n;
 
         Buffer {
             shape,
@@ -533,9 +538,9 @@ where
 
 // Let's just use matrixmultiply crate for f32 and f64
 #[cfg(feature = "matrixmultiply")]
-impl ops::MatMul for &Buffer<f32> {
+impl ops::MatMul for Buffer<f32> {
     type Output = Buffer<f32>;
-    fn matmul(self, rhs: &Buffer<f32>) -> Self::Output {
+    fn matmul(self, rhs: Buffer<f32>) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -566,9 +571,9 @@ impl ops::MatMul for &Buffer<f32> {
 }
 
 #[cfg(feature = "matrixmultiply")]
-impl ops::MatMul for &Buffer<f64> {
+impl ops::MatMul for Buffer<f64> {
     type Output = Buffer<f64>;
-    fn matmul(self, rhs: &Buffer<f64>) -> Self::Output {
+    fn matmul(self, rhs: Buffer<f64>) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -599,9 +604,9 @@ impl ops::MatMul for &Buffer<f64> {
 }
 
 #[cfg(feature = "cblas")]
-impl ops::MatMul for &Buffer<f32> {
+impl ops::MatMul for Buffer<f32> {
     type Output = Buffer<f32>;
-    fn matmul(self, rhs: &Buffer<f32>) -> Self::Output {
+    fn matmul(self, rhs: Buffer<f32>) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -637,9 +642,9 @@ impl ops::MatMul for &Buffer<f32> {
 }
 
 #[cfg(feature = "cblas")]
-impl ops::MatMul for &Buffer<f64> {
+impl ops::MatMul for Buffer<f64> {
     type Output = Buffer<f64>;
-    fn matmul(self, rhs: &Buffer<f64>) -> Self::Output {
+    fn matmul(self, rhs: Buffer<f64>) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");

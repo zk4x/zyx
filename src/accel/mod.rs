@@ -1,7 +1,7 @@
 //! Various implementations of accelerators.
-//! The default is zyx::buffer::cpu::Buffer.
+//! The default is zyx::accel::Cpu.
 //! 
-//! Every storage/accelerator must implement following traits:
+//! Every accelerator must implement following traits:
 //! 
 //! std::default::Default
 //! std::fmt::Display
@@ -13,4 +13,4 @@
 //! 
 
 pub mod cpu;
-//pub mod buffer_opencl;
+//pub mod opencl;

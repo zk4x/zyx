@@ -1,19 +1,7 @@
-use crate::{shape::Dims, ops::Permute, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
-use std::{rc::Rc, ops::Add, cell::RefCell};
+use crate::{shape::Dims, ops::Permute, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::Add, cell::RefCell};
 
-impl<S> Permute for Tensor<S>
-where
-    for<'a> &'a S: Permute<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn permute(self, dims: &[i32]) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.permute(dims)),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PermuteBackwardG<'g, S> {
     grad: &'g RefCell<S>,
     dims: Vec<i32>,
@@ -21,22 +9,21 @@ pub struct PermuteBackwardG<'g, S> {
 
 impl<'g, S> Backward<S> for PermuteBackwardG<'g, S>
 where
-    for<'a> &'a S: Permute<Output = S> + Add<Output = S>,
+    S: Default + Permute<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_with(|grad| &*grad + &res_grad.permute(&self.dims));
+        self.grad.replace_take(|grad| grad + res_grad.permute(&self.dims));
     }
 }
 
-impl<'g, S> Permute for &'g TensorGrad<S>
+impl<'g, S> Permute for &'g Variable<S>
 where
-    S: 'g,
-    for<'a> &'a S: Permute<Output = S>,
+    S: 'g + Clone + Permute<Output = S>,
 {
-    type Output = TensorFunc<S, PermuteBackwardG<'g, S>>;
+    type Output = Tensor<S, PermuteBackwardG<'g, S>>;
     fn permute(self, dims: &[i32]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data().permute(dims)),
+        Tensor {
+            data: (*self.data()).clone().permute(dims),
             func: PermuteBackwardG {
                 grad: &self.grad,
                 dims: dims.argsort(),
@@ -45,7 +32,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PermuteBackwardF<F> {
     func: F,
     dims: Vec<i32>,
@@ -53,7 +40,7 @@ pub struct PermuteBackwardF<F> {
 
 impl<S, F> Backward<S> for PermuteBackwardF<F>
 where
-    for<'a> &'a S: Permute<Output = S>,
+    S: Permute<Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -61,14 +48,14 @@ where
     }
 }
 
-impl<S, F> Permute for TensorFunc<S, F>
+impl<S, F> Permute for Tensor<S, F>
 where
-    for<'a> &'a S: Permute<Output = S>,
+    S: Permute<Output = S>,
 {
-    type Output = TensorFunc<S, PermuteBackwardF<F>>;
+    type Output = Tensor<S, PermuteBackwardF<F>>;
     fn permute(self, dims: &[i32]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.permute(dims)),
+        Tensor {
+            data: self.data.permute(dims),
             func: PermuteBackwardF {
                 func: self.func,
                 dims: dims.argsort(),

@@ -1,19 +1,7 @@
-use crate::{ops::{Max, Expand, GetShape}, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
-use std::{rc::Rc, ops::Add, cell::RefCell};
+use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::Add, cell::RefCell};
 
-impl<S> Max for Tensor<S>
-where
-    for<'a> &'a S: Max<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn max(self, dims: &[i32]) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.max(dims)),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MaxBackwardG<'g, S> {
     grad: &'g RefCell<S>,
     shape: Vec<usize>,
@@ -21,22 +9,22 @@ pub struct MaxBackwardG<'g, S> {
 
 impl<'g, S> Backward<S> for MaxBackwardG<'g, S>
 where
-    for<'a> &'a S: Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_with(|grad| &*grad + &res_grad.expand(&self.shape));
+        self.grad.replace_take(|grad| grad + res_grad.expand(&self.shape));
     }
 }
 
-impl<'g, S> Max for &'g TensorGrad<S>
+impl<'g, S> Max for &'g Variable<S>
 where
-    S: 'g,
-    for<'a> &'a S: Max<Output = S> + GetShape,
+    S: 'g + Clone + Max<Output = S>,
+    S: GetShape,
 {
-    type Output = TensorFunc<S, MaxBackwardG<'g, S>>;
+    type Output = Tensor<S, MaxBackwardG<'g, S>>;
     fn max(self, dims: &[i32]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.borrow().max(dims)),
+        Tensor {
+            data: (*self.data.borrow()).clone().max(dims),
             func: MaxBackwardG {
                 grad: &self.grad,
                 shape: self.data.borrow().shape(),
@@ -45,7 +33,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MaxBackwardF<F> {
     func: F,
     shape: Vec<usize>,
@@ -53,7 +41,7 @@ pub struct MaxBackwardF<F> {
 
 impl<S, F> Backward<S> for MaxBackwardF<F>
 where
-    for<'a> &'a S: Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Expand<Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -61,17 +49,18 @@ where
     }
 }
 
-impl<S, F> Max for TensorFunc<S, F>
+impl<S, F> Max for Tensor<S, F>
 where
-    for<'a> &'a S: Max<Output = S> + GetShape,
+    S: Max<Output = S> + GetShape,
 {
-    type Output = TensorFunc<S, MaxBackwardF<F>>;
+    type Output = Tensor<S, MaxBackwardF<F>>;
     fn max(self, dims: &[i32]) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.max(dims)),
+        let shape = self.data.shape();
+        Tensor {
+            data: self.data.max(dims),
             func: MaxBackwardF {
                 func: self.func,
-                shape: self.data.shape(),
+                shape,
             },
         }
     }

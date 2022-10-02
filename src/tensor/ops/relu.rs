@@ -1,95 +1,61 @@
-use crate::{ops::{ReLU, DReLU}, tensor::{Tensor, TensorGrad, TensorFunc, Backward}};
-use std::{rc::Rc, ops::{Add, Mul}, cell::RefCell};
+use crate::{ops::{ReLU, DReLU}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::{Add, Mul}, cell::RefCell};
 
-impl<S> ReLU for Tensor<S>
-where
-    for<'a> &'a S: ReLU<Output = S>,
-{
-    type Output = Tensor<S>;
-    fn relu(self) -> Self::Output {
-        Tensor {
-            data: Rc::new(self.data.relu()),
-        }
-    }
-}
-
+#[derive(Debug, Clone, Copy)]
 pub struct ReLUBackwardLeaf<'g, S> {
     grad: &'g RefCell<S>,
-    data: Rc<S>,
-}
-
-impl<'g, S> Clone for ReLUBackwardLeaf<'g, S> {
-    fn clone(&self) -> Self {
-        Self {
-            grad: self.grad,
-            data: self.data.clone(),
-        }
-    }
+    data: S,
 }
 
 impl<'g, S> Backward<S> for ReLUBackwardLeaf<'g, S>
 where
-    for<'a> &'a S: DReLU<Output = S> + Mul<Output = S> + Add<Output = S>,
+    S: Default + DReLU<Output = S> + Mul<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_with(|grad| &*grad + &(&res_grad * &self.data.drelu()));
+        self.grad.replace_take(|grad| grad + res_grad * self.data.drelu());
     }
 }
 
-impl<'g, S> ReLU for &'g TensorGrad<S>
+impl<'g, S> ReLU for &'g Variable<S>
 where
-    S: 'g,
-    for<'a> &'a S: ReLU<Output = S>,
+    S: 'g + Clone + ReLU<Output = S>,
 {
-    type Output = TensorFunc<S, ReLUBackwardLeaf<'g, S>>;
+    type Output = Tensor<S, ReLUBackwardLeaf<'g, S>>;
     fn relu(self) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.borrow().relu()),
+        Tensor {
+            data: (*self.data()).clone().relu(),
             func: ReLUBackwardLeaf {
                 grad: &self.grad,
-                data: Rc::clone(&self.data.borrow()),
+                data: (*self.data()).clone(),
             },
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ReLUBackward<S, F> {
     func: F,
-    data: Rc<S>,
-}
-
-impl<S, F> Clone for ReLUBackward<S, F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            func: self.func.clone(),
-            data: Rc::clone(&self.data),
-        }
-    }
+    data: S,
 }
 
 impl<S, F> Backward<S> for ReLUBackward<S, F>
 where
-    for<'a> &'a S: DReLU<Output = S> + Mul<Output = S> + Add<Output = S>,
+    S: DReLU<Output = S> + Mul<Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(&res_grad * &self.data.drelu());
+        self.func.backward(res_grad * self.data.drelu());
     }
 }
 
-impl<S, F> ReLU for TensorFunc<S, F>
+impl<S, F> ReLU for Tensor<S, F>
 where
-    for<'a> &'a S: ReLU<Output = S>,
-    F: Backward<S>,
+    S: Clone + ReLU<Output = S>,
 {
-    type Output = TensorFunc<S, ReLUBackward<S, F>>;
+    type Output = Tensor<S, ReLUBackward<S, F>>;
     fn relu(self) -> Self::Output {
-        TensorFunc {
-            data: Rc::new(self.data.relu()),
+        Tensor {
+            data: self.data.clone().relu(),
             func: ReLUBackward {
                 func: self.func,
                 data: self.data,

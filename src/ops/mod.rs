@@ -1,4 +1,4 @@
-//! Traits for different operations you can to with tensors.
+//! Traits for different operations you can to with Buffers.
 //! Currently under development, but we take inspiration about which operations are most important from tinygrad.
 //!
 
@@ -15,30 +15,45 @@ mod max;
 
 /// ## Convert between devices and types
 /// 
-/// Create new tensor on given device with given type
+/// Create new Buffer on given device with given type
 // needed because we can't use std::convert::From
+// because it's foreign trait and it doesn't work
+// when T == Self
 pub trait ConvertFrom<T> {
-    fn convert_from(x: T) -> Self;
+    fn cfrom(x: T) -> Self;
+}
+
+pub trait ConvertInto<T> {
+    fn cinto(self) -> T;
+}
+
+impl<T, R> ConvertInto<R> for T
+where
+    R: ConvertFrom<T>,
+{
+    fn cinto(self) -> R {
+        R::cfrom(self)
+    }
 }
 
 /// ## Zeros operation
 /// 
-/// Create new tensor initialized with zeros.
+/// Create new Buffer initialized with zeros.
 pub trait Zeros {
     fn zeros(shape: &[usize]) -> Self;
 }
 
 /// ## Ones operation
 /// 
-/// Create new tensor initialized with ones.
+/// Create new Buffer initialized with ones.
 pub trait Ones {
     fn ones(shape: &[usize]) -> Self;
 }
 
 /// ## ToVec operation
 /// 
-/// Returns values from tensor as a Vec. This accesses raw storage,
-/// with the buffer::cpu::Buffer it will have row major order.
+/// Returns values from Buffer as a Vec. This accesses raw storage,
+/// with the buffer::Cpu it will have row major order.
 /// 
 pub trait ToVec<T> {
     fn to_vec(&self) -> Vec<T>;
@@ -46,12 +61,13 @@ pub trait ToVec<T> {
 
 /// ## FromVec operation
 /// 
-/// Creates new tensor from given Vec and shape.
+/// Creates new Buffer from given Vec and shape.
 /// 
 /// ### Example
 /// ```
-/// use zyx::{tensor::Tensor, ops::ReLU};
-/// let x = Tensor::from_vec([2, 3, 1, 3].to_vec(), &[2, 2]);
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// let x = Buffer::from_vec([2, 3, 1, 3].to_vec(), &[2, 2]);
 /// println!("{}", x);
 /// ```
 /// ### Output
@@ -64,17 +80,17 @@ pub trait FromVec<T> {
 
 /// ## GetShape operation
 /// 
-/// Returns the shape of tensor as an array of dimensions.
+/// Returns the shape of Buffer as an array of dimensions.
 /// 
 /// ### Example
 /// ```
-/// use zyx::{tensor::Tensor, ops::GetShape};
-/// let x = Tensor::from([2, 3, 1]);
+/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
+/// let x = Buffer::cfrom([2, 3, 1]);
 /// let y = x.shape();
 /// assert_eq!(y, [3]);
 /// ```
 pub trait GetShape {
-    fn shape(self) -> Vec<usize>;
+    fn shape(&self) -> Vec<usize>;
 }
 
 // Unary ops
@@ -170,9 +186,9 @@ pub trait Tanh {
 /// 
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Tensor::from([[3, 2, 1], [4, 2, 1]]);
+/// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.sum(&[0]);
 /// println!("{}", y);
 /// ```
@@ -196,9 +212,9 @@ pub trait Sum {
 /// 
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Tensor::from([[3, 2, 1], [4, 2, 1]]);
+/// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.max(&[0]);
 /// println!("{}", y);
 /// ```
@@ -222,9 +238,9 @@ pub trait Max {
 /// 
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Tensor::from([[3, 2, 1], [4, 2, 1]]);
+/// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.min(&[0]);
 /// println!("{}", y);
 /// ```
@@ -238,23 +254,23 @@ pub trait Min {
     fn min(self, dims: &[i32]) -> Self::Output;
 }
 
-// Reshape simply changes shape of the tensor.
+// Reshape simply changes shape of the Buffer.
 // Permute also changes it's data ordering.
 // Expand expands to given shape if some dimensions are one.
 // PERMUTE, PAD, SHRINK, EXPAND, FLIP,
 // Reshape, Permute, Slice, Expand, Flip   # movement ops
 
 // Movement ops
-/// ## Reshape tensor
+/// ## Reshape Buffer
 /// 
-/// Reshaping changes tensors's shape, while leaving data untouched.
+/// Reshaping changes Buffers's shape, while leaving data untouched.
 /// 
 /// ### Example
 /// ```
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu::Buffer;
 /// use zyx::prelude::*;
 /// 
-/// let x = Tensor::from([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
+/// let x = Buffer::cfrom([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
 /// let x = x.reshape(&[2, 1, 6]);
 /// println!("{}", x);
 /// ```
@@ -270,16 +286,16 @@ pub trait Reshape {
     fn reshape(self, shape: &[usize]) -> Self::Output;
 }
 
-/// ## Expand tensor
+/// ## Expand Buffer
 /// 
-/// Expands tensor to given shape, if some dimensions are 1. Data is cloned to fill the required size.
+/// Expands Buffer to given shape, if some dimensions are 1. Data is cloned to fill the required size.
 /// 
 /// ### Example
 /// ```
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu;
 /// use zyx::prelude::*;
 /// 
-/// let x = Tensor::from([[[3, 2, 4]], [[1, 4, 2]]]);
+/// let x = cpu::Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.expand(&[2, 3, 3]);
 /// println!("{}", x);
 /// ```
@@ -299,16 +315,16 @@ pub trait Expand {
     fn expand(self, shape: &[usize]) -> Self::Output;
 }
 
-/// ## Permute tensor
+/// ## Permute Buffer
 /// 
-/// Shuffles tensor's dimensions in given order.
+/// Shuffles Buffer's dimensions in given order.
 /// 
 /// ### Example
 /// ```
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu::Buffer;
 /// use zyx::prelude::*;
 /// 
-/// let x = Tensor::from([[[3, 2, 4]], [[1, 4, 2]]]);
+/// let x = Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.permute(&[2, 0, 1]);
 /// println!("{}", x);
 /// ```
@@ -356,9 +372,10 @@ where
 
 // Binary ops are Add, Sub, Mul, Div, Pow, all with same size Buffers,
 // use std::ops to implement them (except for Pow)
+
 /// Pow operation
 /// 
-/// Calculate the power of the input tensor to the given exponent tensor.
+/// Calculate the power of the input Buffer to the given exponent Buffer.
 pub trait Pow<Rhs = Self> {
     type Output;
     fn pow(self, rhs: Rhs) -> Self::Output;
@@ -370,11 +387,11 @@ pub trait Pow<Rhs = Self> {
 /// 
 /// ### Example
 /// ```
-/// use zyx::tensor::Tensor;
+/// use zyx::accel::cpu::Buffer;
 /// use zyx::prelude::*;
 /// 
-/// let x = Tensor::from([[3., 2., 4.], [1., 4., 2.]]);
-/// let y = Tensor::from([[3., 2.], [4., 1.], [4., 2.]]);
+/// let x = Buffer::cfrom([[3., 2., 4.], [1., 4., 2.]]);
+/// let y = Buffer::cfrom([[3., 2.], [4., 1.], [4., 2.]]);
 /// let z = x.matmul(y);
 /// println!("{}", z);
 /// ```
