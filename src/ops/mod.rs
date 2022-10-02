@@ -12,6 +12,7 @@ mod zeros;
 mod ones;
 mod min;
 mod max;
+mod get_shape;
 
 /// ## Convert between devices and types
 /// 

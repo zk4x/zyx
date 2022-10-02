@@ -1,7 +1,7 @@
 use crate::tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake};
 use std::{cell::RefCell, ops::Add};
 
-#[derive(Debug, Clone, Copy)]
+/*#[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTG<'g, S> {
     ygrad: &'g RefCell<S>,
 }
@@ -17,7 +17,7 @@ where
 
 // If you wanted to add Variable or Tensor to S, it is not possible,
 // but you can add S to Variable or Tensor
-/*struct Storage<T>(T);
+struct Storage<T>(T);
 
 impl<'g, S> Add<&'g Variable<S>> for Storage<S>
 where

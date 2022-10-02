@@ -45,9 +45,9 @@ Want to use scalars? Just give them gradients!
 ```rust
 use zyx::prelude::*;
 
-let x = 3..with_grad();
-let y = 5.;
-(x + y).relu().backward();
+let x = 3_f32.with_grad();
+let y = 5_f32;
+(&x + y).relu().backward();
 println!("{}", x.grad());
 ```
 
