@@ -3,36 +3,25 @@
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
 
-Zyx is open source tensor library.
-
-It defines generic traits for operations that can be performed
-with tensors and generic tensor struct, that can use any custom accelerator as buffer, provided
-that this accelerator implements those operations, that are called on the tensor.
-
-That is, if you don't use some operations, there is no need to implement them for your accelerator.
+Zyx is open source tensor library. It defines struct Variable that adds gradient to any datatype.
+Provided is multidimensional array accel::cpu::Buffer that can optionally use matrixmultiply
+crate for faster execution.
 
 ## Features
 
-1. Tensor is generic abstraction over underlying type. That is,
-   it is incredibly simple to provide your own accelerators
-   and data types. You just need to implement those ops for your datatype, that you
-   will use and don't need to care about implementing anything else.
-   The library then calculates gradients for you automatically.
+1. Any datatype is supported, including rust primitives, accel::cpu::Buffer as well as any custom
+   datatype that you provide. Basically everything is a tensor.
 
-2. Provided is basic implementation of multidimensional buffer. It is using rayon
-   for parallel computing, but some functions, notably matmul aren't currently optimized,
-   but you can use --features=matrixmultiply to use matrixmultiply crate, but in that case
-   only f32 and f64 multiplication is supported.
+2. Graph is fully dynamic from user perspective, but is compiled statically. Only last Tensor
+   in series of operations (tree root) stores references to gradients and data required for backpropagation,
+   thus everything else is freed. You can clone Tensors to create multiple graphs, or use register_hook to access
+   gradients as they pass through.
 
-3. Graph of neural network is defined dynamically by user, but is statically compiled
-   into the type system. Thus there is virtually zero overhead using dynamic graphs.
-   backward() is just a function call that calls all the operations in reverse without creation
-   of the graph at runtime. No dyn keyword used, Vecs of operations are not created.
-   Tensors are basically zero cost abstractions over underlying accelerator. At compile time
-   they just remeber the operation used and call appropriate functions to calculate the derivatives.
+3. Cpu accelerator code is just 600 lines, so implementing custom accelerators is pretty simple without the need
+   to rewrite the whole library.
 
-4. Accelerator code is just 500 lines in one file. Implementing custom accelerators should be simple.
-   There is no need to make changes across the whole library. Just add a file and you have added an accelerator.
+4. No dyn, no Rc. Performance depends on your choice of accelerator, only overhead from tensors is, that gradients
+   are stored in RefCells.
 
 ## Example of usage
 
@@ -40,16 +29,26 @@ For examples of linear and recurrent neural networks, look at examples directory
 
 ```rust
 use zyx::prelude::*;
-use zyx::buffer::cpu;
-use zyx::tensor::Tensor;
+use zyx::accel::cpu::Buffer;
 
-let x = Tensor::uniform(&[2, 3, 1, 1], -1., 1.).with_grad();
-let y = Tensor::<cpu::Buffer<f32>>::randn(&[2, 3, 1, 4]).with_grad();
+let x = Buffer::uniform(&[2, 3, 2, 3], -1., 1.).with_grad();
+let y = Buffer::<f32>::randn(&[2, 3, 3, 4]).with_grad();
 
 x.matmul(&y).sum(&[]).backward();
 
-println!("{}", x.grad().borrow());
-println!("{}", y.grad().borrow());
+println!("{}", x.grad());
+println!("{}", y.grad());
+```
+
+Want to use scalars? Just give them gradients!
+
+```rust
+use zyx::prelude::*;
+
+let x = 3..with_grad();
+let y = 5.;
+(x + y).relu().backward();
+println!("{}", x.grad());
 ```
 
 ## Installation
@@ -63,22 +62,16 @@ Therefore this library can not be considered stable yet.
 Convolution is in the works.
 With that said, the most important stuff is implemented and working as intended.
 
-## Thank you
-
-To all the users and contributors.
-Without you, this library would have no reason to exist.
-Any opinions, issue reports, feature requests as well as code contributions are very welcome.
-
 ## How to orient yourself in the library
 
 The library contains following modules. The order of these modules is from most to least important.
 
-### Ops
+### ops
 
 This module contains definitions of operations that can be performed on tensors. The operations should be performable with basic datatypes (those implementations
 are in this module), all custom accelerators in buffer module and all tensors (implemented in tensor::ops module).
 
-### Tensor
+### tensor
 
 The primary component of the library is tensor module. It contains definition of Tensor, TensorGrad and TensorFunc.
 Tensor is just an Rc over storage buffer S, so it does not require gradient.
@@ -94,7 +87,7 @@ tensor::self contains tensor definitions, getters and setters for tensors.
 tensor::ops contains tensor implementations of operations defined in ops module.
 tensor::init contains initialization methods for tensors.
 
-### Buffer
+### accel
 
 Buffer module contains implementations of accelerators. The default accelerator is cpu::Buffer. This accelerators is complete, but not optimized.
 You can define your own accelerators by simply creating a new module in this buffer directory.
@@ -102,17 +95,17 @@ You can define your own accelerators by simply creating a new module in this buf
 These three modules represent the foundation upon which this library stands. There should be minimal to none API changes to ops and tensor modules.
 As for the buffer module, new accelerators should be added and existing accelerators should become faster, however removal of existing features is not going to be accepted.
 
-### Optim
+### optim
 
 Optim module has Optimizer trait. Here are all the different optimizers like SGD.
 
-### Module
+### module
 
 This module contains traits needed for simple definition of neural network models.
 Basically all functions and layers and models should have module.forward(input) function and this module also provides input.apply(module) function.
 It is deemed usefull for the user to have access to both standard module.forward(input) type of API and API with monads.
 
-### Shape
+### shape
 
 This module defines Shape and Dims traits. These are implemented for &[usize] and &[i32] respectively. Shape stores the size of tensor's dimensions
 while Dims stores dimension's order, that can also be negative (-1 is last dimension). Dims is used as input into functions as Permute or Sum, when
@@ -121,3 +114,13 @@ we need to define along which dimensions we want to perform these operations.
 ### nn
 
 This is module, which is expected to get most stuff added. This module will contain functors, layers, models, cells, simply averything that can have .forward(input) function.
+
+## init
+
+This module contains initialization methods for tensors.
+
+## Thank you
+
+To all the users and contributors. Without you, this library would have no reason to exist.
+
+Any opinions, issue reports, feature requests as well as code contributions are very welcome.
