@@ -74,7 +74,7 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{accel::cpu, ops::{FromVec, ToVec}, tensor::IntoVariable};
+        use crate::{accel::cpu, ops::{FromVec, ToVec}, tensor::{B, IntoVariable}};
         use super::super::{cmp_vec, cmp_vec_f64};
 
         #[test]
@@ -236,13 +236,13 @@ mod tensor {
             // test Buffer
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]);
             let y = cpu::Buffer::from_vec(vec2.clone(), &[9]);
-            let z = x.clone() + y.clone();
+            let z = x + y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
 
             // test Variable
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]);
             let y = cpu::Buffer::from_vec(vec2.clone(), &[9]).with_grad();
-            let z = &y + x;
+            let z = B(x) + &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());

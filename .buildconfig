@@ -1,0 +1,12 @@
+[default]
+name=Default
+runtime=podman:6eca0163e63938ea508ea84b9d23af55108bd795b680e3958b7053e9d76630ec
+toolchain=default
+config-opts=
+run-opts=
+prefix=/var/home/x/.var/app/org.gnome.Builder/cache/gnome-builder/install/zyx/podman-6eca0163e63938ea508ea84b9d23af55108bd795b680e3958b7053e9d76630ec
+app-id=
+postbuild=
+prebuild=
+run-command=
+default=true

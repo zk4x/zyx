@@ -6,7 +6,7 @@
 //! 3. Tensor - stores datatype and function necessary to calculate gradient of Variable, passed around by cloning
 //!
 //! Buffer and Variable are leaf Buffers. Tensor is strictly non-leaf and therefore it doesn't store it's gradient.
-//! 
+//!
 //! # Example
 //!
 //! ```
@@ -25,7 +25,7 @@ mod ops;
 
 use crate::ops::GetShape;
 use ops::RefCellReplaceTake;
-use std::cell::{RefCell, Ref};
+use std::cell::{Ref, RefCell};
 
 // How this works (for contributors)
 //
@@ -46,6 +46,10 @@ use std::cell::{RefCell, Ref};
 // less concerning than the performance implications of using Rc<FnOnce(S)> closures.
 
 // Tensors are moved into operations, while Variables are passed by reference!
+
+// This is used as a placeholder for custom storage, since some operations like addition are foreign traits,
+// so we need to have our type to wrap foreign storage types inside.
+pub struct B<S>(pub S);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Variable<S> {
@@ -78,11 +82,7 @@ where
     GradFn: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&format!(
-            "{} with_func {:?}",
-            self.data,
-            self.func,
-        ))
+        f.write_str(&format!("{} with_func {:?}", self.data, self.func,))
     }
 }
 
@@ -91,7 +91,8 @@ where
     S: Default + crate::ops::Ones + GetShape + std::ops::Add<Output = S>,
 {
     pub fn backward(&self) {
-        self.grad.replace_take(|grad| grad + S::ones(&self.data().shape()));
+        self.grad
+            .replace_take(|grad| grad + S::ones(&self.data().shape()));
     }
 }
 
@@ -111,7 +112,9 @@ where
 }
 
 pub trait IntoVariable {
-    fn with_grad(self) -> Variable<Self> where Self: Sized;
+    fn with_grad(self) -> Variable<Self>
+    where
+        Self: Sized;
 }
 
 /// Create new Variable that requires gradient

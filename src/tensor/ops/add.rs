@@ -1,7 +1,7 @@
-use crate::tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake};
+use crate::tensor::{B, Variable, Tensor, Backward, ops::RefCellReplaceTake};
 use std::{cell::RefCell, ops::Add};
 
-/*#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTG<'g, S> {
     ygrad: &'g RefCell<S>,
 }
@@ -15,18 +15,16 @@ where
     }
 }
 
-// If you wanted to add Variable or Tensor to S, it is not possible,
+// If you wanted to add Variable or Tensor to S, you need to wrap it inside B(),
 // but you can add S to Variable or Tensor
-struct Storage<T>(T);
-
-impl<'g, S> Add<&'g Variable<S>> for Storage<S>
+impl<'g, S> Add<&'g Variable<S>> for B<S>
 where
     S: 'g + Clone + Add<Output = S>,
 {
     type Output = Tensor<S, AddBackwardTG<'g, S>>;
     fn add(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
-            data: self + rhs.data().clone(),
+            data: self.0 + rhs.data().clone(),
             func: AddBackwardTG {
                 ygrad: &rhs.grad,
             }
@@ -34,18 +32,18 @@ where
     }
 }
 
-impl<S, F> Add<Tensor<S, F>> for Storage<S>
+impl<S, F> Add<Tensor<S, F>> for B<S>
 where
     S: Add<Output = S>,
 {
     type Output = Tensor<S, F>;
     fn add(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
-            data: self + rhs.data,
+            data: self.0 + rhs.data,
             func: rhs.func,
         }
     }
-}*/
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardGT<'g, S> {
