@@ -13,7 +13,11 @@ mod expand;
 mod permute;
 mod add;
 mod sub;
+mod mul;
+mod div;
+mod pow;
 mod matmul;
+mod conv;
 
 // We need custom implementation of replace_take() for RefCell that has F: FnOnce(T) -> T instead of F: FnOnce(&mut T) -> T
 pub(super) trait RefCellReplaceTake<T, F> {

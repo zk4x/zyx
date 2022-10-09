@@ -176,7 +176,7 @@ where
     type Output = Tensor<S, AddBackwardFG<'g, S, XF>>;
     fn add(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
-            data: self.data + (*rhs.data()).clone(),
+            data: self.data + rhs.data().clone(),
             func: AddBackwardFG {
                 xfunc: self.func,
                 ygrad: &rhs.grad,
@@ -193,7 +193,7 @@ pub struct AddBackwardFF<XF, YF> {
 
 impl<S, XF, YF> Backward<S> for AddBackwardFF<XF, YF>
 where
-    S: Clone + Add<Output = S>,
+    S: Clone,
     XF: Backward<S>,
     YF: Backward<S>,
 {

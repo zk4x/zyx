@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
+[![Repository](https://github.com/zk4x/zyx/badge.svg)](https://github.com/zk4x/zyx)
 
 Zyx is open source tensor library. It defines struct Variable that adds gradient to any datatype.
 Provided is multidimensional array accel::cpu::Buffer that can optionally use matrixmultiply

@@ -134,3 +134,5 @@ pub mod init;
 mod tests;
 
 // TODO: saving of models and Buffers
+// multiplication, division and power
+// opencl buffer
