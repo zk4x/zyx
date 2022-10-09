@@ -14,9 +14,9 @@
 //! use zyx::prelude::*;
 //!
 //! let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);        // basic Buffer
-//! let y: Variable<_> = x.clone().with_grad();                 // return Variable
-//! let z: Tensor<_, _> = y.relu();                   // applying any function on Variable returns Tensor
-//! let z: Buffer<_> = x.relu();                          // applying function to Buffer returns Buffer
+//! let y: Variable<_> = x.clone().with_grad();            // return Variable
+//! let z: Tensor<_, _> = y.relu();                        // applying any function on Variable returns Tensor
+//! let z: Buffer<_> = x.relu();                           // applying function to Buffer returns Buffer
 //! ```
 //!
 

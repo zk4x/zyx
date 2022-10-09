@@ -2,6 +2,7 @@
 //! 
 //! [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 //! [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
+//! [![Repository](https://github.com/zk4x/zyx/badge.svg)](https://github.com/zk4x/zyx)
 //! 
 //! Zyx is open source tensor library. It defines struct Variable that adds gradient to any datatype.
 //! Provided is multidimensional array accel::cpu::Buffer that can optionally use matrixmultiply
@@ -73,15 +74,13 @@
 //! 
 //! ### tensor
 //! 
-//! The primary component of the library is tensor module. It contains definition of Tensor, TensorGrad and TensorFunc.
-//! Tensor is just an Rc over storage buffer S, so it does not require gradient.
-//! By calling .with_grad() on Tensor, you get TensorGrad, which stores it's gradient.
-//! These two are called leaf tensors and they are created explicitly by the user.
+//! The primary component of the library is tensor module. It contains definition of Variable and Tensor.
+//! By calling .with_grad() on any datatype, you get Variable, which stores it's gradient.
+//! Variable is leaf tensor.
 //! 
-//! TensorFunc is a tensor, that is a result of some computation where at least one of the operands is TensorGrad.
-//! TensorFunc is not a leaf tensor, TensorFunc does not store it's gradient. This simplifies calculations and saves memory.
-//! TensorFunc stores references to TensorGrad's gradients and Rc pointers to some data buffers used during gradient
-//! calculation.
+//! Tensor is a tensor, that is a result of some computation where at least one of the operands is TensorGrad.
+//! Tensor is not a leaf tensor, Tensor does not store it's gradient. This simplifies calculations and saves memory.
+//! Tensor stores references to Variable's gradients and some data buffers used during gradient calculation.
 //! 
 //! tensor::self contains tensor definitions, getters and setters for tensors.
 //! tensor::ops contains tensor implementations of operations defined in ops module.
@@ -133,6 +132,7 @@ pub mod init;
 #[cfg(test)]
 mod tests;
 
-// TODO: saving of models and Buffers
-// multiplication, division and power
+// TODO: saving of models and buffers (probably via .to_vec() and .shape(), and ::from_vec())
+// power and convolution ops for tensor
 // opencl buffer
+// lazy Buffer (both opencl and cpu (I know, opencl can run on cpu as well))
