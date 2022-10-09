@@ -21,8 +21,7 @@
 //! 3. Cpu accelerator code is just 600 lines, so implementing custom accelerators is pretty simple without the need
 //!    to rewrite the whole library.
 //! 
-//! 4. No dyn, no Rc. Performance depends on your choice of accelerator, only overhead from tensors is, that gradients
-//!    are stored in RefCells.
+//! 4. No dyn, no Rc. Performance depends on your choice of accelerator, only overhead from tensors is gradients stored in RefCells.
 //! 
 //! ## Example of usage
 //! 
