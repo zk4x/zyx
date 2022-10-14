@@ -1,4 +1,4 @@
-use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Reshape, IntoShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ where
 impl<'g, S> Reshape for &'g Variable<S>
 where
     S: 'g + Clone + Reshape<Output = S>,
-    S: GetShape,
+    S: IntoShape,
 {
     type Output = Tensor<S, ReshapeBackwardV<'g, S>>;
     fn reshape(self, shape: &[usize]) -> Self::Output {
@@ -51,7 +51,7 @@ where
 
 impl<S, F> Reshape for Tensor<S, F>
 where
-    S: Reshape<Output = S> + GetShape,
+    S: Reshape<Output = S> + IntoShape,
 {
     type Output = Tensor<S, ReshapeBackwardT<F>>;
     fn reshape(self, res_shape: &[usize]) -> Self::Output {

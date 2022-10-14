@@ -1,5 +1,5 @@
-mod to_vec;
-mod get_shape;
+mod into_vec;
+mod into_shape;
 mod relu;
 mod exp;
 mod ln;

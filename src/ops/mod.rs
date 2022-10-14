@@ -51,12 +51,12 @@ pub trait Ones {
     fn ones(shape: &[usize]) -> Self;
 }
 
-/// ## ToVec operation
+/// ## IntoVec operation
 /// 
 /// Returns values from Buffer as a Vec. This accesses raw storage,
 /// with the buffer::Cpu it will have row major order.
 /// 
-pub trait ToVec<T> {
+pub trait IntoVec<T> {
     fn to_vec(&self) -> Vec<T>;
 }
 
@@ -79,18 +79,18 @@ pub trait FromVec<T> {
     fn from_vec(data: Vec<T>, shape: &[usize]) -> Self;
 }
 
-/// ## GetShape operation
+/// ## IntoShape operation
 /// 
 /// Returns the shape of Buffer as an array of dimensions.
 /// 
 /// ### Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
+/// use zyx::{accel::cpu::Buffer, ops::{IntoShape, ConvertFrom}};
 /// let x = Buffer::cfrom([2, 3, 1]);
 /// let y = x.shape();
 /// assert_eq!(y, [3]);
 /// ```
-pub trait GetShape {
+pub trait IntoShape {
     fn shape(&self) -> Vec<usize>;
 }
 

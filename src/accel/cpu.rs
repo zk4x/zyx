@@ -88,7 +88,7 @@ where
     }
 }
 
-impl<T> ops::ToVec<T> for Buffer<T>
+impl<T> ops::IntoVec<T> for Buffer<T>
 where
     T: Clone,
 {
@@ -107,7 +107,7 @@ impl<T> ops::FromVec<T> for Buffer<T> {
     }
 }
 
-impl<T> ops::GetShape for Buffer<T> {
+impl<T> ops::IntoShape for Buffer<T> {
     fn shape(&self) -> Vec<usize> {
         self.shape.clone()
     }

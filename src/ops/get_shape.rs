@@ -1,4 +1,4 @@
-use super::GetShape;
+use super::IntoShape;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -19,7 +19,7 @@ use duplicate::duplicate_item;
     [usize];
 )]
 
-impl GetShape for dtype {
+impl IntoShape for dtype {
     fn shape(&self) -> Vec<usize> {
         vec![0]
     }

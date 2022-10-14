@@ -23,7 +23,7 @@
 mod init;
 mod ops;
 
-use crate::ops::GetShape;
+use crate::ops::IntoShape;
 use ops::RefCellReplaceTake;
 use std::cell::{Ref, RefCell};
 
@@ -88,7 +88,7 @@ where
 
 impl<S> Variable<S>
 where
-    S: Default + crate::ops::Ones + GetShape + std::ops::Add<Output = S>,
+    S: Default + crate::ops::Ones + IntoShape + std::ops::Add<Output = S>,
 {
     pub fn backward(&self) {
         self.grad
@@ -102,7 +102,7 @@ pub trait Backward<S> {
 
 impl<S, F> Tensor<S, F>
 where
-    S: crate::ops::Ones + GetShape,
+    S: crate::ops::Ones + IntoShape,
     F: Backward<S>,
 {
     pub fn backward(self) {
@@ -120,7 +120,7 @@ pub trait IntoVariable {
 /// Create new Variable that requires gradient
 impl<S> IntoVariable for S
 where
-    S: crate::ops::Zeros + GetShape,
+    S: crate::ops::Zeros + IntoShape,
 {
     fn with_grad(self) -> Variable<Self> {
         let shape = self.shape();

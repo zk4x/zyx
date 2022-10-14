@@ -1,4 +1,4 @@
-use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Max, Expand, IntoShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -9,7 +9,7 @@ pub struct MaxBackwardV<'g, S> {
 
 impl<'g, S> Backward<S> for MaxBackwardV<'g, S>
 where
-    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Default + Add<Output = S> + Expand<Output = S> + IntoShape,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad.expand(&self.shape));
@@ -19,7 +19,7 @@ where
 impl<'g, S> Max for &'g Variable<S>
 where
     S: 'g + Clone + Max<Output = S>,
-    S: GetShape,
+    S: IntoShape,
 {
     type Output = Tensor<S, MaxBackwardV<'g, S>>;
     fn max(self, dims: &[i32]) -> Self::Output {
@@ -51,7 +51,7 @@ where
 
 impl<S, F> Max for Tensor<S, F>
 where
-    S: Max<Output = S> + GetShape,
+    S: Max<Output = S> + IntoShape,
 {
     type Output = Tensor<S, MaxBackwardT<F>>;
     fn max(self, dims: &[i32]) -> Self::Output {

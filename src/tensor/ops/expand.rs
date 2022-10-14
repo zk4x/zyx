@@ -1,4 +1,4 @@
-use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Expand, Max, IntoShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -9,7 +9,7 @@ pub struct ExpandBackwardV<'g, S> {
 
 impl<'g, S> Backward<S> for ExpandBackwardV<'g, S>
 where
-    S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + GetShape,
+    S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + IntoShape,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -19,7 +19,7 @@ where
 
 impl<'g, S> Expand for &'g Variable<S>
 where
-    S: 'g + Clone + Expand<Output = S> + GetShape,
+    S: 'g + Clone + Expand<Output = S> + IntoShape,
 {
     type Output = Tensor<S, ExpandBackwardV<'g, S>>;
     fn expand(self, shape: &[usize]) -> Self::Output {
@@ -42,7 +42,7 @@ pub struct ExpandBackwardT<F> {
 
 impl<S, F> Backward<S> for ExpandBackwardT<F>
 where
-    S: Expand<Output = S> + Max<Output = S> + GetShape,
+    S: Expand<Output = S> + Max<Output = S> + IntoShape,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -53,7 +53,7 @@ where
 impl<S, F> Expand for Tensor<S, F>
 where
     F: FnOnce(S),
-    S: Expand<Output = S> + GetShape,
+    S: Expand<Output = S> + IntoShape,
 {
     type Output = Tensor<S, ExpandBackwardT<F>>;
     fn expand(self, shape: &[usize]) -> Self::Output {

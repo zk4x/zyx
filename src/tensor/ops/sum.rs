@@ -1,4 +1,4 @@
-use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Sum, Expand, IntoShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -9,7 +9,7 @@ pub struct SumBackwardV<'g, S> {
 
 impl<'g, S> Backward<S> for SumBackwardV<'g, S>
 where
-    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Default + Add<Output = S> + Expand<Output = S> + IntoShape,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad.expand(&self.shape));
@@ -18,7 +18,7 @@ where
 
 impl<'g, S> Sum for &'g Variable<S>
 where
-    S: 'g + Clone + Sum<Output = S> + GetShape,
+    S: 'g + Clone + Sum<Output = S> + IntoShape,
 {
     type Output = Tensor<S, SumBackwardV<'g, S>>;
     fn sum(self, dims: &[i32]) -> Self::Output {
@@ -50,7 +50,7 @@ where
 
 impl<S, F> Sum for Tensor<S, F>
 where
-    S: Clone + Sum<Output = S> + GetShape,
+    S: Clone + Sum<Output = S> + IntoShape,
 {
     type Output = Tensor<S, SumBackwardT<F>>;
     fn sum(self, dims: &[i32]) -> Self::Output {

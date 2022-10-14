@@ -74,7 +74,7 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{accel::cpu, ops::{GetShape, FromVec, ToVec, ConvertFrom}, tensor::{B, IntoVariable}};
+        use crate::{accel::cpu, ops::{IntoShape, FromVec, IntoVec, ConvertFrom}, tensor::{B, IntoVariable}};
         use super::super::{cmp_vec, cmp_vec_f64};
 
         #[test]
@@ -177,7 +177,7 @@ mod tensor {
         #[test]
         fn neg() {
             // TODO finish all variations
-            use crate::ops::ToVec;
+            use crate::ops::IntoVec;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]).with_grad();
             let y = -&x;
