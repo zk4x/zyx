@@ -204,7 +204,8 @@ where
     fn backward(self, res_grad: S) {
         // If res_grad is &S this is not a copy, but hey, advantages from passing S
         // by value and potentially doing operations in place are bigger than this copy
-        // (at least hope so), if not, this will be changed
+        // (at least hope so), if not, this will be changed, also, the buffer can implement
+        // reference counting
         self.xfunc.backward(res_grad.clone());
         self.yfunc.backward(res_grad);
     }
