@@ -26,6 +26,9 @@ pub trait ConvertFrom<T> {
     fn cfrom(x: T) -> Self;
 }
 
+/// ## Convert into given type
+/// 
+/// This trait is automatically implemented for everything that implements ConvertFrom
 pub trait ConvertInto<T> {
     fn cinto(self) -> T;
 }

@@ -21,6 +21,21 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
     }
 }
 
+#[cfg(feature = "ndarray")]
+#[test]
+fn ndarray() {
+    /*use crate::prelude::*;
+    use ndarray::array;
+
+    let x = array![[2., 4., 3.], [4., 2., 5.]];
+    let y = x.with_grad();
+    let z = y.exp();
+    z.backward();
+
+    println!("{}", y);
+    panic!();*/
+}
+
 mod nn {
     #[test]
     fn linear() {

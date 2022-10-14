@@ -5,7 +5,7 @@
 //! such as tuples and arrays.
 //! 
 
-use crate::ops::Permute;
+use crate::ops::{Permute, IntoVec};
 use std::ops::Range;
 
 pub trait IntoShape {
@@ -115,6 +115,17 @@ where
         self.0 == other.clone().shape().0
     }
 }
+
+impl IntoVec<usize> for Shape {
+    fn to_vec(&self) -> Vec<usize> {
+        self.0.clone()
+    }
+}
+
+/*#[cfg(feature = "ndarray")]
+impl ndarray::IntoDimension for Shape {
+    type Dim: Dimension;
+}*/
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Dims(pub(crate) Vec<i32>);

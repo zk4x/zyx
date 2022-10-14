@@ -1,10 +1,10 @@
 //! Various implementations of accelerators.
 //! The default is zyx::accel::Cpu.
 //! 
-//! Every accelerator must implement following traits:
+//! Every accelerator can implement following traits in order to be fully compatible with tensors:
 //! 
+//! Clone
 //! std::default::Default
-//! std::fmt::Display
 //! zyx::ops::*
 //! std::ops::{Neg, Add, Sub, Mul, Div}
 //! 
@@ -12,6 +12,10 @@
 //! 
 
 pub mod cpu;
+#[cfg(feature = "ndarray")]
+pub mod ndarray;
+
+//#[cfg(features = "opencl")]
 //pub mod opencl;
 
 /*

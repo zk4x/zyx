@@ -107,6 +107,8 @@ where
 {
     pub fn backward(self) {
         let shape = self.data.shape();
+        // NOTE: right now backward call is recursive
+        // shall this pose a problem, we can switch to iterative version
         self.func.backward(S::ones(shape));
     }
 }

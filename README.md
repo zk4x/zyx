@@ -52,6 +52,17 @@ z.backward();
 println!("{}", x.grad());
 ```
 
+Want to use ndarray? Just give it gradients!
+
+```rust
+use zyx::prelude::*;
+use ndarray::array;
+
+let x = array![[2., 3., 4.], [3., 4., 2.]];
+x.exp().backward();
+println!("{}", x.grad());
+```
+
 ## Installation
 
 The library is available on crates.io: https://crates.io/crates/zyx
