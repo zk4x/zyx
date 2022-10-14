@@ -1,6 +1,6 @@
-use super::IntoShape;
+use super::GetShape;
+use crate::shape::Shape;
 use duplicate::duplicate_item;
-
 #[duplicate_item(
     dtype;
     [f32];
@@ -19,8 +19,8 @@ use duplicate::duplicate_item;
     [usize];
 )]
 
-impl IntoShape for dtype {
-    fn shape(&self) -> Vec<usize> {
-        vec![0]
+impl GetShape for dtype {
+    fn shape(&self) -> Shape {
+        Shape(vec![1])
     }
 }

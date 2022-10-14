@@ -31,10 +31,10 @@
 //! use zyx::prelude::*;
 //! use zyx::accel::cpu::Buffer;
 //! 
-//! let x = Buffer::uniform(&[2, 3, 2, 3], -1., 1.).with_grad();
-//! let y = Buffer::<f32>::randn(&[2, 3, 3, 4]).with_grad();
+//! let x = Buffer::uniform((2, 3, 2, 3), -1., 1.).with_grad();
+//! let y = Buffer::<f32>::randn((2, 3, 3, 4)).with_grad();
 //! 
-//! x.matmul(&y).sum(&[]).backward();
+//! x.matmul(&y).sum(()).backward();
 //! 
 //! println!("{}", x.grad());
 //! println!("{}", y.grad());

@@ -179,8 +179,8 @@ impl<S> Linear<S> {
         T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
         Self {
-            w: Variable::<S>::uniform(&[in_features, out_features], T::zeros(&[]), T::ones(&[])),
-            b: Variable::<S>::uniform(&[1, out_features], T::zeros(&[]), T::ones(&[])),
+            w: Variable::<S>::uniform([in_features, out_features], T::zeros(()), T::ones(())),
+            b: Variable::<S>::uniform([1, out_features], T::zeros(()), T::ones(())),
         }
     }
 }
@@ -216,10 +216,10 @@ impl<S> RNNCell<S> {
         T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
         Self {
-            wih: Variable::<S>::uniform(&[input_size, hidden_size], T::zeros(&[]), T::ones(&[])),
-            bih: Variable::<S>::uniform(&[1, hidden_size], T::zeros(&[]), T::ones(&[])),
-            whh: Variable::<S>::uniform(&[hidden_size, hidden_size], T::zeros(&[]), T::ones(&[])),
-            bhh: Variable::<S>::uniform(&[1, hidden_size], T::zeros(&[]), T::ones(&[])),
+            wih: Variable::<S>::uniform([input_size, hidden_size], T::zeros(()), T::ones(())),
+            bih: Variable::<S>::uniform([1, hidden_size], T::zeros(()), T::ones(())),
+            whh: Variable::<S>::uniform([hidden_size, hidden_size], T::zeros(()), T::ones(())),
+            bhh: Variable::<S>::uniform([1, hidden_size], T::zeros(()), T::ones(())),
         }
     }
 }

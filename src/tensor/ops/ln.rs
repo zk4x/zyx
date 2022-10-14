@@ -12,7 +12,7 @@ where
     S: Default + Ln<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad * self.data.pow(-S::ones(&[1])));
+        self.grad.replace_take(|grad| grad + res_grad * self.data.pow(-S::ones([1])));
     }
 }
 
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad * self.data.pow(-S::ones(&[1])));
+        self.func.backward(res_grad * self.data.pow(-S::ones([1])));
     }
 }
 

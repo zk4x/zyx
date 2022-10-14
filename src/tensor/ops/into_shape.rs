@@ -1,19 +1,19 @@
-use crate::{ops::IntoShape, tensor::{Variable, Tensor}};
+use crate::{ops::GetShape, tensor::{Variable, Tensor}, shape::Shape};
 
-impl<S> IntoShape for Variable<S>
+impl<S> GetShape for Variable<S>
 where
-    S: IntoShape,
+    S: GetShape,
 {
-    fn shape(&self) -> Vec<usize> {
+    fn shape(&self) -> Shape {
         self.data().shape()
     }
 }
 
-impl<S, F> IntoShape for Tensor<S, F>
+impl<S, F> GetShape for Tensor<S, F>
 where
-    S: IntoShape,
+    S: GetShape,
 {
-    fn shape(&self) -> Vec<usize> {
+    fn shape(&self) -> Shape {
         self.data().shape()
     }
 }

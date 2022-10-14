@@ -1,10 +1,10 @@
-use crate::{shape::Dims, ops::Permute, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Permute}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Dims}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardV<'g, S> {
     grad: &'g RefCell<S>,
-    dims: Vec<i32>,
+    dims: Dims,
 }
 
 impl<'g, S> Backward<S> for PermuteBackwardV<'g, S>
@@ -12,7 +12,7 @@ where
     S: Default + Permute<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad.permute(&self.dims));
+        self.grad.replace_take(|grad| grad + res_grad.permute(self.dims));
     }
 }
 
@@ -21,9 +21,10 @@ where
     S: 'g + Clone + Permute<Output = S>,
 {
     type Output = Tensor<S, PermuteBackwardV<'g, S>>;
-    fn permute(self, dims: &[i32]) -> Self::Output {
+    fn permute(self, dims: impl IntoDims) -> Self::Output {
+        let dims = dims.dims();
         Tensor {
-            data: (*self.data()).clone().permute(dims),
+            data: self.data().clone().permute(dims.clone()),
             func: PermuteBackwardV {
                 grad: &self.grad,
                 dims: dims.argsort(),
@@ -35,7 +36,7 @@ where
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardT<F> {
     func: F,
-    dims: Vec<i32>,
+    dims: Dims,
 }
 
 impl<S, F> Backward<S> for PermuteBackwardT<F>
@@ -44,7 +45,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.permute(&self.dims));
+        self.func.backward(res_grad.permute(self.dims));
     }
 }
 
@@ -53,9 +54,10 @@ where
     S: Permute<Output = S>,
 {
     type Output = Tensor<S, PermuteBackwardT<F>>;
-    fn permute(self, dims: &[i32]) -> Self::Output {
+    fn permute(self, dims: impl IntoDims) -> Self::Output {
+        let dims = dims.dims();
         Tensor {
-            data: self.data.permute(dims),
+            data: self.data.permute(dims.clone()),
             func: PermuteBackwardT {
                 func: self.func,
                 dims: dims.argsort(),

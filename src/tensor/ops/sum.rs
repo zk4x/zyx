@@ -1,10 +1,10 @@
-use crate::{ops::{Sum, Expand, IntoShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{Shape, IntoShape, IntoDims}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct SumBackwardV<'g, S> {
     grad: &'g RefCell<S>,
-    shape: Vec<usize>,
+    shape: Shape,
 }
 
 impl<'g, S> Backward<S> for SumBackwardV<'g, S>
@@ -12,16 +12,16 @@ where
     S: Default + Add<Output = S> + Expand<Output = S> + IntoShape,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad.expand(&self.shape));
+        self.grad.replace_take(|grad| grad + res_grad.expand(self.shape));
     }
 }
 
 impl<'g, S> Sum for &'g Variable<S>
 where
-    S: 'g + Clone + Sum<Output = S> + IntoShape,
+    S: 'g + Clone + Sum<Output = S> + GetShape,
 {
     type Output = Tensor<S, SumBackwardV<'g, S>>;
-    fn sum(self, dims: &[i32]) -> Self::Output {
+    fn sum(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().sum(dims),
             func: SumBackwardV {
@@ -35,7 +35,7 @@ where
 #[derive(Debug, Clone)]
 pub struct SumBackwardT<F> {
     func: F,
-    shape: Vec<usize>,
+    shape: Shape,
 }
 
 impl<S, F> Backward<S> for SumBackwardT<F>
@@ -44,16 +44,16 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.expand(&self.shape));
+        self.func.backward(res_grad.expand(self.shape));
     }
 }
 
 impl<S, F> Sum for Tensor<S, F>
 where
-    S: Clone + Sum<Output = S> + IntoShape,
+    S: Clone + Sum<Output = S> + GetShape,
 {
     type Output = Tensor<S, SumBackwardT<F>>;
-    fn sum(self, dims: &[i32]) -> Self::Output {
+    fn sum(self, dims: impl IntoDims) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.sum(dims),

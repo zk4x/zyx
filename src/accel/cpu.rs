@@ -2,7 +2,7 @@
 //! and rayon for multithreading.
 //!
 
-use crate::{ops, shape::{Shape, Dims}};
+use crate::{ops, shape::{IntoShape, IntoDims, Shape, Dims}};
 use std::ops::{Add, Mul};
 
 // It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
@@ -13,13 +13,13 @@ use std::ops::{Add, Mul};
 // If needed, Rc can be change to Arc and RefCell to Mutex/RwLock
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Buffer<T> {
-    shape: Vec<usize>,
+    shape: Shape,
     data: Vec<T>,
 }
 
 impl<T> Buffer<T> {
     pub fn est_mem_size(&self) -> usize {
-        self.data.len() * std::mem::size_of::<T>() + self.shape.len() * std::mem::size_of::<usize>()
+        self.data.len() * std::mem::size_of::<T>() + self.shape.ndim() * std::mem::size_of::<usize>()
     }
 }
 
@@ -45,7 +45,7 @@ where
         let mut res = String::new();
         if self.data.is_empty() { return f.write_str(&(res + "[]")); }
         let n = self.shape.numel();
-        let ndim = self.shape.len();
+        let ndim = self.shape.ndim();
         const PRECISION: usize = 3;
         // get maximal width of single value
         let mut w = 0;
@@ -53,7 +53,7 @@ where
             let l = format!("{0:1$.2$}", x, w, PRECISION).len();
             if l > w { w = l; }
         }
-        let d0 = self.shape.index(-1);
+        let d0 = self.shape[-1];
         for i in 0..n {
             {
                 let mut var = 1;
@@ -69,7 +69,7 @@ where
             }
             use std::fmt::Write;
             let _ = write!(res, "{0:>1$.2$}", self.data[i], w, PRECISION);
-            if (i + 1) % d0 != 0 { res += " "; }
+            if (i + 1) % d0 != 0usize { res += " "; }
             {
                 let mut var = 1;
                 let mut r = ndim;
@@ -82,7 +82,7 @@ where
                     r -= 1;
                 }
             }
-            if (i + 1) % d0 == 0 && i != n - 1 { res += "\n"; }
+            if (i + 1) % d0 == 0usize && i != n - 1 { res += "\n"; }
         }
         f.write_str(&res)
     }
@@ -98,17 +98,18 @@ where
 }
 
 impl<T> ops::FromVec<T> for Buffer<T> {
-    fn from_vec(data: Vec<T>, shape: &[usize]) -> Self {
+    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
+        let shape = shape.shape();
         debug_assert_eq!(shape.numel(), data.len());
         Self {
-            shape: shape.to_vec(),
+            shape,
             data,
         }
     }
 }
 
-impl<T> ops::IntoShape for Buffer<T> {
-    fn shape(&self) -> Vec<usize> {
+impl<T> ops::GetShape for Buffer<T> {
+    fn shape(&self) -> Shape {
         self.shape.clone()
     }
 }
@@ -117,10 +118,12 @@ impl<T> ops::Zeros for Buffer<T>
 where
     T: Clone + ops::Zeros,
 {
-    fn zeros(shape: &[usize]) -> Self {
+    fn zeros(shape: impl IntoShape) -> Self {
+        let shape = shape.shape();
+        let n = shape.numel();
         Self {
-            shape: shape.to_vec(),
-            data: vec![T::zeros(&[]); shape.numel()],
+            shape,
+            data: vec![T::zeros(()); n],
         }
     }
 }
@@ -129,10 +132,12 @@ impl<T> ops::Ones for Buffer<T>
 where
     T: Clone + ops::Ones,
 {
-    fn ones(shape: &[usize]) -> Self {
+    fn ones(shape: impl IntoShape) -> Self {
+        let shape = shape.shape();
+        let n = shape.numel();
         Self {
-            shape: shape.to_vec(),
-            data: vec![T::ones(&[]); shape.numel()],
+            shape,
+            data: vec![T::ones(()); n],
         }
     }
 }
@@ -210,7 +215,7 @@ where
 }
 
 impl<T> Buffer<T> {
-    fn reduce<F>(self, dims: &[i32], init: T, mut f: F) -> Buffer<T>
+    fn reduce<F>(self, dims: impl IntoDims, init: T, mut f: F) -> Buffer<T>
     where
         T: Clone,
         F: FnMut(T, T) -> T,
@@ -218,20 +223,21 @@ impl<T> Buffer<T> {
         // TODO: make this multithreaded
         let mut data = self.data.clone();
         let mut shape = self.shape.clone();
-        let ndims = shape.len();
+        let dims = dims.dims();
+        let ndim = shape.ndim();
 
-        let mut reduce_dim = |data: &[T], dim| {
+        let mut reduce_dim = |data: &[T], dim: i32| {
             let strides = shape.strides();
-            let stride = strides.index(dim);
-            shape[(ndims as i32 + dim) as usize % ndims] = 1;
+            let stride = strides[dim];
+            shape[dim] = 1;
             let mut res = vec![init.clone(); shape.numel()];
-            if dim == 0 || dim == -(ndims as i32) {
+            if dim == 0 || dim == -(ndim as i32) {
                 for (i, x) in data.iter().enumerate() {
                     let idx = i % stride;
                     res[idx] = f(res[idx].clone(), x.clone());
                 }
             } else {
-                let width = strides.index(dim - 1);
+                let width = strides[dim - 1];
                 for (i, x) in data.iter().enumerate() {
                     let idx = i/width*stride + i % stride;
                     res[idx] = f(res[idx].clone(), x.clone());
@@ -246,7 +252,7 @@ impl<T> Buffer<T> {
             }
         } else {
             for dim in dims {
-                data = reduce_dim(&data, *dim);
+                data = reduce_dim(&data, dim);
             }
         }
 
@@ -262,8 +268,8 @@ where
     T: Clone + ops::Zeros + std::ops::Add<Output = T>,
 {
     type Output = Buffer<T>;
-    fn sum(self, dims: &[i32]) -> Self::Output {
-        self.reduce(dims, T::zeros(&[]), |a, b| a + b)
+    fn sum(self, dims: impl IntoDims) -> Self::Output {
+        self.reduce(dims, T::zeros(()), |a, b| a + b)
     }
 }
 
@@ -272,8 +278,8 @@ where
     T: Clone + Default + ops::Min<Output = T> + PartialOrd,
 {
     type Output = Buffer<T>;
-    fn max(self, dims: &[i32]) -> Self::Output {
-        self.reduce(dims, T::min(T::default(), &[]), |a, b| if a > b { a } else { b })
+    fn max(self, dims: impl IntoDims) -> Self::Output {
+        self.reduce(dims, T::min(T::default(), ()), |a, b| if a > b { a } else { b })
     }
 }
 
@@ -282,8 +288,8 @@ where
     T: Clone + Default + ops::Max<Output = T> + PartialOrd,
 {
     type Output = Buffer<T>;
-    fn min(self, dims: &[i32]) -> Self::Output {
-        self.reduce(dims, T::max(T::default(), &[]), |a, b| if a < b { a } else { b })
+    fn min(self, dims: impl IntoDims) -> Self::Output {
+        self.reduce(dims, T::max(T::default(), ()), |a, b| if a < b { a } else { b })
     }
 }
 
@@ -292,11 +298,12 @@ where
     T: Clone,
 {
     type Output = Buffer<T>;
-    fn reshape(self, shape: &[usize]) -> Self::Output {
+    fn reshape(self, shape: impl IntoShape) -> Self::Output {
+        let shape = shape.shape();
         debug_assert_eq!(self.shape.ndim(), shape.ndim());
         debug_assert_eq!(self.shape.numel(), shape.numel());
         Buffer {
-            shape: shape.to_vec(),
+            shape,
             data: self.data,
         }
     }
@@ -307,11 +314,11 @@ where
     T: Clone,
 {
     type Output = Buffer<T>;
-    fn expand(self, res_shape: &[usize]) -> Self::Output {
+    fn expand(self, res_shape: impl IntoShape) -> Self::Output {
         let shape = self.shape.clone();
-        let res_shape = res_shape.dims();
+        let res_shape = res_shape.shape();
         let n = shape.numel();
-        let ndims = shape.len();
+        let ndims = shape.ndim();
         let mut data = self.data;
 
         let copy_dim = |data: Vec<T>, width, times| {
@@ -329,10 +336,10 @@ where
 
         let mut i = ndims;
         let mut width = 1;
-        for (d, r) in shape.iter().zip(res_shape.iter()).rev() {
+        for (d, r) in shape.clone().into_iter().zip(res_shape.clone().into_iter()).rev() {
             i -= 1;
-            if *d != *r {
-                if *d == 1 {
+            if d != r {
+                if d == 1 {
                     data = copy_dim(data, width, r/d);
                 } else {
                     panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}",
@@ -343,7 +350,7 @@ where
         }
 
         Buffer {
-            shape: res_shape.to_vec(),
+            shape: res_shape,
             data,
         }
     }
@@ -354,36 +361,37 @@ where
     T: Clone + ops::Zeros,
 {
     type Output = Buffer<T>;
-    fn permute(self, dims: &[i32]) -> Self::Output {
+    fn permute(self, dims: impl IntoDims) -> Self::Output {
         // if dims.len() is not same as shape.len(), correct it
-        let mut dims = dims.to_vec();
-        match dims.ndim().cmp(&self.shape.ndim()) {
+        let mut dims = dims.dims().0;
+        match dims.len().cmp(&self.shape.ndim()) {
             std::cmp::Ordering::Greater =>
                 panic!("Input has too many dimensions"),
             std::cmp::Ordering::Less =>
-                for i in 0..self.shape.ndim() - dims.ndim() {
+                for i in 0..self.shape.ndim() - dims.len() {
                     dims.insert(0, i as i32);
                 },
             std::cmp::Ordering::Equal => {}
         }
+        let dims = Dims(dims);
         let n = self.shape.numel();
-        let ndims = self.shape.len();
-        let mut data = vec![T::zeros(&[]); n];
-        let shape = self.shape.permute(&dims);
+        let ndims = self.shape.ndim();
+        let mut data = vec![T::zeros(()); n];
+        let shape = self.shape.clone().permute(dims.clone());
         let strides = shape.strides();
 
         // calculate steps for each dimension
         let mut steps = vec![0; ndims];
-        for (i, dim) in dims.iter().enumerate() {
+        for (i, dim) in dims.into_iter().enumerate() {
             steps[(ndims as i32 + dim) as usize % ndims] = strides[i];
         }
         //let steps = strides.permute(dims.dims());
 
         let mut dim_prod = 1;
-        let indexes_steps: Vec<usize> = self.shape.iter().map(|dim| { dim_prod *= dim; n/dim_prod }).collect();
+        let indexes_steps: Vec<usize> = self.shape.clone().into_iter().map(|dim| { dim_prod *= dim; n/dim_prod }).collect();
 
         for (i, x) in self.data.iter().enumerate() {
-            data[steps.iter().zip(indexes_steps.iter()).zip(self.shape.iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
+            data[steps.iter().zip(indexes_steps.iter()).zip(self.shape.clone().into_iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
         }
 
         Buffer {
@@ -413,8 +421,8 @@ where
     use std::cmp::Ordering;
     let shape = x.shape.clone();
     let data = match x.shape.numel().cmp(&y.shape.numel()) {
-        Ordering::Greater => x.data.into_par_iter().zip(y.expand(&x.shape).data.into_par_iter()).map(f).collect(),
-        Ordering::Less => x.expand(&y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
+        Ordering::Greater => x.data.into_par_iter().zip(y.expand(x.shape).data.into_par_iter()).map(f).collect(),
+        Ordering::Less => x.expand(y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
         Ordering::Equal => x.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
     };
     Buffer {
@@ -497,17 +505,17 @@ where
     fn matmul(self, rhs: Self) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
-        let ndim = self.shape.len();
-        if ndim != rhs.shape.len() {
+        let ndim = self.shape.ndim();
+        if ndim != rhs.shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
         }
         use ops::Transpose;
-        let m = self.shape.index(-2);
-        let k = self.shape.index(-1);
-        let n = rhs.shape.index(-1);
+        let m = self.shape[-2];
+        let k = self.shape[-1];
+        let n = rhs.shape[-1];
         let ty = rhs.transpose();
         use rayon::prelude::*;
         const NUM: usize = 16; // basically SIMD length
@@ -687,43 +695,44 @@ where
     T: ops::Zeros + Clone + Add<Output = T> + Mul<Output = T>,
 {
     type Output = Self;
-    fn conv(self, kernel: Self, padding: &[usize]) -> Self::Output {
+    fn conv(self, kernel: Self, padding: impl IntoShape) -> Self::Output {
         // TQDO: support multidimensional convolutions
         // padding must have 2 dims, it is 2d convolution
-        assert_eq!(padding.len(), 2);
+        let padding = padding.shape();
+        assert_eq!(padding.ndim(), 2);
         // go over resulting buffer, i iterates over result
-        let ndim = self.shape.len();
+        let ndim = self.shape.ndim();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
         // TODO: this is not correct result shape, fix it!
-        let shape: Vec<usize> = vec![
+        let shape = [
             {
-                let s = self.shape.index(-2);
-                let k = kernel.shape.index(-2);
+                let s = self.shape[-2];
+                let k = kernel.shape[-2];
                 let p = padding[0];
-                (s - k + 1)/p
+                (s - k + 1usize)/p
             },
             {
-                let s = self.shape.index(-1);
-                let k = kernel.shape.index(-1);
+                let s = self.shape[-1];
+                let k = kernel.shape[-1];
                 let p = padding[1];
-                (s - k + 1)/p
+                (s - k + 1usize)/p
             },
-        ];
+        ].shape();
         let mut i = 0;
         let n = shape.numel();
         let mut data = Vec::with_capacity(n); // result
-        let self_stride = self.shape.index(-1);
-        let kernel_stride = kernel.shape.index(-1);
-        let kernel_rows = kernel.shape.index(-2);
+        let self_stride = self.shape[-1];
+        let kernel_stride = kernel.shape[-1];
+        let kernel_rows = kernel.shape[-2];
 
-        let mut self_col = 0;
+        let mut self_col = 0usize;
         let mut self_row = 0;
         while i < n {
-            let mut sum = T::zeros(&[]);
+            let mut sum = T::zeros(());
             let self_offset = self_row*self_stride + self_col;
-            let mut row_i = 0;
+            let mut row_i = 0usize;
             // repeat for each line in kernel
             while row_i < kernel_rows {
                 let data_begin = self_offset + row_i * self_stride;

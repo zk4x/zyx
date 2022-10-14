@@ -1,4 +1,5 @@
 use super::Max;
+use crate::shape::IntoDims;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -10,7 +11,7 @@ use duplicate::duplicate_item;
 impl Max for dtype
 {
     type Output = Self;
-    fn max(self, _: &[i32]) -> Self::Output {
+    fn max(self, _: impl IntoDims) -> Self::Output {
         dtype::MAX
     }
 }
@@ -24,7 +25,7 @@ impl Max for dtype
 impl Max for &dtype
 {
     type Output = dtype;
-    fn max(self, _: &[i32]) -> Self::Output {
+    fn max(self, _: impl IntoDims) -> Self::Output {
         dtype::MAX
     }
 }
@@ -48,7 +49,7 @@ impl Max for &dtype
 impl Max for dtype
 {
     type Output = Self;
-    fn max(self, _: &[i32]) -> Self::Output {
+    fn max(self, _: impl IntoDims) -> Self::Output {
         dtype::MAX
     }
 }
@@ -72,7 +73,7 @@ impl Max for dtype
 impl Max for &dtype
 {
     type Output = dtype;
-    fn max(self, _: &[i32]) -> Self::Output {
+    fn max(self, _: impl IntoDims) -> Self::Output {
         dtype::MAX
     }
 }

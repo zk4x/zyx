@@ -14,6 +14,8 @@ mod min;
 mod max;
 mod get_shape;
 
+use crate::shape::{IntoShape, IntoDims, Shape};
+
 /// ## Convert between devices and types
 /// 
 /// Create new Buffer on given device with given type
@@ -41,14 +43,14 @@ where
 /// 
 /// Create new Buffer initialized with zeros.
 pub trait Zeros {
-    fn zeros(shape: &[usize]) -> Self;
+    fn zeros(shape: impl IntoShape) -> Self;
 }
 
 /// ## Ones operation
 /// 
 /// Create new Buffer initialized with ones.
 pub trait Ones {
-    fn ones(shape: &[usize]) -> Self;
+    fn ones(shape: impl IntoShape) -> Self;
 }
 
 /// ## IntoVec operation
@@ -68,7 +70,7 @@ pub trait IntoVec<T> {
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::from_vec([2, 3, 1, 3].to_vec(), &[2, 2]);
+/// let x = Buffer::from_vec([2, 3, 1, 3].to_vec(), [2, 2]);
 /// println!("{}", x);
 /// ```
 /// ### Output
@@ -76,22 +78,22 @@ pub trait IntoVec<T> {
 ///  1 3]
 /// 
 pub trait FromVec<T> {
-    fn from_vec(data: Vec<T>, shape: &[usize]) -> Self;
+    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self;
 }
 
-/// ## IntoShape operation
+/// ## GetShape operation
 /// 
 /// Returns the shape of Buffer as an array of dimensions.
 /// 
 /// ### Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{IntoShape, ConvertFrom}};
+/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
 /// let x = Buffer::cfrom([2, 3, 1]);
 /// let y = x.shape();
 /// assert_eq!(y, [3]);
 /// ```
-pub trait IntoShape {
-    fn shape(&self) -> Vec<usize>;
+pub trait GetShape {
+    fn shape(&self) -> Shape;
 }
 
 // Unary ops
@@ -190,7 +192,7 @@ pub trait Tanh {
 /// use zyx::accel::cpu::Buffer;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.sum(&[0]);
+/// let y = x.sum([0]);
 /// println!("{}", y);
 /// ```
 /// ### Output
@@ -200,7 +202,7 @@ pub trait Tanh {
 /// 
 pub trait Sum {
     type Output;
-    fn sum(self, dims: &[i32]) -> Self::Output;
+    fn sum(self, dims: impl IntoDims) -> Self::Output;
 }
 
 /// ## Max operation
@@ -216,7 +218,7 @@ pub trait Sum {
 /// use zyx::accel::cpu::Buffer;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.max(&[0]);
+/// let y = x.max([0]);
 /// println!("{}", y);
 /// ```
 /// ### Output
@@ -226,7 +228,7 @@ pub trait Sum {
 /// 
 pub trait Max {
     type Output;
-    fn max(self, dims: &[i32]) -> Self::Output;
+    fn max(self, dims: impl IntoDims) -> Self::Output;
 }
 
 /// ## Min operation
@@ -242,7 +244,7 @@ pub trait Max {
 /// use zyx::accel::cpu::Buffer;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.min(&[0]);
+/// let y = x.min([0]);
 /// println!("{}", y);
 /// ```
 /// ### Output
@@ -252,7 +254,7 @@ pub trait Max {
 /// 
 pub trait Min {
     type Output;
-    fn min(self, dims: &[i32]) -> Self::Output;
+    fn min(self, dims: impl IntoDims) -> Self::Output;
 }
 
 // Reshape simply changes shape of the Buffer.
@@ -272,7 +274,7 @@ pub trait Min {
 /// use zyx::prelude::*;
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
-/// let x = x.reshape(&[2, 1, 6]);
+/// let x = x.reshape([2, 1, 6]);
 /// println!("{}", x);
 /// ```
 /// 
@@ -284,7 +286,7 @@ pub trait Min {
 /// 
 pub trait Reshape {
     type Output;
-    fn reshape(self, shape: &[usize]) -> Self::Output;
+    fn reshape(self, shape: impl IntoShape) -> Self::Output;
 }
 
 /// ## Expand Buffer
@@ -297,7 +299,7 @@ pub trait Reshape {
 /// use zyx::prelude::*;
 /// 
 /// let x = cpu::Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.expand(&[2, 3, 3]);
+/// let x = x.expand([2, 3, 3]);
 /// println!("{}", x);
 /// ```
 /// 
@@ -313,7 +315,7 @@ pub trait Reshape {
 /// 
 pub trait Expand {
     type Output;
-    fn expand(self, shape: &[usize]) -> Self::Output;
+    fn expand(self, shape: impl IntoShape) -> Self::Output;
 }
 
 /// ## Permute Buffer
@@ -326,7 +328,7 @@ pub trait Expand {
 /// use zyx::prelude::*;
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.permute(&[2, 0, 1]);
+/// let x = x.permute([2, 0, 1]);
 /// println!("{}", x);
 /// ```
 /// 
@@ -342,7 +344,7 @@ pub trait Expand {
 /// 
 pub trait Permute {
     type Output;
-    fn permute(self, dims: &[i32]) -> Self::Output;
+    fn permute(self, dims: impl IntoDims) -> Self::Output;
 }
 
 // TODO: this is only API proposal, it is yet to be finalized
@@ -367,7 +369,7 @@ where
 {
     type Output = T::Output;
     fn transpose(self) -> Self::Output {
-        self.permute(&[-1, -2])
+        self.permute([-1, -2])
     }
 }
 
@@ -416,5 +418,5 @@ pub trait MatMul<Rhs = Self> {
 /// NOTE: This API is not yet stable and may be subject to change
 pub trait Conv<Kernel = Self> {
     type Output;
-    fn conv(self, kernel: Kernel, padding: &[usize]) -> Self::Output;
+    fn conv(self, kernel: Kernel, padding: impl IntoShape) -> Self::Output;
 }

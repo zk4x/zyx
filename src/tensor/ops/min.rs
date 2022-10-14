@@ -1,10 +1,10 @@
-use crate::{ops::{Min, Expand, IntoShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoShape, IntoDims, Shape}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct MinBackwardV<'g, S> {
     grad: &'g RefCell<S>,
-    shape: Vec<usize>,
+    shape: Shape,
 }
 
 impl<'g, S> Backward<S> for MinBackwardV<'g, S>
@@ -12,17 +12,16 @@ where
     S: Default + Add<Output = S> + Expand<Output = S> + IntoShape,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad.expand(&self.shape));
+        self.grad.replace_take(|grad| grad + res_grad.expand(self.shape));
     }
 }
 
 impl<'g, S> Min for &'g Variable<S>
 where
-    S: 'g + Clone + Min<Output = S>,
-    S: IntoShape,
+    S: 'g + Clone + Min<Output = S> + GetShape,
 {
     type Output = Tensor<S, MinBackwardV<'g, S>>;
-    fn min(self, dims: &[i32]) -> Self::Output {
+    fn min(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data.borrow()).clone().min(dims),
             func: MinBackwardV {
@@ -36,7 +35,7 @@ where
 #[derive(Debug, Clone)]
 pub struct MinBackwardT<F> {
     func: F,
-    shape: Vec<usize>,
+    shape: Shape,
 }
 
 impl<S, F> Backward<S> for MinBackwardT<F>
@@ -45,17 +44,17 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.expand(&self.shape));
+        self.func.backward(res_grad.expand(self.shape));
     }
 }
 
 impl<S, F> Min for Tensor<S, F>
 where
-    S: Min<Output = S> + IntoShape,
+    S: Min<Output = S> + GetShape,
     F: FnOnce(S),
 {
     type Output = Tensor<S, MinBackwardT<F>>;
-    fn min(self, dims: &[i32]) -> Self::Output {
+    fn min(self, dims: impl IntoDims) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.min(dims),
