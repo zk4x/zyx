@@ -59,6 +59,7 @@ use zyx::prelude::*;
 use ndarray::array;
 
 let x = array![[2., 3., 4.], [3., 4., 2.]];
+let x = x.with_grad();
 x.exp().backward();
 println!("{}", x.grad());
 ```
