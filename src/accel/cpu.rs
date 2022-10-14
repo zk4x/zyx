@@ -3,6 +3,7 @@
 //!
 
 use crate::{ops, shape::{Shape, Dims}};
+use std::ops::{Add, Mul};
 
 // It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
 // If it creates shallow copy, it needs to do the necessary reference counting
@@ -492,8 +493,8 @@ where
     T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum,
     Buffer<T>: ops::Transpose<Output = Buffer<T>>,
 {
-    type Output = Buffer<T>;
-    fn matmul(self, rhs: Buffer<T>) -> Self::Output {
+    type Output = Self;
+    fn matmul(self, rhs: Self) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
         let ndim = self.shape.len();
@@ -539,9 +540,10 @@ where
 // Let's just use matrixmultiply crate for f32 and f64
 #[cfg(feature = "matrixmultiply")]
 impl ops::MatMul for Buffer<f32> {
-    type Output = Buffer<f32>;
-    fn matmul(self, rhs: Buffer<f32>) -> Self::Output {
+    type Output = Self;
+    fn matmul(self, rhs: Self) -> Self::Output {
         let ndim = self.shape.len();
+        // TODO: support for operations on more than 2 dimensions
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
@@ -572,8 +574,8 @@ impl ops::MatMul for Buffer<f32> {
 
 #[cfg(feature = "matrixmultiply")]
 impl ops::MatMul for Buffer<f64> {
-    type Output = Buffer<f64>;
-    fn matmul(self, rhs: Buffer<f64>) -> Self::Output {
+    type Output = Self;
+    fn matmul(self, rhs: Self) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -605,8 +607,8 @@ impl ops::MatMul for Buffer<f64> {
 
 #[cfg(feature = "cblas")]
 impl ops::MatMul for Buffer<f32> {
-    type Output = Buffer<f32>;
-    fn matmul(self, rhs: Buffer<f32>) -> Self::Output {
+    type Output = Self;
+    fn matmul(self, rhs: Self) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -643,8 +645,8 @@ impl ops::MatMul for Buffer<f32> {
 
 #[cfg(feature = "cblas")]
 impl ops::MatMul for Buffer<f64> {
-    type Output = Buffer<f64>;
-    fn matmul(self, rhs: Buffer<f64>) -> Self::Output {
+    type Output = Self;
+    fn matmul(self, rhs: Self) -> Self::Output {
         let ndim = self.shape.len();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -680,3 +682,68 @@ impl ops::MatMul for Buffer<f64> {
 }
 
 // TODO: conv2d
+impl<T> ops::Conv for Buffer<T>
+where
+    T: ops::Zeros + Clone + Add<Output = T> + Mul<Output = T>,
+{
+    type Output = Self;
+    fn conv(self, kernel: Self, padding: &[usize]) -> Self::Output {
+        // TQDO: support multidimensional convolutions
+        // padding must have 2 dims, it is 2d convolution
+        assert_eq!(padding.len(), 2);
+        // go over resulting buffer, i iterates over result
+        let ndim = self.shape.len();
+        if ndim != 2 {
+            panic!("Only operations on buffers with 2 dimensions are supported.");
+        }
+        // TODO: this is not correct result shape, fix it!
+        let shape: Vec<usize> = vec![
+            {
+                let s = self.shape.index(-2);
+                let k = kernel.shape.index(-2);
+                let p = padding[0];
+                (s - k + 1)/p
+            },
+            {
+                let s = self.shape.index(-1);
+                let k = kernel.shape.index(-1);
+                let p = padding[1];
+                (s - k + 1)/p
+            },
+        ];
+        let mut i = 0;
+        let n = shape.numel();
+        let mut data = Vec::with_capacity(n); // result
+        let self_stride = self.shape.index(-1);
+        let kernel_stride = kernel.shape.index(-1);
+        let kernel_rows = kernel.shape.index(-2);
+
+        let mut self_col = 0;
+        let mut self_row = 0;
+        while i < n {
+            let mut sum = T::zeros(&[]);
+            let self_offset = self_row*self_stride + self_col;
+            let mut row_i = 0;
+            // repeat for each line in kernel
+            while row_i < kernel_rows {
+                let data_begin = self_offset + row_i * self_stride;
+                sum = self.data[data_begin..self_offset+row_i*self_stride+kernel_stride].iter().zip(kernel.data[row_i*kernel_stride..(row_i+1)*kernel_stride].iter()).fold(sum, |a, (x, y)| a + x.clone() * y.clone());
+                row_i += 1;
+            }
+            data.push(sum);
+
+            self_col += padding[1];
+            if self_col >= self_stride {
+                self_row += padding[0];
+                self_col = 0;
+            }
+
+            i += 1;
+        }
+        
+        Self {
+            shape,
+            data,
+        }
+    }
+}

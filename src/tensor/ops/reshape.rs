@@ -2,12 +2,12 @@ use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, ops::
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct ReshapeBackwardG<'g, S> {
+pub struct ReshapeBackwardV<'g, S> {
     grad: &'g RefCell<S>,
     shape: Vec<usize>,
 }
 
-impl<'g, S> Backward<S> for ReshapeBackwardG<'g, S>
+impl<'g, S> Backward<S> for ReshapeBackwardV<'g, S>
 where
     S: Default + Reshape<Output = S> + Add<Output = S>,
 {
@@ -21,11 +21,11 @@ where
     S: 'g + Clone + Reshape<Output = S>,
     S: GetShape,
 {
-    type Output = Tensor<S, ReshapeBackwardG<'g, S>>;
+    type Output = Tensor<S, ReshapeBackwardV<'g, S>>;
     fn reshape(self, shape: &[usize]) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().reshape(shape),
-            func: ReshapeBackwardG {
+            func: ReshapeBackwardV {
                 grad: &self.grad,
                 shape: self.data().shape(),
             }
@@ -34,12 +34,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ReshapeBackwardF<F> {
+pub struct ReshapeBackwardT<F> {
     func: F,
     shape: Vec<usize>,
 }
 
-impl<S, F> Backward<S> for ReshapeBackwardF<F>
+impl<S, F> Backward<S> for ReshapeBackwardT<F>
 where
     S: Reshape<Output = S>,
     F: Backward<S>,
@@ -53,12 +53,12 @@ impl<S, F> Reshape for Tensor<S, F>
 where
     S: Reshape<Output = S> + GetShape,
 {
-    type Output = Tensor<S, ReshapeBackwardF<F>>;
+    type Output = Tensor<S, ReshapeBackwardT<F>>;
     fn reshape(self, res_shape: &[usize]) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.reshape(res_shape),
-            func: ReshapeBackwardF {
+            func: ReshapeBackwardT {
                 func: self.func,
                 shape,
             }

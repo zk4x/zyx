@@ -2,11 +2,11 @@ use crate::tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake};
 use std::{ops::{Sub, Neg}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct NegBackwardG<'g, S> {
+pub struct NegBackwardV<'g, S> {
     grad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for NegBackwardG<'g, S>
+impl<'g, S> Backward<S> for NegBackwardV<'g, S>
 where
     S: Default + Neg<Output = S> + Sub<Output = S>,
 {
@@ -19,11 +19,11 @@ impl<'g, S> Neg for &'g Variable<S>
 where
     S: 'g + Clone + Neg<Output = S>,
 {
-    type Output = Tensor<S, NegBackwardG<'g, S>>;
+    type Output = Tensor<S, NegBackwardV<'g, S>>;
     fn neg(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().neg(),
-            func: NegBackwardG {
+            func: NegBackwardV {
                 grad: &self.grad,
             }
         }
@@ -31,11 +31,11 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NegBackwardF<F> {
+pub struct NegBackwardT<F> {
     func: F,
 }
 
-impl<S, F> Backward<S> for NegBackwardF<F>
+impl<S, F> Backward<S> for NegBackwardT<F>
 where
     S: Neg<Output = S>,
     F: Backward<S>,
@@ -50,11 +50,11 @@ where
     F: FnOnce(S),
     S: Neg<Output = S>,
 {
-    type Output = Tensor<S, NegBackwardF<F>>;
+    type Output = Tensor<S, NegBackwardT<F>>;
     fn neg(self) -> Self::Output {
         Tensor {
             data: self.data.neg(),
-            func: NegBackwardF {
+            func: NegBackwardT {
                 func: self.func,
             },
         }

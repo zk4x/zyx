@@ -2,12 +2,12 @@ use crate::{ops::{Ln, Ones, Pow}, tensor::{Variable, Tensor, Backward, ops::RefC
 use std::{ops::{Add, Mul, Neg}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct LnBackwardLeaf<'g, S> {
+pub struct LnBackwardV<'g, S> {
     grad: &'g RefCell<S>,
     data: S,
 }
 
-impl<'g, S> Backward<S> for LnBackwardLeaf<'g, S>
+impl<'g, S> Backward<S> for LnBackwardV<'g, S>
 where
     S: Default + Ln<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
 {
@@ -20,11 +20,11 @@ impl<'g, S> Ln for &'g Variable<S>
 where
     S: 'g + Clone + Ln<Output = S>,
 {
-    type Output = Tensor<S, LnBackwardLeaf<'g, S>>;
+    type Output = Tensor<S, LnBackwardV<'g, S>>;
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data().clone().ln(),
-            func: LnBackwardLeaf {
+            func: LnBackwardV {
                 grad: &self.grad,
                 data: self.data().clone(),
             },
@@ -33,12 +33,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct LnBackward<S, F> {
+pub struct LnBackwardT<S, F> {
     func: F,
     data: S,
 }
 
-impl<S, F> Backward<S> for LnBackward<S, F>
+impl<S, F> Backward<S> for LnBackwardT<S, F>
 where
     S: Ln<Output = S> + Mul<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
     F: Backward<S>,
@@ -52,11 +52,11 @@ impl<S, F> Ln for Tensor<S, F>
 where
     S: Clone + Ln<Output = S>,
 {
-    type Output = Tensor<S, LnBackward<S, F>>;
+    type Output = Tensor<S, LnBackwardT<S, F>>;
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data.clone().ln(),
-            func: LnBackward {
+            func: LnBackwardT {
                 func: self.func,
                 data: self.data,
             }

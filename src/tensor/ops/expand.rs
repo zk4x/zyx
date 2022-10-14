@@ -2,12 +2,12 @@ use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, o
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct ExpandBackwardG<'g, S> {
+pub struct ExpandBackwardV<'g, S> {
     grad: &'g RefCell<S>,
     dims: Vec<i32>,
 }
 
-impl<'g, S> Backward<S> for ExpandBackwardG<'g, S>
+impl<'g, S> Backward<S> for ExpandBackwardV<'g, S>
 where
     S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + GetShape,
 {
@@ -21,12 +21,12 @@ impl<'g, S> Expand for &'g Variable<S>
 where
     S: 'g + Clone + Expand<Output = S> + GetShape,
 {
-    type Output = Tensor<S, ExpandBackwardG<'g, S>>;
+    type Output = Tensor<S, ExpandBackwardV<'g, S>>;
     fn expand(self, shape: &[usize]) -> Self::Output {
         let dims = self.data().shape().iter().zip(shape.iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
         Tensor {
             data: (*self.data()).clone().expand(shape),
-            func: ExpandBackwardG {
+            func: ExpandBackwardV {
                 grad: &self.grad,
                 dims,
             }
@@ -35,12 +35,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ExpandBackwardF<F> {
+pub struct ExpandBackwardT<F> {
     func: F,
     dims: Vec<i32>,
 }
 
-impl<S, F> Backward<S> for ExpandBackwardF<F>
+impl<S, F> Backward<S> for ExpandBackwardT<F>
 where
     S: Expand<Output = S> + Max<Output = S> + GetShape,
     F: Backward<S>,
@@ -55,12 +55,12 @@ where
     F: FnOnce(S),
     S: Expand<Output = S> + GetShape,
 {
-    type Output = Tensor<S, ExpandBackwardF<F>>;
+    type Output = Tensor<S, ExpandBackwardT<F>>;
     fn expand(self, shape: &[usize]) -> Self::Output {
         let dims = self.data.shape().iter().zip(shape.iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
         Tensor {
             data: self.data.expand(shape),
-            func: ExpandBackwardF {
+            func: ExpandBackwardT {
                 func: self.func,
                 dims,
             },

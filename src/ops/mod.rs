@@ -409,7 +409,12 @@ pub trait MatMul<Rhs = Self> {
 }
 
 // TODO: conv2d
-/*pub trait Conv<Kernel> {
+/// ## 2D Convolution
+/// 
+/// Calculates 2D convodution.
+/// 
+/// NOTE: This API is not yet stable and may be subject to change
+pub trait Conv<Kernel = Self> {
     type Output;
-    fn conv(self, kernel: Kernel) -> Self::Output;
-}*/
+    fn conv(self, kernel: Kernel, padding: &[usize]) -> Self::Output;
+}

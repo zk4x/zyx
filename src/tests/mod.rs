@@ -1,5 +1,5 @@
-// TODO move all the tests into the respective modules.
-// No reason to have them spread like this.
+// TODO: move all the tests into the respective modules.
+// No reason to have them all in here like this.
 
 fn cmp_vec(x: &[f32], y: &[f32]) {
     const PRECISION: i32 = 3;
@@ -74,12 +74,13 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{accel::cpu, ops::{GetShape, FromVec, ToVec}, tensor::{B, IntoVariable}};
+        use crate::{accel::cpu, ops::{GetShape, FromVec, ToVec, ConvertFrom}, tensor::{B, IntoVariable}};
         use super::super::{cmp_vec, cmp_vec_f64};
 
         #[test]
         fn convert_from() {
-            use crate::ops::{ConvertFrom, ConvertInto};
+            // TODO finish all variations, including type and accelerator conversions
+            use crate::ops::ConvertInto;
             let vec = vec![3f32, 1., 2., 4.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 4, 1]);
             let y = cpu::Buffer::<f64>::cfrom(x.clone());
@@ -90,7 +91,7 @@ mod tensor {
 
         #[test]
         fn get_shape() {
-            use crate::{ops::GetShape};
+            // TODO finish all variations
             let vec = vec![3., 1., 2., 4.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 4, 1]);
             assert_eq!(vec![1, 4, 1], x.shape());
@@ -100,7 +101,7 @@ mod tensor {
         fn relu() {
             // TODO: all tests should look like this, test Buffer, Variable and Tensor,
             // with binary operators, also test all 9 variations like Buffer + Variable and Variable + Buffer
-            use crate::{ops::ToVec, ops::ReLU};
+            use crate::ops::ReLU;
             let vec = vec![3., 1., 2., 4.];
             // test Buffer
             let x = cpu::Buffer::from_vec(vec.clone(), &[4]);
@@ -121,7 +122,7 @@ mod tensor {
 
         #[test]
         fn exp() {
-            use crate::{ops::ToVec, ops::Exp};
+            use crate::ops::Exp;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             // test Buffer
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]);
@@ -142,7 +143,7 @@ mod tensor {
 
         #[test]
         fn ln() {
-            use crate::{ops::ToVec, ops::Ln};
+            use crate::ops::Ln;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             // test Buffer
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]);
@@ -163,7 +164,8 @@ mod tensor {
 
         #[test]
         fn tanh() {
-            use crate::{ops::ToVec, ops::Tanh};
+            // TODO finish all variations
+            use crate::ops::Tanh;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]).with_grad();
             let y = x.tanh();
@@ -174,7 +176,8 @@ mod tensor {
 
         #[test]
         fn neg() {
-            use crate::{ops::ToVec};
+            // TODO finish all variations
+            use crate::ops::ToVec;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[9]).with_grad();
             let y = -&x;
@@ -185,6 +188,7 @@ mod tensor {
 
         #[test]
         fn sum() {
+            // TODO finish all variations
             use crate::ops::Sum;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 3, 1, 3, 1]).with_grad();
@@ -194,6 +198,7 @@ mod tensor {
 
         #[test]
         fn max() {
+            // TODO finish all variations
             use crate::ops::Max;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 3, 1, 3, 1]).with_grad();
@@ -203,6 +208,7 @@ mod tensor {
 
         #[test]
         fn min() {
+            // TODO finish all variations
             use crate::ops::Min;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 3, 1, 3, 1]).with_grad();
@@ -212,6 +218,7 @@ mod tensor {
 
         #[test]
         fn reshape() {
+            // TODO finish all variations
             use crate::ops::Reshape;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 1, 9]);
@@ -221,6 +228,7 @@ mod tensor {
 
         #[test]
         fn expand() {
+            // TODO finish all variations
             use crate::ops::Expand;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[1, 1, 9]);
@@ -231,6 +239,7 @@ mod tensor {
 
         #[test]
         fn permute() {
+            // TODO finish all variations
             use crate::ops::Permute;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = cpu::Buffer::from_vec(vec.clone(), &[9, 1]).with_grad();
@@ -407,7 +416,8 @@ mod tensor {
 
         #[test]
         fn matmul() {
-            use crate::{ops::ToVec, ops::{MatMul, ConvertFrom}};
+            // TODO finish all variations
+            use crate::ops::{MatMul, ConvertFrom};
             let x = cpu::Buffer::cfrom([[2f32, 3., 4.]]);
             let y = cpu::Buffer::cfrom([[2., 3.], [3., 4.], [5., 3.]]);
             let z = x.clone().matmul(y.clone());
@@ -438,7 +448,14 @@ mod tensor {
 
         #[test]
         fn conv() {
-            //todo!()
+            use crate::ops::Conv;
+            let x = cpu::Buffer::cfrom([[2, 3, 4, 1], [4, 2, 1, 3]]);
+            let y = cpu::Buffer::cfrom([[2, 3, 2], [3, 4, 1]]);
+            let z = x.clone().conv(y.clone(), &[1, 2]);
+            //println!("{}", x);
+            //println!("{}", y);
+            //println!("{}", z);
+            //panic!()
         }
     }
 }

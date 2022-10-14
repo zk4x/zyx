@@ -20,6 +20,7 @@ mod matmul;
 mod conv;
 
 // We need custom implementation of replace_take() for RefCell that has F: FnOnce(T) -> T instead of F: FnOnce(&mut T) -> T
+// This is due to the fact, that buffers implement operations on consumed values, not on references
 pub(super) trait RefCellReplaceTake<T, F> {
     fn replace_take(&self, f: F);
 }

@@ -2,12 +2,12 @@ use crate::{ops::{Tanh, Ones, Pow}, tensor::{Variable, Tensor, Backward, ops::Re
 use std::{ops::{Add, Mul, Neg}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct TanhBackwardG<'g, S> {
+pub struct TanhBackwardV<'g, S> {
     grad: &'g RefCell<S>,
     data: S,
 }
 
-impl<'g, S> Backward<S> for TanhBackwardG<'g, S>
+impl<'g, S> Backward<S> for TanhBackwardV<'g, S>
 where
     S: Default + Tanh<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
 {
@@ -20,12 +20,12 @@ impl<'g, S> Tanh for &'g Variable<S>
 where
     S: 'g + Clone + Tanh<Output = S>,
 {
-    type Output = Tensor<S, TanhBackwardG<'g, S>>;
+    type Output = Tensor<S, TanhBackwardV<'g, S>>;
     fn tanh(self) -> Self::Output {
         let data = (*self.data()).clone().tanh();
         Tensor {
             data: data.clone(),
-            func: TanhBackwardG {
+            func: TanhBackwardV {
                 grad: &self.grad,
                 data,
             }
@@ -34,12 +34,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TanhBackwardF<S, F> {
+pub struct TanhBackwardT<S, F> {
     func: F,
     data: S,
 }
 
-impl<S, F> Backward<S> for TanhBackwardF<S, F>
+impl<S, F> Backward<S> for TanhBackwardT<S, F>
 where
     S: Tanh<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
     F: Backward<S>,
@@ -53,12 +53,12 @@ impl<S, F> Tanh for Tensor<S, F>
 where
     S: Clone + Tanh<Output = S>,
 {
-    type Output = Tensor<S, TanhBackwardF<S, F>>;
+    type Output = Tensor<S, TanhBackwardT<S, F>>;
     fn tanh(self) -> Self::Output {
         let data = self.data.tanh();
         Tensor {
             data: data.clone(),
-            func: TanhBackwardF {
+            func: TanhBackwardT {
                 func: self.func,
                 data,
             },

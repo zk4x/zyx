@@ -2,12 +2,12 @@ use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, o
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct MinBackwardG<'g, S> {
+pub struct MinBackwardV<'g, S> {
     grad: &'g RefCell<S>,
     shape: Vec<usize>,
 }
 
-impl<'g, S> Backward<S> for MinBackwardG<'g, S>
+impl<'g, S> Backward<S> for MinBackwardV<'g, S>
 where
     S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {
@@ -21,11 +21,11 @@ where
     S: 'g + Clone + Min<Output = S>,
     S: GetShape,
 {
-    type Output = Tensor<S, MinBackwardG<'g, S>>;
+    type Output = Tensor<S, MinBackwardV<'g, S>>;
     fn min(self, dims: &[i32]) -> Self::Output {
         Tensor {
             data: (*self.data.borrow()).clone().min(dims),
-            func: MinBackwardG {
+            func: MinBackwardV {
                 grad: &self.grad,
                 shape: self.data.borrow().shape(),
             }
@@ -34,12 +34,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct MinBackwardF<F> {
+pub struct MinBackwardT<F> {
     func: F,
     shape: Vec<usize>,
 }
 
-impl<S, F> Backward<S> for MinBackwardF<F>
+impl<S, F> Backward<S> for MinBackwardT<F>
 where
     S: Expand<Output = S>,
     F: Backward<S>,
@@ -54,12 +54,12 @@ where
     S: Min<Output = S> + GetShape,
     F: FnOnce(S),
 {
-    type Output = Tensor<S, MinBackwardF<F>>;
+    type Output = Tensor<S, MinBackwardT<F>>;
     fn min(self, dims: &[i32]) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.min(dims),
-            func: MinBackwardF {
+            func: MinBackwardT {
                 func: self.func,
                 shape,
             }

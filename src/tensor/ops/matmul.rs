@@ -2,12 +2,12 @@ use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, ops::
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardTG<'g, S> {
+pub struct MatMulBackwardSV<'g, S> {
     xdata: S,
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for MatMulBackwardTG<'g, S>
+impl<'g, S> Backward<S> for MatMulBackwardSV<'g, S>
 where
     S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
@@ -20,11 +20,11 @@ impl<'g, S> MatMul<&'g Variable<S>> for S
 where
     S: 'g + Clone + MatMul<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardTG<'g, S>>;
+    type Output = Tensor<S, MatMulBackwardSV<'g, S>>;
     fn matmul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.clone().matmul(rhs.data().clone()),
-            func: MatMulBackwardTG {
+            func: MatMulBackwardSV {
                 xdata: self,
                 ygrad: &rhs.grad,
             }
@@ -33,12 +33,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardTF<S, F> {
+pub struct MatMulBackwardST<S, F> {
     xdata: S,
     yfunc: F,
 }
 
-impl<S, F> Backward<S> for MatMulBackwardTF<S, F>
+impl<S, F> Backward<S> for MatMulBackwardST<S, F>
 where
     S: MatMul<Output = S> + Transpose<Output = S>,
     F: Backward<S>,
@@ -52,11 +52,11 @@ impl<S, F> MatMul<Tensor<S, F>> for S
 where
     S: Clone + MatMul<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardTF<S, F>>;
+    type Output = Tensor<S, MatMulBackwardST<S, F>>;
     fn matmul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.clone().matmul(rhs.data),
-            func: MatMulBackwardTF {
+            func: MatMulBackwardST {
                 xdata: self,
                 yfunc: rhs.func,
             }
@@ -65,12 +65,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardGT<'g, S> {
+pub struct MatMulBackwardVS<'g, S> {
     xgrad: &'g RefCell<S>,
     ydata: S,
 }
 
-impl<'g, S> Backward<S> for MatMulBackwardGT<'g, S>
+impl<'g, S> Backward<S> for MatMulBackwardVS<'g, S>
 where
     S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
@@ -83,11 +83,11 @@ impl<'g, S> MatMul<S> for &'g Variable<S>
 where
     S: 'g + Clone + MatMul<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardGT<'g, S>>;
+    type Output = Tensor<S, MatMulBackwardVS<'g, S>>;
     fn matmul(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data.borrow().clone().matmul(rhs.clone()),
-            func: MatMulBackwardGT {
+            func: MatMulBackwardVS {
                 xgrad: &self.grad,
                 ydata: rhs,
             }
@@ -96,14 +96,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardGG<'g, S> {
+pub struct MatMulBackwardVV<'g, S> {
     xgrad: &'g RefCell<S>,
     xdata: S,
     ygrad: &'g RefCell<S>,
     ydata: S,
 }
 
-impl<'g, S> Backward<S> for MatMulBackwardGG<'g, S>
+impl<'g, S> Backward<S> for MatMulBackwardVV<'g, S>
 where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
@@ -117,11 +117,11 @@ impl<'g, S> MatMul<&'g Variable<S>> for &'g Variable<S>
 where
     S: 'g + Clone + MatMul<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardGG<'g, S>>;
+    type Output = Tensor<S, MatMulBackwardVV<'g, S>>;
     fn matmul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data().clone().matmul(rhs.data().clone()),
-            func: MatMulBackwardGG {
+            func: MatMulBackwardVV {
                 xgrad: &self.grad,
                 xdata: self.data().clone(),
                 ygrad: &rhs.grad,
@@ -132,14 +132,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardGF<'g, S, YF> {
+pub struct MatMulBackwardVT<'g, S, YF> {
     xgrad: &'g RefCell<S>,
     xdata: S,
     yfunc: YF,
     ydata: S,
 }
 
-impl<'g, S, YF> Backward<S> for MatMulBackwardGF<'g, S, YF>
+impl<'g, S, YF> Backward<S> for MatMulBackwardVT<'g, S, YF>
 where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
     YF: Backward<S>,
@@ -154,11 +154,11 @@ impl<'g, S, F> MatMul<Tensor<S, F>> for &'g Variable<S>
 where
     S: 'g + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardGF<'g, S, F>>;
+    type Output = Tensor<S, MatMulBackwardVT<'g, S, F>>;
     fn matmul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.data().clone().matmul(rhs.data.clone()),
-            func: MatMulBackwardGF {
+            func: MatMulBackwardVT {
                 xgrad: &self.grad,
                 xdata: self.data().clone(),
                 yfunc: rhs.func,
@@ -169,12 +169,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardFT<S, XF> {
+pub struct MatMulBackwardTS<S, XF> {
     xfunc: XF,
     ydata: S,
 }
 
-impl<S, XF> Backward<S> for MatMulBackwardFT<S, XF>
+impl<S, XF> Backward<S> for MatMulBackwardTS<S, XF>
 where
     S: MatMul<Output = S> + Transpose<Output = S>,
     XF: Backward<S>,
@@ -188,11 +188,11 @@ impl<S, F> MatMul<S> for Tensor<S, F>
 where
     S: Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardFT<S, F>>;
+    type Output = Tensor<S, MatMulBackwardTS<S, F>>;
     fn matmul(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data.matmul(rhs.clone()),
-            func: MatMulBackwardFT {
+            func: MatMulBackwardTS {
                 xfunc: self.func,
                 ydata: rhs,
             }
@@ -201,14 +201,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardFG<'g, S, XF> {
+pub struct MatMulBackwardTV<'g, S, XF> {
     xfunc: XF,
     xdata: S,
     ygrad: &'g RefCell<S>,
     ydata: S,
 }
 
-impl<'g, S, XF> Backward<S> for MatMulBackwardFG<'g, S, XF>
+impl<'g, S, XF> Backward<S> for MatMulBackwardTV<'g, S, XF>
 where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
     XF: Backward<S>,
@@ -223,11 +223,11 @@ impl<'g, S, F> MatMul<&'g Variable<S>> for Tensor<S, F>
 where
     S: 'g + Clone + MatMul<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardFG<'g, S, F>>;
+    type Output = Tensor<S, MatMulBackwardTV<'g, S, F>>;
     fn matmul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data().clone()),
-            func: MatMulBackwardFG {
+            func: MatMulBackwardTV {
                 xfunc: self.func,
                 xdata: self.data,
                 ygrad: &rhs.grad,
@@ -238,14 +238,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MatMulBackwardFF<S, XF, YF> {
+pub struct MatMulBackwardTT<S, XF, YF> {
     xfunc: XF,
     xdata: S,
     yfunc: YF,
     ydata: S,
 }
 
-impl<S, XF, YF> Backward<S> for MatMulBackwardFF<S, XF, YF>
+impl<S, XF, YF> Backward<S> for MatMulBackwardTT<S, XF, YF>
 where
     S: Clone + MatMul<Output = S> + Transpose<Output = S>,
     XF: Backward<S>,
@@ -261,11 +261,11 @@ impl<S, XF, YF> MatMul<Tensor<S, YF>> for Tensor<S, XF>
 where
     S: Clone + MatMul<Output = S>,
 {
-    type Output = Tensor<S, MatMulBackwardFF<S, XF, YF>>;
+    type Output = Tensor<S, MatMulBackwardTT<S, XF, YF>>;
     fn matmul(self, rhs: Tensor<S, YF>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data.clone()),
-            func: MatMulBackwardFF {
+            func: MatMulBackwardTT {
                 xfunc: self.func,
                 xdata: self.data,
                 yfunc: rhs.func,

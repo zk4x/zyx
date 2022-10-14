@@ -2,12 +2,12 @@ use crate::{shape::Dims, ops::Permute, tensor::{Variable, Tensor, Backward, ops:
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct PermuteBackwardG<'g, S> {
+pub struct PermuteBackwardV<'g, S> {
     grad: &'g RefCell<S>,
     dims: Vec<i32>,
 }
 
-impl<'g, S> Backward<S> for PermuteBackwardG<'g, S>
+impl<'g, S> Backward<S> for PermuteBackwardV<'g, S>
 where
     S: Default + Permute<Output = S> + Add<Output = S>,
 {
@@ -20,11 +20,11 @@ impl<'g, S> Permute for &'g Variable<S>
 where
     S: 'g + Clone + Permute<Output = S>,
 {
-    type Output = Tensor<S, PermuteBackwardG<'g, S>>;
+    type Output = Tensor<S, PermuteBackwardV<'g, S>>;
     fn permute(self, dims: &[i32]) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().permute(dims),
-            func: PermuteBackwardG {
+            func: PermuteBackwardV {
                 grad: &self.grad,
                 dims: dims.argsort(),
             }
@@ -33,12 +33,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct PermuteBackwardF<F> {
+pub struct PermuteBackwardT<F> {
     func: F,
     dims: Vec<i32>,
 }
 
-impl<S, F> Backward<S> for PermuteBackwardF<F>
+impl<S, F> Backward<S> for PermuteBackwardT<F>
 where
     S: Permute<Output = S>,
     F: Backward<S>,
@@ -52,11 +52,11 @@ impl<S, F> Permute for Tensor<S, F>
 where
     S: Permute<Output = S>,
 {
-    type Output = Tensor<S, PermuteBackwardF<F>>;
+    type Output = Tensor<S, PermuteBackwardT<F>>;
     fn permute(self, dims: &[i32]) -> Self::Output {
         Tensor {
             data: self.data.permute(dims),
-            func: PermuteBackwardF {
+            func: PermuteBackwardT {
                 func: self.func,
                 dims: dims.argsort(),
             }

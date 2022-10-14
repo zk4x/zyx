@@ -44,11 +44,11 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SubBackwardVB<'g, S> {
+pub struct SubBackwardVS<'g, S> {
     xgrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for SubBackwardVB<'g, S>
+impl<'g, S> Backward<S> for SubBackwardVS<'g, S>
 where
     S: Default + Add<Output = S>,
 {
@@ -61,11 +61,11 @@ impl<'g, S> Sub<S> for &'g Variable<S>
 where
     S: 'g + Clone + Sub<Output = S>,
 {
-    type Output = Tensor<S, SubBackwardVB<'g, S>>;
+    type Output = Tensor<S, SubBackwardVS<'g, S>>;
     fn sub(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs,
-            func: SubBackwardVB {
+            func: SubBackwardVS {
                 xgrad: &self.grad,
             },
         }
