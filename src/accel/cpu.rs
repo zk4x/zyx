@@ -391,7 +391,7 @@ where
         let indexes_steps: Vec<usize> = self.shape.clone().into_iter().map(|dim| { dim_prod *= dim; n/dim_prod }).collect();
 
         for (i, x) in self.data.iter().enumerate() {
-            data[steps.iter().zip(indexes_steps.iter()).zip(self.shape.clone().into_iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
+            data[steps.iter().zip(indexes_steps.iter()).zip(self.shape.0.iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
         }
 
         Buffer {
@@ -550,20 +550,20 @@ where
 impl ops::MatMul for Buffer<f32> {
     type Output = Self;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let ndim = self.shape.len();
+        let ndim = self.shape.ndim();
         // TODO: support for operations on more than 2 dimensions
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != rhs.shape.len() {
+        if ndim != rhs.shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
         }
-        let m = self.shape.index(-2);
-        let k = self.shape.index(-1);
-        let n = rhs.shape.index(-1);
+        let m = self.shape[-2];
+        let k = self.shape[-1];
+        let n = rhs.shape[-1];
         let mut data = Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -575,7 +575,7 @@ impl ops::MatMul for Buffer<f32> {
 
         Buffer {
             data,
-            shape: vec![m, n],
+            shape: [m, n].shape(),
         }
     }
 }
@@ -584,19 +584,19 @@ impl ops::MatMul for Buffer<f32> {
 impl ops::MatMul for Buffer<f64> {
     type Output = Self;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let ndim = self.shape.len();
+        let ndim = self.shape.ndim();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != rhs.shape.len() {
+        if ndim != rhs.shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
         }
-        let m = self.shape.index(-2);
-        let k = self.shape.index(-1);
-        let n = rhs.shape.index(-1);
+        let m = self.shape[-2];
+        let k = self.shape[-1];
+        let n = rhs.shape[-1];
         let mut data = Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -608,7 +608,7 @@ impl ops::MatMul for Buffer<f64> {
 
         Buffer {
             data,
-            shape: vec![m, n],
+            shape: [m, n].shape(),
         }
     }
 }
@@ -617,19 +617,19 @@ impl ops::MatMul for Buffer<f64> {
 impl ops::MatMul for Buffer<f32> {
     type Output = Self;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let ndim = self.shape.len();
+        let ndim = self.shape.ndim();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != rhs.shape.len() {
+        if ndim != rhs.shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
         }
-        let m = self.shape.index(-2);
-        let k = self.shape.index(-1);
-        let n = rhs.shape.index(-1);
+        let m = self.shape[-2];
+        let k = self.shape[-1];
+        let n = rhs.shape[-1];
         let mut data = Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -646,7 +646,7 @@ impl ops::MatMul for Buffer<f32> {
 
         Buffer {
             data,
-            shape: vec![m, n],
+            shape: [m, n].shape(),
         }
     }
 }
@@ -655,19 +655,19 @@ impl ops::MatMul for Buffer<f32> {
 impl ops::MatMul for Buffer<f64> {
     type Output = Self;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let ndim = self.shape.len();
+        let ndim = self.shape.ndim();
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != rhs.shape.len() {
+        if ndim != rhs.shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape.index(-1) != rhs.shape.index(-2) {
+        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
         }
-        let m = self.shape.index(-2);
-        let k = self.shape.index(-1);
-        let n = rhs.shape.index(-1);
+        let m = self.shape[-2];
+        let k = self.shape[-1];
+        let n = rhs.shape[-1];
         let mut data = Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -684,7 +684,7 @@ impl ops::MatMul for Buffer<f64> {
 
         Buffer {
             data,
-            shape: vec![m, n],
+            shape: [m, n].shape(),
         }
     }
 }

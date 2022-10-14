@@ -2,7 +2,6 @@
 //! 
 //! [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 //! [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
-//! [![Repository](https://github.com/zk4x/zyx/badge.svg)](https://github.com/zk4x/zyx)
 //! 
 //! Zyx is open source tensor library. It defines struct Variable that adds gradient to any datatype.
 //! Provided is multidimensional array accel::cpu::Buffer that can optionally use matrixmultiply
@@ -34,7 +33,8 @@
 //! let x = Buffer::uniform((2, 3, 2, 3), -1., 1.).with_grad();
 //! let y = Buffer::<f32>::randn((2, 3, 3, 4)).with_grad();
 //! 
-//! x.matmul(&y).sum(()).backward();
+//! let z = x.matmul(&y).sum(());
+//! z.backward();
 //! 
 //! println!("{}", x.grad());
 //! println!("{}", y.grad());
@@ -46,8 +46,9 @@
 //! use zyx::prelude::*;
 //! 
 //! let x = 3_f32.with_grad();
-//! let y = 5_f32;
-//! (&x + y).relu().backward();
+//! let y = 5.;
+//! let z = (&x + y).relu();
+//! z.backward();
 //! println!("{}", x.grad());
 //! ```
 //! 
@@ -58,9 +59,9 @@
 //! ## Important
 //! 
 //! Not all features are yet implemented and not all tests are written.
-//! Therefore this library can not be considered stable yet.
-//! Convolution is in the works.
-//! With that said, the most important stuff is implemented and working as intended.
+//! Therefore this library can not be considered stable yet, but we are getting closer to stable release as the main API is not gonna change much anymore.
+//! Preliminary support for convolution is done.
+//! Most stuff is implemented and working as intended.
 //! 
 //! ## How to orient yourself in the library
 //! 
@@ -101,7 +102,7 @@
 //! 
 //! This module contains traits needed for simple definition of neural network models.
 //! Basically all functions and layers and models should have module.forward(input) function and this module also provides input.apply(module) function.
-//! It is deemed usefull for the user to have access to both standard module.forward(input) type of API and API with monads.
+//! We think it is usefull for the user to have access to both standard module.forward(input) type of API and API with monads.
 //! 
 //! ### shape
 //! 
@@ -111,7 +112,7 @@
 //! 
 //! ### nn
 //! 
-//! This is module, which is expected to get most stuff added. This module will contain functors, layers, models, cells, simply averything that can have .forward(input) function.
+//! This is module, which is expected to get most stuff added. This module will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //! 
 //! ## init
 //! 

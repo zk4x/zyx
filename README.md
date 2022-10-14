@@ -30,10 +30,10 @@ For examples of linear and recurrent neural networks, look at examples directory
 use zyx::prelude::*;
 use zyx::accel::cpu::Buffer;
 
-let x = Buffer::uniform(&[2, 3, 2, 3], -1., 1.).with_grad();
-let y = Buffer::<f32>::randn(&[2, 3, 3, 4]).with_grad();
+let x = Buffer::uniform((2, 3, 2, 3), -1., 1.).with_grad();
+let y = Buffer::<f32>::randn((2, 3, 3, 4)).with_grad();
 
-let z = x.matmul(&y).sum(&[]);
+let z = x.matmul(&y).sum(());
 z.backward();
 
 println!("{}", x.grad());

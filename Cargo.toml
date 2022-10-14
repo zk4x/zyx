@@ -27,3 +27,6 @@ blas-src = { version = "0.8", features = ["blis"], optional = true }
 [features]
 matrixmultiply = ["dep:matrixmultiply"]
 cblas = ["dep:cblas-sys", "dep:blas-src"]
+
+[build]
+rustflags = ["-C", "link-args=-lblas,-rpath=."]
