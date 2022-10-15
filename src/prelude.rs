@@ -5,6 +5,6 @@ pub use crate::{
     module::{ModuleParams, Module, Apply},
     shape::{IntoShape, IntoDims},
     optim::Optimizer,
-    init::{RandInit, UniformInit},
+    init::{EyeInit, RandInit, UniformInit},
     tensor::IntoVariable
 };

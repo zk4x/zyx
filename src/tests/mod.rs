@@ -24,6 +24,18 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
 #[cfg(feature = "ndarray")]
 #[test]
 fn ndarray() {
+    use crate::prelude::*;
+    use ndarray::Array;
+    use crate::accel::cpu::Buffer;
+
+    let x = Array::<f32, _>::eye(4).with_grad();
+    //let x = x.sum((1));
+    println!("{}", x);
+
+    let x = Buffer::<f32>::eye(4);
+    println!("{}", x);
+
+    //panic!();
     /*use crate::prelude::*;
     use ndarray::array;
 

@@ -1,5 +1,5 @@
-use crate::{ops::{self, IntoVec, FromVec}, shape::{IntoShape, Shape}};
-use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr};
+use crate::{ops::{self, IntoVec, FromVec}, shape::{IntoShape, IntoDims, Shape}};
+use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis};
 use num_traits::identities::{Zero, One};
 
 impl<T, D> ops::GetShape for ArrayBase<T, D>
@@ -189,5 +189,21 @@ where
     type Output = Self;
     fn tanh(self) -> Self::Output {
         self.map(|x| x.clone().tanh())
+    }
+}
+
+impl<T, D> ops::Sum for ArrayBase<OwnedRepr<T>, D>
+where
+    D: Dimension<Smaller = D> + RemoveAxis,
+    T: Clone + Zero,
+{
+    type Output = Self;
+    fn sum(self, dims: impl IntoDims) -> Self::Output {
+        let dims = dims.dims();
+        let mut res = self;
+        for dim in dims.into_iter() {
+            res = res.sum_axis(Axis(dim as usize));
+        }
+        res
     }
 }
