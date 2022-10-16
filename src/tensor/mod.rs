@@ -168,13 +168,6 @@ where
     }
 }
 
-/// Drop Tensor's gradient function
-impl<S, GradFn> Tensor<S, GradFn> {
-    pub fn detach(self) -> S {
-        self.data
-    }
-}
-
 /// Access Variable's data buffer
 impl<S> Variable<S> {
     pub fn data(&self) -> Ref<S> {

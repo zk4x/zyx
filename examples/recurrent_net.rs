@@ -30,13 +30,18 @@ fn main() {
     for i in 0..30000 {
         let i_f32 = i as f32;
         let data = vec![i_f32*1., i_f32*2., i_f32*3.];
+
         let y = cpu::Buffer::from_vec(data.iter().map(|x| (*x as f32).sin()).collect(), (1, input_size));
         let x = cpu::Buffer::from_vec(data, (1, input_size));
-        // Don't forget to call .detach() on your hidden state to get just Buffer without graph
-        hidden_state = rnn_net.forward((x, hidden_state.clone())).detach();
-        let y_predicted = net2.forward(hidden_state.clone());
+
+        let hidden_state_t1 = rnn_net.forward((x, hidden_state.clone()));
+        // Don't forget to get data on your hidden state to get just Buffer without graph
+        hidden_state = hidden_state_t1.data().clone();
+
+        let y_predicted = net2.forward(hidden_state_t1);
         let loss = mse_loss(y_predicted, y);
         loss.backward();
+
         optimizer.step();
         optimizer.zero_grad();
     }
