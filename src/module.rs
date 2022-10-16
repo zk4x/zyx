@@ -8,17 +8,32 @@
 
 use crate::tensor::Variable;
 
+/// # ModuleParams trait
+/// 
+/// Every module that stores some parameters should implement this trait.
+/// Also every module that can be used by optimizers must implement this trait.
+/// Thus this trait is implemented by most thing in zyx::nn, such as layers and functors.
 pub trait ModuleParams<'a, S> {
+    /// Get parameters of module
     fn parameters(&'a self) -> Vec<&'a Variable<S>>;
 }
 
+/// # Module trait
+/// 
+/// Module can be implemented for anything that can have forward function.
+/// Forward simply takes any input, applies some operation and returns output.
 pub trait Module<Input> {
+    /// Output of forward operation on Module
     type Output;
+    /// Forward operation on Module
     fn forward(self, x: Input) -> Self::Output;
 }
 
+/// Apply trait allows us to use monads
 pub trait Apply<Operation> {
+    /// Output of forward operation on Module
     type Output;
+    /// Forward operation on Module
     fn apply(self, x: Operation) -> Self::Output;
 }
 

@@ -61,6 +61,7 @@ use crate::shape::{IntoShape, IntoDims, Shape};
 // because it's foreign trait and it doesn't work
 // when T == Self
 pub trait ConvertFrom<T> {
+    /// Converts input into output type
     fn cfrom(x: T) -> Self;
 }
 
@@ -68,6 +69,7 @@ pub trait ConvertFrom<T> {
 /// 
 /// This trait is automatically implemented for everything that implements ConvertFrom
 pub trait ConvertInto<T> {
+    /// Converts input into output type
     fn cinto(self) -> T;
 }
 
@@ -84,6 +86,7 @@ where
 /// 
 /// Create new tensor initialized with zeros.
 pub trait Zeros {
+    /// Create new tensor initialized with zeros.
     fn zeros(shape: impl IntoShape) -> Self;
 }
 
@@ -91,6 +94,7 @@ pub trait Zeros {
 /// 
 /// Create new tensor initialized with ones.
 pub trait Ones {
+    /// Create new tensor initialized with ones.
     fn ones(shape: impl IntoShape) -> Self;
 }
 
@@ -98,8 +102,8 @@ pub trait Ones {
 /// 
 /// Returns values from tensor as a Vec. This accesses raw storage,
 /// with the buffer::Cpu it will have row major order.
-/// 
 pub trait IntoVec<T> {
+    /// Returns values from tensor as a Vec. This can access raw storage.
     fn to_vec(&self) -> Vec<T>;
 }
 
@@ -119,6 +123,7 @@ pub trait IntoVec<T> {
 ///  1 3]
 /// 
 pub trait FromVec<T> {
+    /// Create new tensor from Vec and Shape.
     fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self;
 }
 
@@ -134,6 +139,7 @@ pub trait FromVec<T> {
 /// assert_eq!(y, [3]);
 /// ```
 pub trait GetShape {
+    /// Get shape of input tensor.
     fn shape(&self) -> Shape;
 }
 
@@ -151,7 +157,9 @@ pub trait GetShape {
 /// assert_eq!(y, 1);
 /// ```
 pub trait ReLU {
+    /// Output of the ReLU operation.
     type Output;
+    /// Apply ReLU operation on given input.
     fn relu(self) -> Self::Output;
 }
 
@@ -168,7 +176,9 @@ pub trait ReLU {
 /// assert_eq!(y, 1)
 /// ```
 pub trait DReLU {
+    /// Output of the DReLU operation.
     type Output;
+    /// Apply DReLU operation on given input.
     fn drelu(self) -> Self::Output;
 }
 
@@ -184,7 +194,9 @@ pub trait DReLU {
 /// let y = x.exp();
 /// ```
 pub trait Exp {
+    /// Output of the Exp operation.
     type Output;
+    /// Apply Exp operation on given input.
     fn exp(self) -> Self::Output;
 }
 
@@ -200,7 +212,9 @@ pub trait Exp {
 /// let y = x.ln();
 /// ```
 pub trait Ln {
+    /// Output of the Ln operation.
     type Output;
+    /// Apply Ln operation on given input.
     fn ln(self) -> Self::Output;
 }
 
@@ -216,7 +230,9 @@ pub trait Ln {
 /// let y = x.tanh();
 /// ```
 pub trait Tanh {
+    /// Output of the Tanh operation.
     type Output;
+    /// Apply Tanh operation on given input.
     fn tanh(self) -> Self::Output;
 }
 
@@ -242,7 +258,9 @@ pub trait Tanh {
 /// ```
 /// 
 pub trait Sum {
+    /// Output of the Sum operation.
     type Output;
+    /// Apply Sum operation on given input.
     fn sum(self, dims: impl IntoDims) -> Self::Output;
 }
 
@@ -268,7 +286,9 @@ pub trait Sum {
 /// ```
 /// 
 pub trait Max {
+    /// Output of the Max operation.
     type Output;
+    /// Apply Max operation on given input.
     fn max(self, dims: impl IntoDims) -> Self::Output;
 }
 
@@ -294,7 +314,9 @@ pub trait Max {
 /// ```
 /// 
 pub trait Min {
+    /// Output of the Min operation.
     type Output;
+    /// Apply Min operation on given input.
     fn min(self, dims: impl IntoDims) -> Self::Output;
 }
 
@@ -326,7 +348,9 @@ pub trait Min {
 /// ```
 /// 
 pub trait Reshape {
+    /// Output of the Reshape operation.
     type Output;
+    /// Apply Reshape operation on given input.
     fn reshape(self, shape: impl IntoShape) -> Self::Output;
 }
 
@@ -355,7 +379,9 @@ pub trait Reshape {
 /// ```
 /// 
 pub trait Expand {
+    /// Output of the Expand operation.
     type Output;
+    /// Apply Expand operation on given input.
     fn expand(self, shape: impl IntoShape) -> Self::Output;
 }
 
@@ -384,7 +410,9 @@ pub trait Expand {
 /// ```
 /// 
 pub trait Permute {
+    /// Output of the Permute operation.
     type Output;
+    /// Apply Permute operation on given input.
     fn permute(self, dims: impl IntoDims) -> Self::Output;
 }
 
@@ -398,9 +426,14 @@ where
     fn slice(self, dims: SH) -> Self::Output;
 }*/
 
+/// # Transpose tensor
+///
 /// Transpose is a subset of permute.
+/// It is equivalent to x.permute((-1, -2))
 pub trait Transpose {
+    /// Output of the Transpose operation.
     type Output;
+    /// Apply Transpose operation on given input.
     fn transpose(self) -> Self::Output;
 }
 
@@ -421,7 +454,9 @@ where
 /// 
 /// Calculate the power of the input tensor to the given exponent tensor.
 pub trait Pow<Rhs = Self> {
+    /// Output of the Pow operation.
     type Output;
+    /// Apply Pow operation on given input.
     fn pow(self, rhs: Rhs) -> Self::Output;
 }
 
@@ -447,7 +482,9 @@ pub trait Pow<Rhs = Self> {
 /// ```
 /// 
 pub trait MatMul<Rhs = Self> {
+    /// Output of the MatMul operation.
     type Output;
+    /// Apply MatMul operation on given input.
     fn matmul(self, rhs: Rhs) -> Self::Output;
 }
 
@@ -458,6 +495,8 @@ pub trait MatMul<Rhs = Self> {
 /// 
 /// NOTE: This API is not yet stable and may be subject to change
 pub trait Conv<Kernel = Self> {
+    /// Output of the Conv operation.
     type Output;
+    /// Apply Conv operation on given input.
     fn conv(self, kernel: Kernel, padding: impl IntoShape) -> Self::Output;
 }

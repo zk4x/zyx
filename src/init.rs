@@ -5,7 +5,7 @@
 
 use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape};
 
-pub trait DType {}
+trait DType {}
 
 impl DType for f32 {}
 impl DType for f64 {}
@@ -41,6 +41,7 @@ impl DType for bool {}
 ///  0 0 1]
 /// ```
 pub trait EyeInit<T> {
+    /// Initialize tensor with eye matrix
     fn eye(n: usize) -> Self;
 }
 
@@ -76,6 +77,7 @@ where
 /// println!("{}", x);
 /// ```
 pub trait RandInit<T> {
+    /// Initialize tensor with random numbers
     fn randn(shape: impl IntoShape) -> Self;
 }
 
@@ -108,6 +110,7 @@ where
 /// println!("{}", x);
 /// ```
 pub trait UniformInit<T> {
+    /// Initialize tensor with random numbers from uniform distribution
     fn uniform(shape: impl IntoShape, low: T, high: T) -> Self;
 }
 

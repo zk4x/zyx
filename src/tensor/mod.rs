@@ -105,18 +105,18 @@ where
     }
 }
 
-/// # Variable backward
-/// 
-/// Calls backward function on Variable.
-/// This results in Variable's gradient being increased by one.
-/// 
-/// ```txt
-/// x.grad += Buffer::ones();
-/// ```
 impl<S> Variable<S>
 where
     S: Default + crate::ops::Ones + std::ops::Add<Output = S> + GetShape,
 {
+    /// # Variable backward
+    /// 
+    /// Calls backward function on Variable.
+    /// This results in Variable's gradient being increased by one.
+    /// 
+    /// ```txt
+    /// x.grad += Buffer::ones();
+    /// ```
     pub fn backward(&self) {
         self.grad
             .replace_take(|grad| grad + S::ones(self.data().shape()));
@@ -127,19 +127,19 @@ where
 /// 
 /// This trait is implemented by all functions that allow us to calculate gradients.
 pub trait Backward<S> {
+    /// Calls backward on a grad_fn, passing calculated output's gradient as parameter.
     fn backward(self, res_grad: S);
 }
-
-/// # Tensor backward
-/// 
-/// Calls backward function on Tensor.
-/// Computes gradient of all Variables that were used as inputs to operations that resulted in creation of this tensor.
-/// This function accumulates gradients in those Variables. If you want to clear Variables gradients, call .zero_grad().
 impl<S, F> Tensor<S, F>
 where
     S: crate::ops::Ones + GetShape,
     F: Backward<S>,
 {
+    /// # Tensor backward
+    /// 
+    /// Calls backward function on Tensor.
+    /// Computes gradient of all Variables that were used as inputs to operations that resulted in creation of this tensor.
+    /// This function accumulates gradients in those Variables. If you want to clear Variables gradients, call .zero_grad().
     pub fn backward(self) {
         let shape = self.data.shape();
         // NOTE: right now backward call is recursive
@@ -148,7 +148,9 @@ where
     }
 }
 
+/// Turn any datatype into Variable.
 pub trait IntoVariable {
+    /// Calling this functino turns input into Variable adding gradient in the process.
     fn with_grad(self) -> Variable<Self>
     where
         Self: Sized;
@@ -168,29 +170,29 @@ where
     }
 }
 
-/// Access Variable's data buffer
 impl<S> Variable<S> {
+    /// Access Variable's data buffer
     pub fn data(&self) -> Ref<S> {
         self.data.borrow()
     }
 }
 
-/// Access Tensor's data buffer
 impl<S, GradFn> Tensor<S, GradFn> {
+    /// Access Tensor's data buffer
     pub fn data(&self) -> &S {
         &self.data
     }
 }
 
-/// Access Buffer's grad buffer
 impl<S> Variable<S> {
+    /// Access Tensor's grad buffer
     pub fn grad(&self) -> Ref<S> {
         self.grad.borrow()
     }
 }
 
-/// Access Buffer's backward function
 impl<S, GradFn> Tensor<S, GradFn> {
+    /// Access Tensor's backward function
     pub fn grad_fn(&self) -> &GradFn {
         &self.grad_fn
     }
@@ -214,10 +216,10 @@ where
     }
 }
 
-/// Add custom FnOnce closure that will receive Buffer's gradient during backward pass
-/// The hook is stored in the result, so make sure to do all operations on this result,
-/// otherwise your hook will not be called.
 impl<S> Variable<S> {
+    /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass.
+    /// The hook is stored in the result, so make sure to do all operations on this result,
+    /// otherwise your hook will not be called.
     pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> Tensor<S, GradHookV<'g, S, HOOK>>
     where
         S: 'g + Clone,
@@ -252,10 +254,10 @@ where
     }
 }
 
-/// Add custom FnOnce closure that will receive Buffer's gradient during backward pass
-/// The hook is stored in the result, so make sure to do all operations on this result,
-/// otherwise your hook will not be called.
 impl<S, GradFn> Tensor<S, GradFn> {
+    /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass
+    /// The hook is stored in the result, so make sure to do all operations on this result,
+    /// otherwise your hook will not be called.
     pub fn register_hook<HOOK>(self, hook: HOOK) -> Tensor<S, GradHookT<GradFn, HOOK>>
     where
         HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
@@ -285,11 +287,11 @@ where
     }
 }
 
-/// Fill Variable's gradient with zeros.
 impl<S> Variable<S>
 where
     S: Default,
 {
+    /// Fill Variable's gradient with zeros.
     pub fn zero_grad(&self) {
         self.grad.replace(S::default());
     }

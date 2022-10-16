@@ -2,9 +2,10 @@
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
 
-use crate::{module::Module, ops, ops::MatMul, tensor::Variable, prelude::ModuleParams, init::UniformInit};
+use crate::{module::Module, ops, ops::MatMul, tensor::Variable, prelude::{ModuleParams, IntoDims}, init::UniformInit};
 use std::ops::Add;
 
+/// ReLU operation
 #[derive(Debug)]
 pub struct ReLU;
 
@@ -24,6 +25,7 @@ impl<'a, S> ModuleParams<'a, S> for ReLU {
     }
 }
 
+/// Exp operation
 #[derive(Debug)]
 pub struct Exp;
 
@@ -43,6 +45,7 @@ impl<'a, S> ModuleParams<'a, S> for Exp {
     }
 }
 
+/// Ln operation
 #[derive(Debug)]
 pub struct Ln;
 
@@ -62,6 +65,7 @@ impl<'a, S> ModuleParams<'a, S> for Ln {
     }
 }
 
+/// Tanh operation
 #[derive(Debug)]
 pub struct Tanh;
 
@@ -81,6 +85,7 @@ impl<'a, S> ModuleParams<'a, S> for Tanh {
     }
 }
 
+/// Sigmoid operation
 #[derive(Debug)]
 pub struct Sigmoid;
 
@@ -103,69 +108,94 @@ impl<'a, S> ModuleParams<'a, S> for Sigmoid {
     }
 }
 
+/// Sum operation
 #[derive(Debug)]
-pub struct Sum<'a> {
-    pub dims: &'a [i32],
+pub struct Sum<D>
+where
+    D: IntoDims,
+{
+    /// Dimensions to sum
+    pub dims: D,
 }
 
-impl<'a, Input> Module<Input> for &Sum<'a>
+impl<Input, D> Module<Input> for &Sum<D>
 where
     Input: ops::Sum,
+    D: IntoDims + Clone,
 {
     type Output = Input::Output;
     fn forward(self, x: Input) -> Self::Output {
-        x.sum(self.dims)
+        x.sum(self.dims.clone())
     }
 }
 
-impl<'a, S> ModuleParams<'a, S> for Sum<'a> {
+impl<'a, S, D> ModuleParams<'a, S> for Sum<D>
+where
+    D: IntoDims,
+{
     fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
 
+/// Max operation
 #[derive(Debug)]
-pub struct Max<'a> {
-    pub dims: &'a [i32],
+pub struct Max<D>
+where
+    D: IntoDims,
+{
+    /// Dimensions to max
+    pub dims: D,
 }
 
-impl<'a, Input> Module<Input> for &Max<'a>
+impl<Input, D> Module<Input> for &Max<D>
 where
     Input: ops::Max,
+    D: IntoDims + Clone,
 {
     type Output = Input::Output;
     fn forward(self, x: Input) -> Self::Output {
-        x.max(self.dims)
+        x.max(self.dims.clone())
     }
 }
 
-impl<'a, S> ModuleParams<'a, S> for Max<'a> {
+impl<'a, S, D> ModuleParams<'a, S> for Max<D>
+where
+    D: IntoDims,
+{
     fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
 
+/// Min operation
 #[derive(Debug)]
-pub struct Min<'a> {
-    pub dims: &'a [i32],
+pub struct Min<D> {
+    /// Dimensions to min
+    pub dims: D,
 }
 
-impl<'a, Input> Module<Input> for &Min<'a>
+impl<Input, D> Module<Input> for &Min<D>
 where
     Input: ops::Min,
+    D: IntoDims + Clone,
 {
     type Output = Input::Output;
     fn forward(self, x: Input) -> Self::Output {
-        x.min(self.dims)
+        x.min(self.dims.clone())
     }
 }
 
-impl<'a, S> ModuleParams<'a, S> for Min<'a> {
+impl<'a, S, D> ModuleParams<'a, S> for Min<D>
+where
+    D: IntoDims,
+{
     fn parameters(&self) -> Vec<&'a Variable<S>> {
         Vec::new()
     }
 }
 
+/// Linear layer
 #[derive(Debug)]
 pub struct Linear<S> {
     w: Variable<S>,
@@ -173,6 +203,7 @@ pub struct Linear<S> {
 }
 
 impl<S> Linear<S> {
+    /// Create new Linear layer with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
         S: ops::FromVec<T> + ops::Zeros,
@@ -202,6 +233,7 @@ impl<'a, S> ModuleParams<'a, S> for Linear<S> {
     }
 }
 
+/// RNNCell
 pub struct RNNCell<S> {
     wih: Variable<S>,
     bih: Variable<S>,
@@ -210,6 +242,7 @@ pub struct RNNCell<S> {
 }
 
 impl<S> RNNCell<S> {
+    /// Create new RNNCell with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
         S: ops::FromVec<T> + ops::Zeros,

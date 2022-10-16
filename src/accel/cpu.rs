@@ -11,6 +11,10 @@ use std::ops::{Add, Mul};
 // because tensor::Variable ensures that it will not be mutated in wrong ways
 // If needed, Rc can be change to Arc and RefCell to Mutex/RwLock
 // Though for now everything is hard copy.
+/// Generic multidimensional buffer
+/// 
+/// Each buffer has a shape and data stored in vec.
+/// Data is stored in row major order.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Buffer<T> {
     shape: Shape,
@@ -18,11 +22,13 @@ pub struct Buffer<T> {
 }
 
 impl<T> Buffer<T> {
+    /// Get buffers estimated memory size
     pub fn est_mem_size(&self) -> usize {
         self.data.len() * std::mem::size_of::<T>() + self.shape.ndim() * std::mem::size_of::<usize>()
     }
 }
 
+/// Convert between Buffers with different datatypes
 impl<T, T2> ops::ConvertFrom<Buffer<T2>> for Buffer<T>
 where
     T: From<T2> + Send,
@@ -37,6 +43,7 @@ where
     }
 }
 
+/// Display Buffer
 impl<T> std::fmt::Display for Buffer<T>
 where
     T: std::fmt::Display
@@ -88,6 +95,8 @@ where
     }
 }
 
+/// Get Buffer represented as vector.
+/// It is flattened with row major order.
 impl<T> ops::IntoVec<T> for Buffer<T>
 where
     T: Clone,
@@ -97,6 +106,7 @@ where
     }
 }
 
+/// Create new Buffer from vec
 impl<T> ops::FromVec<T> for Buffer<T> {
     fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
         let shape = shape.shape();
@@ -108,12 +118,14 @@ impl<T> ops::FromVec<T> for Buffer<T> {
     }
 }
 
+/// Get Buffer's shape
 impl<T> ops::GetShape for Buffer<T> {
     fn shape(&self) -> Shape {
         self.shape.clone()
     }
 }
 
+/// Create new Buffer filled with zeros
 impl<T> ops::Zeros for Buffer<T>
 where
     T: Clone + ops::Zeros,
@@ -128,6 +140,7 @@ where
     }
 }
 
+/// Create new Buffer filled with ones
 impl<T> ops::Ones for Buffer<T>
 where
     T: Clone + ops::Ones,

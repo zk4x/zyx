@@ -9,18 +9,31 @@
 use crate::ops::{Permute, IntoVec};
 use std::ops::Range;
 
+/// Turn datatype into Shape
+/// 
+/// This trait is umplemented for tuples, vec and arrays of usize.
 pub trait IntoShape {
+    /// Turn input into Shape
     fn shape(self) -> Shape;
 }
 
+
+/// Turn datatype into Dims
+/// 
+/// This trait is umplemented for tuples, vec and arrays of i32.
 pub trait IntoDims {
+    /// Turn input into Dims
     fn dims(self) -> Dims;
 }
 
+/// # Shape
+/// 
+/// Stores size of dimensions of multidimensional data structures.
 #[derive(Debug, Default, Clone, Eq, PartialOrd, Ord)]
 pub struct Shape(pub(crate) Vec<usize>);
 
 impl Shape {
+    /// Get Shape strides
     pub fn strides(&self) -> Shape {
         let mut product = 1;
         let mut res = vec![0; self.ndim()];
@@ -31,20 +44,25 @@ impl Shape {
         Shape(res)
     }
 
+    /// Returns the indices that sort Shape in ascending order
     pub fn argsort(&self) -> Dims {
         let mut indices: Vec<i32> = (0..self.ndim() as i32).collect();
         indices.sort_by_key(|&i| &self[i as usize]);
         Dims(indices)
     }
 
+    /// Get Shape number of elements.
+    /// This is just a product of all Shape's dimensions.
     pub fn numel(&self) -> usize {
         self.0.iter().product()
     }
 
+    /// Get number of Shape's dimensions.
     pub fn ndim(&self) -> usize {
         self.0.len()
     }
 
+    /// Check if the shape is empty
     pub fn is_empty(&self) -> bool {
         self.numel() == 0
     }
@@ -128,10 +146,16 @@ impl ndarray::IntoDimension for Shape {
     type Dim: Dimension;
 }*/
 
+/// # Dims
+/// 
+/// Stores indices of dimensions of Shape.
+/// We pass this struct to operations like sum, max or permute.
+/// So we can also say this struct holds axes of Shapes or tensors.
 #[derive(Debug, Default, Clone, Eq, PartialOrd, Ord)]
 pub struct Dims(pub(crate) Vec<i32>);
 
 impl Dims {
+    /// Get strides of Dims.
     pub fn strides(&self) -> Dims {
         let mut product = 1;
         let mut res = vec![0; self.ndim()];
@@ -142,22 +166,22 @@ impl Dims {
         Dims(res)
     }
 
+    /// Returns the indices that sort Dims in ascending order.
     pub fn argsort(&self) -> Dims {
         let mut indices: Vec<i32> = (0..self.ndim() as i32).collect();
         indices.sort_by_key(|&i| &self[i]);
         Dims(indices)
     }
 
-    pub fn numel(&self) -> usize {
-        self.0.iter().product::<i32>() as usize
-    }
-
+    /// Get number of dimensions/axes stored in Dims.
     pub fn ndim(&self) -> usize {
         self.0.len()
     }
 
+    /// Check if dims are empty.
+    /// Unlike Shape, this function only returns true if there are no values stored in Dims.
     pub fn is_empty(&self) -> bool {
-        self.numel() == 0
+        self.0.is_empty()
     }
 }
 
