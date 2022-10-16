@@ -24,7 +24,7 @@ where
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data().clone().ln(),
-            func: LnBackwardV {
+            grad_fn: LnBackwardV {
                 grad: &self.grad,
                 data: self.data().clone(),
             },
@@ -34,7 +34,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct LnBackwardT<S, F> {
-    func: F,
+    grad_fn: F,
     data: S,
 }
 
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad * self.data.pow(-S::ones([1])));
+        self.grad_fn.backward(res_grad * self.data.pow(-S::ones([1])));
     }
 }
 
@@ -56,8 +56,8 @@ where
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data.clone().ln(),
-            func: LnBackwardT {
-                func: self.func,
+            grad_fn: LnBackwardT {
+                grad_fn: self.grad_fn,
                 data: self.data,
             }
         }

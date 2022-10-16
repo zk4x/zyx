@@ -25,7 +25,7 @@ where
         let data = (*self.data()).clone().tanh();
         Tensor {
             data: data.clone(),
-            func: TanhBackwardV {
+            grad_fn: TanhBackwardV {
                 grad: &self.grad,
                 data,
             }
@@ -35,7 +35,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct TanhBackwardT<S, F> {
-    func: F,
+    grad_fn: F,
     data: S,
 }
 
@@ -45,7 +45,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad * (-self.data.pow(S::ones([1]) + S::ones([1])) + S::ones([1])));
+        self.grad_fn.backward(res_grad * (-self.data.pow(S::ones([1]) + S::ones([1])) + S::ones([1])));
     }
 }
 
@@ -58,8 +58,8 @@ where
         let data = self.data.tanh();
         Tensor {
             data: data.clone(),
-            func: TanhBackwardT {
-                func: self.func,
+            grad_fn: TanhBackwardT {
+                grad_fn: self.grad_fn,
                 data,
             },
         }

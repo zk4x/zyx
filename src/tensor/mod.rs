@@ -72,7 +72,7 @@ pub struct Variable<S> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tensor<S, GradFn> {
     data: S,
-    func: GradFn, // Cell needed for .backward() freeing of buffers by making func None
+    grad_fn: GradFn,
 }
 
 /// # Display Variable
@@ -100,7 +100,7 @@ where
     GradFn: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&format!("{} with_func {:?}", self.data, self.func,))
+        f.write_str(&format!("{} with_func {:?}", self.data, self.grad_fn,))
     }
 }
 
@@ -127,7 +127,7 @@ where
         let shape = self.data.shape();
         // NOTE: right now backward call is recursive
         // shall this pose a problem, we can switch to iterative version
-        self.func.backward(S::ones(shape));
+        self.grad_fn.backward(S::ones(shape));
     }
 }
 
@@ -182,7 +182,7 @@ impl<S> Variable<S> {
 /// Access Buffer's backward function
 impl<S, GradFn> Tensor<S, GradFn> {
     pub fn grad_fn(&self) -> &GradFn {
-        &self.func
+        &self.grad_fn
     }
 }
 
@@ -214,7 +214,7 @@ impl<S> Variable<S> {
     {
         Tensor {
             data: (*self.data()).clone(),
-            func: GradHookV {
+            grad_fn: GradHookV {
                 grad: &self.grad,
                 hook,
             },
@@ -224,7 +224,7 @@ impl<S> Variable<S> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GradHookT<GradFn, HOOK> {
-    func: GradFn,
+    grad_fn: GradFn,
     hook: HOOK,
 }
 
@@ -236,7 +236,7 @@ where
 {
     fn backward(self, res_grad: S) {
         (self.hook)(res_grad.clone());
-        self.func.backward(res_grad);
+        self.grad_fn.backward(res_grad);
     }
 }
 
@@ -250,8 +250,8 @@ impl<S, GradFn> Tensor<S, GradFn> {
     {
         Tensor {
             data: self.data,
-            func: GradHookT {
-                func: self.func,
+            grad_fn: GradHookT {
+                grad_fn: self.grad_fn,
                 hook,
             },
         }
@@ -307,7 +307,7 @@ where
     fn cfrom(x: Tensor<S2, GradFn>) -> Self {
         Self {
             data: S::cfrom(x.data),
-            func: x.func,
+            grad_fn: x.grad_fn,
         }
     }
 }

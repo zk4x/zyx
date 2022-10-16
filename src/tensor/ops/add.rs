@@ -29,7 +29,7 @@ where
     fn add(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.0 + rhs.data().clone(),
-            func: AddBackwardSV {
+            grad_fn: AddBackwardSV {
                 ygrad: &rhs.grad,
             }
         }
@@ -44,7 +44,7 @@ where
     fn add(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.0 + rhs.data,
-            func: rhs.func,
+            grad_fn: rhs.grad_fn,
         }
     }
 }
@@ -71,7 +71,7 @@ where
     fn add(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data().clone() + rhs,
-            func: AddBackwardVS {
+            grad_fn: AddBackwardVS {
                 xgrad: &self.grad,
             }
         }
@@ -102,7 +102,7 @@ where
     fn add(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data().clone() + rhs.data().clone(),
-            func: AddBackwardVV {
+            grad_fn: AddBackwardVV {
                 xgrad: &self.grad,
                 ygrad: &rhs.grad,
             }
@@ -113,7 +113,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVT<'g, S, YF> {
     xgrad: &'g RefCell<S>,
-    yfunc: YF,
+    ygrad_fn: YF,
 }
 
 impl<'g, S, YF> Backward<S> for AddBackwardVT<'g, S, YF>
@@ -123,7 +123,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + res_grad.clone());
-        self.yfunc.backward(res_grad);
+        self.ygrad_fn.backward(res_grad);
     }
 }
 
@@ -135,9 +135,9 @@ where
     fn add(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.data().clone() + rhs.data,
-            func: AddBackwardVT {
+            grad_fn: AddBackwardVT {
                 xgrad: &self.grad,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
             }
         }
     }
@@ -151,14 +151,14 @@ where
     fn add(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data + rhs,
-            func: self.func,
+            grad_fn: self.grad_fn,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTV<'g, S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     ygrad: &'g RefCell<S>,
 }
 
@@ -169,7 +169,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad + res_grad.clone());
-        self.xfunc.backward(res_grad);
+        self.xgrad_fn.backward(res_grad);
     }
 }
 
@@ -181,8 +181,8 @@ where
     fn add(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data + rhs.data().clone(),
-            func: AddBackwardTV {
-                xfunc: self.func,
+            grad_fn: AddBackwardTV {
+                xgrad_fn: self.grad_fn,
                 ygrad: &rhs.grad,
             },
         }
@@ -191,8 +191,8 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTT<XF, YF> {
-    xfunc: XF,
-    yfunc: YF,
+    xgrad_fn: XF,
+    ygrad_fn: YF,
 }
 
 impl<S, XF, YF> Backward<S> for AddBackwardTT<XF, YF>
@@ -206,8 +206,8 @@ where
         // by value and potentially doing operations in place are bigger than this copy
         // (at least hope so), if not, this will be changed, also, the buffer can implement
         // reference counting
-        self.xfunc.backward(res_grad.clone());
-        self.yfunc.backward(res_grad);
+        self.xgrad_fn.backward(res_grad.clone());
+        self.ygrad_fn.backward(res_grad);
     }
 }
 
@@ -219,9 +219,9 @@ where
     fn add(self, rhs: Tensor<S, YF>) -> Self::Output {
         Tensor {
             data: self.data + rhs.data,
-            func: AddBackwardTT {
-                xfunc: self.func,
-                yfunc: rhs.func,
+            grad_fn: AddBackwardTT {
+                xgrad_fn: self.grad_fn,
+                ygrad_fn: rhs.grad_fn,
             }
         }
     }

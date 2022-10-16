@@ -26,7 +26,7 @@ where
     fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.0.clone() * rhs.data().clone(),
-            func: MulBackwardSV {
+            grad_fn: MulBackwardSV {
                 xdata: self.0,
                 ygrad: &rhs.grad,
             }
@@ -37,7 +37,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct MulBackwardST<S, YF> {
     xdata: S,
-    yfunc: YF,
+    ygrad_fn: YF,
 }
 
 impl<S, YF> Backward<S> for MulBackwardST<S, YF>
@@ -46,7 +46,7 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.yfunc.backward(self.xdata * res_grad);
+        self.ygrad_fn.backward(self.xdata * res_grad);
     }
 }
 
@@ -58,9 +58,9 @@ where
     fn mul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.0.clone() * rhs.data,
-            func: MulBackwardST {
+            grad_fn: MulBackwardST {
                 xdata: self.0,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
             },
         }
     }
@@ -89,7 +89,7 @@ where
     fn mul(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data().clone() * rhs.clone(),
-            func: MulBackwardVS {
+            grad_fn: MulBackwardVS {
                 xgrad: &self.grad,
                 ydata: rhs,
             }
@@ -123,7 +123,7 @@ where
     fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data().clone() * rhs.data().clone(),
-            func: MulBackwardVV {
+            grad_fn: MulBackwardVV {
                 xgrad: &self.grad,
                 xdata: self.data().clone(),
                 ygrad: &rhs.grad,
@@ -137,7 +137,7 @@ where
 pub struct MulBackwardVT<'g, S, YF> {
     xgrad: &'g RefCell<S>,
     xdata: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -148,7 +148,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + self.ydata * res_grad.clone());
-        self.yfunc.backward(self.xdata * res_grad);
+        self.ygrad_fn.backward(self.xdata * res_grad);
     }
 }
 
@@ -160,10 +160,10 @@ where
     fn mul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.data().clone() * rhs.data.clone(),
-            func: MulBackwardVT {
+            grad_fn: MulBackwardVT {
                 xgrad: &self.grad,
                 xdata: self.data().clone(),
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
         }
@@ -172,7 +172,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MulBackwardTS<S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     ydata: S,
 }
 
@@ -182,7 +182,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(self.ydata * res_grad);
+        self.xgrad_fn.backward(self.ydata * res_grad);
     }
 }
 
@@ -194,8 +194,8 @@ where
     fn mul(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data * rhs.clone(),
-            func: MulBackwardTS {
-                xfunc: self.func,
+            grad_fn: MulBackwardTS {
+                xgrad_fn: self.grad_fn,
                 ydata: rhs,
             },
         }
@@ -204,7 +204,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MulBackwardTV<'g, S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xdata: S,
     ygrad: &'g RefCell<S>,
     ydata: S,
@@ -218,7 +218,7 @@ where
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad + self.xdata * res_grad.clone());
         // this way it is tail recursive
-        self.xfunc.backward(self.ydata * res_grad);
+        self.xgrad_fn.backward(self.ydata * res_grad);
     }
 }
 
@@ -230,8 +230,8 @@ where
     fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data.clone() * rhs.data().clone(),
-            func: MulBackwardTV {
-                xfunc: self.func,
+            grad_fn: MulBackwardTV {
+                xgrad_fn: self.grad_fn,
                 xdata: self.data,
                 ygrad: &rhs.grad,
                 ydata: rhs.data().clone(),
@@ -242,9 +242,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MulBackwardTT<S, XF, YF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xdata: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -258,8 +258,8 @@ where
         // If res_grad is &S this is not a copy, but hey, advantages from passing S
         // by value and potentially doing operations in place are bigger than this copy
         // (at least hope so), if not, this will be changed
-        self.xfunc.backward(self.ydata * res_grad.clone());
-        self.yfunc.backward(self.xdata * res_grad);
+        self.xgrad_fn.backward(self.ydata * res_grad.clone());
+        self.ygrad_fn.backward(self.xdata * res_grad);
     }
 }
 
@@ -271,10 +271,10 @@ where
     fn mul(self, rhs: Tensor<S, YF>) -> Self::Output {
         Tensor {
             data: self.data.clone() * rhs.data.clone(),
-            func: MulBackwardTT {
-                xfunc: self.func,
+            grad_fn: MulBackwardTT {
+                xgrad_fn: self.grad_fn,
                 xdata: self.data,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
         }

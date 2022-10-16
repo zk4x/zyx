@@ -23,7 +23,7 @@ where
     fn neg(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().neg(),
-            func: NegBackwardV {
+            grad_fn: NegBackwardV {
                 grad: &self.grad,
             }
         }
@@ -32,7 +32,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct NegBackwardT<F> {
-    func: F,
+    grad_fn: F,
 }
 
 impl<S, F> Backward<S> for NegBackwardT<F>
@@ -41,7 +41,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(-res_grad);
+        self.grad_fn.backward(-res_grad);
     }
 }
 
@@ -54,8 +54,8 @@ where
     fn neg(self) -> Self::Output {
         Tensor {
             data: self.data.neg(),
-            func: NegBackwardT {
-                func: self.func,
+            grad_fn: NegBackwardT {
+                grad_fn: self.grad_fn,
             },
         }
     }

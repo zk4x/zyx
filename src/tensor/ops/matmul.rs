@@ -24,7 +24,7 @@ where
     fn matmul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.clone().matmul(rhs.data().clone()),
-            func: MatMulBackwardSV {
+            grad_fn: MatMulBackwardSV {
                 xdata: self,
                 ygrad: &rhs.grad,
             }
@@ -35,7 +35,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardST<S, F> {
     xdata: S,
-    yfunc: F,
+    ygrad_fn: F,
 }
 
 impl<S, F> Backward<S> for MatMulBackwardST<S, F>
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.yfunc.backward(self.xdata.transpose().matmul(res_grad));
+        self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -56,9 +56,9 @@ where
     fn matmul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.clone().matmul(rhs.data),
-            func: MatMulBackwardST {
+            grad_fn: MatMulBackwardST {
                 xdata: self,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
             }
         }
     }
@@ -87,7 +87,7 @@ where
     fn matmul(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data.borrow().clone().matmul(rhs.clone()),
-            func: MatMulBackwardVS {
+            grad_fn: MatMulBackwardVS {
                 xgrad: &self.grad,
                 ydata: rhs,
             }
@@ -121,7 +121,7 @@ where
     fn matmul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data().clone().matmul(rhs.data().clone()),
-            func: MatMulBackwardVV {
+            grad_fn: MatMulBackwardVV {
                 xgrad: &self.grad,
                 xdata: self.data().clone(),
                 ygrad: &rhs.grad,
@@ -135,7 +135,7 @@ where
 pub struct MatMulBackwardVT<'g, S, YF> {
     xgrad: &'g RefCell<S>,
     xdata: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -145,7 +145,7 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.yfunc.backward(self.xdata.transpose().matmul(res_grad.clone()));
+        self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad.clone()));
         self.xgrad.replace_take(|grad| grad + res_grad.transpose().matmul(self.ydata));
     }
 }
@@ -158,10 +158,10 @@ where
     fn matmul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.data().clone().matmul(rhs.data.clone()),
-            func: MatMulBackwardVT {
+            grad_fn: MatMulBackwardVT {
                 xgrad: &self.grad,
                 xdata: self.data().clone(),
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
         }
@@ -170,7 +170,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardTS<S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     ydata: S,
 }
 
@@ -180,7 +180,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(self.ydata.transpose().matmul(res_grad));
+        self.xgrad_fn.backward(self.ydata.transpose().matmul(res_grad));
     }
 }
 
@@ -192,8 +192,8 @@ where
     fn matmul(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data.matmul(rhs.clone()),
-            func: MatMulBackwardTS {
-                xfunc: self.func,
+            grad_fn: MatMulBackwardTS {
+                xgrad_fn: self.grad_fn,
                 ydata: rhs,
             }
         }
@@ -202,7 +202,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardTV<'g, S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xdata: S,
     ygrad: &'g RefCell<S>,
     ydata: S,
@@ -214,7 +214,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(res_grad.clone().matmul(self.ydata.transpose()));
+        self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
         self.ygrad.replace_take(|grad| grad + self.xdata.transpose().matmul(res_grad));
     }
 }
@@ -227,8 +227,8 @@ where
     fn matmul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data().clone()),
-            func: MatMulBackwardTV {
-                xfunc: self.func,
+            grad_fn: MatMulBackwardTV {
+                xgrad_fn: self.grad_fn,
                 xdata: self.data,
                 ygrad: &rhs.grad,
                 ydata: rhs.data().clone(),
@@ -239,9 +239,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardTT<S, XF, YF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xdata: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -252,8 +252,8 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(res_grad.clone().matmul(self.ydata.transpose()));
-        self.yfunc.backward(self.xdata.transpose().matmul(res_grad));
+        self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
+        self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -265,10 +265,10 @@ where
     fn matmul(self, rhs: Tensor<S, YF>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data.clone()),
-            func: MatMulBackwardTT {
-                xfunc: self.func,
+            grad_fn: MatMulBackwardTT {
+                xgrad_fn: self.grad_fn,
                 xdata: self.data,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
         }

@@ -25,7 +25,7 @@ where
         let res = self.clone().pow(rhs.data().clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardSV {
+            grad_fn: PowBackwardSV {
                 ygrad: &rhs.grad,
                 ytemp: res * self.ln(),
             }
@@ -35,7 +35,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardST<S, YF> {
-    yfunc: YF,
+    ygrad_fn: YF,
     ytemp: S,
 }
 
@@ -45,7 +45,7 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.yfunc.backward(res_grad * self.ytemp);
+        self.ygrad_fn.backward(res_grad * self.ytemp);
     }
 }
 
@@ -58,8 +58,8 @@ where
         let res = self.clone().pow(rhs.data);
         Tensor {
             data: res.clone(),
-            func: PowBackwardST {
-                yfunc: rhs.func,
+            grad_fn: PowBackwardST {
+                ygrad_fn: rhs.grad_fn,
                 ytemp: res * self.ln(),
             },
         }
@@ -90,7 +90,7 @@ where
         let res = self.data().clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardVS {
+            grad_fn: PowBackwardVS {
                 xgrad: &self.grad,
                 xtemp: rhs * res/self.data().clone(),
             }
@@ -125,7 +125,7 @@ where
         let res = self.data().clone().pow(rhs.data().clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardVV {
+            grad_fn: PowBackwardVV {
                 xgrad: &self.grad,
                 xtemp: rhs.data().clone() * res.clone()/self.data().clone(),
                 ygrad: &rhs.grad,
@@ -139,7 +139,7 @@ where
 pub struct PowBackwardVT<'g, S, YF> {
     xgrad: &'g RefCell<S>,
     xtemp: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ytemp: S,
 }
 
@@ -150,7 +150,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + self.xtemp * res_grad.clone());
-        self.yfunc.backward(res_grad * self.ytemp);
+        self.ygrad_fn.backward(res_grad * self.ytemp);
     }
 }
 
@@ -163,10 +163,10 @@ where
         let res = self.data().clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardVT {
+            grad_fn: PowBackwardVT {
                 xgrad: &self.grad,
                 xtemp: rhs.data * res.clone()/self.data().clone(),
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ytemp: res * self.data().clone().ln(),
             }
         }
@@ -175,7 +175,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardTS<S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xtemp: S,
 }
 
@@ -185,7 +185,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(self.xtemp * res_grad);
+        self.xgrad_fn.backward(self.xtemp * res_grad);
     }
 }
 
@@ -198,8 +198,8 @@ where
         let res = self.data.clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardTS {
-                xfunc: self.func,
+            grad_fn: PowBackwardTS {
+                xgrad_fn: self.grad_fn,
                 xtemp: rhs * res/self.data,
             },
         }
@@ -208,7 +208,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardTV<'g, S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xtemp: S,
     ygrad: &'g RefCell<S>,
     ytemp: S,
@@ -221,7 +221,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad + res_grad.clone() * self.ytemp);
-        self.xfunc.backward(self.xtemp * res_grad);
+        self.xgrad_fn.backward(self.xtemp * res_grad);
     }
 }
 
@@ -234,8 +234,8 @@ where
         let res = self.data.clone().pow(rhs.data().clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardTV {
-                xfunc: self.func,
+            grad_fn: PowBackwardTV {
+                xgrad_fn: self.grad_fn,
                 xtemp: rhs.data().clone() * res.clone()/self.data.clone(),
                 ygrad: &rhs.grad,
                 ytemp: res * self.data.ln(),
@@ -246,9 +246,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardTT<S, XF, YF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     xtemp: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ytemp: S,
 }
 
@@ -259,8 +259,8 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.yfunc.backward(self.ytemp * res_grad.clone());
-        self.xfunc.backward(self.xtemp * res_grad);
+        self.ygrad_fn.backward(self.ytemp * res_grad.clone());
+        self.xgrad_fn.backward(self.xtemp * res_grad);
     }
 }
 
@@ -273,10 +273,10 @@ where
         let res = self.data.clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
-            func: PowBackwardTT {
-                xfunc: self.func,
+            grad_fn: PowBackwardTT {
+                xgrad_fn: self.grad_fn,
                 xtemp: rhs.data().clone() * res.clone()/self.data.clone(),
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ytemp: res * self.data.ln(),
             }
         }

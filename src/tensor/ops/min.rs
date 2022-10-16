@@ -24,7 +24,7 @@ where
     fn min(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data.borrow()).clone().min(dims),
-            func: MinBackwardV {
+            grad_fn: MinBackwardV {
                 grad: &self.grad,
                 shape: self.data.borrow().shape(),
             }
@@ -34,7 +34,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct MinBackwardT<F> {
-    func: F,
+    grad_fn: F,
     shape: Shape,
 }
 
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.expand(self.shape));
+        self.grad_fn.backward(res_grad.expand(self.shape));
     }
 }
 
@@ -58,8 +58,8 @@ where
         let shape = self.data.shape();
         Tensor {
             data: self.data.min(dims),
-            func: MinBackwardT {
-                func: self.func,
+            grad_fn: MinBackwardT {
+                grad_fn: self.grad_fn,
                 shape,
             }
         }

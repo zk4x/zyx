@@ -28,7 +28,7 @@ where
         let res = self.0 / rhs.data().clone();
         Tensor {
             data: res.clone(),
-            func: DivBackwardSV {
+            grad_fn: DivBackwardSV {
                 res,
                 ygrad: &rhs.grad,
                 ydata: rhs.data().clone(),
@@ -40,7 +40,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardST<S, YF> {
     res: S,
-    yfunc: YF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -50,7 +50,7 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.yfunc.backward(-self.res / self.ydata * res_grad);
+        self.ygrad_fn.backward(-self.res / self.ydata * res_grad);
     }
 }
 
@@ -63,9 +63,9 @@ where
         let res = self.0 / rhs.data.clone();
         Tensor {
             data: res.clone(),
-            func: DivBackwardST {
+            grad_fn: DivBackwardST {
                 res,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             },
         }
@@ -95,7 +95,7 @@ where
     fn div(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data().clone() / rhs.clone(),
-            func: DivBackwardVS {
+            grad_fn: DivBackwardVS {
                 xgrad: &self.grad,
                 ydata: rhs,
             }
@@ -131,7 +131,7 @@ where
         let res = self.data().clone() / rhs.data().clone();
         Tensor {
             data: res.clone(),
-            func: DivBackwardVV {
+            grad_fn: DivBackwardVV {
                 xgrad: &self.grad,
                 res,
                 ygrad: &rhs.grad,
@@ -145,7 +145,7 @@ where
 pub struct DivBackwardVT<'g, S, YF> {
     res: S,
     xgrad: &'g RefCell<S>,
-    yfunc: YF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -157,7 +157,7 @@ where
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
         self.xgrad.replace_take(|grad| grad + temp.clone());
-        self.yfunc.backward(-self.res * temp);
+        self.ygrad_fn.backward(-self.res * temp);
     }
 }
 
@@ -170,10 +170,10 @@ where
         let res = self.data().clone() / rhs.data.clone();
         Tensor {
             data: res.clone(),
-            func: DivBackwardVT {
+            grad_fn: DivBackwardVT {
                 res,
                 xgrad: &self.grad,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
         }
@@ -182,7 +182,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardTS<S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     ydata: S,
 }
 
@@ -192,7 +192,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(res_grad / self.ydata);
+        self.xgrad_fn.backward(res_grad / self.ydata);
     }
 }
 
@@ -204,8 +204,8 @@ where
     fn div(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data / rhs.clone(),
-            func: DivBackwardTS {
-                xfunc: self.func,
+            grad_fn: DivBackwardTS {
+                xgrad_fn: self.grad_fn,
                 ydata: rhs,
             },
         }
@@ -215,7 +215,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardTV<'g, S, XF> {
     res: S,
-    xfunc: XF,
+    xgrad_fn: XF,
     ygrad: &'g RefCell<S>,
     ydata: S,
 }
@@ -228,7 +228,7 @@ where
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
         self.ygrad.replace_take(|grad| grad - self.res * temp.clone());
-        self.xfunc.backward(temp);
+        self.xgrad_fn.backward(temp);
     }
 }
 
@@ -241,9 +241,9 @@ where
         let res = self.data / rhs.data().clone();
         Tensor {
             data: res.clone(),
-            func: DivBackwardTV {
+            grad_fn: DivBackwardTV {
                 res,
-                xfunc: self.func,
+                xgrad_fn: self.grad_fn,
                 ygrad: &rhs.grad,
                 ydata: rhs.data().clone(),
             },
@@ -254,8 +254,8 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardTT<S, XF, YF> {
     res: S,
-    xfunc: XF,
-    yfunc: YF,
+    xgrad_fn: XF,
+    ygrad_fn: YF,
     ydata: S,
 }
 
@@ -270,8 +270,8 @@ where
         // by value and potentially doing operations in place are bigger than this copy
         // (at least hope so), if not, this will be changed
         let temp = res_grad / self.ydata;
-        self.xfunc.backward(temp.clone());
-        self.yfunc.backward(- self.res * temp);
+        self.xgrad_fn.backward(temp.clone());
+        self.ygrad_fn.backward(- self.res * temp);
     }
 }
 
@@ -284,10 +284,10 @@ where
         let res = self.data / rhs.data.clone();
         Tensor {
             data: res.clone(),
-            func: DivBackwardTT {
+            grad_fn: DivBackwardTT {
                 res,
-                xfunc: self.func,
-                yfunc: rhs.func,
+                xgrad_fn: self.grad_fn,
+                ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
         }

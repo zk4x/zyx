@@ -27,7 +27,7 @@ where
         let dims = Dims(self.data().shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());
         Tensor {
             data: (*self.data()).clone().expand(shape),
-            func: ExpandBackwardV {
+            grad_fn: ExpandBackwardV {
                 grad: &self.grad,
                 dims,
             }
@@ -37,7 +37,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardT<F> {
-    func: F,
+    grad_fn: F,
     dims: Vec<i32>,
 }
 
@@ -47,7 +47,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.max(self.dims));
+        self.grad_fn.backward(res_grad.max(self.dims));
     }
 }
 
@@ -62,8 +62,8 @@ where
         let dims = self.data.shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
         Tensor {
             data: self.data.expand(shape),
-            func: ExpandBackwardT {
-                func: self.func,
+            grad_fn: ExpandBackwardT {
+                grad_fn: self.grad_fn,
                 dims,
             },
         }

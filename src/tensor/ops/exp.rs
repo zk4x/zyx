@@ -25,7 +25,7 @@ where
         let data = (*self.data()).clone().exp();
         Tensor {
             data: data.clone(),
-            func: ExpBackwardV {
+            grad_fn: ExpBackwardV {
                 grad: &self.grad,
                 data,
             },
@@ -35,7 +35,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct ExpBackwardT<S, F> {
-    func: F,
+    grad_fn: F,
     data: S,
 }
 
@@ -45,7 +45,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad * self.data);
+        self.grad_fn.backward(res_grad * self.data);
     }
 }
 
@@ -58,8 +58,8 @@ where
         let data = self.data.exp();
         Tensor {
             data: data.clone(),
-            func: ExpBackwardT {
-                func: self.func,
+            grad_fn: ExpBackwardT {
+                grad_fn: self.grad_fn,
                 data,
             },
         }

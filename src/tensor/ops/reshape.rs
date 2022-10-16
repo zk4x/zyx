@@ -24,7 +24,7 @@ where
     fn reshape(self, shape: impl IntoShape) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().reshape(shape),
-            func: ReshapeBackwardV {
+            grad_fn: ReshapeBackwardV {
                 grad: &self.grad,
                 shape: self.data().shape(),
             }
@@ -34,7 +34,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct ReshapeBackwardT<F> {
-    func: F,
+    grad_fn: F,
     shape: Shape,
 }
 
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.reshape(self.shape));
+        self.grad_fn.backward(res_grad.reshape(self.shape));
     }
 }
 
@@ -57,8 +57,8 @@ where
         let shape = self.data.shape();
         Tensor {
             data: self.data.reshape(res_shape),
-            func: ReshapeBackwardT {
-                func: self.func,
+            grad_fn: ReshapeBackwardT {
+                grad_fn: self.grad_fn,
                 shape,
             }
         }

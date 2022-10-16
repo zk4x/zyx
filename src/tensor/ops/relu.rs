@@ -24,7 +24,7 @@ where
     fn relu(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().relu(),
-            func: ReLUBackwardV {
+            grad_fn: ReLUBackwardV {
                 grad: &self.grad,
                 data: (*self.data()).clone(),
             },
@@ -34,7 +34,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReLUBackwardT<S, F> {
-    func: F,
+    grad_fn: F,
     data: S,
 }
 
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad * self.data.drelu());
+        self.grad_fn.backward(res_grad * self.data.drelu());
     }
 }
 
@@ -56,8 +56,8 @@ where
     fn relu(self) -> Self::Output {
         Tensor {
             data: self.data.clone().relu(),
-            func: ReLUBackwardT {
-                func: self.func,
+            grad_fn: ReLUBackwardT {
+                grad_fn: self.grad_fn,
                 data: self.data,
             },
         }

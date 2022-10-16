@@ -25,7 +25,7 @@ where
         let dims = dims.dims();
         Tensor {
             data: self.data().clone().permute(dims.clone()),
-            func: PermuteBackwardV {
+            grad_fn: PermuteBackwardV {
                 grad: &self.grad,
                 dims: dims.argsort(),
             }
@@ -35,7 +35,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardT<F> {
-    func: F,
+    grad_fn: F,
     dims: Dims,
 }
 
@@ -45,7 +45,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.permute(self.dims));
+        self.grad_fn.backward(res_grad.permute(self.dims));
     }
 }
 
@@ -58,8 +58,8 @@ where
         let dims = dims.dims();
         Tensor {
             data: self.data.permute(dims.clone()),
-            func: PermuteBackwardT {
-                func: self.func,
+            grad_fn: PermuteBackwardT {
+                grad_fn: self.grad_fn,
                 dims: dims.argsort(),
             }
         }

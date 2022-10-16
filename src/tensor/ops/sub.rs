@@ -23,7 +23,7 @@ where
     fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.0 - rhs.data().clone(),
-            func: SubBackwardSV {
+            grad_fn: SubBackwardSV {
                 ygrad: &rhs.grad,
             },
         }
@@ -38,7 +38,7 @@ where
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.0 - rhs.data,
-            func: rhs.func,
+            grad_fn: rhs.grad_fn,
         }
     }
 }
@@ -65,7 +65,7 @@ where
     fn sub(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs,
-            func: SubBackwardVS {
+            grad_fn: SubBackwardVS {
                 xgrad: &self.grad,
             },
         }
@@ -96,7 +96,7 @@ where
     fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs.data().clone(),
-            func: SubBackwardVV {
+            grad_fn: SubBackwardVV {
                 xgrad: &self.grad,
                 ygrad: &rhs.grad,
             },
@@ -107,7 +107,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct SubBackwardVT<'g, S, YF> {
     xgrad: &'g RefCell<S>,
-    yfunc: YF,
+    ygrad_fn: YF,
 }
 
 impl<'g, S, YF> Backward<S> for SubBackwardVT<'g, S, YF>
@@ -117,7 +117,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + res_grad.clone());
-        self.yfunc.backward(-res_grad);
+        self.ygrad_fn.backward(-res_grad);
     }
 }
 
@@ -129,9 +129,9 @@ where
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs.data,
-            func: SubBackwardVT {
+            grad_fn: SubBackwardVT {
                 xgrad: &self.grad,
-                yfunc: rhs.func,
+                ygrad_fn: rhs.grad_fn,
             },
         }
     }
@@ -145,14 +145,14 @@ where
     fn sub(self, rhs: S) -> Self::Output {
         Tensor {
             data: self.data - rhs,
-            func: self.func,
+            grad_fn: self.grad_fn,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubBackwardTV<'g, S, XF> {
-    xfunc: XF,
+    xgrad_fn: XF,
     ygrad: &'g RefCell<S>,
 }
 
@@ -162,7 +162,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(res_grad.clone());
+        self.xgrad_fn.backward(res_grad.clone());
         self.ygrad.replace_take(|grad| grad - res_grad);
     }
 }
@@ -175,8 +175,8 @@ where
     fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
             data: self.data - rhs.data().clone(),
-            func: SubBackwardTV {
-                xfunc: self.func,
+            grad_fn: SubBackwardTV {
+                xgrad_fn: self.grad_fn,
                 ygrad: &rhs.grad,
             },
         }
@@ -185,8 +185,8 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubBackwardTT<XF, YF> {
-    xfunc: XF,
-    yfunc: YF,
+    xgrad_fn: XF,
+    ygrad_fn: YF,
 }
 
 impl<S, XF, YF> Backward<S> for SubBackwardTT<XF, YF>
@@ -196,8 +196,8 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xfunc.backward(-res_grad.clone());
-        self.yfunc.backward(res_grad);
+        self.xgrad_fn.backward(-res_grad.clone());
+        self.ygrad_fn.backward(res_grad);
     }
 }
 
@@ -209,9 +209,9 @@ where
     fn sub(self, rhs: Tensor<S, YF>) -> Self::Output {
         Tensor {
             data: self.data - rhs.data,
-            func: SubBackwardTT {
-                xfunc: self.func,
-                yfunc: rhs.func,
+            grad_fn: SubBackwardTT {
+                xgrad_fn: self.grad_fn,
+                ygrad_fn: rhs.grad_fn,
             },
         }
     }

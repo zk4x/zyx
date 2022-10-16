@@ -24,7 +24,7 @@ where
     fn sum(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().sum(dims),
-            func: SumBackwardV {
+            grad_fn: SumBackwardV {
                 grad: &self.grad,
                 shape: self.data().shape(),
             }
@@ -34,7 +34,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct SumBackwardT<F> {
-    func: F,
+    grad_fn: F,
     shape: Shape,
 }
 
@@ -44,7 +44,7 @@ where
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.func.backward(res_grad.expand(self.shape));
+        self.grad_fn.backward(res_grad.expand(self.shape));
     }
 }
 
@@ -57,8 +57,8 @@ where
         let shape = self.data.shape();
         Tensor {
             data: self.data.sum(dims),
-            func: SumBackwardT {
-                func: self.func,
+            grad_fn: SumBackwardT {
+                grad_fn: self.grad_fn,
                 shape,
             }
         }
