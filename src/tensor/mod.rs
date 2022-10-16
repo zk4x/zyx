@@ -1,9 +1,10 @@
-//! Description of generic Buffer types. All Buffers are immutable!
+//! Description of generic tensor types. All tensors are immutable!
 //! Mutability is allowed only for calculating gradients and optimizer parameters.
-//! There are three Buffer types.
-//! 1. Buffer     - only stores datatype inside Rc, passed around by cloning
-//! 2. Variable - stores datatype and also it's gradient, passed around by reference
-//! 3. Tensor - stores datatype and function necessary to calculate gradient of Variable, passed around by cloning
+//! There are two tensor types.
+//! ```txt
+//! 1. Variable   - stores datatype and also it's gradient, passed around by reference
+//! 2. Tensor     - stores datatype and function necessary to calculate gradient of Variable, passed around by cloning
+//! ```
 //!
 //! Buffer and Variable are leaf Buffers. Tensor is strictly non-leaf and therefore it doesn't store it's gradient.
 //!
@@ -29,8 +30,8 @@ use std::cell::{Ref, RefCell};
 
 // How this works (for contributors)
 //
-// The Buffer and Variable are leaf Buffers. Buffer does not have grad, while Variable does (obviously).
-// Tensor is non leaf Buffer.
+// The Buffer and Variable are leaf tensors. Buffer does not have grad, while Variable does (obviously).
+// Tensor is non leaf tensor.
 // When an operation is performed with Buffer, a new Buffer is returned with result. Nothing magical happens.
 // When an operation is performed with Variable, a new Tensor is returned that holds weak pointer
 // to Variable's gradient. This Tensor contains a closure, that hold's this pointer and calculates
@@ -104,6 +105,14 @@ where
     }
 }
 
+/// # Variable backward
+/// 
+/// Calls backward function on Variable.
+/// This results in Variable's gradient being increased by one.
+/// 
+/// ```txt
+/// x.grad += Buffer::ones();
+/// ```
 impl<S> Variable<S>
 where
     S: Default + crate::ops::Ones + std::ops::Add<Output = S> + GetShape,
@@ -114,10 +123,18 @@ where
     }
 }
 
+/// # Backward trait
+/// 
+/// This trait is implemented by all functions that allow us to calculate gradients.
 pub trait Backward<S> {
     fn backward(self, res_grad: S);
 }
 
+/// # Tensor backward
+/// 
+/// Calls backward function on Tensor.
+/// Computes gradient of all Variables that were used as inputs to operations that resulted in creation of this tensor.
+/// This function accumulates gradients in those Variables. If you want to clear Variables gradients, call .zero_grad().
 impl<S, F> Tensor<S, F>
 where
     S: crate::ops::Ones + GetShape,
@@ -186,6 +203,7 @@ impl<S, GradFn> Tensor<S, GradFn> {
     }
 }
 
+/// Gradient hook for Variable
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GradHookV<'g, S, Hook> {
     grad: &'g RefCell<S>,
@@ -222,6 +240,7 @@ impl<S> Variable<S> {
     }
 }
 
+/// Gradient hook for Tensor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GradHookT<GradFn, HOOK> {
     grad_fn: GradFn,
@@ -258,6 +277,7 @@ impl<S, GradFn> Tensor<S, GradFn> {
     }
 }
 
+/// Update Variable's data. It is used by optimizer.step().
 impl<S> Variable<S>
 where
     S: Default,
@@ -272,6 +292,7 @@ where
     }
 }
 
+/// Fill Variable's gradient with zeros.
 impl<S> Variable<S>
 where
     S: Default,
@@ -281,7 +302,7 @@ where
     }
 }
 
-// conversions between devices and types
+/// Conversions between devices and types
 // NOTE: you need to move the Variable into required device and type
 // before using it in optimizer
 impl<S, S2> crate::ops::ConvertFrom<Variable<S2>> for Variable<S>
@@ -297,6 +318,7 @@ where
     }
 }
 
+/// Conversions between devices and types
 // We usually don't want to move across devices inside the model, but we want want to implement changing dtypes,
 // so here is an implementation of ConvertFrom, but keep in mind the performance implications of calling
 // this function, especially if you are changing devices on the fly.

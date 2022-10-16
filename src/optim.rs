@@ -2,7 +2,8 @@
 //! 
 
 // TODO: currently, all parameter Buffers must have same storage
-// variadic templates would be useful
+// we can solve this using dyn, but it would be nice, if we could use
+// some kind of dynamic tuples
 
 use crate::tensor::Variable;
 

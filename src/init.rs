@@ -1,3 +1,8 @@
+//! # Initialization methods for tensors
+//! 
+//! Includes eye, randn and uniform as well as array initialization.
+//! These are implemented for all data structures that implement ops::FromVec trait.
+
 use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape};
 
 pub trait DType {}

@@ -1,8 +1,9 @@
-//! Shape for multidimensional data structures
+//! Shape and Dims for multidimensional data structures
 //! 
-//! Stores dimension sizes for multidimensional data structures.
-//! Shape is a trait that is implemented for some basic data types,
-//! such as tuples and arrays.
+//! This module defines Shape and Dims traits. These are implemented for &[usize] and &[i32] respectively.
+//! Shape stores the size of tensor's dimensions while Dims stores dimension's order,
+//! that can also be negative (-1 is last dimension). Dims is used as input into functions as Permute or Sum,
+//! when we need to define along which dimensions we want to perform these operations.
 //! 
 
 use crate::ops::{Permute, IntoVec};

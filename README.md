@@ -25,6 +25,7 @@ crate for faster execution.
 ## Example of usage
 
 For examples of linear and recurrent neural networks, look at examples directory.
+If you want to accelerate matrix multiplication using matrixmultiply crate, use --features=matrimultiply.
 
 ```rust
 use zyx::prelude::*;
@@ -52,7 +53,7 @@ z.backward();
 println!("{}", x.grad());
 ```
 
-Want to use ndarray? Just give it gradients!
+Want to use ndarray? Just give it gradients and use --features=ndarray!
 Note that reduce and movement ops are not yet implemented for ndarray.
 
 ```rust
@@ -67,7 +68,7 @@ println!("{}", x.grad());
 
 ## Installation
 
-The library is available on crates.io: https://crates.io/crates/zyx
+The library is available on crates.io: <https://crates.io/crates/zyx>
 
 ## Important
 
