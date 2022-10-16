@@ -24,7 +24,7 @@
 mod init;
 mod ops;
 
-use crate::ops::GetShape;
+use crate::ops::{GetShape, Zeros};
 use ops::RefCellReplaceTake;
 use std::cell::{Ref, RefCell};
 
@@ -289,11 +289,11 @@ where
 
 impl<S> Variable<S>
 where
-    S: Default,
+    S: Zeros,
 {
     /// Fill Variable's gradient with zeros.
     pub fn zero_grad(&self) {
-        self.grad.replace(S::default());
+        self.grad.replace(S::zeros(1));
     }
 }
 

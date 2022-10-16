@@ -2,11 +2,11 @@
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
 
-use crate::{module::Module, ops, ops::MatMul, tensor::Variable, prelude::{ModuleParams, IntoDims}, init::UniformInit};
-use std::ops::Add;
+use crate::{module::Module, ops::{self, ConvertFrom, GetShape}, tensor::Variable, prelude::{ModuleParams, IntoDims}, init::UniformInit};
+use std::ops::{Neg, Add, Div};
 
 /// ReLU operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReLU;
 
 impl<Input> Module<Input> for &ReLU
@@ -26,7 +26,7 @@ impl<'a, S> ModuleParams<'a, S> for ReLU {
 }
 
 /// Exp operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Exp;
 
 impl<Input> Module<Input> for &Exp
@@ -46,7 +46,7 @@ impl<'a, S> ModuleParams<'a, S> for Exp {
 }
 
 /// Ln operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ln;
 
 impl<Input> Module<Input> for &Ln
@@ -66,7 +66,7 @@ impl<'a, S> ModuleParams<'a, S> for Ln {
 }
 
 /// Tanh operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tanh;
 
 impl<Input> Module<Input> for &Tanh
@@ -86,21 +86,26 @@ impl<'a, S> ModuleParams<'a, S> for Tanh {
 }
 
 /// Sigmoid operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Sigmoid;
 
-/*impl<Input> Module<Input> for &Sigmoid
+impl<Input> Module<Input> for &Sigmoid
 where
-    Input: std::ops::Neg,
-    <Input as std::ops::Neg>::Output: ops::Exp,
-//std::ops::Div
+    Input:
+        Clone +
+        Neg +
+        ops::Ones +
+        Add<<<Input as Neg>::Output as ops::Exp>::Output> +
+        Div<<Input as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
+    <Input as Neg>::Output: ops::Exp,
 {
-    type Output = <<<Input as std::ops::Neg>::Output as ops::Exp>::Output as std::ops::Div>::Output;
+    type Output = <Input as Div<<Input as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>>::Output;
     fn forward(self, x: Input) -> Self::Output {
-        use crate::ops::Ones;
-        Buffer::ones(&[])/(Buffer::ones(&[])+(-x).exp())
+        use ops::Exp;
+        let ones = Input::ones(1);
+        ones.clone()/(ones+(-x).exp())
     }
-}*/
+}
 
 impl<'a, S> ModuleParams<'a, S> for Sigmoid {
     fn parameters(&self) -> Vec<&'a Variable<S>> {
@@ -108,8 +113,57 @@ impl<'a, S> ModuleParams<'a, S> for Sigmoid {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Softmax operation
+pub struct SoftMax<D>
+where
+    D: IntoDims,
+{
+    /// Dimensions to calculate softmax across
+    pub dims: D
+}
+
+impl<Input, D> Module<Input> for &SoftMax<D>
+where
+    D: IntoDims + Clone,
+    Input: ops::Exp,
+    <Input as ops::Exp>::Output:
+        Clone +
+        ops::Sum +
+        Div<<<Input as ops::Exp>::Output as ops::Sum>::Output>,
+{
+    type Output = <<Input as ops::Exp>::Output as Div<<<Input as ops::Exp>::Output as ops::Sum>::Output>>::Output;
+    fn forward(self, x: Input) -> Self::Output {
+        use ops::Sum;
+        let temp = x.exp();
+        temp.clone()/temp.sum(self.dims.clone())
+    }
+}
+
+impl<'a, S, D> ModuleParams<'a, S> for SoftMax<D>
+where
+    D: IntoDims,
+{
+    fn parameters(&self) -> Vec<&'a Variable<S>> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn softmax_test() {
+    use crate::prelude::*;
+    use crate::accel::cpu::Buffer;
+
+    let x = Buffer::cfrom([[3., 2., 4.], [4., 2., 5.]]);
+    println!("{}", x);
+    let y = x.apply(&SoftMax { dims: -2 });
+    println!("\n{}", y);
+    println!("{}", y.sum(-2));
+    //panic!();
+}
+
 /// Sum operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Sum<D>
 where
     D: IntoDims,
@@ -139,7 +193,7 @@ where
 }
 
 /// Max operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Max<D>
 where
     D: IntoDims,
@@ -169,7 +223,7 @@ where
 }
 
 /// Min operation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Min<D> {
     /// Dimensions to min
     pub dims: D,
@@ -195,8 +249,41 @@ where
     }
 }
 
+/// Mean operation
+pub struct Mean<D>
+where
+    D: IntoDims,
+{
+    dims: D
+}
+
+impl<Input, D> Module<Input> for &Mean<D>
+where
+    D: IntoDims + Clone,
+    Input: ops::Sum + ConvertFrom<usize> + GetShape,
+    <Input as ops::Sum>::Output: Div<Input>,
+{
+    type Output = <<Input as ops::Sum>::Output as Div<Input>>::Output;
+    fn forward(self, x: Input) -> Self::Output {
+        let n = Input::cfrom(x.shape().numel());
+        x.sum(self.dims.clone())/n
+    }
+}
+
+//pub struct STD {}
+
+/*#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NormLayer {}
+
+impl<Input> Module<Input> for &NormLayer {
+    type Output = Self;
+    fn forward(self, x: Input) -> Self::Output {
+        (x - x.apply(Mean))/x.apply(STD)
+    }
+}*/
+
 /// Linear layer
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Linear<S> {
     w: Variable<S>,
     b: Variable<S>,
@@ -234,6 +321,7 @@ impl<'a, S> ModuleParams<'a, S> for Linear<S> {
 }
 
 /// RNNCell
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RNNCell<S> {
     wih: Variable<S>,
     bih: Variable<S>,
@@ -257,6 +345,7 @@ impl<S> RNNCell<S> {
     }
 }
 
+use ops::MatMul;
 impl<'a, S, X, H> Module<(X, H)> for &'a RNNCell<S>
 where
     X: MatMul<&'a Variable<S>>,

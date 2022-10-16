@@ -9,7 +9,7 @@ pub struct MatMulBackwardSV<'g, S> {
 
 impl<'g, S> Backward<S> for MatMulBackwardSV<'g, S>
 where
-    S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
+    S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S> + std::fmt::Display + crate::ops::GetShape,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad + self.xdata.transpose().matmul(res_grad));

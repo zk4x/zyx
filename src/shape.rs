@@ -141,6 +141,14 @@ impl IntoVec<usize> for Shape {
     }
 }
 
+impl std::fmt::Display for Shape {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
+        data.replace_range(data.len()-2..data.len(), "");
+        f.write_fmt(format_args!("Shape({})", data))
+    }
+}
+
 /*#[cfg(feature = "ndarray")]
 impl ndarray::IntoDimension for Shape {
     type Dim: Dimension;
@@ -206,8 +214,6 @@ use duplicate::duplicate_item;
 
 #[duplicate_item(
     dtype;
-    [f32];
-    [f64];
     [i8];
     [i16];
     [i32];
@@ -224,7 +230,7 @@ use duplicate::duplicate_item;
 
 impl IntoShape for dtype {
     fn shape(self) -> Shape {
-        Shape(vec![1])
+        Shape(vec![self as usize])
     }
 }
 
@@ -314,8 +320,6 @@ impl<const N: usize> IntoShape for [usize; N] {
 
 #[duplicate_item(
     dtype;
-    [f32];
-    [f64];
     [i8];
     [i16];
     [i32];
@@ -332,7 +336,7 @@ impl<const N: usize> IntoShape for [usize; N] {
 
 impl IntoDims for dtype {
     fn dims(self) -> Dims {
-        Dims(vec![1])
+        Dims(vec![self as i32])
     }
 }
 
@@ -378,5 +382,13 @@ where
 {
     fn eq(&self, other: &Other) -> bool {
         self.0 == other.clone().dims().0
+    }
+}
+
+impl std::fmt::Display for Dims {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
+        data.replace_range(data.len()-2..data.len(), "");
+        f.write_fmt(format_args!("Dims({})", data))
     }
 }

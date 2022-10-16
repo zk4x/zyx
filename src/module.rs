@@ -255,9 +255,9 @@ where
 }
 
 // Arrays of modules are modules (although inputs and outputs must be the same type)
-impl<Input, M0, const N: usize> Module<Input> for [M0; N]
+impl<Input, M, const N: usize> Module<Input> for [M; N]
 where
-    M0: Module<Input, Output = Input>,
+    M: Module<Input, Output = Input>,
 {
     type Output = Input;
     fn forward(self, mut x: Input) -> Self::Output {
@@ -268,6 +268,7 @@ where
     }
 }
 
+// Closures are modules
 impl<Input, Output, Function> Module<Input> for Function
 where
     Function: Fn(Input) -> Output

@@ -141,6 +141,16 @@ where
     }
 }
 
+impl<S, T> ConvertFrom<T> for S
+where
+    S: FromVec<T>,
+    T: DType,
+{
+    fn cfrom(x: T) -> Self {
+        S::from_vec(vec![x], [1])
+    }
+}
+
 impl<S, T, const D0: usize> ConvertFrom<[T; D0]> for S
 where
     S: FromVec<T>,

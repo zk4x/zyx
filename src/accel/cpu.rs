@@ -15,7 +15,7 @@ use std::ops::{Add, Mul};
 /// 
 /// Each buffer has a shape and data stored in vec.
 /// Data is stored in row major order.
-#[derive(Default, Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Buffer<T> {
     shape: Shape,
     data: Vec<T>,
@@ -110,7 +110,7 @@ where
 impl<T> ops::FromVec<T> for Buffer<T> {
     fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
         let shape = shape.shape();
-        debug_assert_eq!(shape.numel(), data.len());
+        assert_eq!(shape.numel(), data.len());
         Self {
             shape,
             data,
@@ -313,8 +313,7 @@ where
     type Output = Buffer<T>;
     fn reshape(self, shape: impl IntoShape) -> Self::Output {
         let shape = shape.shape();
-        debug_assert_eq!(self.shape.ndim(), shape.ndim());
-        debug_assert_eq!(self.shape.numel(), shape.numel());
+        assert_eq!(self.shape.numel(), shape.numel());
         Buffer {
             shape,
             data: self.data,
@@ -328,8 +327,17 @@ where
 {
     type Output = Buffer<T>;
     fn expand(self, res_shape: impl IntoShape) -> Self::Output {
-        let shape = self.shape.clone();
-        let res_shape = res_shape.shape();
+        let mut shape = self.shape.clone();
+        let mut res_shape = res_shape.shape();
+
+        // if input shape is shorter than res_shape or vice versa,
+        // add necessary ones to the beginning
+        while shape.ndim() < res_shape.ndim() {
+            shape.0.insert(0, 1);
+        }
+        while shape.ndim() > res_shape.ndim() {
+            res_shape.0.insert(0, 1);
+        }
         let n = shape.numel();
         let ndims = shape.ndim();
         let mut data = self.data;
@@ -376,21 +384,26 @@ where
     type Output = Buffer<T>;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
         // if dims.len() is not same as shape.len(), correct it
-        let mut dims = dims.dims().0;
-        match dims.len().cmp(&self.shape.ndim()) {
+        let dimsx = dims.dims();
+        let mut dims = dimsx.clone().0;
+        let mut s_shape = self.shape;
+        match dims.len().cmp(&s_shape.ndim()) {
             std::cmp::Ordering::Greater =>
-                panic!("Input has too many dimensions"),
+                for _ in 0..dims.len() - s_shape.ndim() {
+                    s_shape.0.insert(0, 1);
+                },
+                //panic!("Too many permute dimensions for buffer, input shape: {}, input dims: {}", s_shape, dimsx),
             std::cmp::Ordering::Less =>
-                for i in 0..self.shape.ndim() - dims.len() {
+                for i in 0..s_shape.ndim() - dims.len() {
                     dims.insert(0, i as i32);
                 },
             std::cmp::Ordering::Equal => {}
         }
         let dims = Dims(dims);
-        let n = self.shape.numel();
-        let ndims = self.shape.ndim();
+        let n = s_shape.numel();
+        let ndims = s_shape.ndim();
         let mut data = vec![T::zeros(()); n];
-        let shape = self.shape.clone().permute(dims.clone());
+        let shape = s_shape.clone().permute(dims.clone());
         let strides = shape.strides();
 
         // calculate steps for each dimension
@@ -398,13 +411,12 @@ where
         for (i, dim) in dims.into_iter().enumerate() {
             steps[(ndims as i32 + dim) as usize % ndims] = strides[i];
         }
-        //let steps = strides.permute(dims.dims());
 
         let mut dim_prod = 1;
-        let indexes_steps: Vec<usize> = self.shape.clone().into_iter().map(|dim| { dim_prod *= dim; n/dim_prod }).collect();
+        let indexes_steps: Vec<usize> = s_shape.clone().into_iter().map(|dim| { dim_prod *= dim; n/dim_prod }).collect();
 
         for (i, x) in self.data.iter().enumerate() {
-            data[steps.iter().zip(indexes_steps.iter()).zip(self.shape.0.iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
+            data[steps.iter().zip(indexes_steps.iter()).zip(s_shape.0.iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
         }
 
         Buffer {
@@ -508,7 +520,7 @@ where
     }
 }
 
-#[cfg(not(any(feature = "matrixmultiply", feature = "cblas")))]
+#[cfg(not(feature = "matrixmultiply"))]
 impl<T> ops::MatMul for Buffer<T>
 where
     T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum,
@@ -518,20 +530,30 @@ where
     fn matmul(self, rhs: Self) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
-        let ndim = self.shape.ndim();
-        if ndim != rhs.shape.ndim() {
-            panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
+        let mut s_shape = self.shape;
+        let mut r_shape = rhs.shape.clone();
+        // if input shape is shorter than res_shape or vice versa,
+        // add necessary ones to the beginning
+        while s_shape.ndim() < r_shape.ndim() {
+            s_shape.0.insert(0, 1);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
-            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
+        while s_shape.ndim() > r_shape.ndim() {
+            r_shape.0.insert(0, 1);
         }
+        let ndim = s_shape.ndim();
+        if ndim < 2 {
+            panic!("You need at least one of the buffers to have 2 or more dimensions to do matrix multiplication. Current shapes: {}, {}", s_shape, r_shape);
+        }
+        if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
+            panic!("Incorrect x and y shapes for matmul: {}, {}", s_shape, r_shape);
+        }
+        let m = s_shape[-2];
+        let k = s_shape[-1];
+        let n = r_shape[-1];
         use ops::Transpose;
-        let m = self.shape[-2];
-        let k = self.shape[-1];
-        let n = rhs.shape[-1];
         let ty = rhs.transpose();
         use rayon::prelude::*;
-        const NUM: usize = 16; // basically SIMD length
+        const NUM: usize = 8; // /std::mem::size_of::<T>(); // basically SIMD length
         let data: Vec<T> = ty.data
                 .par_chunks(k)
                 .map(|y_row| {
@@ -547,7 +569,7 @@ where
                 .flatten()
                 .collect();
         
-        let mut shape = self.shape;
+        let mut shape = s_shape;
         shape[ndim-1] = m;
         shape[ndim-2] = n;
 
@@ -563,20 +585,30 @@ where
 impl ops::MatMul for Buffer<f32> {
     type Output = Self;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let ndim = self.shape.ndim();
+        let mut s_shape = self.shape;
+        let mut r_shape = rhs.shape;
+        // if input shape is shorter than res_shape or vice versa,
+        // add necessary ones to the beginning
+        while s_shape.ndim() < r_shape.ndim() {
+            s_shape.0.insert(0, 1);
+        }
+        while s_shape.ndim() > r_shape.ndim() {
+            r_shape.0.insert(0, 1);
+        }
+        let ndim = s_shape.ndim();
         // TODO: support for operations on more than 2 dimensions
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != rhs.shape.ndim() {
-            panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
+        if ndim != r_shape.ndim() {
+            panic!("Matmul buffers have different degrees: {:?}, {:?}", s_shape, r_shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
-            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
+        if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
+            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
         }
-        let m = self.shape[-2];
-        let k = self.shape[-1];
-        let n = rhs.shape[-1];
+        let m = s_shape[-2];
+        let k = s_shape[-1];
+        let n = r_shape[-1];
         let mut data = Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);

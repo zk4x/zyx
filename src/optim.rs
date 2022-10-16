@@ -8,7 +8,8 @@
 // we can solve this using dyn, but it would be nice, if we could use
 // some kind of dynamic tuples
 
-use crate::tensor::Variable;
+use crate::{ops::Zeros, tensor::Variable};
+use std::ops::Mul;
 
 /// # Optimizer trait
 /// 
@@ -40,7 +41,7 @@ impl<'a, S> SGD<'a, S> {
 
 impl<'a, S> Optimizer<'a, S> for SGD<'a, S>
 where
-    S: Default + std::ops::Mul<f32, Output = S>,
+    S: Default + Zeros + Mul<f32, Output = S>,
 {
     fn parameters(&self) -> &[&'a Variable<S>] {
         &self.parameters
