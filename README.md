@@ -53,6 +53,7 @@ println!("{}", x.grad());
 ```
 
 Want to use ndarray? Just give it gradients!
+Note that reduce and movement ops are not yet implemented for ndarray.
 
 ```rust
 use zyx::prelude::*;

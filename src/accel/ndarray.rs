@@ -1,3 +1,7 @@
+//! Implentation of necessary traits from ops module for ndarray.
+//!
+//! Currently reduce and movement ops are not supported.
+
 use crate::{ops::{self, IntoVec, FromVec}, shape::{IntoShape, IntoDims, Shape}};
 use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis};
 use num_traits::identities::{Zero, One};

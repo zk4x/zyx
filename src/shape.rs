@@ -127,7 +127,7 @@ impl ndarray::IntoDimension for Shape {
     type Dim: Dimension;
 }*/
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, Eq, PartialOrd, Ord)]
 pub struct Dims(pub(crate) Vec<i32>);
 
 impl Dims {
@@ -344,5 +344,14 @@ impl IntoDims for Dims {
 impl<const N: usize> IntoDims for [i32; N] {
     fn dims(self) -> Dims {
         Dims(self.into())
+    }
+}
+
+impl<Other> std::cmp::PartialEq<Other> for Dims
+where
+    Other: IntoDims + Clone,
+{
+    fn eq(&self, other: &Other) -> bool {
+        self.0 == other.clone().dims().0
     }
 }

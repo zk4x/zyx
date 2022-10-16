@@ -12,6 +12,29 @@ impl DType for i64 {}
 impl DType for i128 {}
 impl DType for bool {}
 
+/// ## Eye initialization
+/// 
+/// Initialize tensor with eye matrix
+/// 
+/// ### Example
+/// 
+/// ```
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// 
+/// let x = Buffer::<i32>::eye(3);
+/// assert_eq!(x.to_vec(), vec![1, 0, 0, 0, 1, 0, 0, 0, 1]);
+/// assert_eq!(x.shape(), (3, 3));
+/// println!("{}", x);
+/// ```
+/// 
+/// ### Output
+/// 
+/// ```txt
+/// [1 0 0
+///  0 1 0
+///  0 0 1]
+/// ```
 pub trait EyeInit<T> {
     fn eye(n: usize) -> Self;
 }
@@ -32,6 +55,21 @@ where
     }
 }
 
+/// ## Random initialization
+/// 
+/// Initialize tensor with random values
+/// We are using rand::distributions::Standard.
+/// 
+/// ### Example
+/// 
+/// ```
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// 
+/// let x = Buffer::<f32>::randn((3, 2, 3));
+/// assert_eq!(x.shape(), (3, 2, 3));
+/// println!("{}", x);
+/// ```
 pub trait RandInit<T> {
     fn randn(shape: impl IntoShape) -> Self;
 }
@@ -49,6 +87,21 @@ where
     }
 }
 
+/// ## Uniform initialization
+/// 
+/// Initialize tensor with value from uniform distribution
+/// We are using rand::distributions::uniform.
+/// 
+/// ### Example
+/// 
+/// ```
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// 
+/// let x = Buffer::uniform((3, 2, 3), -1., 1.);
+/// assert_eq!(x.shape(), (3, 2, 3));
+/// println!("{}", x);
+/// ```
 pub trait UniformInit<T> {
     fn uniform(shape: impl IntoShape, low: T, high: T) -> Self;
 }

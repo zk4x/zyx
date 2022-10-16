@@ -1,14 +1,17 @@
 //! Various implementations of accelerators.
-//! The default is zyx::accel::Cpu.
+//! The default is zyx::accel::cpu::Buffer.
 //! 
 //! Every accelerator can implement following traits in order to be fully compatible with tensors:
 //! 
 //! Clone
 //! std::default::Default
-//! zyx::ops::*
 //! std::ops::{Neg, Add, Sub, Mul, Div}
+//! zyx::ops::*
 //! 
 //! The zyx::ops module documents (with examples) how these operations should work.
+//! 
+//! All operations take buffer by value. Cloning can be implemented as shallow copying,
+//! but you will need to do the necessary reference counting.
 //! 
 
 pub mod cpu;

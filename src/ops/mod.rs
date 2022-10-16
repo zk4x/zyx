@@ -1,6 +1,44 @@
-//! Traits for different operations you can to with Buffers.
-//! Currently under development, but we take inspiration about which operations are most important from tinygrad.
+//! # Tensor operations
+//! 
+//! Traits for different operations you can to with tensors.
 //!
+//! ## Operations are separated into categories
+//! 
+//! ```txt
+//! Initialization ops:   ConvertFrom, Zeros, Ones, FromVec
+//! Getters:              IntoVec, GetShape
+//! Unary ops:            ReLU, DReLU, Exp, Ln, Tanh
+//! Reduce ops:           Sum, Max, Min
+//! Movement ops:         Reshape, Expand, Permute
+//! Binary ops:           Pow
+//! Processing ops:       MatMul, Conv
+//! ```
+//! 
+//! ## List of all operations
+//! 
+//! This list excludes ops that are automatically implemented.
+//! 
+//! ConvertFrom
+//! Zeros
+//! Ones
+//! IntoVec
+//! FromVec
+//! GetShape
+//! ReLU
+//! DReLU
+//! Exp
+//! Ln
+//! Tanh
+//! Sum
+//! Max
+//! Min
+//! Reshape
+//! Expand
+//! Permute
+//! Pow
+//! MatMul
+//! Conv
+//! 
 
 mod relu;
 mod drelu;
@@ -18,7 +56,7 @@ use crate::shape::{IntoShape, IntoDims, Shape};
 
 /// ## Convert between devices and types
 /// 
-/// Create new Buffer on given device with given type
+/// Create new tensor on given device with given type
 // needed because we can't use std::convert::From
 // because it's foreign trait and it doesn't work
 // when T == Self
@@ -44,21 +82,21 @@ where
 
 /// ## Zeros operation
 /// 
-/// Create new Buffer initialized with zeros.
+/// Create new tensor initialized with zeros.
 pub trait Zeros {
     fn zeros(shape: impl IntoShape) -> Self;
 }
 
 /// ## Ones operation
 /// 
-/// Create new Buffer initialized with ones.
+/// Create new tensor initialized with ones.
 pub trait Ones {
     fn ones(shape: impl IntoShape) -> Self;
 }
 
 /// ## IntoVec operation
 /// 
-/// Returns values from Buffer as a Vec. This accesses raw storage,
+/// Returns values from tensor as a Vec. This accesses raw storage,
 /// with the buffer::Cpu it will have row major order.
 /// 
 pub trait IntoVec<T> {
@@ -67,7 +105,7 @@ pub trait IntoVec<T> {
 
 /// ## FromVec operation
 /// 
-/// Creates new Buffer from given Vec and shape.
+/// Creates new tensor from given Vec and shape.
 /// 
 /// ### Example
 /// ```
@@ -86,7 +124,7 @@ pub trait FromVec<T> {
 
 /// ## GetShape operation
 /// 
-/// Returns the shape of Buffer as an array of dimensions.
+/// Returns the shape of tensor as a Shape struct.
 /// 
 /// ### Example
 /// ```
@@ -260,16 +298,16 @@ pub trait Min {
     fn min(self, dims: impl IntoDims) -> Self::Output;
 }
 
-// Reshape simply changes shape of the Buffer.
+// Reshape simply changes shape of the tensor.
 // Permute also changes it's data ordering.
 // Expand expands to given shape if some dimensions are one.
 // PERMUTE, PAD, SHRINK, EXPAND, FLIP,
 // Reshape, Permute, Slice, Expand, Flip   # movement ops
 
 // Movement ops
-/// ## Reshape Buffer
+/// ## Reshape tensor
 /// 
-/// Reshaping changes Buffers's shape, while leaving data untouched.
+/// Reshaping changes tensor's shape, while leaving data untouched.
 /// 
 /// ### Example
 /// ```
@@ -292,9 +330,9 @@ pub trait Reshape {
     fn reshape(self, shape: impl IntoShape) -> Self::Output;
 }
 
-/// ## Expand Buffer
+/// ## Expand tensor
 /// 
-/// Expands Buffer to given shape, if some dimensions are 1. Data is cloned to fill the required size.
+/// Expands tensor to given shape, if some dimensions are 1. Data is cloned to fill the required size.
 /// 
 /// ### Example
 /// ```
@@ -321,9 +359,9 @@ pub trait Expand {
     fn expand(self, shape: impl IntoShape) -> Self::Output;
 }
 
-/// ## Permute Buffer
+/// ## Permute tensor
 /// 
-/// Shuffles Buffer's dimensions in given order.
+/// Shuffles tensors's dimensions in given order.
 /// 
 /// ### Example
 /// ```
@@ -376,12 +414,12 @@ where
     }
 }
 
-// Binary ops are Add, Sub, Mul, Div, Pow, all with same size Buffers,
+// Binary ops are Add, Sub, Mul, Div, Pow, all with same size tensors,
 // use std::ops to implement them (except for Pow)
 
 /// Pow operation
 /// 
-/// Calculate the power of the input Buffer to the given exponent Buffer.
+/// Calculate the power of the input tensor to the given exponent tensor.
 pub trait Pow<Rhs = Self> {
     type Output;
     fn pow(self, rhs: Rhs) -> Self::Output;

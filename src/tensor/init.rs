@@ -1,4 +1,4 @@
-//! Methods for Buffer initialization
+//! Methods for tensor initialization
 //! 
 
 use crate::{tensor::Variable, ops::{self, FromVec}, shape::IntoShape};
@@ -8,6 +8,7 @@ use std::cell::RefCell;
 //#[cfg(Opencl)]
 //type Storage<T> = opencl::Buffer<T>;
 
+/// Initialize tensor from vec and shape
 impl<S, T> ops::FromVec<T> for Variable<S>
 where
     S: FromVec<T> + ops::Zeros,
@@ -22,6 +23,7 @@ where
     }
 }
 
+/// Initialize tensor filled with zeros
 impl<S> ops::Zeros for Variable<S>
 where
     S: ops::Zeros,
@@ -35,6 +37,7 @@ where
     }
 }
 
+/// Initialize tensor filled with ones
 impl<S> ops::Ones for Variable<S>
 where
     S: ops::Ones + ops::Zeros,

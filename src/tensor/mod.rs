@@ -42,27 +42,42 @@ use std::cell::{Ref, RefCell};
 // If you want to have more the one Tensor to call .backward() on, you need to clone this Tensor
 // or any of the intermediate Tensors. In this case, the library performs cloning of the closures.
 // This is a conscious decision to not store the closures in Rc and just clone them if needed,
-// because we find the RAM usage of cloned closures (basically cloned Rc<RefCell<S>> to gradients and S to some data)
+// because we find the RAM usage of cloned closures (basically &RefCell<S> to gradients and S of some data)
 // less concerning than the performance implications of using Rc<FnOnce(S)> closures.
 
 // Tensors are moved into operations, while Variables are passed by reference!
 
-// This is used as a placeholder for custom storage, since some operations like addition are foreign traits,
-// so we need to have our type to wrap foreign storage types inside.
+/// # B<S>
+///
+/// This is used as a placeholder for custom storage, since some operations like addition are foreign traits,
+/// so we need to have our type to wrap foreign storage types inside.
+/// B<S> does not have gradient.
 pub struct B<S>(pub S);
 
+/// # Variable<S>
+/// 
+/// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Variable<S> {
     data: RefCell<S>, // RefCell here is needed for optimizer.step() function
     grad: RefCell<S>, // RefCell needed for .backward() gradient calculation
 }
 
+/// # Tensor<S, GradFn>
+/// 
+/// Tensor holds data and grad_fn to calculate gradients of Variables.
+/// Tensor is only created as a result of some operations on at least one Variable.
+/// Tensor does not store it's gradient, but the gradient can be accessed during backward
+/// pass by using GradHookT. This is a FnOnce closure: x.register_hook(|grad| { // do something with grad })
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tensor<S, GradFn> {
     data: S,
     func: GradFn, // Cell needed for .backward() freeing of buffers by making func None
 }
 
+/// # Display Variable
+/// 
+/// Shows Variable and it's gradient.
 impl<S> std::fmt::Display for Variable<S>
 where
     S: std::fmt::Display,
@@ -76,6 +91,9 @@ where
     }
 }
 
+/// # Display Tensor
+/// 
+/// Shows Tensor and it's grad_fn.
 impl<S, GradFn> std::fmt::Display for Tensor<S, GradFn>
 where
     S: std::fmt::Display,
@@ -169,12 +187,12 @@ impl<S, GradFn> Tensor<S, GradFn> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GradHookG<'g, S, Hook> {
+pub struct GradHookV<'g, S, Hook> {
     grad: &'g RefCell<S>,
     hook: Hook,
 }
 
-impl<'g, S, HOOK> Backward<S> for GradHookG<'g, S, HOOK>
+impl<'g, S, HOOK> Backward<S> for GradHookV<'g, S, HOOK>
 where
     S: Default + Clone + std::ops::Add<Output = S>,
     HOOK: FnOnce(S),
@@ -189,14 +207,14 @@ where
 /// The hook is stored in the result, so make sure to do all operations on this result,
 /// otherwise your hook will not be called.
 impl<S> Variable<S> {
-    pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> Tensor<S, GradHookG<'g, S, HOOK>>
+    pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> Tensor<S, GradHookV<'g, S, HOOK>>
     where
         S: 'g + Clone,
         HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
     {
         Tensor {
             data: (*self.data()).clone(),
-            func: GradHookG {
+            func: GradHookV {
                 grad: &self.grad,
                 hook,
             },
@@ -205,12 +223,12 @@ impl<S> Variable<S> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GradHookF<GradFn, HOOK> {
+pub struct GradHookT<GradFn, HOOK> {
     func: GradFn,
     hook: HOOK,
 }
 
-impl<S, GradFn, HOOK> Backward<S> for GradHookF<GradFn, HOOK>
+impl<S, GradFn, HOOK> Backward<S> for GradHookT<GradFn, HOOK>
 where
     GradFn: Backward<S>,
     HOOK: FnOnce(S),
@@ -226,13 +244,13 @@ where
 /// The hook is stored in the result, so make sure to do all operations on this result,
 /// otherwise your hook will not be called.
 impl<S, GradFn> Tensor<S, GradFn> {
-    pub fn register_hook<HOOK>(self, hook: HOOK) -> Tensor<S, GradHookF<GradFn, HOOK>>
+    pub fn register_hook<HOOK>(self, hook: HOOK) -> Tensor<S, GradHookT<GradFn, HOOK>>
     where
         HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
     {
         Tensor {
             data: self.data,
-            func: GradHookF {
+            func: GradHookT {
                 func: self.func,
                 hook,
             },

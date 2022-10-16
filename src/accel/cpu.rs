@@ -1,16 +1,16 @@
 //! Buffer is multidimensional storage type using cpu for the calculations
-//! and rayon for multithreading.
+//! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
 use crate::{ops, shape::{IntoShape, IntoDims, Shape, Dims}};
 use std::ops::{Add, Mul};
 
-// It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
+// TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
 // If it creates shallow copy, it needs to do the necessary reference counting
-
 // Now Buffer can be passed by value and can implement inplace operations,
 // because tensor::Variable ensures that it will not be mutated in wrong ways
 // If needed, Rc can be change to Arc and RefCell to Mutex/RwLock
+// Though for now everything is hard copy.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Buffer<T> {
     shape: Shape,
