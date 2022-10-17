@@ -352,6 +352,53 @@ impl IntoDims for (i32, i32) {
     }
 }
 
+impl IntoDims for (i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2])
+    }
+}
+
+impl IntoDims for (i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3])
+    }
+}
+
+impl IntoDims for (i32, i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3, self.4])
+    }
+}
+
+impl IntoDims for (i32, i32, i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3, self.4, self.5])
+    }
+}
+
+impl IntoDims for (i32, i32, i32, i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3, self.4, self.5, self.6])
+    }
+}
+
+impl IntoDims for (i32, i32, i32, i32, i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3, self.4, self.5, self.6, self.7])
+    }
+}
+
+impl IntoDims for (i32, i32, i32, i32, i32, i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3, self.4, self.5, self.6, self.7, self.8])
+    }
+}
+impl IntoDims for (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) {
+    fn dims(self) -> Dims {
+        Dims(vec![self.0, self.1, self.2, self.3, self.4, self.5, self.6, self.7, self.8, self.9])
+    }
+}
+
 impl IntoDims for &[i32] {
     fn dims(self) -> Dims {
         Dims(self.into())

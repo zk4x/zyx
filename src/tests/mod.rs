@@ -270,6 +270,27 @@ mod tensor {
         fn permute() {
             // TODO finish all variations
             use crate::ops::Permute;
+            let x = Buffer::cfrom([[[3, 2], [4, 1], [4, 2]], [[2, 3], [3, 4], [4, 1]]]);
+            let y = x.clone().permute((2, 1, 0));
+            assert_eq!(&y.to_vec(), &[3, 2, 4, 3, 4, 4, 2, 3, 1, 4, 2, 1]);
+            assert_eq!(y.shape(), (2, 3, 2));
+
+            let y = x.clone().permute((1, 0, 2));
+            assert_eq!(&y.to_vec(), &[3, 2, 2, 3, 4, 1, 3, 4, 4, 2, 4, 1]);
+            assert_eq!(y.shape(), (3, 2, 2));
+
+            let y = x.clone().permute((0, 2, 1));
+            assert_eq!(&y.to_vec(), &[3, 4, 4, 2, 1, 2, 2, 3, 4, 3, 4, 1]);
+            assert_eq!(y.shape(), (2, 2, 3));
+
+            let y = x.clone().permute((1, 2, 0));
+            assert_eq!(&y.to_vec(), &[3, 2, 2, 3, 4, 3, 1, 4, 4, 4, 2, 1]);
+            assert_eq!(y.shape(), (3, 2, 2));
+
+            let y = x.clone().permute((2, 0, 1));
+            assert_eq!(&y.to_vec(), &[3, 4, 4, 2, 3, 4, 2, 1, 2, 3, 4, 1]);
+            assert_eq!(y.shape(), (2, 2, 3));
+
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = Buffer::from_vec(vec.clone(), [9, 1]).with_grad();
             let y = x.permute((1, 0));

@@ -396,6 +396,8 @@ pub trait Expand {
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.permute([2, 0, 1]);
+/// assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
+/// assert_eq!(x.shape(), (3, 2, 1));
 /// println!("{}", x);
 /// ```
 /// 

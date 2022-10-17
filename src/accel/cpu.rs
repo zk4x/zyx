@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops, shape::{IntoShape, IntoDims, Shape, Dims}};
+use crate::{ops, shape::{IntoShape, IntoDims, Shape}};
 use std::ops::{Add, Mul};
 
 // TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
@@ -347,9 +347,7 @@ where
             for i in (0..n).step_by(width) {
                 // copy this part of vec
                 for _ in 0..times {
-                    for x in &data[i..i+width] {
-                        res_data.push(x.clone());
-                    }
+                    res_data.extend_from_slice(&data[i..i+width]);
                 }
             }
             res_data
@@ -384,39 +382,48 @@ where
     type Output = Buffer<T>;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
         // if dims.len() is not same as shape.len(), correct it
-        let dimsx = dims.dims();
-        let mut dims = dimsx.clone().0;
+        let mut dims = dims.dims().0;
         let mut s_shape = self.shape;
         match dims.len().cmp(&s_shape.ndim()) {
             std::cmp::Ordering::Greater =>
                 for _ in 0..dims.len() - s_shape.ndim() {
                     s_shape.0.insert(0, 1);
                 },
-                //panic!("Too many permute dimensions for buffer, input shape: {}, input dims: {}", s_shape, dimsx),
             std::cmp::Ordering::Less =>
                 for i in 0..s_shape.ndim() - dims.len() {
                     dims.insert(0, i as i32);
                 },
             std::cmp::Ordering::Equal => {}
         }
-        let dims = Dims(dims);
-        let n = s_shape.numel();
-        let ndims = s_shape.ndim();
-        let mut data = vec![T::zeros(()); n];
-        let shape = s_shape.clone().permute(dims.clone());
-        let strides = shape.strides();
 
-        // calculate steps for each dimension
-        let mut steps = vec![0; ndims];
-        for (i, dim) in dims.into_iter().enumerate() {
-            steps[(ndims as i32 + dim) as usize % ndims] = strides[i];
+        let ndim = s_shape.ndim();
+        let shape = s_shape.clone().permute(dims.clone());
+        let strides = s_shape.strides().permute(dims.clone());
+        let mut acc_var = 1;
+        let acc = Shape(s_shape.into_iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<Vec<usize>>().into_iter().rev().collect()).permute(dims);
+        std::mem::drop(acc_var);
+        let n = shape.numel();
+        // temp is in reverse order
+        let mut temp = vec![(0, 0); ndim]; // strides, acc_shape
+        let mut begins = vec![0; ndim];
+        for k in 0..ndim {
+            temp[ndim-k-1] = (strides[k], acc[k]);
         }
 
-        let mut dim_prod = 1;
-        let indexes_steps: Vec<usize> = s_shape.clone().into_iter().map(|dim| { dim_prod *= dim; n/dim_prod }).collect();
-
-        for (i, x) in self.data.iter().enumerate() {
-            data[steps.iter().zip(indexes_steps.iter()).zip(s_shape.0.iter()).map(|((step, idx), dim)| i/idx%dim*step).sum::<usize>()] = x.clone();
+        let mut data = Vec::with_capacity(n);
+        let mut i = 0;
+        for _ in  0..n {
+            data.push(self.data[i].clone());
+            for (j, (st, acc)) in temp.iter().enumerate() {
+                begins[j] += st;
+                i += st;
+                if begins[j] < *acc {
+                    break;
+                } else {
+                    i -= begins[j];
+                    begins[j] = 0;
+                }
+            }
         }
 
         Buffer {
@@ -445,6 +452,8 @@ where
     use ops::Expand;
     use std::cmp::Ordering;
     let shape = x.shape.clone();
+    // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
+    // stuff during expanding
     let data = match x.shape.numel().cmp(&y.shape.numel()) {
         Ordering::Greater => x.data.into_par_iter().zip(y.expand(x.shape).data.into_par_iter()).map(f).collect(),
         Ordering::Less => x.expand(y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
