@@ -19,5 +19,4 @@ mod tests;
 // opencl buffer
 // lazy Buffer (both opencl and cpu (I know, opencl can run on cpu as well))
 
-// TODO: release 0.4.2 with documentation added
 // and then release 0.5.0 with changes to how parameters to optimizers are handled

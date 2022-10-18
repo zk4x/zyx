@@ -8,7 +8,7 @@
 // we can solve this using dyn, but it would be nice, if we could use
 // some kind of dynamic tuples
 
-use crate::{ops::Zeros, tensor::Variable};
+use crate::{ops::{Zeros, ConvertFrom}, tensor::Variable};
 use std::ops::Mul;
 
 /// # Optimizer trait
@@ -41,14 +41,14 @@ impl<'a, S> SGD<'a, S> {
 
 impl<'a, S> Optimizer<'a, S> for SGD<'a, S>
 where
-    S: Default + Zeros + Mul<f32, Output = S>,
+    S: Default + Zeros + ConvertFrom<f32> + Mul<Output = S>,
 {
     fn parameters(&self) -> &[&'a Variable<S>] {
         &self.parameters
     }
 
     fn step(&self) {
-        self.parameters.iter().for_each(|param| param.update_data(|data| data * (1. - self.learning_rate)));
+        self.parameters.iter().for_each(|param| param.update_data(|data| data * S::cfrom(1. - self.learning_rate)));
     }
 
     fn zero_grad(&self) {

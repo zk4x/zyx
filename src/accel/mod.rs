@@ -6,7 +6,6 @@
 //! Clone
 //! std::default::Default
 //! std::ops::{Neg, Add, Sub, Mul, Div}
-//! std::ops::Mul<f32>
 //! zyx::ops::*
 //! 
 //! The zyx::ops module documents (with examples) how these operations should work.
