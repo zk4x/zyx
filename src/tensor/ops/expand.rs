@@ -9,7 +9,7 @@ pub struct ExpandBackwardV<'g, S> {
 
 impl<'g, S> Backward<S> for ExpandBackwardV<'g, S>
 where
-    S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + IntoShape,
+    S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + GetShape,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -43,7 +43,7 @@ pub struct ExpandBackwardT<F> {
 
 impl<S, F> Backward<S> for ExpandBackwardT<F>
 where
-    S: Expand<Output = S> + Max<Output = S> + IntoShape,
+    S: Expand<Output = S> + Max<Output = S> + GetShape,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {

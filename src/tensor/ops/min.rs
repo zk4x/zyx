@@ -1,4 +1,4 @@
-use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoShape, IntoDims, Shape}};
+use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Shape}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -9,7 +9,7 @@ pub struct MinBackwardV<'g, S> {
 
 impl<'g, S> Backward<S> for MinBackwardV<'g, S>
 where
-    S: Default + Add<Output = S> + Expand<Output = S> + IntoShape,
+    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad.expand(self.shape));

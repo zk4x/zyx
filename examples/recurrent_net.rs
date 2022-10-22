@@ -1,8 +1,7 @@
 //! ## This is an example of recurrent neural network
-
-use zyx::prelude::*;
+/*use zyx::prelude::*;
 use zyx::accel::cpu;
-use zyx::nn;
+use zyx::nn::{RNNCell, Linear, SoftMax, Tanh, MSELoss, Sum};
 use zyx::optim;
 
 fn main() {
@@ -10,22 +9,27 @@ fn main() {
     let input_size = 3;
 
     let rnn_net = (
-        nn::RNNCell::new::<f32>(input_size, hidden_size),
-        nn::Tanh,
+        RNNCell::new::<f32>(input_size, hidden_size),
+        Tanh,
     );
     let net2 = (
-        nn::Linear::new::<f32>(hidden_size, 3),
-        nn::Tanh,
+        Linear::new::<f32>(hidden_size, 3),
+        SoftMax { dims: () },
     );
 
-    let mut params = Vec::new();
-    params.extend(rnn_net.parameters().into_iter());
-    params.extend(net2.parameters().into_iter());
+    // This looks bad right now, eventually it will look like this:
+    //let mut params = (rnn_net.parameters(), net2.parameters());
+    let mut params = (
+        <&(RNNCell<cpu::Buffer<f32>>, Tanh) as Module<(cpu::Buffer<f32>, cpu::Buffer<f32>)>>::parameters(&rnn_net),
+        <&(Linear<cpu::Buffer<f32>>, SoftMax<()>) as zyx::module::Module<cpu::Buffer<f32>>>::parameters(&net2),
+    );
 
     let mut hidden_state = cpu::Buffer::uniform((1, hidden_size), 0., 1.);
 
-    let mse_loss = |x, y| { x - y };
-    let optimizer = optim::SGD::new(&params);
+    // MSELoss does not reduce it's output, you need to add some reduce function if you want to apply reduce
+    let mse_loss = (MSELoss, Sum { dims: () });
+
+    let optimizer = optim::SGD::new(params);
 
     for i in 0..30000 {
         let i_f32 = i as f32;
@@ -39,12 +43,14 @@ fn main() {
         hidden_state = hidden_state_t1.data().clone();
 
         let y_predicted = net2.forward(hidden_state_t1);
-        let loss = mse_loss(y_predicted, y);
-        loss.backward();
+        let loss = (y_predicted, y).apply(mse_loss);
 
-        optimizer.step();
         optimizer.zero_grad();
+        loss.backward();
+        optimizer.step();
     }
 
     //println!("hidden state: {}", hidden_state);
-}
+}*/
+
+fn main() {}

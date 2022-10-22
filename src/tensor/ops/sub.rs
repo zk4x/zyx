@@ -1,28 +1,33 @@
-use crate::tensor::{B, Tensor, Variable, Backward, ops::RefCellReplaceTake};
+use crate::tensor::{Tensor, Variable, Backward, ops::RefCellReplaceTake};
 use std::{cell::RefCell, ops::{Sub, Neg, Add}};
+use duplicate::duplicate_item;
+use crate::accel::cpu::Buffer;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubBackwardSV<'g, S> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for SubBackwardSV<'g, S>
+impl<'g, S, S2> Backward<S> for SubBackwardSV<'g, S2>
 where
-    S: Default + Sub<Output = S>,
+    S2: Default + Sub<S, Output = S2>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad - res_grad);
     }
 }
 
-impl<'g, S> Sub<&'g Variable<S>> for B<S>
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];
+    [Buffer<f32>]; [Buffer<f64>]; [Buffer<i32>]; [Buffer<i64>]; [Buffer<i128>]; [Buffer<u8>]; [Buffer<u16>]; [Buffer<u32>]; [Buffer<u64>]; [Buffer<u128>]; [Buffer<bool>];)]
+impl<'g, S> Sub<&'g Variable<S>> for dtype
 where
-    S: 'g + Clone + Sub<Output = S>,
+    Self: Sub<S>,
+    S: Clone,
 {
-    type Output = Tensor<S, SubBackwardSV<'g, S>>;
+    type Output = Tensor<<Self as Sub<S>>::Output, SubBackwardSV<'g, S>>;
     fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
-            data: self.0 - rhs.data().clone(),
+            data: self - rhs.data().clone(),
             grad_fn: SubBackwardSV {
                 ygrad: &rhs.grad,
             },
@@ -30,14 +35,16 @@ where
     }
 }
 
-impl<S, F> Sub<Tensor<S, F>> for B<S>
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];
+    [Buffer<f32>]; [Buffer<f64>]; [Buffer<i32>]; [Buffer<i64>]; [Buffer<i128>]; [Buffer<u8>]; [Buffer<u16>]; [Buffer<u32>]; [Buffer<u64>]; [Buffer<u128>]; [Buffer<bool>];)]
+impl<S, F> Sub<Tensor<S, F>> for dtype
 where
-    S: Sub<Output = S>,
+    Self: Sub<S>,
 {
-    type Output = Tensor<S, F>;
+    type Output = Tensor<<Self as Sub<S>>::Output, F>;
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
-            data: self.0 - rhs.data,
+            data: self - rhs.data,
             grad_fn: rhs.grad_fn,
         }
     }

@@ -2,25 +2,26 @@ use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTa
 use std::{ops::{Add, Mul}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct ExpBackwardV<'g, S> {
+pub struct ExpBackwardV<'g, S, S2> {
     grad: &'g RefCell<S>,
-    data: S,
+    data: S2,
 }
 
-impl<'g, S> Backward<S> for ExpBackwardV<'g, S>
+impl<'g, S, S2> Backward<S> for ExpBackwardV<'g, S, S2>
 where
-    S: Default + Exp<Output = S> + Mul<Output = S> + Add<Output = S>,
+    S: Default + Mul<S2> + Add<<S as Mul<S2>>::Output, Output = S>,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad * self.data);
     }
 }
 
-impl<'g, S> Exp for &'g Variable<S>
+impl<'g, S, S2> Exp for &'g Variable<S>
 where
-    S: 'g + Clone + Exp<Output = S>,
+    S: Clone + Exp<Output = S2>,
+    S2: Clone,
 {
-    type Output = Tensor<S, ExpBackwardV<'g, S>>;
+    type Output = Tensor<S2, ExpBackwardV<'g, S, S2>>;
     fn exp(self) -> Self::Output {
         let data = (*self.data()).clone().exp();
         Tensor {
@@ -34,14 +35,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ExpBackwardT<S, F> {
+pub struct ExpBackwardT<S2, F> {
     grad_fn: F,
-    data: S,
+    data: S2,
 }
 
-impl<S, F> Backward<S> for ExpBackwardT<S, F>
+impl<S, S2, F> Backward<S> for ExpBackwardT<S2, F>
 where
-    S: Exp<Output = S> + Mul<Output = S>,
+    S: Mul<S2, Output = S>,
     F: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -49,11 +50,12 @@ where
     }
 }
 
-impl<S, F> Exp for Tensor<S, F>
+impl<S, S2, F> Exp for Tensor<S, F>
 where
-    S: Clone + Exp<Output = S>,
+    S: Exp<Output = S2>,
+    S2: Clone,
 {
-    type Output = Tensor<S, ExpBackwardT<S, F>>;
+    type Output = Tensor<S2, ExpBackwardT<S2, F>>;
     fn exp(self) -> Self::Output {
         let data = self.data.exp();
         Tensor {

@@ -24,7 +24,7 @@
 mod init;
 mod ops;
 
-use crate::ops::{GetShape, Zeros};
+use crate::{ops::{GetShape, Zeros}, module::Parameters, optim::Optimizer};
 use ops::RefCellReplaceTake;
 use std::cell::{Ref, RefCell};
 
@@ -85,7 +85,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(&format!(
-            "{} with_grad\n{}",
+            "{} with grad:\n{}",
             self.data.borrow(),
             self.grad.borrow()
         ))
@@ -101,7 +101,9 @@ where
     GradFn: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&format!("{} with_func {:?}", self.data, self.grad_fn,))
+        // TODO: this is ugly solution, please just print the name of the function, don't require GradFn debug
+        // and creating debug string of all the buffers stored in grad_fn
+        f.write_str(&format!("{} with grad_fn: {}", self.data, format!("{:?}", self.grad_fn).split_once(" {").unwrap().0))
     }
 }
 
@@ -272,31 +274,6 @@ impl<S, GradFn> Tensor<S, GradFn> {
     }
 }
 
-/// Update Variable's data. It is used by optimizer.step().
-impl<S> Variable<S>
-where
-    S: Default,
-{
-    // users should be able to access Variables only immutably,
-    // this is meant for optimizers
-    pub(crate) fn update_data<F>(&self, f: F)
-    where
-        F: Fn(S) -> S,
-    {
-        self.data.replace_take(f);
-    }
-}
-
-impl<S> Variable<S>
-where
-    S: Zeros,
-{
-    /// Fill Variable's gradient with zeros.
-    pub fn zero_grad(&self) {
-        self.grad.replace(S::zeros(1));
-    }
-}
-
 /// Conversions between devices and types
 // NOTE: you need to move the Variable into required device and type
 // before using it in optimizer
@@ -326,5 +303,24 @@ where
             data: S::cfrom(x.data),
             grad_fn: x.grad_fn,
         }
+    }
+}
+
+use std::ops::{Sub, Mul};
+// Update Variable's data. It is used by optimizer.step().
+impl<S> Parameters for &Variable<S>
+where
+    S: Default + Clone + Zeros + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+{
+    fn update_data<Optim>(&self, optim: &Optim)
+    where
+        Optim: Optimizer
+    {
+        let grad = self.grad().clone();
+        self.data.replace_take(|data| optim.update_data(data, grad));
+    }
+
+    fn zero_grad(&self) {
+        self.grad.replace(S::zeros(1));
     }
 }

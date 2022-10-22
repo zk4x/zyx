@@ -2,7 +2,7 @@
 
 pub use crate::{
     ops::*,
-    module::{ModuleParams, Module, Apply},
+    module::{Module, Apply},
     shape::{IntoShape, IntoDims},
     optim::Optimizer,
     init::{EyeInit, RandInit, UniformInit},

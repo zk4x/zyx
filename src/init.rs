@@ -3,19 +3,7 @@
 //! Includes eye, randn and uniform as well as array initialization.
 //! These are implemented for all data structures that implement ops::FromVec trait.
 
-use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape};
-
-trait DType {}
-
-impl DType for f32 {}
-impl DType for f64 {}
-impl DType for u8 {}
-impl DType for i8 {}
-impl DType for i16 {}
-impl DType for i32 {}
-impl DType for i64 {}
-impl DType for i128 {}
-impl DType for bool {}
+use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape, dtype::ScalarType};
 
 /// ## Eye initialization
 /// 
@@ -141,20 +129,10 @@ where
     }
 }
 
-impl<S, T> ConvertFrom<T> for S
-where
-    S: FromVec<T>,
-    T: DType,
-{
-    fn cfrom(x: T) -> Self {
-        S::from_vec(vec![x], [1])
-    }
-}
-
 impl<S, T, const D0: usize> ConvertFrom<[T; D0]> for S
 where
     S: FromVec<T>,
-    T: DType + Clone,
+    T: ScalarType + Clone,
 {
     fn cfrom(x: [T; D0]) -> Self {
         S::from_vec(x.to_vec(), [D0])
@@ -164,7 +142,7 @@ where
 impl<S, T, const D1: usize, const D0: usize> ConvertFrom<[[T; D0]; D1]> for S
 where
     S: FromVec<T>,
-    T: DType + Clone,
+    T: ScalarType + Clone,
 {
     fn cfrom(x: [[T; D0]; D1]) -> Self {
         S::from_vec(x.into_iter().flatten().collect(), [D1, D0])
@@ -174,7 +152,7 @@ where
 impl<S, T, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[T; D0]; D1]; D2]> for S
 where
     S: FromVec<T>,
-    T: DType + Clone
+    T: ScalarType + Clone
 {
     fn cfrom(x: [[[T; D0]; D1]; D2]) -> Self {
         S::from_vec(x.into_iter().flatten().flatten().collect(), [D2, D1, D0])
@@ -184,7 +162,7 @@ where
 impl<S, T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[T; D0]; D1]; D2]; D3]> for S
 where
     S: FromVec<T>,
-    T: DType + Clone
+    T: ScalarType + Clone
 {
     fn cfrom(x: [[[[T; D0]; D1]; D2]; D3]) -> Self {
         S::from_vec(x.into_iter().flatten().flatten().flatten().collect(), [D3, D2, D1, D0])
@@ -194,7 +172,7 @@ where
 impl<S, T, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[[T; D0]; D1]; D2]; D3]; D4]> for S
 where
     S: FromVec<T>,
-    T: DType + Clone
+    T: ScalarType + Clone
 {
     fn cfrom(x: [[[[[T; D0]; D1]; D2]; D3]; D4]) -> Self {
         Self::from_vec(x.into_iter().flatten().flatten().flatten().flatten().collect(), [D4, D3, D2, D1, D0])

@@ -1,4 +1,4 @@
-use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoShape, IntoDims, Shape}};
+use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Shape}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -9,9 +9,13 @@ pub struct MaxBackwardV<'g, S> {
 
 impl<'g, S> Backward<S> for MaxBackwardV<'g, S>
 where
-    S: Default + Add<Output = S> + Expand<Output = S> + IntoShape,
+    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {
     fn backward(self, res_grad: S) {
+        // TODO: This is not correct. Max does not simply expand.
+        // Max sets values at max indices to 1 and other values to 0.
+        // So res_grad values must be added to indices where there were maximums previously.
+        // So Instead of shape, we need to store indices of those values.
         self.grad.replace_take(|grad| grad + res_grad.expand(self.shape));
     }
 }

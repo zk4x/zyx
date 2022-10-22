@@ -20,10 +20,10 @@ impl Pow for dtype {
     [f64];
 )]
 
-impl Pow for &dtype {
+impl Pow<i32> for dtype {
     type Output = dtype;
-    fn pow(self, rhs: Self) -> Self::Output {
-        self.powf(*rhs)
+    fn pow(self, rhs: i32) -> Self::Output {
+        self.powi(rhs)
     }
 }
 
@@ -59,24 +59,17 @@ impl Pow for u32 {
     [u8];
     [u16];
     [u64];
+    [u32];
     [u128];
     [i8];
     [i16];
-    [i32];
     [i64];
     [i128];
 )]
 
-impl Pow for &dtype {
+impl Pow<i32> for dtype {
     type Output = dtype;
-    fn pow(self, rhs: Self) -> Self::Output {
-        (*self).pow((*rhs).try_into().unwrap())
-    }
-}
-
-impl Pow for &u32 {
-    type Output = u32;
-    fn pow(self, rhs: Self) -> Self::Output {
-        (*self).pow(*rhs)
+    fn pow(self, rhs: i32) -> Self::Output {
+        self.pow(rhs as u32)
     }
 }

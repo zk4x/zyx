@@ -1,4 +1,4 @@
-use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, dtype::DType};
 use std::{cell::RefCell, ops::{Add, Mul, Div}};
 
 #[derive(Debug, Clone, Copy)]
@@ -67,26 +67,32 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardVS<'g, S> {
+pub struct PowBackwardVS<'g, S, S2> {
     xgrad: &'g RefCell<S>,
-    xtemp: S,
+    xtemp: S2,
 }
 
-impl<'g, S> Backward<S> for PowBackwardVS<'g, S>
+// TODO: rewrite everything like this
+impl<'g, S, S2> Backward<S> for PowBackwardVS<'g, S, S2>
 where
-    S: Default + Add<Output = S> + Mul<Output = S>,
+    S: Default + std::ops::Add<<S2 as Mul<S>>::Output, Output = S>,
+    S2: Mul<S>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + self.xtemp * res_grad);
     }
 }
 
-impl<'g, S> Pow<S> for &'g Variable<S>
+impl<'g, S, S2> Pow<S2> for &'g Variable<S>
 where
-    S: 'g + Clone + Mul<Output = S> + Div<Output = S> + Pow<Output = S>,
+    S2: DType + Clone + Mul<<S as Pow<S2>>::Output>,
+    <S2 as Mul<<S as Pow<S2>>::Output>>::Output: Div<S>,
+    S: Clone + Pow<S2>,
+    <S as Pow<S2>>::Output: Clone,
+    <<S2 as Mul<<S as Pow<S2>>::Output>>::Output as Div<S>>::Output: 'g,
 {
-    type Output = Tensor<S, PowBackwardVS<'g, S>>;
-    fn pow(self, rhs: S) -> Self::Output {
+    type Output = Tensor<<S as Pow<S2>>::Output, PowBackwardVS<'g, S, <<S2 as Mul<<S as Pow<S2>>::Output>>::Output as Div<S>>::Output>>;
+    fn pow(self, rhs: S2) -> Self::Output {
         let res = self.data().clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),
@@ -174,14 +180,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardTS<S, XF> {
+pub struct PowBackwardTS<S2, XF> {
     xgrad_fn: XF,
-    xtemp: S,
+    xtemp: S2,
 }
 
-impl<S, XF> Backward<S> for PowBackwardTS<S, XF>
+impl<S, S2, XF> Backward<S> for PowBackwardTS<S2, XF>
 where
-    S: Default + Mul<Output = S>,
+    S2: Default + Mul<S, Output = S>,
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -189,12 +195,15 @@ where
     }
 }
 
-impl<S, F> Pow<S> for Tensor<S, F>
+impl<S, S2, F> Pow<S2> for Tensor<S, F>
 where
-    S: Clone + Mul<Output = S> + Div<Output = S> + Pow<Output = S>,
+    S: Clone + Pow<S2>,
+    S2: DType + Clone + Mul<<S as Pow<S2>>::Output>,
+    <S as Pow<S2>>::Output: Clone,
+    <S2 as Mul<<S as Pow<S2>>::Output>>::Output: Div<S>,
 {
-    type Output = Tensor<S, PowBackwardTS<S, F>>;
-    fn pow(self, rhs: S) -> Self::Output {
+    type Output = Tensor<<S as Pow<S2>>::Output, PowBackwardTS<<<S2 as Mul<<S as Pow<S2>>::Output>>::Output as Div<S>>::Output, F>>;
+    fn pow(self, rhs: S2) -> Self::Output {
         let res = self.data.clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),

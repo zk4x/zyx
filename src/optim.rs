@@ -1,57 +1,83 @@
 //! Various optimizers to update Buffers with gradients.
 //! 
 
-// TODO: add Parameters struct, that will be used instead of Vec<&'a Variable>
-// It should be dynamic over all variable storages.
-
-// TODO: currently, all parameter Buffers must have same storage
-// we can solve this using dyn, but it would be nice, if we could use
-// some kind of dynamic tuples
-
-use crate::{ops::{Zeros, ConvertFrom}, tensor::Variable};
-use std::ops::Mul;
+use crate::module::Parameters;
+use std::ops::{Mul, Sub};
 
 /// # Optimizer trait
 /// 
 /// All optimizers must implement this trait.
-pub trait Optimizer<'a, S> {
+pub trait Optimizer {
+    /// Optimizer parameters
+    type P: Parameters;
+
     /// Get all parameters that optimizer has.
-    fn parameters(&self) -> &[&'a Variable<S>];
+    fn parameters(&self) -> &Self::P;
+
+    /// Update one of parameters
+    fn update_data<S>(&self, data: S, grad: S) -> S
+    where
+        // These are the requirements for SGD. For other optimizers, they may be subject to change.
+        S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>;
+
     /// Update data in parameters using their gradients.
-    fn step(&self);
+    fn step(&self)
+    where
+        Self: Optimizer,
+        Self: Sized,
+    {
+        self.parameters().update_data(self);
+    }
+
     /// Fill parameter gradients with zeros.
-    fn zero_grad(&self);
+    fn zero_grad(&self) {
+        self.parameters().zero_grad();
+    }
 }
 
-/// Stochastic gradient descent optimizer
-pub struct SGD<'a, S> {
-    parameters: Vec<&'a Variable<S>>,
-    learning_rate: f32,
+/// # Stochastic gradient descent optimizer
+///
+/// Updates parameter's data using following function:
+/// ```txt
+/// x.data = x.data - x.grad * learning_rate;
+/// ```
+pub struct SGD<Params> {
+    parameters: Params,
+    learning_rate: f64,
 }
 
-impl<'a, S> SGD<'a, S> {
+impl<Params> SGD<Params> {
     /// Create new SGD from given parameters
-    pub fn new(parameters: &[&'a Variable<S>]) -> Self {
+    pub fn new(parameters: Params) -> Self
+    where
+        Params: Parameters,
+    {
         Self {
-            parameters: parameters.to_vec(),
+            parameters: parameters,
             learning_rate: 0.01,
         }
     }
+
+    /// Set learning rate for SGD
+    pub fn with_learning_rate(mut self, learning_rate: f64) -> Self {
+        self.learning_rate = learning_rate;
+        self
+    }
 }
 
-impl<'a, S> Optimizer<'a, S> for SGD<'a, S>
+impl<Params> Optimizer for SGD<Params>
 where
-    S: Default + Zeros + ConvertFrom<f32> + Mul<Output = S>,
+    Params: Parameters,
 {
-    fn parameters(&self) -> &[&'a Variable<S>] {
+    type P = Params;
+    fn parameters(&self) -> &Self::P {
         &self.parameters
     }
 
-    fn step(&self) {
-        self.parameters.iter().for_each(|param| param.update_data(|data| data * S::cfrom(1. - self.learning_rate)));
-    }
-
-    fn zero_grad(&self) {
-        self.parameters.iter().for_each(|param| param.zero_grad());
+    fn update_data<S>(&self, data: S, grad: S) -> S
+    where
+        S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    {
+        data - grad * self.learning_rate
     }
 }

@@ -47,7 +47,6 @@ where
 
 impl<S, F> Neg for Tensor<S, F>
 where
-    F: FnOnce(S),
     S: Neg<Output = S>,
 {
     type Output = Tensor<S, NegBackwardT<F>>;

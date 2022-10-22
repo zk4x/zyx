@@ -2,8 +2,8 @@
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
 
-use crate::{module::Module, ops::{self, ConvertFrom, GetShape}, tensor::Variable, prelude::{ModuleParams, IntoDims}, init::UniformInit};
-use std::ops::{Neg, Add, Div};
+use crate::{module::Module, ops::{self, ConvertFrom, GetShape, Pow}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
+use std::ops::{Neg, Add, Sub, Mul, Div};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,14 +14,14 @@ where
     Input: ops::ReLU,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.relu()
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for ReLU {
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -34,14 +34,14 @@ where
     Input: ops::Exp,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.exp()
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for Exp {
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -54,14 +54,14 @@ where
     Input: ops::Ln,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.ln()
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for Ln {
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -74,14 +74,14 @@ where
     Input: ops::Tanh,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.tanh()
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for Tanh {
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -94,22 +94,21 @@ where
     Input:
         Clone +
         Neg +
-        ops::Ones +
         Add<<<Input as Neg>::Output as ops::Exp>::Output> +
         Div<<Input as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
     <Input as Neg>::Output: ops::Exp,
+    i32: Add<<<Input as Neg>::Output as ops::Exp>::Output> + Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
 {
-    type Output = <Input as Div<<Input as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>>::Output;
+    type Output = <i32 as Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>>::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         use ops::Exp;
-        let ones = Input::ones(1);
-        ones.clone()/(ones+(-x).exp())
+        1/(1+(-x).exp())
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for Sigmoid {
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -126,26 +125,24 @@ where
 impl<Input, D> Module<Input> for &SoftMax<D>
 where
     D: IntoDims + Clone,
-    Input: ops::Exp,
-    <Input as ops::Exp>::Output:
-        Clone +
-        ops::Sum +
-        Div<<<Input as ops::Exp>::Output as ops::Sum>::Output>,
+    Input: Clone + ops::Max + Sub<<Input as ops::Max>::Output>,
+    <Input as Sub<<Input as ops::Max>::Output>>::Output: ops::Exp,
+    <<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output: Clone + ops::Sum,
+    <<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output: Div<<<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as ops::Sum>::Output>,
 {
-    type Output = <<Input as ops::Exp>::Output as Div<<<Input as ops::Exp>::Output as ops::Sum>::Output>>::Output;
-    fn forward(self, x: Input) -> Self::Output {
-        use ops::Sum;
-        let temp = x.exp();
-        temp.clone()/temp.sum(self.dims.clone())
-    }
-}
+    type Output = <<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as Div<<<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as ops::Sum>::Output>>::Output;
+    type Params = ();
 
-impl<'a, S, D> ModuleParams<'a, S> for SoftMax<D>
-where
-    D: IntoDims,
-{
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn forward(self, x: Input) -> Self::Output {
+        use crate::ops::{Exp, Sum};
+        // TODO: Check if cloning Tensors (that is also cloning their grad_fn)
+        // has any effect on correctness of this function's gradient calculation
+        let temp = (x.clone() - x.max(())).exp();
+        temp.clone() / temp.sum(self.dims.clone())
+    }
+
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -154,11 +151,20 @@ fn softmax_test() {
     use crate::prelude::*;
     use crate::accel::cpu::Buffer;
 
-    let x = Buffer::cfrom([[3., 2., 4.], [4., 2., 5.]]);
-    println!("{}", x);
-    let y = x.apply(&SoftMax { dims: -2 });
+    let x = Buffer::<f32>::cfrom([[3., 2., 4.], [4., 2., 5.]]).with_grad();
+
+    /*let dim = -1;
+    let e_x = ((&x).data().clone() - (&x).max(())).exp();
+    println!("\n{}", e_x);
+    let y = e_x.clone() / e_x.sum(dim);
     println!("\n{}", y);
-    println!("{}", y.sum(-2));
+    y.backward();
+    println!("\n{}", x.grad());*/
+
+    let y = (&x).apply(&SoftMax { dims: -1 });
+    println!("\n{}", y);
+    y.backward();
+    println!("\n{}", x);
     //panic!();
 }
 
@@ -178,17 +184,14 @@ where
     D: IntoDims + Clone,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.sum(self.dims.clone())
     }
-}
-
-impl<'a, S, D> ModuleParams<'a, S> for Sum<D>
-where
-    D: IntoDims,
-{
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -208,17 +211,14 @@ where
     D: IntoDims + Clone,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.max(self.dims.clone())
     }
-}
-
-impl<'a, S, D> ModuleParams<'a, S> for Max<D>
-where
-    D: IntoDims,
-{
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -235,17 +235,14 @@ where
     D: IntoDims + Clone,
 {
     type Output = Input::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
         x.min(self.dims.clone())
     }
-}
 
-impl<'a, S, D> ModuleParams<'a, S> for Min<D>
-where
-    D: IntoDims,
-{
-    fn parameters(&self) -> Vec<&'a Variable<S>> {
-        Vec::new()
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -264,9 +261,37 @@ where
     <Input as ops::Sum>::Output: Div<Input>,
 {
     type Output = <<Input as ops::Sum>::Output as Div<Input>>::Output;
+    type Params = ();
+
     fn forward(self, x: Input) -> Self::Output {
+        // TODO: We can't do Input::cfrom, because we don't know what type Input has and whether that type implements ConvertFrom<usize>
         let n = Input::cfrom(x.shape().numel());
         x.sum(self.dims.clone())/n
+    }
+
+    fn parameters(self) -> Self::Params {
+        ()
+    }
+}
+
+/// MSE loss
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MSELoss;
+
+impl<Y, YP> Module<(Y, YP)> for &MSELoss
+where
+    Y: Sub<YP>,
+    <Y as Sub<YP>>::Output: Pow<i32>,
+{
+    type Output = <<Y as Sub<YP>>::Output as Pow<i32>>::Output;
+    type Params = ();
+
+    fn forward(self, x: (Y, YP)) -> Self::Output {
+        (x.0 - x.1).pow(2)
+    }
+
+    fn parameters(self) -> Self::Params {
+        ()
     }
 }
 
@@ -305,18 +330,19 @@ impl<S> Linear<S> {
 
 impl<'a, S, Input> Module<Input> for &'a Linear<S>
 where
+    S: 'a + Default + Zeros + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
     Input: ops::MatMul<&'a Variable<S>>,
     <Input as ops::MatMul<&'a Variable<S>>>::Output: std::ops::Add<&'a Variable<S>>,
 {
     type Output = <<Input as ops::MatMul<&'a Variable<S>>>::Output as std::ops::Add<&'a Variable<S>>>::Output;
+    type Params = (&'a Variable<S>, &'a Variable<S>);
+
     fn forward(self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for Linear<S> {
-    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
-        vec![&self.w, &self.b]
+    fn parameters(self) -> Self::Params {
+        (&self.w, &self.b)
     }
 }
 
@@ -348,6 +374,7 @@ impl<S> RNNCell<S> {
 use ops::MatMul;
 impl<'a, S, X, H> Module<(X, H)> for &'a RNNCell<S>
 where
+    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
     X: MatMul<&'a Variable<S>>,
     H: MatMul<&'a Variable<S>>,
     <X as MatMul<&'a Variable<S>>>::Output: Add<&'a Variable<S>>,
@@ -355,13 +382,13 @@ where
     <<<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output as Add<<H as MatMul<&'a Variable<S>>>::Output>>::Output: Add<&'a Variable<S>>,
 {
     type Output = <<<<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output as Add<<H as MatMul<&'a Variable<S>>>::Output>>::Output as Add<&'a Variable<S>>>::Output;
+    type Params = (&'a Variable<S>, &'a Variable<S>, &'a Variable<S>, &'a Variable<S>);
+
     fn forward(self, x: (X, H)) -> Self::Output {
         x.0.matmul(&self.wih) + &self.bih + x.1.matmul(&self.whh) + &self.bhh
     }
-}
 
-impl<'a, S> ModuleParams<'a, S> for RNNCell<S> {
-    fn parameters(&'a self) -> Vec<&'a Variable<S>> {
-        vec![&self.wih, &self.bih, &self.whh, &self.bhh]
+    fn parameters(self) -> Self::Params {
+        (&self.wih, &self.bih, &self.whh, &self.bhh)
     }
 }

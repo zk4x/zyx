@@ -1,12 +1,10 @@
 //! Methods for tensor initialization
 //! 
 
+// TODO: move these implementations to tensor::ops::from_vec.rs etc.
+
 use crate::{tensor::Variable, ops::{self, FromVec}, shape::IntoShape};
 use std::cell::RefCell;
-
-// Different accelerators can be supported with either config flags similar to this, or with calls like Buffer::<opencl::Buffer<f32>>::convert_from(other_Buffer)
-//#[cfg(Opencl)]
-//type Storage<T> = opencl::Buffer<T>;
 
 /// Initialize tensor from vec and shape
 impl<S, T> ops::FromVec<T> for Variable<S>

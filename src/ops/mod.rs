@@ -40,17 +40,18 @@
 //! Conv
 //! 
 
+mod convert_from;
+mod zeros;
+mod ones;
+mod get_shape;
 mod relu;
 mod drelu;
 mod exp;
 mod ln;
 mod tanh;
-mod pow;
-mod zeros;
-mod ones;
 mod min;
+mod pow;
 mod max;
-mod get_shape;
 
 use crate::shape::{IntoShape, IntoDims, Shape};
 

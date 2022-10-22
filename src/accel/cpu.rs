@@ -22,13 +22,13 @@ pub struct Buffer<T> {
 }
 
 impl<T> Buffer<T> {
-    /// Get buffers estimated memory size
+    /// Get Buffer's estimated memory size
     pub fn est_mem_size(&self) -> usize {
         self.data.len() * std::mem::size_of::<T>() + self.shape.ndim() * std::mem::size_of::<usize>()
     }
 }
 
-/// Convert between Buffers with different datatypes
+// Convert between Buffers with different datatypes
 impl<T, T2> ops::ConvertFrom<Buffer<T2>> for Buffer<T>
 where
     T: From<T2> + Send,
@@ -43,7 +43,7 @@ where
     }
 }
 
-/// Display Buffer
+// Display Buffer
 impl<T> std::fmt::Display for Buffer<T>
 where
     T: std::fmt::Display
@@ -53,11 +53,11 @@ where
         if self.data.is_empty() { return f.write_str(&(res + "[]")); }
         let n = self.shape.numel();
         let ndim = self.shape.ndim();
-        const PRECISION: usize = 3;
+        //const PRECISION: usize = 3;
         // get maximal width of single value
         let mut w = 0;
         for x in &self.data {
-            let l = format!("{0:1$.2$}", x, w, PRECISION).len();
+            let l = format!("{0:1$}", x, w).len();
             if l > w { w = l; }
         }
         let d0 = self.shape[-1];
@@ -75,7 +75,7 @@ where
                 }
             }
             use std::fmt::Write;
-            let _ = write!(res, "{0:>1$.2$}", self.data[i], w, PRECISION);
+            let _ = write!(res, "{0:>1$}", self.data[i], w);
             if (i + 1) % d0 != 0usize { res += " "; }
             {
                 let mut var = 1;
@@ -456,7 +456,12 @@ where
     // stuff during expanding
     let data = match x.shape.numel().cmp(&y.shape.numel()) {
         Ordering::Greater => x.data.into_par_iter().zip(y.expand(x.shape).data.into_par_iter()).map(f).collect(),
-        Ordering::Less => x.expand(y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
+        Ordering::Less => {
+            println!("Expanding first to {}", y.shape);
+            let t = x.expand(y.shape);
+            println!("{}", t.data.len());
+            t.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect()
+        }
         Ordering::Equal => x.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
     };
     Buffer {
@@ -495,6 +500,22 @@ where
     }
 }
 
+impl<T> std::ops::Mul<f64> for Buffer<T>
+where
+    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ops::ConvertFrom<f64>,
+{
+    type Output = Buffer<T>;
+    fn mul(self, rhs: f64) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let rhs: T = rhs.cinto();
+        Self {
+            shape: self.shape,
+            data: self.data.into_par_iter().map(|x| x * rhs.clone()).collect(),
+        }
+    }
+}
+
 impl<T> std::ops::Div for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Div<Output = T>,
@@ -512,6 +533,19 @@ where
     type Output = Buffer<T>;
     fn pow(self, rhs: Buffer<T>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a.pow(b))
+    }
+}
+
+impl<T> ops::Pow<i32> for Buffer<T>
+where
+    T: Sync + Send + Clone + ops::Pow<i32>,
+{
+    type Output = Buffer<<T as ops::Pow<i32>>::Output>;
+    fn pow(self, rhs: i32) -> Self::Output {
+        Buffer {
+            shape: self.shape,
+            data: self.data.into_iter().map(|x| x.pow(rhs)).collect(),
+        }
     }
 }
 

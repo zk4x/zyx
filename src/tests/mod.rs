@@ -55,7 +55,7 @@ mod nn {
         use crate::prelude::*;
         use super::Buffer;
         use crate::nn;
-        let linear = nn::Linear::new::<f64>(3, 2);
+        let linear = nn::Linear::new(3, 2);
         let x = Buffer::cfrom([[2., 3., 1.]]);
         let z = linear.forward(x);
         assert_eq!(z.shape(), (1, 2).shape());
@@ -314,7 +314,7 @@ mod tensor {
             // test Variable
             let x = Buffer::from_vec(vec.clone(), [9]);
             let y = Buffer::from_vec(vec2.clone(), [9]).with_grad();
-            let z = B(x) + &y;
+            let z = x + &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
