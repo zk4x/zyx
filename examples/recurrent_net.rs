@@ -1,5 +1,5 @@
 //! ## This is an example of recurrent neural network
-/*use zyx::prelude::*;
+use zyx::prelude::*;
 use zyx::accel::cpu;
 use zyx::nn::{RNNCell, Linear, SoftMax, Tanh, MSELoss, Sum};
 use zyx::optim;
@@ -18,10 +18,10 @@ fn main() {
     );
 
     // This looks bad right now, eventually it will look like this:
-    //let mut params = (rnn_net.parameters(), net2.parameters());
-    let mut params = (
+    //let params = (rnn_net.parameters(), net2.parameters());
+    let params = (
         <&(RNNCell<cpu::Buffer<f32>>, Tanh) as Module<(cpu::Buffer<f32>, cpu::Buffer<f32>)>>::parameters(&rnn_net),
-        <&(Linear<cpu::Buffer<f32>>, SoftMax<()>) as zyx::module::Module<cpu::Buffer<f32>>>::parameters(&net2),
+        <&(Linear<cpu::Buffer<f32>>, SoftMax<()>) as Module<cpu::Buffer<f32>>>::parameters(&net2),
     );
 
     let mut hidden_state = cpu::Buffer::uniform((1, hidden_size), 0., 1.);
@@ -43,7 +43,7 @@ fn main() {
         hidden_state = hidden_state_t1.data().clone();
 
         let y_predicted = net2.forward(hidden_state_t1);
-        let loss = (y_predicted, y).apply(mse_loss);
+        let loss = (y_predicted, y).apply(&mse_loss);
 
         optimizer.zero_grad();
         loss.backward();
@@ -51,6 +51,4 @@ fn main() {
     }
 
     //println!("hidden state: {}", hidden_state);
-}*/
-
-fn main() {}
+}

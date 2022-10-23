@@ -8,7 +8,7 @@
 
 // TODO: use macros to make this DRY
 
-use crate::{tensor::Variable, ops::Zeros, optim::Optimizer};
+use crate::{tensor::Variable, ops::{Zeros, GetShape}, optim::Optimizer};
 use std::ops::{Sub, Mul};
 
 // We can just store all Variables in tuple and implement some trait for this tuple that will take input and call
@@ -36,7 +36,7 @@ impl Parameters for () {
 
 impl<S, const N: usize> Parameters for [&Variable<S>; N]
 where
-    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where
@@ -52,7 +52,7 @@ where
 
 impl<S> Parameters for Vec<&Variable<S>>
 where
-    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where

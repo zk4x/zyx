@@ -11,3 +11,9 @@ impl ConvertFrom<i32> for f32 {
         x as f32
     }
 }
+
+impl ConvertFrom<usize> for f32 {
+    fn cfrom(x: usize) -> Self {
+        x as f32
+    }
+}

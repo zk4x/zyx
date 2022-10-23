@@ -53,7 +53,7 @@ impl<Params> SGD<Params> {
         Params: Parameters,
     {
         Self {
-            parameters: parameters,
+            parameters,
             learning_rate: 0.01,
         }
     }

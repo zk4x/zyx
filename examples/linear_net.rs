@@ -2,37 +2,41 @@
 
 use zyx::prelude::*;
 use zyx::accel::cpu;
-use zyx::nn::{Linear, Tanh, Sigmoid, MSELoss, Sum};
+use zyx::nn::{Linear, MSELoss, Mean, ReLU, Tanh, Sigmoid};
 use zyx::optim;
 
 fn main() {
     let network = (
-        Linear::new::<f32>(1, 2000),
+        Linear::new::<f32>(1, 20),
+        ReLU,
+        Linear::new::<f32>(20, 50),
         Tanh,
-        Linear::new::<f32>(2000, 1000),
-        Tanh,
-        Linear::new::<f32>(1000, 500),
-        Tanh,
-        Linear::new::<f32>(500, 1),
+        Linear::new::<f32>(50, 1),
         Sigmoid,
     );
 
-    // MSELoss does not reduce it's output, you need to add some reduce function if you want to apply reduce
-    let mse_loss = (MSELoss, Sum { dims: () });
+    // MSELoss does not reduce it's output (it's just (y-yp)^2), you need to add some reduce function if you want to apply reduce
+    let mse_loss = (MSELoss, Mean { dims: () });
 
     // This looks bad right now, eventually it will look like this:
     //let optimizer = optim::SGD::new(network.parameters());
-    use cpu::Buffer;
-    let optimizer = optim::SGD::new(<&(Linear<Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>>, Sigmoid) as zyx::module::Module<Buffer<f32>>>::parameters(&network));
+    let optimizer = optim::SGD::new(<&(
+        Linear<cpu::Buffer<f32>>, ReLU,
+        Linear<cpu::Buffer<f32>>, Tanh,
+        Linear<cpu::Buffer<f32>>, Sigmoid) as Module<cpu::Buffer<f32>>>::parameters(&network)).with_learning_rate(0.03);
 
-    for i in 0..100 {
-        let x = cpu::Buffer::cfrom(i as f32 / 10.);
-        let y = cpu::Buffer::cfrom((i as f32).sin());
-        let y_predicted = network.forward(x);
-        let loss = (y_predicted, y).apply(&mse_loss);
-        //println!("Loss: {}", loss);
-        optimizer.zero_grad();
-        loss.backward();
-        optimizer.step();
+    for _ in 0..100 {
+        for i in 0..100 {
+            let x = cpu::Buffer::cfrom(i as f32 / 10.);
+            let y = cpu::Buffer::cfrom((i as f32 / 10.).sin());
+
+            let y_predicted = network.forward(x);
+
+            let loss = (y_predicted, y).apply(&mse_loss);
+
+            optimizer.zero_grad();
+            loss.backward();
+            optimizer.step();
+        }
     }
 }

@@ -1,4 +1,4 @@
-use crate::tensor::{B, Variable, Tensor, Backward, ops::RefCellReplaceTake};
+use crate::{tensor::{B, Variable, Tensor, Backward, ops::RefCellReplaceTake}, dtype::DType};
 use std::{cell::RefCell, ops::{Neg, Add, Sub, Mul, Div}};
 use duplicate::duplicate_item;
 use crate::accel::cpu::Buffer;
@@ -64,6 +64,7 @@ impl<S, F> Div<Tensor<S, F>> for dtype
 where
     S: Clone,
     Self: Div<S, Output = S>,
+    // TODO: why does this overflow during compilation?
     //<Self as Div<S>>::Output: Clone,
 {
     type Output = Tensor<<Self as Div<S>>::Output, DivBackwardST<<Self as Div<S>>::Output, S, F>>;
@@ -194,22 +195,23 @@ pub struct DivBackwardTS<S, XF> {
     ydata: S,
 }
 
-impl<S, XF> Backward<S> for DivBackwardTS<S, XF>
+impl<S, S2, XF> Backward<S2> for DivBackwardTS<S, XF>
 where
-    S: Div<Output = S>,
-    XF: Backward<S>,
+    S2: Div<S>,
+    XF: Backward<<S2 as Div<S>>::Output>,
 {
-    fn backward(self, res_grad: S) {
+    fn backward(self, res_grad: S2) {
         self.xgrad_fn.backward(res_grad / self.ydata);
     }
 }
 
-impl<S, F> Div<S> for Tensor<S, F>
+impl<S, S2, F> Div<S2> for Tensor<S, F>
 where
-    S: Clone + Div<Output = S>,
+    S2: DType + Clone,
+    S: Clone + Div<S2>,
 {
-    type Output = Tensor<S, DivBackwardTS<S, F>>;
-    fn div(self, rhs: S) -> Self::Output {
+    type Output = Tensor<<S as Div<S2>>::Output, DivBackwardTS<S2, F>>;
+    fn div(self, rhs: S2) -> Self::Output {
         Tensor {
             data: self.data / rhs.clone(),
             grad_fn: DivBackwardTS {

@@ -2,7 +2,7 @@
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
 
-use crate::{module::Module, ops::{self, ConvertFrom, GetShape, Pow}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
+use crate::{module::Module, ops::{self, GetShape, Pow}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
 use std::ops::{Neg, Add, Sub, Mul, Div};
 
 /// ReLU operation
@@ -20,9 +20,7 @@ where
         x.relu()
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Exp operation
@@ -40,9 +38,7 @@ where
         x.exp()
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Ln operation
@@ -60,9 +56,7 @@ where
         x.ln()
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Tanh operation
@@ -80,9 +74,7 @@ where
         x.tanh()
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Sigmoid operation
@@ -107,9 +99,7 @@ where
         1/(1+(-x).exp())
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,9 +131,7 @@ where
         temp.clone() / temp.sum(self.dims.clone())
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 #[test]
@@ -190,9 +178,7 @@ where
         x.sum(self.dims.clone())
     }
     
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Max operation
@@ -217,9 +203,7 @@ where
         x.max(self.dims.clone())
     }
     
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Min operation
@@ -241,9 +225,7 @@ where
         x.min(self.dims.clone())
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// Mean operation
@@ -251,27 +233,25 @@ pub struct Mean<D>
 where
     D: IntoDims,
 {
-    dims: D
+    /// Dimensions for mean
+    pub dims: D
 }
 
 impl<Input, D> Module<Input> for &Mean<D>
 where
     D: IntoDims + Clone,
-    Input: ops::Sum + ConvertFrom<usize> + GetShape,
-    <Input as ops::Sum>::Output: Div<Input>,
+    Input: GetShape + ops::Sum,
+    <Input as ops::Sum>::Output: Div<usize>,
 {
-    type Output = <<Input as ops::Sum>::Output as Div<Input>>::Output;
+    type Output = <<Input as ops::Sum>::Output as Div<usize>>::Output;
     type Params = ();
 
     fn forward(self, x: Input) -> Self::Output {
-        // TODO: We can't do Input::cfrom, because we don't know what type Input has and whether that type implements ConvertFrom<usize>
-        let n = Input::cfrom(x.shape().numel());
+        let n = x.shape().numel();
         x.sum(self.dims.clone())/n
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 /// MSE loss
@@ -290,9 +270,7 @@ where
         (x.0 - x.1).pow(2)
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 //pub struct STD {}
@@ -303,7 +281,7 @@ pub struct NormLayer {}
 impl<Input> Module<Input> for &NormLayer {
     type Output = Self;
     fn forward(self, x: Input) -> Self::Output {
-        (x - x.apply(Mean))/x.apply(STD)
+        (x - x.apply(&Mean))/x.apply(&STD)
     }
 }*/
 
@@ -330,7 +308,7 @@ impl<S> Linear<S> {
 
 impl<'a, S, Input> Module<Input> for &'a Linear<S>
 where
-    S: 'a + Default + Zeros + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    S: 'a + Default + Zeros + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
     Input: ops::MatMul<&'a Variable<S>>,
     <Input as ops::MatMul<&'a Variable<S>>>::Output: std::ops::Add<&'a Variable<S>>,
 {
@@ -374,7 +352,7 @@ impl<S> RNNCell<S> {
 use ops::MatMul;
 impl<'a, S, X, H> Module<(X, H)> for &'a RNNCell<S>
 where
-    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
     X: MatMul<&'a Variable<S>>,
     H: MatMul<&'a Variable<S>>,
     <X as MatMul<&'a Variable<S>>>::Output: Add<&'a Variable<S>>,

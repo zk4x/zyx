@@ -310,7 +310,7 @@ use std::ops::{Sub, Mul};
 // Update Variable's data. It is used by optimizer.step().
 impl<S> Parameters for &Variable<S>
 where
-    S: Default + Clone + Zeros + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    S: Default + Clone + Zeros + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where
@@ -321,6 +321,6 @@ where
     }
 
     fn zero_grad(&self) {
-        self.grad.replace(S::zeros(1));
+        self.grad.replace(S::zeros(self.shape()));
     }
 }

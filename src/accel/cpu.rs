@@ -401,7 +401,6 @@ where
         let strides = s_shape.strides().permute(dims.clone());
         let mut acc_var = 1;
         let acc = Shape(s_shape.into_iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<Vec<usize>>().into_iter().rev().collect()).permute(dims);
-        std::mem::drop(acc_var);
         let n = shape.numel();
         // temp is in reverse order
         let mut temp = vec![(0, 0); ndim]; // strides, acc_shape
@@ -476,7 +475,7 @@ where
 }
 
 use duplicate::duplicate_item;
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Add<Buffer<T>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + std::ops::Add<Output = T> + Clone,
@@ -529,7 +528,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Mul<Buffer<T>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + std::ops::Mul<Output = T> + Clone,
@@ -572,7 +571,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Div<Buffer<T>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + std::ops::Div<Output = T> + Clone,
@@ -585,6 +584,24 @@ where
         Buffer {
             shape: rhs.shape,
             data: rhs.data.into_par_iter().map(|y| x.clone()/y).collect(),
+        }
+    }
+}
+
+use crate::dtype::ScalarType;
+impl<T, T2> std::ops::Div<T2> for Buffer<T>
+where
+    T2: ScalarType,
+    T: Clone + Sync + Send + std::ops::Div<Output = T> + ops::ConvertFrom<T2>,
+{
+    type Output = Buffer<T>;
+    fn div(self, rhs: T2) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let rhs: T = rhs.cinto();
+        Self {
+            shape: self.shape,
+            data: self.data.into_par_iter().map(|x| x / rhs.clone()).collect(),
         }
     }
 }
