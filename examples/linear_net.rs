@@ -1,8 +1,8 @@
 //! ## This is an example of linear neural network with sequential model
 
-/*use zyx::prelude::*;
+use zyx::prelude::*;
 use zyx::accel::cpu;
-use zyx::nn::{Linear, Tanh, SoftMax, Sigmoid, MSELoss, Sum};
+use zyx::nn::{Linear, Tanh, Sigmoid, MSELoss, Sum};
 use zyx::optim;
 
 fn main() {
@@ -22,18 +22,17 @@ fn main() {
 
     // This looks bad right now, eventually it will look like this:
     //let optimizer = optim::SGD::new(network.parameters());
-    let optimizer = optim::SGD::new(<&(Linear<_>, zyx::nn::Tanh, Linear<_>, zyx::nn::Tanh, Linear<_>, zyx::nn::Tanh, Linear<_>, SoftMax<()>) as Module<cpu::Buffer<f32>>>::parameters(&network));
+    use cpu::Buffer;
+    let optimizer = optim::SGD::new(<&(Linear<Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>>, Sigmoid) as zyx::module::Module<Buffer<f32>>>::parameters(&network));
 
     for i in 0..100 {
-        let x = cpu::Buffer::<f32>::cfrom(i as f32 / 10.);
+        let x = cpu::Buffer::cfrom(i as f32 / 10.);
         let y = cpu::Buffer::cfrom((i as f32).sin());
         let y_predicted = network.forward(x);
-        let loss = (y_predicted, y).apply(mse_loss);
+        let loss = (y_predicted, y).apply(&mse_loss);
         //println!("Loss: {}", loss);
         optimizer.zero_grad();
         loss.backward();
         optimizer.step();
     }
-}*/
-
-fn main() {}
+}

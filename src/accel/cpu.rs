@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops, shape::{IntoShape, IntoDims, Shape}};
+use crate::{ops::{self, ConvertFrom}, shape::{IntoShape, IntoDims, Shape}};
 use std::ops::{Add, Mul};
 
 // TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
@@ -456,12 +456,7 @@ where
     // stuff during expanding
     let data = match x.shape.numel().cmp(&y.shape.numel()) {
         Ordering::Greater => x.data.into_par_iter().zip(y.expand(x.shape).data.into_par_iter()).map(f).collect(),
-        Ordering::Less => {
-            println!("Expanding first to {}", y.shape);
-            let t = x.expand(y.shape);
-            println!("{}", t.data.len());
-            t.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect()
-        }
+        Ordering::Less => x.expand(y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
         Ordering::Equal => x.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
     };
     Buffer {
@@ -477,6 +472,40 @@ where
     type Output = Buffer<T>;
     fn add(self, rhs: Buffer<T>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a + b)
+    }
+}
+
+use duplicate::duplicate_item;
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];)]
+impl<T> std::ops::Add<Buffer<T>> for dtype
+where
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Add<Output = T> + Clone,
+{
+    type Output = Buffer<T>;
+    fn add(self, rhs: Buffer<T>) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let x: T = self.cinto();
+        Buffer {
+            shape: rhs.shape,
+            data: rhs.data.into_par_iter().map(|y| x.clone() + y).collect(),
+        }
+    }
+}
+
+impl<T, T2> std::ops::Add<T2> for Buffer<T>
+where
+    T2: crate::dtype::ScalarType,
+    T: Clone + Sync + Send + std::ops::Add<Output = T> + From<T2>,
+{
+    type Output = Buffer<T>;
+    fn add(self, rhs: T2) -> Self::Output {
+        use rayon::prelude::*;
+        let rhs: T = rhs.into();
+        Self {
+            shape: self.shape,
+            data: self.data.into_par_iter().map(|x| x + rhs.clone()).collect()
+        }
     }
 }
 
@@ -497,6 +526,23 @@ where
     type Output = Buffer<T>;
     fn mul(self, rhs: Buffer<T>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a * b)
+    }
+}
+
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];)]
+impl<T> std::ops::Mul<Buffer<T>> for dtype
+where
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Mul<Output = T> + Clone,
+{
+    type Output = Buffer<T>;
+    fn mul(self, rhs: Buffer<T>) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let x: T = self.cinto();
+        Buffer {
+            shape: rhs.shape,
+            data: rhs.data.into_par_iter().map(|y| x.clone()*y).collect(),
+        }
     }
 }
 
@@ -523,6 +569,23 @@ where
     type Output = Buffer<T>;
     fn div(self, rhs: Buffer<T>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a / b)
+    }
+}
+
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];)]
+impl<T> std::ops::Div<Buffer<T>> for dtype
+where
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Div<Output = T> + Clone,
+{
+    type Output = Buffer<T>;
+    fn div(self, rhs: Buffer<T>) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let x: T = self.cinto();
+        Buffer {
+            shape: rhs.shape,
+            data: rhs.data.into_par_iter().map(|y| x.clone()/y).collect(),
+        }
     }
 }
 

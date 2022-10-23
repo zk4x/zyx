@@ -5,3 +5,9 @@ impl ConvertFrom<f64> for f32 {
         x as f32
     }
 }
+
+impl ConvertFrom<i32> for f32 {
+    fn cfrom(x: i32) -> Self {
+        x as f32
+    }
+}

@@ -1,5 +1,7 @@
 use crate::tensor::{B, Variable, Tensor, Backward, ops::RefCellReplaceTake};
 use std::{cell::RefCell, ops::{Neg, Add, Sub, Mul, Div}};
+use duplicate::duplicate_item;
+use crate::accel::cpu::Buffer;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardSV<'g, S> {
@@ -38,29 +40,35 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DivBackwardST<S, YF> {
+pub struct DivBackwardST<S, S2, YF> {
     res: S,
     ygrad_fn: YF,
-    ydata: S,
+    ydata: S2,
 }
 
-impl<S, YF> Backward<S> for DivBackwardST<S, YF>
+impl<S, S2, S3, YF> Backward<S3> for DivBackwardST<S, S2, YF>
 where
-    S: Neg<Output = S> + Mul<Output = S> + Div<Output = S>,
-    YF: Backward<S>,
+    S: Neg,
+    <S as Neg>::Output: Div<S2>,
+    <<S as Neg>::Output as Div<S2>>::Output: Mul<S3, Output = S2>,
+    YF: Backward<S2>,
 {
-    fn backward(self, res_grad: S) {
+    fn backward(self, res_grad: S3) {
         self.ygrad_fn.backward(-self.res / self.ydata * res_grad);
     }
 }
 
-impl<S, F> Div<Tensor<S, F>> for B<S>
+#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];
+    [Buffer<f32>]; [Buffer<f64>]; [Buffer<i32>]; [Buffer<i64>]; [Buffer<i128>]; [Buffer<u8>]; [Buffer<u16>]; [Buffer<u32>]; [Buffer<u64>]; [Buffer<u128>]; [Buffer<bool>];)]
+impl<S, F> Div<Tensor<S, F>> for dtype
 where
-    S: Clone + Div<Output = S>,
+    S: Clone,
+    Self: Div<S, Output = S>,
+    //<Self as Div<S>>::Output: Clone,
 {
-    type Output = Tensor<S, DivBackwardST<S, F>>;
+    type Output = Tensor<<Self as Div<S>>::Output, DivBackwardST<<Self as Div<S>>::Output, S, F>>;
     fn div(self, rhs: Tensor<S, F>) -> Self::Output {
-        let res = self.0 / rhs.data.clone();
+        let res = self / rhs.data.clone();
         Tensor {
             data: res.clone(),
             grad_fn: DivBackwardST {
