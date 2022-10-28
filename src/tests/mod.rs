@@ -91,7 +91,7 @@ mod tensor {
 
         #[test]
         fn randn() {
-            use crate::init::RandInit;
+            use crate::init::RandnInit;
             let _ = Buffer::<f32>::randn([3, 1, 4]);
         }
 
@@ -103,7 +103,7 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{ops::{GetShape, FromVec, IntoVec, ConvertFrom}, tensor::{B, IntoVariable}, shape::IntoShape};
+        use crate::{ops::{GetShape, FromVec, IntoVec, ConvertFrom}, tensor::IntoVariable, shape::IntoShape};
         use super::super::{cmp_vec, cmp_vec_f64, Buffer};
 
         #[test]
@@ -393,7 +393,7 @@ mod tensor {
             // test Variable
             let x = Buffer::from_vec(vec.clone(), [9]);
             let y = Buffer::from_vec(vec2.clone(), [9]).with_grad();
-            let z = B(x) * &y;
+            let z = x * &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x * *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             println!("{}", y);

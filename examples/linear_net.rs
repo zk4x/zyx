@@ -19,7 +19,7 @@ fn main() {
     let mse_loss = (MSELoss, Mean { dims: () });
 
     // This looks bad right now, eventually it will look like this:
-    //let optimizer = optim::SGD::new(network.parameters());
+    //let optimizer = optim::SGD::new(network.parameters()).with_learning_rate(0.03);
     let optimizer = optim::SGD::new(<&(
         Linear<cpu::Buffer<f32>>, ReLU,
         Linear<cpu::Buffer<f32>>, Tanh,

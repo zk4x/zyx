@@ -1,7 +1,6 @@
-use crate::tensor::{Tensor, Variable, Backward, ops::RefCellReplaceTake};
+use crate::{tensor::{Tensor, Variable, Backward, ops::RefCellReplaceTake}, accel::cpu};
 use std::{cell::RefCell, ops::{Sub, Neg, Add}};
 use duplicate::duplicate_item;
-use crate::accel::cpu::Buffer;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubBackwardSV<'g, S> {
@@ -17,8 +16,9 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];
-    [Buffer<f32>]; [Buffer<f64>]; [Buffer<i32>]; [Buffer<i64>]; [Buffer<i128>]; [Buffer<u8>]; [Buffer<u16>]; [Buffer<u32>]; [Buffer<u64>]; [Buffer<u128>]; [Buffer<bool>];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
+    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<'g, S> Sub<&'g Variable<S>> for dtype
 where
     Self: Sub<S>,
@@ -35,8 +35,9 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [bool];
-    [Buffer<f32>]; [Buffer<f64>]; [Buffer<i32>]; [Buffer<i64>]; [Buffer<i128>]; [Buffer<u8>]; [Buffer<u16>]; [Buffer<u32>]; [Buffer<u64>]; [Buffer<u128>]; [Buffer<bool>];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
+    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<S, F> Sub<Tensor<S, F>> for dtype
 where
     Self: Sub<S>,

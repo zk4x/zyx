@@ -1,33 +1,37 @@
-use crate::tensor::{B, Variable, Tensor, Backward, ops::RefCellReplaceTake};
+use crate::{tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, accel::cpu};
 use std::{cell::RefCell, ops::{Add, Mul}};
+use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]
-pub struct MulBackwardSV<'g, S> {
-    xdata: S,
+pub struct MulBackwardSV<'g, S, S2> {
+    xdata: S2,
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for MulBackwardSV<'g, S>
+impl<'g, S, S2> Backward<S> for MulBackwardSV<'g, S, S2>
 where
-    S: Default + Mul<Output = S> + Add<Output = S>,
+    S: Default + Add<<S2 as Mul<S>>::Output, Output = S>,
+    S2: Mul<S>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad + self.xdata * res_grad);
     }
 }
 
-// If you wanted to Mul Variable or Tensor to S, you need to wrap it inside B(),
-// but you can Mul S to Variable or Tensor
-impl<'g, S> Mul<&'g Variable<S>> for B<S>
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
+    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
+impl<'g, S> Mul<&'g Variable<S>> for dtype
 where
-    S: 'g + Clone + Mul<Output = S>,
+    Self: Mul<S>,
+    S: Clone,
 {
-    type Output = Tensor<S, MulBackwardSV<'g, S>>;
+    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardSV<'g, S, Self>>;
     fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
         Tensor {
-            data: self.0.clone() * rhs.data().clone(),
+            data: self.clone() * rhs.data().clone(),
             grad_fn: MulBackwardSV {
-                xdata: self.0,
+                xdata: self,
                 ygrad: &rhs.grad,
             }
         }
@@ -40,26 +44,29 @@ pub struct MulBackwardST<S, YF> {
     ygrad_fn: YF,
 }
 
-impl<S, YF> Backward<S> for MulBackwardST<S, YF>
+impl<S, S2, YF> Backward<S> for MulBackwardST<S2, YF>
 where
-    S: Mul<Output = S>,
-    YF: Backward<S>,
+    S2: Mul<S>,
+    YF: Backward<<S2 as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad_fn.backward(self.xdata * res_grad);
     }
 }
 
-impl<S, F> Mul<Tensor<S, F>> for B<S>
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
+    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
+impl<S, F> Mul<Tensor<S, F>> for dtype
 where
-    S: Clone + Mul<Output = S>,
+    Self: Mul<S>,
 {
-    type Output = Tensor<S, MulBackwardST<S, F>>;
+    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardST<Self, F>>;
     fn mul(self, rhs: Tensor<S, F>) -> Self::Output {
         Tensor {
-            data: self.0.clone() * rhs.data,
+            data: self.clone() * rhs.data,
             grad_fn: MulBackwardST {
-                xdata: self.0,
+                xdata: self,
                 ygrad_fn: rhs.grad_fn,
             },
         }

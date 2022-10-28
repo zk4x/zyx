@@ -1,9 +1,13 @@
-//! Module is generic trait that implements only one method: forward.
-//! It can be implemented for anything.
-//! This module also contains implementation of Apply trait, that is automatically
-//! implemented for anything that implements Module and allows users to use both
+//! [Module] is generic trait that implements only one method: [forward](Module::forward()).
+//! It is meant to be implemented mainly for functors and layers.
+//!
+//! This module also contains implementation of [Apply], that is automatically
+//! implemented for anything that implements [Module] and allows users to use both
 //! module.forward(input) notation as well as
 //! input.apply(module) notation
+//!
+//! Basically all functions, layers and models should have [module.forward(input)](Module::forward()) function and this module also provides [input.apply(module)](Apply::apply()) function.
+//! We think it is usefull for the user to have access to both standard [module.forward(input)] type of API and API with monads.
 //! 
 
 // TODO: use macros to make this DRY
@@ -17,13 +21,14 @@ use std::ops::{Sub, Mul};
 
 /// # Parameters trait
 /// 
-/// Implemented for different arrays/tuples/vecs of Variables.
+/// Implemented for different arrays/tuples/vecs of [Variables](crate::tensor::Variable).
+/// These can then be used by [optimizers](crate::optim).
 pub trait Parameters {
-    /// Update Parameter's data
+    /// Update [Parameter's](Parameters) data
     fn update_data<Optim>(&self, optim: &Optim)
     where
         Optim: Optimizer; // these functions should be callable only by optimizers
-    /// Zero Parameter's gradients
+    /// Zero [Parameter's](Parameters) gradients
     fn zero_grad(&self);
 }
 
@@ -306,24 +311,26 @@ where
 /// 
 /// Module can be implemented for anything that can have forward function.
 /// Forward simply takes any input, applies some operation and returns output.
-/// Every module also has some or zero parameters that can be optimized
-/// by optimizers.
+/// Every module also has some or zero [parameters](Parameters) that can be optimized
+/// by [optimizers](crate::optim).
 pub trait Module<Input> {
-    /// Output of forward operation on Module
+    /// Output of forward operation on [Module]
     type Output;
-    /// Parameters of Module
+    /// [Parameters] of [Module]
     type Params: Parameters;
-    /// Forward operation on Module
+    /// Forward operation on [Module]
     fn forward(self, x: Input) -> Self::Output;
-    /// Get parameters of Module
+    /// Get parameters of [Module]
     fn parameters(self) -> Self::Params;
+    // Set [parameters](Parameters) of [Module] (This is primarily used for loading models)
+    //fn set_parameters(self, parameters: Self::Params) -> Self;
 }
 
 /// Apply trait allows us to use monads
 pub trait Apply<Operation> {
-    /// Output of forward operation on Module
+    /// Output of forward operation on [Module]
     type Output;
-    /// Forward operation on Module
+    /// Forward operation on [Module]
     fn apply(self, x: Operation) -> Self::Output;
 }
 

@@ -40,8 +40,8 @@ pub struct SumBackwardT<F> {
 
 impl<S, F> Backward<S> for SumBackwardT<F>
 where
-    S: Expand<Output = S>,
-    F: Backward<S>,
+    S: Expand,
+    F: Backward<<S as Expand>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.expand(self.shape));

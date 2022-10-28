@@ -1,4 +1,4 @@
-//! Various optimizers to update Buffers with gradients.
+//! Various optimizers to update [Variables](crate::tensor::Variable).
 //! 
 
 use crate::module::Parameters;
@@ -8,19 +8,19 @@ use std::ops::{Mul, Sub};
 /// 
 /// All optimizers must implement this trait.
 pub trait Optimizer {
-    /// Optimizer parameters
+    /// Optimizer's [parameters](crate::module::Parameters)
     type P: Parameters;
 
-    /// Get all parameters that optimizer has.
+    /// Get all [parameters](crate::module::Parameters) that optimizer has.
     fn parameters(&self) -> &Self::P;
 
-    /// Update one of parameters
+    /// Update one of [parameters](crate::module::Parameters)
     fn update_data<S>(&self, data: S, grad: S) -> S
     where
         // These are the requirements for SGD. For other optimizers, they may be subject to change.
         S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>;
 
-    /// Update data in parameters using their gradients.
+    /// Update data in [parameters](crate::module::Parameters) using their gradients.
     fn step(&self)
     where
         Self: Optimizer,
@@ -29,7 +29,7 @@ pub trait Optimizer {
         self.parameters().update_data(self);
     }
 
-    /// Fill parameter gradients with zeros.
+    /// Fill [parameter](crate::module::Parameters) gradients with zeros.
     fn zero_grad(&self) {
         self.parameters().zero_grad();
     }
@@ -37,7 +37,7 @@ pub trait Optimizer {
 
 /// # Stochastic gradient descent optimizer
 ///
-/// Updates parameter's data using following function:
+/// Updates [parameter's](crate::module::Parameters) data using following function:
 /// ```txt
 /// x.data = x.data - x.grad * learning_rate;
 /// ```
@@ -47,7 +47,7 @@ pub struct SGD<Params> {
 }
 
 impl<Params> SGD<Params> {
-    /// Create new SGD from given parameters
+    /// Create new [SGD] from given parameters
     pub fn new(parameters: Params) -> Self
     where
         Params: Parameters,
@@ -58,7 +58,7 @@ impl<Params> SGD<Params> {
         }
     }
 
-    /// Set learning rate for SGD
+    /// Set learning rate for [SGD]
     pub fn with_learning_rate(mut self, learning_rate: f64) -> Self {
         self.learning_rate = learning_rate;
         self

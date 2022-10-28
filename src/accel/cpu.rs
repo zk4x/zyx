@@ -3,13 +3,13 @@
 //!
 
 use crate::{ops::{self, ConvertFrom}, shape::{IntoShape, IntoDims, Shape}};
-use std::ops::{Add, Mul};
+use std::{ops::{Add, Mul}, sync::Arc};
 
 // TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
 // If it creates shallow copy, it needs to do the necessary reference counting
 // Now Buffer can be passed by value and can implement inplace operations,
 // because tensor::Variable ensures that it will not be mutated in wrong ways
-// If needed, Rc can be change to Arc and RefCell to Mutex/RwLock
+// If needed, Arc can be change to Arc and RefCell to Mutex/RwLock
 // Though for now everything is hard copy.
 /// Generic multidimensional buffer
 /// 
@@ -18,7 +18,7 @@ use std::ops::{Add, Mul};
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Buffer<T> {
     shape: Shape,
-    data: Vec<T>,
+    data: Arc<Vec<T>>,
 }
 
 impl<T> Buffer<T> {
@@ -29,16 +29,17 @@ impl<T> Buffer<T> {
 }
 
 // Convert between Buffers with different datatypes
-impl<T, T2> ops::ConvertFrom<Buffer<T2>> for Buffer<T>
+impl<T, T2> ConvertFrom<Buffer<T2>> for Buffer<T>
 where
-    T: From<T2> + Send,
-    T2: Clone + Send,
+    T: ConvertFrom<T2> + Send + Sync,
+    T2: Clone + Send + Sync,
 {
     fn cfrom(x: Buffer<T2>) -> Self {
         use rayon::prelude::*;
+        use crate::ops::ConvertInto;
         Self {
             shape: x.shape.clone(),
-            data: x.data.into_par_iter().map(|x| x.into()).collect(),
+            data: Arc::new(x.data.as_ref().par_iter().map(|x| x.clone().cinto()).collect()),
         }
     }
 }
@@ -56,7 +57,7 @@ where
         //const PRECISION: usize = 3;
         // get maximal width of single value
         let mut w = 0;
-        for x in &self.data {
+        for x in self.data.as_ref().iter() {
             let l = format!("{0:1$}", x, w).len();
             if l > w { w = l; }
         }
@@ -102,7 +103,7 @@ where
     T: Clone,
 {
     fn to_vec(&self) -> Vec<T> {
-        self.data.clone()
+        self.data.as_ref().clone()
     }
 }
 
@@ -113,7 +114,7 @@ impl<T> ops::FromVec<T> for Buffer<T> {
         assert_eq!(shape.numel(), data.len());
         Self {
             shape,
-            data,
+            data: Arc::new(data),
         }
     }
 }
@@ -135,7 +136,7 @@ where
         let n = shape.numel();
         Self {
             shape,
-            data: vec![T::zeros(()); n],
+            data: Arc::new(vec![T::zeros(()); n]),
         }
     }
 }
@@ -150,26 +151,29 @@ where
         let n = shape.numel();
         Self {
             shape,
-            data: vec![T::ones(()); n],
+            data: Arc::new(vec![T::ones(()); n]),
         }
     }
 }
 
 fn unary_op<T, F>(x: Buffer<T>, f: F) -> Buffer<T>
 where
-    T: Sync + Send,
+    T: Clone + Sync + Send,
     F: Fn(T) -> T + Sync + Send,
 {
     use rayon::prelude::*;
     Buffer {
         shape: x.shape.clone(),
-        data: x.data.into_par_iter().map(f).collect(),
+        data: Arc::new(match Arc::try_unwrap(x.data) {
+            Ok(vec) => vec.into_par_iter().map(f).collect(),
+            Err(rc) => rc.as_ref().par_iter().map(|x| f(x.clone())).collect(),
+        }),
     }
 }
 
 impl<T> ops::ReLU for Buffer<T>
 where
-    T: Sync + Send + ops::ReLU<Output = T>,
+    T: Clone + Sync + Send + ops::ReLU<Output = T>,
 {
     type Output = Buffer<T>;
     fn relu(self) -> Self::Output {
@@ -179,7 +183,7 @@ where
 
 impl<T> ops::DReLU for Buffer<T>
 where
-    T: Sync + Send + ops::DReLU<Output = T>,
+    T: Clone + Sync + Send + ops::DReLU<Output = T>,
 {
     type Output = Buffer<T>;
     fn drelu(self) -> Self::Output {
@@ -189,7 +193,7 @@ where
 
 impl<T> ops::Exp for Buffer<T>
 where
-    T: Sync + Send + ops::Exp<Output = T>,
+    T: Clone + Sync + Send + ops::Exp<Output = T>,
 {
     type Output = Buffer<T>;
     fn exp(self) -> Self::Output {
@@ -199,7 +203,7 @@ where
 
 impl<T> ops::Ln for Buffer<T>
 where
-    T: Sync + Send + ops::Ln<Output = T>,
+    T: Clone + Sync + Send + ops::Ln<Output = T>,
 {
     type Output = Buffer<T>;
     fn ln(self) -> Self::Output {
@@ -209,7 +213,7 @@ where
 
 impl<T> ops::Tanh for Buffer<T>
 where
-    T: Sync + Send + ops::Tanh<Output = T>,
+    T: Clone + Sync + Send + ops::Tanh<Output = T>,
 {
     type Output = Buffer<T>;
     fn tanh(self) -> Self::Output {
@@ -234,7 +238,7 @@ impl<T> Buffer<T> {
         F: FnMut(T, T) -> T,
     {
         // TODO: make this multithreaded
-        let mut data = self.data.clone();
+        let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
         let mut shape = self.shape.clone();
         let dims = dims.dims();
         let ndim = shape.ndim();
@@ -271,7 +275,7 @@ impl<T> Buffer<T> {
 
         Buffer {
             shape,
-            data,
+            data: Arc::new(data),
         }
     }
 }
@@ -340,7 +344,7 @@ where
         }
         let n = shape.numel();
         let ndims = shape.ndim();
-        let mut data = self.data;
+        let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
 
         let copy_dim = |data: Vec<T>, width, times| {
             let mut res_data = Vec::with_capacity(res_shape.numel());
@@ -370,7 +374,7 @@ where
 
         Buffer {
             shape: res_shape,
-            data,
+            data: Arc::new(data),
         }
     }
 }
@@ -427,7 +431,7 @@ where
 
         Buffer {
             shape,
-            data,
+            data: Arc::new(data),
         }
     }
 }
@@ -454,13 +458,37 @@ where
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
     // stuff during expanding
     let data = match x.shape.numel().cmp(&y.shape.numel()) {
-        Ordering::Greater => x.data.into_par_iter().zip(y.expand(x.shape).data.into_par_iter()).map(f).collect(),
-        Ordering::Less => x.expand(y.shape).data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
-        Ordering::Equal => x.data.into_par_iter().zip(y.data.into_par_iter()).map(f).collect(),
+        Ordering::Greater => {
+            match Arc::try_unwrap(x.data) {
+                Ok(vec) => match Arc::try_unwrap(y.expand(x.shape).data) {
+                    Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
+                    Err(rc_y) => vec.into_par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
+                }
+                Err(rc) => match Arc::try_unwrap(y.expand(x.shape).data) {
+                    Ok(vec_y) => rc.as_ref().par_iter().zip(vec_y.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
+                    Err(rc_y) => rc.as_ref().par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
+                }
+            }
+        }
+        Ordering::Less => 
+            match Arc::try_unwrap(y.data) {
+                Ok(vec) => match Arc::try_unwrap(x.expand(y.shape).data) {
+                    Ok(vec_x) => vec_x.into_par_iter().zip(vec.into_par_iter()).map(f).collect(),
+                    Err(rc_x) => rc_x.par_iter().zip(vec.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
+                },
+                Err(rc) => match Arc::try_unwrap(x.expand(y.shape).data) {
+                    Ok(vec_x) => vec_x.into_par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
+                    Err(rc_x) => rc_x.par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
+                }
+            }
+        Ordering::Equal => {
+            let x_data = Arc::try_unwrap(x.data).unwrap_or_else(|x| x.as_ref().to_owned());
+            x_data.into_par_iter().zip(Arc::try_unwrap(y.data).unwrap_or_else(|x| x.as_ref().to_owned()).into_par_iter()).map(f).collect()
+        }
     };
     Buffer {
         shape,
-        data,
+        data: Arc::new(data),
     }
 }
 
@@ -475,7 +503,7 @@ where
 }
 
 use duplicate::duplicate_item;
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Add<Buffer<T>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + std::ops::Add<Output = T> + Clone,
@@ -485,9 +513,10 @@ where
         use rayon::prelude::*;
         use ops::ConvertInto;
         let x: T = self.cinto();
+        let y_data = Arc::try_unwrap(rhs.data).unwrap_or_else(|x| x.as_ref().to_owned());
         Buffer {
             shape: rhs.shape,
-            data: rhs.data.into_par_iter().map(|y| x.clone() + y).collect(),
+            data: Arc::new(y_data.into_par_iter().map(|y| x.clone() + y).collect()),
         }
     }
 }
@@ -503,7 +532,11 @@ where
         let rhs: T = rhs.into();
         Self {
             shape: self.shape,
-            data: self.data.into_par_iter().map(|x| x + rhs.clone()).collect()
+            data: Arc::new(
+                match Arc::try_unwrap(self.data) {
+                    Ok(vec) => vec.into_par_iter().map(|x| x + rhs.clone()).collect(),
+                    Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() + rhs.clone()).collect(),
+                }),
         }
     }
 }
@@ -528,7 +561,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Mul<Buffer<T>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + std::ops::Mul<Output = T> + Clone,
@@ -540,23 +573,30 @@ where
         let x: T = self.cinto();
         Buffer {
             shape: rhs.shape,
-            data: rhs.data.into_par_iter().map(|y| x.clone()*y).collect(),
+            data: Arc::new(match Arc::try_unwrap(rhs.data) {
+                Ok(vec) => vec.into_par_iter().map(|y| x.clone() * y).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() * y.clone()).collect(),
+            }),
         }
     }
 }
 
-impl<T> std::ops::Mul<f64> for Buffer<T>
+impl<T, T2> std::ops::Mul<T2> for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ops::ConvertFrom<f64>,
+    T2: crate::dtype::ScalarType,
+    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ops::ConvertFrom<T2>,
 {
     type Output = Buffer<T>;
-    fn mul(self, rhs: f64) -> Self::Output {
+    fn mul(self, rhs: T2) -> Self::Output {
         use rayon::prelude::*;
         use ops::ConvertInto;
-        let rhs: T = rhs.cinto();
+        let y: T = rhs.cinto();
         Self {
             shape: self.shape,
-            data: self.data.into_par_iter().map(|x| x * rhs.clone()).collect(),
+            data: Arc::new(match Arc::try_unwrap(self.data) {
+                Ok(vec) => vec.into_par_iter().map(|x| x * y.clone()).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() * y.clone()).collect(),
+            }),
         }
     }
 }
@@ -571,7 +611,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Div<Buffer<T>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + std::ops::Div<Output = T> + Clone,
@@ -583,16 +623,18 @@ where
         let x: T = self.cinto();
         Buffer {
             shape: rhs.shape,
-            data: rhs.data.into_par_iter().map(|y| x.clone()/y).collect(),
+            data: Arc::new(match Arc::try_unwrap(rhs.data) {
+                Ok(vec) => vec.into_par_iter().map(|y| x.clone()/y).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|y| x.clone()/y.clone()).collect(),
+            }),
         }
     }
 }
 
-use crate::dtype::ScalarType;
 impl<T, T2> std::ops::Div<T2> for Buffer<T>
 where
-    T2: ScalarType,
-    T: Clone + Sync + Send + std::ops::Div<Output = T> + ops::ConvertFrom<T2>,
+    T2: crate::dtype::ScalarType,
+    T: Clone + Sync + Send + std::ops::Div<Output = T> + ConvertFrom<T2>,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: T2) -> Self::Output {
@@ -601,7 +643,10 @@ where
         let rhs: T = rhs.cinto();
         Self {
             shape: self.shape,
-            data: self.data.into_par_iter().map(|x| x / rhs.clone()).collect(),
+            data: Arc::new(match Arc::try_unwrap(self.data) {
+                Ok(vec) => vec.into_par_iter().map(|x| x / rhs.clone()).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() / rhs.clone()).collect(),
+            }),
         }
     }
 }
@@ -619,12 +664,17 @@ where
 impl<T> ops::Pow<i32> for Buffer<T>
 where
     T: Sync + Send + Clone + ops::Pow<i32>,
+    <T as ops::Pow<i32>>::Output: Send,
 {
     type Output = Buffer<<T as ops::Pow<i32>>::Output>;
     fn pow(self, rhs: i32) -> Self::Output {
+        use rayon::prelude::*;
         Buffer {
             shape: self.shape,
-            data: self.data.into_iter().map(|x| x.pow(rhs)).collect(),
+            data: Arc::new(match Arc::try_unwrap(self.data) {
+                Ok(vec) => vec.into_par_iter().map(|x| x.pow(rhs)).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone().pow(rhs)).collect(),
+            }),
         }
     }
 }
@@ -651,7 +701,7 @@ where
         }
         let ndim = s_shape.ndim();
         if ndim < 2 {
-            panic!("You need at least one of the buffers to have 2 or more dimensions to do matrix multiplication. Current shapes: {}, {}", s_shape, r_shape);
+            panic!("At least one of the buffers must have 2 or more dimensions to do matrix multiplication. Current shapes: {}, {}", s_shape, r_shape);
         }
         if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
             panic!("Incorrect x and y shapes for matmul: {}, {}", s_shape, r_shape);
@@ -662,11 +712,13 @@ where
         use ops::Transpose;
         let ty = rhs.transpose();
         use rayon::prelude::*;
-        const NUM: usize = 8; // /std::mem::size_of::<T>(); // basically SIMD length
-        let data: Vec<T> = ty.data
+        let x_data = self.data.as_ref();
+        let ty_data = ty.data.as_ref();
+        const NUM: usize = 8; //256/std::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
+        let data: Vec<T> = ty_data
                 .par_chunks(k)
                 .map(|y_row| {
-                    self.data.chunks(k)
+                    x_data.par_chunks(k)
                         .map(|x| {
                             x.chunks(NUM)
                                 .zip(y_row.chunks(NUM))
@@ -684,7 +736,7 @@ where
 
         Buffer {
             shape,
-            data,
+            data: Arc::new(data),
         }.transpose()
     }
 }
@@ -728,7 +780,7 @@ impl ops::MatMul for Buffer<f32> {
         }
 
         Buffer {
-            data,
+            data: Arc::new(data),
             shape: [m, n].shape(),
         }
     }
@@ -738,19 +790,30 @@ impl ops::MatMul for Buffer<f32> {
 impl ops::MatMul for Buffer<f64> {
     type Output = Self;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let ndim = self.shape.ndim();
+        let mut s_shape = self.shape;
+        let mut r_shape = rhs.shape;
+        // if input shape is shorter than res_shape or vice versa,
+        // add necessary ones to the beginning
+        while s_shape.ndim() < r_shape.ndim() {
+            s_shape.0.insert(0, 1);
+        }
+        while s_shape.ndim() > r_shape.ndim() {
+            r_shape.0.insert(0, 1);
+        }
+        let ndim = s_shape.ndim();
+        // TODO: support for operations on more than 2 dimensions
         if ndim != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != rhs.shape.ndim() {
-            panic!("Matmul buffers have different degrees: {:?}, {:?}", self.shape, rhs.shape);
+        if ndim != r_shape.ndim() {
+            panic!("Matmul buffers have different degrees: {:?}, {:?}", s_shape, r_shape);
         }
-        if self.shape[0..ndim-2] != rhs.shape[0..ndim-2] || self.shape[-1] != rhs.shape[-2] {
-            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", self.shape, rhs.shape);
+        if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
+            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
         }
-        let m = self.shape[-2];
-        let k = self.shape[-1];
-        let n = rhs.shape[-1];
+        let m = s_shape[-2];
+        let k = s_shape[-1];
+        let n = r_shape[-1];
         let mut data = Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -761,7 +824,7 @@ impl ops::MatMul for Buffer<f64> {
         }
 
         Buffer {
-            data,
+            data: Arc::new(data),
             shape: [m, n].shape(),
         }
     }
@@ -829,7 +892,7 @@ where
         
         Self {
             shape,
-            data,
+            data: Arc::new(data),
         }
     }
 }

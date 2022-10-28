@@ -1,24 +1,28 @@
 //! Various implementations of accelerators.
-//! The default is zyx::accel::cpu::Buffer.
+//! The default is [CPU Buffer][cpu::Buffer].
 //! 
-//! Every accelerator can implement following traits in order to be fully compatible with tensors:
-//! 
-//! Clone
-//! std::default::Default
-//! std::ops::{Neg, Add, Sub, Mul, Div}
-//! std::ops::Mul<f64> // for use in optimizers
-//! zyx::ops::*
-//! 
-//! The zyx::ops module documents (with examples) how these operations should work.
-//! 
-//! All operations take buffer by value. Cloning can be implemented as shallow copying,
-//! but you will need to do the necessary reference counting.
-//! 
+
+// Every accelerator can implement following traits in order to be fully compatible with tensors:
+// ```txt
+// - Clone
+// - std::default::Default
+// - std::ops::{Neg, Add, Sub, Mul, Div}
+// - std::ops::Mul<f64> // for use in optimizers
+// - zyx::ops::*
+// ```
+// 
+// Some functors in [nn module][crate::nn] also require the buffer to implement binary operations with anything that implements [ScalarType](crate::dtype::ScalarType).
+// 
+// The [ops module](crate::ops) documents how these operations should work.
+// 
+// All operations take buffer by value. Cloning can be implemented as shallow copying,
+// but you will need to do the necessary reference counting.
+// 
 
 pub mod cpu;
 #[cfg(feature = "ndarray")]
 pub mod ndarray;
-
+// TODO: add opencl support
 //#[cfg(features = "opencl")]
 //pub mod opencl;
 

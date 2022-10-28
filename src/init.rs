@@ -1,15 +1,15 @@
 //! # Initialization methods for tensors
 //! 
-//! Includes eye, randn and uniform as well as array initialization.
-//! These are implemented for all data structures that implement ops::FromVec trait.
+//! Includes [eye](EyeInit), [randn](RandnInit) and [uniform](UniformInit) as well as array initialization.
+//! These are implemented for all data structures that implement [FromVec](crate::ops::FromVec) trait.
 
 use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape, dtype::ScalarType};
 
-/// ## Eye initialization
+/// # Eye initialization
 /// 
-/// Initialize tensor with eye matrix
+/// Initialize tensor with eye matrix.
 /// 
-/// ### Example
+/// ## Example
 /// 
 /// ```
 /// use zyx::prelude::*;
@@ -21,7 +21,7 @@ use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape, dtype::S
 /// println!("{}", x);
 /// ```
 /// 
-/// ### Output
+/// ## Output
 /// 
 /// ```txt
 /// [1 0 0
@@ -49,12 +49,12 @@ where
     }
 }
 
-/// ## Random initialization
+/// # Random initialization
 /// 
 /// Initialize tensor with random values
 /// We are using rand::distributions::Standard.
 /// 
-/// ### Example
+/// ## Example
 /// 
 /// ```
 /// use zyx::prelude::*;
@@ -64,12 +64,12 @@ where
 /// assert_eq!(x.shape(), (3, 2, 3));
 /// println!("{}", x);
 /// ```
-pub trait RandInit<T> {
+pub trait RandnInit<T> {
     /// Initialize tensor with random numbers
     fn randn(shape: impl IntoShape) -> Self;
 }
 
-impl<S, T> RandInit<T> for S
+impl<S, T> RandnInit<T> for S
 where
     S: FromVec<T>,
     rand::distributions::Standard: rand::prelude::Distribution<T>,
@@ -82,12 +82,12 @@ where
     }
 }
 
-/// ## Uniform initialization
+/// # Uniform initialization
 /// 
 /// Initialize tensor with value from uniform distribution
 /// We are using rand::distributions::uniform.
 /// 
-/// ### Example
+/// ## Example
 /// 
 /// ```
 /// use zyx::prelude::*;

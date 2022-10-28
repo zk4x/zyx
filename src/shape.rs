@@ -1,10 +1,14 @@
 //! Shape and Dims for multidimensional data structures
 //! 
-//! This module defines Shape and Dims traits. These are implemented for &[usize] and &[i32] respectively.
+//! This module defines Shape and Dims structs. These store `Vec<usize>` and `Vec<i32>` respectively.
 //! Shape stores the size of tensor's dimensions while Dims stores dimension's order,
-//! that can also be negative (-1 is last dimension). Dims is used as input into functions as Permute or Sum,
+//! which can also be negative (-1 is last dimension). Dims is used as input into functions as Permute or Sum,
 //! when we need to define along which dimensions we want to perform these operations.
-//! 
+//!
+//! > This API is subject to change as we would like to move towards API based on const shape.
+//! > That however depends on rust's support for user defined const generics.
+//! > This would be particularly nice, becuase it would get rid of all runtime errors, since everything else is already enforced in type system of buffer, Variable, Tensor.
+//!
 
 use crate::ops::{Permute, IntoVec};
 use std::ops::Range;
@@ -37,10 +41,11 @@ impl Shape {
     pub fn strides(&self) -> Shape {
         let mut product = 1;
         let mut res = vec![0; self.ndim()];
-        for (i, dim) in self.clone().into_iter().enumerate().rev() {
-            res[i] = product;
-            product *= dim;
-        }
+        self.clone().into_iter().enumerate().rev().for_each(
+            |(i, dim)| {
+                res[i] = product;
+                product *= dim;
+            });
         Shape(res)
     }
 
@@ -71,13 +76,18 @@ impl Shape {
 impl Permute for Shape {
     type Output = Shape;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
-        let mut res = self.0.clone();
-        for (i, dim) in dims.dims().into_iter().enumerate() {
-            res[i] = self[dim];
-        }
-        Shape(res)
+        Shape(dims.dims().into_iter().map(|dim| self[dim]).collect())
     }
 }
+
+/*impl<'a> IntoIterator for &'a Shape {
+    type Item = usize;
+    type IntoIter = std::slice::Iter<'a, usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}*/
 
 impl IntoIterator for Shape {
     type Item = usize;
@@ -167,10 +177,10 @@ impl Dims {
     pub fn strides(&self) -> Dims {
         let mut product = 1;
         let mut res = vec![0; self.ndim()];
-        for (i, dim) in self.clone().into_iter().enumerate().rev() {
+        self.clone().into_iter().enumerate().rev().for_each(|(i, dim)| {
             res[i] = product;
             product *= dim;
-        }
+        });
         Dims(res)
     }
 

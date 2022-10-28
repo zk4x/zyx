@@ -18,26 +18,26 @@
 //! 
 //! This list excludes ops that are automatically implemented.
 //! 
-//! ConvertFrom
-//! Zeros
-//! Ones
-//! IntoVec
-//! FromVec
-//! GetShape
-//! ReLU
-//! DReLU
-//! Exp
-//! Ln
-//! Tanh
-//! Sum
-//! Max
-//! Min
-//! Reshape
-//! Expand
-//! Permute
-//! Pow
-//! MatMul
-//! Conv
+//! - [ConvertFrom]
+//! - [Zeros]
+//! - [Ones]
+//! - [IntoVec]
+//! - [FromVec]
+//! - [GetShape]
+//! - [ReLU]
+//! - [DReLU]
+//! - [Exp]
+//! - [Ln]
+//! - [Tanh]
+//! - [Sum]
+//! - [Max]
+//! - [Min]
+//! - [Reshape]
+//! - [Expand]
+//! - [Permute]
+//! - [Pow]
+//! - [MatMul]
+//! - [Conv]
 //! 
 
 mod convert_from;

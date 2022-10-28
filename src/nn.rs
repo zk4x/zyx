@@ -1,6 +1,9 @@
 //! Structs that implement trait Module for anything that it makes sense to implement this trait.
 //! These include zyx::ops, as well as layers, such as Linear.
 //!
+//! This is module, which is expected to get most stuff added.
+//! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
+//!
 
 use crate::{module::Module, ops::{self, GetShape, Pow}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
 use std::ops::{Neg, Add, Sub, Mul, Div};

@@ -1,27 +1,49 @@
 //! Description of generic tensor types. All tensors are immutable!
 //! Mutability is allowed only for calculating gradients and optimizer parameters.
-//! There are two tensor types.
-//! ```txt
-//! 1. Variable   - stores datatype and also it's gradient, passed around by reference
-//! 2. Tensor     - stores datatype and function necessary to calculate gradient of Variable, passed around by cloning
-//! ```
 //!
-//! Buffer and Variable are leaf Buffers. Tensor is strictly non-leaf and therefore it doesn't store it's gradient.
+//! There are two tensor types:
+//! > 1. [Variable]   - stores datatype and also it's gradient, passed around by reference
+//! > 2. [Tensor]     - stores datatype and functions necessary to calculate gradient of [Variable], passed around by cloning
+//!
+//! Buffer and [Variable] are leaf tensors. [Tensor] is strictly non-leaf and therefore it doesn't store it's gradient.
 //!
 //! # Example
 //!
+//! Basic buffer
 //! ```
-//! use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
-//! use zyx::prelude::*;
+//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
+//! # use zyx::prelude::*;
+//! let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
+//! ```
 //!
-//! let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);        // basic Buffer
-//! let y: Variable<_> = x.clone().with_grad();            // return Variable
-//! let z: Tensor<_, _> = y.relu();                        // applying any function on Variable returns Tensor
-//! let z: Buffer<_> = x.relu();                           // applying function to Buffer returns Buffer
+//! By calling [IntoVariable::with_grad()] on any datatype, you get [Variable], which adds gradient to the buffer.
+//! ```
+//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
+//! # use zyx::prelude::*;
+//! # let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
+//! let y: Variable<_> = x.clone().with_grad();
+//! ```
+//!
+//! Applying function to [Variable] returns [Tensor].
+//! [Tensor] stores references to [Variable's](Variable) gradients and some data buffers used during gradient calculation.
+//! ```
+//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
+//! # use zyx::prelude::*;
+//! # let y: Variable<_> = Buffer::cfrom([2., 1., 4.]).with_grad();
+//! let z: Tensor<_, _> = y.relu();
+//! ```
+//!
+//! Applying function to buffer simply returns buffer.
+//! ```
+//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
+//! # use zyx::prelude::*;
+//! # let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
+//! let z: Buffer<_> = x.relu();
 //! ```
 //!
 
-mod init;
+// This file contains tensor definitions, getters and setters for tensors.
+
 mod ops;
 
 use crate::{ops::{GetShape, Zeros}, module::Parameters, optim::Optimizer};
@@ -48,28 +70,21 @@ use std::cell::{Ref, RefCell};
 
 // Tensors are moved into operations, while Variables are passed by reference!
 
-/// # B<S>
-///
-/// This is used as a placeholder for custom storage, since some operations like addition are foreign traits,
-/// so we need to have our type to wrap foreign storage types inside.
-/// B<S> does not have gradient.
-pub struct B<S>(pub S);
-
-/// # Variable<S>
+/// # Variable
 /// 
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Variable<S> {
-    data: RefCell<S>, // RefCell here is needed for optimizer.step() function
+    data: RefCell<S>, // RefCell needed for optimizer.step() function
     grad: RefCell<S>, // RefCell needed for .backward() gradient calculation
 }
 
-/// # Tensor<S, GradFn>
+/// # Tensor
 /// 
-/// Tensor holds data and grad_fn to calculate gradients of Variables.
-/// Tensor is only created as a result of some operations on at least one Variable.
+/// Tensor holds data and grad_fn to calculate gradients of [Variables](Variable).
+/// Tensor is only created as a result of some operations on at least one [Variable].
 /// Tensor does not store it's gradient, but the gradient can be accessed during backward
-/// pass by using GradHookT. This is a FnOnce closure: x.register_hook(|grad| { // do something with grad })
+/// pass by using [GradHookT].
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tensor<S, GradFn> {
     data: S,
@@ -78,7 +93,7 @@ pub struct Tensor<S, GradFn> {
 
 /// # Display Variable
 /// 
-/// Shows Variable and it's gradient.
+/// Shows [Variable] and it's gradient.
 impl<S> std::fmt::Display for Variable<S>
 where
     S: std::fmt::Display,
@@ -94,7 +109,7 @@ where
 
 /// # Display Tensor
 /// 
-/// Shows Tensor and it's grad_fn.
+/// Shows [Tensor] and it's grad_fn.
 impl<S, GradFn> std::fmt::Display for Tensor<S, GradFn>
 where
     S: std::fmt::Display,
@@ -109,19 +124,19 @@ where
 
 impl<S> Variable<S>
 where
-    S: Default + crate::ops::Ones + std::ops::Add<Output = S> + GetShape,
+    S: Default + std::ops::Add<i32, Output = S>,
 {
     /// # Variable backward
     /// 
-    /// Calls backward function on Variable.
-    /// This results in Variable's gradient being increased by one.
+    /// Calls backward function on [Variable].
+    /// This results in [Variable's](Variable) gradient being increased by one.
     /// 
     /// ```txt
-    /// x.grad += Buffer::ones();
+    /// x.grad += 1;
     /// ```
     pub fn backward(&self) {
         self.grad
-            .replace_take(|grad| grad + S::ones(self.data().shape()));
+            .replace_take(|grad| grad + 1);
     }
 }
 
@@ -132,6 +147,7 @@ pub trait Backward<S> {
     /// Calls backward on a grad_fn, passing calculated output's gradient as parameter.
     fn backward(self, res_grad: S);
 }
+
 impl<S, F> Tensor<S, F>
 where
     S: crate::ops::Ones + GetShape,
@@ -139,26 +155,51 @@ where
 {
     /// # Tensor backward
     /// 
-    /// Calls backward function on Tensor.
-    /// Computes gradient of all Variables that were used as inputs to operations that resulted in creation of this tensor.
-    /// This function accumulates gradients in those Variables. If you want to clear Variables gradients, call .zero_grad().
+    /// Calls backward function on [Tensor].
+    /// Computes gradient of all [Variables](Variable) that were used as inputs to operations that resulted in creation of this [Tensor].
+    /// This function accumulates gradients in those [Variables](Variable). If you want to clear [Variable's](Variable) gradients, call [Parameters::zero_grad()] on that [Variable].
+    ///
+    /// # Example
+    /// ```
+    /// # use zyx::prelude::*;
+    /// # use zyx::accel::cpu;
+    /// let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// let y = x.exp();
+    /// ```
+    /// y is now [Tensor], so we can call backward on it.
+    /// ```
+    /// # use zyx::prelude::*;
+    /// # use zyx::accel::cpu;
+    /// # let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// # let y = x.exp();
+    /// y.backward();
+    /// ```
+    /// and the gradient of [Variable] x will now get populated:
+    /// ```
+    /// # use zyx::prelude::*;
+    /// # use zyx::accel::cpu;
+    /// # let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// # let y = x.exp();
+    /// # y.backward();
+    /// assert_eq!(x.grad().to_vec(), x.data().clone().exp().to_vec());
+    /// ```
     pub fn backward(self) {
-        let shape = self.data.shape();
-        // NOTE: right now backward call is recursive
-        // shall this pose a problem, we can switch to iterative version
+        // NOTE: right now backward call is recursive.
+        // Shall this pose a problem, we can switch to iterative version.
+        let shape = self.shape();
         self.grad_fn.backward(S::ones(shape));
     }
 }
 
-/// Turn any datatype into Variable.
+/// Turn any datatype into [Variable].
 pub trait IntoVariable {
-    /// Calling this functino turns input into Variable adding gradient in the process.
+    /// Calling this function turns input into [Variable] adding gradient in the process.
     fn with_grad(self) -> Variable<Self>
     where
         Self: Sized;
 }
 
-/// Create new Variable that requires gradient
+/// Create new [Variable] that requires gradient
 impl<S> IntoVariable for S
 where
     S: crate::ops::Zeros + GetShape,
@@ -173,34 +214,34 @@ where
 }
 
 impl<S> Variable<S> {
-    /// Access Variable's data buffer
+    /// Access [Variable's](Variable) data buffer
     pub fn data(&self) -> Ref<S> {
         self.data.borrow()
     }
 }
 
 impl<S, GradFn> Tensor<S, GradFn> {
-    /// Access Tensor's data buffer
+    /// Access [Tensor's](Tensor) data buffer
     pub fn data(&self) -> &S {
         &self.data
     }
 }
 
 impl<S> Variable<S> {
-    /// Access Tensor's grad buffer
+    /// Access [Tensor's](Tensor) grad buffer
     pub fn grad(&self) -> Ref<S> {
         self.grad.borrow()
     }
 }
 
 impl<S, GradFn> Tensor<S, GradFn> {
-    /// Access Tensor's backward function
+    /// Access [Tensor's](Tensor) backward function
     pub fn grad_fn(&self) -> &GradFn {
         &self.grad_fn
     }
 }
 
-/// Gradient hook for Variable
+/// Gradient hook for [Variable]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GradHookV<'g, S, Hook> {
     grad: &'g RefCell<S>,
@@ -237,7 +278,7 @@ impl<S> Variable<S> {
     }
 }
 
-/// Gradient hook for Tensor
+/// Gradient hook for [Tensor]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GradHookT<GradFn, HOOK> {
     grad_fn: GradFn,
