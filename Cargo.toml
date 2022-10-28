@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["zk4x"]
 edition = "2021"
 description = "Generic tensor library and extensions."
@@ -9,7 +9,7 @@ readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
 license = "MIT OR Apache-2.0"
-keywords = ["tensor", "generic"]
+keywords = ["tensor", "generic", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "concurrency", "science", "simulation", "text-processing"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

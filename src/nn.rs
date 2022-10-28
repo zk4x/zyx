@@ -1,7 +1,7 @@
-//! Structs that implement trait Module for anything that it makes sense to implement this trait.
-//! These include zyx::ops, as well as layers, such as Linear.
+//! Structs that implement trait [Module](crate::module::Module) for anything that it makes sense to implement this trait.
+//! These include zyx::ops, as well as layers, such as [Linear].
 //!
-//! This is module, which is expected to get most stuff added.
+//! This module is expected to get most stuff added.
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
@@ -111,7 +111,7 @@ pub struct SoftMax<D>
 where
     D: IntoDims,
 {
-    /// Dimensions to calculate softmax across
+    /// [Dimensions](crate::shape::IntoDims) to calculate softmax across
     pub dims: D
 }
 
@@ -165,7 +165,7 @@ pub struct Sum<D>
 where
     D: IntoDims,
 {
-    /// Dimensions to sum
+    /// [Dimensions](crate::shape::IntoDims) to sum
     pub dims: D,
 }
 
@@ -190,7 +190,7 @@ pub struct Max<D>
 where
     D: IntoDims,
 {
-    /// Dimensions to max
+    /// [Dimensions](crate::shape::IntoDims) to max
     pub dims: D,
 }
 
@@ -212,7 +212,7 @@ where
 /// Min operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Min<D> {
-    /// Dimensions to min
+    /// [Dimensions](crate::shape::IntoDims) to min
     pub dims: D,
 }
 
@@ -236,7 +236,7 @@ pub struct Mean<D>
 where
     D: IntoDims,
 {
-    /// Dimensions for mean
+    /// [Dimensions](crate::shape::IntoDims) for mean
     pub dims: D
 }
 
@@ -296,7 +296,7 @@ pub struct Linear<S> {
 }
 
 impl<S> Linear<S> {
-    /// Create new Linear layer with given in_features and out_features dimensions
+    /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
         S: ops::FromVec<T> + ops::Zeros,
@@ -337,7 +337,7 @@ pub struct RNNCell<S> {
 }
 
 impl<S> RNNCell<S> {
-    /// Create new RNNCell with given input_size and hidden_size dimensions
+    /// Create new [RNNCell] with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
         S: ops::FromVec<T> + ops::Zeros,
