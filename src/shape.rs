@@ -249,6 +249,12 @@ impl IntoShape for () {
     }
 }
 
+impl IntoShape for usize {
+    fn shape(self) -> Shape {
+        Shape(vec![self])
+    }
+}
+
 impl IntoShape for (usize, usize) {
     fn shape(self) -> Shape {
         Shape(vec![self.0, self.1])
