@@ -7,7 +7,7 @@ pub struct SumBackwardV<'g, S> {
     shape: Shape,
 }
 
-impl<'g, S> Backward<S> for SumBackwardV<'g, S>
+impl<S> Backward<S> for SumBackwardV<'_, S>
 where
     S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {

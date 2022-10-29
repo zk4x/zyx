@@ -7,7 +7,7 @@ pub struct ReshapeBackwardV<'g, S> {
     shape: Shape,
 }
 
-impl<'g, S> Backward<S> for ReshapeBackwardV<'g, S>
+impl<S> Backward<S> for ReshapeBackwardV<'_, S>
 where
     S: Default + Reshape<Output = S> + Add<Output = S>,
 {

@@ -7,7 +7,7 @@ pub struct TanhBackwardV<'g, S> {
     data: S,
 }
 
-impl<'g, S> Backward<S> for TanhBackwardV<'g, S>
+impl<S> Backward<S> for TanhBackwardV<'_, S>
 where
     S: Default + Tanh<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
 {

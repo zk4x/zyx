@@ -6,7 +6,7 @@ pub struct NegBackwardV<'g, S> {
     grad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for NegBackwardV<'g, S>
+impl<S> Backward<S> for NegBackwardV<'_, S>
 where
     S: Default + Neg<Output = S> + Sub<Output = S>,
 {

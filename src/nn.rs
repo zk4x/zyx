@@ -9,7 +9,7 @@ use crate::{module::Module, ops::{self, GetShape, Pow}, tensor::Variable, init::
 use std::ops::{Neg, Add, Sub, Mul, Div};
 
 /// ReLU operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReLU;
 
 impl<Input> Module<Input> for &ReLU
@@ -27,7 +27,7 @@ where
 }
 
 /// Exp operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Exp;
 
 impl<Input> Module<Input> for &Exp
@@ -45,7 +45,7 @@ where
 }
 
 /// Ln operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ln;
 
 impl<Input> Module<Input> for &Ln
@@ -63,7 +63,7 @@ where
 }
 
 /// Tanh operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tanh;
 
 impl<Input> Module<Input> for &Tanh
@@ -81,7 +81,7 @@ where
 }
 
 /// Sigmoid operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sigmoid;
 
 impl<Input> Module<Input> for &Sigmoid
@@ -105,8 +105,8 @@ where
     fn parameters(self) -> Self::Params {}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Softmax operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SoftMax<D>
 where
     D: IntoDims,
@@ -160,7 +160,7 @@ fn softmax_test() {
 }
 
 /// Sum operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sum<D>
 where
     D: IntoDims,
@@ -185,7 +185,7 @@ where
 }
 
 /// Max operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Max<D>
 where
     D: IntoDims,
@@ -210,7 +210,7 @@ where
 }
 
 /// Min operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Min<D> {
     /// [Dimensions](crate::shape::IntoDims) to min
     pub dims: D,
@@ -231,6 +231,7 @@ where
     fn parameters(self) -> Self::Params {}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Mean operation
 pub struct Mean<D>
 where

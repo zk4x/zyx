@@ -152,7 +152,7 @@ impl IntoVec<usize> for Shape {
 }
 
 impl std::fmt::Display for Shape {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
         data.replace_range(data.len()-2..data.len(), "");
         f.write_fmt(format_args!("Shape({})", data))
@@ -235,7 +235,6 @@ use duplicate::duplicate_item;
     [u64];
     [u128];
     [isize];
-    [usize];
 )]
 
 impl IntoShape for dtype {
@@ -332,7 +331,6 @@ impl<const N: usize> IntoShape for [usize; N] {
     dtype;
     [i8];
     [i16];
-    [i32];
     [i64];
     [i128];
     [u8];
@@ -347,6 +345,12 @@ impl<const N: usize> IntoShape for [usize; N] {
 impl IntoDims for dtype {
     fn dims(self) -> Dims {
         Dims(vec![self as i32])
+    }
+}
+
+impl IntoDims for i32 {
+    fn dims(self) -> Dims {
+        Dims(vec![self])
     }
 }
 
@@ -443,7 +447,7 @@ where
 }
 
 impl std::fmt::Display for Dims {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
         data.replace_range(data.len()-2..data.len(), "");
         f.write_fmt(format_args!("Dims({})", data))

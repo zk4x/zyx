@@ -98,7 +98,7 @@ impl<S> std::fmt::Display for Variable<S>
 where
     S: std::fmt::Display,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!(
             "{} with grad:\n{}",
             self.data.borrow(),
@@ -115,7 +115,7 @@ where
     S: std::fmt::Display,
     GradFn: std::fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // TODO: this is ugly solution, please just print the name of the function, don't require GradFn debug
         // and creating debug string of all the buffers stored in grad_fn
         f.write_str(&format!("{} with grad_fn: {}", self.data, format!("{:?}", self.grad_fn).split_once(" {").unwrap().0))
@@ -215,7 +215,7 @@ where
 
 impl<S> Variable<S> {
     /// Access [Variable's](Variable) data buffer
-    pub fn data(&self) -> Ref<S> {
+    pub fn data(&self) -> Ref<'_, S> {
         self.data.borrow()
     }
 }
@@ -229,7 +229,7 @@ impl<S, GradFn> Tensor<S, GradFn> {
 
 impl<S> Variable<S> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> Ref<S> {
+    pub fn grad(&self) -> Ref<'_, S> {
         self.grad.borrow()
     }
 }
@@ -242,13 +242,13 @@ impl<S, GradFn> Tensor<S, GradFn> {
 }
 
 /// Gradient hook for [Variable]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy)]
 pub struct GradHookV<'g, S, Hook> {
     grad: &'g RefCell<S>,
     hook: Hook,
 }
 
-impl<'g, S, HOOK> Backward<S> for GradHookV<'g, S, HOOK>
+impl<S, HOOK> Backward<S> for GradHookV<'_, S, HOOK>
 where
     S: Default + Clone + std::ops::Add<Output = S>,
     HOOK: FnOnce(S),
@@ -279,7 +279,7 @@ impl<S> Variable<S> {
 }
 
 /// Gradient hook for [Tensor]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy)]
 pub struct GradHookT<GradFn, HOOK> {
     grad_fn: GradFn,
     hook: HOOK,

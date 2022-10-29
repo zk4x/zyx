@@ -7,7 +7,7 @@ pub struct ReLUBackwardV<'g, S> {
     data: S,
 }
 
-impl<'g, S> Backward<S> for ReLUBackwardV<'g, S>
+impl<S> Backward<S> for ReLUBackwardV<'_, S>
 where
     S: Default + DReLU<Output = S> + Mul<Output = S> + Add<Output = S>,
 {

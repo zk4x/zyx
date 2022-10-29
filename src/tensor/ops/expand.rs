@@ -7,7 +7,7 @@ pub struct ExpandBackwardV<'g, S> {
     dims: Dims,
 }
 
-impl<'g, S> Backward<S> for ExpandBackwardV<'g, S>
+impl<S> Backward<S> for ExpandBackwardV<'_, S>
 where
     S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + GetShape,
 {

@@ -8,7 +8,7 @@ pub struct MulBackwardSV<'g, S, S2> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S, S2> Backward<S> for MulBackwardSV<'g, S, S2>
+impl<S, S2> Backward<S> for MulBackwardSV<'_, S, S2>
 where
     S: Default + Add<<S2 as Mul<S>>::Output, Output = S>,
     S2: Mul<S>,
@@ -18,8 +18,25 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
-    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+impl<'g, S> Mul<&'g Variable<S>> for dtype
+where
+    Self: Mul<S>,
+    S: Clone,
+{
+    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardSV<'g, S, Self>>;
+    fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
+        Tensor {
+            data: self * rhs.data().clone(),
+            grad_fn: MulBackwardSV {
+                xdata: self,
+                ygrad: &rhs.grad,
+            }
+        }
+    }
+}
+
+#[duplicate_item( dtype; [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<'g, S> Mul<&'g Variable<S>> for dtype
 where
@@ -54,8 +71,24 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
-    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool]; )]
+impl<S, F> Mul<Tensor<S, F>> for dtype
+where
+    Self: Mul<S>,
+{
+    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardST<Self, F>>;
+    fn mul(self, rhs: Tensor<S, F>) -> Self::Output {
+        Tensor {
+            data: self * rhs.data,
+            grad_fn: MulBackwardST {
+                xdata: self,
+                ygrad_fn: rhs.grad_fn,
+            },
+        }
+    }
+}
+
+#[duplicate_item( dtype; [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<S, F> Mul<Tensor<S, F>> for dtype
 where
@@ -79,7 +112,7 @@ pub struct MulBackwardVS<'g, S> {
     ydata: S,
 }
 
-impl<'g, S> Backward<S> for MulBackwardVS<'g, S>
+impl<S> Backward<S> for MulBackwardVS<'_, S>
 where
     S: Default + Mul<Output = S> + Add<Output = S>,
 {
@@ -112,7 +145,7 @@ pub struct MulBackwardVV<'g, S> {
     ydata: S,
 }
 
-impl<'g, S> Backward<S> for MulBackwardVV<'g, S>
+impl<S> Backward<S> for MulBackwardVV<'_, S>
 where
     S: Default + Clone + Mul<Output = S> + Add<Output = S>,
 {
@@ -148,7 +181,7 @@ pub struct MulBackwardVT<'g, S, YF> {
     ydata: S,
 }
 
-impl<'g, S, YF> Backward<S> for MulBackwardVT<'g, S, YF>
+impl<S, YF> Backward<S> for MulBackwardVT<'_, S, YF>
 where
     S: Default + Clone + Mul<Output = S> + Add<Output = S>,
     YF: Backward<S>,
@@ -217,7 +250,7 @@ pub struct MulBackwardTV<'g, S, XF> {
     ydata: S,
 }
 
-impl<'g, S, XF> Backward<S> for MulBackwardTV<'g, S, XF>
+impl<S, XF> Backward<S> for MulBackwardTV<'_, S, XF>
 where
     S: Default + Clone + Mul<Output = S> + Add<Output = S>,
     XF: Backward<S>,

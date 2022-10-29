@@ -41,6 +41,7 @@ pub trait Optimizer {
 /// ```txt
 /// x.data = x.data - x.grad * learning_rate;
 /// ```
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct SGD<Params> {
     parameters: Params,
     learning_rate: f64,

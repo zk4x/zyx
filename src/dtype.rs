@@ -16,7 +16,7 @@ pub trait ScalarType {}
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl ScalarType for dtype {}
 
-pub trait NDimType {}
+pub(crate) trait NDimType {}
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl NDimType for crate::accel::cpu::Buffer<dtype> {}

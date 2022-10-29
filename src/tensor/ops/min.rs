@@ -7,7 +7,7 @@ pub struct MinBackwardV<'g, S> {
     shape: Shape,
 }
 
-impl<'g, S> Backward<S> for MinBackwardV<'g, S>
+impl<S> Backward<S> for MinBackwardV<'_, S>
 where
     S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {

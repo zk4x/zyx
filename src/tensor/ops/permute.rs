@@ -1,4 +1,4 @@
-use crate::{ops::{Permute}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Dims}};
+use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Dims}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
@@ -7,7 +7,7 @@ pub struct PermuteBackwardV<'g, S> {
     dims: Dims,
 }
 
-impl<'g, S> Backward<S> for PermuteBackwardV<'g, S>
+impl<S> Backward<S> for PermuteBackwardV<'_, S>
 where
     S: Default + Permute<Output = S> + Add<Output = S>,
 {

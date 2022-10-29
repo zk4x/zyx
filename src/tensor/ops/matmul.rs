@@ -7,7 +7,7 @@ pub struct MatMulBackwardSV<'g, S> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for MatMulBackwardSV<'g, S>
+impl<S> Backward<S> for MatMulBackwardSV<'_, S>
 where
     S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S> + std::fmt::Display + crate::ops::GetShape,
 {
@@ -70,7 +70,7 @@ pub struct MatMulBackwardVS<'g, S> {
     ydata: S,
 }
 
-impl<'g, S> Backward<S> for MatMulBackwardVS<'g, S>
+impl<S> Backward<S> for MatMulBackwardVS<'_, S>
 where
     S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
@@ -103,7 +103,7 @@ pub struct MatMulBackwardVV<'g, S> {
     ydata: S,
 }
 
-impl<'g, S> Backward<S> for MatMulBackwardVV<'g, S>
+impl<S> Backward<S> for MatMulBackwardVV<'_, S>
 where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
@@ -139,7 +139,7 @@ pub struct MatMulBackwardVT<'g, S, YF> {
     ydata: S,
 }
 
-impl<'g, S, YF> Backward<S> for MatMulBackwardVT<'g, S, YF>
+impl<S, YF> Backward<S> for MatMulBackwardVT<'_, S, YF>
 where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
     YF: Backward<S>,
@@ -208,7 +208,7 @@ pub struct MatMulBackwardTV<'g, S, XF> {
     ydata: S,
 }
 
-impl<'g, S, XF> Backward<S> for MatMulBackwardTV<'g, S, XF>
+impl<S, XF> Backward<S> for MatMulBackwardTV<'_, S, XF>
 where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
     XF: Backward<S>,

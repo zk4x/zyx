@@ -7,7 +7,7 @@ pub struct SubBackwardSV<'g, S> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S, S2> Backward<S> for SubBackwardSV<'g, S2>
+impl<S, S2> Backward<S> for SubBackwardSV<'_, S2>
 where
     S2: Default + Sub<S, Output = S2>,
 {
@@ -56,7 +56,7 @@ pub struct SubBackwardVS<'g, S> {
     xgrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for SubBackwardVS<'g, S>
+impl<S> Backward<S> for SubBackwardVS<'_, S>
 where
     S: Default + Add<Output = S>,
 {
@@ -86,7 +86,7 @@ pub struct SubBackwardVV<'g, S> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for SubBackwardVV<'g, S>
+impl<S> Backward<S> for SubBackwardVV<'_, S>
 where
     S: Default + Clone + Add<Output = S> + Sub<Output = S>,
 {
@@ -118,7 +118,7 @@ pub struct SubBackwardVT<'g, S, YF> {
     ygrad_fn: YF,
 }
 
-impl<'g, S, YF> Backward<S> for SubBackwardVT<'g, S, YF>
+impl<S, YF> Backward<S> for SubBackwardVT<'_, S, YF>
 where
     S: Default + Clone + Add<Output = S> + Neg<Output = S>,
     YF: Backward<S>,
@@ -164,7 +164,7 @@ pub struct SubBackwardTV<'g, S, XF> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S, XF> Backward<S> for SubBackwardTV<'g, S, XF>
+impl<S, XF> Backward<S> for SubBackwardTV<'_, S, XF>
 where
     S: Default + Clone + Sub<Output = S>,
     XF: Backward<S>,

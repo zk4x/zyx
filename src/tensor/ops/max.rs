@@ -7,7 +7,7 @@ pub struct MaxBackwardV<'g, S> {
     shape: Shape,
 }
 
-impl<'g, S> Backward<S> for MaxBackwardV<'g, S>
+impl<S> Backward<S> for MaxBackwardV<'_, S>
 where
     S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {

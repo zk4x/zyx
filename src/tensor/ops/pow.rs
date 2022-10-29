@@ -7,7 +7,7 @@ pub struct PowBackwardSV<'g, S> {
     ytemp: S,
 }
 
-impl<'g, S> Backward<S> for PowBackwardSV<'g, S>
+impl<S> Backward<S> for PowBackwardSV<'_, S>
 where
     S: Default + Add<Output = S> + Mul<Output = S>,
 {
@@ -73,7 +73,7 @@ pub struct PowBackwardVS<'g, S, S2> {
 }
 
 // TODO: rewrite everything like this
-impl<'g, S, S2> Backward<S> for PowBackwardVS<'g, S, S2>
+impl<S, S2> Backward<S> for PowBackwardVS<'_, S, S2>
 where
     S: Default + std::ops::Add<<S2 as Mul<S>>::Output, Output = S>,
     S2: Mul<S>,
@@ -112,7 +112,7 @@ pub struct PowBackwardVV<'g, S> {
     ytemp: S,
 }
 
-impl<'g, S> Backward<S> for PowBackwardVV<'g, S>
+impl<S> Backward<S> for PowBackwardVV<'_, S>
 where
     S: Default + Clone + Add<Output = S> + Mul<Output = S>,
 {
@@ -149,7 +149,7 @@ pub struct PowBackwardVT<'g, S, YF> {
     ytemp: S,
 }
 
-impl<'g, S, YF> Backward<S> for PowBackwardVT<'g, S, YF>
+impl<S, YF> Backward<S> for PowBackwardVT<'_, S, YF>
 where
     S: Default + Clone + Add<Output = S> + Mul<Output = S> + Pow<Output = S>,
     YF: Backward<S>,
@@ -223,7 +223,7 @@ pub struct PowBackwardTV<'g, S, XF> {
     ytemp: S,
 }
 
-impl<'g, S, XF> Backward<S> for PowBackwardTV<'g, S, XF>
+impl<S, XF> Backward<S> for PowBackwardTV<'_, S, XF>
 where
     S: Default + Clone + Add<Output = S> + Mul<Output = S>,
     XF: Backward<S>,

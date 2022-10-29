@@ -7,7 +7,7 @@ pub struct LnBackwardV<'g, S> {
     data: S,
 }
 
-impl<'g, S> Backward<S> for LnBackwardV<'g, S>
+impl<S> Backward<S> for LnBackwardV<'_, S>
 where
     S: Default + Ln<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
 {

@@ -49,7 +49,7 @@ impl<T> std::fmt::Display for Buffer<T>
 where
     T: std::fmt::Display
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut res = String::new();
         if self.data.is_empty() { return f.write_str(&(res + "[]")); }
         let n = self.shape.numel();

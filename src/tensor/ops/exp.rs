@@ -7,7 +7,7 @@ pub struct ExpBackwardV<'g, S, S2> {
     data: S2,
 }
 
-impl<'g, S, S2> Backward<S> for ExpBackwardV<'g, S, S2>
+impl<S, S2> Backward<S> for ExpBackwardV<'_, S, S2>
 where
     S: Default + Mul<S2> + Add<<S as Mul<S2>>::Output, Output = S>,
 {

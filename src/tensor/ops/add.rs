@@ -11,7 +11,7 @@ pub struct AddBackwardSV<'g, S2> {
     ygrad: &'g RefCell<S2>,
 }
 
-impl<'g, S, S2> Backward<S> for AddBackwardSV<'g, S2>
+impl<S, S2> Backward<S> for AddBackwardSV<'_, S2>
 where
     S2: Default + Add<S, Output = S2>,
 {
@@ -60,7 +60,7 @@ pub struct AddBackwardVS<'g, S> {
     xgrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for AddBackwardVS<'g, S>
+impl<S> Backward<S> for AddBackwardVS<'_, S>
 where
     S: Default + Add<Output = S>,
 {
@@ -91,7 +91,7 @@ pub struct AddBackwardVV<'g, S> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S> Backward<S> for AddBackwardVV<'g, S>
+impl<S> Backward<S> for AddBackwardVV<'_, S>
 where
     S: Default + Clone + Add<Output = S>,
 {
@@ -123,7 +123,7 @@ pub struct AddBackwardVT<'g, S, YF> {
     ygrad_fn: YF,
 }
 
-impl<'g, S, YF> Backward<S> for AddBackwardVT<'g, S, YF>
+impl<S, YF> Backward<S> for AddBackwardVT<'_, S, YF>
 where
     S: Default + Clone + Add<Output = S>,
     YF: Backward<S>,
@@ -169,7 +169,7 @@ pub struct AddBackwardTV<'g, S, XF> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<'g, S, S2, XF> Backward<S> for AddBackwardTV<'g, S2, XF>
+impl<S, S2, XF> Backward<S> for AddBackwardTV<'_, S2, XF>
 where
     S: Clone,
     S2: Default + Add<S, Output = S2>,
