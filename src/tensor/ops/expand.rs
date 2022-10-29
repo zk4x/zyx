@@ -7,9 +7,11 @@ pub struct ExpandBackwardV<'g, S> {
     dims: Dims,
 }
 
-impl<S> Backward<S> for ExpandBackwardV<'_, S>
+impl<S, S2> Backward<S> for ExpandBackwardV<'_, S2>
 where
-    S: Default + Expand<Output = S> + Add<Output = S> + Max<Output = S> + GetShape,
+    S2: Default,
+    S: Max,
+    S2: Add<<S as Max>::Output, Output = S2>,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -19,9 +21,9 @@ where
 
 impl<'g, S> Expand for &'g Variable<S>
 where
-    S: 'g + Clone + Expand<Output = S> + GetShape,
+    S: Clone + Expand + GetShape,
 {
-    type Output = Tensor<S, ExpandBackwardV<'g, S>>;
+    type Output = Tensor<<S as Expand>::Output, ExpandBackwardV<'g, S>>;
     fn expand(self, shape: impl IntoShape) -> Self::Output {
         let shape = shape.shape();
         let dims = Dims(self.data().shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());
@@ -43,8 +45,8 @@ pub struct ExpandBackwardT<F> {
 
 impl<S, F> Backward<S> for ExpandBackwardT<F>
 where
-    S: Expand<Output = S> + Max<Output = S> + GetShape,
-    F: Backward<S>,
+    S: Max,
+    F: Backward<<S as Max>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.max(self.dims));
@@ -53,10 +55,10 @@ where
 
 impl<S, F> Expand for Tensor<S, F>
 where
-    S: Expand<Output = S> + GetShape,
-    F: FnOnce(S),
+    S: Expand + GetShape,
+    F: Backward<S>,
 {
-    type Output = Tensor<S, ExpandBackwardT<F>>;
+    type Output = Tensor<<S as Expand>::Output, ExpandBackwardT<F>>;
     fn expand(self, shape: impl IntoShape) -> Self::Output {
         let shape = shape.shape();
         let dims = self.data.shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();

@@ -13,14 +13,26 @@
 use crate::ops::{Permute, IntoVec};
 use std::ops::Range;
 
-/// Turn datatype into [Shape]
+/// # IntoShape trait
 /// 
+/// Turn input into [Shape].
 /// This trait is implemented for tuples, vec and arrays of usize.
+/// 
+/// # Example
+/// 
+/// ```
+/// # use zyx::prelude::*;
+/// let shape = (2, 4, 1).shape();
+/// ```
+/// It is used in tensor initialization>.
+/// For example create buffer with random values with shape 2 by 3 by 4:
+/// ```
+/// let x = cpu::Buffer<f32>::randn((2, 3, 4));
+/// ```
 pub trait IntoShape {
     /// Turn input into Shape
     fn shape(self) -> Shape;
 }
-
 
 /// Turn datatype into [Dims]
 /// 

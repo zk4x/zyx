@@ -1,5 +1,5 @@
-use crate::{ops::{Ln, Ones, Pow}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
-use std::{ops::{Add, Mul, Neg}, cell::RefCell};
+use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use std::{ops::{Add, Mul}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LnBackwardV<'g, S> {
@@ -7,20 +7,21 @@ pub struct LnBackwardV<'g, S> {
     data: S,
 }
 
-impl<S> Backward<S> for LnBackwardV<'_, S>
+impl<S, S2> Backward<S> for LnBackwardV<'_, S2>
 where
-    S: Default + Ln<Output = S> + Mul<Output = S> + Add<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
+    S2: Default + Pow<i32> + Add<<S as Mul<<S2 as Pow<i32>>::Output>>::Output, Output = S2>,
+    S: Mul<<S2 as Pow<i32>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad * self.data.pow(-S::ones([1])));
+        self.grad.replace_take(|grad| grad + res_grad * self.data.pow(-1));
     }
 }
 
 impl<'g, S> Ln for &'g Variable<S>
 where
-    S: 'g + Clone + Ln<Output = S>,
+    S: Clone + Ln,
 {
-    type Output = Tensor<S, LnBackwardV<'g, S>>;
+    type Output = Tensor<<S as Ln>::Output, LnBackwardV<'g, S>>;
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data().clone().ln(),
@@ -38,21 +39,22 @@ pub struct LnBackwardT<S, F> {
     data: S,
 }
 
-impl<S, F> Backward<S> for LnBackwardT<S, F>
+impl<S, S2, F> Backward<S> for LnBackwardT<S2, F>
 where
-    S: Ln<Output = S> + Mul<Output = S> + Pow<Output = S> + Neg<Output = S> + Ones,
-    F: Backward<S>,
+    S2: Pow<i32>,
+    S: Mul<<S2 as Pow<i32>>::Output>,
+    F: Backward<<S as Mul<<S2 as Pow<i32>>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad * self.data.pow(-S::ones([1])));
+        self.grad_fn.backward(res_grad * self.data.pow(-1));
     }
 }
 
 impl<S, F> Ln for Tensor<S, F>
 where
-    S: Clone + Ln<Output = S>,
+    S: Clone + Ln,
 {
-    type Output = Tensor<S, LnBackwardT<S, F>>;
+    type Output = Tensor<<S as Ln>::Output, LnBackwardT<S, F>>;
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data.clone().ln(),

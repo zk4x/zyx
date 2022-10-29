@@ -51,7 +51,7 @@ where
 impl<S, F> Min for Tensor<S, F>
 where
     S: Min<Output = S> + GetShape,
-    F: FnOnce(S),
+    F: Backward<S>,
 {
     type Output = Tensor<S, MinBackwardT<F>>;
     fn min(self, dims: impl IntoDims) -> Self::Output {

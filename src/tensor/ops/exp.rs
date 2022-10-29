@@ -42,8 +42,8 @@ pub struct ExpBackwardT<S2, F> {
 
 impl<S, S2, F> Backward<S> for ExpBackwardT<S2, F>
 where
-    S: Mul<S2, Output = S>,
-    F: Backward<S>,
+    S: Mul<S2>,
+    F: Backward<<S as Mul<S2>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad * self.data);

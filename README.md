@@ -8,7 +8,7 @@ Provided is [multidimensional array](crate::accel::cpu::Buffer) that can optiona
 crate for faster execution.
 
 From user perspective, it works similar to PyTorch. Also names of functions are mostly the same,
-so that you can quickly pick up this library, if you are familiar with PyTorch.
+so that you can quickly pick up this library if you are familiar with PyTorch.
 
 ## Features
 
