@@ -7,9 +7,10 @@ pub struct ReLUBackwardV<'g, S> {
     data: S,
 }
 
-impl<S> Backward<S> for ReLUBackwardV<'_, S>
+impl<S, S2> Backward<S> for ReLUBackwardV<'_, S2>
 where
-    S: Default + DReLU<Output = S> + Mul<Output = S> + Add<Output = S>,
+    S2: Default + DReLU + Add<<S as Mul<<S2 as DReLU>::Output>>::Output, Output = S2>,
+    S: Mul<<S2 as DReLU>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad * self.data.drelu());
@@ -18,9 +19,9 @@ where
 
 impl<'g, S> ReLU for &'g Variable<S>
 where
-    S: 'g + Clone + ReLU<Output = S>,
+    S: Clone + ReLU,
 {
-    type Output = Tensor<S, ReLUBackwardV<'g, S>>;
+    type Output = Tensor<<S as ReLU>::Output, ReLUBackwardV<'g, S>>;
     fn relu(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().relu(),
@@ -38,10 +39,11 @@ pub struct ReLUBackwardT<S, F> {
     data: S,
 }
 
-impl<S, F> Backward<S> for ReLUBackwardT<S, F>
+impl<S, S2, F> Backward<S> for ReLUBackwardT<S2, F>
 where
-    S: DReLU<Output = S> + Mul<Output = S>,
-    F: Backward<S>,
+    S2: DReLU,
+    S: Mul<<S2 as DReLU>::Output>,
+    F: Backward<<S as Mul<<S2 as DReLU>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad * self.data.drelu());
@@ -50,9 +52,9 @@ where
 
 impl<S, F> ReLU for Tensor<S, F>
 where
-    S: Clone + ReLU<Output = S>,
+    S: Clone + ReLU,
 {
-    type Output = Tensor<S, ReLUBackwardT<S, F>>;
+    type Output = Tensor<<S as ReLU>::Output, ReLUBackwardT<S, F>>;
     fn relu(self) -> Self::Output {
         Tensor {
             data: self.data.clone().relu(),

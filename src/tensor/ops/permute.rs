@@ -7,9 +7,10 @@ pub struct PermuteBackwardV<'g, S> {
     dims: Dims,
 }
 
-impl<S> Backward<S> for PermuteBackwardV<'_, S>
+impl<S, S2> Backward<S> for PermuteBackwardV<'_, S2>
 where
-    S: Default + Permute<Output = S> + Add<Output = S>,
+    S2: Default + Add<<S as Permute>::Output, Output = S2>,
+    S: Permute,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad.permute(self.dims));
@@ -18,9 +19,9 @@ where
 
 impl<'g, S> Permute for &'g Variable<S>
 where
-    S: 'g + Clone + Permute<Output = S>,
+    S: Clone + Permute,
 {
-    type Output = Tensor<S, PermuteBackwardV<'g, S>>;
+    type Output = Tensor<<S as Permute>::Output, PermuteBackwardV<'g, S>>;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
         let dims = dims.dims();
         Tensor {
@@ -41,8 +42,8 @@ pub struct PermuteBackwardT<F> {
 
 impl<S, F> Backward<S> for PermuteBackwardT<F>
 where
-    S: Permute<Output = S>,
-    F: Backward<S>,
+    S: Permute,
+    F: Backward<<S as Permute>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.permute(self.dims));
@@ -51,9 +52,9 @@ where
 
 impl<S, F> Permute for Tensor<S, F>
 where
-    S: Permute<Output = S>,
+    S: Permute,
 {
-    type Output = Tensor<S, PermuteBackwardT<F>>;
+    type Output = Tensor<<S as Permute>::Output, PermuteBackwardT<F>>;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
         let dims = dims.dims();
         Tensor {

@@ -27,7 +27,9 @@ use std::ops::Range;
 /// It is used in tensor initialization>.
 /// For example create buffer with random values with shape 2 by 3 by 4:
 /// ```
-/// let x = cpu::Buffer<f32>::randn((2, 3, 4));
+/// # use zyx::prelude::*;
+/// # use zyx::accel::cpu;
+/// let x = cpu::Buffer::<f32>::randn((2, 3, 4));
 /// ```
 pub trait IntoShape {
     /// Turn input into Shape

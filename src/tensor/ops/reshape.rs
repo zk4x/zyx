@@ -7,9 +7,10 @@ pub struct ReshapeBackwardV<'g, S> {
     shape: Shape,
 }
 
-impl<S> Backward<S> for ReshapeBackwardV<'_, S>
+impl<S, S2> Backward<S> for ReshapeBackwardV<'_, S2>
 where
-    S: Default + Reshape<Output = S> + Add<Output = S>,
+    S2: Default + Add<<S as Reshape>::Output, Output = S2>,
+    S: Reshape,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad + res_grad.reshape(self.shape));
@@ -18,9 +19,9 @@ where
 
 impl<'g, S> Reshape for &'g Variable<S>
 where
-    S: 'g + Clone + Reshape<Output = S> + GetShape,
+    S: Clone + Reshape + GetShape,
 {
-    type Output = Tensor<S, ReshapeBackwardV<'g, S>>;
+    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardV<'g, S>>;
     fn reshape(self, shape: impl IntoShape) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().reshape(shape),
@@ -40,8 +41,8 @@ pub struct ReshapeBackwardT<F> {
 
 impl<S, F> Backward<S> for ReshapeBackwardT<F>
 where
-    S: Reshape<Output = S>,
-    F: Backward<S>,
+    S: Reshape,
+    F: Backward<<S as Reshape>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.reshape(self.shape));
@@ -50,9 +51,9 @@ where
 
 impl<S, F> Reshape for Tensor<S, F>
 where
-    S: Reshape<Output = S> + GetShape,
+    S: Reshape + GetShape,
 {
-    type Output = Tensor<S, ReshapeBackwardT<F>>;
+    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardT<F>>;
     fn reshape(self, res_shape: impl IntoShape) -> Self::Output {
         let shape = self.data.shape();
         Tensor {

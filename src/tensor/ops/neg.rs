@@ -6,9 +6,9 @@ pub struct NegBackwardV<'g, S> {
     grad: &'g RefCell<S>,
 }
 
-impl<S> Backward<S> for NegBackwardV<'_, S>
+impl<S, S2> Backward<S> for NegBackwardV<'_, S2>
 where
-    S: Default + Neg<Output = S> + Sub<Output = S>,
+    S2: Default + Sub<S, Output = S2>,
 {
     fn backward(self, res_grad: S) {
         self.grad.replace_take(|grad| grad - res_grad);
@@ -17,12 +17,12 @@ where
 
 impl<'g, S> Neg for &'g Variable<S>
 where
-    S: 'g + Clone + Neg<Output = S>,
+    S: Clone + Neg,
 {
-    type Output = Tensor<S, NegBackwardV<'g, S>>;
+    type Output = Tensor<<S as Neg>::Output, NegBackwardV<'g, S>>;
     fn neg(self) -> Self::Output {
         Tensor {
-            data: (*self.data()).clone().neg(),
+            data: self.data().clone().neg(),
             grad_fn: NegBackwardV {
                 grad: &self.grad,
             }
@@ -37,8 +37,8 @@ pub struct NegBackwardT<F> {
 
 impl<S, F> Backward<S> for NegBackwardT<F>
 where
-    S: Neg<Output = S>,
-    F: Backward<S>,
+    S: Neg,
+    F: Backward<<S as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(-res_grad);
@@ -47,9 +47,9 @@ where
 
 impl<S, F> Neg for Tensor<S, F>
 where
-    S: Neg<Output = S>,
+    S: Neg,
 {
-    type Output = Tensor<S, NegBackwardT<F>>;
+    type Output = Tensor<<S as Neg>::Output, NegBackwardT<F>>;
     fn neg(self) -> Self::Output {
         Tensor {
             data: self.data.neg(),

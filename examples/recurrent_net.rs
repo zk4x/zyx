@@ -1,7 +1,7 @@
 //! ## This is an example of recurrent neural network
 use zyx::prelude::*;
 use zyx::accel::cpu;
-use zyx::nn::{RNNCell, Linear, SoftMax, Tanh, MSELoss, Sum};
+use zyx::nn::{RNNCell, Linear, SoftMax, MSELoss, Sum, ReLU};
 use zyx::optim;
 
 fn main() {
@@ -10,7 +10,7 @@ fn main() {
 
     let rnn_net = (
         RNNCell::new::<f32>(input_size, hidden_size),
-        Tanh,
+        ReLU,
     );
     let net2 = (
         Linear::new::<f32>(hidden_size, 3),
@@ -20,7 +20,7 @@ fn main() {
     // This looks bad right now, eventually it will look like this:
     //let params = (rnn_net.parameters(), net2.parameters());
     let params = (
-        <&(RNNCell<cpu::Buffer<f32>>, Tanh) as Module<(cpu::Buffer<f32>, cpu::Buffer<f32>)>>::parameters(&rnn_net),
+        <&(RNNCell<cpu::Buffer<f32>>, ReLU) as Module<(cpu::Buffer<f32>, cpu::Buffer<f32>)>>::parameters(&rnn_net),
         <&(Linear<cpu::Buffer<f32>>, SoftMax<()>) as Module<cpu::Buffer<f32>>>::parameters(&net2),
     );
 

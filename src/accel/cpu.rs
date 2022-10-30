@@ -524,12 +524,13 @@ where
 impl<T, T2> std::ops::Add<T2> for Buffer<T>
 where
     T2: crate::dtype::ScalarType,
-    T: Clone + Sync + Send + std::ops::Add<Output = T> + From<T2>,
+    T: Clone + Sync + Send + std::ops::Add<Output = T> + ConvertFrom<T2>,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: T2) -> Self::Output {
         use rayon::prelude::*;
-        let rhs: T = rhs.into();
+        use crate::ops::ConvertInto;
+        let rhs: T = rhs.cinto();
         Self {
             shape: self.shape,
             data: Arc::new(
