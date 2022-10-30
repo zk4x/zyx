@@ -2,3 +2,4 @@
 /Cargo.lock
 /mutants.out
 /mutants.out.old
+.buildconfig

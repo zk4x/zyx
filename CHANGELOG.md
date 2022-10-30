@@ -1,3 +1,8 @@
+# 0.6.2
+
+- Found some incompatibility of some lints with stable channel, so we removed them.
+- Continuing to support more operations with different input and output values.
+
 # 0.6.1
 
 - More operations now work with different input and output types (previously it was required that input and output to operations has the same type). After this is done, we can provide full support for ndarray and possibly other libraries that use rank or shape as part of type state. And it will allow us to support const generic shape once support for user defined const generics lands.
