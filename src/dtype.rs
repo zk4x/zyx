@@ -1,4 +1,4 @@
-use crate::ops::{ConvertFrom, FromVec};
+//use crate::ops::{ConvertFrom, FromVec};
 use duplicate::duplicate_item;
 
 // # DType traits
@@ -6,10 +6,11 @@ use duplicate::duplicate_item;
 // This just differentiates between types that can be used inside this library and other types
 pub trait DType {}
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+use crate::accel::cpu;
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
+    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
+    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl DType for dtype {}
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl DType for crate::accel::cpu::Buffer<dtype> {}
 
 pub trait ScalarType {}
 
@@ -22,14 +23,3 @@ pub(crate) trait NDimType {}
 impl NDimType for crate::accel::cpu::Buffer<dtype> {}
 
 // TODO: implement DType for NDArray
-
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-
-impl<S> ConvertFrom<dtype> for S
-where
-    S: FromVec<dtype>,
-{
-    fn cfrom(x: dtype) -> Self {
-        S::from_vec(vec![x], [1])
-    }
-}

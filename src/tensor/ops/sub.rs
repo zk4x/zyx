@@ -1,15 +1,15 @@
-use crate::{tensor::{Tensor, Variable, Backward, ops::RefCellReplaceTake}, accel::cpu};
+use crate::{tensor::{Tensor, Variable, Backward, ops::RefCellReplaceTake}, accel::cpu, dtype::DType};
 use std::{cell::RefCell, ops::{Sub, Neg, Add}};
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]
-pub struct SubBackwardSV<'g, S> {
-    ygrad: &'g RefCell<S>,
+pub struct SubBackwardSV<'g, YS> {
+    ygrad: &'g RefCell<YS>,
 }
 
-impl<S, S2> Backward<S> for SubBackwardSV<'_, S2>
+impl<S, YS> Backward<S> for SubBackwardSV<'_, YS>
 where
-    S2: Default + Sub<S, Output = S2>,
+    YS: Default + Sub<S, Output = YS>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.replace_take(|grad| grad - res_grad);
@@ -22,7 +22,7 @@ where
 impl<'g, S> Sub<&'g Variable<S>> for dtype
 where
     Self: Sub<S>,
-    S: Clone,
+    S: Clone + DType,
 {
     type Output = Tensor<<Self as Sub<S>>::Output, SubBackwardSV<'g, S>>;
     fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
@@ -41,6 +41,7 @@ where
 impl<S, F> Sub<Tensor<S, F>> for dtype
 where
     Self: Sub<S>,
+    S: DType,
 {
     type Output = Tensor<<Self as Sub<S>>::Output, F>;
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
@@ -52,25 +53,26 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SubBackwardVS<'g, S> {
-    xgrad: &'g RefCell<S>,
+pub struct SubBackwardVS<'g, XS> {
+    xgrad: &'g RefCell<XS>,
 }
 
-impl<S> Backward<S> for SubBackwardVS<'_, S>
+impl<S, XS> Backward<S> for SubBackwardVS<'_, XS>
 where
-    S: Default + Add<Output = S>,
+    XS: Default + Add<S, Output = XS>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + res_grad);
     }
 }
 
-impl<'g, S> Sub<S> for &'g Variable<S>
+impl<'g, XS, YS> Sub<YS> for &'g Variable<XS>
 where
-    S: 'g + Clone + Sub<Output = S>,
+    XS: Clone + Sub<YS>,
+    YS: DType,
 {
-    type Output = Tensor<S, SubBackwardVS<'g, S>>;
-    fn sub(self, rhs: S) -> Self::Output {
+    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardVS<'g, XS>>;
+    fn sub(self, rhs: YS) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs,
             grad_fn: SubBackwardVS {
@@ -81,14 +83,16 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SubBackwardVV<'g, S> {
-    xgrad: &'g RefCell<S>,
-    ygrad: &'g RefCell<S>,
+pub struct SubBackwardVV<'g, XS, YS> {
+    xgrad: &'g RefCell<XS>,
+    ygrad: &'g RefCell<YS>,
 }
 
-impl<S> Backward<S> for SubBackwardVV<'_, S>
+impl<S, XS, YS> Backward<S> for SubBackwardVV<'_, XS, YS>
 where
-    S: Default + Clone + Add<Output = S> + Sub<Output = S>,
+    S: Clone,
+    XS: Default + Add<S, Output = XS>,
+    YS: Default + Sub<S, Output = YS>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + res_grad.clone());
@@ -96,12 +100,13 @@ where
     }
 }
 
-impl<'g, S> Sub<&'g Variable<S>> for &'g Variable<S>
+impl<'g, XS, YS> Sub<&'g Variable<YS>> for &'g Variable<XS>
 where
-    S: 'g + Clone + Sub<Output = S>,
+    XS: Clone + Sub<YS>,
+    YS: Clone,
 {
-    type Output = Tensor<S, SubBackwardVV<'g, S>>;
-    fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardVV<'g, XS, YS>>;
+    fn sub(self, rhs: &'g Variable<YS>) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs.data().clone(),
             grad_fn: SubBackwardVV {
@@ -113,15 +118,16 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SubBackwardVT<'g, S, YF> {
-    xgrad: &'g RefCell<S>,
+pub struct SubBackwardVT<'g, XS, YF> {
+    xgrad: &'g RefCell<XS>,
     ygrad_fn: YF,
 }
 
-impl<S, YF> Backward<S> for SubBackwardVT<'_, S, YF>
+impl<S, XS, YF> Backward<S> for SubBackwardVT<'_, XS, YF>
 where
-    S: Default + Clone + Add<Output = S> + Neg<Output = S>,
-    YF: Backward<S>,
+    S: Clone + Neg,
+    XS: Default + Add<S, Output = XS>,
+    YF: Backward<<S as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.replace_take(|grad| grad + res_grad.clone());
@@ -131,7 +137,7 @@ where
 
 impl<'g, S, F> Sub<Tensor<S, F>> for &'g Variable<S>
 where
-    S: 'g + Clone + Sub<Output = S>,
+    S: Clone + Sub<Output = S>,
 {
     type Output = Tensor<S, SubBackwardVT<'g, S, F>>;
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
@@ -145,12 +151,13 @@ where
     }
 }
 
-impl<S, XF> Sub<S> for Tensor<S, XF>
+impl<XS, YS, XF> Sub<YS> for Tensor<XS, XF>
 where
-    S: Sub<Output = S>,
+    XS: Sub<YS>,
+    YS: DType,
 {
-    type Output = Tensor<S, XF>;
-    fn sub(self, rhs: S) -> Self::Output {
+    type Output = Tensor<<XS as Sub<YS>>::Output, XF>;
+    fn sub(self, rhs: YS) -> Self::Output {
         Tensor {
             data: self.data - rhs,
             grad_fn: self.grad_fn,
@@ -164,9 +171,10 @@ pub struct SubBackwardTV<'g, S, XF> {
     ygrad: &'g RefCell<S>,
 }
 
-impl<S, XF> Backward<S> for SubBackwardTV<'_, S, XF>
+impl<S, YS, XF> Backward<S> for SubBackwardTV<'_, YS, XF>
 where
-    S: Default + Clone + Sub<Output = S>,
+    S: Clone,
+    YS: Default + Sub<S, Output = YS>,
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -175,12 +183,13 @@ where
     }
 }
 
-impl<'g, S, F> Sub<&'g Variable<S>> for Tensor<S, F>
+impl<'g, XS, YS, F> Sub<&'g Variable<YS>> for Tensor<XS, F>
 where
-    S: 'g + Clone + Sub<Output = S>,
+    XS: Clone + Sub<YS>,
+    YS: Clone,
 {
-    type Output = Tensor<S, SubBackwardTV<'g, S, F>>;
-    fn sub(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardTV<'g, YS, F>>;
+    fn sub(self, rhs: &'g Variable<YS>) -> Self::Output {
         Tensor {
             data: self.data - rhs.data().clone(),
             grad_fn: SubBackwardTV {
@@ -199,8 +208,8 @@ pub struct SubBackwardTT<XF, YF> {
 
 impl<S, XF, YF> Backward<S> for SubBackwardTT<XF, YF>
 where
-    S: Clone + Neg<Output = S>,
-    XF: Backward<S>,
+    S: Clone + Neg,
+    XF: Backward<<S as Neg>::Output>,
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -209,12 +218,12 @@ where
     }
 }
 
-impl<S, XF, YF> Sub<Tensor<S, YF>> for Tensor<S, XF>
+impl<XS, YS, XF, YF> Sub<Tensor<YS, YF>> for Tensor<XS, XF>
 where
-    S: Sub<Output = S>,
+    XS: Sub<YS>,
 {
-    type Output = Tensor<S, SubBackwardTT<XF, YF>>;
-    fn sub(self, rhs: Tensor<S, YF>) -> Self::Output {
+    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardTT<XF, YF>>;
+    fn sub(self, rhs: Tensor<YS, YF>) -> Self::Output {
         Tensor {
             data: self.data - rhs.data,
             grad_fn: SubBackwardTT {

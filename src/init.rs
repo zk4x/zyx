@@ -129,6 +129,17 @@ where
     }
 }
 
+// TODO: Figure wheter this is usefull. But currently we don't think it is usefull enough.
+/*impl<S, T> ConvertFrom<T> for S
+where
+    S: FromVec<dtype>,
+    T: ScalarType,
+{
+    fn cfrom(x: T) -> Self {
+        S::from_vec(vec![x], [1])
+    }
+}*/
+
 impl<S, T, const D0: usize> ConvertFrom<[T; D0]> for S
 where
     S: FromVec<T>,

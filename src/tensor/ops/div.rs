@@ -1,8 +1,8 @@
 use crate::{tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, dtype::DType, accel::cpu};
 use std::{cell::RefCell, ops::{Neg, Add, Sub, Mul, Div}};
-use duplicate::duplicate_item;
+//use duplicate::duplicate_item;
 
-#[derive(Debug, Clone, Copy)]
+/*#[derive(Debug, Clone, Copy)]
 pub struct DivBackwardSV<'g, S, S2> {
     res: S2,
     ygrad: &'g RefCell<S>,
@@ -25,9 +25,9 @@ where
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<'g, S> Div<&'g Variable<S>> for dtype
 where
-    Self: Div<S, Output = S>,
-    S: Clone,
-    //<Self as Div<S>>::Output: Clone,
+    S: Clone + DType,
+    Self: Div<S>,
+    <Self as Div<S>>::Output: Clone,
 {
     type Output = Tensor<<Self as Div<S>>::Output, DivBackwardSV<'g, S, <Self as Div<S>>::Output>>;
     fn div(self, rhs: &'g Variable<S>) -> Self::Output {
@@ -41,39 +41,57 @@ where
             }
         }
     }
-}
+}*/
 
 #[derive(Debug, Clone, Copy)]
-pub struct DivBackwardST<S, S2, YF> {
+pub struct DivBackwardST<S, YS, YF> {
     res: S,
     ygrad_fn: YF,
-    ydata: S2,
+    ydata: YS,
 }
 
-impl<S, S2, S3, YF> Backward<S3> for DivBackwardST<S, S2, YF>
+impl<S, YS, S3, YF> Backward<S3> for DivBackwardST<S, YS, YF>
 where
     S: Neg,
-    <S as Neg>::Output: Div<S2>,
-    <<S as Neg>::Output as Div<S2>>::Output: Mul<S3, Output = S2>,
-    YF: Backward<S2>,
+    <S as Neg>::Output: Div<YS>,
+    <<S as Neg>::Output as Div<YS>>::Output: Mul<S3, Output = YS>,
+    YF: Backward<YS>,
 {
     fn backward(self, res_grad: S3) {
         self.ygrad_fn.backward(-self.res / self.ydata * res_grad);
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
+/*#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
     [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
-impl<S, F> Div<Tensor<S, F>> for dtype
+impl<YS, F> Div<Tensor<YS, F>> for dtype
 where
-    S: Clone,
-    Self: Div<S, Output = S>,
-    // TODO: why does this overflow during compilation?
-    //<Self as Div<S>>::Output: Clone,
+    YS: Clone + DType,
+    Self: Div<YS>,
+    <Self as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<<Self as Div<S>>::Output, DivBackwardST<<Self as Div<S>>::Output, S, F>>;
-    fn div(self, rhs: Tensor<S, F>) -> Self::Output {
+    type Output = Tensor<<Self as Div<YS>>::Output, DivBackwardST<<Self as Div<YS>>::Output, YS, F>>;
+    fn div(self, rhs: Tensor<YS, F>) -> Self::Output {
+        let res = self / rhs.data.clone();
+        Tensor {
+            data: res.clone(),
+            grad_fn: DivBackwardST {
+                res,
+                ygrad_fn: rhs.grad_fn,
+                ydata: rhs.data,
+            },
+        }
+    }
+}*/
+
+// TODO: remove this and put it into the implementation above.
+// And figure why the above implementation overflows during compilation.
+impl<F> Div<Tensor<cpu::Buffer<f32>, F>> for i32
+where
+{
+    type Output = Tensor<<Self as Div<cpu::Buffer<f32>>>::Output, DivBackwardST<<Self as Div<cpu::Buffer<f32>>>::Output, cpu::Buffer<f32>, F>>;
+    fn div(self, rhs: Tensor<cpu::Buffer<f32>, F>) -> Self::Output {
         let res = self / rhs.data.clone();
         Tensor {
             data: res.clone(),
@@ -144,8 +162,8 @@ where
 
 impl<'g, XS, YS> Div<&'g Variable<YS>> for &'g Variable<XS>
 where
-    XS: Clone + Div<YS>,
-    YS: Clone,
+    XS: Clone + Div<YS> + DType,
+    YS: Clone + DType,
     <XS as Div<YS>>::Output: Clone,
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XS, YS>>;
@@ -187,12 +205,14 @@ where
     }
 }
 
-impl<'g, S, F> Div<Tensor<S, F>> for &'g Variable<S>
+impl<'g, XS, YS, YF> Div<Tensor<YS, YF>> for &'g Variable<XS>
 where
-    S: 'g + Clone + Div<Output = S>,
+    XS: Clone + Div<YS> + DType,
+    YS: Clone + DType,
+    <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<S, DivBackwardVT<'g, S, S, S, F>>;
-    fn div(self, rhs: Tensor<S, F>) -> Self::Output {
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVT<'g, <XS as Div<YS>>::Output, XS, YS, YF>>;
+    fn div(self, rhs: Tensor<YS, YF>) -> Self::Output {
         let res = self.data().clone() / rhs.data.clone();
         Tensor {
             data: res.clone(),
@@ -240,17 +260,20 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DivBackwardTV<'g, S, XF> {
+pub struct DivBackwardTV<'g, S, YS, XF> {
     res: S,
     xgrad_fn: XF,
-    ygrad: &'g RefCell<S>,
-    ydata: S,
+    ygrad: &'g RefCell<YS>,
+    ydata: YS,
 }
 
-impl<S, XF> Backward<S> for DivBackwardTV<'_, S, XF>
+impl<S, S2, YS, XF> Backward<S> for DivBackwardTV<'_, S2, YS, XF>
 where
-    S: Default + Clone + Sub<Output = S> + Mul<Output = S> + Div<Output = S>,
-    XF: Backward<S>,
+    S: Div<YS>,
+    <S as Div<YS>>::Output: Clone,
+    S2: Mul<<S as Div<YS>>::Output>,
+    YS: Default + Sub<<S2 as Mul<<S as Div<YS>>::Output>>::Output, Output = YS>,
+    XF: Backward<<S as Div<YS>>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
@@ -259,12 +282,14 @@ where
     }
 }
 
-impl<'g, S, XF> Div<&'g Variable<S>> for Tensor<S, XF>
+impl<'g, XS, YS, XF> Div<&'g Variable<YS>> for Tensor<XS, XF>
 where
-    S: 'g + Clone + Div<Output = S>,
+    XS: Div<YS> + DType,
+    YS: Clone + DType,
+    <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<S, DivBackwardTV<'g, S, XF>>;
-    fn div(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardTV<'g, <XS as Div<YS>>::Output, YS, XF>>;
+    fn div(self, rhs: &'g Variable<YS>) -> Self::Output {
         let res = self.data / rhs.data().clone();
         Tensor {
             data: res.clone(),

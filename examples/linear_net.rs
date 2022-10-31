@@ -27,8 +27,8 @@ fn main() {
 
     for _ in 0..100 {
         for i in 0..100 {
-            let x = cpu::Buffer::cfrom(i as f32 / 10.);
-            let y = cpu::Buffer::cfrom((i as f32 / 10.).sin());
+            let x = cpu::Buffer::cfrom([i as f32 / 10.]);
+            let y = cpu::Buffer::cfrom([(i as f32 / 10.).sin()]);
 
             let y_predicted = network.forward(x);
 

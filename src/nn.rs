@@ -86,13 +86,10 @@ pub struct Sigmoid;
 
 impl<Input> Module<Input> for &Sigmoid
 where
-    Input:
-        Clone +
-        Neg +
-        Add<<<Input as Neg>::Output as ops::Exp>::Output> +
-        Div<<Input as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
+    Input: Neg,
     <Input as Neg>::Output: ops::Exp,
-    i32: Add<<<Input as Neg>::Output as ops::Exp>::Output> + Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
+    i32: Add<<<Input as Neg>::Output as ops::Exp>::Output>,
+    i32: Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
 {
     type Output = <i32 as Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>>::Output;
     type Params = ();
