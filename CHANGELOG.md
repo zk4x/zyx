@@ -1,3 +1,8 @@
+# 0.6.3
+
+- Finished rewrite of tensor::ops to support outputs different from inputs and different inputs in binary operations.
+- Performance improvements
+
 # 0.6.2
 
 - Found some incompatibility of some lints with stable channel, so we removed them.

@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.6.2"
+version = "0.6.3"
 authors = ["zk4x"]
 edition = "2021"
 description = "Generic tensor library and extensions."
