@@ -1,12 +1,12 @@
 //! ## This is an example of linear neural network with sequential model
 
-use zyx::prelude::*;
+/*use zyx::prelude::*;
 use zyx::accel::cpu;
 use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
-use zyx::optim;
+use zyx::optim;*/
 
 fn main() {
-    let network = (
+    /*let network = (
         Linear::new::<f32>(1, 20),
         ReLU,
         Linear::new::<f32>(20, 50),
@@ -21,9 +21,9 @@ fn main() {
     // This looks bad right now, eventually it will look like this:
     //let optimizer = optim::SGD::new(network.parameters()).with_learning_rate(0.03);
     let optimizer = optim::SGD::new(<&(
-        Linear<cpu::Buffer<f32>>, ReLU,
-        Linear<cpu::Buffer<f32>>, Tanh,
-        Linear<cpu::Buffer<f32>>, Sigmoid) as Module<cpu::Buffer<f32>>>::parameters(&network)).with_learning_rate(0.03);
+        Linear<cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>>, ReLU,
+        Linear<cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>>, Tanh,
+        Linear<cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>>, Sigmoid) as Module<cpu::Buffer<f32>>>::parameters(&network)).with_learning_rate(0.03);
 
     for _ in 0..100 {
         for i in 0..100 {
@@ -38,5 +38,5 @@ fn main() {
             loss.backward();
             optimizer.step();
         }
-    }
+    }*/
 }

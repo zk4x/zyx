@@ -1,5 +1,5 @@
 use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Dims}};
-use std::{ops::Add, cell::RefCell};
+use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardV<'g, G> {

@@ -1,5 +1,5 @@
 use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Shape}};
-use std::{ops::Add, cell::RefCell};
+use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct MinBackwardV<'g, G> {

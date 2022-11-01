@@ -1,5 +1,5 @@
 use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoShape, Shape}};
-use std::{ops::Add, cell::RefCell};
+use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct ReshapeBackwardV<'g, G> {

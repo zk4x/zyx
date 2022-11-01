@@ -6,7 +6,7 @@
 //!
 
 use crate::{module::Module, ops::{self, GetShape, Pow, FromVec, MatMul}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
-use std::ops::{Neg, Add, Sub, Mul, Div};
+use std::ops::{Neg, Add, Sub, Div};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

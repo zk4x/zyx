@@ -1,5 +1,5 @@
 use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType};
-use std::{cell::RefCell, ops::{Add, Mul, Div}};
+use std::{ops::{Add, Mul, Div}};
 
 /*#[derive(Debug, Clone, Copy)]
 pub struct PowBackwardSV<'g, YG, YT> {

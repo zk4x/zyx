@@ -2,7 +2,7 @@
 //! 
 
 use crate::module::Parameters;
-use std::ops::{Mul, Sub};
+
 
 /// # Optimizer trait
 /// 
@@ -75,7 +75,7 @@ where
         &self.parameters
     }
 
-    fn update_data<S>(&self, data: S, grad: S) -> S
+    fn update_data<S>(&self, _data: S, _grad: S) -> S
     //where
         //S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
     {

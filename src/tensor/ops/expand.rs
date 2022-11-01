@@ -1,5 +1,5 @@
 use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoShape, Dims}};
-use std::{ops::Add, cell::RefCell};
+use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardV<'g, G> {

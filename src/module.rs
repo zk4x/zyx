@@ -12,8 +12,8 @@
 
 // TODO: use macros to make this DRY
 
-use crate::{tensor::Variable, ops::{Zeros, GetShape}, optim::Optimizer};
-use std::ops::{Sub, Mul};
+use crate::{tensor::Variable, optim::Optimizer};
+
 
 // We can just store all Variables in tuple and implement some trait for this tuple that will take input and call
 // all the required methods - update_data, zero_grad.

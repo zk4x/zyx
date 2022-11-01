@@ -9,7 +9,7 @@ where
     fn zeros(shape: impl IntoShape) -> Self {
         let shape = shape.shape();
         Self {
-            data: RefCell::new(S::zeros(shape.clone())),
+            data: RefCell::new(S::zeros(shape)),
             grad: Gradient::new(),
         }
     }

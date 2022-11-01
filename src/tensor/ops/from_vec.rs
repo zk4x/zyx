@@ -10,7 +10,7 @@ where
         let shape = shape.shape();
         debug_assert_eq!(data.len(), shape.numel());
         Self {
-            data: RefCell::new(S::from_vec(data, shape.clone())),
+            data: RefCell::new(S::from_vec(data, shape)),
             grad: Gradient::new(),
         }
     }

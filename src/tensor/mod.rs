@@ -21,7 +21,7 @@
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
 //! # let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
-//! let y: Variable<_> = x.clone().with_grad();
+//! let y: Variable<_, ()> = x.clone().with_grad();
 //! ```
 //!
 //! Applying function to [Variable] returns [Tensor].
@@ -29,7 +29,7 @@
 //! ```
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let y: Variable<_> = Buffer::cfrom([2., 1., 4.]).with_grad();
+//! # let y: Variable<_, ()> = Buffer::cfrom([2., 1., 4.]).with_grad();
 //! let z: Tensor<_, _> = y.relu();
 //! ```
 //!
@@ -46,7 +46,7 @@
 
 mod ops;
 
-use crate::{ops::{GetShape, Zeros}, module::Parameters, optim::Optimizer};
+use crate::{ops::GetShape, module::Parameters, optim::Optimizer};
 use std::cell::{Ref, RefCell};
 
 // How this works (for contributors)
@@ -108,18 +108,30 @@ impl<G> Gradient<G> {
     }
 }
 
+impl<G, T> crate::ops::IntoVec<T> for Gradient<G>
+where
+    G: crate::ops::IntoVec<T>,
+{
+    fn to_vec(&self) -> Vec<T> {
+        if let Some(grad) = self.0.borrow().as_ref() {
+            grad.to_vec()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 impl<G> std::fmt::Display for Gradient<G>
 where
     G: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s;
         let grad = self.0.borrow();
-        if grad.is_some() {
-            s = grad.as_ref().unwrap().to_string();
+        let s = if grad.is_some() {
+            grad.as_ref().unwrap().to_string()
         } else {
-            s = "None".into();
-        }
+            "None".into()
+        };
         f.write_str(&s)
     }
 }
@@ -205,7 +217,7 @@ where
     /// ```
     /// # use zyx::prelude::*;
     /// # use zyx::accel::cpu;
-    /// let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad::<cpu::Buffer<f32>>();
     /// let y = x.exp();
     /// ```
     /// y is now [Tensor], so we can call backward on it.
@@ -301,7 +313,7 @@ impl<S, G> Variable<S, G> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass.
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
-    pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> Tensor<S, GradHookV<'g, G, HOOK>>
+    pub fn register_hook<HOOK>(&self, hook: HOOK) -> Tensor<S, GradHookV<'_, G, HOOK>>
     where
         S: Clone,
         HOOK: FnOnce(G), // not necessary to put this requirement here, but seems like a good idea
@@ -385,13 +397,13 @@ where
     }
 }
 
-use std::ops::{Sub, Mul};
+
 // Update Variable's data. It is used by optimizer.step().
 impl<S, G> Parameters for &Variable<S, G>
 //where
     //S: Default + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn update_data<Optim>(&self, _optim: &Optim)
     where
         Optim: Optimizer
     {

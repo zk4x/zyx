@@ -1,5 +1,5 @@
 use crate::{tensor::{Tensor, Variable, Backward, Gradient}, accel::cpu, dtype::DType, ops::ConvertFrom};
-use std::{cell::RefCell, ops::{Sub, Neg, Add}};
+use std::{ops::{Sub, Neg, Add}};
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]

@@ -1,11 +1,11 @@
 //! ## This is an example of recurrent neural network
-use zyx::prelude::*;
+/*use zyx::prelude::*;
 use zyx::accel::cpu;
 use zyx::nn::{RNNCell, Linear, SoftMax, MSELoss, Sum, ReLU};
-use zyx::optim;
+use zyx::optim;*/
 
 fn main() {
-    let hidden_size = 10;
+    /*let hidden_size = 10;
     let input_size = 3;
 
     let rnn_net = (
@@ -48,7 +48,7 @@ fn main() {
         optimizer.zero_grad();
         loss.backward();
         optimizer.step();
-    }
+    }*/
 
     //println!("hidden state: {}", hidden_state);
 }
