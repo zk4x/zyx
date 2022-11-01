@@ -1,22 +1,21 @@
 use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
-use std::{ops::{Add, Mul, Neg}, cell::RefCell};
+use std::ops::{Add, Sub, Mul};
 
 #[derive(Debug, Clone, Copy)]
-pub struct TanhBackwardV<'g, S, G> {
+pub struct TanhBackwardV<'g, S2, G> {
     grad: &'g Gradient<G>,
-    res: S,
+    res: S2,
 }
 
-impl<S, S2, S3> Backward<S> for TanhBackwardV<'_, S2, S3>
+impl<S, S2, G> Backward<S> for TanhBackwardV<'_, S2, G>
 where
-    S2: Add<S2, Output = S2>,
-    S3: Pow<i32>,
-    <S3 as Pow<i32>>::Output: Neg,
-    <<S3 as Pow<i32>>::Output as Neg>::Output: Add<i32>,
-    S: Mul<<<<S3 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output, Output = S2>,
+    S2: Pow<i32>,
+    i32: Sub<<S2 as Pow<i32>>::Output>,
+    S: Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output, Output = G>,
+    G: Add<G, Output = G>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad * (-self.res.pow(2) + 1));
+        self.grad.accumulate(res_grad * (1 - self.res.pow(2)));
     }
 }
 
@@ -25,7 +24,7 @@ where
     S: Clone + Tanh,
     <S as Tanh>::Output: Clone,
 {
-    type Output = Tensor<<S as Tanh>::Output, TanhBackwardV<'g, S, <S as Tanh>::Output>>;
+    type Output = Tensor<<S as Tanh>::Output, TanhBackwardV<'g, <S as Tanh>::Output, G>>;
     fn tanh(self) -> Self::Output {
         let res = self.data().clone().tanh();
         Tensor {
@@ -39,21 +38,20 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TanhBackwardT<S, F> {
+pub struct TanhBackwardT<S2, F> {
     grad_fn: F,
-    res: S,
+    res: S2,
 }
 
 impl<S, S2, F> Backward<S> for TanhBackwardT<S2, F>
 where
-    S2: Pow<i32> + Neg,
-    <S2 as Pow<i32>>::Output: Neg,
-    <<S2 as Pow<i32>>::Output as Neg>::Output: Add<i32>,
-    S: Mul<<<<S2 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output>,
-    F: Backward<<S as Mul<<<<S2 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output>>::Output>,
+    S2: Pow<i32>,
+    i32: Sub<<S2 as Pow<i32>>::Output>,
+    S: Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>,
+    F: Backward<<S as Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad * (-self.res.pow(2) + 1));
+        self.grad_fn.backward(res_grad * (1 - self.res.pow(2)));
     }
 }
 

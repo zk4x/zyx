@@ -1,5 +1,5 @@
 use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
-use std::{ops::{Add, Mul}, cell::RefCell};
+use std::ops::{Add, Mul};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LnBackwardV<'g, S, G> {
@@ -10,7 +10,8 @@ pub struct LnBackwardV<'g, S, G> {
 impl<S, S2, G> Backward<S> for LnBackwardV<'_, S2, G>
 where
     S2: Pow<i32>,
-    S: Mul<<S2 as Pow<i32>>::Output>,
+    S: Mul<<S2 as Pow<i32>>::Output, Output = G>,
+    G: Add<G, Output = G>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad * self.data.pow(-1));

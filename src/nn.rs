@@ -5,7 +5,7 @@
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
-use crate::{module::Module, ops::{self, GetShape, Pow}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
+use crate::{module::Module, ops::{self, GetShape, Pow, FromVec, MatMul}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
 use std::ops::{Neg, Add, Sub, Mul, Div};
 
 /// ReLU operation
@@ -297,8 +297,9 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
-        //S: ops::FromVec<T> + ops::Zeros,
-        T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
+        W: FromVec<T> + Zeros,
+        B: FromVec<T> + Zeros,
+        T: Clone + Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
         Self {
             w: Variable::uniform([in_features, out_features], T::zeros(()), T::ones(())),
@@ -309,12 +310,14 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
 
 impl<'a, W, WG, B, BG, Input> Module<Input> for &'a Linear<W, WG, B, BG>
 where
-    //S: 'a + Default + Zeros + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
-    //Input: ops::MatMul<&'a Variable<S>>,
-    //<Input as ops::MatMul<&'a Variable<S>>>::Output: std::ops::Add<&'a Variable<S>>,
+    W: 'a,
+    WG: 'a,
+    B: 'a,
+    BG: 'a,
+    Input: MatMul<&'a Variable<W, WG>>,
+    <Input as MatMul<&'a Variable<W, WG>>>::Output: Add<&'a Variable<B, BG>>,
 {
-    //type Output = <<Input as ops::MatMul<&'a Variable<S>>>::Output as std::ops::Add<&'a Variable<S>>>::Output;
-    type Output = ();
+    type Output = <<Input as MatMul<&'a Variable<W, WG>>>::Output as Add<&'a Variable<B, BG>>>::Output;
     type Params = (&'a Variable<W, WG>, &'a Variable<B, BG>);
 
     fn forward(self, x: Input) -> Self::Output {
@@ -325,7 +328,7 @@ where
         (&self.w, &self.b)
     }
 }
-
+/*
 /// RNNCell
 // TODO: rewrite to use different storages for parameters and their gradients
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -372,4 +375,4 @@ where
     fn parameters(self) -> Self::Params {
         (&self.wih, &self.bih, &self.whh, &self.bhh)
     }
-}
+}*/

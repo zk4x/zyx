@@ -83,12 +83,13 @@ pub struct Variable<S, G> {
     grad: Gradient<G>,
 }
 
+/// Gradient of [Variable]
 #[derive(Default, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Gradient<G>(RefCell<Option<G>>);
 
 impl<G> Gradient<G> {
     fn new() -> Self {
-        Self::default()
+        Self(RefCell::new(None))
     }
 
     fn accumulate(&self, value: G)
@@ -96,10 +97,10 @@ impl<G> Gradient<G> {
         G: std::ops::Add<Output = G>,
     {
         let x = self.0.take();
-        self.0 = Some(match x {
+        self.0.replace(Some(match x {
             Some(grad) => grad + value,
             None => value,
-        });
+        }));
     }
 
     fn zero(&self) {
@@ -112,7 +113,14 @@ where
     G: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write(self.0)
+        let s;
+        let grad = self.0.borrow();
+        if grad.is_some() {
+            s = grad.as_ref().unwrap().to_string();
+        } else {
+            s = "None".into();
+        }
+        f.write_str(&s)
     }
 }
 
@@ -140,7 +148,7 @@ where
         f.write_str(&format!(
             "{} with grad:\n{}",
             self.data.borrow(),
-            self.grad.borrow()
+            self.grad
         ))
     }
 }
@@ -160,7 +168,7 @@ where
     }
 }
 
-impl<S, G> Variable<S, G> {
+impl<S> Variable<S, i32> {
     /// # Variable backward
     /// 
     /// Calls backward function on [Variable].
@@ -236,7 +244,6 @@ pub trait IntoVariable {
 /// Create new [Variable] that requires gradient
 impl<S> IntoVariable for S {
     fn with_grad<G>(self) -> Variable<Self, G> {
-        let shape = self.shape();
         Variable {
             data: RefCell::new(self),
             grad: Gradient::new(),
@@ -281,7 +288,7 @@ pub struct GradHookV<'g, G, Hook> {
 
 impl<G, HOOK> Backward<G> for GradHookV<'_, G, HOOK>
 where
-    G: Clone,
+    G: Clone + std::ops::Add<G, Output = G>,
     HOOK: FnOnce(G),
 {
     fn backward(self, res_grad: G) {
@@ -294,10 +301,10 @@ impl<S, G> Variable<S, G> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass.
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
-    pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> Tensor<S, GradHookV<'g, S, HOOK>>
+    pub fn register_hook<'g, HOOK>(&'g self, hook: HOOK) -> Tensor<S, GradHookV<'g, G, HOOK>>
     where
-        S: 'g + Clone,
-        HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
+        S: Clone,
+        HOOK: FnOnce(G), // not necessary to put this requirement here, but seems like a good idea
     {
         Tensor {
             data: (*self.data()).clone(),
@@ -381,15 +388,16 @@ where
 use std::ops::{Sub, Mul};
 // Update Variable's data. It is used by optimizer.step().
 impl<S, G> Parameters for &Variable<S, G>
-where
-    S: Default + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+//where
+    //S: Default + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where
         Optim: Optimizer
     {
-        let grad = self.grad().clone();
-        self.data.replace_take(|data| optim.update_data(data, grad));
+        //let grad = self.grad().clone();
+        //let data = self.data.take();
+        //self.data.replace(optim.update_data(data, grad));
     }
 
     fn zero_grad(&self) {

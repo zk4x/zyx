@@ -1,15 +1,15 @@
 use crate::tensor::{Variable, Tensor, Backward, Gradient};
-use std::{ops::{Sub, Add, Neg}, cell::RefCell};
+use std::ops::{Add, Neg};
 
 #[derive(Debug, Clone, Copy)]
 pub struct NegBackwardV<'g, G> {
     grad: &'g Gradient<G>,
 }
 
-impl<S, S2> Backward<S> for NegBackwardV<'_, S2>
+impl<S, G> Backward<S> for NegBackwardV<'_, G>
 where
-    S: Neg<Output = S2>,
-    S2: Add<S2, Output = S2>,
+    S: Neg<Output = G>,
+    G: Add<G, Output = G>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(-res_grad);
@@ -20,7 +20,7 @@ impl<'g, S, G> Neg for &'g Variable<S, G>
 where
     S: Clone + Neg,
 {
-    type Output = Tensor<<S as Neg>::Output, NegBackwardV<'g, S>>;
+    type Output = Tensor<<S as Neg>::Output, NegBackwardV<'g, G>>;
     fn neg(self) -> Self::Output {
         Tensor {
             data: self.data().clone().neg(),

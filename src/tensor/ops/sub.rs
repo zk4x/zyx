@@ -10,6 +10,7 @@ pub struct SubBackwardSV<'g, YG> {
 impl<S, YG> Backward<S> for SubBackwardSV<'_, YG>
 where
     S: Neg<Output = YG>,
+    YG: Add<YG, Output = YG>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(-res_grad);
@@ -89,13 +90,13 @@ pub struct SubBackwardVV<'g, XG, YG> {
     ygrad: &'g Gradient<YG>,
 }
 
-impl<S, XG, YG> Backward<S> for SubBackwardVV<'_, XG, YG>
+impl<S, YG> Backward<S> for SubBackwardVV<'_, S, YG>
 where
-    S: Clone + Neg<Output = YG>,
+    S: Clone + Neg<Output = YG> + Add<S, Output = S>,
+    YG: Add<YG, Output = YG>,
 {
     fn backward(self, res_grad: S) {
-        use crate::ops::ConvertInto;
-        self.xgrad.accumulate(res_grad.clone().cinto());
+        self.xgrad.accumulate(res_grad.clone());
         self.ygrad.accumulate(-res_grad);
     }
 }
@@ -105,7 +106,7 @@ where
     XS: Clone + Sub<YS>,
     YS: Clone,
 {
-    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardVV<'g, XS, YS>>;
+    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardVV<'g, XG, YG>>;
     fn sub(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.data().clone() - rhs.data().clone(),
@@ -118,20 +119,18 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SubBackwardVT<'g, XS, YF> {
-    xgrad: &'g Gradient<XS>,
+pub struct SubBackwardVT<'g, XG, YF> {
+    xgrad: &'g Gradient<XG>,
     ygrad_fn: YF,
 }
 
-impl<S, XS, YF> Backward<S> for SubBackwardVT<'_, XS, YF>
+impl<S, YF> Backward<S> for SubBackwardVT<'_, S, YF>
 where
-    S: Clone + Neg,
-    XS: Add<XS, Output = XS> + ConvertFrom<S>,
+    S: Clone + Neg + Add<S, Output = S>,
     YF: Backward<<S as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
-        use crate::ops::ConvertInto;
-        self.xgrad.accumulate(res_grad.clone().cinto());
+        self.xgrad.accumulate(res_grad.clone());
         self.ygrad_fn.backward(-res_grad);
     }
 }
@@ -172,10 +171,10 @@ pub struct SubBackwardTV<'g, YG, XF> {
     ygrad: &'g Gradient<YG>,
 }
 
-impl<S, YS, XF> Backward<S> for SubBackwardTV<'_, YS, XF>
+impl<S, YG, XF> Backward<S> for SubBackwardTV<'_, YG, XF>
 where
-    S: Clone + Neg<Output = YS>,
-    YS: Add<YS, Output = YS>,
+    S: Clone + Neg<Output = YG>,
+    YG: Add<YG, Output = YG>,
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
@@ -184,12 +183,12 @@ where
     }
 }
 
-impl<'g, XS, YS, YG, F> Sub<&'g Variable<YS, YG>> for Tensor<XS, F>
+impl<'g, XS, YS, YG, XF> Sub<&'g Variable<YS, YG>> for Tensor<XS, XF>
 where
     XS: Clone + Sub<YS>,
     YS: Clone,
 {
-    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardTV<'g, YS, F>>;
+    type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardTV<'g, YG, XF>>;
     fn sub(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.data - rhs.data().clone(),

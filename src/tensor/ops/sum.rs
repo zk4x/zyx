@@ -1,5 +1,5 @@
 use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{Shape, IntoDims}};
-use std::{ops::Add, cell::RefCell};
+use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct SumBackwardV<'g, G> {
@@ -18,9 +18,9 @@ where
 
 impl<'g, S, G> Sum for &'g Variable<S, G>
 where
-    S: 'g + Clone + Sum<Output = S> + GetShape,
+    S: Clone + Sum + GetShape,
 {
-    type Output = Tensor<S, SumBackwardV<'g, S>>;
+    type Output = Tensor<<S as Sum>::Output, SumBackwardV<'g, G>>;
     fn sum(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().sum(dims),
@@ -50,9 +50,9 @@ where
 
 impl<S, F> Sum for Tensor<S, F>
 where
-    S: Clone + Sum<Output = S> + GetShape,
+    S: Clone + Sum + GetShape,
 {
-    type Output = Tensor<S, SumBackwardT<F>>;
+    type Output = Tensor<<S as Sum>::Output, SumBackwardT<F>>;
     fn sum(self, dims: impl IntoDims) -> Self::Output {
         let shape = self.data.shape();
         Tensor {

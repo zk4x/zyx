@@ -11,6 +11,7 @@ impl<S, XS, YG> Backward<S> for MatMulBackwardSV<'_, XS, YG>
 where
     XS: Transpose,
     <XS as Transpose>::Output: MatMul<S, Output = YG>,
+    YG: Add<YG, Output = YG>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));
@@ -78,6 +79,7 @@ impl<S, XG, YS> Backward<S> for MatMulBackwardVS<'_, XG, YS>
 where
     YS: Transpose,
     S: MatMul<<YS as Transpose>::Output, Output = XG>,
+    XG: Add<XG, Output = XG>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(res_grad.matmul(self.ydata.transpose()));
@@ -111,6 +113,13 @@ pub struct MatMulBackwardVV<'g, XS, XG, YS, YG> {
 
 impl<S, XS, XG, YS, YG> Backward<S> for MatMulBackwardVV<'_, XS, XG, YS, YG>
 where
+    S: Clone,
+    XS: Transpose,
+    <XS as Transpose>::Output: MatMul<S, Output = YG>,
+    YG: Add<YG, Output = YG>,
+    YS: Transpose,
+    S: MatMul<<YS as Transpose>::Output, Output = XG>,
+    XG: Add<XG, Output = XG>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad.clone()));
@@ -147,7 +156,12 @@ pub struct MatMulBackwardVT<'g, XG, XS, YS, YF> {
 
 impl<S, XG, XS, YS, YF> Backward<S> for MatMulBackwardVT<'_, XG, XS, YS, YF>
 where
-    YF: Backward<()>,
+    S: Clone + Transpose,
+    XS: Transpose,
+    <XS as Transpose>::Output: MatMul<S>,
+    <S as Transpose>::Output: MatMul<YS, Output = XG>,
+    XG: Add<XG, Output = XG>,
+    YF: Backward<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad.clone()));
@@ -182,7 +196,9 @@ pub struct MatMulBackwardTS<YS, XF> {
 
 impl<S, YS, XF> Backward<S> for MatMulBackwardTS<YS, XF>
 where
-    XF: Backward<()>,
+    YS: Transpose,
+    <YS as Transpose>::Output: MatMul<S>,
+    XF: Backward<<<YS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(self.ydata.transpose().matmul(res_grad));
@@ -216,7 +232,12 @@ pub struct MatMulBackwardTV<'g, YG, XS, YS, XF> {
 
 impl<S, YG, XS, YS, XF> Backward<S> for MatMulBackwardTV<'_, YG, XS, YS, XF>
 where
-    XF: Backward<()>,
+    YS: Transpose,
+    S: Clone + MatMul<<YS as Transpose>::Output>,
+    XF: Backward<<S as MatMul<<YS as Transpose>::Output>>::Output>,
+    XS: Transpose,
+    <XS as Transpose>::Output: MatMul<S, Output = YG>,
+    YG: Add<YG, Output = YG>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
@@ -253,8 +274,12 @@ pub struct MatMulBackwardTT<XS, YS, XF, YF> {
 
 impl<S, XS, YS, XF, YF> Backward<S> for MatMulBackwardTT<XS, YS, XF, YF>
 where
-    XF: Backward<()>,
-    YF: Backward<()>,
+    S: Clone + MatMul<<YS as Transpose>::Output>,
+    YS: Transpose,
+    XF: Backward<<S as MatMul<<YS as Transpose>::Output>>::Output>,
+    XS: Transpose,
+    <XS as Transpose>::Output: MatMul<S>,
+    YF: Backward<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));

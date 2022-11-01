@@ -1,5 +1,5 @@
 use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Shape}};
-use std::{ops::Add, cell::RefCell};
+use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct MaxBackwardV<'g, G> {
@@ -7,9 +7,10 @@ pub struct MaxBackwardV<'g, G> {
     shape: Shape,
 }
 
-impl<S> Backward<S> for MaxBackwardV<'_, S>
+impl<S, G> Backward<S> for MaxBackwardV<'_, G>
 where
-    S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
+    S: Expand<Output = G>,
+    G: Add<G, Output = G>,
 {
     fn backward(self, res_grad: S) {
         // TODO: This is not correct. Max does not simply expand.
@@ -22,9 +23,9 @@ where
 
 impl<'g, S, G> Max for &'g Variable<S, G>
 where
-    S: 'g + Clone + Max<Output = S> + GetShape,
+    S: Clone + Max<Output = S> + GetShape,
 {
-    type Output = Tensor<S, MaxBackwardV<'g, S>>;
+    type Output = Tensor<S, MaxBackwardV<'g, G>>;
     fn max(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data.borrow()).clone().max(dims),
@@ -44,8 +45,8 @@ pub struct MaxBackwardT<F> {
 
 impl<S, F> Backward<S> for MaxBackwardT<F>
 where
-    S: Expand<Output = S>,
-    F: Backward<S>,
+    S: Expand,
+    F: Backward<<S as Expand>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.expand(self.shape));
@@ -54,9 +55,9 @@ where
 
 impl<S, F> Max for Tensor<S, F>
 where
-    S: Max<Output = S> + GetShape,
+    S: Max + GetShape,
 {
-    type Output = Tensor<S, MaxBackwardT<F>>;
+    type Output = Tensor<<S as Max>::Output, MaxBackwardT<F>>;
     fn max(self, dims: impl IntoDims) -> Self::Output {
         let shape = self.data.shape();
         Tensor {

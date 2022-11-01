@@ -106,13 +106,14 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVS<'g, XG, YS> {
-    xgrad: &'g RefCell<XG>,
+    xgrad: &'g Gradient<XG>,
     ydata: YS,
 }
 
 impl<S, XG, YS> Backward<S> for DivBackwardVS<'_, XG, YS>
 where
-    S: Div<YS>,
+    S: Div<YS, Output = XG>,
+    XG: Add<XG, Output = XG>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(res_grad / self.ydata);
@@ -124,7 +125,7 @@ where
     XS: Clone + Div<YS>,
     YS: Clone + DType,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVS<'g, XS, YS>>;
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVS<'g, XG, YS>>;
     fn div(self, rhs: YS) -> Self::Output {
         Tensor {
             data: self.data().clone() / rhs.clone(),
@@ -137,20 +138,20 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DivBackwardVV<'g, S, XS, YS> {
+pub struct DivBackwardVV<'g, S, XG, YS, YG> {
     res: S,
-    xgrad: &'g RefCell<XS>,
-    ygrad: &'g RefCell<YS>,
+    xgrad: &'g Gradient<XG>,
+    ygrad: &'g Gradient<YG>,
     ydata: YS,
 }
 
-impl<S, S2, XS, YS> Backward<S> for DivBackwardVV<'_, S2, XS, YS>
+impl<S, S2, XG, YS, YG> Backward<S> for DivBackwardVV<'_, S2, XG, YS, YG>
 where
-    S: Div<YS>,
-    <S as Div<YS>>::Output: Clone,
-    S2: Mul<<S as Div<YS>>::Output>,
-    XS: Default + Add<<S as Div<YS>>::Output, Output = XS>,
-    YS: Default + Sub<<S2 as Mul<<S as Div<YS>>::Output>>::Output, Output = YS>,
+    S: Div<YS, Output = XG>,
+    XG: Clone + Add<XG, Output = XG>,
+    S2: Mul<XG>,
+    <S2 as Mul<XG>>::Output: Neg<Output = YG>,
+    YG: Add<YG, Output = YG>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
@@ -165,7 +166,7 @@ where
     YS: Clone + DType,
     <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XS, YS>>;
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XG, YS, YG>>;
     fn div(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         let res = self.data().clone() / rhs.data().clone();
         Tensor {
@@ -183,29 +184,33 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVT<'g, S, XG, YS, YF> {
     res: S,
-    xgrad: &'g RefCell<XG>,
+    xgrad: &'g Gradient<XG>,
     ygrad_fn: YF,
     ydata: YS,
 }
 
 impl<S, S2, XG, YS, YF> Backward<S> for DivBackwardVT<'_, S2, XG, YS, YF>
 where
-    S: Div<YS>,
+    S: Div<YS, Output = XG>,
+    XG: Clone + Add<XG, Output = XG>,
+    S2: Mul<XG>,
+    <S2 as Mul<XG>>::Output: Neg,
+    YF: Backward<<<S2 as Mul<XG>>::Output as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
         self.xgrad.accumulate(temp.clone());
-        self.ygrad_fn.backward(-self.res * temp);
+        self.ygrad_fn.backward(-(self.res * temp));
     }
 }
 
 impl<'g, XS, XG, YS, YF> Div<Tensor<YS, YF>> for &'g Variable<XS, XG>
 where
-    XS: Clone + Div<YS> + DType,
-    YS: Clone + DType,
+    XS: Clone + Div<YS>,
+    YS: Clone,
     <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVT<'g, <XS as Div<YS>>::Output, XS, YS, YF>>;
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVT<'g, <XS as Div<YS>>::Output, XG, YS, YF>>;
     fn div(self, rhs: Tensor<YS, YF>) -> Self::Output {
         let res = self.data().clone() / rhs.data.clone();
         Tensor {
@@ -257,17 +262,22 @@ where
 pub struct DivBackwardTV<'g, S, YS, YG, XF> {
     res: S,
     xgrad_fn: XF,
-    ygrad: &'g RefCell<YG>,
+    ygrad: &'g Gradient<YG>,
     ydata: YS,
 }
 
 impl<S, S2, YS, YG, XF> Backward<S> for DivBackwardTV<'_, S2, YS, YG, XF>
 where
     S: Div<YS>,
+    <S as Div<YS>>::Output: Clone,
+    S2: Mul<<S as Div<YS>>::Output>,
+    <S2 as Mul<<S as Div<YS>>::Output>>::Output: Neg<Output = YG>,
+    YG: Add<YG, Output = YG>,
+    XF: Backward<<S as Div<YS>>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
-        self.ygrad.accumulate(-self.res * temp.clone());
+        self.ygrad.accumulate(-(self.res * temp.clone()));
         self.xgrad_fn.backward(temp);
     }
 }

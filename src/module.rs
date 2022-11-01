@@ -42,7 +42,7 @@ impl Parameters for () {
 impl<S, G, const N: usize> Parameters for [&Variable<S, G>; N]
 where
     // TODO: change this to be more flexible
-    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+    //S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where
@@ -58,7 +58,7 @@ where
 
 impl<S, G> Parameters for Vec<&Variable<S, G>>
 where
-    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+    //S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where

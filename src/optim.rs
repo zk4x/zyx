@@ -15,10 +15,10 @@ pub trait Optimizer {
     fn parameters(&self) -> &Self::P;
 
     /// Update one of [parameters](crate::module::Parameters)
-    fn update_data<S>(&self, data: S, grad: S) -> S
-    where
+    fn update_data<S>(&self, data: S, grad: S) -> S;
+    //where
         // These are the requirements for SGD. For other optimizers, they may be subject to change.
-        S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>;
+        //S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>;
 
     /// Update data in [parameters](crate::module::Parameters) using their gradients.
     fn step(&self)
@@ -76,9 +76,10 @@ where
     }
 
     fn update_data<S>(&self, data: S, grad: S) -> S
-    where
-        S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
+    //where
+        //S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>,
     {
-        data - grad * self.learning_rate
+        //data - grad * self.learning_rate
+        todo!()
     }
 }

@@ -7,10 +7,10 @@ pub struct ReshapeBackwardV<'g, G> {
     shape: Shape,
 }
 
-impl<S, S2> Backward<S> for ReshapeBackwardV<'_, S2>
+impl<S, G> Backward<S> for ReshapeBackwardV<'_, G>
 where
-    S2: Add<S2, Output = S2>,
-    S: Reshape<Output = S2>,
+    S: Reshape<Output = G>,
+    G: Add<G, Output = G>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.reshape(self.shape));
@@ -21,7 +21,7 @@ impl<'g, S, G> Reshape for &'g Variable<S, G>
 where
     S: Clone + Reshape + GetShape,
 {
-    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardV<'g, S>>;
+    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardV<'g, G>>;
     fn reshape(self, shape: impl IntoShape) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().reshape(shape),

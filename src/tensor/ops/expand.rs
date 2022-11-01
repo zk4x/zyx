@@ -22,7 +22,7 @@ impl<'g, S, G> Expand for &'g Variable<S, G>
 where
     S: Clone + Expand + GetShape,
 {
-    type Output = Tensor<<S as Expand>::Output, ExpandBackwardV<'g, S>>;
+    type Output = Tensor<<S as Expand>::Output, ExpandBackwardV<'g, G>>;
     fn expand(self, shape: impl IntoShape) -> Self::Output {
         let shape = shape.shape();
         let dims = Dims(self.data().shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());
