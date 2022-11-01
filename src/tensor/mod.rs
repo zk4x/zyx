@@ -47,7 +47,6 @@
 mod ops;
 
 use crate::{ops::{GetShape, Zeros}, module::Parameters, optim::Optimizer};
-use ops::RefCellReplaceTake;
 use std::cell::{Ref, RefCell};
 
 // How this works (for contributors)
@@ -75,8 +74,49 @@ use std::cell::{Ref, RefCell};
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Variable<S> {
+    // We could get rid of RefCell here by having every Module implementor have update_data function
+    // with optimizer as one of it's parameters.
     data: RefCell<S>, // RefCell needed for optimizer.step() function
-    grad: RefCell<S>, // RefCell needed for .backward() gradient calculation
+    grad: Gradient<S>,
+}
+
+// We need custom implementation of replace_take() for RefCell that has F: FnOnce(T) -> T instead of F: FnOnce(&mut T) -> T
+// This is due to the fact, that buffers implement operations on consumed values, not on references
+trait RefCellReplaceTake<T, F> {
+    fn replace_take(&self, f: F);
+}
+
+impl<T, F> RefCellReplaceTake<T, F> for std::cell::RefCell<T>
+where
+    T: Default,
+    F: FnOnce(T) -> T,
+{
+    fn replace_take(&self, f: F) {
+        self.replace(f(self.take()));
+    }
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Gradient<S>(RefCell<Option<S>>);
+
+impl<S> Gradient<S> {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn accumulate(&self, value: S)
+    where
+        S: std::ops::Add<Output = S>,
+    {
+        self.0.replace_take(|x| match x {
+            Some(grad) => grad + value,
+            None => value,
+        });
+    }
+
+    fn zero(&self) {
+        self.0.replace(None);
+    }
 }
 
 /// # Tensor
@@ -244,7 +284,7 @@ impl<S, GradFn> Tensor<S, GradFn> {
 /// Gradient hook for [Variable]
 #[derive(Debug, Clone, Copy)]
 pub struct GradHookV<'g, S, Hook> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     hook: Hook,
 }
 

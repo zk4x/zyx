@@ -1,4 +1,4 @@
-use crate::{ops::{FromVec, Zeros}, tensor::Variable, shape::IntoShape};
+use crate::{ops::{FromVec, Zeros}, tensor::{Variable, Gradient}, shape::IntoShape};
 use std::cell::RefCell;
 
 /// Initialize tensor from vec and shape
@@ -11,7 +11,7 @@ where
         debug_assert_eq!(data.len(), shape.numel());
         Self {
             data: RefCell::new(S::from_vec(data, shape.clone())),
-            grad: RefCell::new(S::zeros(shape)),
+            grad: Gradient::new(),
         }
     }
 }

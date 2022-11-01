@@ -1,19 +1,19 @@
-use crate::{ops::{ReLU, DReLU}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{ReLU, DReLU}, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::{Add, Mul}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReLUBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     data: S,
 }
 
 impl<S, S2> Backward<S> for ReLUBackwardV<'_, S2>
 where
-    S2: Default + DReLU + Add<<S as Mul<<S2 as DReLU>::Output>>::Output, Output = S2>,
-    S: Mul<<S2 as DReLU>::Output>,
+    S2: DReLU + Add<Output = S2>,
+    S: Mul<<S2 as DReLU>::Output, Output = S2>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad * self.data.drelu());
+        self.grad.accumulate(res_grad * self.data.drelu());
     }
 }
 

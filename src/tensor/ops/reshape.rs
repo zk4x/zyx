@@ -1,9 +1,9 @@
-use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoShape, Shape}};
+use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoShape, Shape}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct ReshapeBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     shape: Shape,
 }
 
@@ -13,7 +13,7 @@ where
     S: Reshape,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad.reshape(self.shape));
+        self.grad.accumulate(res_grad.reshape(self.shape));
     }
 }
 

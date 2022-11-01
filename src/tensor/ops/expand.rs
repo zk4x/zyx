@@ -1,9 +1,9 @@
-use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoShape, Dims}};
+use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoShape, Dims}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     dims: Dims,
 }
 
@@ -15,7 +15,7 @@ where
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
-        self.grad.replace_take(|grad| grad + res_grad.max(self.dims));
+        self.grad.accumulate(res_grad.max(self.dims));
     }
 }
 

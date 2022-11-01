@@ -1,9 +1,9 @@
-use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, dtype::DType};
+use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType};
 use std::{cell::RefCell, ops::{Add, Mul, Div}};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardSV<'g, S> {
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
     ytemp: S,
 }
 
@@ -12,7 +12,7 @@ where
     S: Default + Add<Output = S> + Mul<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad + res_grad * self.ytemp);
+        self.ygrad.accumulate(res_grad * self.ytemp);
     }
 }
 
@@ -68,7 +68,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardVS<'g, S, S2> {
-    xgrad: &'g RefCell<S>,
+    xgrad: &'g Gradient<S>,
     xtemp: S2,
 }
 
@@ -79,7 +79,7 @@ where
     S2: Mul<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + self.xtemp * res_grad);
+        self.xgrad.accumulate(self.xtemp * res_grad);
     }
 }
 
@@ -106,9 +106,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardVV<'g, S> {
-    xgrad: &'g RefCell<S>,
+    xgrad: &'g Gradient<S>,
     xtemp: S,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
     ytemp: S,
 }
 
@@ -117,8 +117,8 @@ where
     S: Default + Clone + Add<Output = S> + Mul<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + self.xtemp * res_grad.clone());
-        self.ygrad.replace_take(|grad| grad + self.ytemp * res_grad);
+        self.xgrad.accumulate(self.xtemp * res_grad.clone());
+        self.ygrad.accumulate(self.ytemp * res_grad);
     }
 }
 
@@ -143,7 +143,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardVT<'g, S, YF> {
-    xgrad: &'g RefCell<S>,
+    xgrad: &'g Gradient<S>,
     xtemp: S,
     ygrad_fn: YF,
     ytemp: S,
@@ -155,7 +155,7 @@ where
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + self.xtemp * res_grad.clone());
+        self.xgrad.accumulate(self.xtemp * res_grad.clone());
         self.ygrad_fn.backward(res_grad * self.ytemp);
     }
 }
@@ -219,7 +219,7 @@ where
 pub struct PowBackwardTV<'g, S, XF> {
     xgrad_fn: XF,
     xtemp: S,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
     ytemp: S,
 }
 
@@ -229,7 +229,7 @@ where
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad + res_grad.clone() * self.ytemp);
+        self.ygrad.accumulate(res_grad.clone() * self.ytemp);
         self.xgrad_fn.backward(self.xtemp * res_grad);
     }
 }

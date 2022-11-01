@@ -1,11 +1,11 @@
-use crate::{tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, accel::cpu, dtype::DType};
+use crate::{tensor::{Variable, Tensor, Backward, Gradient}, accel::cpu, dtype::DType};
 use std::{cell::RefCell, ops::{Add, Mul}};
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MulBackwardSV<'g, S, S2> {
     xdata: S2,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
 }
 
 impl<S, S2> Backward<S> for MulBackwardSV<'_, S, S2>
@@ -14,7 +14,7 @@ where
     S2: Mul<S>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad + self.xdata * res_grad);
+        self.ygrad.accumulate(self.xdata * res_grad);
     }
 }
 
@@ -118,7 +118,7 @@ where
     YS: Mul<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + self.ydata * res_grad);
+        self.xgrad.accumulate(self.ydata * res_grad);
     }
 }
 
@@ -154,8 +154,8 @@ where
     YS: Default + Add<<XS as Mul<S>>::Output, Output = YS> + Mul<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + self.ydata * res_grad.clone());
-        self.ygrad.replace_take(|grad| grad + self.xdata * res_grad);
+        self.xgrad.accumulate(self.ydata * res_grad.clone());
+        self.ygrad.accumulate(self.xdata * res_grad);
     }
 }
 
@@ -194,7 +194,7 @@ where
     YF: Backward<<XS as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + self.ydata * res_grad.clone());
+        self.xgrad.accumulate(self.ydata * res_grad.clone());
         self.ygrad_fn.backward(self.xdata * res_grad);
     }
 }
@@ -267,7 +267,7 @@ where
     XF: Backward<<YS as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad + self.xdata * res_grad.clone());
+        self.ygrad.accumulate(self.xdata * res_grad.clone());
         // this way it is tail recursive
         self.xgrad_fn.backward(self.ydata * res_grad);
     }

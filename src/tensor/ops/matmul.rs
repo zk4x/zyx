@@ -1,10 +1,10 @@
-use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardSV<'g, S> {
     xdata: S,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
 }
 
 impl<S> Backward<S> for MatMulBackwardSV<'_, S>
@@ -12,7 +12,7 @@ where
     S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S> + std::fmt::Display + crate::ops::GetShape,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad + self.xdata.transpose().matmul(res_grad));
+        self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -66,7 +66,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVS<'g, S> {
-    xgrad: &'g RefCell<S>,
+    xgrad: &'g Gradient<S>,
     ydata: S,
 }
 
@@ -75,7 +75,7 @@ where
     S: Default + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + res_grad.matmul(self.ydata.transpose()));
+        self.xgrad.accumulate(res_grad.matmul(self.ydata.transpose()));
     }
 }
 
@@ -97,9 +97,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVV<'g, S> {
-    xgrad: &'g RefCell<S>,
+    xgrad: &'g Gradient<S>,
     xdata: S,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
     ydata: S,
 }
 
@@ -108,8 +108,8 @@ where
     S: Default + Clone + MatMul<Output = S> + Transpose<Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad + self.xdata.transpose().matmul(res_grad.clone()));
-        self.xgrad.replace_take(|grad| grad + res_grad.matmul(self.ydata.transpose()));
+        self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad.clone()));
+        self.xgrad.accumulate(res_grad.matmul(self.ydata.transpose()));
     }
 }
 
@@ -133,7 +133,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVT<'g, S, YF> {
-    xgrad: &'g RefCell<S>,
+    xgrad: &'g Gradient<S>,
     xdata: S,
     ygrad_fn: YF,
     ydata: S,
@@ -146,7 +146,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad.clone()));
-        self.xgrad.replace_take(|grad| grad + res_grad.transpose().matmul(self.ydata));
+        self.xgrad.accumulate(res_grad.transpose().matmul(self.ydata));
     }
 }
 
@@ -204,7 +204,7 @@ where
 pub struct MatMulBackwardTV<'g, S, XF> {
     xgrad_fn: XF,
     xdata: S,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
     ydata: S,
 }
 
@@ -215,7 +215,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
-        self.ygrad.replace_take(|grad| grad + self.xdata.transpose().matmul(res_grad));
+        self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));
     }
 }
 

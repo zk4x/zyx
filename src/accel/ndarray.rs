@@ -3,7 +3,7 @@
 //! Currently reduce and movement ops are not supported.
 
 use crate::{ops::{self, IntoVec, FromVec}, shape::{IntoShape, IntoDims, Shape}};
-use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis};
+use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis, Ix1, Ix2, Data, LinalgScalar};
 use num_traits::identities::{Zero, One};
 
 impl<T, D> ops::GetShape for ArrayBase<T, D>
@@ -209,5 +209,57 @@ where
             res = res.sum_axis(Axis(dim as usize));
         }
         res
+    }
+}
+
+impl<A, S, S2> ops::MatMul<ArrayBase<S2, Ix1>> for ArrayBase<S, Ix1>
+where
+    S: Data<Elem = A>,
+    S2: Data<Elem = A>,
+    A: LinalgScalar,
+{
+    type Output = A;
+
+    fn matmul(self, rhs: ArrayBase<S2, Ix1>) -> Self::Output {
+        self.dot(&rhs)
+    }
+}
+
+impl<A, S, S2> ops::MatMul<ArrayBase<S2, Ix2>> for ArrayBase<S, Ix1>
+where
+    S: Data<Elem = A>,
+    S2: Data<Elem = A>,
+    A: LinalgScalar,
+{
+    type Output = ArrayBase<OwnedRepr<A>, Ix1>;
+
+    fn matmul(self, rhs: ArrayBase<S2, Ix2>) -> Self::Output {
+        self.dot(&rhs)
+    }
+}
+
+impl<A, S, S2> ops::MatMul<ArrayBase<S2, Ix1>> for ArrayBase<S, Ix2>
+where
+    S: Data<Elem = A>,
+    S2: Data<Elem = A>,
+    A: LinalgScalar,
+{
+    type Output = ArrayBase<OwnedRepr<A>, Ix1>;
+
+    fn matmul(self, rhs: ArrayBase<S2, Ix1>) -> Self::Output {
+        self.dot(&rhs)
+    }
+}
+
+impl<A, S, S2> ops::MatMul<ArrayBase<S2, Ix2>> for ArrayBase<S, Ix2>
+where
+    S: Data<Elem = A>,
+    S2: Data<Elem = A>,
+    A: LinalgScalar,
+{
+    type Output = ArrayBase<OwnedRepr<A>, Ix2>;
+
+    fn matmul(self, rhs: ArrayBase<S2, Ix2>) -> Self::Output {
+        self.dot(&rhs)
     }
 }

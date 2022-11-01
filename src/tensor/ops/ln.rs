@@ -1,19 +1,20 @@
-use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::{Add, Mul}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LnBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     data: S,
 }
 
 impl<S, S2> Backward<S> for LnBackwardV<'_, S2>
 where
-    S2: Default + Pow<i32> + Add<<S as Mul<<S2 as Pow<i32>>::Output>>::Output, Output = S2>,
-    S: Mul<<S2 as Pow<i32>>::Output>,
+    S2: Default + Pow<i32>,
+    S: Mul<<S2 as Pow<i32>>::Output, Output = S>,
+    S: Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad * self.data.pow(-1));
+        self.grad.accumulate(res_grad * self.data.pow(-1));
     }
 }
 

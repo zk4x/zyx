@@ -1,18 +1,18 @@
-use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::{Add, Mul}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ExpBackwardV<'g, S, S2> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     data: S2,
 }
 
 impl<S, S2> Backward<S> for ExpBackwardV<'_, S, S2>
 where
-    S: Default + Mul<S2> + Add<<S as Mul<S2>>::Output, Output = S>,
+    S: Mul<S2, Output = S> + Add<Output = S>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad * self.data);
+        self.grad.accumulate(res_grad * self.data);
     }
 }
 

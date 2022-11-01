@@ -1,17 +1,18 @@
-use crate::tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake};
+use crate::tensor::{Variable, Tensor, Backward, Gradient};
 use std::{ops::{Sub, Neg}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct NegBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
 }
 
 impl<S, S2> Backward<S> for NegBackwardV<'_, S2>
 where
-    S2: Default + Sub<S, Output = S2>,
+    S2: Default,
+    S: Neg<Output = S2>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad - res_grad);
+        self.grad.accumulate(-res_grad);
     }
 }
 

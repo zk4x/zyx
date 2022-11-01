@@ -1,4 +1,4 @@
-use crate::{tensor::{Tensor, Variable, Backward, ops::RefCellReplaceTake}, accel::cpu, dtype::DType};
+use crate::{tensor::{Tensor, Variable, Backward, Gradient}, accel::cpu, dtype::DType};
 use std::{cell::RefCell, ops::{Sub, Neg, Add}};
 use duplicate::duplicate_item;
 
@@ -12,7 +12,7 @@ where
     YS: Default + Sub<S, Output = YS>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad - res_grad);
+        self.ygrad.accumulate(-res_grad);
     }
 }
 
@@ -62,7 +62,7 @@ where
     XS: Default + Add<S, Output = XS>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + res_grad);
+        self.xgrad.accumulate(res_grad);
     }
 }
 
@@ -95,8 +95,8 @@ where
     YS: Default + Sub<S, Output = YS>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + res_grad.clone());
-        self.ygrad.replace_take(|grad| grad - res_grad);
+        self.xgrad.accumulate(res_grad.clone());
+        self.ygrad.accumulate(-res_grad);
     }
 }
 
@@ -130,7 +130,7 @@ where
     YF: Backward<<S as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + res_grad.clone());
+        self.xgrad.accumulate(res_grad.clone());
         self.ygrad_fn.backward(-res_grad);
     }
 }
@@ -168,7 +168,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct SubBackwardTV<'g, S, XF> {
     xgrad_fn: XF,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
 }
 
 impl<S, YS, XF> Backward<S> for SubBackwardTV<'_, YS, XF>
@@ -179,7 +179,7 @@ where
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(res_grad.clone());
-        self.ygrad.replace_take(|grad| grad - res_grad);
+        self.ygrad.accumulate(-res_grad);
     }
 }
 

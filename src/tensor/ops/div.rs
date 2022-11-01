@@ -1,11 +1,11 @@
-use crate::{tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, dtype::DType, accel::cpu};
+use crate::{tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType, accel::cpu};
 use std::{cell::RefCell, ops::{Neg, Add, Sub, Mul, Div}};
 //use duplicate::duplicate_item;
 
 /*#[derive(Debug, Clone, Copy)]
 pub struct DivBackwardSV<'g, S, S2> {
     res: S2,
-    ygrad: &'g RefCell<S>,
+    ygrad: &'g Gradient<S>,
     ydata: S,
 }
 
@@ -16,7 +16,7 @@ where
     <S2 as Div<S>>::Output: Mul<S>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.replace_take(|grad| grad - self.res / self.ydata * res_grad);
+        self.ygrad.accumulate(grad - self.res / self.ydata * res_grad);
     }
 }
 
@@ -116,7 +116,7 @@ where
     XS: Default + Add<<S as Div<YS>>::Output, Output = XS>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.replace_take(|grad| grad + res_grad / self.ydata);
+        self.xgrad.accumulate(res_grad / self.ydata);
     }
 }
 
@@ -155,8 +155,8 @@ where
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
-        self.xgrad.replace_take(|grad| grad + temp.clone());
-        self.ygrad.replace_take(|grad| grad - self.res * temp);
+        self.xgrad.accumulate(temp.clone());
+        self.ygrad.accumulate(-(self.res * temp));
     }
 }
 
@@ -200,7 +200,7 @@ where
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
-        self.xgrad.replace_take(|grad| grad + temp.clone());
+        self.xgrad.accumulate(temp.clone());
         self.ygrad_fn.backward(-self.res * temp);
     }
 }
@@ -272,12 +272,12 @@ where
     S: Div<YS>,
     <S as Div<YS>>::Output: Clone,
     S2: Mul<<S as Div<YS>>::Output>,
-    YS: Default + Sub<<S2 as Mul<<S as Div<YS>>::Output>>::Output, Output = YS>,
+    <S2 as Mul<<S as Div<YS>>::Output>>::Output: Neg<Output = YS>,
     XF: Backward<<S as Div<YS>>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
-        self.ygrad.replace_take(|grad| grad - self.res * temp.clone());
+        self.ygrad.accumulate(-self.res * temp.clone());
         self.xgrad_fn.backward(temp);
     }
 }

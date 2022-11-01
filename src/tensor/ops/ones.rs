@@ -1,4 +1,4 @@
-use crate::{ops::{Ones, Zeros}, tensor::Variable, shape::IntoShape};
+use crate::{ops::{Ones, Zeros}, tensor::{Variable, Gradient}, shape::IntoShape};
 use std::cell::RefCell;
 
 /// Initialize tensor filled with zeros
@@ -10,7 +10,7 @@ where
         let shape = shape.shape();
         Self {
             data: RefCell::new(S::ones(shape.clone())),
-            grad: RefCell::new(S::zeros(shape)),
+            grad: Gradient::new(),
         }
     }
 }

@@ -1,9 +1,9 @@
-use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{Shape, IntoDims}};
+use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{Shape, IntoDims}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct SumBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     shape: Shape,
 }
 
@@ -12,7 +12,7 @@ where
     S: Default + Add<Output = S> + Expand<Output = S> + GetShape,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad.expand(self.shape));
+        self.grad.accumulate(res_grad.expand(self.shape));
     }
 }
 

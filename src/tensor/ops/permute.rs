@@ -1,9 +1,9 @@
-use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Dims}};
+use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Dims}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     dims: Dims,
 }
 
@@ -13,7 +13,7 @@ where
     S: Permute,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad.permute(self.dims));
+        self.grad.accumulate(res_grad.permute(self.dims));
     }
 }
 

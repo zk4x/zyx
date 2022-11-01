@@ -1,9 +1,9 @@
-use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}, shape::{IntoDims, Shape}};
+use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Shape}};
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
 pub struct MaxBackwardV<'g, S> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     shape: Shape,
 }
 
@@ -16,7 +16,7 @@ where
         // Max sets values at max indices to 1 and other values to 0.
         // So res_grad values must be added to indices where there were maximums previously.
         // So Instead of shape, we need to store indices of those values.
-        self.grad.replace_take(|grad| grad + res_grad.expand(self.shape));
+        self.grad.accumulate(res_grad.expand(self.shape));
     }
 }
 

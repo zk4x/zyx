@@ -1,9 +1,9 @@
-use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, ops::RefCellReplaceTake}};
+use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::{Add, Mul, Neg}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TanhBackwardV<'g, S, S2> {
-    grad: &'g RefCell<S>,
+    grad: &'g Gradient<S>,
     res: S2,
 }
 
@@ -16,7 +16,7 @@ where
     S: Mul<<<<S3 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.replace_take(|grad| grad + res_grad * (-self.res.pow(2) + 1));
+        self.grad.accumulate(res_grad * (-self.res.pow(2) + 1));
     }
 }
 
