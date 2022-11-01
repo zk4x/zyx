@@ -19,9 +19,9 @@ where
 impl<'g, S, S2, G> Exp for &'g Variable<S, G>
 where
     S: Clone + Exp<Output = S2>,
-    S2: Clone,
+    S2: Clone + 'g,
 {
-    type Output = Tensor<S2, ExpBackwardV<'g, S, S2>>;
+    type Output = Tensor<<S as Exp>::Output, ExpBackwardV<'g, S, S2>>;
     fn exp(self) -> Self::Output {
         let data = (*self.data()).clone().exp();
         Tensor {
