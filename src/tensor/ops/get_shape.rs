@@ -1,6 +1,6 @@
 use crate::{ops::GetShape, tensor::{Variable, Tensor}, shape::Shape};
 
-impl<S> GetShape for Variable<S>
+impl<S, G> GetShape for Variable<S, G>
 where
     S: GetShape,
 {

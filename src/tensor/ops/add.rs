@@ -1,16 +1,13 @@
-use crate::{tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType, accel::cpu};
+use crate::{tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType, accel::cpu, ops::ConvertFrom};
 use std::{cell::RefCell, ops::Add};
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]
-pub struct AddBackwardSV<'g, S2> {
-    ygrad: &'g RefCell<S2>,
+pub struct AddBackwardSV<'g, YS> {
+    ygrad: &'g Gradient<YS>,
 }
 
-impl<S, S2> Backward<S> for AddBackwardSV<'_, S2>
-where
-    S2: Default + Add<S, Output = S2>,
-{
+impl<S, YS> Backward<S> for AddBackwardSV<'_, YS> {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(res_grad);
     }
@@ -19,13 +16,13 @@ where
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
     [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
-impl<'g, S> Add<&'g Variable<S>> for dtype
+impl<'g, S, G> Add<&'g Variable<S, G>> for dtype
 where
     Self: Add<S>,
     S: Clone + DType,
 {
     type Output = Tensor<<Self as Add<S>>::Output, AddBackwardSV<'g, S>>;
-    fn add(self, rhs: &'g Variable<S>) -> Self::Output {
+    fn add(self, rhs: &'g Variable<S, G>) -> Self::Output {
         Tensor {
             data: self + rhs.data().clone(),
             grad_fn: AddBackwardSV {
@@ -53,20 +50,20 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct AddBackwardVS<'g, S> {
-    xgrad: &'g Gradient<S>,
+pub struct AddBackwardVS<'g, XG> {
+    xgrad: &'g Gradient<XG>,
 }
 
-impl<S, XS> Backward<S> for AddBackwardVS<'_, XS>
+impl<S> Backward<S> for AddBackwardVS<'_, S>
 where
-    XS: Default + Add<S, Output = XS>,
+    S: Add<S, Output = S>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(res_grad);
     }
 }
 
-impl<'g, XS, YS> Add<YS> for &'g Variable<XS>
+impl<'g, XS, YS, XG> Add<YS> for &'g Variable<XS, XG>
 where
     XS: Clone + Add<YS>,
     YS: DType,
@@ -84,29 +81,30 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVV<'g, XS, YS> {
-    xgrad: &'g RefCell<XS>,
-    ygrad: &'g RefCell<YS>,
+    xgrad: &'g Gradient<XS>,
+    ygrad: &'g Gradient<YS>,
 }
 
 impl<S, XS, YS> Backward<S> for AddBackwardVV<'_, XS, YS>
 where
     S: Clone,
-    XS: Default + Add<S, Output = XS>,
-    YS: Default + Add<S, Output = YS>,
+    XS: Add<XS, Output = XS> + ConvertFrom<S>,
+    YS: Add<YS, Output = YS> + ConvertFrom<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.accumulate(res_grad.clone());
-        self.ygrad.accumulate(res_grad);
+        use crate::ops::ConvertInto;
+        self.xgrad.accumulate(res_grad.clone().cinto());
+        self.ygrad.accumulate(res_grad.cinto());
     }
 }
 
-impl<'g, XS, YS> Add<&'g Variable<YS>> for &'g Variable<XS>
+impl<'g, XS, XG, YS, YG> Add<&'g Variable<YS, YG>> for &'g Variable<XS, XG>
 where
     XS: Clone + Add<YS>,
     YS: Clone,
 {
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardVV<'g, XS, YS>>;
-    fn add(self, rhs: &'g Variable<YS>) -> Self::Output {
+    fn add(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.data().clone() + rhs.data().clone(),
             grad_fn: AddBackwardVV {
@@ -119,23 +117,24 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVT<'g, XS, YF> {
-    xgrad: &'g RefCell<XS>,
+    xgrad: &'g Gradient<XS>,
     ygrad_fn: YF,
 }
 
 impl<S, XS, YF> Backward<S> for AddBackwardVT<'_, XS, YF>
 where
     S: Clone,
-    XS: Default + Add<S, Output = XS>,
+    XS: Add<XS, Output = XS> + ConvertFrom<S>,
     YF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.accumulate(res_grad.clone());
+        use crate::ops::ConvertInto;
+        self.xgrad.accumulate(res_grad.clone().cinto());
         self.ygrad_fn.backward(res_grad);
     }
 }
 
-impl<'g, XS, YS, YF> Add<Tensor<YS, YF>> for &'g Variable<XS>
+impl<'g, XS, XG, YS, YF> Add<Tensor<YS, YF>> for &'g Variable<XS, XG>
 where
     XS: Clone + Add<YS>,
 {
@@ -168,28 +167,29 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTV<'g, YS, XF> {
     xgrad_fn: XF,
-    ygrad: &'g RefCell<YS>,
+    ygrad: &'g Gradient<YS>,
 }
 
 impl<S, YS, XF> Backward<S> for AddBackwardTV<'_, YS, XF>
 where
     S: Clone,
-    YS: Default + Add<S, Output = YS>,
+    YS: Add<YS, Output = YS> + ConvertFrom<S>,
     XF: Backward<S>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.accumulate(res_grad.clone());
+        use crate::ops::ConvertInto;
+        self.ygrad.accumulate(res_grad.clone().cinto());
         self.xgrad_fn.backward(res_grad);
     }
 }
 
-impl<'g, XS, YS, XF> Add<&'g Variable<YS>> for Tensor<XS, XF>
+impl<'g, XS, YS, YG, XF> Add<&'g Variable<YS, YG>> for Tensor<XS, XF>
 where
     XS: Add<YS> + DType,
     YS: Clone + DType,
 {
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardTV<'g, YS, XF>>;
-    fn add(self, rhs: &'g Variable<YS>) -> Self::Output {
+    fn add(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.data + rhs.data().clone(),
             grad_fn: AddBackwardTV {

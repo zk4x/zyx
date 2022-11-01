@@ -60,12 +60,9 @@ use std::cell::{Ref, RefCell};
 // We can imagine neural network as a tree, where leafs are Buffers and Variables and root/roots
 // are Tensor. When an operation is performed with Tensor, it's consumed and it's func is moved to the resulting
 // Tensor. So the last Tensor is the root of the tree and is the only Tensor in existence
-// and it holds all the closures with Rc<RefCell<S>> pointers to the Variable's gradients.
+// and it holds all the closures with &RefCell<S> pointers to the Variable's gradients.
 // If you want to have more the one Tensor to call .backward() on, you need to clone this Tensor
 // or any of the intermediate Tensors. In this case, the library performs cloning of the closures.
-// This is a conscious decision to not store the closures in Rc and just clone them if needed,
-// because we find the RAM usage of cloned closures (basically &RefCell<S> to gradients and S of some data)
-// less concerning than the performance implications of using Rc<FnOnce(S)> closures.
 
 // Tensors are moved into operations, while Variables are passed by reference!
 
@@ -73,42 +70,33 @@ use std::cell::{Ref, RefCell};
 /// 
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Variable<S> {
+pub struct Variable<S, G> {
     // We could get rid of RefCell here by having every Module implementor have update_data function
     // with optimizer as one of it's parameters.
     data: RefCell<S>, // RefCell needed for optimizer.step() function
-    grad: Gradient<S>,
-}
-
-// We need custom implementation of replace_take() for RefCell that has F: FnOnce(T) -> T instead of F: FnOnce(&mut T) -> T
-// This is due to the fact, that buffers implement operations on consumed values, not on references
-trait RefCellReplaceTake<T, F> {
-    fn replace_take(&self, f: F);
-}
-
-impl<T, F> RefCellReplaceTake<T, F> for std::cell::RefCell<T>
-where
-    T: Default,
-    F: FnOnce(T) -> T,
-{
-    fn replace_take(&self, f: F) {
-        self.replace(f(self.take()));
-    }
+    // Theoretically gradient should be the same shape and type as data, but practically
+    // it just needs to implement operations required by optimizers so there is no need
+    // to arbitrarily constrain it. This also simplyfies some performance optimizations.
+    // One side effect is, that the type of the gradient does not need to be user known
+    // at the time of creation, because compiler will determine it when some operation
+    // is applied to this Variable.
+    grad: Gradient<G>,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Gradient<S>(RefCell<Option<S>>);
+pub struct Gradient<G>(RefCell<Option<G>>);
 
-impl<S> Gradient<S> {
+impl<G> Gradient<G> {
     fn new() -> Self {
         Self::default()
     }
 
-    fn accumulate(&self, value: S)
+    fn accumulate(&self, value: G)
     where
-        S: std::ops::Add<Output = S>,
+        G: std::ops::Add<Output = G>,
     {
-        self.0.replace_take(|x| match x {
+        let x = self.0.take();
+        self.0 = Some(match x {
             Some(grad) => grad + value,
             None => value,
         });
@@ -116,6 +104,15 @@ impl<S> Gradient<S> {
 
     fn zero(&self) {
         self.0.replace(None);
+    }
+}
+
+impl<G> std::fmt::Display for Gradient<G>
+where
+    G: std::fmt::Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write(self.0)
     }
 }
 
@@ -134,9 +131,10 @@ pub struct Tensor<S, GradFn> {
 /// # Display Variable
 /// 
 /// Shows [Variable] and it's gradient.
-impl<S> std::fmt::Display for Variable<S>
+impl<S, G> std::fmt::Display for Variable<S, G>
 where
     S: std::fmt::Display,
+    G: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!(
@@ -162,10 +160,7 @@ where
     }
 }
 
-impl<S> Variable<S>
-where
-    S: Default + std::ops::Add<i32, Output = S>,
-{
+impl<S, G> Variable<S, G> {
     /// # Variable backward
     /// 
     /// Calls backward function on [Variable].
@@ -175,8 +170,7 @@ where
     /// x.grad += 1;
     /// ```
     pub fn backward(&self) {
-        self.grad
-            .replace_take(|grad| grad + 1);
+        self.grad.accumulate(1);
     }
 }
 
@@ -234,26 +228,23 @@ where
 /// Turn any datatype into [Variable].
 pub trait IntoVariable {
     /// Calling this function turns input into [Variable] adding gradient in the process.
-    fn with_grad(self) -> Variable<Self>
+    fn with_grad<G>(self) -> Variable<Self, G>
     where
         Self: Sized;
 }
 
 /// Create new [Variable] that requires gradient
-impl<S> IntoVariable for S
-where
-    S: crate::ops::Zeros + GetShape,
-{
-    fn with_grad(self) -> Variable<Self> {
+impl<S> IntoVariable for S {
+    fn with_grad<G>(self) -> Variable<Self, G> {
         let shape = self.shape();
         Variable {
             data: RefCell::new(self),
-            grad: RefCell::new(S::zeros(shape)),
+            grad: Gradient::new(),
         }
     }
 }
 
-impl<S> Variable<S> {
+impl<S, G> Variable<S, G> {
     /// Access [Variable's](Variable) data buffer
     pub fn data(&self) -> Ref<'_, S> {
         self.data.borrow()
@@ -267,10 +258,10 @@ impl<S, GradFn> Tensor<S, GradFn> {
     }
 }
 
-impl<S> Variable<S> {
+impl<S, G> Variable<S, G> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> Ref<'_, S> {
-        self.grad.borrow()
+    pub fn grad(&self) -> &Gradient<G> {
+        &self.grad
     }
 }
 
@@ -283,23 +274,23 @@ impl<S, GradFn> Tensor<S, GradFn> {
 
 /// Gradient hook for [Variable]
 #[derive(Debug, Clone, Copy)]
-pub struct GradHookV<'g, S, Hook> {
-    grad: &'g Gradient<S>,
+pub struct GradHookV<'g, G, Hook> {
+    grad: &'g Gradient<G>,
     hook: Hook,
 }
 
-impl<S, HOOK> Backward<S> for GradHookV<'_, S, HOOK>
+impl<G, HOOK> Backward<G> for GradHookV<'_, G, HOOK>
 where
-    S: Default + Clone + std::ops::Add<Output = S>,
-    HOOK: FnOnce(S),
+    G: Clone,
+    HOOK: FnOnce(G),
 {
-    fn backward(self, res_grad: S) {
+    fn backward(self, res_grad: G) {
         (self.hook)(res_grad.clone());
-        self.grad.replace_take(|grad| grad + res_grad);
+        self.grad.accumulate(res_grad);
     }
 }
 
-impl<S> Variable<S> {
+impl<S, G> Variable<S, G> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass.
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
@@ -358,15 +349,15 @@ impl<S, GradFn> Tensor<S, GradFn> {
 /// Conversions between devices and types
 // NOTE: you need to move the Variable into required device and type
 // before using it in optimizer
-impl<S, S2> crate::ops::ConvertFrom<Variable<S2>> for Variable<S>
+impl<S, S2, G> crate::ops::ConvertFrom<Variable<S2, G>> for Variable<S, G>
 where
     S: crate::ops::ConvertFrom<S2>,
     S2: Clone,
 {
-    fn cfrom(x: Variable<S2>) -> Self {
+    fn cfrom(x: Variable<S2, G>) -> Self {
         Self {
             data: RefCell::new(S::cfrom((*x.data.borrow()).clone())),
-            grad: RefCell::new(S::cfrom((*x.grad.borrow()).clone())),
+            grad: Gradient::new(),
         }
     }
 }
@@ -389,9 +380,9 @@ where
 
 use std::ops::{Sub, Mul};
 // Update Variable's data. It is used by optimizer.step().
-impl<S> Parameters for &Variable<S>
+impl<S, G> Parameters for &Variable<S, G>
 where
-    S: Default + Clone + Zeros + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+    S: Default + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
     where
@@ -402,6 +393,6 @@ where
     }
 
     fn zero_grad(&self) {
-        self.grad.replace(S::zeros(self.shape()));
+        self.grad.zero();
     }
 }

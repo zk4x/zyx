@@ -288,33 +288,34 @@ impl<Input> Module<Input> for &NormLayer {
 
 /// Linear layer
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Linear<S> {
-    w: Variable<S>,
-    b: Variable<S>,
+pub struct Linear<W, WG, B, BG> {
+    w: Variable<W, WG>,
+    b: Variable<B, BG>,
 }
 
-impl<S> Linear<S> {
+impl<W, WG, B, BG> Linear<W, WG, B, BG> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
-        S: ops::FromVec<T> + ops::Zeros,
+        //S: ops::FromVec<T> + ops::Zeros,
         T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
         Self {
-            w: Variable::<S>::uniform([in_features, out_features], T::zeros(()), T::ones(())),
-            b: Variable::<S>::uniform([1, out_features], T::zeros(()), T::ones(())),
+            w: Variable::uniform([in_features, out_features], T::zeros(()), T::ones(())),
+            b: Variable::uniform([1, out_features], T::zeros(()), T::ones(())),
         }
     }
 }
 
-impl<'a, S, Input> Module<Input> for &'a Linear<S>
+impl<'a, W, WG, B, BG, Input> Module<Input> for &'a Linear<W, WG, B, BG>
 where
-    S: 'a + Default + Zeros + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
-    Input: ops::MatMul<&'a Variable<S>>,
-    <Input as ops::MatMul<&'a Variable<S>>>::Output: std::ops::Add<&'a Variable<S>>,
+    //S: 'a + Default + Zeros + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+    //Input: ops::MatMul<&'a Variable<S>>,
+    //<Input as ops::MatMul<&'a Variable<S>>>::Output: std::ops::Add<&'a Variable<S>>,
 {
-    type Output = <<Input as ops::MatMul<&'a Variable<S>>>::Output as std::ops::Add<&'a Variable<S>>>::Output;
-    type Params = (&'a Variable<S>, &'a Variable<S>);
+    //type Output = <<Input as ops::MatMul<&'a Variable<S>>>::Output as std::ops::Add<&'a Variable<S>>>::Output;
+    type Output = ();
+    type Params = (&'a Variable<W, WG>, &'a Variable<B, BG>);
 
     fn forward(self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
@@ -326,12 +327,13 @@ where
 }
 
 /// RNNCell
+// TODO: rewrite to use different storages for parameters and their gradients
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RNNCell<S> {
-    wih: Variable<S>,
-    bih: Variable<S>,
-    whh: Variable<S>,
-    bhh: Variable<S>,
+    wih: Variable<S, S>,
+    bih: Variable<S, S>,
+    whh: Variable<S, S>,
+    bhh: Variable<S, S>,
 }
 
 impl<S> RNNCell<S> {
@@ -354,14 +356,14 @@ use ops::MatMul;
 impl<'a, S, X, H> Module<(X, H)> for &'a RNNCell<S>
 where
     S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
-    X: MatMul<&'a Variable<S>>,
-    H: MatMul<&'a Variable<S>>,
-    <X as MatMul<&'a Variable<S>>>::Output: Add<&'a Variable<S>>,
-    <<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output: Add<<H as MatMul<&'a Variable<S>>>::Output>,
-    <<<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output as Add<<H as MatMul<&'a Variable<S>>>::Output>>::Output: Add<&'a Variable<S>>,
+    X: MatMul<&'a Variable<S, S>>,
+    H: MatMul<&'a Variable<S, S>>,
+    <X as MatMul<&'a Variable<S, S>>>::Output: Add<&'a Variable<S, S>>,
+    <<X as MatMul<&'a Variable<S, S>>>::Output as Add<&'a Variable<S, S>>>::Output: Add<<H as MatMul<&'a Variable<S, S>>>::Output>,
+    <<<X as MatMul<&'a Variable<S, S>>>::Output as Add<&'a Variable<S, S>>>::Output as Add<<H as MatMul<&'a Variable<S, S>>>::Output>>::Output: Add<&'a Variable<S, S>>,
 {
-    type Output = <<<<X as MatMul<&'a Variable<S>>>::Output as Add<&'a Variable<S>>>::Output as Add<<H as MatMul<&'a Variable<S>>>::Output>>::Output as Add<&'a Variable<S>>>::Output;
-    type Params = (&'a Variable<S>, &'a Variable<S>, &'a Variable<S>, &'a Variable<S>);
+    type Output = <<<<X as MatMul<&'a Variable<S, S>>>::Output as Add<&'a Variable<S, S>>>::Output as Add<<H as MatMul<&'a Variable<S, S>>>::Output>>::Output as Add<&'a Variable<S, S>>>::Output;
+    type Params = (&'a Variable<S, S>, &'a Variable<S, S>, &'a Variable<S, S>, &'a Variable<S, S>);
 
     fn forward(self, x: (X, H)) -> Self::Output {
         x.0.matmul(&self.wih) + &self.bih + x.1.matmul(&self.whh) + &self.bhh

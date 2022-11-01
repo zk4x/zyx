@@ -2,25 +2,25 @@ use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::{Add, Mul, Neg}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct TanhBackwardV<'g, S, S2> {
-    grad: &'g Gradient<S>,
-    res: S2,
+pub struct TanhBackwardV<'g, S, G> {
+    grad: &'g Gradient<G>,
+    res: S,
 }
 
 impl<S, S2, S3> Backward<S> for TanhBackwardV<'_, S2, S3>
 where
-    S2: Default + Add<<S as Mul<<<<S3 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output>>::Output, Output = S2>,
+    S2: Add<S2, Output = S2>,
     S3: Pow<i32>,
     <S3 as Pow<i32>>::Output: Neg,
     <<S3 as Pow<i32>>::Output as Neg>::Output: Add<i32>,
-    S: Mul<<<<S3 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output>,
+    S: Mul<<<<S3 as Pow<i32>>::Output as Neg>::Output as Add<i32>>::Output, Output = S2>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad * (-self.res.pow(2) + 1));
     }
 }
 
-impl<'g, S> Tanh for &'g Variable<S>
+impl<'g, S, G> Tanh for &'g Variable<S, G>
 where
     S: Clone + Tanh,
     <S as Tanh>::Output: Clone,

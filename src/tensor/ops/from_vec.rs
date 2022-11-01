@@ -2,7 +2,7 @@ use crate::{ops::{FromVec, Zeros}, tensor::{Variable, Gradient}, shape::IntoShap
 use std::cell::RefCell;
 
 /// Initialize tensor from vec and shape
-impl<S, T> FromVec<T> for Variable<S>
+impl<S, G, T> FromVec<T> for Variable<S, G>
 where
     S: FromVec<T> + Zeros,
 {

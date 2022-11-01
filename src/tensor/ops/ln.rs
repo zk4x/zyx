@@ -2,27 +2,26 @@ use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
 use std::{ops::{Add, Mul}, cell::RefCell};
 
 #[derive(Debug, Clone, Copy)]
-pub struct LnBackwardV<'g, S> {
-    grad: &'g Gradient<S>,
+pub struct LnBackwardV<'g, S, G> {
+    grad: &'g Gradient<G>,
     data: S,
 }
 
-impl<S, S2> Backward<S> for LnBackwardV<'_, S2>
+impl<S, S2, G> Backward<S> for LnBackwardV<'_, S2, G>
 where
-    S2: Default + Pow<i32>,
-    S: Mul<<S2 as Pow<i32>>::Output, Output = S>,
-    S: Add<Output = S>,
+    S2: Pow<i32>,
+    S: Mul<<S2 as Pow<i32>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad * self.data.pow(-1));
     }
 }
 
-impl<'g, S> Ln for &'g Variable<S>
+impl<'g, S, G> Ln for &'g Variable<S, G>
 where
     S: Clone + Ln,
 {
-    type Output = Tensor<<S as Ln>::Output, LnBackwardV<'g, S>>;
+    type Output = Tensor<<S as Ln>::Output, LnBackwardV<'g, S, G>>;
     fn ln(self) -> Self::Output {
         Tensor {
             data: self.data().clone().ln(),

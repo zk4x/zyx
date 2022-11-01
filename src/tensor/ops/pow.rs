@@ -2,26 +2,26 @@ use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, Gradient}, dtyp
 use std::{cell::RefCell, ops::{Add, Mul, Div}};
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardSV<'g, S> {
-    ygrad: &'g Gradient<S>,
-    ytemp: S,
+pub struct PowBackwardSV<'g, YG, YT> {
+    ygrad: &'g Gradient<YG>,
+    ytemp: YT,
 }
 
-impl<S> Backward<S> for PowBackwardSV<'_, S>
+impl<S, YG, YT> Backward<S> for PowBackwardSV<'_, YG, YT>
 where
-    S: Default + Add<Output = S> + Mul<Output = S>,
+    S: Mul<YT, Output = YG>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(res_grad * self.ytemp);
     }
 }
 
-impl<'g, S> Pow<&'g Variable<S>> for S
+impl<'g, XS, YS, YG> Pow<&'g Variable<YS, YG>> for XS
 where
-    S: 'g + Clone + Pow<Output = S> + Mul<Output = S> + Ln<Output = S>,
+    XS: Pow<YS> + DType,
 {
-    type Output = Tensor<S, PowBackwardSV<'g, S>>;
-    fn pow(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardSV<'g, YG, ()>>;
+    fn pow(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         let res = self.clone().pow(rhs.data().clone());
         Tensor {
             data: res.clone(),
@@ -67,32 +67,28 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardVS<'g, S, S2> {
-    xgrad: &'g Gradient<S>,
-    xtemp: S2,
+pub struct PowBackwardVS<'g, XG, XT> {
+    xgrad: &'g Gradient<XG>,
+    xtemp: XT,
 }
 
 // TODO: rewrite everything like this
-impl<S, S2> Backward<S> for PowBackwardVS<'_, S, S2>
+impl<S, XG, XT> Backward<S> for PowBackwardVS<'_, XG, XT>
 where
-    S: Default + std::ops::Add<<S2 as Mul<S>>::Output, Output = S>,
-    S2: Mul<S>,
+    XT: Mul<S, Output = XG>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(self.xtemp * res_grad);
     }
 }
 
-impl<'g, S, S2> Pow<S2> for &'g Variable<S>
+impl<'g, XS, XG, YS> Pow<YS> for &'g Variable<XS, XG>
 where
-    S2: DType + Clone + Mul<<S as Pow<S2>>::Output>,
-    <S2 as Mul<<S as Pow<S2>>::Output>>::Output: Div<S>,
-    S: Clone + Pow<S2>,
-    <S as Pow<S2>>::Output: Clone,
-    <<S2 as Mul<<S as Pow<S2>>::Output>>::Output as Div<S>>::Output: 'g,
+    XS: Pow<YS>,
+    YS: DType,
 {
-    type Output = Tensor<<S as Pow<S2>>::Output, PowBackwardVS<'g, S, <<S2 as Mul<<S as Pow<S2>>::Output>>::Output as Div<S>>::Output>>;
-    fn pow(self, rhs: S2) -> Self::Output {
+    type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardVS<'g, XG, ()>>;
+    fn pow(self, rhs: YS) -> Self::Output {
         let res = self.data().clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),
@@ -105,16 +101,17 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardVV<'g, S> {
-    xgrad: &'g Gradient<S>,
-    xtemp: S,
-    ygrad: &'g Gradient<S>,
-    ytemp: S,
+pub struct PowBackwardVV<'g, XG, XT, YG, YT> {
+    xgrad: &'g Gradient<XG>,
+    xtemp: XT,
+    ygrad: &'g Gradient<YG>,
+    ytemp: YT,
 }
 
-impl<S> Backward<S> for PowBackwardVV<'_, S>
+impl<S, G, XT, YT> Backward<S> for PowBackwardVV<'_, G, XT, G, YT>
 where
-    S: Default + Clone + Add<Output = S> + Mul<Output = S>,
+    S: Clone,
+    XT: Mul<S, Output = G>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(self.xtemp * res_grad.clone());
@@ -122,12 +119,12 @@ where
     }
 }
 
-impl<'g, S> Pow<&'g Variable<S>> for &'g Variable<S>
+impl<'g, XS, XG, YS, YG> Pow<&'g Variable<YS, YG>> for &'g Variable<XS, XG>
 where
-    S: 'g + Clone + Mul<Output = S> + Div<Output = S> + Pow<Output = S> + Ln<Output = S>,
+    XS: Pow<YS>,
 {
-    type Output = Tensor<S, PowBackwardVV<'g, S>>;
-    fn pow(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardVV<'g, XG, (), YG, ()>>;
+    fn pow(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         let res = self.data().clone().pow(rhs.data().clone());
         Tensor {
             data: res.clone(),
@@ -142,30 +139,32 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardVT<'g, S, YF> {
-    xgrad: &'g Gradient<S>,
-    xtemp: S,
+pub struct PowBackwardVT<'g, XG, XT, YT, YF> {
+    xgrad: &'g Gradient<XG>,
+    xtemp: XT,
     ygrad_fn: YF,
-    ytemp: S,
+    ytemp: YT,
 }
 
-impl<S, YF> Backward<S> for PowBackwardVT<'_, S, YF>
+impl<S, XG, XT, YT, YF> Backward<S> for PowBackwardVT<'_, XG, XT, YT, YF>
 where
-    S: Default + Clone + Add<Output = S> + Mul<Output = S> + Pow<Output = S>,
-    YF: Backward<S>,
+    S: Clone,
+    XT: Mul<S, Output = XG>,
+    YT: Mul<S>,
+    YF: Backward<<YT as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(self.xtemp * res_grad.clone());
-        self.ygrad_fn.backward(res_grad * self.ytemp);
+        self.ygrad_fn.backward(self.ytemp * res_grad);
     }
 }
 
-impl<'g, S, F> Pow<Tensor<S, F>> for &'g Variable<S>
+impl<'g, XS, XG, YS, YF> Pow<Tensor<YS, YF>> for &'g Variable<XS, XG>
 where
-    S: 'g + Clone + Mul<Output = S> + Div<Output = S> + Pow<Output = S> + Ln<Output = S>,
+    XS: Pow<YS>,
 {
-    type Output = Tensor<S, PowBackwardVT<'g, S, F>>;
-    fn pow(self, rhs: Tensor<S, F>) -> Self::Output {
+    type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardVT<'g, XG, (), (), YF>>;
+    fn pow(self, rhs: Tensor<YS, YF>) -> Self::Output {
         let res = self.data().clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
@@ -216,30 +215,32 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PowBackwardTV<'g, S, XF> {
+pub struct PowBackwardTV<'g, YG, XT, YT, XF> {
     xgrad_fn: XF,
-    xtemp: S,
-    ygrad: &'g Gradient<S>,
-    ytemp: S,
+    xtemp: XT,
+    ygrad: &'g Gradient<YG>,
+    ytemp: YT,
 }
 
-impl<S, XF> Backward<S> for PowBackwardTV<'_, S, XF>
+impl<S, YG, XT, YT, XF> Backward<S> for PowBackwardTV<'_, YG, XT, YT, XF>
 where
-    S: Default + Clone + Add<Output = S> + Mul<Output = S>,
-    XF: Backward<S>,
+    S: Clone,
+    YT: Mul<S, Output = YG>,
+    XT: Mul<S>,
+    XF: Backward<<XT as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.accumulate(res_grad.clone() * self.ytemp);
+        self.ygrad.accumulate(self.ytemp * res_grad.clone());
         self.xgrad_fn.backward(self.xtemp * res_grad);
     }
 }
 
-impl<'g, S, XF> Pow<&'g Variable<S>> for Tensor<S, XF>
+impl<'g, XS, YS, YG, XF> Pow<&'g Variable<YS, YG>> for Tensor<XS, XF>
 where
-    S: 'g + Clone + Mul<Output = S> + Div<Output = S> + Pow<Output = S> + Ln<Output = S>,
+    XS: Pow<YS>,
 {
-    type Output = Tensor<S, PowBackwardTV<'g, S, XF>>;
-    fn pow(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardTV<'g, YG, (), (), XF>>;
+    fn pow(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         let res = self.data.clone().pow(rhs.data().clone());
         Tensor {
             data: res.clone(),

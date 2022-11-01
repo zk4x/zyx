@@ -2,8 +2,8 @@ use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, G
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct MinBackwardV<'g, S> {
-    grad: &'g Gradient<S>,
+pub struct MinBackwardV<'g, G> {
+    grad: &'g Gradient<G>,
     shape: Shape,
 }
 
@@ -16,11 +16,11 @@ where
     }
 }
 
-impl<'g, S> Min for &'g Variable<S>
+impl<'g, S, G> Min for &'g Variable<S, G>
 where
     S: 'g + Clone + Min<Output = S> + GetShape,
 {
-    type Output = Tensor<S, MinBackwardV<'g, S>>;
+    type Output = Tensor<S, MinBackwardV<'g, G>>;
     fn min(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
             data: (*self.data.borrow()).clone().min(dims),

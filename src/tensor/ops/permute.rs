@@ -2,22 +2,22 @@ use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, Gradient}, shape:
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct PermuteBackwardV<'g, S> {
-    grad: &'g Gradient<S>,
+pub struct PermuteBackwardV<'g, G> {
+    grad: &'g Gradient<G>,
     dims: Dims,
 }
 
 impl<S, S2> Backward<S> for PermuteBackwardV<'_, S2>
 where
-    S2: Default + Add<<S as Permute>::Output, Output = S2>,
-    S: Permute,
+    S2: Add<S2, Output = S2>,
+    S: Permute<Output = S2>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.permute(self.dims));
     }
 }
 
-impl<'g, S> Permute for &'g Variable<S>
+impl<'g, S, G> Permute for &'g Variable<S, G>
 where
     S: Clone + Permute,
 {

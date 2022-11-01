@@ -2,16 +2,15 @@ use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, G
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct ExpandBackwardV<'g, S> {
-    grad: &'g Gradient<S>,
+pub struct ExpandBackwardV<'g, G> {
+    grad: &'g Gradient<G>,
     dims: Dims,
 }
 
 impl<S, S2> Backward<S> for ExpandBackwardV<'_, S2>
 where
-    S2: Default,
-    S: Max,
-    S2: Add<<S as Max>::Output, Output = S2>,
+    S: Max<Output = S2>,
+    S2: Add<S2, Output = S2>,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -19,7 +18,7 @@ where
     }
 }
 
-impl<'g, S> Expand for &'g Variable<S>
+impl<'g, S, G> Expand for &'g Variable<S, G>
 where
     S: Clone + Expand + GetShape,
 {

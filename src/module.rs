@@ -39,8 +39,9 @@ impl Parameters for () {
     fn zero_grad(&self) {}
 }
 
-impl<S, const N: usize> Parameters for [&Variable<S>; N]
+impl<S, G, const N: usize> Parameters for [&Variable<S, G>; N]
 where
+    // TODO: change this to be more flexible
     S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {
     fn update_data<Optim>(&self, optim: &Optim)
@@ -55,7 +56,7 @@ where
     }
 }
 
-impl<S> Parameters for Vec<&Variable<S>>
+impl<S, G> Parameters for Vec<&Variable<S, G>>
 where
     S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
 {

@@ -2,7 +2,7 @@ use crate::{ops::Zeros, tensor::{Variable, Gradient}, shape::IntoShape};
 use std::cell::RefCell;
 
 /// Initialize tensor filled with zeros
-impl<S> Zeros for Variable<S>
+impl<S, G> Zeros for Variable<S, G>
 where
     S: Zeros,
 {

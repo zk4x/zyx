@@ -3,15 +3,13 @@ use std::{cell::RefCell, ops::{Add, Mul}};
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]
-pub struct MulBackwardSV<'g, S, S2> {
-    xdata: S2,
-    ygrad: &'g Gradient<S>,
+pub struct MulBackwardSV<'g, XS, YG> {
+    xdata: XS,
+    ygrad: &'g Gradient<YG>,
 }
 
-impl<S, S2> Backward<S> for MulBackwardSV<'_, S, S2>
+impl<S, XS, YG> Backward<S> for MulBackwardSV<'_, XS, YG>
 where
-    S: Default + Add<<S2 as Mul<S>>::Output, Output = S>,
-    S2: Mul<S>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(self.xdata * res_grad);
@@ -19,13 +17,13 @@ where
 }
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl<'g, S> Mul<&'g Variable<S>> for dtype
+impl<'g, YS, YG> Mul<&'g Variable<YS, YG>> for dtype
 where
-    Self: Mul<S>,
-    S: Clone,
+    Self: Mul<YS>,
+    YS: Clone,
 {
-    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardSV<'g, S, Self>>;
-    fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<Self as Mul<YS>>::Output, MulBackwardSV<'g, Self, YS>>;
+    fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self * rhs.data().clone(),
             grad_fn: MulBackwardSV {
@@ -38,13 +36,13 @@ where
 
 #[duplicate_item( dtype; [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
-impl<'g, S> Mul<&'g Variable<S>> for dtype
+impl<'g, YS, YG> Mul<&'g Variable<YS, YG>> for dtype
 where
-    Self: Mul<S>,
-    S: Clone,
+    Self: Mul<YS>,
+    YS: Clone,
 {
-    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardSV<'g, S, Self>>;
-    fn mul(self, rhs: &'g Variable<S>) -> Self::Output {
+    type Output = Tensor<<Self as Mul<YS>>::Output, MulBackwardSV<'g, Self, YS>>;
+    fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.clone() * rhs.data().clone(),
             grad_fn: MulBackwardSV {
@@ -56,15 +54,15 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MulBackwardST<S, YF> {
-    xdata: S,
+pub struct MulBackwardST<XS, YF> {
+    xdata: XS,
     ygrad_fn: YF,
 }
 
-impl<S, S2, YF> Backward<S> for MulBackwardST<S2, YF>
+impl<S, XS, YF> Backward<S> for MulBackwardST<XS, YF>
 where
-    S2: Mul<S>,
-    YF: Backward<<S2 as Mul<S>>::Output>,
+    XS: Mul<S>,
+    YF: Backward<<XS as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad_fn.backward(self.xdata * res_grad);
@@ -72,12 +70,12 @@ where
 }
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool]; )]
-impl<S, F> Mul<Tensor<S, F>> for dtype
+impl<YS, YF> Mul<Tensor<YS, YF>> for dtype
 where
-    Self: Mul<S>,
+    Self: Mul<YS>,
 {
-    type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardST<Self, F>>;
-    fn mul(self, rhs: Tensor<S, F>) -> Self::Output {
+    type Output = Tensor<<Self as Mul<YS>>::Output, MulBackwardST<Self, YF>>;
+    fn mul(self, rhs: Tensor<YS, YF>) -> Self::Output {
         Tensor {
             data: self * rhs.data,
             grad_fn: MulBackwardST {
@@ -107,22 +105,20 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MulBackwardVS<'g, XS, YS> {
-    xgrad: &'g RefCell<XS>,
+pub struct MulBackwardVS<'g, XG, YS> {
+    xgrad: &'g Gradient<XG>,
     ydata: YS,
 }
 
-impl<S, XS, YS> Backward<S> for MulBackwardVS<'_, XS, YS>
+impl<S, XG, YS> Backward<S> for MulBackwardVS<'_, XG, YS>
 where
-    XS: Default + Add<<YS as Mul<S>>::Output, Output = XS>,
-    YS: Mul<S>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(self.ydata * res_grad);
     }
 }
 
-impl<'g, XS, YS> Mul<YS> for &'g Variable<XS>
+impl<'g, XS, XG, YS> Mul<YS> for &'g Variable<XS, XG>
 where
     YS: Clone + DType,
     XS: Clone + Mul<YS>,
@@ -150,8 +146,6 @@ pub struct MulBackwardVV<'g, XS, YS> {
 impl<S, XS, YS> Backward<S> for MulBackwardVV<'_, XS, YS>
 where
     S: Clone,
-    XS: Default + Add<<YS as Mul<S>>::Output, Output = XS> + Mul<S>,
-    YS: Default + Add<<XS as Mul<S>>::Output, Output = YS> + Mul<S>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(self.ydata * res_grad.clone());
@@ -159,13 +153,13 @@ where
     }
 }
 
-impl<'g, XS, YS> Mul<&'g Variable<YS>> for &'g Variable<XS>
+impl<'g, XS, XG, YS, YG> Mul<&'g Variable<YS, YG>> for &'g Variable<XS, XG>
 where
     XS: Clone + Mul<YS>,
     YS: Clone,
 {
     type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardVV<'g, XS, YS>>;
-    fn mul(self, rhs: &'g Variable<YS>) -> Self::Output {
+    fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.data().clone() * rhs.data().clone(),
             grad_fn: MulBackwardVV {
@@ -179,14 +173,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MulBackwardVT<'g, XS, YS, YF> {
-    xgrad: &'g RefCell<XS>,
+pub struct MulBackwardVT<'g, XS, XG, YS, YF> {
+    xgrad: &'g RefCell<XG>,
     xdata: XS,
     ygrad_fn: YF,
     ydata: YS,
 }
 
-impl<S, XS, YS, YF> Backward<S> for MulBackwardVT<'_, XS, YS, YF>
+impl<S, XS, XG, YS, YF> Backward<S> for MulBackwardVT<'_, XS, XG, YS, YF>
 where
     S: Clone,
     XS: Default + Mul<S> + Add<<YS as Mul<S>>::Output, Output = XS>,
@@ -199,12 +193,12 @@ where
     }
 }
 
-impl<'g, XS, YS, F> Mul<Tensor<YS, F>> for &'g Variable<XS>
+impl<'g, XS, XG, YS, F> Mul<Tensor<YS, F>> for &'g Variable<XS, XG>
 where
     XS: Clone + Mul<YS>,
     YS: Clone,
 {
-    type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardVT<'g, XS, YS, F>>;
+    type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardVT<'g, XS, XG, YS, F>>;
     fn mul(self, rhs: Tensor<YS, F>) -> Self::Output {
         Tensor {
             data: self.data().clone() * rhs.data.clone(),
@@ -273,13 +267,13 @@ where
     }
 }
 
-impl<'g, XS, YS, XF> Mul<&'g Variable<YS>> for Tensor<XS, XF>
+impl<'g, XS, YS, YG, XF> Mul<&'g Variable<YS, YG>> for Tensor<XS, XF>
 where
     XS: Clone + Mul<YS>,
     YS: Clone,
 {
     type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardTV<'g, XS, YS, XF>>;
-    fn mul(self, rhs: &'g Variable<YS>) -> Self::Output {
+    fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
             data: self.data.clone() * rhs.data().clone(),
             grad_fn: MulBackwardTV {

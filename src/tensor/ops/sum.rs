@@ -2,8 +2,8 @@ use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, G
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct SumBackwardV<'g, S> {
-    grad: &'g Gradient<S>,
+pub struct SumBackwardV<'g, G> {
+    grad: &'g Gradient<G>,
     shape: Shape,
 }
 
@@ -16,7 +16,7 @@ where
     }
 }
 
-impl<'g, S> Sum for &'g Variable<S>
+impl<'g, S, G> Sum for &'g Variable<S, G>
 where
     S: 'g + Clone + Sum<Output = S> + GetShape,
 {

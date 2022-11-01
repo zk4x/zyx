@@ -2,22 +2,22 @@ use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, Gradi
 use std::{ops::Add, cell::RefCell};
 
 #[derive(Debug, Clone)]
-pub struct ReshapeBackwardV<'g, S> {
-    grad: &'g Gradient<S>,
+pub struct ReshapeBackwardV<'g, G> {
+    grad: &'g Gradient<G>,
     shape: Shape,
 }
 
 impl<S, S2> Backward<S> for ReshapeBackwardV<'_, S2>
 where
-    S2: Default + Add<<S as Reshape>::Output, Output = S2>,
-    S: Reshape,
+    S2: Add<S2, Output = S2>,
+    S: Reshape<Output = S2>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.reshape(self.shape));
     }
 }
 
-impl<'g, S> Reshape for &'g Variable<S>
+impl<'g, S, G> Reshape for &'g Variable<S, G>
 where
     S: Clone + Reshape + GetShape,
 {
