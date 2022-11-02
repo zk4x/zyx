@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom}, shape::{IntoShape, IntoDims, Shape}};
+use crate::{ops::{self, ConvertFrom}, shape::{IntoShape, IntoDims, Shape}, dtype::ScalarType};
 use std::{ops::{Add, Mul}, sync::Arc};
 
 // TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
@@ -31,8 +31,8 @@ impl<T> Buffer<T> {
 // Convert between Buffers with different datatypes
 impl<T, T2> ConvertFrom<Buffer<T2>> for Buffer<T>
 where
-    T: ConvertFrom<T2> + Send + Sync,
-    T2: Clone + Send + Sync,
+    T: ConvertFrom<T2> + Send + Sync + ScalarType,
+    T2: Clone + Send + Sync + ScalarType,
 {
     fn cfrom(x: Buffer<T2>) -> Self {
         use rayon::prelude::*;
@@ -47,7 +47,7 @@ where
 // Display Buffer
 impl<T> std::fmt::Display for Buffer<T>
 where
-    T: std::fmt::Display
+    T: std::fmt::Display + ScalarType
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut res = String::new();
@@ -100,7 +100,7 @@ where
 /// It is flattened with row major order.
 impl<T> ops::IntoVec<T> for Buffer<T>
 where
-    T: Clone,
+    T: Clone + ScalarType,
 {
     fn to_vec(&self) -> Vec<T> {
         self.data.as_ref().clone()
@@ -129,7 +129,7 @@ impl<T> ops::GetShape for Buffer<T> {
 /// Create new Buffer filled with zeros
 impl<T> ops::Zeros for Buffer<T>
 where
-    T: Clone + ops::Zeros,
+    T: Clone + ops::Zeros + ScalarType,
 {
     fn zeros(shape: impl IntoShape) -> Self {
         let shape = shape.shape();
@@ -144,7 +144,7 @@ where
 /// Create new Buffer filled with ones
 impl<T> ops::Ones for Buffer<T>
 where
-    T: Clone + ops::Ones,
+    T: Clone + ops::Ones + ScalarType,
 {
     fn ones(shape: impl IntoShape) -> Self {
         let shape = shape.shape();
@@ -158,7 +158,7 @@ where
 
 fn unary_op<T, F>(x: Buffer<T>, f: F) -> Buffer<T>
 where
-    T: Clone + Sync + Send,
+    T: Clone + Sync + Send + ScalarType,
     F: Fn(T) -> T + Sync + Send,
 {
     use rayon::prelude::*;
@@ -173,7 +173,7 @@ where
 
 impl<T> ops::ReLU for Buffer<T>
 where
-    T: Clone + Sync + Send + ops::ReLU<Output = T>,
+    T: Clone + Sync + Send + ops::ReLU<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn relu(self) -> Self::Output {
@@ -183,7 +183,7 @@ where
 
 impl<T> ops::DReLU for Buffer<T>
 where
-    T: Clone + Sync + Send + ops::DReLU<Output = T>,
+    T: Clone + Sync + Send + ops::DReLU<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn drelu(self) -> Self::Output {
@@ -193,7 +193,7 @@ where
 
 impl<T> ops::Exp for Buffer<T>
 where
-    T: Clone + Sync + Send + ops::Exp<Output = T>,
+    T: Clone + Sync + Send + ops::Exp<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn exp(self) -> Self::Output {
@@ -203,7 +203,7 @@ where
 
 impl<T> ops::Ln for Buffer<T>
 where
-    T: Clone + Sync + Send + ops::Ln<Output = T>,
+    T: Clone + Sync + Send + ops::Ln<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn ln(self) -> Self::Output {
@@ -213,7 +213,7 @@ where
 
 impl<T> ops::Tanh for Buffer<T>
 where
-    T: Clone + Sync + Send + ops::Tanh<Output = T>,
+    T: Clone + Sync + Send + ops::Tanh<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn tanh(self) -> Self::Output {
@@ -223,7 +223,7 @@ where
 
 impl<T> std::ops::Neg for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Neg<Output = T>,
+    T: Clone + Sync + Send + std::ops::Neg<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn neg(self) -> Self::Output {
@@ -234,7 +234,7 @@ where
 impl<T> Buffer<T> {
     fn reduce<F>(self, dims: impl IntoDims, init: T, mut f: F) -> Buffer<T>
     where
-        T: Clone,
+        T: Clone + ScalarType,
         F: FnMut(T, T) -> T,
     {
         // TODO: make this multithreaded
@@ -282,7 +282,7 @@ impl<T> Buffer<T> {
 
 impl<T> ops::Sum for Buffer<T>
 where
-    T: Clone + ops::Zeros + std::ops::Add<Output = T>,
+    T: Clone + ops::Zeros + std::ops::Add<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn sum(self, dims: impl IntoDims) -> Self::Output {
@@ -292,7 +292,7 @@ where
 
 impl<T> ops::Max for Buffer<T>
 where
-    T: Clone + Default + ops::Min<Output = T> + PartialOrd,
+    T: Clone + Default + ops::Min<Output = T> + PartialOrd + ScalarType,
 {
     type Output = Buffer<T>;
     fn max(self, dims: impl IntoDims) -> Self::Output {
@@ -302,7 +302,7 @@ where
 
 impl<T> ops::Min for Buffer<T>
 where
-    T: Clone + Default + ops::Max<Output = T> + PartialOrd,
+    T: Clone + Default + ops::Max<Output = T> + PartialOrd + ScalarType,
 {
     type Output = Buffer<T>;
     fn min(self, dims: impl IntoDims) -> Self::Output {
@@ -312,7 +312,7 @@ where
 
 impl<T> ops::Reshape for Buffer<T>
 where
-    T: Clone,
+    T: Clone +ScalarType,
 {
     type Output = Buffer<T>;
     fn reshape(self, shape: impl IntoShape) -> Self::Output {
@@ -327,7 +327,7 @@ where
 
 impl<T> ops::Expand for Buffer<T>
 where
-    T: Clone,
+    T: Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn expand(self, res_shape: impl IntoShape) -> Self::Output {
@@ -381,7 +381,7 @@ where
 
 impl<T> ops::Permute for Buffer<T>
 where
-    T: Clone + ops::Zeros,
+    T: Clone + ops::Zeros + ScalarType,
 {
     type Output = Buffer<T>;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
@@ -448,7 +448,7 @@ where
 
 fn binary_op<T, F>(x: Buffer<T>, y: Buffer<T>, f: F) -> Buffer<T>
 where
-    T: Sync + Send + Clone,
+    T: Sync + Send + Clone + ScalarType,
     F: Fn((T, T)) -> T + Sync + Send,
 {
     use rayon::prelude::*;
@@ -502,7 +502,7 @@ where
 
 impl<T> std::ops::Add for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Add<Output = T>,
+    T: Clone + Sync + Send + std::ops::Add<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: Buffer<T>) -> Self::Output {
@@ -514,7 +514,7 @@ use duplicate::duplicate_item;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Add<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Add<Output = T> + Clone,
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Add<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: Buffer<T>) -> Self::Output {
@@ -534,8 +534,8 @@ where
 
 impl<T, T2> std::ops::Add<T2> for Buffer<T>
 where
-    T2: crate::dtype::ScalarType,
-    T: Clone + Sync + Send + std::ops::Add<Output = T> + ConvertFrom<T2>,
+    T2: ScalarType,
+    T: Clone + Sync + Send + std::ops::Add<Output = T> + ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: T2) -> Self::Output {
@@ -555,7 +555,7 @@ where
 
 impl<T> std::ops::Sub for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Sub<Output = T>,
+    T: Clone + Sync + Send + std::ops::Sub<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn sub(self, rhs: Buffer<T>) -> Self::Output {
@@ -565,7 +565,7 @@ where
 
 impl<T> std::ops::Mul for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Mul<Output = T>,
+    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn mul(self, rhs: Buffer<T>) -> Self::Output {
@@ -576,7 +576,7 @@ where
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Mul<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Mul<Output = T> + Clone,
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Mul<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn mul(self, rhs: Buffer<T>) -> Self::Output {
@@ -595,8 +595,8 @@ where
 
 impl<T, T2> std::ops::Mul<T2> for Buffer<T>
 where
-    T2: crate::dtype::ScalarType,
-    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ops::ConvertFrom<T2>,
+    T2: ScalarType,
+    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ops::ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn mul(self, rhs: T2) -> Self::Output {
@@ -615,7 +615,7 @@ where
 
 impl<T> std::ops::Div for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Div<Output = T>,
+    T: Clone + Sync + Send + std::ops::Div<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: Buffer<T>) -> Self::Output {
@@ -626,7 +626,7 @@ where
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T> std::ops::Div<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Div<Output = T> + Clone,
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Div<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: Buffer<T>) -> Self::Output {
@@ -645,8 +645,8 @@ where
 
 impl<T, T2> std::ops::Div<T2> for Buffer<T>
 where
-    T2: crate::dtype::ScalarType,
-    T: Clone + Sync + Send + std::ops::Div<Output = T> + ConvertFrom<T2>,
+    T2: ScalarType,
+    T: Clone + Sync + Send + std::ops::Div<Output = T> + ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: T2) -> Self::Output {
@@ -665,7 +665,7 @@ where
 
 impl<T> ops::Pow for Buffer<T>
 where
-    T: Sync + Send + Clone + ops::Pow<Output = T>,
+    T: Sync + Send + Clone + ops::Pow<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn pow(self, rhs: Buffer<T>) -> Self::Output {
@@ -675,7 +675,7 @@ where
 
 impl<T> ops::Pow<i32> for Buffer<T>
 where
-    T: Sync + Send + Clone + ops::Pow<i32>,
+    T: Sync + Send + Clone + ops::Pow<i32> + ScalarType,
     <T as ops::Pow<i32>>::Output: Send,
 {
     type Output = Buffer<<T as ops::Pow<i32>>::Output>;
@@ -694,7 +694,7 @@ where
 #[cfg(not(feature = "matrixmultiply"))]
 impl<T> ops::MatMul for Buffer<T>
 where
-    T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum,
+    T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum + ScalarType,
     Buffer<T>: ops::Transpose<Output = Buffer<T>>,
 {
     type Output = Self;
@@ -844,7 +844,7 @@ impl ops::MatMul for Buffer<f64> {
 
 impl<T> ops::Conv for Buffer<T>
 where
-    T: ops::Zeros + Clone + Add<Output = T> + Mul<Output = T>,
+    T: ops::Zeros + Clone + Add<Output = T> + Mul<Output = T> + ScalarType,
 {
     type Output = Self;
     fn conv(self, kernel: Self, padding: impl IntoShape) -> Self::Output {

@@ -52,7 +52,7 @@ fn ndarray() {
 mod nn {
     #[test]
     fn linear() {
-        /*use crate::prelude::*;
+        use crate::prelude::*;
         use super::Buffer;
         use crate::nn;
         let linear = nn::Linear::new(3, 2);
@@ -60,7 +60,7 @@ mod nn {
         let z = linear.forward(x);
         assert_eq!(z.shape(), (1, 2).shape());
         //println!("{}", z);
-        z.backward();*/
+        z.backward();
     }
 }
 
