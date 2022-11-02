@@ -482,8 +482,16 @@ where
                 }
             }
         Ordering::Equal => {
-            let x_data = Arc::try_unwrap(x.data).unwrap_or_else(|x| x.as_ref().to_owned());
-            x_data.into_par_iter().zip(Arc::try_unwrap(y.data).unwrap_or_else(|x| x.as_ref().to_owned()).into_par_iter()).map(f).collect()
+            match Arc::try_unwrap(x.data) {
+                Ok(vec) => match Arc::try_unwrap(y.data) {
+                    Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
+                    Err(rc_y) => vec.into_par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
+                },
+                Err(rc) => match Arc::try_unwrap(y.data) {
+                    Ok(vec_y) => rc.par_iter().zip(vec_y.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
+                    Err(rc_y) => rc.par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
+                }
+            }
         }
     };
     Buffer {
@@ -513,10 +521,13 @@ where
         use rayon::prelude::*;
         use ops::ConvertInto;
         let x: T = self.cinto();
-        let y_data = Arc::try_unwrap(rhs.data).unwrap_or_else(|x| x.as_ref().to_owned());
         Buffer {
             shape: rhs.shape,
-            data: Arc::new(y_data.into_par_iter().map(|y| x.clone() + y).collect()),
+            data: Arc::new(
+                match Arc::try_unwrap(rhs.data) {
+                    Ok(vec) => vec.into_par_iter().map(|y| x.clone() + y).collect(),
+                    Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() + y.clone()).collect(),
+                }),
         }
     }
 }
