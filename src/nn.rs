@@ -310,10 +310,6 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
 
 impl<'a, W, WG, B, BG, Input> Module<Input> for &'a Linear<W, WG, B, BG>
 where
-    W: 'a,
-    WG: 'a,
-    B: 'a,
-    BG: 'a,
     Input: MatMul<&'a Variable<W, WG>>,
     <Input as MatMul<&'a Variable<W, WG>>>::Output: Add<&'a Variable<B, BG>>,
 {

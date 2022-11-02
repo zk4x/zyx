@@ -23,13 +23,13 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
     }
 }
 
-#[cfg(feature = "ndarray")]
+//#[cfg(feature = "ndarray")]
 #[test]
 fn ndarray() {
     use crate::prelude::*;
     use ndarray::Array;
 
-    let x = Array::<f32, _>::eye(4).with_grad();
+    let x = Array::<f32, _>::eye(4).with_grad::<i32>();
     //let x = x.sum((1));
     println!("{}", x);
 
@@ -37,7 +37,6 @@ fn ndarray() {
     println!("{}", x);
 
     //panic!();
-    /*use crate::prelude::*;
     use ndarray::array;
 
     let x = array![[2., 4., 3.], [4., 2., 5.]];
@@ -46,7 +45,7 @@ fn ndarray() {
     z.backward();
 
     println!("{}", y);
-    panic!();*/
+    //panic!();
 }
 
 mod nn {
@@ -55,7 +54,7 @@ mod nn {
         use crate::prelude::*;
         use super::Buffer;
         use crate::nn;
-        let linear = nn::Linear::new(3, 2);
+        let linear = nn::Linear::<Buffer<_>, _, Buffer<_>, _>::new::<f32>(3, 2);
         let x = Buffer::cfrom([[2., 3., 1.]]);
         let z = linear.forward(x);
         assert_eq!(z.shape(), (1, 2).shape());
@@ -106,7 +105,7 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{ops::{GetShape, FromVec, IntoVec, ConvertFrom}, tensor::IntoVariable, shape::IntoShape};
+        use crate::{ops::{GetShape, FromVec, IntoVec, ConvertFrom, ConvertInto}, tensor::IntoVariable, shape::IntoShape};
         use super::super::{cmp_vec, cmp_vec_f64, Buffer};
 
         #[test]
@@ -202,8 +201,8 @@ mod tensor {
             let x = Buffer::from_vec(vec.clone(), [9]).with_grad::<Buffer<f32>>();
             let y = x.tanh();
             assert_eq!(vec.iter().map(|x| x.tanh()).collect::<Vec<f32>>(), y.data().clone().to_vec());
-            //y.backward();
-            //assert_eq!(x.grad().clone().to_vec(), vec.iter().map(|x| 1. - x.tanh().powi(2)).collect::<Vec<f32>>());
+            y.backward();
+            assert_eq!(x.grad().clone().to_vec(), vec.iter().map(|x| 1. - x.tanh().powi(2)).collect::<Vec<f32>>());
         }
 
         #[test]
@@ -378,6 +377,28 @@ mod tensor {
         }
 
         #[test]
+        fn add_scalar() {
+            let x = Buffer::<f32>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
+            let _y = x.clone()/2f32;
+            let _y = x.clone()/2f64;
+            let _y = x.clone()/2i8;
+            let _y = x.clone()/2i16;
+            let _y = x.clone()/2i32;
+            let _y = x.clone()/2i64;
+            let _y = x.clone()/2i128;
+            let _y = x.clone()/2isize;
+            let _y = x.clone()/2u8;
+            let _y = x.clone()/2u16;
+            let _y = x.clone()/2u32;
+            let _y = x.clone()/2u64;
+            let _y = x.clone()/2u128;
+            let _y = x.clone()/2usize;
+            let x: Buffer<i32> = x.cinto();
+            println!("{}", x);
+            //panic!();
+        }
+
+        #[test]
         fn sub() {
             // TODO
         }
@@ -465,6 +486,16 @@ mod tensor {
         #[test]
         fn pow() {
             // TODO
+        }
+
+        #[test]
+        fn pow_scalar() {
+            use crate::ops::Pow;
+            let x = Buffer::<f32>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
+            let _y = x.clone().pow(2i32);
+            let x: Buffer<i32> = x.cinto();
+            println!("{}", x);
+            //panic!();
         }
 
         #[test]

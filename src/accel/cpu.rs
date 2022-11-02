@@ -563,6 +563,48 @@ where
     }
 }
 
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+impl<T> std::ops::Sub<Buffer<T>> for dtype
+where
+    T: Sync + Send + ConvertFrom<Self> + std::ops::Sub<Output = T> + Clone + ScalarType,
+{
+    type Output = Buffer<T>;
+    fn sub(self, rhs: Buffer<T>) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let x: T = self.cinto();
+        Buffer {
+            shape: rhs.shape,
+            data: Arc::new(
+                match Arc::try_unwrap(rhs.data) {
+                    Ok(vec) => vec.into_par_iter().map(|y| x.clone() - y).collect(),
+                    Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() - y.clone()).collect(),
+                }),
+        }
+    }
+}
+
+impl<T, T2> std::ops::Sub<T2> for Buffer<T>
+where
+    T2: ScalarType,
+    T: Clone + Sync + Send + std::ops::Sub<Output = T> + ConvertFrom<T2> + ScalarType,
+{
+    type Output = Buffer<T>;
+    fn sub(self, rhs: T2) -> Self::Output {
+        use rayon::prelude::*;
+        use crate::ops::ConvertInto;
+        let rhs: T = rhs.cinto();
+        Self {
+            shape: self.shape,
+            data: Arc::new(
+                match Arc::try_unwrap(self.data) {
+                    Ok(vec) => vec.into_par_iter().map(|x| x - rhs.clone()).collect(),
+                    Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() - rhs.clone()).collect(),
+                }),
+        }
+    }
+}
+
 impl<T> std::ops::Mul for Buffer<T>
 where
     T: Clone + Sync + Send + std::ops::Mul<Output = T> + ScalarType,
