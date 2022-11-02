@@ -1,6 +1,6 @@
-use crate::{ops::{FromVec, Zeros}, tensor::{Variable, Gradient}, shape::IntoShape};
-use std::cell::RefCell;
-
+//use crate::{ops::{FromVec, Zeros}, tensor::{Variable, Gradient}, shape::IntoShape};
+//use std::cell::RefCell;
+/*
 /// Initialize tensor from vec and shape
 impl<S, G, T> FromVec<T> for Variable<S, G>
 where
@@ -14,4 +14,4 @@ where
             grad: Gradient::new(),
         }
     }
-}
+}*/

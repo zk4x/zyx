@@ -301,9 +301,10 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
         B: FromVec<T> + Zeros,
         T: Clone + Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
     {
+        use crate::tensor::IntoVariable;
         Self {
-            w: Variable::uniform([in_features, out_features], T::zeros(()), T::ones(())),
-            b: Variable::uniform([1, out_features], T::zeros(()), T::ones(())),
+            w: W::uniform([in_features, out_features], T::zeros(()), T::ones(())).with_grad(),
+            b: B::uniform([1, out_features], T::zeros(()), T::ones(())).with_grad(),
         }
     }
 }
