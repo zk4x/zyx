@@ -29,7 +29,7 @@
 #![deny(non_ascii_idents)]
 #![warn(noop_method_call)]
 #![deny(pointer_structural_match)]
-//#![deny(rust_2021_incompatible_closure_captures)]
+#![deny(rust_2021_incompatible_closure_captures)]
 #![deny(rust_2021_incompatible_or_patterns)]
 #![deny(rust_2021_prefixes_incompatible_syntax)]
 #![deny(rust_2021_prelude_collisions)]

@@ -5,7 +5,7 @@
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
-use crate::{module::Module, ops::{self, GetShape, Pow, FromVec, MatMul}, tensor::Variable, init::UniformInit, ops::Zeros, shape::IntoDims};
+use crate::{module::Module, ops::{self, GetShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::IntoDims};
 use std::ops::{Neg, Add, Sub, Div};
 
 /// ReLU operation
@@ -297,11 +297,10 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
-        W: FromVec<T> + Zeros,
-        B: FromVec<T> + Zeros,
-        T: Clone + Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
+        T: Zeros + Ones,
+        W: UniformInit<T>,
+        B: UniformInit<T>,
     {
-        use crate::tensor::IntoVariable;
         Self {
             w: W::uniform([in_features, out_features], T::zeros(()), T::ones(())).with_grad(),
             b: B::uniform([1, out_features], T::zeros(()), T::ones(())).with_grad(),
@@ -325,51 +324,52 @@ where
         (&self.w, &self.b)
     }
 }
-/*
+
 /// RNNCell
-// TODO: rewrite to use different storages for parameters and their gradients
+/// TODO: Should we rewrite this as two linear layers?
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RNNCell<S> {
-    wih: Variable<S, S>,
-    bih: Variable<S, S>,
-    whh: Variable<S, S>,
-    bhh: Variable<S, S>,
+pub struct RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG> {
+    wih: Variable<WI, WIG>,
+    bih: Variable<BI, BIG>,
+    whh: Variable<WH, WHG>,
+    bhh: Variable<BH, BHG>,
 }
 
-impl<S> RNNCell<S> {
+impl<WI, WIG, BI, BIG, WH, WHG, BH, BHG> RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG> {
     /// Create new [RNNCell] with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
-        S: ops::FromVec<T> + ops::Zeros,
-        T: Clone + ops::Zeros + ops::Ones + rand::distributions::uniform::SampleUniform,
+        T: Zeros + Ones,
+        WI: UniformInit<T>,
+        BI: UniformInit<T>,
+        WH: UniformInit<T>,
+        BH: UniformInit<T>,
     {
         Self {
-            wih: Variable::<S>::uniform([input_size, hidden_size], T::zeros(()), T::ones(())),
-            bih: Variable::<S>::uniform([1, hidden_size], T::zeros(()), T::ones(())),
-            whh: Variable::<S>::uniform([hidden_size, hidden_size], T::zeros(()), T::ones(())),
-            bhh: Variable::<S>::uniform([1, hidden_size], T::zeros(()), T::ones(())),
+            wih: WI::uniform([input_size, hidden_size], T::zeros(()), T::ones(())).with_grad(),
+            bih: BI::uniform([1, hidden_size], T::zeros(()), T::ones(())).with_grad(),
+            whh: WH::uniform([hidden_size, hidden_size], T::zeros(()), T::ones(())).with_grad(),
+            bhh: BH::uniform([1, hidden_size], T::zeros(()), T::ones(())).with_grad(),
         }
     }
 }
 
-use ops::MatMul;
-impl<'a, S, X, H> Module<(X, H)> for &'a RNNCell<S>
+impl<'a, WI, WIG, BI, BIG, WH, WHG, BH, BHG, I, H> Module<(I, H)> for &'a RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG>
 where
-    S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
-    X: MatMul<&'a Variable<S, S>>,
-    H: MatMul<&'a Variable<S, S>>,
-    <X as MatMul<&'a Variable<S, S>>>::Output: Add<&'a Variable<S, S>>,
-    <<X as MatMul<&'a Variable<S, S>>>::Output as Add<&'a Variable<S, S>>>::Output: Add<<H as MatMul<&'a Variable<S, S>>>::Output>,
-    <<<X as MatMul<&'a Variable<S, S>>>::Output as Add<&'a Variable<S, S>>>::Output as Add<<H as MatMul<&'a Variable<S, S>>>::Output>>::Output: Add<&'a Variable<S, S>>,
+    I: MatMul<&'a Variable<WI, WIG>>,
+    <I as MatMul<&'a Variable<WI, WIG>>>::Output: Add<&'a Variable<BI, BIG>>,
+    H: MatMul<&'a Variable<WH, WHG>>,
+    <H as MatMul<&'a Variable<WH, WHG>>>::Output: Add<&'a Variable<BH, BHG>>,
+    <<I as MatMul<&'a Variable<WI, WIG>>>::Output as Add<&'a Variable<BI, BIG>>>::Output: Add<<<H as MatMul<&'a Variable<WH, WHG>>>::Output as Add<&'a Variable<BH, BHG>>>::Output>,
 {
-    type Output = <<<<X as MatMul<&'a Variable<S, S>>>::Output as Add<&'a Variable<S, S>>>::Output as Add<<H as MatMul<&'a Variable<S, S>>>::Output>>::Output as Add<&'a Variable<S, S>>>::Output;
-    type Params = (&'a Variable<S, S>, &'a Variable<S, S>, &'a Variable<S, S>, &'a Variable<S, S>);
+    type Output = <<<I as MatMul<&'a Variable<WI, WIG>>>::Output as Add<&'a Variable<BI, BIG>>>::Output as Add<<<H as MatMul<&'a Variable<WH, WHG>>>::Output as Add<&'a Variable<BH, BHG>>>::Output>>::Output;
+    type Params = (&'a Variable<WI, WIG>, &'a Variable<BI, BIG>, &'a Variable<WH, WHG>, &'a Variable<BH, BHG>);
 
-    fn forward(self, x: (X, H)) -> Self::Output {
-        x.0.matmul(&self.wih) + &self.bih + x.1.matmul(&self.whh) + &self.bhh
+    fn forward(self, x: (I, H)) -> Self::Output {
+        (x.0.matmul(&self.wih) + &self.bih) + (x.1.matmul(&self.whh) + &self.bhh)
     }
 
     fn parameters(self) -> Self::Params {
         (&self.wih, &self.bih, &self.whh, &self.bhh)
     }
-}*/
+}
