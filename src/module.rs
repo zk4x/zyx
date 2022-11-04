@@ -527,6 +527,25 @@ where
     }
 }
 
+// Closures are modules
+// But they can not have any parameters.
+impl<Input, Output, Function> Module<Input> for Function
+where
+    Function: Fn(Input) -> Output
+{
+    type Output = Output;
+    type Params = ();
+
+    fn forward(self, x: Input) -> Self::Output {
+        self(x)
+    }
+
+    fn parameters(self) -> Self::Params {
+        ()
+    }
+}
+
+// TODO: Should arrays of modules be modules?
 // Arrays of modules are modules (although inputs and outputs must be the same type)
 /*impl<Input, M, const N: usize> Module<Input> for [M; N]
 where
@@ -538,16 +557,5 @@ where
             x = module.forward(x);
         }
         x
-    }
-}
-
-// Closures are modules
-impl<Input, Output, Function> Module<Input> for Function
-where
-    Function: Fn(Input) -> Output
-{
-    type Output = Output;
-    fn forward(self, x: Input) -> Self::Output {
-        self(x)
     }
 }*/
