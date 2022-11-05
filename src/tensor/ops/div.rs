@@ -31,13 +31,13 @@ where
 {
     type Output = Tensor<<Self as Div<S>>::Output, DivBackwardSV<'g, S, <Self as Div<S>>::Output>>;
     fn div(self, rhs: &'g Variable<S>) -> Self::Output {
-        let res = self / rhs.data().clone();
+        let res = self / rhs.data.clone();
         Tensor {
             data: res.clone(),
             grad_fn: DivBackwardSV {
                 res,
                 ygrad: &rhs.grad,
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             }
         }
     }
@@ -128,7 +128,7 @@ where
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVS<'g, XG, YS>>;
     fn div(self, rhs: YS) -> Self::Output {
         Tensor {
-            data: self.data().clone() / rhs.clone(),
+            data: self.data.clone() / rhs.clone(),
             grad_fn: DivBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
@@ -168,14 +168,14 @@ where
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XG, YS, YG>>;
     fn div(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
-        let res = self.data().clone() / rhs.data().clone();
+        let res = self.data.clone() / rhs.data.clone();
         Tensor {
             data: res.clone(),
             grad_fn: DivBackwardVV {
                 xgrad: GradientRef::new(&self.grad),
                 res,
                 ygrad: GradientRef::new(&rhs.grad),
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             }
         }
     }
@@ -212,7 +212,7 @@ where
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVT<'g, <XS as Div<YS>>::Output, XG, YS, YF>>;
     fn div(self, rhs: Tensor<YS, YF>) -> Self::Output {
-        let res = self.data().clone() / rhs.data.clone();
+        let res = self.data.clone() / rhs.data.clone();
         Tensor {
             data: res.clone(),
             grad_fn: DivBackwardVT {
@@ -290,14 +290,14 @@ where
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardTV<'g, <XS as Div<YS>>::Output, YS, YG, XF>>;
     fn div(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
-        let res = self.data / rhs.data().clone();
+        let res = self.data / rhs.data.clone();
         Tensor {
             data: res.clone(),
             grad_fn: DivBackwardTV {
                 res,
                 xgrad_fn: self.grad_fn,
                 ygrad: GradientRef::new(&rhs.grad),
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             },
         }
     }

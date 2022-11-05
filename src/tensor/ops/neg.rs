@@ -23,7 +23,7 @@ where
     type Output = Tensor<<S as Neg>::Output, NegBackwardV<'g, G>>;
     fn neg(self) -> Self::Output {
         Tensor {
-            data: self.data().clone().neg(),
+            data: self.data.clone().neg(),
             grad_fn: NegBackwardV {
                 grad: GradientRef::new(&self.grad),
             }

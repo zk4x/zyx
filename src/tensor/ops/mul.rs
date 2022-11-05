@@ -27,7 +27,7 @@ where
     type Output = Tensor<<Self as Mul<YS>>::Output, MulBackwardSV<'g, Self, YG>>;
     fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self * rhs.data().clone(),
+            data: self * rhs.data.clone(),
             grad_fn: MulBackwardSV {
                 xdata: self,
                 ygrad: GradientRef::new(&rhs.grad),
@@ -46,7 +46,7 @@ where
     type Output = Tensor<<Self as Mul<YS>>::Output, MulBackwardSV<'g, Self, YG>>;
     fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.clone() * rhs.data().clone(),
+            data: self.clone() * rhs.data.clone(),
             grad_fn: MulBackwardSV {
                 xdata: self,
                 ygrad: GradientRef::new(&rhs.grad),
@@ -130,7 +130,7 @@ where
     type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardVS<'g, XG, YS>>;
     fn mul(self, rhs: YS) -> Self::Output {
         Tensor {
-            data: self.data().clone() * rhs.clone(),
+            data: self.data.clone() * rhs.clone(),
             grad_fn: MulBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
@@ -169,12 +169,12 @@ where
     type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardVV<'g, XS, XG, YS, YG>>;
     fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.data().clone() * rhs.data().clone(),
+            data: self.data.clone() * rhs.data.clone(),
             grad_fn: MulBackwardVV {
                 xgrad: GradientRef::new(&self.grad),
-                xdata: self.data().clone(),
+                xdata: self.data.clone(),
                 ygrad: GradientRef::new(&rhs.grad),
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             }
         }
     }
@@ -210,10 +210,10 @@ where
     type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardVT<'g, XS, XG, YS, F>>;
     fn mul(self, rhs: Tensor<YS, F>) -> Self::Output {
         Tensor {
-            data: self.data().clone() * rhs.data.clone(),
+            data: self.data.clone() * rhs.data.clone(),
             grad_fn: MulBackwardVT {
                 xgrad: GradientRef::new(&self.grad),
-                xdata: self.data().clone(),
+                xdata: self.data.clone(),
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
@@ -285,12 +285,12 @@ where
     type Output = Tensor<<XS as Mul<YS>>::Output, MulBackwardTV<'g, XS, YS, YG, XF>>;
     fn mul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.data.clone() * rhs.data().clone(),
+            data: self.data.clone() * rhs.data.clone(),
             grad_fn: MulBackwardTV {
                 xgrad_fn: self.grad_fn,
                 xdata: self.data,
                 ygrad: GradientRef::new(&rhs.grad),
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             },
         }
     }

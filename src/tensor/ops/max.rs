@@ -28,10 +28,10 @@ where
     type Output = Tensor<S, MaxBackwardV<'g, G>>;
     fn max(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
-            data: (*self.data.borrow()).clone().max(dims),
+            data: self.data.clone().max(dims),
             grad_fn: MaxBackwardV {
                 grad: GradientRef::new(&self.grad),
-                shape: self.data.borrow().shape(),
+                shape: self.data.shape(),
             }
         }
     }

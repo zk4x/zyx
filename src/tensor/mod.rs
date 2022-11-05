@@ -70,9 +70,7 @@ use crate::{ops::GetShape, module::Parameters, optim::Optimizer};
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default)]
 pub struct Variable<S, G> {
-    // We could get rid of RefCell here by having every Module implementor have update_data function
-    // with optimizer as one of it's parameters.
-    data: std::cell::RefCell<S>, // RefCell needed for optimizer.step() function
+    data: S,
     // Theoretically gradient should be the same shape and type as data, but practically
     // it just needs to implement operations required by optimizers so there is no need
     // to arbitrarily constrain it. This also simplyfies some performance optimizations.
@@ -122,7 +120,7 @@ struct GradientRef<'g, G>(&'g Gradient<G>);
 
 impl<'g, G> GradientRef<'g, G> {
     fn new(gradient: &'g Gradient<G>) -> Self {
-        Self(&gradient)
+        Self(gradient)
     }
 
     fn accumulate(&self, value: G)
@@ -130,7 +128,7 @@ impl<'g, G> GradientRef<'g, G> {
         G: std::ops::Add<Output = G>,
     {
         let mut x = None;
-        unsafe { std::mem::swap(&mut *self.0.0.get(), &mut x); }
+        unsafe { core::ptr::swap(self.0.0.get(), &mut x); }
         let grad = Some(match x {
             Some(grad) => grad + value,
             None => value,
@@ -190,7 +188,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!(
             "{} with grad:\n{}",
-            self.data.borrow(),
+            self.data,
             &self.grad,
         ))
     }
@@ -288,7 +286,7 @@ pub trait IntoVariable {
 impl<S> IntoVariable for S {
     fn with_grad<G>(self) -> Variable<Self, G> {
         Variable {
-            data: std::cell::RefCell::new(self),
+            data: self,
             grad: Gradient::new(),
         }
     }
@@ -296,8 +294,8 @@ impl<S> IntoVariable for S {
 
 impl<S, G> Variable<S, G> {
     /// Access [Variable's](Variable) data buffer
-    pub fn data(&self) -> std::cell::Ref<'_, S> {
-        self.data.borrow()
+    pub fn data(&self) -> &S {
+        &self.data
     }
 }
 
@@ -406,7 +404,7 @@ where
 {
     fn cfrom(x: Variable<S2, G>) -> Self {
         Self {
-            data: std::cell::RefCell::new(S::cfrom((*x.data.borrow()).clone())),
+            data: S::cfrom(x.data),
             grad: Gradient::new(),
         }
     }

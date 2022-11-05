@@ -26,7 +26,7 @@ where
 {
     type Output = Tensor<<S as Tanh>::Output, TanhBackwardV<'g, <S as Tanh>::Output, G>>;
     fn tanh(self) -> Self::Output {
-        let res = self.data().clone().tanh();
+        let res = self.data.clone().tanh();
         Tensor {
             data: res.clone(),
             grad_fn: TanhBackwardV {

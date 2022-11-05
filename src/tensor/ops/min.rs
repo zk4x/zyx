@@ -23,10 +23,10 @@ where
     type Output = Tensor<S, MinBackwardV<'g, G>>;
     fn min(self, dims: impl IntoDims) -> Self::Output {
         Tensor {
-            data: (*self.data.borrow()).clone().min(dims),
+            data: self.data.clone().min(dims),
             grad_fn: MinBackwardV {
                 grad: GradientRef::new(&self.grad),
-                shape: self.data.borrow().shape(),
+                shape: self.data.shape(),
             }
         }
     }

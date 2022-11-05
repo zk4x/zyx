@@ -5,7 +5,7 @@ where
     S: Clone + IntoVec<T>,
 {
     fn to_vec(&self) -> Vec<T> {
-        self.data().clone().to_vec()
+        self.data.clone().to_vec()
     }
 }
 

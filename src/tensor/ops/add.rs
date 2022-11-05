@@ -27,7 +27,7 @@ where
     type Output = Tensor<<Self as Add<YS>>::Output, AddBackwardSV<'g, YG>>;
     fn add(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self + rhs.data().clone(),
+            data: self + rhs.data.clone(),
             grad_fn: AddBackwardSV {
                 ygrad: GradientRef::new(&rhs.grad),
             }
@@ -74,7 +74,7 @@ where
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardVS<'g, XG>>;
     fn add(self, rhs: YS) -> Self::Output {
         Tensor {
-            data: self.data().clone() + rhs,
+            data: self.data.clone() + rhs,
             grad_fn: AddBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
             }
@@ -106,7 +106,7 @@ where
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardVV<'g, XG, YG>>;
     fn add(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.data().clone() + rhs.data().clone(),
+            data: self.data.clone() + rhs.data.clone(),
             grad_fn: AddBackwardVV {
                 xgrad: GradientRef::new(&self.grad),
                 ygrad: GradientRef::new(&rhs.grad),
@@ -139,7 +139,7 @@ where
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardVT<'g, XG, YF>>;
     fn add(self, rhs: Tensor<YS, YF>) -> Self::Output {
         Tensor {
-            data: self.data().clone() + rhs.data,
+            data: self.data.clone() + rhs.data,
             grad_fn: AddBackwardVT {
                 xgrad: GradientRef::new(&self.grad),
                 ygrad_fn: rhs.grad_fn,
@@ -187,7 +187,7 @@ where
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardTV<'g, YG, XF>>;
     fn add(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.data + rhs.data().clone(),
+            data: self.data + rhs.data.clone(),
             grad_fn: AddBackwardTV {
                 xgrad_fn: self.grad_fn,
                 ygrad: GradientRef::new(&rhs.grad),

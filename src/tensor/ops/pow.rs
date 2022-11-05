@@ -25,7 +25,7 @@ where
 {
     type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardSV<'g, YG, <<XS as Pow<YS>>::Output as Mul<<XS as Ln>::Output>>::Output>>;
     fn pow(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
-        let res = self.clone().pow(rhs.data().clone());
+        let res = self.clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardSV {
@@ -95,12 +95,12 @@ where
 {
     type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardVS<'g, XG, <<YS as Mul<<XS as Pow<YS>>::Output>>::Output as Div<XS>>::Output>>;
     fn pow(self, rhs: YS) -> Self::Output {
-        let res = self.data().clone().pow(rhs.clone());
+        let res = self.data.clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
-                xtemp: rhs * res/self.data().clone(),
+                xtemp: rhs * res/self.data.clone(),
             }
         }
     }
@@ -138,14 +138,14 @@ where
 {
     type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardVV<'g, XG, <<YS as Mul<<XS as Pow<YS>>::Output>>::Output as Div<XS>>::Output, YG, <<XS as Pow<YS>>::Output as Mul<<XS as Ln>::Output>>::Output>>;
     fn pow(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
-        let res = self.data().clone().pow(rhs.data().clone());
+        let res = self.data.clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardVV {
                 xgrad: GradientRef::new(&self.grad),
-                xtemp: rhs.data().clone() * res.clone()/self.data().clone(),
+                xtemp: rhs.data.clone() * res.clone()/self.data.clone(),
                 ygrad: GradientRef::new(&rhs.grad),
-                ytemp: res * self.data().clone().ln(),
+                ytemp: res * self.data.clone().ln(),
             }
         }
     }
@@ -183,14 +183,14 @@ where
 {
     type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardVT<'g, XG, <<YS as Mul<<XS as Pow<YS>>::Output>>::Output as Div<XS>>::Output, <<XS as Pow<YS>>::Output as Mul<<XS as Ln>::Output>>::Output, YF>>;
     fn pow(self, rhs: Tensor<YS, YF>) -> Self::Output {
-        let res = self.data().clone().pow(rhs.data.clone());
+        let res = self.data.clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardVT {
                 xgrad: GradientRef::new(&self.grad),
-                xtemp: rhs.data * res.clone()/self.data().clone(),
+                xtemp: rhs.data * res.clone()/self.data.clone(),
                 ygrad_fn: rhs.grad_fn,
-                ytemp: res * self.data().clone().ln(),
+                ytemp: res * self.data.clone().ln(),
             }
         }
     }
@@ -264,12 +264,12 @@ where
 {
     type Output = Tensor<<XS as Pow<YS>>::Output, PowBackwardTV<'g, YG, <<YS as Mul<<XS as Pow<YS>>::Output>>::Output as Div<XS>>::Output, <<XS as Pow<YS>>::Output as Mul<<XS as Ln>::Output>>::Output, XF>>;
     fn pow(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
-        let res = self.data.clone().pow(rhs.data().clone());
+        let res = self.data.clone().pow(rhs.data.clone());
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardTV {
                 xgrad_fn: self.grad_fn,
-                xtemp: rhs.data().clone() * res.clone()/self.data.clone(),
+                xtemp: rhs.data.clone() * res.clone()/self.data.clone(),
                 ygrad: GradientRef::new(&rhs.grad),
                 ytemp: res * self.data.ln(),
             },
@@ -308,7 +308,7 @@ where
             data: res.clone(),
             grad_fn: PowBackwardTT {
                 xgrad_fn: self.grad_fn,
-                xtemp: rhs.data().clone() * res.clone()/self.data.clone(),
+                xtemp: rhs.data.clone() * res.clone()/self.data.clone(),
                 ygrad_fn: rhs.grad_fn,
                 ytemp: res * self.data.ln(),
             }

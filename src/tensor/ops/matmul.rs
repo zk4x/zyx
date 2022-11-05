@@ -26,7 +26,7 @@ where
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardSV<'g, XS, YG>>;
     fn matmul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.clone().matmul(rhs.data().clone()),
+            data: self.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardSV {
                 xdata: self,
                 ygrad: GradientRef::new(&rhs.grad),
@@ -94,7 +94,7 @@ where
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVS<'g, XG, YS>>;
     fn matmul(self, rhs: YS) -> Self::Output {
         Tensor {
-            data: self.data.borrow().clone().matmul(rhs.clone()),
+            data: self.data.clone().matmul(rhs.clone()),
             grad_fn: MatMulBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
@@ -135,12 +135,12 @@ where
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVV<'g, XS, XG, YS, YG>>;
     fn matmul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.data().clone().matmul(rhs.data().clone()),
+            data: self.data.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardVV {
                 xgrad: GradientRef::new(&self.grad),
-                xdata: self.data().clone(),
+                xdata: self.data.clone(),
                 ygrad: GradientRef::new(&rhs.grad),
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             }
         }
     }
@@ -177,10 +177,10 @@ where
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVT<'g, XG, XS, YS, YF>>;
     fn matmul(self, rhs: Tensor<YS, YF>) -> Self::Output {
         Tensor {
-            data: self.data().clone().matmul(rhs.data.clone()),
+            data: self.data.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardVT {
                 xgrad: GradientRef::new(&self.grad),
-                xdata: self.data().clone(),
+                xdata: self.data.clone(),
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
@@ -253,12 +253,12 @@ where
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardTV<'g, YG, XS, YS, XF>>;
     fn matmul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
         Tensor {
-            data: self.data.clone().matmul(rhs.data().clone()),
+            data: self.data.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardTV {
                 xgrad_fn: self.grad_fn,
                 xdata: self.data,
                 ygrad: GradientRef::new(&rhs.grad),
-                ydata: rhs.data().clone(),
+                ydata: rhs.data.clone(),
             }
         }
     }

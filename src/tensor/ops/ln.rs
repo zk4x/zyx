@@ -25,10 +25,10 @@ where
     type Output = Tensor<<S as Ln>::Output, LnBackwardV<'g, S, G>>;
     fn ln(self) -> Self::Output {
         Tensor {
-            data: self.data().clone().ln(),
+            data: self.data.clone().ln(),
             grad_fn: LnBackwardV {
                 grad: GradientRef::new(&self.grad),
-                data: self.data().clone(),
+                data: self.data.clone(),
             },
         }
     }

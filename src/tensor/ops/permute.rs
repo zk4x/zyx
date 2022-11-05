@@ -25,7 +25,7 @@ where
     fn permute(self, dims: impl IntoDims) -> Self::Output {
         let dims = dims.dims();
         Tensor {
-            data: self.data().clone().permute(dims.clone()),
+            data: self.data.clone().permute(dims.clone()),
             grad_fn: PermuteBackwardV {
                 grad: GradientRef::new(&self.grad),
                 dims: dims.argsort(),
