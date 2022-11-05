@@ -522,7 +522,7 @@ mod tensor {
             z.backward();
             assert_eq!(x.grad().to_vec(), [5., 7., 8.].to_vec());
 
-            let x = Buffer::cfrom([[2., 3., 4.]]).with_grad();
+            let x = Buffer::<f32>::cfrom([[2., 3., 4.]]).with_grad();
             let y = Buffer::cfrom([[2., 3.], [3., 4.], [5., 3.]]).with_grad();
             let z = x.matmul(&y);
             assert_eq!(z.data().to_vec(), [33., 30.]);

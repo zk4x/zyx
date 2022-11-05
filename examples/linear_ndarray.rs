@@ -2,7 +2,7 @@
 
 //#[cfg(feature = "ndarray")]
 fn main() {
-    use zyx::prelude::*;
+    /*use zyx::prelude::*;
     use ndarray::{array, OwnedRepr, Dim, ArrayBase, Ix2, Ix1};
     use zyx::nn::{Linear, ReLU};
     use zyx::optim;
@@ -39,5 +39,5 @@ fn main() {
             loss.backward();
             optimizer.step();
         }
-    }
+    }*/
 }

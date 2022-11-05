@@ -540,9 +540,7 @@ where
         self(x)
     }
 
-    fn parameters(self) -> Self::Params {
-        ()
-    }
+    fn parameters(self) -> Self::Params {}
 }
 
 // TODO: Should arrays of modules be modules?

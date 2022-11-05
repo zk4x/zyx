@@ -1,9 +1,9 @@
-use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
+use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, GradientRef}};
 use std::ops::{Add, Sub, Mul};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TanhBackwardV<'g, S2, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     res: S2,
 }
 
@@ -30,7 +30,7 @@ where
         Tensor {
             data: res.clone(),
             grad_fn: TanhBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 res,
             }
         }

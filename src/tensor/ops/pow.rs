@@ -1,9 +1,9 @@
-use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType};
+use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, GradientRef}, dtype::DType};
 use std::{ops::{Add, Mul, Div}};
 
 /*#[derive(Debug, Clone, Copy)]
 pub struct PowBackwardSV<'g, YG, YT> {
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
     ytemp: YT,
 }
 
@@ -71,7 +71,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardVS<'g, XG, XT> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     xtemp: XT,
 }
 
@@ -99,7 +99,7 @@ where
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardVS {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 xtemp: rhs * res/self.data().clone(),
             }
         }
@@ -108,9 +108,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardVV<'g, XG, XT, YG, YT> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     xtemp: XT,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
     ytemp: YT,
 }
 
@@ -142,9 +142,9 @@ where
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardVV {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 xtemp: rhs.data().clone() * res.clone()/self.data().clone(),
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
                 ytemp: res * self.data().clone().ln(),
             }
         }
@@ -153,7 +153,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowBackwardVT<'g, XG, XT, YT, YF> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     xtemp: XT,
     ygrad_fn: YF,
     ytemp: YT,
@@ -187,7 +187,7 @@ where
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardVT {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 xtemp: rhs.data * res.clone()/self.data().clone(),
                 ygrad_fn: rhs.grad_fn,
                 ytemp: res * self.data().clone().ln(),
@@ -236,7 +236,7 @@ where
 pub struct PowBackwardTV<'g, YG, XT, YT, XF> {
     xgrad_fn: XF,
     xtemp: XT,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
     ytemp: YT,
 }
 
@@ -270,7 +270,7 @@ where
             grad_fn: PowBackwardTV {
                 xgrad_fn: self.grad_fn,
                 xtemp: rhs.data().clone() * res.clone()/self.data.clone(),
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
                 ytemp: res * self.data.ln(),
             },
         }

@@ -1,9 +1,9 @@
-use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{Shape, IntoDims}};
+use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{Shape, IntoDims}};
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct SumBackwardV<'g, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     shape: Shape,
 }
 
@@ -25,7 +25,7 @@ where
         Tensor {
             data: (*self.data()).clone().sum(dims),
             grad_fn: SumBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 shape: self.data().shape(),
             }
         }

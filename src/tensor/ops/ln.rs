@@ -1,9 +1,9 @@
-use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, Gradient}};
+use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, GradientRef}};
 use std::ops::{Add, Mul};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LnBackwardV<'g, S, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     data: S,
 }
 
@@ -27,7 +27,7 @@ where
         Tensor {
             data: self.data().clone().ln(),
             grad_fn: LnBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 data: self.data().clone(),
             },
         }

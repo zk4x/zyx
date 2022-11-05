@@ -85,22 +85,11 @@ pub struct Variable<S, G> {
 
 /// Gradient of [Variable]
 #[derive(Default, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Gradient<G>(RefCell<Option<G>>);
+struct Gradient<G>(RefCell<Option<G>>);
 
 impl<G> Gradient<G> {
     fn new() -> Self {
         Self(RefCell::new(None))
-    }
-
-    fn accumulate(&self, value: G)
-    where
-        G: std::ops::Add<Output = G>,
-    {
-        let x = self.0.take();
-        self.0.replace(Some(match x {
-            Some(grad) => grad + value,
-            None => value,
-        }));
     }
 
     fn zero(&self) {
@@ -108,12 +97,34 @@ impl<G> Gradient<G> {
     }
 }
 
-impl<G, T> crate::ops::IntoVec<T> for Gradient<G>
+// We can make
+/// Reference to [Gradient]
+#[derive(Debug, Clone, Copy)]
+pub struct GradientRef<'g, G>(&'g Gradient<G>);
+
+impl<'g, G> GradientRef<'g, G> {
+    fn new(gradient: &'g Gradient<G>) -> Self {
+        Self(&gradient)
+    }
+
+    fn accumulate(&self, value: G)
+    where
+        G: std::ops::Add<Output = G>,
+    {
+        let x = self.0.0.take();
+        self.0.0.replace(Some(match x {
+            Some(grad) => grad + value,
+            None => value,
+        }));
+    }
+}
+
+impl<G, T> crate::ops::IntoVec<T> for GradientRef<'_, G>
 where
     G: crate::ops::IntoVec<T>,
 {
     fn to_vec(&self) -> Vec<T> {
-        if let Some(grad) = self.0.borrow().as_ref() {
+        if let Some(grad) = self.0.0.borrow().as_ref() {
             grad.to_vec()
         } else {
             Vec::new()
@@ -121,12 +132,12 @@ where
     }
 }
 
-impl<G> std::fmt::Display for Gradient<G>
+impl<G> std::fmt::Display for GradientRef<'_, G>
 where
     G: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let grad = self.0.borrow();
+        let grad = self.0.0.borrow();
         let s = if grad.is_some() {
             grad.as_ref().unwrap().to_string()
         } else {
@@ -160,7 +171,7 @@ where
         f.write_str(&format!(
             "{} with grad:\n{}",
             self.data.borrow(),
-            self.grad
+            GradientRef(&self.grad),
         ))
     }
 }
@@ -190,7 +201,7 @@ impl<S> Variable<S, i32> {
     /// x.grad += 1;
     /// ```
     pub fn backward(&self) {
-        self.grad.accumulate(1);
+        GradientRef(&self.grad).accumulate(1);
     }
 }
 
@@ -279,8 +290,8 @@ impl<S, GradFn> Tensor<S, GradFn> {
 
 impl<S, G> Variable<S, G> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> &Gradient<G> {
-        &self.grad
+    pub fn grad(&self) -> GradientRef<'_, G> {
+        GradientRef::new(&self.grad)
     }
 }
 
@@ -294,7 +305,7 @@ impl<S, GradFn> Tensor<S, GradFn> {
 /// Gradient hook for [Variable]
 #[derive(Debug, Clone, Copy)]
 pub struct GradHookV<'g, G, Hook> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     hook: Hook,
 }
 
@@ -321,7 +332,7 @@ impl<S, G> Variable<S, G> {
         Tensor {
             data: (*self.data()).clone(),
             grad_fn: GradHookV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 hook,
             },
         }

@@ -1,11 +1,11 @@
-use crate::{tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType, accel::cpu};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef}, dtype::DType, accel::cpu};
 use std::{ops::{Neg, Add, Mul, Div}};
 //use duplicate::duplicate_item;
 
 /*#[derive(Debug, Clone, Copy)]
 pub struct DivBackwardSV<'g, S, S2> {
     res: S2,
-    ygrad: &'g Gradient<G>,
+    ygrad: GradientRef<'g, G>,
     ydata: S,
 }
 
@@ -106,7 +106,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVS<'g, XG, YS> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     ydata: YS,
 }
 
@@ -130,7 +130,7 @@ where
         Tensor {
             data: self.data().clone() / rhs.clone(),
             grad_fn: DivBackwardVS {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
             }
         }
@@ -140,8 +140,8 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVV<'g, S, XG, YS, YG> {
     res: S,
-    xgrad: &'g Gradient<XG>,
-    ygrad: &'g Gradient<YG>,
+    xgrad: GradientRef<'g, XG>,
+    ygrad: GradientRef<'g, YG>,
     ydata: YS,
 }
 
@@ -172,9 +172,9 @@ where
         Tensor {
             data: res.clone(),
             grad_fn: DivBackwardVV {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 res,
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data().clone(),
             }
         }
@@ -184,7 +184,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVT<'g, S, XG, YS, YF> {
     res: S,
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     ygrad_fn: YF,
     ydata: YS,
 }
@@ -217,7 +217,7 @@ where
             data: res.clone(),
             grad_fn: DivBackwardVT {
                 res,
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
             }
@@ -262,7 +262,7 @@ where
 pub struct DivBackwardTV<'g, S, YS, YG, XF> {
     res: S,
     xgrad_fn: XF,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
     ydata: YS,
 }
 
@@ -296,7 +296,7 @@ where
             grad_fn: DivBackwardTV {
                 res,
                 xgrad_fn: self.grad_fn,
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data().clone(),
             },
         }

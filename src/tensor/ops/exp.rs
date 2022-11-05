@@ -1,10 +1,10 @@
-use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, Gradient}};
+use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, GradientRef}};
 use std::ops::{Add, Mul};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ExpBackwardV<'g, S2, G> {
     res: S2,
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
 }
 
 impl<S, S2, G> Backward<S> for ExpBackwardV<'_, S2, G>
@@ -28,7 +28,7 @@ where
         Tensor {
             data: res.clone(),
             grad_fn: ExpBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 res,
             },
         }

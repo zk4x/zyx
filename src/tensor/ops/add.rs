@@ -1,10 +1,10 @@
-use crate::{tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType, accel::cpu};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef}, dtype::DType, accel::cpu};
 use std::ops::Add;
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardSV<'g, YG> {
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
 }
 
 impl<S> Backward<S> for AddBackwardSV<'_, S>
@@ -29,7 +29,7 @@ where
         Tensor {
             data: self + rhs.data().clone(),
             grad_fn: AddBackwardSV {
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
             }
         }
     }
@@ -54,7 +54,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVS<'g, XG> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
 }
 
 impl<S> Backward<S> for AddBackwardVS<'_, S>
@@ -76,7 +76,7 @@ where
         Tensor {
             data: self.data().clone() + rhs,
             grad_fn: AddBackwardVS {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
             }
         }
     }
@@ -84,8 +84,8 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVV<'g, XG, YG> {
-    xgrad: &'g Gradient<XG>,
-    ygrad: &'g Gradient<YG>,
+    xgrad: GradientRef<'g, XG>,
+    ygrad: GradientRef<'g, YG>,
 }
 
 impl<S> Backward<S> for AddBackwardVV<'_, S, S>
@@ -108,8 +108,8 @@ where
         Tensor {
             data: self.data().clone() + rhs.data().clone(),
             grad_fn: AddBackwardVV {
-                xgrad: &self.grad,
-                ygrad: &rhs.grad,
+                xgrad: GradientRef::new(&self.grad),
+                ygrad: GradientRef::new(&rhs.grad),
             }
         }
     }
@@ -117,7 +117,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVT<'g, XG, YF> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     ygrad_fn: YF,
 }
 
@@ -141,7 +141,7 @@ where
         Tensor {
             data: self.data().clone() + rhs.data,
             grad_fn: AddBackwardVT {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 ygrad_fn: rhs.grad_fn,
             }
         }
@@ -165,7 +165,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTV<'g, YG, XF> {
     xgrad_fn: XF,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
 }
 
 impl<S, XF> Backward<S> for AddBackwardTV<'_, S, XF>
@@ -190,7 +190,7 @@ where
             data: self.data + rhs.data().clone(),
             grad_fn: AddBackwardTV {
                 xgrad_fn: self.grad_fn,
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
             },
         }
     }

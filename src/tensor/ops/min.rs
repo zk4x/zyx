@@ -1,9 +1,9 @@
-use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Shape}};
+use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoDims, Shape}};
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct MinBackwardV<'g, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     shape: Shape,
 }
 
@@ -25,7 +25,7 @@ where
         Tensor {
             data: (*self.data.borrow()).clone().min(dims),
             grad_fn: MinBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 shape: self.data.borrow().shape(),
             }
         }

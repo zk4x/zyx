@@ -1,9 +1,9 @@
-use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoShape, Shape}};
+use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoShape, Shape}};
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct ReshapeBackwardV<'g, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     shape: Shape,
 }
 
@@ -26,7 +26,7 @@ where
         Tensor {
             data: (*self.data()).clone().reshape(shape),
             grad_fn: ReshapeBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 shape: self.data().shape(),
             }
         }

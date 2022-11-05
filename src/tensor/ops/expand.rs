@@ -1,9 +1,9 @@
-use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoShape, Dims}};
+use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoShape, Dims}};
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardV<'g, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     dims: Dims,
 }
 
@@ -29,7 +29,7 @@ where
         Tensor {
             data: (*self.data()).clone().expand(shape),
             grad_fn: ExpandBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 dims,
             }
         }

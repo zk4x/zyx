@@ -1,9 +1,9 @@
-use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Dims}};
+use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoDims, Dims}};
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardV<'g, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     dims: Dims,
 }
 
@@ -27,7 +27,7 @@ where
         Tensor {
             data: self.data().clone().permute(dims.clone()),
             grad_fn: PermuteBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 dims: dims.argsort(),
             }
         }

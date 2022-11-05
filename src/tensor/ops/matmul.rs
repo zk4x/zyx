@@ -1,10 +1,10 @@
-use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, Gradient}, dtype::DType};
+use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef}, dtype::DType};
 use std::ops::Add; 
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardSV<'g, XS, YG> {
     xdata: XS,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
 }
 
 impl<S, XS, YG> Backward<S> for MatMulBackwardSV<'_, XS, YG>
@@ -29,7 +29,7 @@ where
             data: self.clone().matmul(rhs.data().clone()),
             grad_fn: MatMulBackwardSV {
                 xdata: self,
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
             }
         }
     }
@@ -71,7 +71,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVS<'g, XG, YS> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     ydata: YS,
 }
 
@@ -96,7 +96,7 @@ where
         Tensor {
             data: self.data.borrow().clone().matmul(rhs.clone()),
             grad_fn: MatMulBackwardVS {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
             }
         }
@@ -105,9 +105,9 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVV<'g, XS, XG, YS, YG> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     xdata: XS,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
     ydata: YS,
 }
 
@@ -137,9 +137,9 @@ where
         Tensor {
             data: self.data().clone().matmul(rhs.data().clone()),
             grad_fn: MatMulBackwardVV {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 xdata: self.data().clone(),
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data().clone(),
             }
         }
@@ -148,7 +148,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVT<'g, XG, XS, YS, YF> {
-    xgrad: &'g Gradient<XG>,
+    xgrad: GradientRef<'g, XG>,
     xdata: XS,
     ygrad_fn: YF,
     ydata: YS,
@@ -179,7 +179,7 @@ where
         Tensor {
             data: self.data().clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardVT {
-                xgrad: &self.grad,
+                xgrad: GradientRef::new(&self.grad),
                 xdata: self.data().clone(),
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
@@ -226,7 +226,7 @@ where
 pub struct MatMulBackwardTV<'g, YG, XS, YS, XF> {
     xgrad_fn: XF,
     xdata: XS,
-    ygrad: &'g Gradient<YG>,
+    ygrad: GradientRef<'g, YG>,
     ydata: YS,
 }
 
@@ -257,7 +257,7 @@ where
             grad_fn: MatMulBackwardTV {
                 xgrad_fn: self.grad_fn,
                 xdata: self.data,
-                ygrad: &rhs.grad,
+                ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data().clone(),
             }
         }

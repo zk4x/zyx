@@ -1,9 +1,9 @@
-use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, Gradient}, shape::{IntoDims, Shape}};
+use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoDims, Shape}};
 use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct MaxBackwardV<'g, G> {
-    grad: &'g Gradient<G>,
+    grad: GradientRef<'g, G>,
     shape: Shape,
 }
 
@@ -30,7 +30,7 @@ where
         Tensor {
             data: (*self.data.borrow()).clone().max(dims),
             grad_fn: MaxBackwardV {
-                grad: &self.grad,
+                grad: GradientRef::new(&self.grad),
                 shape: self.data.borrow().shape(),
             }
         }
