@@ -6,85 +6,85 @@
 //!
 
 use crate::{module::Module, ops::{self, GetShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::IntoDims};
-use std::ops::{Neg, Add, Sub, Div};
+use std::ops::{Neg, Add, Sub, Div, Mul};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReLU;
 
-impl<Input> Module<Input> for &ReLU
+impl<Input> Module<'_, Input> for ReLU
 where
     Input: ops::ReLU,
 {
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.relu()
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Exp operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Exp;
 
-impl<Input> Module<Input> for &Exp
+impl<Input> Module<'_, Input> for Exp
 where
     Input: ops::Exp,
 {
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.exp()
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Ln operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ln;
 
-impl<Input> Module<Input> for &Ln
+impl<Input> Module<'_, Input> for Ln
 where
     Input: ops::Ln,
 {
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.ln()
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Tanh operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tanh;
 
-impl<Input> Module<Input> for &Tanh
+impl<Input> Module<'_, Input> for Tanh
 where
     Input: ops::Tanh,
 {
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.tanh()
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Sigmoid operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sigmoid;
 
-impl<Input> Module<Input> for &Sigmoid
+impl<Input> Module<'_, Input> for Sigmoid
 where
     Input: Neg,
     <Input as Neg>::Output: ops::Exp,
@@ -94,12 +94,12 @@ where
     type Output = <i32 as Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>>::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         use ops::Exp;
         1/(1+(-x).exp())
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Softmax operation
@@ -112,7 +112,7 @@ where
     pub dims: D
 }
 
-impl<Input, D> Module<Input> for &SoftMax<D>
+impl<Input, D> Module<'_, Input> for SoftMax<D>
 where
     D: IntoDims + Clone,
     Input: Clone + ops::Max + Sub<<Input as ops::Max>::Output>,
@@ -123,7 +123,7 @@ where
     type Output = <<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as Div<<<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as ops::Sum>::Output>>::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         use crate::ops::{Exp, Sum};
         // TODO: Check if cloning Tensors (that is also cloning their grad_fn)
         // has any effect on correctness of this function's gradient calculation
@@ -131,7 +131,7 @@ where
         temp.clone() / temp.sum(self.dims.clone())
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 #[test]
@@ -149,7 +149,8 @@ fn softmax_test() {
     y.backward();
     println!("\n{}", x.grad());*/
 
-    let y = (&x).apply(&SoftMax { dims: -1 });
+    let sm = SoftMax { dims: -1 };
+    let y = sm.forward(&x);
     println!("\n{}", y);
     y.backward();
     println!("\n{}", x);
@@ -166,7 +167,7 @@ where
     pub dims: D,
 }
 
-impl<Input, D> Module<Input> for &Sum<D>
+impl<Input, D> Module<'_, Input> for Sum<D>
 where
     Input: ops::Sum,
     D: IntoDims + Clone,
@@ -174,11 +175,11 @@ where
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.sum(self.dims.clone())
     }
     
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Max operation
@@ -191,7 +192,7 @@ where
     pub dims: D,
 }
 
-impl<Input, D> Module<Input> for &Max<D>
+impl<Input, D> Module<'_, Input> for Max<D>
 where
     Input: ops::Max,
     D: IntoDims + Clone,
@@ -199,11 +200,11 @@ where
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.max(self.dims.clone())
     }
     
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// Min operation
@@ -213,7 +214,7 @@ pub struct Min<D> {
     pub dims: D,
 }
 
-impl<Input, D> Module<Input> for &Min<D>
+impl<Input, D> Module<'_, Input> for Min<D>
 where
     Input: ops::Min,
     D: IntoDims + Clone,
@@ -221,11 +222,11 @@ where
     type Output = Input::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         x.min(self.dims.clone())
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -238,7 +239,7 @@ where
     pub dims: D
 }
 
-impl<Input, D> Module<Input> for &Mean<D>
+impl<Input, D> Module<'_, Input> for Mean<D>
 where
     D: IntoDims + Clone,
     Input: GetShape + ops::Sum,
@@ -247,19 +248,19 @@ where
     type Output = <<Input as ops::Sum>::Output as Div<usize>>::Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         let n = x.shape().numel();
         x.sum(self.dims.clone())/n
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 /// MSE loss
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MSELoss;
 
-impl<Y, YP> Module<(Y, YP)> for &MSELoss
+impl<Y, YP> Module<'_, (Y, YP)> for MSELoss
 where
     Y: Sub<YP>,
     <Y as Sub<YP>>::Output: Pow<i32>,
@@ -267,11 +268,11 @@ where
     type Output = <<Y as Sub<YP>>::Output as Pow<i32>>::Output;
     type Params = ();
 
-    fn forward(self, x: (Y, YP)) -> Self::Output {
+    fn forward(&self, x: (Y, YP)) -> Self::Output {
         (x.0 - x.1).pow(2)
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 //pub struct STD {}
@@ -308,25 +309,35 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
     }
 }
 
-impl<'a, W, WG, B, BG, Input> Module<Input> for &'a Linear<W, WG, B, BG>
+impl<'p, W, WG, B, BG, Input> Module<'p, Input> for Linear<W, WG, B, BG>
 where
-    Input: MatMul<&'a Variable<W, WG>>,
-    <Input as MatMul<&'a Variable<W, WG>>>::Output: Add<&'a Variable<B, BG>>,
-{
-    type Output = <<Input as MatMul<&'a Variable<W, WG>>>::Output as Add<&'a Variable<B, BG>>>::Output;
-    type Params = (&'a Variable<W, WG>, &'a Variable<B, BG>);
+    W: Clone + Sub<<WG as Mul<f64>>::Output, Output = W>,
+    WG: Clone + Mul<f64>,
+    B: Clone + Sub<<BG as Mul<f64>>::Output, Output = B>,
+    BG: Clone + Mul<f64>,
 
-    fn forward(self, x: Input) -> Self::Output {
+    W: 'p,
+    WG: 'p,
+    B: 'p,
+    BG: 'p,
+
+    Input: MatMul<&'p Variable<W, WG>>,
+    <Input as MatMul<&'p Variable<W, WG>>>::Output: Add<&'p Variable<B, BG>>,
+{
+    type Output = <<Input as MatMul<&'p Variable<W, WG>>>::Output as Add<&'p Variable<B, BG>>>::Output;
+    type Params = (&'p mut Variable<W, WG>, &'p mut Variable<B, BG>);
+
+    fn forward(&'p self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
     }
 
-    fn parameters(self) -> Self::Params {
-        (&self.w, &self.b)
+    fn parameters(&'p mut self) -> Self::Params {
+        (&mut self.w, &mut self.b)
     }
 }
 
 /// RNNCell
-/// TODO: Should we rewrite this as two linear layers?
+// TODO: Should we rewrite this as two linear layers?
 #[derive(Debug, Clone)]
 pub struct RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG> {
     wih: Variable<WI, WIG>,
@@ -354,8 +365,17 @@ impl<WI, WIG, BI, BIG, WH, WHG, BH, BHG> RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, 
     }
 }
 
-impl<'a, WI, WIG, BI, BIG, WH, WHG, BH, BHG, I, H> Module<(I, H)> for &'a RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG>
+impl<'a, WI, WIG, BI, BIG, WH, WHG, BH, BHG, I, H> Module<'a, (I, H)> for RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG>
 where
+    WI: 'a + Clone + Sub<<WIG as Mul<f64>>::Output, Output = WI>,
+    WIG: 'a + Clone + Mul<f64>,
+    BI: 'a + Clone + Sub<<BIG as Mul<f64>>::Output, Output = BI>,
+    BIG: 'a + Clone + Mul<f64>,
+    WH: 'a + Clone + Sub<<WHG as Mul<f64>>::Output, Output = WH>,
+    WHG: 'a + Clone + Mul<f64>,
+    BH: 'a + Clone + Sub<<BHG as Mul<f64>>::Output, Output = BH>,
+    BHG: 'a + Clone + Mul<f64>,
+
     I: MatMul<&'a Variable<WI, WIG>>,
     <I as MatMul<&'a Variable<WI, WIG>>>::Output: Add<&'a Variable<BI, BIG>>,
     H: MatMul<&'a Variable<WH, WHG>>,
@@ -363,13 +383,13 @@ where
     <<I as MatMul<&'a Variable<WI, WIG>>>::Output as Add<&'a Variable<BI, BIG>>>::Output: Add<<<H as MatMul<&'a Variable<WH, WHG>>>::Output as Add<&'a Variable<BH, BHG>>>::Output>,
 {
     type Output = <<<I as MatMul<&'a Variable<WI, WIG>>>::Output as Add<&'a Variable<BI, BIG>>>::Output as Add<<<H as MatMul<&'a Variable<WH, WHG>>>::Output as Add<&'a Variable<BH, BHG>>>::Output>>::Output;
-    type Params = (&'a Variable<WI, WIG>, &'a Variable<BI, BIG>, &'a Variable<WH, WHG>, &'a Variable<BH, BHG>);
+    type Params = (&'a mut Variable<WI, WIG>, &'a mut Variable<BI, BIG>, &'a mut Variable<WH, WHG>, &'a mut Variable<BH, BHG>);
 
-    fn forward(self, x: (I, H)) -> Self::Output {
+    fn forward(&'a self, x: (I, H)) -> Self::Output {
         (x.0.matmul(&self.wih) + &self.bih) + (x.1.matmul(&self.whh) + &self.bhh)
     }
 
-    fn parameters(self) -> Self::Params {
-        (&self.wih, &self.bih, &self.whh, &self.bhh)
+    fn parameters(&'a mut self) -> Self::Params {
+        (&mut self.wih, &mut self.bih, &mut self.whh, &mut self.bhh)
     }
 }

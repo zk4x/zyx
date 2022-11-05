@@ -19,15 +19,11 @@ rand = "0.8.5"
 rayon = "1.5.3"
 duplicate = "0.4.1"
 
-ndarray = { version = "0.15.6", features = ["rayon", "matrixmultiply-threading"] }
-num-traits = "0.2.15"
-
 # optional dependencies
 matrixmultiply = { version = "0.3.2", features = ["threading"], optional = true }
-
-#ndarray = { version = "0.15.6", features = ["rayon", "matrixmultiply-threading"], optional = true }
-#num-traits = { version = "0.2.15", optional = true }
+ndarray = { version = "0.15.6", features = ["rayon", "matrixmultiply-threading"], optional = true }
+num-traits = { version = "0.2.15", optional = true }
 
 [features]
 matrixmultiply = ["dep:matrixmultiply"]
-#ndarray = ["dep:ndarray", "dep:num-traits"]
+ndarray = ["dep:ndarray", "dep:num-traits"]

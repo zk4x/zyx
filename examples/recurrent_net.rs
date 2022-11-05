@@ -1,10 +1,11 @@
 //! ## This is an example of recurrent neural network
-use zyx::prelude::*;
-use zyx::accel::cpu;
-use zyx::nn::{RNNCell, Linear, SoftMax, MSELoss, Sum, ReLU};
-use zyx::optim;
 
 fn main() {
+    /*use zyx::prelude::*;
+    use zyx::accel::cpu;
+    use zyx::nn::{RNNCell, Linear, SoftMax, MSELoss, Sum, ReLU};
+    use zyx::optim;
+
     let hidden_size = 10;
     let input_size = 3;
 
@@ -19,10 +20,10 @@ fn main() {
 
     // This looks bad right now, eventually it will look like this:
     //let params = (rnn_net.parameters(), net2.parameters());
-    let params = (
+    /*let params = (
         <&(RNNCell<cpu::Buffer<f32>, _, cpu::Buffer<f32>, _, cpu::Buffer<f32>, _, cpu::Buffer<f32>, _>, ReLU) as Module<(cpu::Buffer<f32>, cpu::Buffer<f32>)>>::parameters(&rnn_net),
         <&(Linear<cpu::Buffer<f32>, _, cpu::Buffer<f32>, _>, SoftMax<()>) as Module<cpu::Buffer<f32>>>::parameters(&net2),
-    );
+    );*/
 
     let mut hidden_state = cpu::Buffer::uniform((1, hidden_size), 0., 1.);
 
@@ -30,9 +31,11 @@ fn main() {
     // Sum dims () means sum across all dims
     let mse_loss = (MSELoss, Sum { dims: () });
 
-    let optimizer = optim::SGD::new(params);
+    let optimizer = optim::SGD::new();
 
     for i in 0..30000 {
+        (rnn_net.parameters(), net2.parameters()).zero_grad();
+
         let i_f32 = i as f32;
         let data = vec![i_f32*1., i_f32*2., i_f32*3.];
 
@@ -46,10 +49,10 @@ fn main() {
         let y_predicted = net2.forward(hidden_state_t1);
         let loss = (y_predicted, y).apply(&mse_loss);
 
-        optimizer.zero_grad();
         loss.backward();
-        optimizer.step();
-    }
+
+        (rnn_net.parameters(), net2.parameters()).step(&optimizer);
+    }*/
 
     //println!("hidden state: {}", hidden_state);
 }

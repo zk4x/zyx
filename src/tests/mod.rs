@@ -23,7 +23,7 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
     }
 }
 
-//#[cfg(feature = "ndarray")]
+#[cfg(feature = "ndarray")]
 #[test]
 fn ndarray() {
     use crate::prelude::*;
@@ -76,8 +76,11 @@ mod tensor {
             let _ = Buffer::cfrom([[[2, 3]]]);
             let _ = Buffer::cfrom([[[[2, 3]], [[2, 3]]]]);
 
-            use ndarray::{ArrayBase, OwnedRepr, Ix2};
-            let _ = ArrayBase::<OwnedRepr<i32>, Ix2>::cfrom([[2, 3]]);
+            #[cfg(feature = "ndarray")]
+            {
+                use ndarray::{ArrayBase, OwnedRepr, Ix2};
+                let _ = ArrayBase::<OwnedRepr<i32>, Ix2>::cfrom([[2, 3]]);
+            }
         }
 
         #[test]

@@ -1,22 +1,22 @@
 //! [Module] is generic trait that implements only one method: [forward](Module::forward()).
 //! It is meant to be implemented mainly for functors and layers.
 //!
-//! This module also contains implementation of [Apply], that is automatically
-//! implemented for anything that implements [Module] and allows users to use both
-//! module.forward(input) notation as well as
-//! input.apply(module) notation
-//!
-//! Basically all functions, layers and models should have [module.forward(input)](Module::forward()) function and this module also provides [input.apply(module)](Apply::apply()) function.
-//! We think it is usefull for the user to have access to both standard [module.forward(input)] type of API and API with monads.
-//! 
+// This module also contains implementation of [Apply], that is automatically
+// implemented for anything that implements [Module] and allows users to use both
+// module.forward(input) notation as well as
+// input.apply(module) notation
+//
+// Basically all functions, layers and models should have [module.forward(input)](Module::forward()) function and this module also provides [input.apply(module)](Apply::apply()) function.
+// We think it is usefull for the user to have access to both standard [module.forward(input)] type of API and API with monads.
+// 
 
 // TODO: use macros to make this DRY
 
 use crate::{tensor::Variable, optim::Optimizer};
-
+use std::ops::{Mul, Sub};
 
 // We can just store all Variables in tuple and implement some trait for this tuple that will take input and call
-// all the required methods - update_data, zero_grad.
+// all the required methods - step, zero_grad.
 // This way there is no need for dyn.
 
 /// # Parameters trait
@@ -25,7 +25,7 @@ use crate::{tensor::Variable, optim::Optimizer};
 /// These can then be used by [optimizers](crate::optim).
 pub trait Parameters {
     /// Update [Parameter's](Parameters) data
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer; // these functions should be callable only by optimizers
     /// Zero [Parameter's](Parameters) gradients
@@ -33,22 +33,22 @@ pub trait Parameters {
 }
 
 impl Parameters for () {
-    fn update_data<Optim>(&self, _: &Optim)
+    fn step<Optim>(self, _: &Optim)
     where
         Optim: Optimizer {}
     fn zero_grad(&self) {}
 }
 
-impl<S, G, const N: usize> Parameters for [&Variable<S, G>; N]
+impl<S, G, const N: usize> Parameters for [&mut Variable<S, G>; N]
 where
-    // TODO: change this to be more flexible
-    //S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+    S: Clone + Sub<<G as Mul<f64>>::Output, Output = S>,
+    G: Clone + Mul<f64>,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer
     {
-        self.iter().for_each(|x| x.update_data(optim));
+        self.into_iter().for_each(|x| x.step(optim));
     }
 
     fn zero_grad(&self) {
@@ -56,15 +56,16 @@ where
     }
 }
 
-impl<S, G> Parameters for Vec<&Variable<S, G>>
+impl<S, G> Parameters for Vec<&mut Variable<S, G>>
 where
-    //S: Zeros + Clone + Default + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+    S: Clone + Sub<<G as Mul<f64>>::Output, Output = S>,
+    G: Clone + Mul<f64>,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer
     {
-        self.iter().for_each(|x| x.update_data(optim));
+        self.into_iter().for_each(|x| x.step(optim));
     }
 
     fn zero_grad(&self) {
@@ -77,12 +78,12 @@ where
     Params1: Parameters,
     Params2: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -97,13 +98,13 @@ where
     Params2: Parameters,
     Params3: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -120,14 +121,14 @@ where
     Params3: Parameters,
     Params4: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
-        self.3.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -146,15 +147,15 @@ where
     Params4: Parameters,
     Params5: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
-        self.3.update_data(optim);
-        self.4.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -175,16 +176,16 @@ where
     Params5: Parameters,
     Params6: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
-        self.3.update_data(optim);
-        self.4.update_data(optim);
-        self.5.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -207,17 +208,17 @@ where
     Params6: Parameters,
     Params7: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
-        self.3.update_data(optim);
-        self.4.update_data(optim);
-        self.5.update_data(optim);
-        self.6.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
+        self.6.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -242,18 +243,18 @@ where
     Params7: Parameters,
     Params8: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
-        self.3.update_data(optim);
-        self.4.update_data(optim);
-        self.5.update_data(optim);
-        self.6.update_data(optim);
-        self.7.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
+        self.6.step(optim);
+        self.7.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -280,19 +281,19 @@ where
     Params8: Parameters,
     Params9: Parameters,
 {
-    fn update_data<Optim>(&self, optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer,
     {
-        self.0.update_data(optim);
-        self.1.update_data(optim);
-        self.2.update_data(optim);
-        self.3.update_data(optim);
-        self.4.update_data(optim);
-        self.5.update_data(optim);
-        self.6.update_data(optim);
-        self.7.update_data(optim);
-        self.8.update_data(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
+        self.6.step(optim);
+        self.7.step(optim);
+        self.8.step(optim);
     }
 
     fn zero_grad(&self) {
@@ -314,240 +315,240 @@ where
 /// Forward simply takes any input, applies some operation and returns output.
 /// Every module also has some or zero [parameters](Parameters) that can be optimized
 /// by [optimizers](crate::optim).
-pub trait Module<Input> {
+pub trait Module<'p, Input> {
     /// Output of forward operation on [Module]
     type Output;
     /// [Parameters] of [Module]
     type Params: Parameters;
     /// Forward operation on [Module]
-    fn forward(self, x: Input) -> Self::Output;
+    fn forward(&'p self, x: Input) -> Self::Output;
     /// Get parameters of [Module]
-    fn parameters(self) -> Self::Params;
+    fn parameters(&'p mut self) -> Self::Params;
     // Set [parameters](Parameters) of [Module] (This is primarily used for loading models)
     //fn set_parameters(self, parameters: Self::Params) -> Self;
 }
 
-/// Apply trait allows us to use monads
-pub trait Apply<Operation> {
+// Apply trait allows us to use monads
+/*pub trait Apply<'p, Operation> {
     /// Output of forward operation on [Module]
     type Output;
     /// Forward operation on [Module]
     fn apply(self, x: Operation) -> Self::Output;
 }
 
-impl<Input, Operation> Apply<Operation> for Input
+impl<'p, Input, Operation> Apply<'p, Operation> for Input
 where
-    Operation: Module<Input>
+    Operation: Module<'p, Input>
 {
-    type Output = Operation::Output;
+    type Output = <Operation as Module<'p, Input>>::Output;
     fn apply(self, x: Operation) -> Self::Output {
         x.forward(self)
     }
-}
+}*/
 
 // Functions are modules
 // Layers are modules
 // Tuples of modules are modules
-impl<'a, Input, M0, M1> Module<Input> for &'a (M0, M1)
+impl<'p, Input, M0, M1> Module<'p, Input> for (M0, M1)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
 {
-    type Output = <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output;
-    type Params = (<&'a M0 as Module<Input>>::Params, <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params);
+    type Output = <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output;
+    type Params = (<M0 as Module<'p, Input>>::Params, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params);
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.1.forward(self.0.forward(x))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters())
     }
 }
 
-impl<'a, Input, M0, M1, M2> Module<Input> for &'a (M0, M1, M2)
+impl<'p, Input, M0, M1, M2> Module<'p, Input> for (M0, M1, M2)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
-    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
+    M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
 {
-    type Output = <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output;
+    type Output = <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output;
     type Params = (
-        <&'a M0 as Module<Input>>::Params,
-        <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params,
-        <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Params,
+        <M0 as Module<'p, Input>>::Params,
+        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
     );
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.2.forward(self.1.forward(self.0.forward(x)))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters(), self.2.parameters())
     }
 }
 
-impl<'a, Input, M0, M1, M2, M3> Module<Input> for &'a (M0, M1, M2, M3)
+impl<'p, Input, M0, M1, M2, M3> Module<'p, Input> for (M0, M1, M2, M3)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
-    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
-    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
+    M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
+    M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
 {
-    type Output = <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output;
+    type Output = <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output;
     type Params = (
-        <&'a M0 as Module<Input>>::Params,
-        <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params,
-        <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Params,
-        <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Params,
+        <M0 as Module<'p, Input>>::Params,
+        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
+        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
     );
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters())
     }
 }
 
-impl<'a, Input, M0, M1, M2, M3, M4> Module<Input> for &'a (M0, M1, M2, M3, M4)
+impl<'p, Input, M0, M1, M2, M3, M4> Module<'p, Input> for (M0, M1, M2, M3, M4)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
-    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
-    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
-    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
+    M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
+    M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
+    M4: Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>,
 {
-    type Output = <&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output;
+    type Output = <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output;
     type Params = (
-        <&'a M0 as Module<Input>>::Params,
-        <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params,
-        <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Params,
-        <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Params,
-        <&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M0 as Module<'p, Input>>::Params,
+        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
+        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
+        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
     );
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x)))))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters())
     }
 }
 
-impl<'a, Input, M0, M1, M2, M3, M4, M5> Module<Input> for &'a (M0, M1, M2, M3, M4, M5)
+impl<'p, Input, M0, M1, M2, M3, M4, M5> Module<'p, Input> for (M0, M1, M2, M3, M4, M5)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
-    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
-    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
-    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
-    &'a M5: Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
+    M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
+    M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
+    M4: Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>,
+    M5: Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
 {
-    type Output = <&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
+    type Output = <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
     type Params = (
-        <&'a M0 as Module<Input>>::Params,
-        <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params,
-        <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Params,
-        <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Params,
-        <&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M0 as Module<'p, Input>>::Params,
+        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
+        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
+        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
     );
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters(), self.5.parameters())
     }
 }
 
-impl<'a, Input, M0, M1, M2, M3, M4, M5, M6> Module<Input> for &'a (M0, M1, M2, M3, M4, M5, M6)
+impl<'p, Input, M0, M1, M2, M3, M4, M5, M6> Module<'p, Input> for (M0, M1, M2, M3, M4, M5, M6)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
-    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
-    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
-    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
-    &'a M5: Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
-    &'a M6: Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
+    M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
+    M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
+    M4: Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>,
+    M5: Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    M6: Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
 {
-    type Output = <&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
+    type Output = <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
     type Params = (
-        <&'a M0 as Module<Input>>::Params,
-        <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params,
-        <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Params,
-        <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Params,
-        <&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M0 as Module<'p, Input>>::Params,
+        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
+        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
+        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
     );
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.6.forward(self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x)))))))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters(), self.5.parameters(), self.6.parameters())
     }
 }
 
-impl<'a, Input, M0, M1, M2, M3, M4, M5, M6, M7> Module<Input> for &'a (M0, M1, M2, M3, M4, M5, M6, M7)
+impl<'p, Input, M0, M1, M2, M3, M4, M5, M6, M7> Module<'p, Input> for (M0, M1, M2, M3, M4, M5, M6, M7)
 where
-    &'a M0: Module<Input>,
-    &'a M1: Module<<&'a M0 as Module<Input>>::Output>,
-    &'a M2: Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>,
-    &'a M3: Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>,
-    &'a M4: Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>,
-    &'a M5: Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
-    &'a M6: Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
-    &'a M7: Module<<&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    M0: Module<'p, Input>,
+    M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
+    M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
+    M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
+    M4: Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>,
+    M5: Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    M6: Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
+    M7: Module<'p, <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
 {
-    type Output = <&'a M7 as Module<<&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
+    type Output = <M7 as Module<'p, <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
     type Params = (
-        <&'a M0 as Module<Input>>::Params,
-        <&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Params,
-        <&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Params,
-        <&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Params,
-        <&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <&'a M7 as Module<<&'a M6 as Module<<&'a M5 as Module<<&'a M4 as Module<<&'a M3 as Module<<&'a M2 as Module<<&'a M1 as Module<<&'a M0 as Module<Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M0 as Module<'p, Input>>::Params,
+        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
+        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
+        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
+        <M7 as Module<'p, <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
     );
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         self.7.forward(self.6.forward(self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))))))
     }
 
-    fn parameters(self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters(), self.5.parameters(), self.6.parameters(), self.7.parameters())
     }
 }
 
 // Closures are modules
 // But they can not have any parameters.
-impl<Input, Output, Function> Module<Input> for Function
+impl<Input, Output, Function> Module<'_, Input> for Function
 where
     Function: Fn(Input) -> Output
 {
     type Output = Output;
     type Params = ();
 
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         self(x)
     }
 
-    fn parameters(self) -> Self::Params {}
+    fn parameters(&mut self) -> Self::Params {}
 }
 
 // TODO: Should arrays of modules be modules?
 // Arrays of modules are modules (although inputs and outputs must be the same type)
-/*impl<Input, M, const N: usize> Module<Input> for [M; N]
+/*impl<Input, M, const N: usize> Module<'p, Input> for [M; N]
 where
-    M: Module<Input, Output = Input>,
+    M: Module<'p, Input, Output = Input>,
 {
     type Output = Input;
     fn forward(self, mut x: Input) -> Self::Output {

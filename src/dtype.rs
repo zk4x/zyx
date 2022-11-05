@@ -1,6 +1,4 @@
 use duplicate::duplicate_item;
-//#[cfg(feature = "ndarray")]
-use ndarray::{ArrayBase, RawData};
 
 // # DType traits
 //
@@ -23,13 +21,16 @@ pub(crate) trait NDimType {}
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl NDimType for crate::accel::cpu::Buffer<dtype> {}
 
-//#[cfg(feature = "ndarray")]
+#[cfg(feature = "ndarray")]
 impl<A, D> DType for ArrayBase<A, D>
 where
     A: RawData,
 {}
 
-//#[cfg(feature = "ndarray")]
+#[cfg(feature = "ndarray")]
+use ndarray::{ArrayBase, RawData};
+
+#[cfg(feature = "ndarray")]
 impl<A, D> NDimType for ArrayBase<A, D>
 where
     A: RawData,

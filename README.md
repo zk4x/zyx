@@ -12,19 +12,11 @@ so that you can quickly pick up this library if you are familiar with PyTorch.
 
 ## Features
 
-1. Any datatype is supported, including rust primitives, [CPU Buffer](crate::accel::cpu::Buffer), preliminary support for ndarray
-   as well as any custom datatype that you provide. Basically everything is a tensor.
-2. Graph is fully dynamic from user perspective, but is compiled statically. Only last [Tensor](crate::tensor::Tensor)
-   in series of operations (tree root) stores references to gradients and data required for backpropagation,
-   thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs,
-   or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
-3. [CPU Buffer](crate::accel::cpu::Buffer) code is just 500 lines, so implementing custom accelerators is pretty simple
-   without the need to rewrite the whole library.
-4. No dyn, no Rc. Performance depends on your choice of accelerator, only overhead from tensors is gradients stored
-   in [RefCells](crate::tensor::Variable).
-5. There are no runtime errors, not even Results that need to be handled. State is stored in the type system. 
-   Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients.
-6. Zero unsafe by default. With `--features=matrixmultiply` there are two unsafe blocks for f32 and f64 multiplication.
+1. Any datatype is supported, including rust primitives, [CPU Buffer](crate::accel::cpu::Buffer), preliminary support for ndarray as well as any custom datatype that you provide. Basically everything is a tensor.
+2. Graph is fully dynamic from user perspective, but is compiled statically. Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
+3. [CPU Buffer](crate::accel::cpu::Buffer) code is under 1000 lines, so implementing custom accelerators is pretty simple without the need to rewrite the whole library.
+4. No dyn, no Rc, no RefCell, so Variable is true zero cost abstraction. Performance depends on your choice of accelerator. However gradients need to be updated from multiple places, so for that we use UnsafeCell. Since only unsafe mutation of gradients happens while calling backward, it is pretty easy to manually assure safety.
+5. There are no runtime errors, not even Results that need to be handled. State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients.
 
 ## Example of usage
 

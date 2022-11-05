@@ -46,7 +46,7 @@
 
 mod ops;
 
-use crate::{ops::GetShape, module::Parameters, optim::Optimizer};
+use crate::{ops::GetShape, module::Parameters};
 
 // How this works (for contributors)
 //
@@ -105,6 +105,10 @@ where
 impl<G> Gradient<G> {
     fn new() -> Self {
         Self(std::cell::UnsafeCell::new(None))
+    }
+
+    fn value(self) -> Option<G> {
+        self.0.into_inner()
     }
 
     fn zero(&self) {
@@ -426,19 +430,23 @@ where
     }
 }
 
-
+use crate::optim::Optimizer;
+use std::ops::{Sub, Mul};
 // Update Variable's data. It is used by optimizer.step().
-impl<S, G> Parameters for &Variable<S, G>
-//where
-    //S: Default + Clone + Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S> + GetShape,
+impl<S, G> Parameters for &mut Variable<S, G>
+where
+    S: Clone + Sub<<G as Mul<f64>>::Output, Output = S>,
+    G: Clone + Mul<f64>,
 {
-    fn update_data<Optim>(&self, _optim: &Optim)
+    fn step<Optim>(self, optim: &Optim)
     where
         Optim: Optimizer
     {
-        //let grad = self.grad().clone();
-        //let data = self.data.take();
-        //self.data.replace(optim.update_data(data, grad));
+        if let Some(grad) = self.grad().clone().value() {
+            self.data = optim.update_data(self.data.clone(), grad);
+        }
+        // If the gradient wasn't calculated, just do nothing, or should we pass gradient of zeros?
+        // Does some optimizer need that?
     }
 
     fn zero_grad(&self) {
