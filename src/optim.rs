@@ -6,11 +6,7 @@ use std::ops::{Sub, Mul};
 /// # Optimizer trait
 /// 
 /// All optimizers must implement this trait.
-pub trait Optimizer
-//where
-    // These are the requirements for SGD. For other optimizers, they may be subject to change.
-    //S: Sub<Output = S> + Mul<Output = S> + Mul<f64, Output = S>;
-{
+pub trait Optimizer {
     /// Update one of [parameters](crate::module::Parameters)
     fn update_data<S, G>(&self, data: S, grad: G) -> S
     where

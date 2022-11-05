@@ -529,8 +529,10 @@ where
 }
 
 // Closures are modules
-// But they can not have any parameters.
-impl<Input, Output, Function> Module<'_, Input> for Function
+//
+// But they can not have any parameters. And this must be assured by the user.
+// So for now we won't use this, as it does not look like a good thing (we want to at least warn user, if he does something shady).
+/*impl<Input, Output, Function> Module<'_, Input> for Function
 where
     Function: Fn(Input) -> Output
 {
@@ -542,7 +544,7 @@ where
     }
 
     fn parameters(&mut self) -> Self::Params {}
-}
+}*/
 
 // TODO: Should arrays of modules be modules?
 // Arrays of modules are modules (although inputs and outputs must be the same type)
