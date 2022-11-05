@@ -287,7 +287,7 @@ impl<Input> Module<Input> for &NormLayer {
 }*/
 
 /// Linear layer
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone)]
 pub struct Linear<W, WG, B, BG> {
     w: Variable<W, WG>,
     b: Variable<B, BG>,
@@ -327,7 +327,7 @@ where
 
 /// RNNCell
 /// TODO: Should we rewrite this as two linear layers?
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone)]
 pub struct RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG> {
     wih: Variable<WI, WIG>,
     bih: Variable<BI, BIG>,

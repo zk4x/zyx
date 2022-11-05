@@ -47,7 +47,6 @@
 mod ops;
 
 use crate::{ops::GetShape, module::Parameters, optim::Optimizer};
-use std::cell::{Ref, RefCell};
 
 // How this works (for contributors)
 //
@@ -69,11 +68,11 @@ use std::cell::{Ref, RefCell};
 /// # Variable
 /// 
 /// Variable holds data and it's gradient.
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default)]
 pub struct Variable<S, G> {
     // We could get rid of RefCell here by having every Module implementor have update_data function
     // with optimizer as one of it's parameters.
-    data: RefCell<S>, // RefCell needed for optimizer.step() function
+    data: std::cell::RefCell<S>, // RefCell needed for optimizer.step() function
     // Theoretically gradient should be the same shape and type as data, but practically
     // it just needs to implement operations required by optimizers so there is no need
     // to arbitrarily constrain it. This also simplyfies some performance optimizations.
@@ -84,23 +83,42 @@ pub struct Variable<S, G> {
 }
 
 /// Gradient of [Variable]
-#[derive(Default, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Gradient<G>(RefCell<Option<G>>);
+/// 
+/// User has read-only access to [Gradient] with to_vec and to_string.
+// This is using UnsafeCell to store value inside gradient.
+// Since UnsafeCell is not Sync, there is just few times that we access gradient,
+// so it is not difficult to make it safe to use.
+// The only mutable accesses are [Self::zero], which does not use unsafe
+// and accumulate, which uses unsafe, since [Variable] can be passed into multiple
+// functions and all of them need to be able to accumulate gradient, also maybe needed
+// for batch?
+#[derive(Default, Debug)]
+pub struct Gradient<G>(std::cell::UnsafeCell<Option<G>>);
 
-impl<G> Gradient<G> {
-    fn new() -> Self {
-        Self(RefCell::new(None))
-    }
-
-    fn zero(&self) {
-        self.0.replace(None);
+impl<G> Clone for Gradient<G>
+where
+    G: Clone,
+{
+    fn clone(&self) -> Self {
+        unsafe { Self(std::cell::UnsafeCell::new((*self.0.get()).clone())) }
     }
 }
 
-// We can make
-/// Reference to [Gradient]
+impl<G> Gradient<G> {
+    fn new() -> Self {
+        Self(std::cell::UnsafeCell::new(None))
+    }
+
+    fn zero(&self) {
+        // TODO this unsafe can be removed by making this function take mutable reference,
+        // that however requires that parameters are passed around mutably
+        // (they can not be stored in optimizers)
+        unsafe { *self.0.get() = None; }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
-pub struct GradientRef<'g, G>(&'g Gradient<G>);
+struct GradientRef<'g, G>(&'g Gradient<G>);
 
 impl<'g, G> GradientRef<'g, G> {
     fn new(gradient: &'g Gradient<G>) -> Self {
@@ -111,20 +129,22 @@ impl<'g, G> GradientRef<'g, G> {
     where
         G: std::ops::Add<Output = G>,
     {
-        let x = self.0.0.take();
-        self.0.0.replace(Some(match x {
+        let mut x = None;
+        unsafe { std::mem::swap(&mut *self.0.0.get(), &mut x); }
+        let grad = Some(match x {
             Some(grad) => grad + value,
             None => value,
-        }));
+        });
+        unsafe { *self.0.0.get() = grad; }
     }
 }
 
-impl<G, T> crate::ops::IntoVec<T> for GradientRef<'_, G>
+impl<G, T> crate::ops::IntoVec<T> for Gradient<G>
 where
     G: crate::ops::IntoVec<T>,
 {
     fn to_vec(&self) -> Vec<T> {
-        if let Some(grad) = self.0.0.borrow().as_ref() {
+        if let Some(grad) = unsafe { &*self.0.get() } {
             grad.to_vec()
         } else {
             Vec::new()
@@ -132,12 +152,12 @@ where
     }
 }
 
-impl<G> std::fmt::Display for GradientRef<'_, G>
+impl<G> std::fmt::Display for Gradient<G>
 where
     G: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let grad = self.0.0.borrow();
+        let grad = unsafe { &*self.0.get() };
         let s = if grad.is_some() {
             grad.as_ref().unwrap().to_string()
         } else {
@@ -171,7 +191,7 @@ where
         f.write_str(&format!(
             "{} with grad:\n{}",
             self.data.borrow(),
-            GradientRef(&self.grad),
+            &self.grad,
         ))
     }
 }
@@ -268,7 +288,7 @@ pub trait IntoVariable {
 impl<S> IntoVariable for S {
     fn with_grad<G>(self) -> Variable<Self, G> {
         Variable {
-            data: RefCell::new(self),
+            data: std::cell::RefCell::new(self),
             grad: Gradient::new(),
         }
     }
@@ -276,7 +296,7 @@ impl<S> IntoVariable for S {
 
 impl<S, G> Variable<S, G> {
     /// Access [Variable's](Variable) data buffer
-    pub fn data(&self) -> Ref<'_, S> {
+    pub fn data(&self) -> std::cell::Ref<'_, S> {
         self.data.borrow()
     }
 }
@@ -290,8 +310,8 @@ impl<S, GradFn> Tensor<S, GradFn> {
 
 impl<S, G> Variable<S, G> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> GradientRef<'_, G> {
-        GradientRef::new(&self.grad)
+    pub fn grad(&self) -> &Gradient<G> {
+        &self.grad
     }
 }
 
@@ -386,7 +406,7 @@ where
 {
     fn cfrom(x: Variable<S2, G>) -> Self {
         Self {
-            data: RefCell::new(S::cfrom((*x.data.borrow()).clone())),
+            data: std::cell::RefCell::new(S::cfrom((*x.data.borrow()).clone())),
             grad: Gradient::new(),
         }
     }
