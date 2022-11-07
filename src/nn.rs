@@ -393,3 +393,43 @@ where
         (&mut self.wih, &mut self.bih, &mut self.whh, &mut self.bhh)
     }
 }
+
+/*#[derive(Debug, Clone)]
+struct Attention<W, WG, F, FG, FB, FBG> {
+    num_heads: usize,
+    scale: f64,
+    qkv: Variable<W, WG>,
+    fc_out: Linear<F, FG, FB, FBG>,
+}
+
+impl<'p, W, WG, F, FG, FB, FBG, QKV> Attention<'p, QKV> for Attention<W, WG, F, WG, FB, FBG>
+where
+    W: 'p + Clone + Sub<<WG as Mul<f64>>::Output, Output = W>,
+    WG: 'a + Clone + Mul<f64>,
+    F: 'a + Clone + Sub<<FG as Mul<f64>>::Output, Output = F>,
+    FG: 'a + Clone + Mul<f64>,
+    FB: 'a + Clone + Sub<<FBG as Mul<f64>>::Output, Output = FB>,
+    FBG: 'a + Clone + Mul<f64>,
+
+{
+    type Output = ();
+    type Params = (&'p mut Variable<W, WG>, (&'p mut Variable<F, FG>, &'p mut Variable<FB, FBG>));
+
+    fn forward(&'a self, x: QKV) -> Self::Output {
+        // All that is needed for attention mechanism
+        let s = x.shape();
+        let (B, N, C) = (s[0], s[1], s[2]);
+        qkv = x.matmul(self.qkv).reshape(B, B, 3, self.num_heads, C/self.num_heads).permute(2, 0, 3, 1, 4);
+        let (q, k, v) = qkv.unbind(0); // we don't have unbind yet, so we need to implement it and then we will have working attention
+
+        attn = (q.matmul(k.transpose())) * self.scale;
+        attn = SoftMax { dim = -1 }.forward(attn);
+        x = (attn.matmul(v)).permute(1, 2).reshape(B, N, C);
+
+        self.fc_out.forward(x)
+    }
+
+    fn parameters(&'a mut self) -> Self::Params {
+        (&mut self.qkv, self.fc_out.parameters())
+    }
+}*/
