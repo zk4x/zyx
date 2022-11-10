@@ -6,7 +6,7 @@
 //!
 
 use crate::{module::Module, ops::{self, GetShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::IntoDims};
-use std::ops::{Neg, Add, Sub, Div, Mul};
+use core::ops::{Neg, Add, Sub, Div, Mul};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -289,12 +289,12 @@ impl<Input> Module<Input> for &NormLayer {
 
 /// Linear layer
 #[derive(Debug, Clone)]
-pub struct Linear<W, WG, B, BG> {
-    w: Variable<W, WG>,
-    b: Variable<B, BG>,
+pub struct Linear<W, B> {
+    w: Variable<W>,
+    b: Variable<B>,
 }
 
-impl<W, WG, B, BG> Linear<W, WG, B, BG> {
+impl<W, B> Linear<W, B> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
@@ -309,23 +309,19 @@ impl<W, WG, B, BG> Linear<W, WG, B, BG> {
     }
 }
 
-impl<'p, W, WG, B, BG, Input> Module<'p, Input> for Linear<W, WG, B, BG>
+impl<'p, W, B, Input> Module<'p, Input> for Linear<W, B>
 where
-    W: Clone + Sub<<WG as Mul<f64>>::Output, Output = W>,
-    WG: Clone + Mul<f64>,
-    B: Clone + Sub<<BG as Mul<f64>>::Output, Output = B>,
-    BG: Clone + Mul<f64>,
+    W: Clone + Sub<<W as Mul<f64>>::Output, Output = W> + Mul<f64>,
+    B: Clone + Sub<<B as Mul<f64>>::Output, Output = B> + Mul<f64>,
 
     W: 'p,
-    WG: 'p,
     B: 'p,
-    BG: 'p,
 
-    Input: MatMul<&'p Variable<W, WG>>,
-    <Input as MatMul<&'p Variable<W, WG>>>::Output: Add<&'p Variable<B, BG>>,
+    Input: MatMul<&'p Variable<W>>,
+    <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
 {
-    type Output = <<Input as MatMul<&'p Variable<W, WG>>>::Output as Add<&'p Variable<B, BG>>>::Output;
-    type Params = (&'p mut Variable<W, WG>, &'p mut Variable<B, BG>);
+    type Output = <<Input as MatMul<&'p Variable<W>>>::Output as Add<&'p Variable<B>>>::Output;
+    type Params = (&'p mut Variable<W>, &'p mut Variable<B>);
 
     fn forward(&'p self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
@@ -339,14 +335,14 @@ where
 /// RNNCell
 // TODO: Should we rewrite this as two linear layers?
 #[derive(Debug, Clone)]
-pub struct RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG> {
-    wih: Variable<WI, WIG>,
-    bih: Variable<BI, BIG>,
-    whh: Variable<WH, WHG>,
-    bhh: Variable<BH, BHG>,
+pub struct RNNCell<WI, BI, WH, BH> {
+    wih: Variable<WI>,
+    bih: Variable<BI>,
+    whh: Variable<WH>,
+    bhh: Variable<BH>,
 }
 
-impl<WI, WIG, BI, BIG, WH, WHG, BH, BHG> RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG> {
+impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
     /// Create new [RNNCell] with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
@@ -365,25 +361,21 @@ impl<WI, WIG, BI, BIG, WH, WHG, BH, BHG> RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, 
     }
 }
 
-impl<'a, WI, WIG, BI, BIG, WH, WHG, BH, BHG, I, H> Module<'a, (I, H)> for RNNCell<WI, WIG, BI, BIG, WH, WHG, BH, BHG>
+impl<'a, WI, BI, WH, BH, I, H> Module<'a, (I, H)> for RNNCell<WI, BI, WH, BH>
 where
-    WI: 'a + Clone + Sub<<WIG as Mul<f64>>::Output, Output = WI>,
-    WIG: 'a + Clone + Mul<f64>,
-    BI: 'a + Clone + Sub<<BIG as Mul<f64>>::Output, Output = BI>,
-    BIG: 'a + Clone + Mul<f64>,
-    WH: 'a + Clone + Sub<<WHG as Mul<f64>>::Output, Output = WH>,
-    WHG: 'a + Clone + Mul<f64>,
-    BH: 'a + Clone + Sub<<BHG as Mul<f64>>::Output, Output = BH>,
-    BHG: 'a + Clone + Mul<f64>,
+    WI: 'a + Clone + Sub<<WI as Mul<f64>>::Output, Output = WI> + Mul<f64>,
+    BI: 'a + Clone + Sub<<BI as Mul<f64>>::Output, Output = BI> + Mul<f64>,
+    WH: 'a + Clone + Sub<<WH as Mul<f64>>::Output, Output = WH> + Mul<f64>,
+    BH: 'a + Clone + Sub<<BH as Mul<f64>>::Output, Output = BH> + Mul<f64>,
 
-    I: MatMul<&'a Variable<WI, WIG>>,
-    <I as MatMul<&'a Variable<WI, WIG>>>::Output: Add<&'a Variable<BI, BIG>>,
-    H: MatMul<&'a Variable<WH, WHG>>,
-    <H as MatMul<&'a Variable<WH, WHG>>>::Output: Add<&'a Variable<BH, BHG>>,
-    <<I as MatMul<&'a Variable<WI, WIG>>>::Output as Add<&'a Variable<BI, BIG>>>::Output: Add<<<H as MatMul<&'a Variable<WH, WHG>>>::Output as Add<&'a Variable<BH, BHG>>>::Output>,
+    I: MatMul<&'a Variable<WI>>,
+    <I as MatMul<&'a Variable<WI>>>::Output: Add<&'a Variable<BI>>,
+    H: MatMul<&'a Variable<WH>>,
+    <H as MatMul<&'a Variable<WH>>>::Output: Add<&'a Variable<BH>>,
+    <<I as MatMul<&'a Variable<WI>>>::Output as Add<&'a Variable<BI>>>::Output: Add<<<H as MatMul<&'a Variable<WH>>>::Output as Add<&'a Variable<BH>>>::Output>,
 {
-    type Output = <<<I as MatMul<&'a Variable<WI, WIG>>>::Output as Add<&'a Variable<BI, BIG>>>::Output as Add<<<H as MatMul<&'a Variable<WH, WHG>>>::Output as Add<&'a Variable<BH, BHG>>>::Output>>::Output;
-    type Params = (&'a mut Variable<WI, WIG>, &'a mut Variable<BI, BIG>, &'a mut Variable<WH, WHG>, &'a mut Variable<BH, BHG>);
+    type Output = <<<I as MatMul<&'a Variable<WI>>>::Output as Add<&'a Variable<BI>>>::Output as Add<<<H as MatMul<&'a Variable<WH>>>::Output as Add<&'a Variable<BH>>>::Output>>::Output;
+    type Params = (&'a mut Variable<WI>, &'a mut Variable<BI>, &'a mut Variable<WH>, &'a mut Variable<BH>);
 
     fn forward(&'a self, x: (I, H)) -> Self::Output {
         (x.0.matmul(&self.wih) + &self.bih) + (x.1.matmul(&self.whh) + &self.bhh)

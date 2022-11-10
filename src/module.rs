@@ -13,7 +13,7 @@
 // TODO: use macros to make this DRY
 
 use crate::{tensor::Variable, optim::Optimizer};
-use std::ops::{Mul, Sub};
+use core::ops::{Mul, Sub};
 
 // We can just store all Variables in tuple and implement some trait for this tuple that will take input and call
 // all the required methods - step, zero_grad.
@@ -29,20 +29,19 @@ pub trait Parameters {
     where
         Optim: Optimizer; // these functions should be callable only by optimizers
     /// Zero [Parameter's](Parameters) gradients
-    fn zero_grad(&self);
+    fn zero_grad(&mut self);
 }
 
 impl Parameters for () {
     fn step<Optim>(self, _: &Optim)
     where
         Optim: Optimizer {}
-    fn zero_grad(&self) {}
+    fn zero_grad(&mut self) {}
 }
 
-impl<S, G, const N: usize> Parameters for [&mut Variable<S, G>; N]
+impl<S, const N: usize> Parameters for [&mut Variable<S>; N]
 where
-    S: Clone + Sub<<G as Mul<f64>>::Output, Output = S>,
-    G: Clone + Mul<f64>,
+    S: Clone + Sub<<S as Mul<f64>>::Output, Output = S> + Mul<f64>,
 {
     fn step<Optim>(self, optim: &Optim)
     where
@@ -51,15 +50,14 @@ where
         self.into_iter().for_each(|x| x.step(optim));
     }
 
-    fn zero_grad(&self) {
-        self.iter().for_each(|x| x.zero_grad());
+    fn zero_grad(&mut self) {
+        self.iter_mut().for_each(|x| x.zero_grad());
     }
 }
 
-impl<S, G> Parameters for Vec<&mut Variable<S, G>>
+impl<S> Parameters for Vec<&mut Variable<S>>
 where
-    S: Clone + Sub<<G as Mul<f64>>::Output, Output = S>,
-    G: Clone + Mul<f64>,
+    S: Clone + Sub<<S as Mul<f64>>::Output, Output = S> + Mul<f64>,
 {
     fn step<Optim>(self, optim: &Optim)
     where
@@ -68,8 +66,8 @@ where
         self.into_iter().for_each(|x| x.step(optim));
     }
 
-    fn zero_grad(&self) {
-        self.iter().for_each(|x| x.zero_grad());
+    fn zero_grad(&mut self) {
+        self.iter_mut().for_each(|x| x.zero_grad());
     }
 }
 
@@ -86,7 +84,7 @@ where
         self.1.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
     }
@@ -107,7 +105,7 @@ where
         self.2.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();
@@ -131,7 +129,7 @@ where
         self.3.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();
@@ -158,7 +156,7 @@ where
         self.4.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();
@@ -188,7 +186,7 @@ where
         self.5.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();
@@ -221,7 +219,7 @@ where
         self.6.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();
@@ -257,7 +255,7 @@ where
         self.7.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();
@@ -296,7 +294,7 @@ where
         self.8.step(optim);
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.0.zero_grad();
         self.1.zero_grad();
         self.2.zero_grad();

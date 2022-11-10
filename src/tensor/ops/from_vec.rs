@@ -1,5 +1,5 @@
 //use crate::{ops::{FromVec, Zeros}, tensor::{Variable, GradientRef}, shape::IntoShape};
-//use std::cell::RefCell;
+//use core::cell::RefCell;
 /*
 /// Initialize tensor from vec and shape
 impl<S, G, T> FromVec<T> for Variable<S, G>

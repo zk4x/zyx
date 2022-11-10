@@ -1,5 +1,4 @@
-use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoShape, Dims}};
-use std::ops::Add;
+use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoShape, Dims}};
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardV<'g, G> {
@@ -7,10 +6,10 @@ pub struct ExpandBackwardV<'g, G> {
     dims: Dims,
 }
 
-impl<S, S2> Backward<S> for ExpandBackwardV<'_, S2>
+impl<S, G> Backward<S> for ExpandBackwardV<'_, G>
 where
-    S: Max<Output = S2>,
-    S2: Add<S2, Output = S2>,
+    S: Max,
+    G: GradAcc<<S as Max>::Output>,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -18,11 +17,11 @@ where
     }
 }
 
-impl<'g, S, G> Expand for &'g Variable<S, G>
+impl<'g, S> Expand for &'g Variable<S>
 where
     S: Clone + Expand + GetShape,
 {
-    type Output = Tensor<<S as Expand>::Output, ExpandBackwardV<'g, G>>;
+    type Output = Tensor<<S as Expand>::Output, ExpandBackwardV<'g, S>>;
     fn expand(self, shape: impl IntoShape) -> Self::Output {
         let shape = shape.shape();
         let dims = Dims(self.data().shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());

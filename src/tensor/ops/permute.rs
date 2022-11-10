@@ -1,5 +1,4 @@
-use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoDims, Dims}};
-use std::ops::Add;
+use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoDims, Dims}};
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardV<'g, G> {
@@ -9,19 +8,19 @@ pub struct PermuteBackwardV<'g, G> {
 
 impl<S, G> Backward<S> for PermuteBackwardV<'_, G>
 where
-    S: Permute<Output = G>,
-    G: Add<G, Output = G>,
+    S: Permute,
+    G: GradAcc<<S as Permute>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.permute(self.dims));
     }
 }
 
-impl<'g, S, G> Permute for &'g Variable<S, G>
+impl<'g, S> Permute for &'g Variable<S>
 where
     S: Clone + Permute,
 {
-    type Output = Tensor<<S as Permute>::Output, PermuteBackwardV<'g, G>>;
+    type Output = Tensor<<S as Permute>::Output, PermuteBackwardV<'g, S>>;
     fn permute(self, dims: impl IntoDims) -> Self::Output {
         let dims = dims.dims();
         Tensor {

@@ -1,5 +1,5 @@
-use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, GradientRef}};
-use std::ops::{Add, Mul};
+use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use core::ops::Mul;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ExpBackwardV<'g, S2, G> {
@@ -10,19 +10,19 @@ pub struct ExpBackwardV<'g, S2, G> {
 impl<S, S2, G> Backward<S> for ExpBackwardV<'_, S2, G>
 where
     S: Mul<S2, Output = G>,
-    G: Add<G, Output = G>,
+    G: GradAcc<<S as Mul<S2>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad * self.res);
     }
 }
 
-impl<'g, S, G> Exp for &'g Variable<S, G>
+impl<'g, S> Exp for &'g Variable<S>
 where
     S: Clone + Exp,
     <S as Exp>::Output: Clone,
 {
-    type Output = Tensor<<S as Exp>::Output, ExpBackwardV<'g, <S as Exp>::Output, G>>;
+    type Output = Tensor<<S as Exp>::Output, ExpBackwardV<'g, <S as Exp>::Output, S>>;
     fn exp(self) -> Self::Output {
         let res = (*self.data()).clone().exp();
         Tensor {

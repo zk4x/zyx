@@ -1,5 +1,5 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef}, dtype::DType, accel::cpu};
-use std::{ops::{Neg, Add, Mul, Div}};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu};
+use core::ops::{Neg, Mul, Div};
 //use duplicate::duplicate_item;
 
 /*#[derive(Debug, Clone, Copy)]
@@ -112,20 +112,20 @@ pub struct DivBackwardVS<'g, XG, YS> {
 
 impl<S, XG, YS> Backward<S> for DivBackwardVS<'_, XG, YS>
 where
-    S: Div<YS, Output = XG>,
-    XG: Add<XG, Output = XG>,
+    S: Div<YS>,
+    XG: GradAcc<<S as Div<YS>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(res_grad / self.ydata);
     }
 }
 
-impl<'g, XS, XG, YS> Div<YS> for &'g Variable<XS, XG>
+impl<'g, XS, YS> Div<YS> for &'g Variable<XS>
 where
     XS: Clone + Div<YS>,
     YS: Clone + DType,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVS<'g, XG, YS>>;
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVS<'g, XS, YS>>;
     fn div(self, rhs: YS) -> Self::Output {
         Tensor {
             data: self.data.clone() / rhs.clone(),
@@ -147,11 +147,13 @@ pub struct DivBackwardVV<'g, S, XG, YS, YG> {
 
 impl<S, S2, XG, YS, YG> Backward<S> for DivBackwardVV<'_, S2, XG, YS, YG>
 where
-    S: Div<YS, Output = XG>,
-    XG: Clone + Add<XG, Output = XG>,
-    S2: Mul<XG>,
-    <S2 as Mul<XG>>::Output: Neg<Output = YG>,
-    YG: Add<YG, Output = YG>,
+    S: Div<YS>,
+    <S as Div<YS>>::Output: Clone,
+    S2: Mul<<S as Div<YS>>::Output>,
+    <S2 as Mul<<S as Div<YS>>::Output>>::Output: Neg,
+
+    XG: GradAcc<<S as Div<YS>>::Output>,
+    YG: GradAcc<<<S2 as Mul<<S as Div<YS>>::Output>>::Output as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
@@ -160,14 +162,14 @@ where
     }
 }
 
-impl<'g, XS, XG, YS, YG> Div<&'g Variable<YS, YG>> for &'g Variable<XS, XG>
+impl<'g, XS, YS> Div<&'g Variable<YS>> for &'g Variable<XS>
 where
     XS: Clone + Div<YS> + DType,
     YS: Clone + DType,
     <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XG, YS, YG>>;
-    fn div(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XS, YS, YS>>;
+    fn div(self, rhs: &'g Variable<YS>) -> Self::Output {
         let res = self.data.clone() / rhs.data.clone();
         Tensor {
             data: res.clone(),
@@ -191,11 +193,12 @@ pub struct DivBackwardVT<'g, S, XG, YS, YF> {
 
 impl<S, S2, XG, YS, YF> Backward<S> for DivBackwardVT<'_, S2, XG, YS, YF>
 where
-    S: Div<YS, Output = XG>,
-    XG: Clone + Add<XG, Output = XG>,
-    S2: Mul<XG>,
-    <S2 as Mul<XG>>::Output: Neg,
-    YF: Backward<<<S2 as Mul<XG>>::Output as Neg>::Output>,
+    S: Div<YS>,
+    <S as Div<YS>>::Output: Clone,
+    S2: Mul<<S as Div<YS>>::Output>,
+    <S2 as Mul<<S as Div<YS>>::Output>>::Output: Neg,
+    XG: GradAcc<<S as Div<YS>>::Output>,
+    YF: Backward<<<S2 as Mul<<S as Div<YS>>::Output>>::Output as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
@@ -204,13 +207,13 @@ where
     }
 }
 
-impl<'g, XS, XG, YS, YF> Div<Tensor<YS, YF>> for &'g Variable<XS, XG>
+impl<'g, XS, YS, YF> Div<Tensor<YS, YF>> for &'g Variable<XS>
 where
     XS: Clone + Div<YS>,
     YS: Clone,
     <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVT<'g, <XS as Div<YS>>::Output, XG, YS, YF>>;
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVT<'g, <XS as Div<YS>>::Output, XS, YS, YF>>;
     fn div(self, rhs: Tensor<YS, YF>) -> Self::Output {
         let res = self.data.clone() / rhs.data.clone();
         Tensor {
@@ -271,9 +274,9 @@ where
     S: Div<YS>,
     <S as Div<YS>>::Output: Clone,
     S2: Mul<<S as Div<YS>>::Output>,
-    <S2 as Mul<<S as Div<YS>>::Output>>::Output: Neg<Output = YG>,
-    YG: Add<YG, Output = YG>,
+    <S2 as Mul<<S as Div<YS>>::Output>>::Output: Neg,
     XF: Backward<<S as Div<YS>>::Output>,
+    YG: GradAcc<<<S2 as Mul<<S as Div<YS>>::Output>>::Output as Neg>::Output>,
 {
     fn backward(self, res_grad: S) {
         let temp = res_grad / self.ydata;
@@ -282,14 +285,14 @@ where
     }
 }
 
-impl<'g, XS, YS, YG, XF> Div<&'g Variable<YS, YG>> for Tensor<XS, XF>
+impl<'g, XS, YS, XF> Div<&'g Variable<YS>> for Tensor<XS, XF>
 where
     XS: Div<YS> + DType,
     YS: Clone + DType,
     <XS as Div<YS>>::Output: Clone,
 {
-    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardTV<'g, <XS as Div<YS>>::Output, YS, YG, XF>>;
-    fn div(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
+    type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardTV<'g, <XS as Div<YS>>::Output, YS, YS, XF>>;
+    fn div(self, rhs: &'g Variable<YS>) -> Self::Output {
         let res = self.data / rhs.data.clone();
         Tensor {
             data: res.clone(),

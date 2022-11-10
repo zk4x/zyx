@@ -1,5 +1,5 @@
-use crate::{ops::{ReLU, DReLU}, tensor::{Variable, Tensor, Backward, GradientRef}};
-use std::ops::{Add, Mul};
+use crate::{ops::{ReLU, DReLU}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use core::ops::Mul;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReLUBackwardV<'g, S, G> {
@@ -10,19 +10,19 @@ pub struct ReLUBackwardV<'g, S, G> {
 impl<S, S2, G> Backward<S> for ReLUBackwardV<'_, S2, G>
 where
     S2: DReLU,
-    S: Mul<<S2 as DReLU>::Output, Output = G>,
-    G: Add<G, Output = G>,
+    S: Mul<<S2 as DReLU>::Output>,
+    G: GradAcc<<S as Mul<<S2 as DReLU>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad * self.data.drelu());
     }
 }
 
-impl<'g, S, G> ReLU for &'g Variable<S, G>
+impl<'g, S> ReLU for &'g Variable<S>
 where
     S: Clone + ReLU,
 {
-    type Output = Tensor<<S as ReLU>::Output, ReLUBackwardV<'g, S, G>>;
+    type Output = Tensor<<S as ReLU>::Output, ReLUBackwardV<'g, S, S>>;
     fn relu(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().relu(),

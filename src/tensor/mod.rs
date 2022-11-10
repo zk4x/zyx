@@ -21,7 +21,7 @@
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
 //! # let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
-//! let y: Variable<_, ()> = x.clone().with_grad();
+//! let y: Variable<_> = x.clone().with_grad();
 //! ```
 //!
 //! Applying function to [Variable] returns [Tensor].
@@ -29,7 +29,7 @@
 //! ```
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let y: Variable<_, ()> = Buffer::cfrom([2., 1., 4.]).with_grad();
+//! # let y: Variable<_> = Buffer::cfrom([2., 1., 4.]).with_grad();
 //! let z: Tensor<_, _> = y.relu();
 //! ```
 //!
@@ -69,15 +69,10 @@ use crate::{ops::GetShape, module::Parameters};
 /// 
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default)]
-pub struct Variable<S, G> {
+pub struct Variable<S> {
     data: S,
-    // Theoretically gradient should be the same shape and type as data, but practically
-    // it just needs to implement operations required by optimizers so there is no need
-    // to arbitrarily constrain it. This also simplyfies some performance optimizations.
-    // One side effect is, that the type of the gradient does not need to be user known
-    // at the time of creation, because compiler will determine it when some operation
-    // is applied to this Variable.
-    grad: Gradient<G>,
+    // Gradient has the same type and shape as data
+    grad: Gradient<S>,
 }
 
 /// Gradient of [Variable]
@@ -88,54 +83,58 @@ pub struct Variable<S, G> {
 // so it is not difficult to make it safe to use.
 // The only mutable accesses are [Self::zero], which does not use unsafe
 // and accumulate, which uses unsafe, since [Variable] can be passed into multiple
-// functions and all of them need to be able to accumulate gradient, also maybe needed
-// for batch?
+// functions and all of them need to be able to accumulate gradient.
+// So we just make sure that backward can not be called on buffer that is borrowed
+// and that is it.
 #[derive(Default, Debug)]
-pub struct Gradient<G>(std::cell::UnsafeCell<Option<G>>);
+pub struct Gradient<S>(core::cell::UnsafeCell<Option<S>>);
 
-impl<G> Clone for Gradient<G>
+impl<S> Clone for Gradient<S>
 where
-    G: Clone,
+    S: Clone,
 {
     fn clone(&self) -> Self {
-        unsafe { Self(std::cell::UnsafeCell::new((*self.0.get()).clone())) }
+        // Safe, read only access
+        unsafe { Self(core::cell::UnsafeCell::new((*self.0.get()).clone())) }
     }
 }
 
-impl<G> Gradient<G> {
+impl<S> Gradient<S> {
     fn new() -> Self {
-        Self(std::cell::UnsafeCell::new(None))
+        Self(core::cell::UnsafeCell::new(None))
     }
 
-    fn value(self) -> Option<G> {
+    fn value(self) -> Option<S> {
         self.0.into_inner()
     }
 
-    fn zero(&self) {
-        // TODO this unsafe can be removed by making this function take mutable reference,
-        // that however requires that parameters are passed around mutably
-        // (they can not be stored in optimizers)
-        unsafe { *self.0.get() = None; }
+    fn zero(&mut self) {
+        *self.0.get_mut() = None;
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct GradientRef<'g, G>(&'g Gradient<G>);
+trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
+impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
 
-impl<'g, G> GradientRef<'g, G> {
-    fn new(gradient: &'g Gradient<G>) -> Self {
+#[derive(Debug, Clone, Copy)]
+struct GradientRef<'g, S>(&'g Gradient<S>);
+
+impl<'g, S> GradientRef<'g, S> {
+    fn new(gradient: &'g Gradient<S>) -> Self {
         Self(gradient)
     }
 
-    fn accumulate(&self, value: G)
+    fn accumulate<G>(&self, value: G)
     where
-        G: std::ops::Add<Output = G>,
+        S: GradAcc<G>,
     {
+        // Accumulate is called by backward function to accumulate gradients. This is needed in batch processing.
+        // Unsafe is needed, because we need multiple functions accessing the same gradient.
         let mut x = None;
         unsafe { core::ptr::swap(self.0.0.get(), &mut x); }
         let grad = Some(match x {
             Some(grad) => grad + value,
-            None => value,
+            None => S::zeros(1) + value,
         });
         unsafe { *self.0.0.get() = grad; }
     }
@@ -146,6 +145,7 @@ where
     G: crate::ops::IntoVec<T>,
 {
     fn to_vec(&self) -> Vec<T> {
+        // This is save, beacause it is read only access
         if let Some(grad) = unsafe { &*self.0.get() } {
             grad.to_vec()
         } else {
@@ -154,11 +154,12 @@ where
     }
 }
 
-impl<G> std::fmt::Display for Gradient<G>
+impl<G> core::fmt::Display for Gradient<G>
 where
-    G: std::fmt::Display,
+    G: core::fmt::Display,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // This is save, beacause it is read only access
         let grad = unsafe { &*self.0.get() };
         let s = if grad.is_some() {
             grad.as_ref().unwrap().to_string()
@@ -184,12 +185,11 @@ pub struct Tensor<S, GradFn> {
 /// # Display Variable
 /// 
 /// Shows [Variable] and it's gradient.
-impl<S, G> std::fmt::Display for Variable<S, G>
+impl<S> core::fmt::Display for Variable<S>
 where
-    S: std::fmt::Display,
-    G: std::fmt::Display,
+    S: core::fmt::Display,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&format!(
             "{} with grad:\n{}",
             self.data,
@@ -201,28 +201,32 @@ where
 /// # Display Tensor
 /// 
 /// Shows [Tensor] and it's grad_fn.
-impl<S, GradFn> std::fmt::Display for Tensor<S, GradFn>
+impl<S, GradFn> core::fmt::Display for Tensor<S, GradFn>
 where
-    S: std::fmt::Display,
-    GradFn: std::fmt::Debug,
+    S: core::fmt::Display,
+    GradFn: core::fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // TODO: this is ugly solution, please just print the name of the function, don't require GradFn debug
         // and creating debug string of all the buffers stored in grad_fn
         f.write_str(&format!("{} with grad_fn: {}", self.data, format!("{:?}", self.grad_fn).split_once(" {").unwrap().0))
     }
 }
 
-impl<S> Variable<S, i32> {
+impl<S> Variable<S> {
     /// # Variable backward
     /// 
     /// Calls backward function on [Variable].
     /// This results in [Variable's](Variable) gradient being increased by one.
+    /// We take [Variable] with mutable reference, so that we have exclusive access during mutation of gradient.
     /// 
     /// ```txt
     /// x.grad += 1;
     /// ```
-    pub fn backward(&self) {
+    pub fn backward(&mut self)
+    where
+        S: core::ops::Add<i32, Output = S> + crate::ops::Zeros,
+    {
         GradientRef(&self.grad).accumulate(1);
     }
 }
@@ -250,7 +254,7 @@ where
     /// ```
     /// # use zyx::prelude::*;
     /// # use zyx::accel::cpu;
-    /// let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad::<cpu::Buffer<f32>>();
+    /// let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
     /// let y = x.exp();
     /// ```
     /// y is now [Tensor], so we can call backward on it.
@@ -281,14 +285,14 @@ where
 /// Turn any datatype into [Variable].
 pub trait IntoVariable {
     /// Calling this function turns input into [Variable] adding gradient in the process.
-    fn with_grad<G>(self) -> Variable<Self, G>
+    fn with_grad(self) -> Variable<Self>
     where
         Self: Sized;
 }
 
 /// Create new [Variable] that requires gradient
 impl<S> IntoVariable for S {
-    fn with_grad<G>(self) -> Variable<Self, G> {
+    fn with_grad(self) -> Variable<Self> {
         Variable {
             data: self,
             grad: Gradient::new(),
@@ -296,7 +300,7 @@ impl<S> IntoVariable for S {
     }
 }
 
-impl<S, G> Variable<S, G> {
+impl<S> Variable<S> {
     /// Access [Variable's](Variable) data buffer
     pub fn data(&self) -> &S {
         &self.data
@@ -310,9 +314,9 @@ impl<S, GradFn> Tensor<S, GradFn> {
     }
 }
 
-impl<S, G> Variable<S, G> {
+impl<S> Variable<S> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> &Gradient<G> {
+    pub fn grad(&self) -> &Gradient<S> {
         &self.grad
     }
 }
@@ -331,25 +335,26 @@ pub struct GradHookV<'g, G, Hook> {
     hook: Hook,
 }
 
-impl<G, HOOK> Backward<G> for GradHookV<'_, G, HOOK>
+impl<S, G, HOOK> Backward<S> for GradHookV<'_, G, HOOK>
 where
-    G: Clone + std::ops::Add<G, Output = G>,
-    HOOK: FnOnce(G),
+    S: Clone,
+    G: Clone + GradAcc<S>,
+    HOOK: FnOnce(S),
 {
-    fn backward(self, res_grad: G) {
+    fn backward(self, res_grad: S) {
         (self.hook)(res_grad.clone());
         self.grad.accumulate(res_grad);
     }
 }
 
-impl<S, G> Variable<S, G> {
+impl<S> Variable<S> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass.
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
-    pub fn register_hook<HOOK>(&self, hook: HOOK) -> Tensor<S, GradHookV<'_, G, HOOK>>
+    pub fn register_hook<HOOK>(&self, hook: HOOK) -> Tensor<S, GradHookV<'_, S, HOOK>>
     where
         S: Clone,
-        HOOK: FnOnce(G), // not necessary to put this requirement here, but seems like a good idea
+        HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
     {
         Tensor {
             data: (*self.data()).clone(),
@@ -401,12 +406,12 @@ impl<S, GradFn> Tensor<S, GradFn> {
 /// Conversions between devices and types
 // NOTE: you need to move the Variable into required device and type
 // before using it in optimizer
-impl<S, S2, G> crate::ops::ConvertFrom<Variable<S2, G>> for Variable<S, G>
+impl<S, S2> crate::ops::ConvertFrom<Variable<S2>> for Variable<S>
 where
     S: crate::ops::ConvertFrom<S2>,
     S2: Clone,
 {
-    fn cfrom(x: Variable<S2, G>) -> Self {
+    fn cfrom(x: Variable<S2>) -> Self {
         Self {
             data: S::cfrom(x.data),
             grad: Gradient::new(),
@@ -431,12 +436,11 @@ where
 }
 
 use crate::optim::Optimizer;
-use std::ops::{Sub, Mul};
+use core::ops::{Sub, Mul};
 // Update Variable's data. It is used by optimizer.step().
-impl<S, G> Parameters for &mut Variable<S, G>
+impl<S> Parameters for &mut Variable<S>
 where
-    S: Clone + Sub<<G as Mul<f64>>::Output, Output = S>,
-    G: Clone + Mul<f64>,
+    S: Clone + Mul<f64> + Sub<<S as Mul<f64>>::Output, Output = S>,
 {
     fn step<Optim>(self, optim: &Optim)
     where
@@ -449,7 +453,7 @@ where
         // Does some optimizer need that?
     }
 
-    fn zero_grad(&self) {
+    fn zero_grad(&mut self) {
         self.grad.zero();
     }
 }

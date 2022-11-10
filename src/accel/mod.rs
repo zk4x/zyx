@@ -5,9 +5,9 @@
 // Every accelerator can implement following traits in order to be fully compatible with tensors:
 // ```txt
 // - Clone
-// - std::default::Default
-// - std::ops::{Neg, Add, Sub, Mul, Div}
-// - std::ops::Mul<f64> // for use in optimizers
+// - core::default::Default
+// - core::ops::{Neg, Add, Sub, Mul, Div}
+// - core::ops::Mul<f64> // for use in optimizers
 // - zyx::ops::*
 // ```
 // 

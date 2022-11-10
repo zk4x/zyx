@@ -1,7 +1,7 @@
 //! Various optimizers to update [Variables](crate::tensor::Variable).
 //! 
 
-use std::ops::{Sub, Mul};
+use core::ops::{Sub, Mul};
 
 /// # Optimizer trait
 /// 

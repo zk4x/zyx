@@ -1,7 +1,7 @@
 use crate::{ops::Zeros, tensor::{Variable, Gradient}, shape::IntoShape};
 
 /// Initialize tensor filled with zeros
-impl<S, G> Zeros for Variable<S, G>
+impl<S> Zeros for Variable<S>
 where
     S: Zeros,
 {

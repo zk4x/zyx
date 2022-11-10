@@ -3,7 +3,8 @@
 //!
 
 use crate::{ops::{self, ConvertFrom}, shape::{IntoShape, IntoDims, Shape}, dtype::ScalarType};
-use std::{ops::{Add, Mul}, sync::Arc};
+use core::{ops::{Add, Mul}};
+use std::sync::Arc;
 
 // TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
 // If it creates shallow copy, it needs to do the necessary reference counting
@@ -24,7 +25,7 @@ pub struct Buffer<T> {
 impl<T> Buffer<T> {
     /// Get Buffer's estimated memory size
     pub fn est_mem_size(&self) -> usize {
-        self.data.len() * std::mem::size_of::<T>() + self.shape.ndim() * std::mem::size_of::<usize>()
+        self.data.len() * core::mem::size_of::<T>() + self.shape.ndim() * core::mem::size_of::<usize>()
     }
 }
 
@@ -45,11 +46,11 @@ where
 }
 
 // Display Buffer
-impl<T> std::fmt::Display for Buffer<T>
+impl<T> core::fmt::Display for Buffer<T>
 where
-    T: std::fmt::Display + ScalarType
+    T: core::fmt::Display + ScalarType
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut res = String::new();
         if self.data.is_empty() { return f.write_str(&(res + "[]")); }
         let n = self.shape.numel();
@@ -75,7 +76,7 @@ where
                     r -= 1;
                 }
             }
-            use std::fmt::Write;
+            use core::fmt::Write;
             let _ = write!(res, "{0:>1$}", self.data[i], w);
             if (i + 1) % d0 != 0usize { res += " "; }
             {
@@ -221,9 +222,9 @@ where
     }
 }
 
-impl<T> std::ops::Neg for Buffer<T>
+impl<T> core::ops::Neg for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Neg<Output = T> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Neg<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn neg(self) -> Self::Output {
@@ -282,7 +283,7 @@ impl<T> Buffer<T> {
 
 impl<T> ops::Sum for Buffer<T>
 where
-    T: Clone + ops::Zeros + std::ops::Add<Output = T> + ScalarType,
+    T: Clone + ops::Zeros + core::ops::Add<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn sum(self, dims: impl IntoDims) -> Self::Output {
@@ -389,15 +390,15 @@ where
         let mut dims = dims.dims().0;
         let mut s_shape = self.shape;
         match dims.len().cmp(&s_shape.ndim()) {
-            std::cmp::Ordering::Greater =>
+            core::cmp::Ordering::Greater =>
                 for _ in 0..dims.len() - s_shape.ndim() {
                     s_shape.0.insert(0, 1);
                 },
-            std::cmp::Ordering::Less =>
+            core::cmp::Ordering::Less =>
                 for i in 0..s_shape.ndim() - dims.len() {
                     dims.insert(0, i as i32);
                 },
-            std::cmp::Ordering::Equal => {}
+            core::cmp::Ordering::Equal => {}
         }
 
         let ndim = s_shape.ndim();
@@ -438,7 +439,7 @@ where
 
 /*impl<T> ops::Slice for &Buffer<T>
 where
-    T: Clone + ops::Zeros + std::ops::Add<Output = T>,
+    T: Clone + ops::Zeros + core::ops::Add<Output = T>,
 {
     type Output = Buffer<T>;
     fn slice(self, dims: &[u8]) -> Self::Output {
@@ -453,11 +454,11 @@ where
 {
     use rayon::prelude::*;
     use ops::Expand;
-    use std::cmp::Ordering;
-    let shape = x.shape.clone();
+    use core::cmp::Ordering;
+    let mut shape = x.shape.clone();
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
     // stuff during expanding
-    let data = match x.shape.numel().cmp(&y.shape.numel()) {
+    let data = Arc::new(match x.shape.numel().cmp(&y.shape.numel()) {
         Ordering::Greater => {
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.expand(x.shape).data) {
@@ -470,7 +471,8 @@ where
                 }
             }
         }
-        Ordering::Less => 
+        Ordering::Less => {
+            shape = y.shape.clone();
             match Arc::try_unwrap(y.data) {
                 Ok(vec) => match Arc::try_unwrap(x.expand(y.shape).data) {
                     Ok(vec_x) => vec_x.into_par_iter().zip(vec.into_par_iter()).map(f).collect(),
@@ -481,6 +483,7 @@ where
                     Err(rc_x) => rc_x.par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
                 }
             }
+        }
         Ordering::Equal => {
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.data) {
@@ -493,16 +496,16 @@ where
                 }
             }
         }
-    };
+    });
     Buffer {
         shape,
-        data: Arc::new(data),
+        data,
     }
 }
 
-impl<T> std::ops::Add for Buffer<T>
+impl<T> core::ops::Add for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Add<Output = T> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Add<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: Buffer<T>) -> Self::Output {
@@ -512,9 +515,9 @@ where
 
 use duplicate::duplicate_item;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl<T> std::ops::Add<Buffer<T>> for dtype
+impl<T> core::ops::Add<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Add<Output = T> + Clone + ScalarType,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Add<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: Buffer<T>) -> Self::Output {
@@ -532,10 +535,10 @@ where
     }
 }
 
-impl<T, T2> std::ops::Add<T2> for Buffer<T>
+impl<T, T2> core::ops::Add<T2> for Buffer<T>
 where
     T2: ScalarType,
-    T: Clone + Sync + Send + std::ops::Add<Output = T> + ConvertFrom<T2> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Add<Output = T> + ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn add(self, rhs: T2) -> Self::Output {
@@ -553,9 +556,9 @@ where
     }
 }
 
-impl<T> std::ops::Sub for Buffer<T>
+impl<T> core::ops::Sub for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Sub<Output = T> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Sub<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn sub(self, rhs: Buffer<T>) -> Self::Output {
@@ -564,9 +567,9 @@ where
 }
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl<T> std::ops::Sub<Buffer<T>> for dtype
+impl<T> core::ops::Sub<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Sub<Output = T> + Clone + ScalarType,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Sub<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn sub(self, rhs: Buffer<T>) -> Self::Output {
@@ -584,10 +587,10 @@ where
     }
 }
 
-impl<T, T2> std::ops::Sub<T2> for Buffer<T>
+impl<T, T2> core::ops::Sub<T2> for Buffer<T>
 where
     T2: ScalarType,
-    T: Clone + Sync + Send + std::ops::Sub<Output = T> + ConvertFrom<T2> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Sub<Output = T> + ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn sub(self, rhs: T2) -> Self::Output {
@@ -605,9 +608,9 @@ where
     }
 }
 
-impl<T> std::ops::Mul for Buffer<T>
+impl<T> core::ops::Mul for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn mul(self, rhs: Buffer<T>) -> Self::Output {
@@ -616,9 +619,9 @@ where
 }
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl<T> std::ops::Mul<Buffer<T>> for dtype
+impl<T> core::ops::Mul<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Mul<Output = T> + Clone + ScalarType,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Mul<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn mul(self, rhs: Buffer<T>) -> Self::Output {
@@ -635,10 +638,10 @@ where
     }
 }
 
-impl<T, T2> std::ops::Mul<T2> for Buffer<T>
+impl<T, T2> core::ops::Mul<T2> for Buffer<T>
 where
     T2: ScalarType,
-    T: Clone + Sync + Send + std::ops::Mul<Output = T> + ops::ConvertFrom<T2> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn mul(self, rhs: T2) -> Self::Output {
@@ -655,9 +658,9 @@ where
     }
 }
 
-impl<T> std::ops::Div for Buffer<T>
+impl<T> core::ops::Div for Buffer<T>
 where
-    T: Clone + Sync + Send + std::ops::Div<Output = T> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Div<Output = T> + ScalarType,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: Buffer<T>) -> Self::Output {
@@ -666,9 +669,9 @@ where
 }
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl<T> std::ops::Div<Buffer<T>> for dtype
+impl<T> core::ops::Div<Buffer<T>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + std::ops::Div<Output = T> + Clone + ScalarType,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Div<Output = T> + Clone + ScalarType,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: Buffer<T>) -> Self::Output {
@@ -685,10 +688,10 @@ where
     }
 }
 
-impl<T, T2> std::ops::Div<T2> for Buffer<T>
+impl<T, T2> core::ops::Div<T2> for Buffer<T>
 where
     T2: ScalarType,
-    T: Clone + Sync + Send + std::ops::Div<Output = T> + ConvertFrom<T2> + ScalarType,
+    T: Clone + Sync + Send + core::ops::Div<Output = T> + ConvertFrom<T2> + ScalarType,
 {
     type Output = Buffer<T>;
     fn div(self, rhs: T2) -> Self::Output {
@@ -736,7 +739,7 @@ where
 #[cfg(not(feature = "matrixmultiply"))]
 impl<T> ops::MatMul for Buffer<T>
 where
-    T: Sync + Send + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::iter::Sum + ScalarType,
+    T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + ScalarType,
     Buffer<T>: ops::Transpose<Output = Buffer<T>>,
 {
     type Output = Self;
@@ -768,7 +771,7 @@ where
         use rayon::prelude::*;
         let x_data = self.data.as_ref();
         let ty_data = ty.data.as_ref();
-        const NUM: usize = 8; //256/std::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
+        const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
         let data: Vec<T> = ty_data
                 .par_chunks(k)
                 .map(|y_row| {

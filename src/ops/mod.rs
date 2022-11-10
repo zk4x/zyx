@@ -58,7 +58,7 @@ use crate::shape::{IntoShape, IntoDims, Shape};
 /// ## Convert between devices and types
 /// 
 /// Create new tensor on given device with given type
-// needed because we can't use std::convert::From
+// needed because we can't use core::convert::From
 // because it's foreign trait and it doesn't work
 // when T == Self
 pub trait ConvertFrom<T> {
@@ -101,16 +101,16 @@ pub trait Ones {
 
 /// ## IntoVec operation
 /// 
-/// Returns values from tensor as a Vec. This accesses raw storage,
-/// with the buffer::Cpu it will have row major order.
+/// Returns values from tensor as a Vec.
+/// It must have row major order.
 pub trait IntoVec<T> {
-    /// Returns values from tensor as a Vec. This can access raw storage.
+    /// Returns values from tensor as a Vec with row-major order.
     fn to_vec(&self) -> Vec<T>;
 }
 
 /// ## FromVec operation
 /// 
-/// Creates new tensor from given Vec and shape.
+/// Creates new tensor from given Vec and shape. Vec is in row-major order.
 /// 
 /// ### Example
 /// ```
@@ -451,7 +451,7 @@ where
 }
 
 // Binary ops are Add, Sub, Mul, Div, Pow, all with same size tensors,
-// use std::ops to implement them (except for Pow)
+// use core::ops to implement them (except for Pow)
 
 /// Pow operation
 /// 

@@ -22,8 +22,7 @@ fn main() {
 
     for _ in 0..100 {
         for i in 0..100 {
-            use cpu::Buffer;
-            <(Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU, Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).zero_grad();
+            <(Linear<_, _>, ReLU, Linear<_, _>, Tanh, Linear<_, _>, Sigmoid) as Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).zero_grad();
             // Right now it looks bad, but eventually it will look like this:
             //network.parameters().zero_grad();
 
@@ -36,7 +35,8 @@ fn main() {
 
             loss.backward();
 
-            <(Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU, Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::Tanh, Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).step(&optimizer);
+            use cpu::Buffer;
+            <(Linear<Buffer<f32>, Buffer<f32>>, ReLU, Linear<Buffer<f32>, Buffer<f32>>, Tanh, Linear<Buffer<f32>, Buffer<f32>>, Sigmoid) as Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).step(&optimizer);
             // Right now it looks bad, but eventually it will look like this:
             //network.parameters().step(&optimizer);
         }

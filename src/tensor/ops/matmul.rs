@@ -1,5 +1,4 @@
-use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef}, dtype::DType};
-use std::ops::Add; 
+use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardSV<'g, XS, YG> {
@@ -10,21 +9,21 @@ pub struct MatMulBackwardSV<'g, XS, YG> {
 impl<S, XS, YG> Backward<S> for MatMulBackwardSV<'_, XS, YG>
 where
     XS: Transpose,
-    <XS as Transpose>::Output: MatMul<S, Output = YG>,
-    YG: Add<YG, Output = YG>,
+    <XS as Transpose>::Output: MatMul<S>,
+    YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));
     }
 }
 
-impl<'g, XS, YS, YG> MatMul<&'g Variable<YS, YG>> for XS
+impl<'g, XS, YS> MatMul<&'g Variable<YS>> for XS
 where
     XS: Clone + MatMul<YS> + DType,
     YS: Clone + DType,
 {
-    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardSV<'g, XS, YG>>;
-    fn matmul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
+    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardSV<'g, XS, YS>>;
+    fn matmul(self, rhs: &'g Variable<YS>) -> Self::Output {
         Tensor {
             data: self.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardSV {
@@ -78,20 +77,20 @@ pub struct MatMulBackwardVS<'g, XG, YS> {
 impl<S, XG, YS> Backward<S> for MatMulBackwardVS<'_, XG, YS>
 where
     YS: Transpose,
-    S: MatMul<<YS as Transpose>::Output, Output = XG>,
-    XG: Add<XG, Output = XG>,
+    S: MatMul<<YS as Transpose>::Output>,
+    XG: GradAcc<<S as MatMul<<YS as Transpose>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad.accumulate(res_grad.matmul(self.ydata.transpose()));
     }
 }
 
-impl<'g, XS, XG, YS> MatMul<YS> for &'g Variable<XS, XG>
+impl<'g, XS, YS> MatMul<YS> for &'g Variable<XS>
 where
     XS: Clone + MatMul<YS>,
     YS: Clone + DType,
 {
-    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVS<'g, XG, YS>>;
+    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVS<'g, XS, YS>>;
     fn matmul(self, rhs: YS) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.clone()),
@@ -115,11 +114,12 @@ impl<S, XS, XG, YS, YG> Backward<S> for MatMulBackwardVV<'_, XS, XG, YS, YG>
 where
     S: Clone,
     XS: Transpose,
-    <XS as Transpose>::Output: MatMul<S, Output = YG>,
-    YG: Add<YG, Output = YG>,
+    <XS as Transpose>::Output: MatMul<S>,
     YS: Transpose,
-    S: MatMul<<YS as Transpose>::Output, Output = XG>,
-    XG: Add<XG, Output = XG>,
+    S: MatMul<<YS as Transpose>::Output>,
+
+    XG: GradAcc<<S as MatMul<<YS as Transpose>::Output>>::Output>,
+    YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad.clone()));
@@ -127,13 +127,13 @@ where
     }
 }
 
-impl<'g, XS, XG, YS, YG> MatMul<&'g Variable<YS, YG>> for &'g Variable<XS, XG>
+impl<'g, XS, YS> MatMul<&'g Variable<YS>> for &'g Variable<XS>
 where
     XS: Clone + MatMul<YS>,
     YS: Clone,
 {
-    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVV<'g, XS, XG, YS, YG>>;
-    fn matmul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
+    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVV<'g, XS, XS, YS, YS>>;
+    fn matmul(self, rhs: &'g Variable<YS>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardVV {
@@ -159,8 +159,9 @@ where
     S: Clone + Transpose,
     XS: Transpose,
     <XS as Transpose>::Output: MatMul<S>,
-    <S as Transpose>::Output: MatMul<YS, Output = XG>,
-    XG: Add<XG, Output = XG>,
+    <S as Transpose>::Output: MatMul<YS>,
+
+    XG: GradAcc<<<S as Transpose>::Output as MatMul<YS>>::Output>,
     YF: Backward<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
@@ -169,12 +170,12 @@ where
     }
 }
 
-impl<'g, XS, XG, YS, YF> MatMul<Tensor<YS, YF>> for &'g Variable<XS, XG>
+impl<'g, XS, YS, YF> MatMul<Tensor<YS, YF>> for &'g Variable<XS>
 where
     XS: Clone + MatMul<YS>,
     YS: Clone,
 {
-    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVT<'g, XG, XS, YS, YF>>;
+    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVT<'g, XS, XS, YS, YF>>;
     fn matmul(self, rhs: Tensor<YS, YF>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data.clone()),
@@ -234,10 +235,11 @@ impl<S, YG, XS, YS, XF> Backward<S> for MatMulBackwardTV<'_, YG, XS, YS, XF>
 where
     YS: Transpose,
     S: Clone + MatMul<<YS as Transpose>::Output>,
-    XF: Backward<<S as MatMul<<YS as Transpose>::Output>>::Output>,
     XS: Transpose,
-    <XS as Transpose>::Output: MatMul<S, Output = YG>,
-    YG: Add<YG, Output = YG>,
+    <XS as Transpose>::Output: MatMul<S>,
+
+    XF: Backward<<S as MatMul<<YS as Transpose>::Output>>::Output>,
+    YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
@@ -245,13 +247,13 @@ where
     }
 }
 
-impl<'g, XS, XF, YS, YG> MatMul<&'g Variable<YS, YG>> for Tensor<XS, XF>
+impl<'g, XS, XF, YS> MatMul<&'g Variable<YS>> for Tensor<XS, XF>
 where
     XS: Clone + MatMul<YS>,
     YS: Clone,
 {
-    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardTV<'g, YG, XS, YS, XF>>;
-    fn matmul(self, rhs: &'g Variable<YS, YG>) -> Self::Output {
+    type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardTV<'g, YS, XS, YS, XF>>;
+    fn matmul(self, rhs: &'g Variable<YS>) -> Self::Output {
         Tensor {
             data: self.data.clone().matmul(rhs.data.clone()),
             grad_fn: MatMulBackwardTV {

@@ -1,5 +1,5 @@
-use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, GradientRef}};
-use std::ops::{Add, Sub, Mul};
+use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use core::ops::{Sub, Mul};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TanhBackwardV<'g, S2, G> {
@@ -11,20 +11,20 @@ impl<S, S2, G> Backward<S> for TanhBackwardV<'_, S2, G>
 where
     S2: Pow<i32>,
     i32: Sub<<S2 as Pow<i32>>::Output>,
-    S: Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output, Output = G>,
-    G: Add<G, Output = G>,
+    S: Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>,
+    G: GradAcc<<S as Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad * (1 - self.res.pow(2)));
     }
 }
 
-impl<'g, S, G> Tanh for &'g Variable<S, G>
+impl<'g, S> Tanh for &'g Variable<S>
 where
     S: Clone + Tanh,
     <S as Tanh>::Output: Clone,
 {
-    type Output = Tensor<<S as Tanh>::Output, TanhBackwardV<'g, <S as Tanh>::Output, G>>;
+    type Output = Tensor<<S as Tanh>::Output, TanhBackwardV<'g, <S as Tanh>::Output, S>>;
     fn tanh(self) -> Self::Output {
         let res = self.data.clone().tanh();
         Tensor {

@@ -78,7 +78,7 @@ where
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let shape = shape.shape();
-        Self::from_vec(std::iter::repeat(0).take(shape.numel()).map(|_| rng.gen()).collect(), shape)
+        Self::from_vec(core::iter::repeat(0).take(shape.numel()).map(|_| rng.gen()).collect(), shape)
     }
 }
 
@@ -112,7 +112,7 @@ where
         let mut rng = rand::thread_rng();
         let dist = rand::distributions::Uniform::new(low, high);
         let shape = shape.shape();
-        Self::from_vec(std::iter::repeat(0).take(shape.numel()).map(|_| dist.sample(&mut rng)).collect(), shape)
+        Self::from_vec(core::iter::repeat(0).take(shape.numel()).map(|_| dist.sample(&mut rng)).collect(), shape)
     }
 }
 
@@ -125,7 +125,7 @@ where
 {
     fn cfrom(mut f: (F, Sh)) -> Self {
         let shape = f.1.shape();
-        S::from_vec(std::iter::repeat(0).take(shape.numel()).map(|_| f.0()).collect(), shape)
+        S::from_vec(core::iter::repeat(0).take(shape.numel()).map(|_| f.0()).collect(), shape)
     }
 }
 

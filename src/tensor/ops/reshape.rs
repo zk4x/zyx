@@ -1,5 +1,4 @@
-use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef}, shape::{IntoShape, Shape}};
-use std::ops::Add;
+use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoShape, Shape}};
 
 #[derive(Debug, Clone)]
 pub struct ReshapeBackwardV<'g, G> {
@@ -9,19 +8,19 @@ pub struct ReshapeBackwardV<'g, G> {
 
 impl<S, G> Backward<S> for ReshapeBackwardV<'_, G>
 where
-    S: Reshape<Output = G>,
-    G: Add<G, Output = G>,
+    S: Reshape,
+    G: GradAcc<<S as Reshape>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.reshape(self.shape));
     }
 }
 
-impl<'g, S, G> Reshape for &'g Variable<S, G>
+impl<'g, S> Reshape for &'g Variable<S>
 where
     S: Clone + Reshape + GetShape,
 {
-    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardV<'g, G>>;
+    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardV<'g, S>>;
     fn reshape(self, shape: impl IntoShape) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().reshape(shape),

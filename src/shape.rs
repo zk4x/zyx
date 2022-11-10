@@ -11,7 +11,7 @@
 //!
 
 use crate::ops::{Permute, IntoVec};
-use std::ops::Range;
+use core::ops::Range;
 
 /// # IntoShape trait
 /// 
@@ -96,7 +96,7 @@ impl Permute for Shape {
 
 /*impl<'a> IntoIterator for &'a Shape {
     type Item = usize;
-    type IntoIter = std::slice::Iter<'a, usize>;
+    type IntoIter = core::slice::Iter<'a, usize>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
@@ -112,14 +112,14 @@ impl IntoIterator for Shape {
     }
 }
 
-impl std::ops::IndexMut<i32> for Shape {
+impl core::ops::IndexMut<i32> for Shape {
     fn index_mut(&mut self, idx: i32) -> &mut Self::Output {
         let n = self.ndim();
         &mut self.0[(n as i32 + idx) as usize % n]
     }
 }
 
-impl std::ops::Index<i32> for Shape {
+impl core::ops::Index<i32> for Shape {
     type Output = usize;
     fn index(&self, idx: i32) -> &Self::Output {
         let n = self.ndim();
@@ -127,14 +127,14 @@ impl std::ops::Index<i32> for Shape {
     }
 }
 
-impl std::ops::IndexMut<usize> for Shape {
+impl core::ops::IndexMut<usize> for Shape {
     fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
         let n = self.ndim();
         &mut self.0[(n + idx) % n]
     }
 }
 
-impl std::ops::Index<usize> for Shape {
+impl core::ops::Index<usize> for Shape {
     type Output = usize;
     fn index(&self, idx: usize) -> &Self::Output {
         let n = self.ndim();
@@ -142,7 +142,7 @@ impl std::ops::Index<usize> for Shape {
     }
 }
 
-impl std::ops::Index<Range<usize>> for Shape {
+impl core::ops::Index<Range<usize>> for Shape {
     type Output = [usize];
     fn index(&self, idx: Range<usize>) -> &Self::Output {
         let n = self.ndim();
@@ -150,7 +150,7 @@ impl std::ops::Index<Range<usize>> for Shape {
     }
 }
 
-impl<Other> std::cmp::PartialEq<Other> for Shape
+impl<Other> core::cmp::PartialEq<Other> for Shape
 where
     Other: IntoShape + Clone,
 {
@@ -165,8 +165,8 @@ impl IntoVec<usize> for Shape {
     }
 }
 
-impl std::fmt::Display for Shape {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Shape {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
         data.replace_range(data.len()-2..data.len(), "");
         f.write_fmt(format_args!("Shape({})", data))
@@ -226,7 +226,7 @@ impl IntoIterator for Dims {
     }
 }
 
-impl std::ops::Index<i32> for Dims {
+impl core::ops::Index<i32> for Dims {
     type Output = i32;
     fn index(&self, idx: i32) -> &Self::Output {
         let n = self.ndim();
@@ -457,7 +457,7 @@ impl<const N: usize> IntoDims for [i32; N] {
     }
 }
 
-impl<Other> std::cmp::PartialEq<Other> for Dims
+impl<Other> core::cmp::PartialEq<Other> for Dims
 where
     Other: IntoDims + Clone,
 {
@@ -466,8 +466,8 @@ where
     }
 }
 
-impl std::fmt::Display for Dims {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Dims {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
         data.replace_range(data.len()-2..data.len(), "");
         f.write_fmt(format_args!("Dims({})", data))

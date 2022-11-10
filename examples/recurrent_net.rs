@@ -11,11 +11,11 @@ fn main() {
 
     // This looks bad right now, eventually types will be elided
     let mut rnn_net = (
-        RNNCell::<cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>>::new::<f32>(input_size, hidden_size),
+        RNNCell::<cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>>::new::<f32>(input_size, hidden_size),
         ReLU,
     );
     let mut net2 = (
-        Linear::<cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>, cpu::Buffer<f32>>::new::<f32>(hidden_size, 3),
+        Linear::<cpu::Buffer<f32>, cpu::Buffer<f32>>::new::<f32>(hidden_size, 3),
         SoftMax { dims: () },
     );
 
@@ -30,7 +30,7 @@ fn main() {
 
     for i in 0..30000 {
         use cpu::Buffer;
-        (<(RNNCell<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32>, Buffer<f32>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).zero_grad();
+        (<(RNNCell<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32>, Buffer<f32>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32>, Buffer<f32>>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).zero_grad();
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).zero_grad();
 
@@ -50,7 +50,7 @@ fn main() {
 
         loss.backward();
 
-        (<(RNNCell<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32>, Buffer<f32>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).step(&optimizer);
+        (<(RNNCell<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32>, Buffer<f32>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32>, Buffer<f32>>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).step(&optimizer);
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).step(&optimizer);
     }

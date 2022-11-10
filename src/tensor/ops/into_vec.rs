@@ -1,6 +1,6 @@
 use crate::{ops::IntoVec, tensor::{Variable, Tensor}};
 
-impl<S, G, T> IntoVec<T> for Variable<S, G>
+impl<S, T> IntoVec<T> for Variable<S>
 where
     S: Clone + IntoVec<T>,
 {
