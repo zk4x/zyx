@@ -15,14 +15,14 @@ categories = ["computer-vision", "science", "no-std", "simulation", "text-proces
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rand = "0.8.5"
-rayon = "1.5.3"
-duplicate = "0.4.1"
+rand = "0.8.*"
+rayon = "1.*"
+duplicate = "0.4.*"
 
 # optional dependencies
-matrixmultiply = { version = "0.3.2", features = ["threading"], optional = true }
-ndarray = { version = "0.15.6", features = ["rayon", "matrixmultiply-threading"], optional = true }
-num-traits = { version = "0.2.15", optional = true }
+matrixmultiply = { version = "0.3.*", features = ["threading"], optional = true }
+ndarray = { version = "0.15.*", features = ["rayon", "matrixmultiply-threading"], optional = true }
+num-traits = { version = "0.2.*", optional = true }
 
 [features]
 matrixmultiply = ["dep:matrixmultiply"]
