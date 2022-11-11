@@ -832,7 +832,7 @@ impl ops::MatMul for Buffer<f32> {
         let m = s_shape[-2];
         let k = s_shape[-1];
         let n = r_shape[-1];
-        let mut data = Vec::with_capacity(m*n);
+        let mut data = alloc::vec::Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
             matrixmultiply::sgemm(m, k, n, 1.,
@@ -876,7 +876,7 @@ impl ops::MatMul for Buffer<f64> {
         let m = s_shape[-2];
         let k = s_shape[-1];
         let n = r_shape[-1];
-        let mut data = Vec::with_capacity(m*n);
+        let mut data = alloc::vec::Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
             matrixmultiply::dgemm(m, k, n, 1.,

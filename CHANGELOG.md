@@ -1,3 +1,10 @@
+# 0.8.0
+- BREAKING Change of optimizer API, look at the docs to see how it works now
+- BREAKING Variable's gradient must now have the same type as it's data.
+- BREAKING Variable's .grad() function returns &Gradient<G>, which is new unit type to encapsulate stored values.
+- BREAKING .grad_fn() can now longer be called on Tensor
+- added support for no_std environments, still we require alloc crate
+
 # 0.7.0
 - BREAKING removed RefCells from Variable implementation. Variable is now fully zero cost abstraction.
 - BREAKING rewrote optimizer API due to the change in the Variable implementation. This API however makes a lot of sense. The Variables are stored in network and accessed by calling .parameters(). Optimizers no longer store references to parameters. Instead gradients are zeroed using network.parameters().zero_grad() and optimizer is used like this: network.parameters().step(&optimizer). I would prefer optimizer.step(network.parameters()), but under the hood that seemed to require more work, so we went with the former way. So parameters are mutably borrowed during those two function calls instead of using RefCell and hiding it from the user. From this is seems that PyTorch way of doing this is more of a backward compatibility thing than a good way of doing this, but correct me if I am wrong.

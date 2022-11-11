@@ -17,7 +17,8 @@ so that you can quickly pick up this library if you are familiar with PyTorch.
 3. [CPU Buffer](crate::accel::cpu::Buffer) code is under 1000 lines, so implementing custom accelerators is pretty simple without the need to rewrite the whole library.
 4. Graph is fully dynamic from user perspective, but is compiled statically. Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
 5. There are no runtime errors, not even Results that need to be handled. State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients. Accelerators are exception. They may or may not produce runtime errors. [CPU Buffer](crate::accel::cpu::Buffer) panics if you perform operations on [Buffer](crate::accel::cpu::Buffer)s with invalid shapes.
-6. Tensors are immutable from user perspective. This greatly simplifies everything, especially correct calculation of gradients.As for the performance, cloning is used when [Variable](crate::tensor::Variable) is passed by reference. How expensive this clone is depends on accelerator. [CPU Buffer](crate::accel::cpu::Buffer) uses [Arc](alloc::sync::Arc) to avoid copies and make operations inplace if possible.
+6. Tensors are immutable from user perspective. This greatly simplifies everything, especially correct calculation of gradients.As for the performance, cloning is used when [Variable](crate::tensor::Variable) is passed by reference. How expensive this clone is depends on accelerator. [CPU Buffer](crate::accel::cpu::Buffer) uses Arc to avoid copies and make operations inplace if possible.
+7. This is #\[no_std\], but we do need alloc to allocate large arrays.
 
 ## Example of usage
 
@@ -25,6 +26,8 @@ For examples of linear and recurrent neural networks, look at examples directory
 If you want to accelerate matrix multiplication using matrixmultiply crate, use `--features=matrimultiply`.
 
 ```rust
+# #[cfg(not(feature = "matrixmultiply"))]
+# {
 use zyx::prelude::*;
 use zyx::accel::cpu::Buffer;
 
@@ -36,6 +39,7 @@ z.backward();
 
 println!("{}", x.grad());
 println!("{}", y.grad());
+# }
 ```
 
 Want to use scalars? Just give them gradients!

@@ -66,4 +66,4 @@ mod tests;
 // power and convolution ops for tensor
 // opencl buffer
 // lazy Buffer (both opencl and cpu (I know, opencl can run on cpu as well))
-// remove need for alloc crate if user is not using cpu::Buffer
+// remove need for alloc crate if user is not using cpu::Buffer, though this also requires breaking changes to the IntoVec and FromVec ops, or simple make them unavailable?
