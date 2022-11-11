@@ -104,8 +104,9 @@ impl<S> Gradient<S> {
         Self(core::cell::UnsafeCell::new(None))
     }
 
-    fn value(self) -> Option<S> {
-        self.0.into_inner()
+    /// Get value stored inside of the gradient
+    pub fn value(&self) -> &Option<S> {
+        unsafe { &*self.0.get() }
     }
 
     fn zero(&mut self) {
@@ -140,16 +141,15 @@ impl<'g, S> GradientRef<'g, S> {
     }
 }
 
-impl<G, T> crate::ops::IntoVec<T> for Gradient<G>
+impl<S, Rhs> PartialEq<Rhs> for Gradient<S>
 where
-    G: crate::ops::IntoVec<T>,
+   S: PartialEq<Rhs>,
 {
-    fn to_vec(&self) -> Vec<T> {
-        // This is save, beacause it is read only access
+    fn eq(&self, rhs: &Rhs) -> bool {
         if let Some(grad) = unsafe { &*self.0.get() } {
-            grad.to_vec()
+            grad == rhs
         } else {
-            Vec::new()
+            false
         }
     }
 }
@@ -159,6 +159,8 @@ where
     G: core::fmt::Display,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        extern crate alloc;
+        use alloc::string::ToString;
         // This is save, beacause it is read only access
         let grad = unsafe { &*self.0.get() };
         let s = if grad.is_some() {
@@ -190,6 +192,8 @@ where
     S: core::fmt::Display,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        extern crate alloc;
+        use alloc::format;
         f.write_str(&format!(
             "{} with grad:\n{}",
             self.data,
@@ -209,6 +213,8 @@ where
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // TODO: this is ugly solution, please just print the name of the function, don't require GradFn debug
         // and creating debug string of all the buffers stored in grad_fn
+        extern crate alloc;
+        use alloc::format;
         f.write_str(&format!("{} with grad_fn: {}", self.data, format!("{:?}", self.grad_fn).split_once(" {").unwrap().0))
     }
 }
@@ -222,6 +228,23 @@ impl<S> Variable<S> {
     /// 
     /// ```txt
     /// x.grad += 1;
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use zyx::prelude::*;
+    /// let mut x = 3.with_grad();
+    /// x.backward();
+    /// assert_eq!(x.grad(), &1);
+    /// ```
+    /// And gradient gets accumulated if we call backward again.
+    /// ```
+    /// # use zyx::prelude::*;
+    /// # let mut x = 3.with_grad();
+    /// # x.backward();
+    /// x.backward();
+    /// assert_eq!(x.grad(), &2);
     /// ```
     pub fn backward(&mut self)
     where
@@ -321,12 +344,12 @@ impl<S> Variable<S> {
     }
 }
 
-impl<S, GradFn> Tensor<S, GradFn> {
+/*impl<S, GradFn> Tensor<S, GradFn> {
     /// Access [Tensor's](Tensor) backward function
     pub fn grad_fn(&self) -> &GradFn {
         &self.grad_fn
     }
-}
+}*/
 
 /// Gradient hook for [Variable]
 #[derive(Debug, Clone, Copy)]
@@ -446,7 +469,7 @@ where
     where
         Optim: Optimizer
     {
-        if let Some(grad) = self.grad().clone().value() {
+        if let Some(grad) = self.grad().value().clone() {
             self.data = optim.update_data(self.data.clone(), grad);
         }
         // If the gradient wasn't calculated, just do nothing, or should we pass gradient of zeros?

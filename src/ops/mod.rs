@@ -99,35 +99,6 @@ pub trait Ones {
     fn ones(shape: impl IntoShape) -> Self;
 }
 
-/// ## IntoVec operation
-/// 
-/// Returns values from tensor as a Vec.
-/// It must have row major order.
-pub trait IntoVec<T> {
-    /// Returns values from tensor as a Vec with row-major order.
-    fn to_vec(&self) -> Vec<T>;
-}
-
-/// ## FromVec operation
-/// 
-/// Creates new tensor from given Vec and shape. Vec is in row-major order.
-/// 
-/// ### Example
-/// ```
-/// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::from_vec([2, 3, 1, 3].to_vec(), [2, 2]);
-/// println!("{}", x);
-/// ```
-/// ### Output
-/// [2 3
-///  1 3]
-/// 
-pub trait FromVec<T> {
-    /// Create new tensor from Vec and Shape.
-    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self;
-}
-
 /// ## GetShape operation
 /// 
 /// Returns the shape of tensor as a Shape struct.
@@ -502,4 +473,34 @@ pub trait Conv<Kernel = Self> {
     type Output;
     /// Apply Conv operation on given input.
     fn conv(self, kernel: Kernel, padding: impl IntoShape) -> Self::Output;
+}
+
+extern crate alloc;
+/// ## IntoVec operation
+/// 
+/// Returns values from tensor as a Vec.
+/// It must have row major order.
+pub trait IntoVec<T> {
+    /// Returns values from tensor as a Vec with row-major order.
+    fn to_vec(&self) -> alloc::vec::Vec<T>;
+}
+
+/// ## FromVec operation
+/// 
+/// Creates new tensor from given Vec and shape. Vec is in row-major order.
+/// 
+/// ### Example
+/// ```
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// let x = Buffer::from_vec([2, 3, 1, 3].to_vec(), [2, 2]);
+/// println!("{}", x);
+/// ```
+/// ### Output
+/// [2 3
+///  1 3]
+/// 
+pub trait FromVec<T> {
+    /// Create new tensor from Vec and Shape.
+    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self;
 }

@@ -12,6 +12,9 @@
 
 use crate::ops::{Permute, IntoVec};
 use core::ops::Range;
+extern crate alloc;
+use alloc::vec;
+use alloc::format;
 
 /// # IntoShape trait
 /// 
@@ -48,7 +51,7 @@ pub trait IntoDims {
 /// 
 /// Stores size of dimensions of multidimensional data structures.
 #[derive(Debug, Default, Clone, Eq, PartialOrd, Ord)]
-pub struct Shape(pub(crate) Vec<usize>);
+pub struct Shape(pub(crate) alloc::vec::Vec<usize>);
 
 impl Shape {
     /// Get [Shape] strides
@@ -65,7 +68,7 @@ impl Shape {
 
     /// Returns the indices that sort [Shape] in ascending order
     pub fn argsort(&self) -> Dims {
-        let mut indices: Vec<i32> = (0..self.ndim() as i32).collect();
+        let mut indices: alloc::vec::Vec<i32> = (0..self.ndim() as i32).collect();
         indices.sort_by_key(|&i| &self[i as usize]);
         Dims(indices)
     }
@@ -105,7 +108,7 @@ impl Permute for Shape {
 
 impl IntoIterator for Shape {
     type Item = usize;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = alloc::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -160,14 +163,14 @@ where
 }
 
 impl IntoVec<usize> for Shape {
-    fn to_vec(&self) -> Vec<usize> {
+    fn to_vec(&self) -> alloc::vec::Vec<usize> {
         self.0.clone()
     }
 }
 
 impl core::fmt::Display for Shape {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
+        let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<alloc::string::String>();
         data.replace_range(data.len()-2..data.len(), "");
         f.write_fmt(format_args!("Shape({})", data))
     }
@@ -184,7 +187,7 @@ impl ndarray::IntoDimension for Shape {
 /// We pass this struct to operations like [sum](crate::ops::Sum), [max](crate::ops::Max) or [permute](crate::ops::Permute).
 /// So we can also say this struct holds axes of [shapes](Shape) or tensors.
 #[derive(Debug, Default, Clone, Eq, PartialOrd, Ord)]
-pub struct Dims(pub(crate) Vec<i32>);
+pub struct Dims(pub(crate) alloc::vec::Vec<i32>);
 
 impl Dims {
     /// Get strides of [Dims].
@@ -200,7 +203,7 @@ impl Dims {
 
     /// Returns the indices that sort [Dims] in ascending order.
     pub fn argsort(&self) -> Dims {
-        let mut indices: Vec<i32> = (0..self.ndim() as i32).collect();
+        let mut indices: alloc::vec::Vec<i32> = (0..self.ndim() as i32).collect();
         indices.sort_by_key(|&i| &self[i]);
         Dims(indices)
     }
@@ -219,7 +222,7 @@ impl Dims {
 
 impl IntoIterator for Dims {
     type Item = i32;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = alloc::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -259,7 +262,7 @@ impl IntoShape for dtype {
 
 impl IntoShape for () {
     fn shape(self) -> Shape {
-        Shape(Vec::new())
+        Shape(alloc::vec::Vec::new())
     }
 }
 
@@ -329,7 +332,7 @@ impl IntoShape for &[usize] {
     }
 }
 
-impl IntoShape for Vec<usize> {
+impl IntoShape for alloc::vec::Vec<usize> {
     fn shape(self) -> Shape {
         Shape(self)
     }
@@ -376,7 +379,7 @@ impl IntoDims for i32 {
 
 impl IntoDims for () {
     fn dims(self) -> Dims {
-        Dims(Vec::new())
+        Dims(alloc::vec::Vec::new())
     }
 }
 
@@ -439,7 +442,7 @@ impl IntoDims for &[i32] {
     }
 }
 
-impl IntoDims for Vec<i32> {
+impl IntoDims for alloc::vec::Vec<i32> {
     fn dims(self) -> Dims {
         Dims(self)
     }
@@ -468,7 +471,7 @@ where
 
 impl core::fmt::Display for Dims {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<String>();
+        let mut data = self.0.iter().map(|x| format!("{}, ", x)).collect::<alloc::string::String>();
         data.replace_range(data.len()-2..data.len(), "");
         f.write_fmt(format_args!("Dims({})", data))
     }

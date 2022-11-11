@@ -55,22 +55,6 @@ where
     }
 }
 
-impl<S> Parameters for Vec<&mut Variable<S>>
-where
-    S: Clone + Sub<<S as Mul<f64>>::Output, Output = S> + Mul<f64>,
-{
-    fn step<Optim>(self, optim: &Optim)
-    where
-        Optim: Optimizer
-    {
-        self.into_iter().for_each(|x| x.step(optim));
-    }
-
-    fn zero_grad(&mut self) {
-        self.iter_mut().for_each(|x| x.zero_grad());
-    }
-}
-
 impl<Params1, Params2> Parameters for (Params1, Params2)
 where
     Params1: Parameters,

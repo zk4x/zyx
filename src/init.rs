@@ -4,6 +4,8 @@
 //! These are implemented for all data structures that implement [FromVec](crate::ops::FromVec) trait.
 
 use crate::{ops::{FromVec, ConvertFrom, Zeros, Ones}, shape::IntoShape, dtype::ScalarType};
+extern crate alloc;
+use alloc::vec;
 
 /// # Eye initialization
 /// 

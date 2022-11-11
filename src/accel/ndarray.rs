@@ -5,6 +5,7 @@
 use crate::{ops::{self, IntoVec, FromVec}, shape::{IntoShape, IntoDims, Shape}};
 use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis, Ix1, Ix2, Data, LinalgScalar};
 use num_traits::identities::{Zero, One};
+extern crate alloc;
 
 impl<T, D> ops::GetShape for ArrayBase<T, D>
 where
@@ -106,7 +107,7 @@ impl<S, T> FromVec<T> for ArrayBase<S, Dim<[usize; 1]>>
 where
     S: DataOwned<Elem = T>,
 {
-    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
+    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self {
         let shape = shape.shape();
         ArrayBase::<S, Dim<[usize; 1]>>::from_shape_vec([shape[-1]], data).ok().unwrap()
     }
@@ -116,7 +117,7 @@ impl<S, T> FromVec<T> for ArrayBase<S, Dim<[usize; 2]>>
 where
     S: DataOwned<Elem = T>,
 {
-    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
+    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self {
         let shape = shape.shape();
         ArrayBase::<S, Dim<[usize; 2]>>::from_shape_vec([shape[-2], shape[-1]], data).ok().unwrap()
     }
@@ -126,7 +127,7 @@ impl<S, T> FromVec<T> for ArrayBase<S, Dim<[usize; 3]>>
 where
     S: DataOwned<Elem = T>,
 {
-    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
+    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self {
         let shape = shape.shape();
         ArrayBase::<S, Dim<[usize; 3]>>::from_shape_vec([shape[-3], shape[-2], shape[-1]], data).ok().unwrap()
     }
@@ -136,7 +137,7 @@ impl<T, S> FromVec<T> for ArrayBase<S, Dim<IxDynImpl>>
 where
     S: DataOwned<Elem = T>,
 {
-    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
+    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self {
         ArrayBase::from_shape_vec(shape.shape().to_vec(), data).ok().unwrap()
     }
 }

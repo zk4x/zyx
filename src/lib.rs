@@ -1,3 +1,5 @@
+#![no_std]
+
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
@@ -64,3 +66,4 @@ mod tests;
 // power and convolution ops for tensor
 // opencl buffer
 // lazy Buffer (both opencl and cpu (I know, opencl can run on cpu as well))
+// remove need for alloc crate if user is not using cpu::Buffer

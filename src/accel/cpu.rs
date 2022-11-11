@@ -4,7 +4,8 @@
 
 use crate::{ops::{self, ConvertFrom}, shape::{IntoShape, IntoDims, Shape}, dtype::ScalarType};
 use core::{ops::{Add, Mul}};
-use std::sync::Arc;
+extern crate alloc;
+use alloc::{vec, sync::Arc, format};
 
 // TODO: It is up to buffer to decide whether it is better to use shallow or hard copy upon cloning
 // If it creates shallow copy, it needs to do the necessary reference counting
@@ -19,7 +20,7 @@ use std::sync::Arc;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Buffer<T> {
     shape: Shape,
-    data: Arc<Vec<T>>,
+    data: Arc<alloc::vec::Vec<T>>,
 }
 
 impl<T> Buffer<T> {
@@ -51,6 +52,8 @@ where
     T: core::fmt::Display + ScalarType
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        extern crate alloc;
+        use alloc::string::String;
         let mut res = String::new();
         if self.data.is_empty() { return f.write_str(&(res + "[]")); }
         let n = self.shape.numel();
@@ -103,14 +106,14 @@ impl<T> ops::IntoVec<T> for Buffer<T>
 where
     T: Clone + ScalarType,
 {
-    fn to_vec(&self) -> Vec<T> {
+    fn to_vec(&self) -> alloc::vec::Vec<T> {
         self.data.as_ref().clone()
     }
 }
 
 /// Create new Buffer from vec
 impl<T> ops::FromVec<T> for Buffer<T> {
-    fn from_vec(data: Vec<T>, shape: impl IntoShape) -> Self {
+    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self {
         let shape = shape.shape();
         assert_eq!(shape.numel(), data.len());
         Self {
@@ -238,6 +241,7 @@ impl<T> Buffer<T> {
         T: Clone + ScalarType,
         F: FnMut(T, T) -> T,
     {
+        use alloc::borrow::ToOwned;
         // TODO: make this multithreaded
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
         let mut shape = self.shape.clone();
@@ -345,10 +349,11 @@ where
         }
         let n = shape.numel();
         let ndims = shape.ndim();
+        use alloc::borrow::ToOwned;
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
 
-        let copy_dim = |data: Vec<T>, width, times| {
-            let mut res_data = Vec::with_capacity(res_shape.numel());
+        let copy_dim = |data: alloc::vec::Vec<T>, width, times| {
+            let mut res_data = alloc::vec::Vec::with_capacity(res_shape.numel());
             for i in (0..n).step_by(width) {
                 // copy this part of vec
                 for _ in 0..times {
@@ -405,7 +410,7 @@ where
         let shape = s_shape.clone().permute(dims.clone());
         let strides = s_shape.strides().permute(dims.clone());
         let mut acc_var = 1;
-        let acc = Shape(s_shape.into_iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<Vec<usize>>().into_iter().rev().collect()).permute(dims);
+        let acc = Shape(s_shape.into_iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<alloc::vec::Vec<usize>>().into_iter().rev().collect()).permute(dims);
         let n = shape.numel();
         // temp is in reverse order
         let mut temp = vec![(0, 0); ndim]; // strides, acc_shape
@@ -414,7 +419,7 @@ where
             temp[ndim-k-1] = (strides[k], acc[k]);
         }
 
-        let mut data = Vec::with_capacity(n);
+        let mut data = alloc::vec::Vec::with_capacity(n);
         let mut i = 0;
         for _ in  0..n {
             data.push(self.data[i].clone());
@@ -772,7 +777,7 @@ where
         let x_data = self.data.as_ref();
         let ty_data = ty.data.as_ref();
         const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
-        let data: Vec<T> = ty_data
+        let data: alloc::vec::Vec<T> = ty_data
                 .par_chunks(k)
                 .map(|y_row| {
                     x_data.par_chunks(k)
@@ -782,7 +787,7 @@ where
                                 .map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| a.clone() * b.clone()).sum::<T>())
                                 .sum()
                         })
-                        .collect::<Vec<T>>()
+                        .collect::<alloc::vec::Vec<T>>()
                 })
                 .flatten()
                 .collect();
@@ -919,7 +924,7 @@ where
         ].shape();
         let mut i = 0;
         let n = shape.numel();
-        let mut data = Vec::with_capacity(n); // result
+        let mut data = alloc::vec::Vec::with_capacity(n); // result
         let self_stride = self.shape[-1];
         let kernel_stride = kernel.shape[-1];
         let kernel_rows = kernel.shape[-2];

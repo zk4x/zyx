@@ -21,6 +21,7 @@ use duplicate::duplicate_item;
 
 impl GetShape for dtype {
     fn shape(&self) -> Shape {
-        Shape(vec![1])
+        use super::IntoShape;
+        IntoShape::shape(1)
     }
 }

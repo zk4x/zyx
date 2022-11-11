@@ -38,7 +38,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardT<F> {
     grad_fn: F,
-    dims: Vec<i32>,
+    dims: Dims,
 }
 
 impl<S, F> Backward<S> for ExpandBackwardT<F>
@@ -59,7 +59,7 @@ where
     type Output = Tensor<<S as Expand>::Output, ExpandBackwardT<F>>;
     fn expand(self, shape: impl IntoShape) -> Self::Output {
         let shape = shape.shape();
-        let dims = self.data.shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect();
+        let dims = Dims(self.data.shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());
         Tensor {
             data: self.data.expand(shape),
             grad_fn: ExpandBackwardT {

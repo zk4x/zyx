@@ -151,9 +151,9 @@ fn softmax_test() {
 
     let sm = SoftMax { dims: -1 };
     let y = sm.forward(&x);
-    println!("\n{}", y);
+    //println!("\n{}", y);
     y.backward();
-    println!("\n{}", x);
+    //println!("\n{}", x);
     //panic!();
 }
 

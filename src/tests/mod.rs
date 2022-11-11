@@ -26,15 +26,17 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
 #[cfg(feature = "ndarray")]
 #[test]
 fn ndarray() {
+    extern crate alloc;
+    use alloc::vec;
     use crate::prelude::*;
     use ndarray::Array;
 
-    let x = Array::<f32, _>::eye(4).with_grad::<i32>();
+    let _x = Array::<f32, _>::eye(4).with_grad();
     //let x = x.sum((1));
-    println!("{}", x);
+    //println!("{}", x);
 
-    let x = Buffer::<f32>::eye(4);
-    println!("{}", x);
+    let _x = Buffer::<f32>::eye(4);
+    //println!("{}", x);
 
     //panic!();
     use ndarray::array;
@@ -44,7 +46,7 @@ fn ndarray() {
     let z = y.exp();
     z.backward();
 
-    println!("{}", y);
+    //println!("{}", y);
     //panic!();
 }
 
@@ -111,6 +113,9 @@ mod tensor {
     mod ops {
         use crate::{ops::{GetShape, FromVec, IntoVec, ConvertFrom, ConvertInto}, tensor::IntoVariable, shape::IntoShape};
         use super::super::{cmp_vec, cmp_vec_f64, Buffer};
+        extern crate alloc;
+        use alloc::vec;
+        use alloc::vec::Vec;
 
         #[test]
         fn convert_from() {
@@ -170,8 +175,8 @@ mod tensor {
             y.backward();
             cmp_vec(&x.grad().clone().to_vec(), &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>());
             // test Tensor
-            let h = x.register_hook(|grad| println!("Reg grad: {}", grad));
-            let y = h.exp().exp();
+            //let h = x.register_hook(|grad| println!("Reg grad: {}", grad));
+            let y = x.exp().exp();
             cmp_vec(&vec.iter().map(|x| x.exp().exp()).collect::<Vec<f32>>(), &y.data().clone().to_vec());
             y.backward();
             cmp_vec(&x.grad().clone().to_vec(), &vec.iter().map(|x| x.exp() + (x.exp() + x).exp()).collect::<Vec<f32>>());
@@ -383,6 +388,7 @@ mod tensor {
 
         #[test]
         fn add_scalar() {
+            // TODO
             let x = Buffer::<f32>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
             let _y = x.clone()/2f32;
             let _y = x.clone()/2f64;
@@ -398,8 +404,8 @@ mod tensor {
             let _y = x.clone()/2u64;
             let _y = x.clone()/2u128;
             let _y = x.clone()/2usize;
-            let x: Buffer<i32> = x.cinto();
-            println!("{}", x);
+            let _x: Buffer<i32> = x.cinto();
+            //println!("{}", x);
             //panic!();
         }
 
@@ -425,7 +431,7 @@ mod tensor {
             let z = x * &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x * *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
-            println!("{}", y);
+            //println!("{}", y);
             cmp_vec(&vec, &y.grad().to_vec());
 
             /*let x = Buffer::from_vec(vec.clone(), &[9]).with_grad();
@@ -495,11 +501,12 @@ mod tensor {
 
         #[test]
         fn pow_scalar() {
+            // TODO
             use crate::ops::Pow;
             let x = Buffer::<f32>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
             let _y = x.clone().pow(2i32);
-            let x: Buffer<i32> = x.cinto();
-            println!("{}", x);
+            let _x: Buffer<i32> = x.cinto();
+            //println!("{}", x);
             //panic!();
         }
 
