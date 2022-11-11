@@ -23,6 +23,7 @@ use core::ops::{Mul, Sub};
 /// 
 /// Implemented for different arrays/tuples/vecs of [Variables](crate::tensor::Variable).
 /// These can then be used by [optimizers](crate::optim).
+/// Parameters are just a collection of mutable references to [Variables](crate::tensor::Variable).
 pub trait Parameters {
     /// Update [Parameter's](Parameters) data
     fn step<Optim>(self, optim: &Optim)
