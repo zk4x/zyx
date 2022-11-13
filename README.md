@@ -22,7 +22,7 @@ so that you can quickly pick up this library if you are familiar with PyTorch.
 
 ## Example of usage
 
-For examples of linear and recurrent neural networks, look at examples directory.
+For examples of linear and recurrent neural networks, look at [examples directory](https://github.com/zk4x/zyx/tree/main/examples).
 If you want to accelerate matrix multiplication using matrixmultiply crate, use `--features=matrimultiply`.
 
 ```rust
