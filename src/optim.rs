@@ -1,7 +1,7 @@
 //! Various optimizers to update [Variables](crate::tensor::Variable).
 //! 
 //! This is a major change from the way PyTorch handles things.
-//! [Parameters](crate::module::Parameters) are neither stored nor referenced by Optimizers.
+//! [Parameters](crate::module::Parameters) are neither stored nor referenced by [Optimizers](crate::optim::Optimizer).
 //!
 //! We crate new network. [Parameters](crate::module::Parameters) are held in this network.
 //! ```

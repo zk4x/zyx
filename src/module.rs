@@ -31,7 +31,19 @@ pub trait Parameters {
         Optim: Optimizer; // these functions should be callable only by optimizers
     /// Zero [Parameter's](Parameters) gradients
     fn zero_grad(&mut self);
+    // If we want to take path, we should take impl IntoPath, or maybe AsRef
+    // fn load(&mut self, filename: &str) -> Result;
+    // fn save(&self, filename: &str) -> Result;
 }
+
+// We shall go with this API:
+// params.save("my-file.npy")
+// where file type is going to be taken from .npy
+// Or should we just retun Writer enum with different types it can write to like this:
+// params.writer().npy().save("my-file.npy")
+// Or like this?
+// params.npy().save("my-file.npy")
+// Or should the save function return an impl Writer?
 
 impl Parameters for () {
     fn step<Optim>(self, _: &Optim)
