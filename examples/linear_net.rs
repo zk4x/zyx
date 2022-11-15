@@ -22,8 +22,7 @@ fn main() {
 
     for _ in 0..100 {
         for i in 0..100 {
-            <(Linear<_, _>, ReLU, Linear<_, _>, Tanh, Linear<_, _>, Sigmoid) as Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).zero_grad();
-            // Right now it looks bad, but eventually it will look like this:
+            <(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).zero_grad();
             //network.parameters().zero_grad();
 
             let x = cpu::Buffer::cfrom([i as f32 / 10.]);

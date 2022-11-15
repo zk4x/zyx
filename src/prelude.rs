@@ -4,7 +4,7 @@ pub use crate::{
     ops::*,
     module::{Module, Parameters},
     shape::{IntoShape, IntoDims},
-    optim::Optimizer,
     init::{EyeInit, RandnInit, UniformInit},
+    optim::SGDStep,
     tensor::IntoVariable
 };

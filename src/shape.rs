@@ -16,6 +16,8 @@ extern crate alloc;
 use alloc::vec;
 use alloc::format;
 
+//struct ConstShape<const D: u128, const N: u128>;
+
 /// # IntoShape trait
 /// 
 /// Turn input into [Shape].

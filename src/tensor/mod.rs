@@ -70,7 +70,7 @@ use crate::{ops::GetShape, module::Parameters};
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default)]
 pub struct Variable<S> {
-    data: S,
+    pub(crate) data: S,
     // Gradient has the same type and shape as data
     grad: Gradient<S>,
 }
@@ -458,32 +458,10 @@ where
     }
 }
 
-use crate::optim::Optimizer;
-use core::ops::{Sub, Mul};
-// Update Variable's data. It is used by optimizer.step().
 impl<S> Parameters for &mut Variable<S>
 where
-    S: Clone + Mul<f64> + Sub<<S as Mul<f64>>::Output, Output = S>,
 {
-    fn step<Optim>(&mut self, optim: &Optim)
-    where
-        Optim: Optimizer
-    {
-        if let Some(grad) = self.grad().value().clone() {
-            self.data = optim.update_data(self.data.clone(), grad);
-        }
-        // If the gradient wasn't calculated, just do nothing, or should we pass gradient of zeros?
-        // Does some optimizer need that?
-    }
-
     fn zero_grad(&mut self) {
         self.grad.zero();
-    }
-
-    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
-    where
-        ParamsSetter: crate::module::ParametersSetter
-    {
-        setter.update_data(&mut self.data);
     }
 }

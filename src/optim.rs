@@ -53,17 +53,6 @@
 
 use core::ops::{Sub, Mul};
 
-/// # Optimizer trait
-/// 
-/// All optimizers must implement this trait.
-pub trait Optimizer {
-    /// Update one of [parameters](crate::module::Parameters)
-    fn update_data<S, G>(&self, data: S, grad: G) -> S
-    where
-        G: Mul<f64>,
-        S: Sub<<G as Mul<f64>>::Output, Output = S>;
-}
-
 /// # Stochastic gradient descent optimizer
 ///
 /// Updates [parameter's](crate::module::Parameters) data using following function:
@@ -98,12 +87,154 @@ impl SGD {
     }
 }
 
-impl Optimizer for SGD {
-    fn update_data<S, G>(&self, data: S, grad: G) -> S
-    where
-        G: Mul<f64>,
-        S: Sub<<G as Mul<f64>>::Output, Output = S>,
-    {
-        data - grad * self.learning_rate
+// The optimizer and loader and function that zeros gradients should be directly implemented for Variable and all tuples of Variables.
+// If this can't be done in standard rust, we should create macro for that.
+
+/// Step over SGD optimizers parameters
+pub trait SGDStep {
+    /// Call the step function
+    fn step(self, optim: &SGD);
+}
+
+use crate::tensor::Variable;
+impl<S> SGDStep for &mut Variable<S>
+where
+    S: Clone + Mul<f64> + Sub<<S as Mul<f64>>::Output, Output = S>,
+{
+    fn step(self, optim: &SGD) {
+        if let Some(grad) = self.grad().value().clone() {
+            self.data = self.data.clone() - grad * optim.learning_rate;
+        }
+    }
+}
+
+// This should be automatically derived;
+impl SGDStep for () {
+    fn step(self, _: &SGD) {}
+}
+
+// This should be automatically derived;
+impl<V1, V2> SGDStep for (V1, V2)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+    }
+}
+
+// This should be automatically derived;
+impl<V1, V2, V3> SGDStep for (V1, V2, V3)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+    V3: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+         self.2.step(optim);
+    }
+}
+
+// This should be automatically derived;
+impl<V1, V2, V3, V4> SGDStep for (V1, V2, V3, V4)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+    V3: SGDStep,
+    V4: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+         self.2.step(optim);
+         self.3.step(optim);
+    }
+}
+
+// This should be automatically derived;
+impl<V1, V2, V3, V4, V5> SGDStep for (V1, V2, V3, V4, V5)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+    V3: SGDStep,
+    V4: SGDStep,
+    V5: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+         self.2.step(optim);
+         self.3.step(optim);
+         self.4.step(optim);
+    }
+}
+
+// This should be automatically derived;
+impl<V1, V2, V3, V4, V5, V6> SGDStep for (V1, V2, V3, V4, V5, V6)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+    V3: SGDStep,
+    V4: SGDStep,
+    V5: SGDStep,
+    V6: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+         self.2.step(optim);
+         self.3.step(optim);
+         self.4.step(optim);
+         self.5.step(optim);
+    }
+}
+
+// This should be automatically derived;
+impl<V1, V2, V3, V4, V5, V6, V7> SGDStep for (V1, V2, V3, V4, V5, V6, V7)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+    V3: SGDStep,
+    V4: SGDStep,
+    V5: SGDStep,
+    V6: SGDStep,
+    V7: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+         self.2.step(optim);
+         self.3.step(optim);
+         self.4.step(optim);
+         self.5.step(optim);
+         self.6.step(optim);
+    }
+}
+
+// This should be automatically derived;
+impl<V1, V2, V3, V4, V5, V6, V7, V8> SGDStep for (V1, V2, V3, V4, V5, V6, V7, V8)
+where
+    V1: SGDStep,
+    V2: SGDStep,
+    V3: SGDStep,
+    V4: SGDStep,
+    V5: SGDStep,
+    V6: SGDStep,
+    V7: SGDStep,
+    V8: SGDStep,
+{
+    fn step(self, optim: &SGD) {
+         self.0.step(optim);
+         self.1.step(optim);
+         self.2.step(optim);
+         self.3.step(optim);
+         self.4.step(optim);
+         self.5.step(optim);
+         self.6.step(optim);
+         self.7.step(optim);
     }
 }
