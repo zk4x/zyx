@@ -465,7 +465,7 @@ impl<S> Parameters for &mut Variable<S>
 where
     S: Clone + Mul<f64> + Sub<<S as Mul<f64>>::Output, Output = S>,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer
     {
@@ -478,5 +478,12 @@ where
 
     fn zero_grad(&mut self) {
         self.grad.zero();
+    }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: crate::module::ParametersSetter
+    {
+        setter.update_data(&mut self.data);
     }
 }

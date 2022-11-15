@@ -34,7 +34,7 @@
 //! ```
 //! Calling net.parameters() gives us mutable reference to network's [parameters](crate::module::Parameters).
 //! If we would like to define our own updatable [parameters](crate::module::Parameters), it is easy,
-//! since [parameters](crate::module::Parameters) are simply a tuple of [Variable's](crate::tensor::Variable)
+//! since [parameters](crate::module::Parameters) is simply a tuple of [Variables](crate::tensor::Variable)
 //! ```
 //! use zyx::prelude::*;
 //! use zyx::accel::cpu::Buffer;

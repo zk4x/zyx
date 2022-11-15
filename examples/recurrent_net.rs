@@ -1,4 +1,7 @@
 //! ## This is an example of recurrent neural network
+#![no_std]
+
+extern crate alloc;
 
 fn main() {
     use zyx::prelude::*;
@@ -35,7 +38,7 @@ fn main() {
         //(rnn_net.parameters(), net2.parameters()).zero_grad();
 
         let i_f32 = i as f32;
-        let data = vec![i_f32*1., i_f32*2., i_f32*3.];
+        let data = alloc::vec![i_f32*1., i_f32*2., i_f32*3.];
 
         let y = cpu::Buffer::from_vec(data.iter().map(|x| (*x as f32).sin()).collect(), (1, input_size));
         let x = cpu::Buffer::from_vec(data, (1, input_size));

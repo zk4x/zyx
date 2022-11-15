@@ -12,8 +12,7 @@
 
 // TODO: use macros to make this DRY
 
-use crate::{tensor::Variable, optim::Optimizer};
-use core::ops::{Mul, Sub};
+use crate::optim::Optimizer;
 
 // We can just store all Variables in tuple and implement some trait for this tuple that will take input and call
 // all the required methods - step, zero_grad.
@@ -26,46 +25,34 @@ use core::ops::{Mul, Sub};
 /// Parameters are just a collection of mutable references to [Variables](crate::tensor::Variable).
 pub trait Parameters {
     /// Update [Parameter's](Parameters) data
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer; // these functions should be callable only by optimizers
     /// Zero [Parameter's](Parameters) gradients
     fn zero_grad(&mut self);
-    // If we want to take path, we should take impl IntoPath, or maybe AsRef
-    // fn load(&mut self, filename: &str) -> Result;
+    /// Change values of parameters
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter;
     // fn save(&self, filename: &str) -> Result;
 }
 
-// We shall go with this API:
-// params.save("my-file.npy")
-// where file type is going to be taken from .npy
-// Or should we just retun Writer enum with different types it can write to like this:
-// params.writer().npy().save("my-file.npy")
-// Or like this?
-// params.npy().save("my-file.npy")
-// Or should the save function return an impl Writer?
+/// Datatypes implementing this trait can set values for [parameters](Parameters)
+pub trait ParametersSetter {
+    ///
+    fn update_data<S>(&mut self,  data: &mut S);
+}
+
+// If we want to take path in some ParametersSetter, we should take AsRef<Path>
 
 impl Parameters for () {
-    fn step<Optim>(self, _: &Optim)
+    fn step<Optim>(&mut self, _: &Optim)
     where
         Optim: Optimizer {}
     fn zero_grad(&mut self) {}
-}
-
-impl<S, const N: usize> Parameters for [&mut Variable<S>; N]
-where
-    S: Clone + Sub<<S as Mul<f64>>::Output, Output = S> + Mul<f64>,
-{
-    fn step<Optim>(self, optim: &Optim)
+    fn set<ParamsSetter>(&mut self, _: &mut ParamsSetter)
     where
-        Optim: Optimizer
-    {
-        self.into_iter().for_each(|x| x.step(optim));
-    }
-
-    fn zero_grad(&mut self) {
-        self.iter_mut().for_each(|x| x.zero_grad());
-    }
+        ParamsSetter: ParametersSetter {}
 }
 
 impl<Params1, Params2> Parameters for (Params1, Params2)
@@ -73,7 +60,7 @@ where
     Params1: Parameters,
     Params2: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -85,6 +72,14 @@ where
         self.0.zero_grad();
         self.1.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3> Parameters for (Params1, Params2, Params3)
@@ -93,7 +88,7 @@ where
     Params2: Parameters,
     Params3: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -107,6 +102,15 @@ where
         self.1.zero_grad();
         self.2.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3, Params4> Parameters for (Params1, Params2, Params3, Params4)
@@ -116,7 +120,7 @@ where
     Params3: Parameters,
     Params4: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -132,6 +136,16 @@ where
         self.2.zero_grad();
         self.3.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+        self.3.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3, Params4, Params5> Parameters for (Params1, Params2, Params3, Params4, Params5)
@@ -142,7 +156,7 @@ where
     Params4: Parameters,
     Params5: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -160,6 +174,17 @@ where
         self.3.zero_grad();
         self.4.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+        self.3.set(setter);
+        self.4.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3, Params4, Params5, Params6> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6)
@@ -171,7 +196,7 @@ where
     Params5: Parameters,
     Params6: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -191,6 +216,18 @@ where
         self.4.zero_grad();
         self.5.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+        self.3.set(setter);
+        self.4.set(setter);
+        self.5.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6, Params7)
@@ -203,7 +240,7 @@ where
     Params6: Parameters,
     Params7: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -225,6 +262,19 @@ where
         self.5.zero_grad();
         self.6.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+        self.3.set(setter);
+        self.4.set(setter);
+        self.5.set(setter);
+        self.6.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8)
@@ -238,7 +288,7 @@ where
     Params7: Parameters,
     Params8: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -262,6 +312,20 @@ where
         self.6.zero_grad();
         self.7.zero_grad();
     }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+        self.3.set(setter);
+        self.4.set(setter);
+        self.5.set(setter);
+        self.6.set(setter);
+        self.7.set(setter);
+    }
 }
 
 impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9)
@@ -276,7 +340,7 @@ where
     Params8: Parameters,
     Params9: Parameters,
 {
-    fn step<Optim>(self, optim: &Optim)
+    fn step<Optim>(&mut self, optim: &Optim)
     where
         Optim: Optimizer,
     {
@@ -301,6 +365,21 @@ where
         self.6.zero_grad();
         self.7.zero_grad();
         self.8.zero_grad();
+    }
+
+    fn set<ParamsSetter>(&mut self, setter: &mut ParamsSetter)
+    where
+        ParamsSetter: ParametersSetter
+    {
+        self.0.set(setter);
+        self.1.set(setter);
+        self.2.set(setter);
+        self.3.set(setter);
+        self.4.set(setter);
+        self.5.set(setter);
+        self.6.set(setter);
+        self.7.set(setter);
+        self.8.set(setter);
     }
 }
 
