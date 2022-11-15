@@ -10,14 +10,14 @@ homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
 license = "MIT OR Apache-2.0"
 keywords = ["tensor", "generic", "deep-learning", "neural-network", "autodiff"]
-categories = ["computer-vision", "science", "no-std", "simulation", "text-processing"]
+categories = ["computer-vision", "science", "simulation", "text-processing"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rand = "0.8.*"
-rayon = "1.*"
-duplicate = "0.4.*"
+duplicate = { version = "0.4.*" }
+rand = { version = "0.8.*" }
+rayon = { version = "1.*" }
 
 # optional dependencies
 matrixmultiply = { version = "0.3.*", features = ["threading"], optional = true }
