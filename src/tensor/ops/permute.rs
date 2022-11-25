@@ -1,30 +1,31 @@
-use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoDims, Dims}};
+use crate::{ops::Permute, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct PermuteBackwardV<'g, G> {
+pub struct PermuteBackwardV<'g, G, Dims> {
     grad: GradientRef<'g, G>,
     dims: Dims,
 }
 
-impl<S, G> Backward<S> for PermuteBackwardV<'_, G>
+impl<S, G, Dims> Backward<S> for PermuteBackwardV<'_, G, Dims>
 where
-    S: Permute,
-    G: GradAcc<<S as Permute>::Output>,
+    Dims: Shape<D = i32>,
+    S: Permute<Dims>,
+    G: GradAcc<<S as Permute<Dims>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.permute(self.dims));
     }
 }
 
-impl<'g, S> Permute for &'g Variable<S>
+impl<'g, S, Dims> Permute<Dims> for &'g Variable<S>
 where
-    S: Clone + Permute,
+    Dims: Shape<D = i32>,
+    S: Clone + Permute<Dims>,
 {
-    type Output = Tensor<<S as Permute>::Output, PermuteBackwardV<'g, S>>;
-    fn permute(self, dims: impl IntoDims) -> Self::Output {
-        let dims = dims.dims();
+    type Output = Tensor<<S as Permute<Dims>>::Output, PermuteBackwardV<'g, S, Dims>>;
+    fn permute(self, dims: Dims) -> Self::Output {
         Tensor {
-            data: self.data.clone().permute(dims.clone()),
+            data: self.data.clone().permute(dims),
             grad_fn: PermuteBackwardV {
                 grad: GradientRef::new(&self.grad),
                 dims: dims.argsort(),
@@ -34,30 +35,31 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct PermuteBackwardT<F> {
+pub struct PermuteBackwardT<F, Dims> {
     grad_fn: F,
     dims: Dims,
 }
 
-impl<S, F> Backward<S> for PermuteBackwardT<F>
+impl<S, F, Dims> Backward<S> for PermuteBackwardT<F, Dims>
 where
-    S: Permute,
-    F: Backward<<S as Permute>::Output>,
+    Dims: Shape<D = i32>,
+    S: Permute<Dims>,
+    F: Backward<<S as Permute<Dims>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.permute(self.dims));
     }
 }
 
-impl<S, F> Permute for Tensor<S, F>
+impl<S, F, Dims> Permute<Dims> for Tensor<S, F>
 where
-    S: Permute,
+    Dims: Shape<D = i32>,
+    S: Permute<Dims>,
 {
-    type Output = Tensor<<S as Permute>::Output, PermuteBackwardT<F>>;
-    fn permute(self, dims: impl IntoDims) -> Self::Output {
-        let dims = dims.dims();
+    type Output = Tensor<<S as Permute<Dims>>::Output, PermuteBackwardT<F, Dims>>;
+    fn permute(self, dims: Dims) -> Self::Output {
         Tensor {
-            data: self.data.permute(dims.clone()),
+            data: self.data.permute(dims),
             grad_fn: PermuteBackwardT {
                 grad_fn: self.grad_fn,
                 dims: dims.argsort(),

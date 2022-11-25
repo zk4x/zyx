@@ -1,15 +1,18 @@
-use crate::{ops::{Ones, Zeros}, tensor::{Variable, Gradient}, shape::IntoShape};
+// use crate::{ops::Ones, tensor::{Variable, Gradient}, shape::Shape};
 
-/// Initialize tensor filled with zeros
-impl<S> Ones for Variable<S>
+// /// Initialize tensor filled with zeros
+// TODO determine whether this is usefull at all
+/*impl<S, Sh> Ones for Variable<S>
 where
-    S: Ones + Zeros,
+    S: Ones<Sh = Sh>,
+    Sh: Shape<D = usize>,
 {
-    fn ones(shape: impl IntoShape) -> Self {
-        let shape = shape.shape();
+    type Sh = Sh;
+
+    fn ones(shape: Self::Sh) -> Self {
         Self {
             data: S::ones(shape),
             grad: Gradient::new(),
         }
     }
-}
+}*/

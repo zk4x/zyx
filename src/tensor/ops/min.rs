@@ -1,4 +1,6 @@
-use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoDims, Shape}};
+// TODO: This is not correct. Min does not simply expand. It takes
+
+/*use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
 pub struct MinBackwardV<'g, G> {
@@ -21,7 +23,7 @@ where
     S: Clone + Min + GetShape,
 {
     type Output = Tensor<<S as Min>::Output, MinBackwardV<'g, S>>;
-    fn min(self, dims: impl IntoDims) -> Self::Output {
+    fn min(self, dims: impl Shape<i32>) -> Self::Output {
         Tensor {
             data: self.data.clone().min(dims),
             grad_fn: MinBackwardV {
@@ -54,7 +56,7 @@ where
     F: Backward<S>,
 {
     type Output = Tensor<<S as Min>::Output, MinBackwardT<F>>;
-    fn min(self, dims: impl IntoDims) -> Self::Output {
+    fn min(self, dims: impl Shape<i32>) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.min(dims),
@@ -64,4 +66,4 @@ where
             }
         }
     }
-}
+}*/

@@ -1,27 +1,29 @@
-use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, IntoDims}};
+use crate::{ops::{Sum, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct SumBackwardV<'g, G> {
+pub struct SumBackwardV<'g, G, Sh> {
     grad: GradientRef<'g, G>,
-    shape: Shape,
+    shape: Sh,
 }
 
-impl<S, G> Backward<S> for SumBackwardV<'_, G>
+impl<S, G, Sh> Backward<S> for SumBackwardV<'_, G, Sh>
 where
-    S: Expand,
-    G: GradAcc<<S as Expand>::Output>,
+    S: Expand<Sh>,
+    G: GradAcc<<S as Expand<Sh>>::Output>,
+    Sh: Shape<D = usize>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.expand(self.shape));
     }
 }
 
-impl<'g, S> Sum for &'g Variable<S>
+impl<'g, S, Dims> Sum<Dims> for &'g Variable<S>
 where
-    S: Clone + Sum + GetShape,
+    S: Clone + Sum<Dims> + GetShape,
+    Dims: Shape<D = i32>,
 {
-    type Output = Tensor<<S as Sum>::Output, SumBackwardV<'g, S>>;
-    fn sum(self, dims: impl IntoDims) -> Self::Output {
+    type Output = Tensor<<S as Sum<Dims>>::Output, SumBackwardV<'g, S, <S as GetShape>::Output>>;
+    fn sum(self, dims: Dims) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().sum(dims),
             grad_fn: SumBackwardV {
@@ -33,27 +35,29 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct SumBackwardT<F> {
+pub struct SumBackwardT<F, Sh> {
     grad_fn: F,
-    shape: Shape,
+    shape: Sh,
 }
 
-impl<S, F> Backward<S> for SumBackwardT<F>
+impl<S, F, Sh> Backward<S> for SumBackwardT<F, Sh>
 where
-    S: Expand,
-    F: Backward<<S as Expand>::Output>,
+    Sh: Shape<D = usize>,
+    S: Expand<Sh>,
+    F: Backward<<S as Expand<Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.expand(self.shape));
     }
 }
 
-impl<S, F> Sum for Tensor<S, F>
+impl<S, F, Dims> Sum<Dims> for Tensor<S, F>
 where
-    S: Clone + Sum + GetShape,
+    S: Clone + Sum<Dims> + GetShape,
+    Dims: Shape<D = i32>,
 {
-    type Output = Tensor<<S as Sum>::Output, SumBackwardT<F>>;
-    fn sum(self, dims: impl IntoDims) -> Self::Output {
+    type Output = Tensor<<S as Sum<Dims>>::Output, SumBackwardT<F, <S as GetShape>::Output>>;
+    fn sum(self, dims: Dims) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.sum(dims),

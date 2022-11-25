@@ -1,5 +1,4 @@
 use super::Zeros;
-use crate::shape::IntoShape;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -9,7 +8,9 @@ use duplicate::duplicate_item;
 )]
 
 impl Zeros for dtype {
-    fn zeros(_: impl IntoShape) -> Self {
+    type Sh = usize;
+
+    fn zeros(_: usize) -> Self {
         0.
     }
 }
@@ -31,7 +32,9 @@ impl Zeros for dtype {
 )]
 
 impl Zeros for dtype {
-    fn zeros(_: impl IntoShape) -> Self {
+    type Sh = usize;
+
+    fn zeros(_: usize) -> Self {
         0
     }
 }

@@ -114,8 +114,8 @@ impl<S> Gradient<S> {
     }
 }
 
-trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
-impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
+trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = usize> {}
+impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = usize> {}
 
 #[derive(Debug, Clone, Copy)]
 struct GradientRef<'g, S>(&'g Gradient<S>);
@@ -248,7 +248,7 @@ impl<S> Variable<S> {
     /// ```
     pub fn backward(&mut self)
     where
-        S: core::ops::Add<i32, Output = S> + crate::ops::Zeros,
+        S: core::ops::Add<i32, Output = S> + crate::ops::Zeros<Sh = usize>,
     {
         GradientRef(&self.grad).accumulate(1);
     }
@@ -264,7 +264,7 @@ pub trait Backward<S> {
 
 impl<S, F> Tensor<S, F>
 where
-    S: crate::ops::Ones + GetShape,
+    S: crate::ops::Ones<Sh = <S as GetShape>::Output> + GetShape,
     F: Backward<S>,
 {
     /// # Tensor backward

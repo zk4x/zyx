@@ -1,27 +1,29 @@
-use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoShape, Shape}};
+use crate::{ops::{Reshape, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct ReshapeBackwardV<'g, G> {
+pub struct ReshapeBackwardV<'g, G, Sh> {
     grad: GradientRef<'g, G>,
-    shape: Shape,
+    shape: Sh,
 }
 
-impl<S, G> Backward<S> for ReshapeBackwardV<'_, G>
+impl<S, G, Sh> Backward<S> for ReshapeBackwardV<'_, G, Sh>
 where
-    S: Reshape,
-    G: GradAcc<<S as Reshape>::Output>,
+    Sh: Shape<D = usize>,
+    S: Reshape<Sh>,
+    G: GradAcc<<S as Reshape<Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.reshape(self.shape));
     }
 }
 
-impl<'g, S> Reshape for &'g Variable<S>
+impl<'g, S, Sh> Reshape<Sh> for &'g Variable<S>
 where
-    S: Clone + Reshape + GetShape,
+    Sh: Shape<D = usize>,
+    S: Clone + Reshape<Sh> + GetShape,
 {
-    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardV<'g, S>>;
-    fn reshape(self, shape: impl IntoShape) -> Self::Output {
+    type Output = Tensor<<S as Reshape<Sh>>::Output, ReshapeBackwardV<'g, S, <S as GetShape>::Output>>;
+    fn reshape(self, shape: Sh) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().reshape(shape),
             grad_fn: ReshapeBackwardV {
@@ -33,27 +35,29 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ReshapeBackwardT<F> {
+pub struct ReshapeBackwardT<F, Sh> {
     grad_fn: F,
-    shape: Shape,
+    shape: Sh,
 }
 
-impl<S, F> Backward<S> for ReshapeBackwardT<F>
+impl<S, F, Sh> Backward<S> for ReshapeBackwardT<F, Sh>
 where
-    S: Reshape,
-    F: Backward<<S as Reshape>::Output>,
+    Sh: Shape<D = usize>,
+    S: Reshape<Sh>,
+    F: Backward<<S as Reshape<Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.reshape(self.shape));
     }
 }
 
-impl<S, F> Reshape for Tensor<S, F>
+impl<S, F, Sh> Reshape<Sh> for Tensor<S, F>
 where
-    S: Reshape + GetShape,
+    Sh: Shape<D = usize>,
+    S: Reshape<Sh> + GetShape,
 {
-    type Output = Tensor<<S as Reshape>::Output, ReshapeBackwardT<F>>;
-    fn reshape(self, res_shape: impl IntoShape) -> Self::Output {
+    type Output = Tensor<<S as Reshape<Sh>>::Output, ReshapeBackwardT<F, <S as GetShape>::Output>>;
+    fn reshape(self, res_shape: Sh) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.reshape(res_shape),

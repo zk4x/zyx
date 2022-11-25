@@ -1,3 +1,11 @@
+# 0.9.0
+- BREAKING Rewritten shape to now be stack only, since until now we used heap allocated shape. On description how shape works now, look at the documentation.
+- BREAKING Rewritten the way optimizers are handled. There are no more general requirements for all optimizers together, now every optimizers defines it's own requirements and is implemented separately. This gets rid of redundant requirements, but requires more code to be written.
+- BREAKING reqritten the way parameters are handled. This is together with optimizers change. Not only allows us to use different optimizers with separate requirements, it also allows us to define ways to read and mutate parameters. This can be used for loading and saving to IO as well as initializing from different random distributions and so on.
+- Although all of the changes above are technically breaking, they do not require you to change the way you write your programs. For example shape is now part of cpu::Buffer generics (previously cpu::Buffer<T>, now cpu::Buffer<T, Sh>), but shape can always be inferred, so you will at most need to write cpu::Buffer<f32, _> instead of cpu::Buffer<f32>.
+- Removed no_std claim, because it is not true, since we rely on rayon which requires std. In future, we will add std feature enabled by default and make rayon optinal dependency. Shouldn't be too difficult to do, since rayon is required only for cpu::Buffer. For no_std support we also need to make rand optional or create our own random seed. Rand is required by RandInit and UniformInit, so again it is not widely used.
+- Overall the way we rewritten shape and optimizer means that they are both now more modular, but require more code to be written. It should be now easier to add features as non-breaking changes.
+
 # 0.8.0
 - BREAKING Change of optimizer API, look at the docs to see how it works now
 - BREAKING Variable's gradient must now have the same type as it's data.

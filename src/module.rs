@@ -241,8 +241,6 @@ pub trait Module<'p, Input> {
     fn forward(&'p self, x: Input) -> Self::Output;
     /// Get parameters of [Module]
     fn parameters(&'p mut self) -> Self::Params;
-    // Set [parameters](Parameters) of [Module] (This is primarily used for loading models)
-    //fn set_parameters(self, parameters: Self::Params) -> Self;
 }
 
 // Apply trait allows us to use monads

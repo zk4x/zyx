@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use crate::tensor::{Variable, Tensor, Backward, GradientRef, GradAcc};
 use core::ops::Neg;
 
 #[derive(Debug, Clone, Copy)]

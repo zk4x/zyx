@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu, shape::Shape};
 use core::ops::{Neg, Mul, Div};
 //use duplicate::duplicate_item;
 
@@ -87,11 +87,12 @@ where
 
 // TODO: remove this and put it into the implementation above.
 // And figure why the above implementation overflows during compilation.
-impl<F> Div<Tensor<cpu::Buffer<f32>, F>> for i32
+impl<F, Sh> Div<Tensor<cpu::Buffer<f32, Sh>, F>> for i32
 where
+    Sh: Shape<D = usize>,
 {
-    type Output = Tensor<<Self as Div<cpu::Buffer<f32>>>::Output, DivBackwardST<<Self as Div<cpu::Buffer<f32>>>::Output, cpu::Buffer<f32>, F>>;
-    fn div(self, rhs: Tensor<cpu::Buffer<f32>, F>) -> Self::Output {
+    type Output = Tensor<<Self as Div<cpu::Buffer<f32, Sh>>>::Output, DivBackwardST<<Self as Div<cpu::Buffer<f32, Sh>>>::Output, cpu::Buffer<f32, Sh>, F>>;
+    fn div(self, rhs: Tensor<cpu::Buffer<f32, Sh>, F>) -> Self::Output {
         let res = self / rhs.data.clone();
         Tensor {
             data: res.clone(),

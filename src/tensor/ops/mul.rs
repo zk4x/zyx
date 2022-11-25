@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, accel::cpu, dtype::DType};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, accel::cpu, dtype::DType, shape::Shape};
 use core::ops::Mul;
 use duplicate::duplicate_item;
 
@@ -36,10 +36,9 @@ where
     }
 }
 
-#[duplicate_item( dtype; [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
-    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
-impl<'g, YS> Mul<&'g Variable<YS>> for dtype
+impl<'g, YS, T, Sh> Mul<&'g Variable<YS>> for cpu::Buffer<T, Sh>
 where
+    Sh: Shape<D = usize>,
     Self: Mul<YS>,
     YS: Clone,
 {
@@ -88,10 +87,9 @@ where
     }
 }
 
-#[duplicate_item( dtype; [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
-    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
-impl<S, F> Mul<Tensor<S, F>> for dtype
+impl<S, F, T, Sh> Mul<Tensor<S, F>> for cpu::Buffer<T, Sh>
 where
+    Sh: Shape<D = usize>,
     Self: Mul<S>,
 {
     type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardST<Self, F>>;

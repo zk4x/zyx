@@ -1,15 +1,17 @@
-use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{IntoShape, Dims}};
+// TODO make this work
+
+/*use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct ExpandBackwardV<'g, G> {
+pub struct ExpandBackwardV<'g, G, Dims> {
     grad: GradientRef<'g, G>,
     dims: Dims,
 }
 
-impl<S, G> Backward<S> for ExpandBackwardV<'_, G>
+impl<S, G, Dims> Backward<S> for ExpandBackwardV<'_, G, Dims>
 where
-    S: Max,
-    G: GradAcc<<S as Max>::Output>,
+    S: Max<Dims>,
+    G: GradAcc<<S as Max<Dims>>::Output>,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -17,12 +19,12 @@ where
     }
 }
 
-impl<'g, S> Expand for &'g Variable<S>
+impl<'g, S, Sh> Expand<Sh> for &'g Variable<S>
 where
-    S: Clone + Expand + GetShape,
+    S: Clone + Expand<Sh> + GetShape,
 {
-    type Output = Tensor<<S as Expand>::Output, ExpandBackwardV<'g, S>>;
-    fn expand(self, shape: impl IntoShape) -> Self::Output {
+    type Output = Tensor<<S as Expand<Sh>>::Output, ExpandBackwardV<'g, S>>;
+    fn expand(self, shape: Sh) -> Self::Output {
         let shape = shape.shape();
         let dims = Dims(self.data().shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());
         Tensor {
@@ -36,7 +38,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ExpandBackwardT<F> {
+pub struct ExpandBackwardT<F, Dims> {
     grad_fn: F,
     dims: Dims,
 }
@@ -57,7 +59,7 @@ where
     F: Backward<S>,
 {
     type Output = Tensor<<S as Expand>::Output, ExpandBackwardT<F>>;
-    fn expand(self, shape: impl IntoShape) -> Self::Output {
+    fn expand(self, shape: impl Shape<usize>) -> Self::Output {
         let shape = shape.shape();
         let dims = Dims(self.data.shape().into_iter().zip(shape.clone().into_iter()).enumerate().filter_map(|(i, (a, b))| if a != b { Some(i as i32) } else { None }).collect());
         Tensor {
@@ -68,4 +70,4 @@ where
             },
         }
     }
-}
+}*/

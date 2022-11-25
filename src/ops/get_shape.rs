@@ -1,5 +1,4 @@
 use super::GetShape;
-use crate::shape::Shape;
 use duplicate::duplicate_item;
 #[duplicate_item(
     dtype;
@@ -20,8 +19,9 @@ use duplicate::duplicate_item;
 )]
 
 impl GetShape for dtype {
-    fn shape(&self) -> Shape {
-        use super::IntoShape;
-        IntoShape::shape(1)
+    type Output = usize;
+
+    fn shape(&self) -> Self::Output {
+        1
     }
 }

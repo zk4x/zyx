@@ -1,5 +1,4 @@
 use super::Min;
-use crate::shape::IntoDims;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -20,10 +19,10 @@ use duplicate::duplicate_item;
     [usize];
 )]
 
-impl Min for dtype
+impl Min<()> for dtype
 {
     type Output = Self;
-    fn min(self, _: impl IntoDims) -> Self::Output {
+    fn min(self, _: ()) -> Self::Output {
         dtype::MIN
     }
 }
@@ -46,10 +45,10 @@ impl Min for dtype
     [usize];
 )]
 
-impl Min for &dtype
+impl Min<()> for &dtype
 {
     type Output = dtype;
-    fn min(self, _: impl IntoDims) -> Self::Output {
+    fn min(self, _: ()) -> Self::Output {
         dtype::MIN
     }
 }

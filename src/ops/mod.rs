@@ -53,12 +53,12 @@ mod min;
 mod pow;
 mod max;
 
-use crate::shape::{IntoShape, IntoDims, Shape};
+use crate::shape::Shape;
 
 /// ## Convert between devices and types
 /// 
 /// Create new tensor on given device with given type
-// needed because we can't use core::convert::From
+// Needed because we can't use core::convert::From
 // because it's foreign trait and it doesn't work
 // when T == Self
 pub trait ConvertFrom<T> {
@@ -86,17 +86,49 @@ where
 /// ## Zeros operation
 /// 
 /// Create new tensor initialized with zeros.
+/// ### Example
+/// ```
+/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
+/// let x = Buffer::zeros((2, 3, 1));
+/// let y = x.shape();
+/// ```
+/// ### Output
+/// ```txt
+/// [0
+///  0
+///  0]
+/// [0
+///  0
+///  0]
+/// ```
 pub trait Zeros {
+    type Sh: Shape<D = usize>;
     /// Create new tensor initialized with zeros.
-    fn zeros(shape: impl IntoShape) -> Self;
+    fn zeros(shape: Self::Sh) -> Self;
 }
 
 /// ## Ones operation
 /// 
 /// Create new tensor initialized with ones.
+/// ### Example
+/// ```
+/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
+/// let x = Buffer::ones((2, 3, 1));
+/// let y = x.shape();
+/// ```
+/// ### Output
+/// ```txt
+/// [1
+///  1
+///  1]
+/// [1
+///  1
+///  1]
+/// ```
 pub trait Ones {
+    type Sh: Shape<D = usize>;
     /// Create new tensor initialized with ones.
-    fn ones(shape: impl IntoShape) -> Self;
+    fn ones(shape: Self::Sh) -> Self;
 }
 
 /// ## GetShape operation
@@ -111,8 +143,9 @@ pub trait Ones {
 /// assert_eq!(y, [3]);
 /// ```
 pub trait GetShape {
+    type Output: Shape<D = usize>;
     /// Get shape of input tensor.
-    fn shape(&self) -> Shape;
+    fn shape(&self) -> Self::Output;
 }
 
 // Unary ops
@@ -229,11 +262,14 @@ pub trait Tanh {
 /// [7 4 2]
 /// ```
 /// 
-pub trait Sum {
+pub trait Sum<Sh>
+where
+    Sh: Shape<D = i32>,
+{
     /// Output of the Sum operation.
     type Output;
     /// Apply Sum operation on given input.
-    fn sum(self, dims: impl IntoDims) -> Self::Output;
+    fn sum(self, dims: Sh) -> Self::Output;
 }
 
 /// ## Max operation
@@ -257,11 +293,14 @@ pub trait Sum {
 /// [4 2 1]
 /// ```
 /// 
-pub trait Max {
+pub trait Max<Sh>
+where
+    Sh: Shape<D = i32>,
+{
     /// Output of the Max operation.
     type Output;
     /// Apply Max operation on given input.
-    fn max(self, dims: impl IntoDims) -> Self::Output;
+    fn max(self, dims: Sh) -> Self::Output;
 }
 
 /// ## Min operation
@@ -285,11 +324,14 @@ pub trait Max {
 /// [3 2 1]
 /// ```
 /// 
-pub trait Min {
+pub trait Min<Sh>
+where
+    Sh: Shape<D = i32>,
+{
     /// Output of the Min operation.
     type Output;
     /// Apply Min operation on given input.
-    fn min(self, dims: impl IntoDims) -> Self::Output;
+    fn min(self, dims: Sh) -> Self::Output;
 }
 
 // Reshape simply changes shape of the tensor.
@@ -319,11 +361,14 @@ pub trait Min {
 ///  [1 4 2 5 1 6]]
 /// ```
 /// 
-pub trait Reshape {
+pub trait Reshape<Sh>
+where
+    Sh: Shape<D = usize>,
+{
     /// Output of the Reshape operation.
     type Output;
     /// Apply Reshape operation on given input.
-    fn reshape(self, shape: impl IntoShape) -> Self::Output;
+    fn reshape(self, shape: Sh) -> Self::Output;
 }
 
 /// ## Expand tensor
@@ -350,11 +395,14 @@ pub trait Reshape {
 ///   1 4 2]]
 /// ```
 /// 
-pub trait Expand {
+pub trait Expand<Sh>
+where
+    Sh: Shape<D = usize>,
+{
     /// Output of the Expand operation.
     type Output;
     /// Apply Expand operation on given input.
-    fn expand(self, shape: impl IntoShape) -> Self::Output;
+    fn expand(self, shape: Sh) -> Self::Output;
 }
 
 /// ## Permute tensor
@@ -382,12 +430,14 @@ pub trait Expand {
 ///  [4
 ///   2]]
 /// ```
-/// 
-pub trait Permute {
+pub trait Permute<Sh>
+where
+    Sh: Shape<D = i32>,
+{
     /// Output of the Permute operation.
     type Output;
     /// Apply Permute operation on given input.
-    fn permute(self, dims: impl IntoDims) -> Self::Output;
+    fn permute(self, dims: Sh) -> Self::Output;
 }
 
 // TODO: this is only API proposal, it is yet to be finalized
@@ -404,6 +454,25 @@ where
 ///
 /// Transpose is a subset of permute.
 /// It is equivalent to x.permute((-1, -2))
+///
+/// ### Example
+/// ```
+/// use zyx::accel::cpu::Buffer;
+/// use zyx::prelude::*;
+///
+/// let x = Buffer::cfrom([[3, 2, 4], [1, 4, 2]]);
+/// let x = x.transpose();
+/// assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
+/// assert_eq!(x.shape(), (3, 2, 1));
+/// println!("{}", x);
+/// ```
+///
+/// ### Output
+/// ```txt
+/// [3 1
+///  2 4
+///  4 2]
+/// ```
 pub trait Transpose {
     /// Output of the Transpose operation.
     type Output;
@@ -413,11 +482,11 @@ pub trait Transpose {
 
 impl<T> Transpose for T
 where
-    T: Permute,
+    T: Permute<(i32, i32)>,
 {
     type Output = T::Output;
     fn transpose(self) -> Self::Output {
-        self.permute([-1, -2])
+        self.permute((-1, -2))
     }
 }
 
@@ -427,6 +496,23 @@ where
 /// Pow operation
 /// 
 /// Calculate the power of the input tensor to the given exponent tensor.
+/// As with all binary operations, both left and right hand side can be also scalar.
+///
+/// ### Example
+/// ```
+/// use zyx::accel::cpu::Buffer;
+/// use zyx::prelude::*;
+///
+/// let x = Buffer::cfrom([[3., 2., 4.], [1., 4., 2.]]);
+/// let z = x.pow(2);
+/// println!("{}", z);
+/// ```
+///
+/// ### Output
+/// ```txt
+/// [ 9  4 16
+///   1 16  4]
+/// ```
 pub trait Pow<Rhs = Self> {
     /// Output of the Pow operation.
     type Output;
@@ -454,7 +540,6 @@ pub trait Pow<Rhs = Self> {
 /// [33 16
 ///  27 10]
 /// ```
-/// 
 pub trait MatMul<Rhs = Self> {
     /// Output of the MatMul operation.
     type Output;
@@ -468,21 +553,14 @@ pub trait MatMul<Rhs = Self> {
 /// Calculates 2D convodution.
 /// 
 /// NOTE: This API is not yet stable and may be subject to change
-pub trait Conv<Kernel = Self> {
+pub trait Conv<Pd, Kernel = Self>
+where
+    Pd: Shape<D = usize>,
+{
     /// Output of the Conv operation.
     type Output;
     /// Apply Conv operation on given input.
-    fn conv(self, kernel: Kernel, padding: impl IntoShape) -> Self::Output;
-}
-
-extern crate alloc;
-/// ## IntoVec operation
-/// 
-/// Returns values from tensor as a Vec.
-/// It must have row major order.
-pub trait IntoVec<T> {
-    /// Returns values from tensor as a Vec with row-major order.
-    fn to_vec(&self) -> alloc::vec::Vec<T>;
+    fn conv(self, kernel: Kernel, padding: Pd) -> Self::Output;
 }
 
 /// ## FromVec operation
@@ -493,14 +571,25 @@ pub trait IntoVec<T> {
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::from_vec([2, 3, 1, 3].to_vec(), [2, 2]);
+/// let x = Buffer::from_vec(&[2, 3, 1, 3], [2, 2]);
 /// println!("{}", x);
 /// ```
 /// ### Output
 /// [2 3
 ///  1 3]
-/// 
-pub trait FromVec<T> {
+pub trait FromVec {
+    type T;
+    type Sh: Shape<D = usize>;
     /// Create new tensor from Vec and Shape.
-    fn from_vec(data: alloc::vec::Vec<T>, shape: impl IntoShape) -> Self;
+    fn from_vec(data: &[Self::T], shape: Self::Sh) -> Self;
+}
+
+extern crate alloc;
+/// ## IntoVec operation
+/// 
+/// Returns values from tensor as a Vec.
+/// It must have row major order.
+pub trait IntoVec<T> {
+    /// Returns values from tensor as a Vec with row-major order.
+    fn to_vec(&self) -> alloc::vec::Vec<T>;
 }

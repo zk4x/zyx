@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu, shape::Shape};
 use core::ops::Add;
 use duplicate::duplicate_item;
 
@@ -17,9 +17,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
-    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
-    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<'g, YS> Add<&'g Variable<YS>> for dtype
 where
     Self: Add<YS>,
@@ -36,11 +34,41 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
-    [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
-    [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
+impl<'g, YS, T, Sh> Add<&'g Variable<YS>> for cpu::Buffer<T, Sh>
+where
+    Sh: Shape<D = usize>,
+    Self: Add<YS>,
+    YS: Clone + DType,
+{
+    type Output = Tensor<<Self as Add<YS>>::Output, AddBackwardSV<'g, YS>>;
+    fn add(self, rhs: &'g Variable<YS>) -> Self::Output {
+        Tensor {
+            data: self + rhs.data.clone(),
+            grad_fn: AddBackwardSV {
+                ygrad: GradientRef::new(&rhs.grad),
+            }
+        }
+    }
+}
+
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<S, F> Add<Tensor<S, F>> for dtype
 where
+    Self: Add<S>,
+    S: DType,
+{
+    type Output = Tensor<<Self as Add<S>>::Output, F>;
+    fn add(self, rhs: Tensor<S, F>) -> Self::Output {
+        Tensor {
+            data: self + rhs.data,
+            grad_fn: rhs.grad_fn,
+        }
+    }
+}
+
+impl<S, F, T, Sh> Add<Tensor<S, F>> for cpu::Buffer<T, Sh>
+where
+    Sh: Shape<D = usize>,
     Self: Add<S>,
     S: DType,
 {

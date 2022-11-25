@@ -1,5 +1,4 @@
 use super::Ones;
-use crate::shape::IntoShape;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -9,7 +8,9 @@ use duplicate::duplicate_item;
 )]
 
 impl Ones for dtype {
-    fn ones(_: impl IntoShape) -> Self {
+    type Sh = usize;
+
+    fn ones(_: usize) -> Self {
         1.
     }
 }
@@ -31,7 +32,9 @@ impl Ones for dtype {
 )]
 
 impl Ones for dtype {
-    fn ones(_: impl IntoShape) -> Self {
+    type Sh = usize;
+
+    fn ones(_: usize) -> Self {
         1
     }
 }

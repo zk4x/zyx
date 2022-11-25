@@ -25,7 +25,6 @@
 #![deny(missing_abi)]
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
-#![deny(missing_docs)]
 //#![feature(must_not_suspend)]
 //#![warn(must_not_suspend)]
 #![deny(non_ascii_idents)]

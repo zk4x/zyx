@@ -5,7 +5,7 @@
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
-use crate::{module::Module, ops::{self, GetShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::IntoDims};
+use crate::{module::Module, ops::{self, GetShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::Shape};
 use core::ops::{Neg, Add, Sub, Div, Mul};
 
 /// ReLU operation
@@ -104,23 +104,23 @@ where
 
 /// Softmax operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SoftMax<D>
+pub struct SoftMax<Dims>
 where
-    D: IntoDims,
+    Dims: Shape<D = i32>,
 {
-    /// [Dimensions](crate::shape::IntoDims) to calculate softmax across
-    pub dims: D
+    /// Dimension to calculate softmax across
+    pub dims: Dims
 }
 
 impl<Input, D> Module<'_, Input> for SoftMax<D>
 where
-    D: IntoDims + Clone,
-    Input: Clone + ops::Max + Sub<<Input as ops::Max>::Output>,
-    <Input as Sub<<Input as ops::Max>::Output>>::Output: ops::Exp,
-    <<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output: Clone + ops::Sum,
-    <<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output: Div<<<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as ops::Sum>::Output>,
+    D: Clone + Shape<D = i32>,
+    Input: Clone + ops::Max<D> + Sub<<Input as ops::Max<D>>::Output>,
+    <Input as Sub<<Input as ops::Max<D>>::Output>>::Output: ops::Exp,
+    <<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output: Clone + ops::Sum<D>,
+    <<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output: Div<<<<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output as ops::Sum<D>>::Output>,
 {
-    type Output = <<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as Div<<<<Input as Sub<<Input as ops::Max>::Output>>::Output as ops::Exp>::Output as ops::Sum>::Output>>::Output;
+    type Output = <<<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output as Div<<<<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output as ops::Sum<D>>::Output>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
@@ -159,18 +159,18 @@ fn softmax_test() {
 
 /// Sum operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Sum<D>
+pub struct Sum<Dims>
 where
-    D: IntoDims,
+    Dims: Shape<D = i32>,
 {
     /// [Dimensions](crate::shape::IntoDims) to sum
-    pub dims: D,
+    pub dims: Dims,
 }
 
-impl<Input, D> Module<'_, Input> for Sum<D>
+impl<Input, Dims> Module<'_, Input> for Sum<Dims>
 where
-    Input: ops::Sum,
-    D: IntoDims + Clone,
+    Input: ops::Sum<Dims>,
+    Dims: Shape<D = i32> + Clone,
 {
     type Output = Input::Output;
     type Params = ();
@@ -184,18 +184,18 @@ where
 
 /// Max operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Max<D>
+pub struct Max<Dims>
 where
-    D: IntoDims,
+    Dims: Shape<D = i32>,
 {
     /// [Dimensions](crate::shape::IntoDims) to max
-    pub dims: D,
+    pub dims: Dims,
 }
 
-impl<Input, D> Module<'_, Input> for Max<D>
+impl<Input, Dims> Module<'_, Input> for Max<Dims>
 where
-    Input: ops::Max,
-    D: IntoDims + Clone,
+    Input: ops::Max<Dims>,
+    Dims: Shape<D = i32> + Clone,
 {
     type Output = Input::Output;
     type Params = ();
@@ -209,15 +209,18 @@ where
 
 /// Min operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Min<D> {
+pub struct Min<Dims>
+where
+    Dims: Shape<D = i32>,
+{
     /// [Dimensions](crate::shape::IntoDims) to min
-    pub dims: D,
+    pub dims: Dims,
 }
 
-impl<Input, D> Module<'_, Input> for Min<D>
+impl<Input, Dims> Module<'_, Input> for Min<Dims>
 where
-    Input: ops::Min,
-    D: IntoDims + Clone,
+    Input: ops::Min<Dims>,
+    Dims: Clone + Shape<D = i32>,
 {
     type Output = Input::Output;
     type Params = ();
@@ -231,21 +234,21 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Mean operation
-pub struct Mean<D>
+pub struct Mean<Dims>
 where
-    D: IntoDims,
+    Dims: Shape<D = i32>,
 {
     /// [Dimensions](crate::shape::IntoDims) for mean
-    pub dims: D
+    pub dims: Dims
 }
 
-impl<Input, D> Module<'_, Input> for Mean<D>
+impl<Input, Dims> Module<'_, Input> for Mean<Dims>
 where
-    D: IntoDims + Clone,
-    Input: GetShape + ops::Sum,
-    <Input as ops::Sum>::Output: Div<usize>,
+    Dims: Clone + Shape<D = i32>,
+    Input: GetShape + ops::Sum<Dims>,
+    <Input as ops::Sum<Dims>>::Output: Div<usize>,
 {
-    type Output = <<Input as ops::Sum>::Output as Div<usize>>::Output;
+    type Output = <<Input as ops::Sum<Dims>>::Output as Div<usize>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
@@ -299,12 +302,12 @@ impl<W, B> Linear<W, B> {
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
         T: Zeros + Ones,
-        W: UniformInit<T>,
-        B: UniformInit<T>,
+        W: UniformInit<T = T, Sh = (usize, usize)>,
+        B: UniformInit<T = T, Sh = (usize, usize)>,
     {
         Self {
-            w: W::uniform([in_features, out_features], T::zeros(()), T::ones(())).with_grad(),
-            b: B::uniform([1, out_features], T::zeros(()), T::ones(())).with_grad(),
+            w: W::uniform((in_features, out_features), T::zeros(()), T::ones(())).with_grad(),
+            b: B::uniform((1, out_features), T::zeros(()), T::ones(())).with_grad(),
         }
     }
 }
@@ -347,16 +350,16 @@ impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
         T: Zeros + Ones,
-        WI: UniformInit<T>,
-        BI: UniformInit<T>,
-        WH: UniformInit<T>,
-        BH: UniformInit<T>,
+        WI: UniformInit<T = T, Sh = (usize, usize)>,
+        BI: UniformInit<T = T, Sh = (usize, usize)>,
+        WH: UniformInit<T = T, Sh = (usize, usize)>,
+        BH: UniformInit<T = T, Sh = (usize, usize)>,
     {
         Self {
-            wih: WI::uniform([input_size, hidden_size], T::zeros(()), T::ones(())).with_grad(),
-            bih: BI::uniform([1, hidden_size], T::zeros(()), T::ones(())).with_grad(),
-            whh: WH::uniform([hidden_size, hidden_size], T::zeros(()), T::ones(())).with_grad(),
-            bhh: BH::uniform([1, hidden_size], T::zeros(()), T::ones(())).with_grad(),
+            wih: WI::uniform((input_size, hidden_size), T::zeros(()), T::ones(())).with_grad(),
+            bih: BI::uniform((1, hidden_size), T::zeros(()), T::ones(())).with_grad(),
+            whh: WH::uniform((hidden_size, hidden_size), T::zeros(()), T::ones(())).with_grad(),
+            bhh: BH::uniform((1, hidden_size), T::zeros(()), T::ones(())).with_grad(),
         }
     }
 }
