@@ -102,9 +102,6 @@ impl Shape for () {
     }
 }
 
-impl crate::ops::Permute<Sh> for () {
-}
-
 impl Shape for usize {
     type D = usize;
     const N: usize = 1;
@@ -253,6 +250,14 @@ impl Shape for (usize, usize) {
             -2 => &mut self.0,
             _ => panic!("Index out of range, the index is {}, but the length is {}", idx, 1),
         }
+    }
+}
+
+impl crate::ops::Permute<(i32, i32)> for (usize, usize) {
+    type Output = Self;
+
+    fn permute(self, dims: (i32, i32)) -> Self::Output {
+        (self.ati(dims.0), self.ati(dims.1))
     }
 }
 

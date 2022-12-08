@@ -139,7 +139,7 @@ fn softmax_test() {
     use crate::prelude::*;
     use crate::accel::cpu::Buffer;
 
-    let x = Buffer::<f32>::cfrom([[3., 2., 4.], [4., 2., 5.]]).with_grad();
+    let x = Buffer::<f32, _>::cfrom([[3., 2., 4.], [4., 2., 5.]]).with_grad();
 
     /*let dim = -1;
     let e_x = ((&x).data().clone() - (&x).max(())).exp();
@@ -301,7 +301,7 @@ impl<W, B> Linear<W, B> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
-        T: Zeros + Ones,
+        T: Zeros<Sh = ()> + Ones<Sh = ()>,
         W: UniformInit<T = T, Sh = (usize, usize)>,
         B: UniformInit<T = T, Sh = (usize, usize)>,
     {
@@ -349,7 +349,7 @@ impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
     /// Create new [RNNCell] with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
-        T: Zeros + Ones,
+        T: Zeros<Sh = ()> + Ones<Sh = ()>,
         WI: UniformInit<T = T, Sh = (usize, usize)>,
         BI: UniformInit<T = T, Sh = (usize, usize)>,
         WH: UniformInit<T = T, Sh = (usize, usize)>,
