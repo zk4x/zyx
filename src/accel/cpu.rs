@@ -378,8 +378,8 @@ where
     fn expand(self, res_shape: Sh2) -> Self::Output {
         // TODO use Vec instead of shape as temporary solution here
         // in order to avoid nightly or awkward solutions
-        let mut shape = self.shape.to_vec();
-        let mut res_shape = res_shape.to_vec();
+        let mut shape: alloc::vec::Vec<usize> = self.shape.iter().collect();
+        let mut res_shape: alloc::vec::Vec<usize> = res_shape.iter().collect();
         let (shape, res_shape) = crate::shape::sync_shape_rank(shape, res_shape);
         let n = shape.numel();
         let ndims = shape.ndim();

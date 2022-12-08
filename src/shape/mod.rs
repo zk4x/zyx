@@ -57,8 +57,8 @@ impl Dim for i32 {}
 /// let x = cpu::Buffer::<f32>::randn((2, 3));
 /// ```
 pub trait Shape: Clone + Copy {
-    type D: Dim;
     const N: usize;
+    type D: Dim;
     fn strides(&self) -> Self;
     fn argsort(&self) -> Self;
     fn numel(&self) -> usize;
@@ -67,11 +67,53 @@ pub trait Shape: Clone + Copy {
     fn ati(&self, idx: i32) -> Self::D;
     fn mut_at(&mut self, idx: usize) -> &mut Self::D;
     fn mut_ati(&mut self, idx: i32) -> &mut Self::D;
+    fn iter<'a>(&'a self) -> ShapeIter<'a, Self> {
+        ShapeIter::new(self)
+    }
+}
+
+// This is very simple solution for creating an Iterator for the Shape, not the most performant though,
+// TODO: optimize this for every shape separately
+struct ShapeIter<'a, Sh>
+where
+    Sh: Shape,
+{
+    idx: usize,
+    shape: &'a Sh,
+}
+
+impl<Sh> ShapeIter<'_, Sh>
+where
+    Sh: Shape,
+{
+    fn new(shape: &Sh) -> Self {
+        Self {
+            idx: 0,
+            shape,
+        }
+    }
+}
+
+impl<Sh> Iterator for ShapeIter<'_, Sh>
+where
+    Sh: Shape,
+{
+    type Item = Sh::D;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let idx = self.idx;
+        self.idx += 1;
+        if idx < Sh::N {
+            Some(self.shape.at(self.idx))
+        } else {
+            None
+        }
+    }
 }
 
 impl Shape for () {
-    type D = i32;
     const N: usize = 1;
+    type D = i32;
 
     fn strides(&self) -> Self {
         ()
@@ -103,8 +145,8 @@ impl Shape for () {
 }
 
 impl Shape for usize {
-    type D = usize;
     const N: usize = 1;
+    type D = usize;
 
     fn strides(&self) -> Self {
         1
