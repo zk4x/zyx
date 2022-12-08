@@ -127,8 +127,8 @@ where
         use crate::ops::{Exp, Sum};
         // TODO: Check if cloning Tensors (that is also cloning their grad_fn)
         // has any effect on correctness of this function's gradient calculation
-        let temp = (x.clone() - x.max(())).exp();
-        temp.clone() / temp.sum(self.dims.clone())
+        let temp = (x.clone() - x.max(self.dims)).exp();
+        temp.clone() / temp.sum(self.dims)
     }
 
     fn parameters(&mut self) -> Self::Params {}

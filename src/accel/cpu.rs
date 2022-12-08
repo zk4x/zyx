@@ -12,18 +12,12 @@ use alloc::{vec, sync::Arc, format};
 /// Each buffer has a shape and data stored in vec.
 /// Data is stored in row major order.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Buffer<T, Sh>
-where
-    Sh: Shape<D = usize>,
-{
+pub struct Buffer<T, Sh> {
     shape: Sh,
     data: Arc<alloc::vec::Vec<T>>,
 }
 
-impl<T, Sh> Clone for Buffer<T, Sh>
-where
-    Sh: Shape<D = usize>,
-{
+impl<T, Sh> Clone for Buffer<T, Sh> {
     fn clone(&self) -> Self {
         Self {
             shape: self.shape,
@@ -32,10 +26,7 @@ where
     }
 }
 
-impl<T, Sh> Buffer<T, Sh>
-where
-    Sh: Shape<D = usize>,
-{
+impl<T, Sh> Buffer<T, Sh> {
     /// Get Buffer's estimated memory size
     pub fn est_mem_size(&self) -> usize {
         self.data.len() * core::mem::size_of::<T>()
@@ -429,38 +420,28 @@ where
 
 impl<T, Sh, Dims> ops::Permute<Dims> for Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape<D = usize> + ops::Permute<Dims>,
     Dims: Shape<D = i32>,
     T: Clone + ops::Zeros + ScalarType,
 {
     type Output = Buffer<T, Sh>;
     fn permute(self, dims: Dims) -> Self::Output {
-        // if dims.len() is not same as shape.len(), correct it
-        let mut dims = dims.dims().0;
-        let mut s_shape = self.shape;
-        match dims.len().cmp(&s_shape.ndim()) {
-            core::cmp::Ordering::Greater =>
-                for _ in 0..dims.len() - s_shape.ndim() {
-                    s_shape.0.insert(0, 1);
-                },
-            core::cmp::Ordering::Less =>
-                for i in 0..s_shape.ndim() - dims.len() {
-                    dims.insert(0, i as i32);
-                },
-            core::cmp::Ordering::Equal => {}
-        }
-
-        let ndim = s_shape.ndim();
-        let shape = s_shape.clone().permute(dims.clone());
-        let strides = s_shape.strides().permute(dims.clone());
+        let shape = self.shape.permute(dims);
+        let strides = self.shape.strides().permute(dims);
         let mut acc_var = 1;
-        let acc = s_shape.into_iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<alloc::vec::Vec<usize>>().into_iter().rev().collect().permute(dims);
+        //let acc = self.shape.iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<alloc::vec::Vec<usize>>().iter().rev().collect().permute(dims);
+        let acc = [0; Sh::N];
+        for i in 0..Sh::N {
+            acc_var *= self.shape.at(Sh::N - i - 1);
+            acc.mut_at(Sh::N - i - 1) = acc_var;
+        }
+        acc.permute(dims);
         let n = shape.numel();
         // temp is in reverse order
-        let mut temp = vec![(0, 0); ndim]; // strides, acc_shape
-        let mut begins = vec![0; ndim];
-        for k in 0..ndim {
-            temp[ndim-k-1] = (strides[k], acc[k]);
+        let mut temp = [(0, 0); Sh::N]; // strides, acc_shape
+        let mut begins = [0; Sh::N];
+        for k in 0..Sh::N {
+            temp[Sh::N-k-1] = (strides[k], acc[k]);
         }
 
         let mut data = alloc::vec::Vec::with_capacity(n);

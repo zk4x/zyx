@@ -69,28 +69,6 @@ pub trait Shape: Clone + Copy {
     fn mut_ati(&mut self, idx: i32) -> &mut Self::D;
 }
 
-pub(crate) fn sync_shape_rank<Sh1, Sh2>(shape1: Sh1, shape2: Sh2) -> (impl Shape, impl Shape)
-where
-    Sh1: Shape,
-    Sh2: Shape,
-{
-    // if input shape is shorter than res_shape or vice versa,
-    // add necessary ones to the beginning
-    /*while shape.ndim() < res_shape.ndim() {
-        shape.0.insert(0, 1);
-    }
-    while shape.ndim() > res_shape.ndim() {
-        res_shape.0.insert(0, 1);
-    }*/
-
-    if Sh1::N > Sh2::N {
-        let x = [1; { Sh1::N - Sh2::N }];
-    } else if Sh1::N < Sh2::N {
-    } else {}
-
-    todo!()
-}
-
 impl Shape for () {
     type D = i32;
     const N: usize = 1;
@@ -124,6 +102,9 @@ impl Shape for () {
     }
 }
 
+impl crate::ops::Permute<Sh> for () {
+}
+
 impl Shape for usize {
     type D = usize;
     const N: usize = 1;
@@ -143,7 +124,6 @@ impl Shape for usize {
     fn at(&self, idx: usize) -> Self::D {
         match idx {
             0 => *self,
-            -1 => *self,
             _ => panic!("Index out of range, the index is {}, but the length is {}", idx, 1),
         }
     }
@@ -159,7 +139,6 @@ impl Shape for usize {
     fn mut_at(&mut self, idx: usize) -> &mut Self::D {
         match idx {
             0 => self,
-            -1 => self,
             _ => panic!("Index out of range, the index is {}, but the length is {}", idx, 1),
         }
     }
@@ -192,7 +171,6 @@ impl Shape for i32 {
     fn at(&self, idx: usize) -> Self::D {
         match idx {
             0 => *self,
-            -1 => *self,
             _ => panic!("Index out of range, the index is {}, but the length is {}", idx, 1),
         }
     }
@@ -208,7 +186,6 @@ impl Shape for i32 {
     fn mut_at(&mut self, idx: usize) -> &mut Self::D {
         match idx {
             0 => self,
-            -1 => self,
             _ => panic!("Index out of range, the index is {}, but the length is {}", idx, 1),
         }
     }
