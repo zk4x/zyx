@@ -1,5 +1,17 @@
 #![no_std]
 
+//#![feature(adt_const_params)]
+//#![feature(generic_const_exprs)]
+
+// Nightly lints
+//#![feature(strict_provenance)]
+//#![warn(fuzzy_provenance_casts)]
+//#![warn(lossy_provenance_casts)]
+
+//#![feature(must_not_suspend)]
+//#![warn(must_not_suspend)]
+
+// Standard lints
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
@@ -12,21 +24,16 @@
 #![warn(rustdoc::invalid_rust_codeblocks)]
 #![warn(rustdoc::bare_urls)]
 
-// clippy lints
+// Clippy lints
 #![deny(absolute_paths_not_starting_with_crate)]
 #![deny(elided_lifetimes_in_paths)]
 #![deny(explicit_outlives_requirements)]
-//#![feature(strict_provenance)]
-//#![warn(fuzzy_provenance_casts)]
-//#![warn(lossy_provenance_casts)]
 #![deny(keyword_idents)]
 #![deny(macro_use_extern_crate)]
 #![deny(meta_variable_misuse)]
 #![deny(missing_abi)]
 #![deny(missing_copy_implementations)]
 #![deny(missing_debug_implementations)]
-//#![feature(must_not_suspend)]
-//#![warn(must_not_suspend)]
 #![deny(non_ascii_idents)]
 #![warn(noop_method_call)]
 #![deny(pointer_structural_match)]

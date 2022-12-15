@@ -8,9 +8,9 @@ use duplicate::duplicate_item;
 )]
 
 impl Ones for dtype {
-    type Sh = usize;
+    type Sh = ();
 
-    fn ones(_: usize) -> Self {
+    fn ones(_: ()) -> Self {
         1.
     }
 }
@@ -32,9 +32,9 @@ impl Ones for dtype {
 )]
 
 impl Ones for dtype {
-    type Sh = usize;
+    type Sh = ();
 
-    fn ones(_: usize) -> Self {
+    fn ones(_: ()) -> Self {
         1
     }
 }

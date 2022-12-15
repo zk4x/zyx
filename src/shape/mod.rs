@@ -1,8 +1,14 @@
+//! # Shape
+//! 
+//! This module contains definition of [Shape], it's axes/dimensions and some associated methods.
+
 mod bin_op;
 mod const_index;
 
 pub use bin_op::BinOpShape;
 pub use const_index::ConstIndex;
+
+use crate::ops::Permute;
 
 /// # Dim
 ///
@@ -56,17 +62,32 @@ impl Dim for i32 {}
 /// # use zyx::accel::cpu;
 /// let x = cpu::Buffer::<f32>::randn((2, 3));
 /// ```
-pub trait Shape: Clone + Copy {
+pub trait Shape: Clone + Copy + core::fmt::Debug {
+    /// Rank of tensor with this shape
     const N: usize;
+    /// Type of axes, shapes of tensors have usize axes,
+    /// while operations like minimized, maximize and permute
+    /// take shape with i32 axes.
     type D: Dim;
+    /// Create new shape filled with ones
+    fn ones() -> Self;
+    /// Get strides of the shape
     fn strides(&self) -> Self;
+    /// Sort shape's axes from smallest to largest
     fn argsort(&self) -> Self;
+    /// Get number of elements stored in tensor with this shape
     fn numel(&self) -> usize;
+    /// Check if the shape is empty.
     fn is_empty(&self) -> bool { self.numel() == 0 }
+    /// Access axis at given index
     fn at(&self, idx: usize) -> Self::D;
+    /// Access axis at given i32 index, so negative values work as well, with -1 accessing the last axis
     fn ati(&self, idx: i32) -> Self::D;
+    /// Mutably access axis at given index
     fn mut_at(&mut self, idx: usize) -> &mut Self::D;
+    /// Mutably access axis at given i32 index, so negative values work as well, with -1 accessing the last axis
     fn mut_ati(&mut self, idx: i32) -> &mut Self::D;
+    /// Iterate over the whole shape
     fn iter<'a>(&'a self) -> ShapeIter<'a, Self> {
         ShapeIter::new(self)
     }
@@ -74,7 +95,9 @@ pub trait Shape: Clone + Copy {
 
 // This is very simple solution for creating an Iterator for the Shape, not the most performant though,
 // TODO: optimize this for every shape separately
-struct ShapeIter<'a, Sh>
+/// Iterator over the shape
+#[derive(Debug)]
+pub struct ShapeIter<'a, Sh>
 where
     Sh: Shape,
 {
@@ -82,11 +105,11 @@ where
     shape: &'a Sh,
 }
 
-impl<Sh> ShapeIter<'_, Sh>
+impl<'a, Sh> ShapeIter<'a, Sh>
 where
-    Sh: Shape,
+    Sh: Shape + 'a,
 {
-    fn new(shape: &Sh) -> Self {
+    fn new(shape: &'a Sh) -> Self {
         Self {
             idx: 0,
             shape,
@@ -113,7 +136,11 @@ where
 
 impl Shape for () {
     const N: usize = 1;
-    type D = i32;
+    type D = usize;
+
+    fn ones() -> Self {
+        ()
+    }
 
     fn strides(&self) -> Self {
         ()
@@ -124,7 +151,7 @@ impl Shape for () {
     }
 
     fn numel(&self) -> usize {
-        0
+        1 // it is a scalar
     }
 
     fn at(&self, idx: usize) -> Self::D {
@@ -147,6 +174,10 @@ impl Shape for () {
 impl Shape for usize {
     const N: usize = 1;
     type D = usize;
+
+    fn ones() -> Self {
+        1
+    }
 
     fn strides(&self) -> Self {
         1
@@ -195,6 +226,10 @@ impl Shape for i32 {
     type D = i32;
     const N: usize = 1;
 
+    fn ones() -> Self {
+        1
+    }
+
     fn strides(&self) -> Self {
         1
     }
@@ -241,6 +276,10 @@ impl Shape for i32 {
 impl Shape for (usize, usize) {
     type D = usize;
     const N: usize = 2;
+
+    fn ones() -> Self {
+        (1, 1)
+    }
 
     fn strides(&self) -> Self {
         (self.0, 1)
@@ -295,7 +334,7 @@ impl Shape for (usize, usize) {
     }
 }
 
-impl crate::ops::Permute<(i32, i32)> for (usize, usize) {
+impl Permute<(i32, i32)> for (usize, usize) {
     type Output = Self;
 
     fn permute(self, dims: (i32, i32)) -> Self::Output {
@@ -306,6 +345,10 @@ impl crate::ops::Permute<(i32, i32)> for (usize, usize) {
 impl Shape for (i32, i32) {
     type D = i32;
     const N: usize = 2;
+
+    fn ones() -> Self {
+        (1, 1)
+    }
 
     fn strides(&self) -> Self {
         (self.0, 1)
@@ -364,6 +407,10 @@ impl Shape for (usize, usize, usize) {
     type D = usize;
     const N: usize = 3;
 
+    fn ones() -> Self {
+        (1, 1, 1)
+    }
+
     fn strides(&self) -> Self {
         (self.1*self.0, self.0, 1)
     }
@@ -419,10 +466,30 @@ impl Shape for (usize, usize, usize) {
     }
 }
 
+impl Permute<(i32, i32)> for (usize, usize, usize) {
+    type Output = Self;
+
+    fn permute(self, dims: (i32, i32)) -> Self::Output {
+        // TODO fix this code, it is wrong
+        (self.ati(dims.0), self.ati(dims.1), 1)
+    }
+}
+
+impl Permute<(i32, i32, i32)> for (usize, usize, usize) {
+    type Output = Self;
+
+    fn permute(self, dims: (i32, i32, i32)) -> Self::Output {
+        (self.ati(dims.0), self.ati(dims.1), self.ati(dims.2))
+    }
+}
 
 impl Shape for (i32, i32, i32) {
     type D = i32;
     const N: usize = 3;
+
+    fn ones() -> Self {
+        (1, 1, 1)
+    }
 
     fn strides(&self) -> Self {
         (self.1*self.0, self.0, 1)
@@ -482,6 +549,10 @@ impl Shape for (i32, i32, i32) {
 impl Shape for (usize, usize, usize, usize) {
     type D = usize;
     const N: usize = 4;
+
+    fn ones() -> Self {
+        (1, 1, 1, 1)
+    }
 
     fn strides(&self) -> Self {
         (self.2 * self.1 * self.0, self.1*self.0, self.0, 1)
@@ -548,6 +619,10 @@ impl Shape for (i32, i32, i32, i32) {
     type D = i32;
     const N: usize = 4;
 
+    fn ones() -> Self {
+        (1, 1, 1, 1)
+    }
+
     fn strides(&self) -> Self {
         (self.2 * self.1 * self.0, self.1*self.0, self.0, 1)
     }
@@ -612,6 +687,10 @@ impl Shape for (i32, i32, i32, i32) {
 impl Shape for (usize, usize, usize, usize, usize) {
     type D = usize;
     const N: usize = 5;
+
+    fn ones() -> Self {
+        (1, 1, 1, 1, 1)
+    }
 
     fn strides(&self) -> Self {
         (self.3 * self.2 * self.1 * self.0, self.2 * self.1 * self.0, self.1*self.0, self.0, 1)
@@ -684,6 +763,10 @@ impl Shape for (i32, i32, i32, i32, i32) {
     type D = i32;
     const N: usize = 5;
 
+    fn ones() -> Self {
+        (1, 1, 1, 1, 1)
+    }
+
     fn strides(&self) -> Self {
         (self.3*self.2*self.1*self.0, self.2*self.1*self.0, self.1*self.0, self.0, 1)
     }
@@ -755,6 +838,10 @@ impl<const N: usize> Shape for [usize; N] {
     type D = usize;
     const N: usize = N;
 
+    fn ones() -> Self {
+        [1; N]
+    }
+
     fn strides(&self) -> Self {
         let mut product = 1;
         let mut res = [0; N];
@@ -796,6 +883,10 @@ impl<const N: usize> Shape for [usize; N] {
 impl<const N: usize> Shape for [i32; N] {
     type D = i32;
     const N: usize = N;
+
+    fn ones() -> Self {
+        [1; N]
+    }
 
     fn strides(&self) -> Self {
         let mut product = 1;

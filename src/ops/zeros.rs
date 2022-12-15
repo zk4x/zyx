@@ -8,9 +8,9 @@ use duplicate::duplicate_item;
 )]
 
 impl Zeros for dtype {
-    type Sh = usize;
+    type Sh = ();
 
-    fn zeros(_: usize) -> Self {
+    fn zeros(_: ()) -> Self {
         0.
     }
 }
@@ -32,9 +32,9 @@ impl Zeros for dtype {
 )]
 
 impl Zeros for dtype {
-    type Sh = usize;
+    type Sh = ();
 
-    fn zeros(_: usize) -> Self {
+    fn zeros(_: ()) -> Self {
         0
     }
 }

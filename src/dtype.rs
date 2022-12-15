@@ -8,9 +8,9 @@ pub trait DType {}
 
 //use crate::accel::cpu;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-    //[cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
-    //[cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl DType for dtype {}
+
+impl<T, Sh> DType for crate::accel::cpu::Buffer<T, Sh> {}
 
 pub trait ScalarType {}
 

@@ -1,10 +1,10 @@
 //! ## This is an example of recurrent neural network
-#![no_std]
+//#![no_std]
 
-extern crate alloc;
+//extern crate alloc;
 
 fn main() {
-    use zyx::prelude::*;
+    /*use zyx::prelude::*;
     use zyx::accel::cpu;
     use zyx::nn::{RNNCell, Linear, SoftMax, MSELoss, Sum, ReLU};
     use zyx::optim;
@@ -33,7 +33,7 @@ fn main() {
 
     for i in 0..30000 {
         use cpu::Buffer;
-        (<(RNNCell<Buffer<f32>, Buffer<f32>, Buffer<f32>, Buffer<f32>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32>, Buffer<f32>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32>, Buffer<f32>>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).zero_grad();
+        (<(RNNCell<Buffer<f32, _>, Buffer<f32, _>, Buffer<f32, _>, Buffer<f32, _>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32, _>, Buffer<f32, _>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32>, Buffer<f32>>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).zero_grad();
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).zero_grad();
 
@@ -56,7 +56,7 @@ fn main() {
         (<(RNNCell<_, _, _, _>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32>, Buffer<f32>)>>::parameters(&mut rnn_net), <(Linear<_, _>, SoftMax<()>) as zyx::module::Module<'_, Buffer<f32>>>::parameters(&mut net2)).step(&optimizer);
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).step(&optimizer);
-    }
+    }*/
 
     //println!("hidden state: {}", hidden_state);
 }

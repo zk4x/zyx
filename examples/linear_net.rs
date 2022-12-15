@@ -16,17 +16,17 @@ fn main() {
     );
 
     // MSELoss does not reduce it's output (it's just (y-yp)^2), you need to add some reduce function if you want to apply reduce
-    let mse_loss = (MSELoss, Mean { dims: () });
+    let mse_loss = (MSELoss, Mean { dims: 0 });
 
     let optimizer = optim::SGD::new().with_learning_rate(0.03);
 
     for _ in 0..100 {
         for i in 0..100 {
-            <(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).zero_grad();
+            <(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<f32, (usize, usize)>>>::parameters(&mut network).zero_grad();
             //network.parameters().zero_grad();
 
-            let x = cpu::Buffer::cfrom([i as f32 / 10.]);
-            let y = cpu::Buffer::cfrom([(i as f32 / 10.).sin()]);
+            let x = cpu::Buffer::cfrom([[i as f32 / 10.]]);
+            let y = cpu::Buffer::cfrom([[(i as f32 / 10.).sin()]]);
 
             let y_predicted = network.forward(x);
 
@@ -35,7 +35,7 @@ fn main() {
             loss.backward();
 
             use cpu::Buffer;
-            <(Linear<Buffer<f32>, Buffer<f32>>, ReLU, Linear<Buffer<f32>, Buffer<f32>>, Tanh, Linear<Buffer<f32>, Buffer<f32>>, Sigmoid) as Module<'_, cpu::Buffer<f32>>>::parameters(&mut network).step(&optimizer);
+            <(Linear<Buffer<f32, (usize, usize)>, Buffer<f32, (usize, usize)>>, ReLU, Linear<Buffer<f32, (usize, usize)>, Buffer<f32, (usize, usize)>>, Tanh, Linear<Buffer<f32, (usize, usize)>, Buffer<f32, (usize, usize)>>, Sigmoid) as Module<'_, cpu::Buffer<f32, _>>>::parameters(&mut network).step(&optimizer);
             // Right now it looks bad, but eventually it will look like this:
             //network.parameters().step(&optimizer);
         }

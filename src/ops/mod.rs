@@ -565,7 +565,7 @@ where
 
 /// ## FromVec operation
 /// 
-/// Creates new tensor from given Vec and shape. Vec is in row-major order.
+/// Creates new tensor from given array and shape. Array is assumed to be in row-major order.
 /// 
 /// ### Example
 /// ```
@@ -578,7 +578,9 @@ where
 /// [2 3
 ///  1 3]
 pub trait FromVec {
+    /// dtype of values in resulting tensor
     type T;
+    /// Shape of the resulting tensor
     type Sh: Shape<D = usize>;
     /// Create new tensor from Vec and Shape.
     fn from_vec(data: &[Self::T], shape: Self::Sh) -> Self;

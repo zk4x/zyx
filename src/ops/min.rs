@@ -19,10 +19,10 @@ use duplicate::duplicate_item;
     [usize];
 )]
 
-impl Min<()> for dtype
+impl Min<i32> for dtype
 {
     type Output = Self;
-    fn min(self, _: ()) -> Self::Output {
+    fn min(self, _: i32) -> Self::Output {
         dtype::MIN
     }
 }
@@ -45,10 +45,10 @@ impl Min<()> for dtype
     [usize];
 )]
 
-impl Min<()> for &dtype
+impl Min<i32> for &dtype
 {
     type Output = dtype;
-    fn min(self, _: ()) -> Self::Output {
+    fn min(self, _: i32) -> Self::Output {
         dtype::MIN
     }
 }

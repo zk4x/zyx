@@ -1,7 +1,10 @@
 use super::Shape;
 
+/// Trait for anything that wants to support constant indexing
 pub trait ConstIndex<const IDX: i32>: Shape {
+    /// Access value at given index
     fn const_at(&self) -> Self::D;
+    /// Mutably access value at given index
     fn const_mut_at(&mut self) -> &mut Self::D;
 }
 
@@ -71,7 +74,7 @@ impl ConstIndex<0> for i32 {
     }
 
     fn const_mut_at(&mut self) -> &mut Self::D {
-        &mut self
+        self
     }
 }
 
@@ -81,7 +84,7 @@ impl ConstIndex<-1> for i32 {
     }
 
     fn const_mut_at(&mut self) -> &mut Self::D {
-        &mut self
+        self
     }
 }
 

@@ -31,6 +31,7 @@ use alloc::vec;
 ///  0 0 1]
 /// ```
 pub trait EyeInit {
+    /// dtype of values stored in eye matrix
     type T;
     /// Initialize tensor with eye matrix
     fn eye(n: usize) -> Self;
@@ -38,7 +39,7 @@ pub trait EyeInit {
 
 impl<S, T> EyeInit for S
 where
-    S: FromVec<T = T>,
+    S: FromVec<T = T, Sh = (usize, usize)>,
     T: Clone + Zeros<Sh = usize> + Ones<Sh = usize>,
 {
     type T = T;
@@ -70,7 +71,9 @@ where
 /// println!("{}", x);
 /// ```
 pub trait RandnInit {
+    /// dtype of values stored in random matrix
     type T;
+    /// [Shape] of random matrix
     type Sh: Shape<D = usize>;
     /// Initialize tensor with random numbers
     fn randn(shape: Self::Sh) -> Self;
@@ -88,8 +91,7 @@ where
     fn randn(shape: Sh) -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        let shape = shape.shape();
-        Self::from_vec(core::iter::repeat(0).take(shape.numel()).map(|_| rng.gen()).collect(), shape)
+        Self::from_vec(&core::iter::repeat(0).take(shape.numel()).map(|_| rng.gen()).collect::<alloc::vec::Vec<T>>(), shape)
     }
 }
 
@@ -109,7 +111,9 @@ where
 /// println!("{}", x);
 /// ```
 pub trait UniformInit {
+    /// dtype of values stored in random matrix
     type T;
+    /// [Shape] of matrix initialized from uniform distribution
     type Sh: Shape<D = usize>;
     /// Initialize tensor with random numbers from uniform distribution
     fn uniform(shape: Self::Sh, low: Self::T, high: Self::T) -> Self;
@@ -128,8 +132,7 @@ where
         use rand::distributions::Distribution;
         let mut rng = rand::thread_rng();
         let dist = rand::distributions::Uniform::new(low, high);
-        let shape = shape.shape();
-        Self::from_vec(core::iter::repeat(0).take(shape.numel()).map(|_| dist.sample(&mut rng)).collect(), shape)
+        Self::from_vec(&core::iter::repeat(0).take(shape.numel()).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<T>>(), shape)
     }
 }
 
@@ -141,8 +144,7 @@ where
     F: FnMut() -> T,
 {
     fn cfrom(mut f: (F, Sh)) -> Self {
-        let shape = f.1.shape();
-        S::from_vec(core::iter::repeat(0).take(shape.numel()).map(|_| f.0()).collect(), shape)
+        S::from_vec(&core::iter::repeat(0).take(f.1.numel()).map(|_| f.0()).collect::<alloc::vec::Vec<T>>(), f.1)
     }
 }
 
@@ -173,7 +175,7 @@ where
     T: ScalarType + Clone,
 {
     fn cfrom(x: [[T; D0]; D1]) -> Self {
-        S::from_vec(x.into_iter().flatten().collect(), (D1, D0))
+        S::from_vec(&x.into_iter().flatten().collect::<alloc::vec::Vec<T>>(), (D1, D0))
     }
 }
 
@@ -183,7 +185,7 @@ where
     T: ScalarType + Clone
 {
     fn cfrom(x: [[[T; D0]; D1]; D2]) -> Self {
-        S::from_vec(x.into_iter().flatten().flatten().collect(), (D2, D1, D0))
+        S::from_vec(&x.into_iter().flatten().flatten().collect::<alloc::vec::Vec<T>>(), (D2, D1, D0))
     }
 }
 
@@ -193,7 +195,7 @@ where
     T: ScalarType + Clone
 {
     fn cfrom(x: [[[[T; D0]; D1]; D2]; D3]) -> Self {
-        S::from_vec(x.into_iter().flatten().flatten().flatten().collect(), (D3, D2, D1, D0))
+        S::from_vec(&x.into_iter().flatten().flatten().flatten().collect::<alloc::vec::Vec<T>>(), (D3, D2, D1, D0))
     }
 }
 
@@ -203,6 +205,6 @@ where
     T: ScalarType + Clone
 {
     fn cfrom(x: [[[[[T; D0]; D1]; D2]; D3]; D4]) -> Self {
-        Self::from_vec(x.into_iter().flatten().flatten().flatten().flatten().collect(), (D4, D3, D2, D1, D0))
+        Self::from_vec(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<T>>(), (D4, D3, D2, D1, D0))
     }
 }

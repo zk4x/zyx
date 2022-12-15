@@ -17,10 +17,13 @@ pub struct Buffer<T, Sh> {
     data: Arc<alloc::vec::Vec<T>>,
 }
 
-impl<T, Sh> Clone for Buffer<T, Sh> {
+impl<T, Sh> Clone for Buffer<T, Sh>
+where
+    Sh: Clone,
+{
     fn clone(&self) -> Self {
         Self {
-            shape: self.shape,
+            shape: self.shape.clone(),
             data: self.data.clone(),
         }
     }
@@ -150,7 +153,7 @@ where
 /// Create new Buffer filled with zeros
 impl<T, Sh> ops::Zeros for Buffer<T, Sh>
 where
-    T: Clone + ops::Zeros<Sh = usize> + ScalarType,
+    T: Clone + ops::Zeros<Sh = ()> + ScalarType,
     Sh: Shape<D = usize>,
 {
     type Sh = Sh;
@@ -159,7 +162,7 @@ where
         let n = shape.numel();
         Self {
             shape,
-            data: Arc::new(vec![T::zeros(1); n]),
+            data: Arc::new(vec![T::zeros(()); n]),
         }
     }
 }
@@ -167,7 +170,7 @@ where
 /// Create new Buffer filled with ones
 impl<T, Sh> ops::Ones for Buffer<T, Sh>
 where
-    T: Clone + ops::Ones<Sh = usize> + ScalarType,
+    T: Clone + ops::Ones<Sh = ()> + ScalarType,
     Sh: Shape<D = usize>,
 {
     type Sh = Sh;
@@ -176,7 +179,7 @@ where
         let n = shape.numel();
         Self {
             shape,
-            data: Arc::new(vec![T::ones(1); n]),
+            data: Arc::new(vec![T::ones(()); n]),
         }
     }
 }
@@ -276,7 +279,7 @@ where
         use alloc::borrow::ToOwned;
         // TODO: make this multithreaded
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
-        let shape = self.shape;
+        let mut shape = self.shape;
 
         let mut reduce_dim = |data: &[T], dim: i32| {
             let strides = shape.strides();
@@ -317,38 +320,38 @@ where
 
 impl<T, Sh, Dims> ops::Sum<Dims> for Buffer<T, Sh>
 where
-    T: Clone + ops::Zeros<Sh = usize> + core::ops::Add<Output = T> + ScalarType,
+    T: Clone + ops::Zeros<Sh = ()> + core::ops::Add<Output = T> + ScalarType,
     Sh: Shape<D = usize>,
     Dims: Shape<D = i32>,
 {
     type Output = Buffer<T, Sh>;
 
     fn sum(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::zeros(1), |a, b| a + b)
+        self.reduce(dims, T::zeros(()), |a, b| a + b)
     }
 }
 
 impl<T, Sh, Dims> ops::Max<Dims> for Buffer<T, Sh>
 where
-    T: Clone + Default + ops::Min<(), Output = T> + PartialOrd + ScalarType,
+    T: Clone + Default + ops::Min<i32, Output = T> + PartialOrd + ScalarType,
     Sh: Shape<D = usize>,
     Dims: Shape<D = i32>,
 {
     type Output = Buffer<T, Sh>;
     fn max(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::min(T::default(), ()), |a, b| if a > b { a } else { b })
+        self.reduce(dims, T::min(T::default(), 0), |a, b| if a > b { a } else { b })
     }
 }
 
 impl<T, Sh, Dims> ops::Min<Dims> for Buffer<T, Sh>
 where
-    T: Clone + Default + ops::Max<(), Output = T> + PartialOrd + ScalarType,
+    T: Clone + Default + ops::Max<i32, Output = T> + PartialOrd + ScalarType,
     Sh: Shape<D = usize>,
     Dims: Shape<D = i32>,
 {
     type Output = Buffer<T, Sh>;
     fn min(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::max(T::default(), ()), |a, b| if a < b { a } else { b })
+        self.reduce(dims, T::max(T::default(), 0), |a, b| if a < b { a } else { b })
     }
 }
 
@@ -376,13 +379,9 @@ where
 {
     type Output = Buffer<T, Sh2>;
     fn expand(self, res_shape: Sh2) -> Self::Output {
-        // TODO use Vec instead of shape as temporary solution here
-        // in order to avoid nightly or awkward solutions
-        let mut shape: alloc::vec::Vec<usize> = self.shape.iter().collect();
-        let mut res_shape: alloc::vec::Vec<usize> = res_shape.iter().collect();
-        let (shape, res_shape) = crate::shape::sync_shape_rank(shape, res_shape);
-        let n = shape.numel();
-        let ndims = shape.ndim();
+        assert!(Sh2::N >= Sh::N);
+
+        let n = self.shape.numel();
         use alloc::borrow::ToOwned;
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
 
@@ -397,19 +396,20 @@ where
             res_data
         };
 
-        let mut i = ndims;
+        let mut i = Sh2::N;
         let mut width = 1;
-        for (d, r) in shape.clone().into_iter().zip(res_shape.clone().into_iter()).rev() {
+        while i > 0 {
             i -= 1;
+            let d = if Sh::N - i > 0 { self.shape.at(i) } else { 1 };
+            let r = res_shape.at(i);
             if d != r {
                 if d == 1 {
                     data = copy_dim(data, width, r/d);
                 } else {
-                    panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}",
-                        shape, res_shape, i);
+                    panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}", self.shape, res_shape, i);
                 }
             }
-            width *= res_shape[i];
+            width *= res_shape.at(i);
         }
 
         Buffer {
@@ -421,7 +421,7 @@ where
 
 impl<T, Sh, Dims> ops::Permute<Dims> for Buffer<T, Sh>
 where
-    Sh: Shape<D = usize> + ops::Permute<Dims>,
+    Sh: Shape<D = usize> + ops::Permute<Dims, Output = Sh>,
     Dims: Shape<D = i32>,
     T: Clone + ops::Zeros + ScalarType,
 {
@@ -431,7 +431,7 @@ where
         let strides = self.shape.strides().permute(dims);
         let mut acc_var = 1;
         //let acc = self.shape.iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<alloc::vec::Vec<usize>>().iter().rev().collect().permute(dims);
-        let acc = [0; Sh::N];
+        let mut acc = Sh::ones();
         for i in 0..Sh::N {
             acc_var *= self.shape.at(Sh::N - i - 1);
             *acc.mut_at(Sh::N - i - 1) = acc_var;
@@ -439,10 +439,10 @@ where
         acc.permute(dims);
         let n = shape.numel();
         // temp is in reverse order
-        let mut temp = [(0, 0); Sh::N]; // strides, acc_shape
-        let mut begins = [0; Sh::N];
+        let mut temp = vec![(0, 0); Sh::N]; // strides, acc_shape
+        let mut begins = vec![0; Sh::N];
         for k in 0..Sh::N {
-            temp[Sh::N-k-1] = (strides[k], acc[k]);
+            temp[Sh::N-k-1] = (strides.at(k), acc.at(k));
         }
 
         let mut data = alloc::vec::Vec::with_capacity(n);
@@ -478,22 +478,25 @@ where
     }
 }*/
 
-fn binary_op<T, F, XSh, YSh, ZSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, ZSh>
+fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, <XSh as crate::shape::BinOpShape<YSh>>::Output>
 where
     T: Sync + Send + Clone + ScalarType,
     F: Fn((T, T)) -> T + Sync + Send,
-    XSh: Shape<D = usize>,
+    XSh: Shape<D = usize> + crate::shape::BinOpShape<YSh>,
     YSh: Shape<D = usize>,
-    ZSh: Shape<D = usize>,
 {
     use rayon::prelude::*;
     use ops::Expand;
     use core::cmp::Ordering;
-    let mut shape = x.shape.clone();
+    //let mut shape = x.shape.clone();
+    let mut shape = <XSh as BinOpShape<YSh>>::Output::ones();
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
     // stuff during expanding
     let data = Arc::new(match x.shape.numel().cmp(&y.shape.numel()) {
         Ordering::Greater => {
+            for i in 0..XSh::N {
+                *shape.mut_at(i) = x.shape.at(i);
+            }
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.expand(x.shape).data) {
                     Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
@@ -506,7 +509,9 @@ where
             }
         }
         Ordering::Less => {
-            shape = y.shape.clone();
+            for i in 0..YSh::N {
+                *shape.mut_at(i) = y.shape.at(i);
+            }
             match Arc::try_unwrap(y.data) {
                 Ok(vec) => match Arc::try_unwrap(x.expand(y.shape).data) {
                     Ok(vec_x) => vec_x.into_par_iter().zip(vec.into_par_iter()).map(f).collect(),
@@ -519,6 +524,9 @@ where
             }
         }
         Ordering::Equal => {
+            for i in 0..XSh::N {
+                *shape.mut_at(i) = x.shape.at(i);
+            }
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.data) {
                     Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
@@ -595,13 +603,14 @@ where
     }
 }
 
-impl<T, Sh> core::ops::Sub for Buffer<T, Sh>
+impl<T, XSh, YSh> core::ops::Sub<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Sub<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    XSh: Shape<D = usize> + BinOpShape<YSh>,
+    YSh: Shape<D = usize>,
 {
-    type Output = Buffer<T, Sh>;
-    fn sub(self, rhs: Buffer<T, Sh>) -> Self::Output {
+    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    fn sub(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a - b)
     }
 }
@@ -650,13 +659,14 @@ where
     }
 }
 
-impl<T, Sh> core::ops::Mul for Buffer<T, Sh>
+impl<T, XSh, YSh> core::ops::Mul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Mul<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    XSh: Shape<D = usize> + BinOpShape<YSh>,
+    YSh: Shape<D = usize>,
 {
-    type Output = Buffer<T, Sh>;
-    fn mul(self, rhs: Buffer<T, Sh>) -> Self::Output {
+    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    fn mul(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a * b)
     }
 }
@@ -703,13 +713,14 @@ where
     }
 }
 
-impl<T, Sh> core::ops::Div for Buffer<T, Sh>
+impl<T, XSh, YSh> core::ops::Div<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Div<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    XSh: Shape<D = usize> + BinOpShape<YSh>,
+    YSh: Shape<D = usize>,
 {
-    type Output = Buffer<T, Sh>;
-    fn div(self, rhs: Buffer<T, Sh>) -> Self::Output {
+    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    fn div(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a / b)
     }
 }
@@ -756,13 +767,14 @@ where
     }
 }
 
-impl<T, Sh> ops::Pow for Buffer<T, Sh>
+impl<T, XSh, YSh> ops::Pow<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Sync + Send + Clone + ops::Pow<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    XSh: Shape<D = usize> + BinOpShape<YSh>,
+    YSh: Shape<D = usize>,
 {
-    type Output = Buffer<T, Sh>;
-    fn pow(self, rhs: Buffer<T, Sh>) -> Self::Output {
+    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    fn pow(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a.pow(b))
     }
 }
@@ -787,36 +799,37 @@ where
 }
 
 #[cfg(not(feature = "matrixmultiply"))]
-impl<T, Sh> ops::MatMul for Buffer<T, Sh>
+impl<T, Sh> ops::MatMul<Buffer<T, Sh>> for Buffer<T, Sh>
 where
     T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + ScalarType,
     Buffer<T, Sh>: ops::Transpose<Output = Buffer<T, Sh>>,
     Sh: Shape<D = usize>,
 {
-    type Output = Self;
-    fn matmul(self, rhs: Self) -> Self::Output {
+    type Output = Buffer<T, Sh>;
+    fn matmul(self, rhs: Buffer<T, Sh>) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
-        let mut s_shape = self.shape;
-        let mut r_shape = rhs.shape.clone();
+        let s_shape = self.shape;
+        let r_shape = rhs.shape;
         // if input shape is shorter than res_shape or vice versa,
         // add necessary ones to the beginning
-        while s_shape.ndim() < r_shape.ndim() {
+        /*while Sh::N < Sh::N {
             s_shape.0.insert(0, 1);
         }
         while s_shape.ndim() > r_shape.ndim() {
             r_shape.0.insert(0, 1);
         }
-        let ndim = s_shape.ndim();
-        if ndim < 2 {
-            panic!("At least one of the buffers must have 2 or more dimensions to do matrix multiplication. Current shapes: {}, {}", s_shape, r_shape);
+        let ndim = s_shape.ndim();*/
+        if Sh::N < 2 {
+            panic!("At least one of the buffers must have 2 or more dimensions to do matrix multiplication. Current shapes: {:?}, {:?}", s_shape, r_shape);
         }
-        if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
-            panic!("Incorrect x and y shapes for matmul: {}, {}", s_shape, r_shape);
+        //if s_shape[0..Sh::N-2] != r_shape[0..Sh::N-2] ||
+        if s_shape.ati(-1) != r_shape.ati(-2) {
+            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
         }
-        let m = s_shape[-2];
-        let k = s_shape[-1];
-        let n = r_shape[-1];
+        let m = s_shape.ati(-2);
+        let k = s_shape.ati(-1);
+        let n = r_shape.ati(-1);
         use ops::Transpose;
         let ty = rhs.transpose();
         use rayon::prelude::*;
@@ -839,8 +852,8 @@ where
                 .collect();
         
         let mut shape = s_shape;
-        shape[ndim-1] = m;
-        shape[ndim-2] = n;
+        *shape.mut_ati(-1) = m;
+        *shape.mut_ati(-2) = n;
 
         Buffer {
             shape,
@@ -946,42 +959,42 @@ where
 
 impl<T, Sh, Pd> ops::Conv<Pd> for Buffer<T, Sh>
 where
-    T: ops::Zeros + Clone + Add<Output = T> + Mul<Output = T> + ScalarType,
+    T: ops::Zeros<Sh = ()> + Clone + Add<Output = T> + Mul<Output = T> + ScalarType,
     Sh: Shape<D = usize>,
     Pd: Shape<D = usize>,
 {
-    type Output = Self;
+    type Output = Buffer<T, (usize, usize)>;
+
     fn conv(self, kernel: Self, padding: Pd) -> Self::Output {
         // TQDO: support multidimensional convolutions
         // padding must have 2 dims, it is 2d convolution
-        let padding = padding.shape();
-        assert_eq!(padding.ndim(), 2);
+        assert_eq!(Pd::N, 2);
         // go over resulting buffer, i iterates over result
-        let ndim = self.shape.ndim();
-        if ndim != 2 {
+        //let ndim = self.shape.ndim();
+        if Sh::N != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
         // TODO: this is not correct result shape, fix it!
-        let shape = [
+        let shape = (
             {
-                let s = self.shape[-2];
-                let k = kernel.shape[-2];
-                let p = padding[0];
+                let s = self.shape.ati(-2);
+                let k = kernel.shape.ati(-2);
+                let p = padding.at(0);
                 (s - k + 1usize)/p
             },
             {
-                let s = self.shape[-1];
-                let k = kernel.shape[-1];
-                let p = padding[1];
+                let s = self.shape.ati(-1);
+                let k = kernel.shape.ati(-1);
+                let p = padding.at(1);
                 (s - k + 1usize)/p
             },
-        ].shape();
+        );
         let mut i = 0;
         let n = shape.numel();
         let mut data = alloc::vec::Vec::with_capacity(n); // result
-        let self_stride = self.shape[-1];
-        let kernel_stride = kernel.shape[-1];
-        let kernel_rows = kernel.shape[-2];
+        let self_stride = self.shape.ati(-1);
+        let kernel_stride = kernel.shape.ati(-1);
+        let kernel_rows = kernel.shape.ati(-2);
 
         let mut self_col = 0usize;
         let mut self_row = 0;
@@ -997,16 +1010,16 @@ where
             }
             data.push(sum);
 
-            self_col += padding[1];
+            self_col += padding.at(1);
             if self_col >= self_stride {
-                self_row += padding[0];
+                self_row += padding.at(0);
                 self_col = 0;
             }
 
             i += 1;
         }
         
-        Self {
+        Buffer {
             shape,
             data: Arc::new(data),
         }

@@ -150,9 +150,9 @@ fn softmax_test() {
     println!("\n{}", x.grad());*/
 
     let sm = SoftMax { dims: -1 };
-    let y = sm.forward(&x);
+    //let y = sm.forward(&x);
     //println!("\n{}", y);
-    y.backward();
+    //y.backward();
     //println!("\n{}", x);
     //panic!();
 }
@@ -163,7 +163,7 @@ pub struct Sum<Dims>
 where
     Dims: Shape<D = i32>,
 {
-    /// [Dimensions](crate::shape::IntoDims) to sum
+    /// [Dimensions](crate::shape::Shape) to sum
     pub dims: Dims,
 }
 
@@ -188,7 +188,7 @@ pub struct Max<Dims>
 where
     Dims: Shape<D = i32>,
 {
-    /// [Dimensions](crate::shape::IntoDims) to max
+    /// [Dimensions](crate::shape::Shape) to max
     pub dims: Dims,
 }
 
@@ -213,7 +213,7 @@ pub struct Min<Dims>
 where
     Dims: Shape<D = i32>,
 {
-    /// [Dimensions](crate::shape::IntoDims) to min
+    /// [Dimensions](crate::shape::Shape) to min
     pub dims: Dims,
 }
 
