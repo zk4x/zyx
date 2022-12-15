@@ -114,8 +114,8 @@ impl<S> Gradient<S> {
     }
 }
 
-trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = usize> {}
-impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = usize> {}
+trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
+impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
 
 #[derive(Debug, Clone, Copy)]
 struct GradientRef<'g, S>(&'g Gradient<S>);
@@ -133,9 +133,10 @@ impl<'g, S> GradientRef<'g, S> {
         // Unsafe is needed, because we need multiple functions accessing the same gradient.
         let mut x = None;
         unsafe { core::ptr::swap(self.0.0.get(), &mut x); }
+        use crate::shape::Shape;
         let grad = Some(match x {
             Some(grad) => grad + value,
-            None => S::zeros(1) + value,
+            None => S::zeros(<S as crate::ops::Zeros>::Sh::ones()) + value,
         });
         unsafe { *self.0.0.get() = grad; }
     }
@@ -248,7 +249,7 @@ impl<S> Variable<S> {
     /// ```
     pub fn backward(&mut self)
     where
-        S: core::ops::Add<i32, Output = S> + crate::ops::Zeros<Sh = usize>,
+        S: core::ops::Add<i32, Output = S> + crate::ops::Zeros,
     {
         GradientRef(&self.grad).accumulate(1);
     }

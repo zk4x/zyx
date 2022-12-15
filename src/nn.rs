@@ -136,10 +136,10 @@ where
 
 #[test]
 fn softmax_test() {
-    use crate::prelude::*;
-    use crate::accel::cpu::Buffer;
+    //use crate::prelude::*;
+    //use crate::accel::cpu::Buffer;
 
-    let x = Buffer::<f32, _>::cfrom([[3., 2., 4.], [4., 2., 5.]]).with_grad();
+    //let x = Buffer::<f32, _>::cfrom([[3., 2., 4.], [4., 2., 5.]]).with_grad();
 
     /*let dim = -1;
     let e_x = ((&x).data().clone() - (&x).max(())).exp();
@@ -149,12 +149,12 @@ fn softmax_test() {
     y.backward();
     println!("\n{}", x.grad());*/
 
-    let sm = SoftMax { dims: -1 };
-    //let y = sm.forward(&x);
+    /*let sm = SoftMax { dims: -1 };
+    let y = sm.forward(&x);
     //println!("\n{}", y);
-    //y.backward();
+    y.backward();
     //println!("\n{}", x);
-    //panic!();
+    //panic!();*/
 }
 
 /// Sum operation
@@ -170,13 +170,13 @@ where
 impl<Input, Dims> Module<'_, Input> for Sum<Dims>
 where
     Input: ops::Sum<Dims>,
-    Dims: Shape<D = i32> + Clone,
+    Dims: Shape<D = i32>,
 {
     type Output = Input::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.sum(self.dims.clone())
+        x.sum(self.dims)
     }
     
     fn parameters(&mut self) -> Self::Params {}
@@ -195,13 +195,13 @@ where
 impl<Input, Dims> Module<'_, Input> for Max<Dims>
 where
     Input: ops::Max<Dims>,
-    Dims: Shape<D = i32> + Clone,
+    Dims: Shape<D = i32>,
 {
     type Output = Input::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.max(self.dims.clone())
+        x.max(self.dims)
     }
     
     fn parameters(&mut self) -> Self::Params {}
@@ -220,13 +220,13 @@ where
 impl<Input, Dims> Module<'_, Input> for Min<Dims>
 where
     Input: ops::Min<Dims>,
-    Dims: Clone + Shape<D = i32>,
+    Dims: Shape<D = i32>,
 {
     type Output = Input::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.min(self.dims.clone())
+        x.min(self.dims)
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -244,7 +244,7 @@ where
 
 impl<Input, Dims> Module<'_, Input> for Mean<Dims>
 where
-    Dims: Clone + Shape<D = i32>,
+    Dims: Shape<D = i32>,
     Input: GetShape + ops::Sum<Dims>,
     <Input as ops::Sum<Dims>>::Output: Div<usize>,
 {
@@ -253,7 +253,7 @@ where
 
     fn forward(&self, x: Input) -> Self::Output {
         let n = x.shape().numel();
-        x.sum(self.dims.clone())/n
+        x.sum(self.dims)/n
     }
 
     fn parameters(&mut self) -> Self::Params {}

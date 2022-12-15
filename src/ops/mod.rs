@@ -102,6 +102,7 @@ where
 ///  0]
 /// ```
 pub trait Zeros {
+    /// Shape of the resulting tensor
     type Sh: Shape<D = usize>;
     /// Create new tensor initialized with zeros.
     fn zeros(shape: Self::Sh) -> Self;
@@ -126,6 +127,7 @@ pub trait Zeros {
 ///  1]
 /// ```
 pub trait Ones {
+    /// Shape of the resulting tensor
     type Sh: Shape<D = usize>;
     /// Create new tensor initialized with ones.
     fn ones(shape: Self::Sh) -> Self;
@@ -143,6 +145,7 @@ pub trait Ones {
 /// assert_eq!(y, [3]);
 /// ```
 pub trait GetShape {
+    /// Type of the shape
     type Output: Shape<D = usize>;
     /// Get shape of input tensor.
     fn shape(&self) -> Self::Output;

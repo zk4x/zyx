@@ -1,9 +1,14 @@
 use super::Shape;
 
+/// # BinOpShape
+/// 
+/// This trait is a way to encode at compile time the type of the shape resulting
+/// from addition of two tensors with different shapes.
 pub trait BinOpShape<RhsShape>
 where
     RhsShape: Shape<D = usize>,
 {
+    /// Output [Shape] when adding two tensors with different [shapes](Shape) together
     type Output: Shape<D = usize>;
 }
 

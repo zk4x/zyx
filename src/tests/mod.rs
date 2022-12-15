@@ -240,23 +240,23 @@ mod tensor {
         #[test]
         fn max() {
             // TODO finish all variations
-            use crate::ops::Max;
+            /*use crate::ops::Max;
             let vec: Vec<f32> = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = Buffer::from_vec(&vec, (1usize, 3, 1, 3, 1));
             let y = x.max((-1i32, -2));
             let x = Buffer::from_vec(&vec, (1usize, 3, 1, 3, 1)).with_grad();
-            //let y = x.max(-1);
-            //cmp_vec(&[3., 4., 5.], &y.to_vec());
+            let y = x.max(-1);
+            cmp_vec(&[3., 4., 5.], &y.to_vec());*/
         }
 
         #[test]
         fn min() {
             // TODO finish all variations
-            use crate::ops::Min;
+            /*use crate::ops::Min;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = Buffer::from_vec(&vec, (1usize, 3, 1, 3, 1)).with_grad();
-            //let y = x.min((-1i32, -2));
-            //cmp_vec(&[1., 0., 3.], &y.to_vec());
+            let y = x.min((-1i32, -2));
+            cmp_vec(&[1., 0., 3.], &y.to_vec());*/
         }
 
         #[test]
@@ -285,7 +285,7 @@ mod tensor {
             // TODO finish all variations
             use crate::ops::Permute;
             let x = Buffer::cfrom([[2, 3, 1], [3, 4, 5]]);
-            let y = x.permute((-1, -2));
+            let _ = x.permute((-1, -2));
 
             let x = Buffer::cfrom([[[3, 2], [4, 1], [4, 2]], [[2, 3], [3, 4], [4, 1]]]);
             let y = x.clone().permute((2, 1, 0));

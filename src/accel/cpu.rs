@@ -70,7 +70,7 @@ where
         // get maximal width of single value
         let mut w = 0;
         for x in self.data.as_ref().iter() {
-            let l = format!("{0:1$}", x, w).len();
+            let l = format!("{x:w$}").len();
             if l > w { w = l; }
         }
         let d0 = self.shape.const_at();
@@ -141,12 +141,12 @@ where
 /// Get Buffer's shape
 impl<T, Sh> ops::GetShape for Buffer<T, Sh>
 where
-    Sh: Shape<D = usize> + Clone,
+    Sh: Shape<D = usize>,
 {
     type Output = Sh;
 
     fn shape(&self) -> Self::Output {
-        self.shape.clone()
+        self.shape
     }
 }
 

@@ -88,7 +88,7 @@ pub trait Shape: Clone + Copy + core::fmt::Debug {
     /// Mutably access axis at given i32 index, so negative values work as well, with -1 accessing the last axis
     fn mut_ati(&mut self, idx: i32) -> &mut Self::D;
     /// Iterate over the whole shape
-    fn iter<'a>(&'a self) -> ShapeIter<'a, Self> {
+    fn iter(&self) -> ShapeIter<'_, Self> {
         ShapeIter::new(self)
     }
 }
@@ -138,17 +138,11 @@ impl Shape for () {
     const N: usize = 1;
     type D = usize;
 
-    fn ones() -> Self {
-        ()
-    }
+    fn ones() -> Self {}
 
-    fn strides(&self) -> Self {
-        ()
-    }
+    fn strides(&self) -> Self {}
 
-    fn argsort(&self) -> Self {
-        ()
-    }
+    fn argsort(&self) -> Self {}
 
     fn numel(&self) -> usize {
         1 // it is a scalar
@@ -845,7 +839,7 @@ impl<const N: usize> Shape for [usize; N] {
     fn strides(&self) -> Self {
         let mut product = 1;
         let mut res = [0; N];
-        self.clone().into_iter().enumerate().rev().for_each(
+        self.into_iter().enumerate().rev().for_each(
             |(i, dim)| {
                 res[i] = product;
                 product *= dim;
@@ -891,7 +885,7 @@ impl<const N: usize> Shape for [i32; N] {
     fn strides(&self) -> Self {
         let mut product = 1;
         let mut res = [0; N];
-        self.clone().into_iter().enumerate().rev().for_each(
+        self.into_iter().enumerate().rev().for_each(
             |(i, dim)| {
                 res[i] = product;
                 product *= dim;
