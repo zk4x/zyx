@@ -1,5 +1,6 @@
 use super::GetShape;
 use duplicate::duplicate_item;
+
 #[duplicate_item(
     dtype;
     [f32];
@@ -21,7 +22,5 @@ use duplicate::duplicate_item;
 impl GetShape for dtype {
     type Output = ();
 
-    fn shape(&self) -> Self::Output {
-        ()
-    }
+    fn shape(&self) -> Self::Output {}
 }

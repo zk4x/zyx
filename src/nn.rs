@@ -238,7 +238,7 @@ pub struct Mean<Dims>
 where
     Dims: Shape<D = i32>,
 {
-    /// [Dimensions](crate::shape::IntoDims) for mean
+    /// [Dimensions](crate::shape::Shape) for mean
     pub dims: Dims
 }
 

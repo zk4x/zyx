@@ -10,14 +10,35 @@ crate for faster execution.
 From user perspective, it works similar to PyTorch. Also names of functions are mostly the same,
 so that you can quickly pick up this library if you are familiar with PyTorch.
 
+## Main Ideas
+
+We want to provide a way to do automatic differentiation and backpropagation for any datatypes, whether are those scalars, arrays, matrices, or tensors.
+This library aims to be zero cost abstraction and use simple Rust syntax for this autodiff and backprop.
+
+### Zero cost abstraction
+
+By passing datatype into [.with_grad()](crate::tensor::IntoVariable::with_grad()) function you create Variable. Variable stores your datatype and adds gradient
+to this datatype. This gradient is of the same type as your datatype. To manage access to this gradient we use [UnsafeCell](core::cell::UnsafeCell) as gradient must
+be accessed from different places.
+
+Tensor is a result of a mathematical or other operation performed on Variable. Tensor creates the graph needed for backpropagation at compile time.
+
+All operations are executed eagerly.
+
+**TL DR:** By zero cost abstraction we mean zero dyn, zero Rc, zero RefCell and minimal number of branches.
+
+### Simple Rust syntax
+
+The syntax you will be using as a user is very close to PyTorch.
+Also, although the graph is created at compile time, it behaves completely dynamically (i. e. RNNs are easy). You don't need to do any graph.compile or graph.execute calls.
+Tensor and Variable are both immutable
+
 ## Features
 
-1. Any datatype is supported, including rust primitives, [CPU Buffer](crate::accel::cpu::Buffer), preliminary support for ndarray as well as any custom datatype that you provide. Basically everything is a tensor.
-2. No dyn, no Rc, no RefCell, so Variable is true zero cost abstraction. Performance depends on your choice of accelerator. However gradients need to be updated from multiple places, so for that we use UnsafeCell. Since only unsafe mutation of gradients happens while calling backward, it is pretty easy to manually assure safety.
-3. [CPU Buffer](crate::accel::cpu::Buffer) code is under 1000 lines, so implementing custom accelerators is pretty simple without the need to rewrite the whole library.
-4. Graph is fully dynamic from user perspective, but is compiled statically. Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
-5. There are no runtime errors, not even Results that need to be handled. State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients. Accelerators are exception. They may or may not produce runtime errors. [CPU Buffer](crate::accel::cpu::Buffer) panics if you perform operations on [Buffer](crate::accel::cpu::Buffer)s with invalid shapes.
-6. Tensors are immutable from user perspective. This greatly simplifies everything, especially correct calculation of gradients.As for the performance, cloning is used when [Variable](crate::tensor::Variable) is passed by reference. How expensive this clone is depends on accelerator. [CPU Buffer](crate::accel::cpu::Buffer) uses Arc to avoid copies and make operations inplace if possible.
+1. PyTorch like API.
+2. Commitment to support stable Rust.
+3. Zero overhead approach with compile time graph.
+4. Multithreaded CPU Buffer as the default accelerator.
 
 ## Example of usage
 
@@ -80,6 +101,14 @@ Therefore this library can not be considered stable yet, but we are getting clos
 Preliminary support for convolution is done.
 Most stuff is implemented and working as intended.
 
+## Notes
+
+- Performance depends on your choice of accelerator.
+- We support rust primitives, [CPU Buffer](crate::accel::cpu::Buffer), and we have preliminary support for ndarray. We push EVERYTHING IS A TENSOR approach.
+- [CPU Buffer](crate::accel::cpu::Buffer) code is under 1000 lines, so implementing custom accelerators is pretty simple without the need to rewrite the whole library.
+- Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
+- State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients. Accelerators are exception. They may or may not produce runtime errors. [CPU Buffer](crate::accel::cpu::Buffer) panics if you perform operations on [Buffer](crate::accel::cpu::Buffer)s with invalid shapes.
+
 ## How to orient yourself in the library
 
 This is the order of modules from most to least important.
@@ -92,8 +121,10 @@ This is the order of modules from most to least important.
 7. nn
 8. init
 
-## Thank you
+## Future options
 
-To all the users and contributors. Without you, this library would have no reason to exist.
+- **no-std support** - it is not that hard, beacuse only thing blocking us is heavy use of rayon in CPU Buffer.
+- **GPU accelerators** - we would like to create opencl and possibly cuda implementations of buffer. GPU cache and VRAM is much harder than CPU, so we will see about the performance.
+- **const Shape** - not possible because stable rust is missing const-generics. Maybe add --feature nightly?
 
-Any opinions, issue reports, feature requests as well as code contributions are very welcome.
+> Any opinions, issue reports, feature requests as well as code contributions are very welcome.

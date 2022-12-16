@@ -35,7 +35,7 @@ impl Dim for i32 {}
 /// Arrays will be the solution for more dimensional tensors in the future, however right now
 /// due to the fact, that stable rust does not yet implement generic expressions, we are stuck with tuples.
 ///
-/// Scalars have shape (1usize) or [1usize];
+/// Scalars have shape ();
 ///
 /// Shape<i32> is used to describe the order of dimensions in Shape<usize>.
 /// This is used for example when you want to permute tensor.

@@ -1,7 +1,7 @@
 //! Various optimizers to update [Variables](crate::tensor::Variable).
 //! 
 //! This is a major change from the way PyTorch handles things.
-//! [Parameters](crate::module::Parameters) are neither stored nor referenced by [Optimizers](crate::optim::Optimizer).
+//! [Parameters](crate::module::Parameters) are neither stored nor referenced by optimizers.
 //!
 //! We crate new network. [Parameters](crate::module::Parameters) are held in this network.
 //! ```
@@ -11,7 +11,7 @@
 //! # use zyx::accel::cpu::Buffer;
 //! let net = Linear::<Buffer<f32, _>, Buffer<f32, _>>::new(2, 4);
 //! ```
-//! Then we create an [optimizer](crate::optim::Optimizer). We do not pass [parameters](crate::module::Parameters) into it.
+//! Then we create an optimizer. We do not pass [parameters](crate::module::Parameters) into it.
 //! ```
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
@@ -22,7 +22,7 @@
 //! ```
 //! When we want to update our [parameters](crate::module::Parameters) using the optimizer we call the step function.
 //! Name of the function is similar to PyTorch, but instead of passing [parameters](crate::module::Parameters)
-//! into [optimizer](crate::optim::Optimizer), we pass [optimizer](crate::optim::Optimizer) into [parameters](crate::module::Parameters).
+//! into optimizer, we pass optimizer into [parameters](crate::module::Parameters).
 //! ```ignore
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;

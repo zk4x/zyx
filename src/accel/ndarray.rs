@@ -2,7 +2,7 @@
 //!
 //! Currently reduce and movement ops are not supported.
 
-use crate::{ops::{self, IntoVec, FromVec}, shape::{IntoShape, IntoDims, Shape}};
+use crate::{ops::{self, IntoVec, FromVec}, shape::Shape};
 use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis, Ix1, Ix2, Data, LinalgScalar};
 use num_traits::identities::{Zero, One};
 extern crate alloc;
@@ -22,7 +22,9 @@ where
     T: Clone + Zero,
     S: DataOwned<Elem = T>,
 {
-    fn zeros(shape: impl IntoShape) -> Self {
+    type Sh;
+
+    fn zeros(shape: Self::Sh) -> Self {
         ArrayBase::zeros(shape.shape().to_vec())
     }
 }

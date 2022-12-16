@@ -519,7 +519,7 @@ mod tensor {
         fn matmul() {
             // TODO finish all variations
             use crate::ops::{MatMul, ConvertFrom};
-            let x = Buffer::cfrom([[2., 3., 4.]]);
+            let x = Buffer::cfrom([[2f32, 3., 4.]]);
             let y = Buffer::cfrom([[2., 3.], [3., 4.], [5., 3.]]);
             let z = x.clone().matmul(y.clone());
             assert_eq!(z.to_vec(), [33., 30.]);

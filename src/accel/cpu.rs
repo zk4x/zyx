@@ -866,32 +866,32 @@ impl<Sh> ops::MatMul for Buffer<f32, Sh>
 where
     Sh: Shape<D = usize>,
 {
-    type Output = Self;
+    type Output = Buffer<f32, (usize, usize)>;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let mut s_shape = self.shape;
-        let mut r_shape = rhs.shape;
+        let s_shape = self.shape;
+        let r_shape = rhs.shape;
         // if input shape is shorter than res_shape or vice versa,
         // add necessary ones to the beginning
-        while s_shape.ndim() < r_shape.ndim() {
+        /*while Sh::N < r_shape.ndim() {
             s_shape.0.insert(0, 1);
         }
         while s_shape.ndim() > r_shape.ndim() {
             r_shape.0.insert(0, 1);
-        }
-        let ndim = s_shape.ndim();
+        }*/
+        //let ndim = s_shape.ndim();
         // TODO: support for operations on more than 2 dimensions
-        if ndim != 2 {
+        if Sh::N != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != r_shape.ndim() {
+        /*if Sh::N != r_shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", s_shape, r_shape);
-        }
-        if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
+        }*/
+        if s_shape.ati(-1) != r_shape.ati(-2) {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
         }
-        let m = s_shape[-2];
-        let k = s_shape[-1];
-        let n = r_shape[-1];
+        let m = s_shape.ati(-2);
+        let k = s_shape.ati(-1);
+        let n = r_shape.ati(-1);
         let mut data = alloc::vec::Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -903,7 +903,7 @@ where
 
         Buffer {
             data: Arc::new(data),
-            shape: [m, n].shape(),
+            shape: (m, n),
         }
     }
 }
@@ -913,32 +913,32 @@ impl<Sh> ops::MatMul for Buffer<f64, Sh>
 where
     Sh: Shape<D = usize>,
 {
-    type Output = Self;
+    type Output = Buffer<f64, (usize, usize)>;
     fn matmul(self, rhs: Self) -> Self::Output {
-        let mut s_shape = self.shape;
-        let mut r_shape = rhs.shape;
+        let s_shape = self.shape;
+        let r_shape = rhs.shape;
         // if input shape is shorter than res_shape or vice versa,
         // add necessary ones to the beginning
-        while s_shape.ndim() < r_shape.ndim() {
+        /*while Sh::N < r_shape.ndim() {
             s_shape.0.insert(0, 1);
         }
         while s_shape.ndim() > r_shape.ndim() {
             r_shape.0.insert(0, 1);
-        }
-        let ndim = s_shape.ndim();
+        }*/
+        //let ndim = s_shape.ndim();
         // TODO: support for operations on more than 2 dimensions
-        if ndim != 2 {
+        if Sh::N != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        if ndim != r_shape.ndim() {
+        /*if Sh::N != r_shape.ndim() {
             panic!("Matmul buffers have different degrees: {:?}, {:?}", s_shape, r_shape);
-        }
-        if s_shape[0..ndim-2] != r_shape[0..ndim-2] || s_shape[-1] != r_shape[-2] {
+        }*/
+        if s_shape.ati(-1) != r_shape.ati(-2) {
             panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
         }
-        let m = s_shape[-2];
-        let k = s_shape[-1];
-        let n = r_shape[-1];
+        let m = s_shape.ati(-2);
+        let k = s_shape.ati(-1);
+        let n = r_shape.ati(-1);
         let mut data = alloc::vec::Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -950,7 +950,7 @@ where
 
         Buffer {
             data: Arc::new(data),
-            shape: [m, n].shape(),
+            shape: (m, n),
         }
     }
 }
