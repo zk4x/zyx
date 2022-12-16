@@ -13,14 +13,14 @@
 //! ```
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
+//! let x: Buffer<_, _> = Buffer::cfrom([2., 1., 4.]);
 //! ```
 //!
 //! By calling [IntoVariable::with_grad()] on any datatype, you get [Variable], which adds gradient to the buffer.
 //! ```
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
+//! # let x: Buffer<_, _> = Buffer::cfrom([2., 1., 4.]);
 //! let y: Variable<_> = x.clone().with_grad();
 //! ```
 //!
@@ -37,8 +37,8 @@
 //! ```
 //! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let x: Buffer<_> = Buffer::cfrom([2., 1., 4.]);
-//! let z: Buffer<_> = x.relu();
+//! # let x: Buffer<_, _> = Buffer::cfrom([2., 1., 4.]);
+//! let z: Buffer<_, _> = x.relu();
 //! ```
 //!
 

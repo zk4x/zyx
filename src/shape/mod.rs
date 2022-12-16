@@ -3,10 +3,10 @@
 //! This module contains definition of [Shape], it's axes/dimensions and some associated methods.
 
 mod bin_op;
-mod const_index;
+//mod const_index;
 
 pub use bin_op::BinOpShape;
-pub use const_index::ConstIndex;
+//pub use const_index::ConstIndex;
 
 use crate::ops::Permute;
 
@@ -28,9 +28,12 @@ impl Dim for i32 {}
 ///  3 1 4]
 /// ```
 /// it's shape is 2x3, which can be written as (2, 3) tuple of usize or [2, 3] array of usize.
-/// Whether you use tuple of array depends on your personal preference. Most people prefer
-/// to use tuples, however these are implemented only up to 5 dimensions.
-/// If you want to use more dimensions than that, you have to use arrays.
+/// Tuples are implemented only up to 5 dimensions.
+/// You are allowed to use arrays for tensor initialization, however arrays don't work with many
+/// operations, in particular binary operations where you have tensors of different ranks,
+/// because we have no way of calculating the rank of the resulting tensor.
+/// Arrays will be the solution for more dimensional tensors in the future, however right now
+/// due to the fact, that stable rust does not yet implement generic expressions, we are stuck with tuples.
 ///
 /// Scalars have shape (1usize) or [1usize];
 ///
@@ -39,16 +42,16 @@ impl Dim for i32 {}
 /// ```
 /// # use zyx::prelude::*;
 /// # use zyx::accel::cpu;
-/// let x = cpu::Buffer::from([[[2, 3, 4], [2, 1, 3]], [][4, 1, 3], [3, 1, 2]]);
+/// let x = cpu::Buffer::cfrom([[[2, 3, 4], [2, 1, 3]], [[4, 1, 3], [3, 1, 2]]]);
 /// // Here we specify, that we want to exchange first (0) and last dimensions (-1).
-/// let y = x.permute((0, -1))
+/// let y = x.permute((0, -1));
 /// ```
 ///
 /// Shape<i32> is also used to specify along which dimensions we want to perform reduce operations.
 /// ```
 /// # use zyx::prelude::*;
 /// # use zyx::accel::cpu;
-/// # let x = cpu::Buffer::from([[[2, 3, 4], [2, 1, 3]], [][4, 1, 3], [3, 1, 2]]);
+/// # let x = cpu::Buffer::cfrom([[[2, 3, 4], [2, 1, 3]], [[4, 1, 3], [3, 1, 2]]]);
 /// // Perform reduce operation using sum along last two dimensions.
 /// let y = x.sum((-1, -2));
 /// ```
@@ -60,7 +63,7 @@ impl Dim for i32 {}
 /// ```
 /// # use zyx::prelude::*;
 /// # use zyx::accel::cpu;
-/// let x = cpu::Buffer::<f32>::randn((2, 3));
+/// let x = cpu::Buffer::<f32, (usize, usize)>::randn((2, 3));
 /// ```
 pub trait Shape: Clone + Copy + core::fmt::Debug {
     /// Rank of tensor with this shape
@@ -127,7 +130,7 @@ where
         let idx = self.idx;
         self.idx += 1;
         if idx < Sh::N {
-            Some(self.shape.at(self.idx))
+            Some(self.shape.at(idx))
         } else {
             None
         }
@@ -276,7 +279,7 @@ impl Shape for (usize, usize) {
     }
 
     fn strides(&self) -> Self {
-        (self.0, 1)
+        (self.1, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -345,7 +348,7 @@ impl Shape for (i32, i32) {
     }
 
     fn strides(&self) -> Self {
-        (self.0, 1)
+        (self.1, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -406,7 +409,7 @@ impl Shape for (usize, usize, usize) {
     }
 
     fn strides(&self) -> Self {
-        (self.1*self.0, self.0, 1)
+        (self.1*self.2, self.2, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -486,7 +489,7 @@ impl Shape for (i32, i32, i32) {
     }
 
     fn strides(&self) -> Self {
-        (self.1*self.0, self.0, 1)
+        (self.1*self.2, self.2, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -549,7 +552,7 @@ impl Shape for (usize, usize, usize, usize) {
     }
 
     fn strides(&self) -> Self {
-        (self.2 * self.1 * self.0, self.1*self.0, self.0, 1)
+        (self.1 * self.2 * self.3, self.2*self.3, self.3, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -609,6 +612,30 @@ impl Shape for (usize, usize, usize, usize) {
     }
 }
 
+impl Permute<(i32, i32)> for (usize, usize, usize, usize) {
+    type Output = Self;
+
+    fn permute(self, dims: (i32, i32)) -> Self::Output {
+        (self.ati(dims.0), self.ati(dims.1), 1, 1)
+    }
+}
+
+impl Permute<(i32, i32, i32)> for (usize, usize, usize, usize) {
+    type Output = Self;
+
+    fn permute(self, dims: (i32, i32, i32)) -> Self::Output {
+        (self.ati(dims.0), self.ati(dims.1), self.ati(dims.2), 1)
+    }
+}
+
+impl Permute<(i32, i32, i32, i32)> for (usize, usize, usize, usize) {
+    type Output = Self;
+
+    fn permute(self, dims: (i32, i32, i32, i32)) -> Self::Output {
+        (self.ati(dims.0), self.ati(dims.1), self.ati(dims.2), self.ati(dims.3))
+    }
+}
+
 impl Shape for (i32, i32, i32, i32) {
     type D = i32;
     const N: usize = 4;
@@ -618,7 +645,7 @@ impl Shape for (i32, i32, i32, i32) {
     }
 
     fn strides(&self) -> Self {
-        (self.2 * self.1 * self.0, self.1*self.0, self.0, 1)
+        (self.1 * self.2 * self.3, self.2*self.3, self.3, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -687,7 +714,7 @@ impl Shape for (usize, usize, usize, usize, usize) {
     }
 
     fn strides(&self) -> Self {
-        (self.3 * self.2 * self.1 * self.0, self.2 * self.1 * self.0, self.1*self.0, self.0, 1)
+        (self.1 * self.2 * self.3 * self.4, self.2 * self.3 * self.4, self.3*self.4, self.4, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -762,7 +789,7 @@ impl Shape for (i32, i32, i32, i32, i32) {
     }
 
     fn strides(&self) -> Self {
-        (self.3*self.2*self.1*self.0, self.2*self.1*self.0, self.1*self.0, self.0, 1)
+        (self.1*self.2*self.3*self.4, self.2*self.3*self.4, self.3*self.4, self.4, 1)
     }
 
     fn argsort(&self) -> Self {
@@ -854,7 +881,7 @@ impl<const N: usize> Shape for [usize; N] {
     }
 
     fn numel(&self) -> usize {
-        self.iter().product()
+        self.into_iter().product()
     }
 
     fn at(&self, idx: usize) -> Self::D {

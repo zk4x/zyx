@@ -19,9 +19,9 @@ use duplicate::duplicate_item;
 )]
 
 impl GetShape for dtype {
-    type Output = usize;
+    type Output = ();
 
     fn shape(&self) -> Self::Output {
-        1
+        ()
     }
 }

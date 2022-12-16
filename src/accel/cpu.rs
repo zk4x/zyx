@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom}, shape::{Shape, BinOpShape, ConstIndex}, dtype::ScalarType};
+use crate::{ops::{self, ConvertFrom}, shape::{Shape, BinOpShape}, dtype::ScalarType};
 use core::ops::{Add, Mul};
 extern crate alloc;
 use alloc::{vec, sync::Arc, format};
@@ -57,7 +57,7 @@ where
 impl<T, Sh> core::fmt::Display for Buffer<T, Sh>
 where
     T: core::fmt::Display + ScalarType,
-    Sh: Shape<D = usize> + ConstIndex<-1>,
+    Sh: Shape<D = usize>,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
@@ -73,7 +73,7 @@ where
             let l = format!("{x:w$}").len();
             if l > w { w = l; }
         }
-        let d0 = self.shape.const_at();
+        let d0 = self.shape.ati(-1);
         for i in 0..n {
             {
                 let mut var = 1;
@@ -430,13 +430,12 @@ where
         let shape = self.shape.permute(dims);
         let strides = self.shape.strides().permute(dims);
         let mut acc_var = 1;
-        //let acc = self.shape.iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<alloc::vec::Vec<usize>>().iter().rev().collect().permute(dims);
         let mut acc = Sh::ones();
         for i in 0..Sh::N {
             acc_var *= self.shape.at(Sh::N - i - 1);
             *acc.mut_at(Sh::N - i - 1) = acc_var;
         }
-        acc.permute(dims);
+        acc = acc.permute(dims);
         let n = shape.numel();
         // temp is in reverse order
         let mut temp = vec![(0, 0); Sh::N]; // strides, acc_shape
@@ -444,7 +443,6 @@ where
         for k in 0..Sh::N {
             temp[Sh::N-k-1] = (strides.at(k), acc.at(k));
         }
-
         let mut data = alloc::vec::Vec::with_capacity(n);
         let mut i = 0;
         for _ in  0..n {

@@ -17,7 +17,7 @@ use alloc::vec;
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Buffer::<i32>::eye(3);
+/// let x = Buffer::<i32, _>::eye(3);
 /// assert_eq!(x.to_vec(), vec![1, 0, 0, 0, 1, 0, 0, 0, 1]);
 /// assert_eq!(x.shape(), (3, 3));
 /// println!("{}", x);
@@ -40,15 +40,15 @@ pub trait EyeInit {
 impl<S, T> EyeInit for S
 where
     S: FromVec<T = T, Sh = (usize, usize)>,
-    T: Clone + Zeros<Sh = usize> + Ones<Sh = usize>,
+    T: Clone + Zeros<Sh = ()> + Ones<Sh = ()>,
 {
     type T = T;
 
     fn eye(n: usize) -> Self {
-        let mut data = vec![T::zeros(1); n*n];
+        let mut data = vec![T::zeros(()); n*n];
         let mut i = 0;
         while i < n*n {
-            data[i] = T::ones(1);
+            data[i] = T::ones(());
             i += n + 1;
         }
         Self::from_vec(&data, (n, n))
@@ -66,7 +66,7 @@ where
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Buffer::<f32>::randn((3, 2, 3));
+/// let x = Buffer::<f32, (usize, usize, usize)>::randn((3, 2, 3));
 /// assert_eq!(x.shape(), (3, 2, 3));
 /// println!("{}", x);
 /// ```
@@ -106,7 +106,7 @@ where
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Buffer::uniform((3, 2, 3), -1., 1.);
+/// let x = Buffer::uniform((3usize, 2, 3), -1., 1.);
 /// assert_eq!(x.shape(), (3, 2, 3));
 /// println!("{}", x);
 /// ```

@@ -21,6 +21,8 @@ impl<'g, S, Dims> Sum<Dims> for &'g Variable<S>
 where
     S: Clone + Sum<Dims> + GetShape,
     Dims: Shape<D = i32>,
+    //S: Expand<<S as GetShape>::Output>,
+    //S: GradAcc<<S as Expand<<S as GetShape>::Output>>::Output>,
 {
     type Output = Tensor<<S as Sum<Dims>>::Output, SumBackwardV<'g, S, <S as GetShape>::Output>>;
     fn sum(self, dims: Dims) -> Self::Output {

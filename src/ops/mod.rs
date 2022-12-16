@@ -88,9 +88,9 @@ where
 /// Create new tensor initialized with zeros.
 /// ### Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
-/// let x = Buffer::zeros((2, 3, 1));
-/// let y = x.shape();
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// let x = Buffer::<i32, _>::zeros((2usize, 3, 1));
 /// ```
 /// ### Output
 /// ```txt
@@ -113,8 +113,9 @@ pub trait Zeros {
 /// Create new tensor initialized with ones.
 /// ### Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
-/// let x = Buffer::ones((2, 3, 1));
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu::Buffer;
+/// let x = Buffer::<i32, _>::ones((2usize, 3, 1));
 /// let y = x.shape();
 /// ```
 /// ### Output
@@ -142,7 +143,7 @@ pub trait Ones {
 /// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
 /// let x = Buffer::cfrom([2, 3, 1]);
 /// let y = x.shape();
-/// assert_eq!(y, [3]);
+/// assert_eq!(y, 3);
 /// ```
 pub trait GetShape {
     /// Type of the shape
@@ -354,7 +355,7 @@ where
 /// use zyx::prelude::*;
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
-/// let x = x.reshape([2, 1, 6]);
+/// let x = x.reshape([2usize, 1, 6]);
 /// println!("{}", x);
 /// ```
 /// 
@@ -384,7 +385,7 @@ where
 /// use zyx::prelude::*;
 /// 
 /// let x = cpu::Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.expand([2, 3, 3]);
+/// let x = x.expand((2usize, 3, 3));
 /// println!("{}", x);
 /// ```
 /// 
@@ -418,7 +419,7 @@ where
 /// use zyx::prelude::*;
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.permute([2, 0, 1]);
+/// let x = x.permute((2, 0, 1));
 /// assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
 /// assert_eq!(x.shape(), (3, 2, 1));
 /// println!("{}", x);
@@ -466,7 +467,7 @@ where
 /// let x = Buffer::cfrom([[3, 2, 4], [1, 4, 2]]);
 /// let x = x.transpose();
 /// assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
-/// assert_eq!(x.shape(), (3, 2, 1));
+/// assert_eq!(x.shape(), (3, 2));
 /// println!("{}", x);
 /// ```
 ///
@@ -574,7 +575,7 @@ where
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::from_vec(&[2, 3, 1, 3], [2, 2]);
+/// let x = Buffer::from_vec(&[2, 3, 1, 3], [2usize, 2]);
 /// println!("{}", x);
 /// ```
 /// ### Output

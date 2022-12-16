@@ -52,3 +52,51 @@ impl BinOpShape<usize> for (usize, usize, usize) {
 impl BinOpShape<(usize, usize)> for (usize, usize, usize) {
     type Output = (usize, usize, usize);
 }
+
+impl BinOpShape<(usize, usize, usize, usize)> for (usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize)> for (usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize)> for (usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<usize> for (usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize, usize)> for (usize, usize, usize) {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize, usize)> for (usize, usize) {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize, usize)> for usize {
+    type Output = (usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize, usize, usize)> for (usize, usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize, usize)> for (usize, usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize, usize)> for (usize, usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize, usize);
+}
+
+impl BinOpShape<(usize, usize)> for (usize, usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize, usize);
+}
+
+impl BinOpShape<usize> for (usize, usize, usize, usize, usize) {
+    type Output = (usize, usize, usize, usize, usize);
+}

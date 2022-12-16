@@ -30,10 +30,10 @@ If you want to accelerate matrix multiplication using matrixmultiply crate, use 
 use zyx::prelude::*;
 use zyx::accel::cpu::Buffer;
 
-let x = Buffer::uniform((2, 3, 2, 3), -1., 1.).with_grad();
-let y = Buffer::<f32>::randn((2, 3, 3, 4)).with_grad();
+let x = Buffer::uniform((2usize, 3, 2, 3), -1., 1.).with_grad();
+let y = Buffer::<f32, _>::randn((2usize, 3, 3, 4)).with_grad();
 
-let z = x.matmul(&y).sum(());
+let z = x.matmul(&y).sum((0i32, 1, 2, 3));
 z.backward();
 
 println!("{}", x.grad());
