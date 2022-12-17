@@ -21,9 +21,9 @@ rayon = { version = "1.*" }
 
 # optional dependencies
 matrixmultiply = { version = "0.3.*", features = ["threading"], optional = true }
-ndarray = { version = "0.15.*", features = ["rayon", "matrixmultiply-threading"], optional = true }
-num-traits = { version = "0.2.*", optional = true }
+#ndarray = { version = "0.15.*", features = ["rayon", "matrixmultiply-threading"], optional = true }
+#num-traits = { version = "0.2.*", optional = true }
 
 [features]
 matrixmultiply = ["dep:matrixmultiply"]
-ndarray = ["dep:ndarray", "dep:num-traits"]
+#ndarray = ["dep:ndarray", "dep:num-traits"]

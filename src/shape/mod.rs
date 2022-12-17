@@ -4,6 +4,7 @@
 
 mod bin_op;
 //mod const_index;
+mod const_shape;
 
 pub use bin_op::BinOpShape;
 //pub use const_index::ConstIndex;

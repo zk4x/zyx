@@ -20,8 +20,8 @@
 // 
 
 pub mod cpu;
-#[cfg(feature = "ndarray")]
-pub mod ndarray;
+//#[cfg(feature = "ndarray")]
+//pub mod ndarray;
 // TODO: add opencl support
 //#[cfg(features = "opencl")]
 //pub mod opencl;

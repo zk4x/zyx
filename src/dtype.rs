@@ -28,7 +28,7 @@ where
     Sh: Shape<D = usize>,
 {}
 
-#[cfg(feature = "ndarray")]
+/*#[cfg(feature = "ndarray")]
 impl<A, D> DType for ArrayBase<A, D>
 where
     A: RawData,
@@ -38,7 +38,7 @@ where
 use ndarray::{ArrayBase, RawData};
 
 #[cfg(feature = "ndarray")]
-impl<A, D> NDimType for ArrayBase<A, D>
+impl<A, D> NDimType<Sh> for ArrayBase<A, D>
 where
     A: RawData,
-{}
+{}*/

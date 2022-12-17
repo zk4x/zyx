@@ -4,12 +4,12 @@
 //#![feature(generic_const_exprs)]
 
 // Nightly lints
-//#![feature(strict_provenance)]
-//#![warn(fuzzy_provenance_casts)]
-//#![warn(lossy_provenance_casts)]
+#![feature(strict_provenance)]
+#![warn(fuzzy_provenance_casts)]
+#![warn(lossy_provenance_casts)]
 
-//#![feature(must_not_suspend)]
-//#![warn(must_not_suspend)]
+#![feature(must_not_suspend)]
+#![warn(must_not_suspend)]
 
 // Standard lints
 #![doc = include_str!("../README.md")]

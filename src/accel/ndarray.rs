@@ -2,7 +2,7 @@
 //!
 //! Currently reduce and movement ops are not supported.
 
-use crate::{ops::{self, IntoVec, FromVec}, shape::Shape};
+/*use crate::{ops::{self, IntoVec, FromVec}, shape::Shape};
 use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRepr, Axis, RemoveAxis, Ix1, Ix2, Data, LinalgScalar};
 use num_traits::identities::{Zero, One};
 extern crate alloc;
@@ -265,4 +265,4 @@ where
     fn matmul(self, rhs: ArrayBase<S2, Ix2>) -> Self::Output {
         self.dot(&rhs)
     }
-}
+}*/
