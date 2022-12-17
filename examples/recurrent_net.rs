@@ -27,13 +27,13 @@ fn main() {
 
     // MSELoss does not reduce it's output, you need to add some reduce function if you want to apply reduce
     // Sum dims () means sum across all dims
-    let mse_loss = (MSELoss, Sum { dims: (0i32, 1) });
+    let mse_loss = (MSELoss, Sum { dims: (0, 1) });
 
     let optimizer = optim::SGD::new();
 
     for i in 0..30000 {
         use cpu::Buffer;
-        (<(RNNCell<Buffer<f32, _>, Buffer<f32, _>, Buffer<f32, _>, Buffer<f32, _>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32, _>, Buffer<f32, _>)>>::parameters(&mut rnn_net), <(Linear<Buffer<f32, _>, Buffer<f32, _>>, Sigmoid) as zyx::module::Module<'_, Buffer<f32, _>>>::parameters(&mut net2)).zero_grad();
+        (<(RNNCell<Buffer<_, _>, Buffer<_, _>, Buffer<_, _>, Buffer<_, _>>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<_, _>, Buffer<_, _>)>>::parameters(&mut rnn_net), <(Linear<Buffer<_, _>, Buffer<_, _>>, Sigmoid) as zyx::module::Module<'_, Buffer<_, _>>>::parameters(&mut net2)).zero_grad();
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).zero_grad();
 
@@ -53,7 +53,7 @@ fn main() {
 
         loss.backward();
 
-        (<(RNNCell<_, _, _, _>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<f32, _>, Buffer<f32, _>)>>::parameters(&mut rnn_net), <(Linear<_, _>, Sigmoid) as zyx::module::Module<'_, Buffer<f32, _>>>::parameters(&mut net2)).step(&optimizer);
+        (<(RNNCell<_, _, _, _>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<_, _>, Buffer<_, _>)>>::parameters(&mut rnn_net), <(Linear<_, _>, Sigmoid) as zyx::module::Module<'_, Buffer<_, _>>>::parameters(&mut net2)).step(&optimizer);
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).step(&optimizer);
     }

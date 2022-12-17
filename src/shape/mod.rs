@@ -4,7 +4,8 @@
 
 mod bin_op;
 //mod const_index;
-mod const_shape;
+//pub mod shape;
+//pub mod axes;
 
 pub use bin_op::BinOpShape;
 //pub use const_index::ConstIndex;
@@ -467,9 +468,12 @@ impl Shape for (usize, usize, usize) {
 impl Permute<(i32, i32)> for (usize, usize, usize) {
     type Output = Self;
 
-    fn permute(self, dims: (i32, i32)) -> Self::Output {
-        // TODO fix this code, it is wrong
-        (self.ati(dims.0), self.ati(dims.1), 1)
+    fn permute(self, mut dims: (i32, i32)) -> Self::Output {
+        // convert to usize dims
+        for i in 0..2 { if dims.at(i) < i.try_into().unwrap() { *dims.mut_at(i) = 2 + dims.at(i); }; }
+        // find missing dimensions
+        // if dims.at(0)
+        todo!()
     }
 }
 
@@ -617,7 +621,8 @@ impl Permute<(i32, i32)> for (usize, usize, usize, usize) {
     type Output = Self;
 
     fn permute(self, dims: (i32, i32)) -> Self::Output {
-        (self.ati(dims.0), self.ati(dims.1), 1, 1)
+        todo!()
+        //(self.ati(dims.0), self.ati(dims.1), 1, 1)
     }
 }
 
@@ -625,7 +630,8 @@ impl Permute<(i32, i32, i32)> for (usize, usize, usize, usize) {
     type Output = Self;
 
     fn permute(self, dims: (i32, i32, i32)) -> Self::Output {
-        (self.ati(dims.0), self.ati(dims.1), self.ati(dims.2), 1)
+        todo!()
+        //(self.ati(dims.0), self.ati(dims.1), self.ati(dims.2), 1)
     }
 }
 

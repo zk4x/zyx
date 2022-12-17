@@ -22,7 +22,7 @@ fn main() {
 
     for _ in 0..100 {
         for i in 0..100 {
-            <(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<f32, (usize, usize)>>>::parameters(&mut network).zero_grad();
+            <(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<_, _>>>::parameters(&mut network).zero_grad();
             //network.parameters().zero_grad();
 
             let x = cpu::Buffer::cfrom([[i as f32 / 10.]]);
@@ -35,7 +35,7 @@ fn main() {
             loss.backward();
 
             use cpu::Buffer;
-            <(Linear<Buffer<f32, (usize, usize)>, Buffer<f32, (usize, usize)>>, ReLU, Linear<Buffer<f32, (usize, usize)>, Buffer<f32, (usize, usize)>>, Tanh, Linear<Buffer<f32, (usize, usize)>, Buffer<f32, (usize, usize)>>, Sigmoid) as Module<'_, cpu::Buffer<f32, _>>>::parameters(&mut network).step(&optimizer);
+            <(Linear<Buffer<_, _>, Buffer<_, _>>, ReLU, Linear<Buffer<_, _>, Buffer<_, _>>, Tanh, Linear<Buffer<_, _>, Buffer<_, _>>, Sigmoid) as Module<'_, cpu::Buffer<_, _>>>::parameters(&mut network).step(&optimizer);
             // Right now it looks bad, but eventually it will look like this:
             //network.parameters().step(&optimizer);
         }

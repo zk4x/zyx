@@ -66,7 +66,7 @@ where
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
 /// 
-/// let x = Buffer::<f32, (usize, usize, usize)>::randn((3, 2, 3));
+/// let x = Buffer::<f32, _>::randn((3usize, 2, 3));
 /// assert_eq!(x.shape(), (3, 2, 3));
 /// println!("{}", x);
 /// ```

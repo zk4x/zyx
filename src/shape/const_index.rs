@@ -3,9 +3,9 @@
 /// Trait for anything that wants to support constant indexing
 pub trait ConstIndex<const IDX: i32>: Shape {
     /// Access value at given index
-    fn const_at(&self) -> Self::D;
+    fn at(&self) -> Self::D;
     /// Mutably access value at given index
-    fn const_mut_at(&mut self) -> &mut Self::D;
+    fn mut_at(&mut self) -> &mut Self::D;
 }
 
 /*impl<const ID: i32, const N: usize> ConstIndex<ID> for [usize; N] {
