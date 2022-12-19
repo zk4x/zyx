@@ -111,7 +111,7 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{ops::{GetShape, FromVec, IntoVec, ConvertFrom, ConvertInto}, tensor::IntoVariable};
+        use crate::{ops::{HasShape, FromVec, IntoVec, ConvertFrom, ConvertInto}, tensor::IntoVariable};
         use super::super::{cmp_vec, cmp_vec_f64, Buffer};
         extern crate alloc;
         use alloc::vec;

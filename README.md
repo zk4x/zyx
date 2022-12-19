@@ -39,6 +39,17 @@ Tensor and Variable are both immutable
 2. Commitment to support stable Rust.
 3. Zero overhead approach with compile time graph.
 4. Multithreaded CPU Buffer as the default accelerator.
+5. Minimum of runtime errors, primarily thanks to const shapes that are checked at compile time.
+
+## Missing features
+
+These features are important and in the works but not ready yet:
+1. Min opration
+2. Max operation
+3. Convolution
+This means some functions that depend on these, such as Softmax are missing as well.
+
+In particular convolution would be much easier to implement if stable rust supported generic constant expressions.
 
 ## Example of usage
 
@@ -51,10 +62,17 @@ If you want to accelerate matrix multiplication using matrixmultiply crate, use 
 use zyx::prelude::*;
 use zyx::accel::cpu::Buffer;
 
-let x = Buffer::uniform((2, 3, 2, 3), -1., 1.).with_grad();
-let y = Buffer::randn((2, 3, 3, 4)).with_grad();
+let x = Buffer::<f32, Sh4<2, 3, 2, 3>>::uniform(-1., 1.).with_grad();
+let y = Buffer::<f32, Sh4<2, 3, 3, 4>>::randn().with_grad();
 
-let z = x.matmul(&y).sum((0, 1, 2, 3));
+
+let z = <Buffer<_, _> as Sum::<Ax4<0, 1, 2, 3>>>::sum(x.matmul(&y));
+
+let z = x.matmul(&y).sum::<Ax4<0, 1, 2, 3>>();
+
+let z = x.matmul(&y).apply(Sum<Ax4<0, 1, 2, 3>>{});
+
+
 z.backward();
 
 println!("{}", x.grad());
@@ -81,9 +99,8 @@ The library is available on crates.io: <https://crates.io/crates/zyx>
 ## Important
 
 Not all features are yet implemented and not all tests are written.
-Therefore this library can not be considered stable yet, but we are getting closer to stable release as the main API is not gonna change much anymore.
-Preliminary support for convolution is done.
-Most stuff is implemented and working as intended.
+Therefore this library can not be considered stable yet.
+With that said, we don't have plans to significantly change what has already been written.
 
 ## Notes
 

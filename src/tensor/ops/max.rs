@@ -1,4 +1,4 @@
-/*use crate::{ops::{Max, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
+/*use crate::{ops::{Max, Expand, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
 pub struct MaxBackwardV<'g, G> {
@@ -22,7 +22,7 @@ where
 
 impl<'g, S> Max for &'g Variable<S>
 where
-    S: Clone + Max + GetShape,
+    S: Clone + Max + HasShape,
 {
     type Output = Tensor<<S as Max>::Output, MaxBackwardV<'g, S>>;
     fn max(self, dims: impl Shape<i32>) -> Self::Output {
@@ -54,7 +54,7 @@ where
 
 impl<S, F> Max for Tensor<S, F>
 where
-    S: Max + GetShape,
+    S: Max + HasShape,
 {
     type Output = Tensor<<S as Max>::Output, MaxBackwardT<F>>;
     fn max(self, dims: impl Shape<i32>) -> Self::Output {

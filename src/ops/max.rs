@@ -1,4 +1,5 @@
 use super::Max;
+use crate::shape::Ax0;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -7,10 +8,10 @@ use duplicate::duplicate_item;
     [f64];
 )]
 
-impl Max<i32> for dtype
+impl Max<Ax0> for dtype
 {
     type Output = Self;
-    fn max(self, _: i32) -> Self::Output {
+    fn max(self) -> Self::Output {
         dtype::MAX
     }
 }
@@ -21,10 +22,10 @@ impl Max<i32> for dtype
     [f64];
 )]
 
-impl Max<i32> for &dtype
+impl Max<Ax0> for &dtype
 {
     type Output = dtype;
-    fn max(self, _: i32) -> Self::Output {
+    fn max(self) -> Self::Output {
         dtype::MAX
     }
 }
@@ -45,10 +46,10 @@ impl Max<i32> for &dtype
     [usize];
 )]
 
-impl Max<i32> for dtype
+impl Max<Ax0> for dtype
 {
     type Output = Self;
-    fn max(self, _: i32) -> Self::Output {
+    fn max(self) -> Self::Output {
         dtype::MAX
     }
 }
@@ -69,10 +70,10 @@ impl Max<i32> for dtype
     [usize];
 )]
 
-impl Max<i32> for &dtype
+impl Max<Ax0> for &dtype
 {
     type Output = dtype;
-    fn max(self, _: i32) -> Self::Output {
+    fn max(self) -> Self::Output {
         dtype::MAX
     }
 }

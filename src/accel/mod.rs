@@ -11,7 +11,7 @@
 // - zyx::ops::*
 // ```
 // 
-// Some functors in [nn module][crate::nn] also require the buffer to implement binary operations with anything that implements [ScalarType](crate::dtype::ScalarType).
+// Some functors in [nn module][crate::nn] also require the buffer to implement binary operations with anything that implements [DType](crate::dtype::DType).
 // 
 // The [ops module](crate::ops) documents how these operations should work.
 // 

@@ -27,18 +27,25 @@ pub trait Shape: Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> 
     fn is_empty() -> bool { Self::numel() == 0 }
 }
 
-trait ShapeWithLastDim {
+pub trait HasLastDim {
     const LAST_DIM: usize;
 }
 
-trait PermuteShape<Ax>
+pub trait ReducableBy<Ax>
 where
     Ax: Axes,
 {
     type Output: Shape;
 }
 
-trait BinOpShape<YSh>
+pub trait PermutableBy<Ax>
+where
+    Ax: Axes,
+{
+    type Output: Shape;
+}
+
+pub trait BinOpWith<YSh>
 where
     YSh: Shape,
 {
@@ -114,7 +121,7 @@ impl<const D0: usize> Index<i32> for Sh1<D0> {
     }
 }
 
-impl<const D0: usize> ShapeWithLastDim for Sh1<D0> {
+impl<const D0: usize> HasLastDim for Sh1<D0> {
     const LAST_DIM: usize = D0;
 }
 
@@ -159,14 +166,14 @@ impl<const D0: usize, const D1: usize> Index<i32> for Sh2<D0, D1> {
     }
 }
 
-impl<const D0: usize, const D1: usize> ShapeWithLastDim for Sh2<D0, D1> {
+impl<const D0: usize, const D1: usize> HasLastDim for Sh2<D0, D1> {
     const LAST_DIM: usize = D1;
 }
 
-impl<const D0: usize, const D1: usize> PermuteShape<Ax2<1, 0>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
-impl<const D0: usize, const D1: usize> PermuteShape<Ax2<-1, -2>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
-impl<const D0: usize, const D1: usize> PermuteShape<Ax2<-1, 0>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
-impl<const D0: usize, const D1: usize> PermuteShape<Ax2<1, -2>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
+impl<const D0: usize, const D1: usize> PermutableBy<Ax2<1, 0>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
+impl<const D0: usize, const D1: usize> PermutableBy<Ax2<-1, -2>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
+impl<const D0: usize, const D1: usize> PermutableBy<Ax2<-1, 0>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
+impl<const D0: usize, const D1: usize> PermutableBy<Ax2<1, -2>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
 
 /// Shape with 3 dimensions
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -212,41 +219,41 @@ impl<const D0: usize, const D1: usize, const D2: usize> Index<i32> for Sh3<D0, D
     }
 }
 
-impl<const D0: usize, const D1: usize, const D2: usize> ShapeWithLastDim for Sh3<D0, D1, D2> {
+impl<const D0: usize, const D1: usize, const D2: usize> HasLastDim for Sh3<D0, D1, D2> {
     const LAST_DIM: usize = D2;
 }
 
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<-1, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<-1, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<2, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<0, -1, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<0, -1, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<0, 2, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<0, 2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-3, -1, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-3, -1, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-3, 2, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-3, 2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<-1, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<-1, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<2, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<0, -1, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<0, -1, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<0, 2, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<0, 2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-3, -1, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-3, -1, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-3, 2, -2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-3, 2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
 
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<1, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<-2, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<1, -3>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<-2, -3>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<1, 0, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-2, 0, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<1, -3, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<1, 0, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-2, -3, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<1, -3, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-2, 0, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<-2, -3, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<1, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<-2, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<1, -3>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<-2, -3>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, 0, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-2, 0, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, -3, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, 0, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-2, -3, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, -3, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-2, 0, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<-2, -3, -1>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
 
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax3<1, 2, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D2, D0>; }
+//impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, 2, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D2, D0>; }
 
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<1, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D2, D0, D1>; }
+//impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<1, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D2, D0, D1>; }
 
-impl<const D0: usize, const D1: usize, const D2: usize> PermuteShape<Ax2<1, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D2, D1, D0>; }
+//impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<1, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D2, D1, D0>; }
 
 /// Shape with 4 dimensions
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -295,7 +302,7 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> Index<i
     }
 }
 
-impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ShapeWithLastDim for Sh4<D0, D1, D2, D3> {
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> HasLastDim for Sh4<D0, D1, D2, D3> {
     const LAST_DIM: usize = D3;
 }
 
@@ -349,6 +356,6 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D
     }
 }
 
-impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> ShapeWithLastDim for Sh5<D0, D1, D2, D3, D4> {
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> HasLastDim for Sh5<D0, D1, D2, D3, D4> {
     const LAST_DIM: usize = D4;
 }

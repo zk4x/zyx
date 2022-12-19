@@ -6,7 +6,7 @@
 //! 
 //! ```txt
 //! Initialization ops:   ConvertFrom, Zeros, Ones, FromVec
-//! Getters:              IntoVec, GetShape
+//! Getters:              IntoVec, HasShape
 //! Unary ops:            ReLU, DReLU, Exp, Ln, Tanh
 //! Reduce ops:           Sum, Max, Min
 //! Movement ops:         Reshape, Expand, Permute
@@ -23,7 +23,7 @@
 //! - [Ones]
 //! - [IntoVec]
 //! - [FromVec]
-//! - [GetShape]
+//! - [HasShape]
 //! - [ReLU]
 //! - [DReLU]
 //! - [Exp]
@@ -43,7 +43,6 @@
 mod convert_from;
 mod zeros;
 mod ones;
-mod get_shape;
 mod relu;
 mod drelu;
 mod exp;
@@ -53,7 +52,7 @@ mod min;
 mod pow;
 mod max;
 
-use crate::shape::Shape;
+use crate::{shape::{Shape, Axes, Ax2, Sh2}, dtype::DType};
 
 /// ## Convert between devices and types
 /// 
@@ -90,7 +89,7 @@ where
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::<i32, _>::zeros((2usize, 3, 1));
+/// let x = Buffer::<i32, Sh3<2, 3, 1>>::zeros();
 /// ```
 /// ### Output
 /// ```txt
@@ -101,11 +100,11 @@ where
 ///  0
 ///  0]
 /// ```
-pub trait Zeros {
-    /// Shape of the resulting tensor
-    type Sh: Shape<D = usize>;
+pub trait Zeros: HasShape {
+    // /// Shape of the resulting tensor
+    //type Sh: Shape;
     /// Create new tensor initialized with zeros.
-    fn zeros(shape: Self::Sh) -> Self;
+    fn zeros() -> Self;
 }
 
 /// ## Ones operation
@@ -115,7 +114,7 @@ pub trait Zeros {
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::<i32, _>::ones((2usize, 3, 1));
+/// let x = Buffer::<i32, Sh3<2, 3, 1>>::ones();
 /// let y = x.shape();
 /// ```
 /// ### Output
@@ -127,29 +126,32 @@ pub trait Zeros {
 ///  1
 ///  1]
 /// ```
-pub trait Ones {
-    /// Shape of the resulting tensor
-    type Sh: Shape<D = usize>;
+pub trait Ones: HasShape {
+    // /// Shape of the resulting tensor
+    //type Sh: Shape;
     /// Create new tensor initialized with ones.
-    fn ones(shape: Self::Sh) -> Self;
+    fn ones() -> Self;
 }
 
-/// ## GetShape operation
+/// # Has Shape
+pub trait HasDType {
+    type T: DType;
+}
+
+/// ## HasShape
 /// 
-/// Returns the shape of tensor as a Shape struct.
+/// Stores the shape of the tensor.
 /// 
 /// ### Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{GetShape, ConvertFrom}};
+/// use zyx::{accel::cpu::Buffer, ops::{HasShape, ConvertFrom}};
 /// let x = Buffer::cfrom([2, 3, 1]);
-/// let y = x.shape();
-/// assert_eq!(y, 3);
+// /// let y = core::any::type_name::<T>();
+// /// assert_eq!(y, 3);
 /// ```
-pub trait GetShape {
+pub trait HasShape {
     /// Type of the shape
-    type Output: Shape<D = usize>;
-    /// Get shape of input tensor.
-    fn shape(&self) -> Self::Output;
+    type Sh: Shape;
 }
 
 // Unary ops
@@ -266,14 +268,14 @@ pub trait Tanh {
 /// [7 4 2]
 /// ```
 /// 
-pub trait Sum<Sh>
+pub trait Sum<Dims>
 where
-    Sh: Shape<D = i32>,
+    Dims: Axes,
 {
     /// Output of the Sum operation.
     type Output;
     /// Apply Sum operation on given input.
-    fn sum(self, dims: Sh) -> Self::Output;
+    fn sum(self) -> Self::Output;
 }
 
 /// ## Max operation
@@ -297,14 +299,14 @@ where
 /// [4 2 1]
 /// ```
 /// 
-pub trait Max<Sh>
+pub trait Max<Dims>
 where
-    Sh: Shape<D = i32>,
+    Dims: Axes,
 {
     /// Output of the Max operation.
     type Output;
     /// Apply Max operation on given input.
-    fn max(self, dims: Sh) -> Self::Output;
+    fn max(self) -> Self::Output;
 }
 
 /// ## Min operation
@@ -328,14 +330,14 @@ where
 /// [3 2 1]
 /// ```
 /// 
-pub trait Min<Sh>
+pub trait Min<Dims>
 where
-    Sh: Shape<D = i32>,
+    Dims: Axes,
 {
     /// Output of the Min operation.
     type Output;
     /// Apply Min operation on given input.
-    fn min(self, dims: Sh) -> Self::Output;
+    fn min(self) -> Self::Output;
 }
 
 // Reshape simply changes shape of the tensor.
@@ -367,12 +369,12 @@ where
 /// 
 pub trait Reshape<Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     /// Output of the Reshape operation.
     type Output;
     /// Apply Reshape operation on given input.
-    fn reshape(self, shape: Sh) -> Self::Output;
+    fn reshape(self) -> Self::Output;
 }
 
 /// ## Expand tensor
@@ -401,12 +403,12 @@ where
 /// 
 pub trait Expand<Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     /// Output of the Expand operation.
     type Output;
     /// Apply Expand operation on given input.
-    fn expand(self, shape: Sh) -> Self::Output;
+    fn expand(self) -> Self::Output;
 }
 
 /// ## Permute tensor
@@ -434,14 +436,14 @@ where
 ///  [4
 ///   2]]
 /// ```
-pub trait Permute<Sh>
+pub trait Permute<Dims>
 where
-    Sh: Shape<D = i32>,
+    Dims: Axes,
 {
     /// Output of the Permute operation.
     type Output;
     /// Apply Permute operation on given input.
-    fn permute(self, dims: Sh) -> Self::Output;
+    fn permute(self) -> Self::Output;
 }
 
 // TODO: this is only API proposal, it is yet to be finalized
@@ -486,11 +488,11 @@ pub trait Transpose {
 
 impl<T> Transpose for T
 where
-    T: Permute<(i32, i32)>,
+    T: Permute<Ax2<-1, -2>>,
 {
     type Output = T::Output;
     fn transpose(self) -> Self::Output {
-        self.permute((-1, -2))
+        self.permute::<Ax2<-1, -2>>()
     }
 }
 
@@ -557,14 +559,11 @@ pub trait MatMul<Rhs = Self> {
 /// Calculates 2D convodution.
 /// 
 /// NOTE: This API is not yet stable and may be subject to change
-pub trait Conv<Pd, Kernel = Self>
-where
-    Pd: Shape<D = usize>,
-{
+pub trait Conv<const N: usize, const M: usize, Kernel = Self> {
     /// Output of the Conv operation.
     type Output;
     /// Apply Conv operation on given input.
-    fn conv(self, kernel: Kernel, padding: Pd) -> Self::Output;
+    fn conv(self, kernel: Kernel, padding: Sh2<N, M>) -> Self::Output;
 }
 
 /// ## FromVec operation
@@ -581,13 +580,13 @@ where
 /// ### Output
 /// [2 3
 ///  1 3]
-pub trait FromVec {
-    /// dtype of values in resulting tensor
-    type T;
-    /// Shape of the resulting tensor
-    type Sh: Shape<D = usize>;
+pub trait FromSlice: HasShape + HasDType {
+    // /// dtype of values in resulting tensor
+    // type T;
+    // /// Shape of the resulting tensor
+    //type Sh: Shape;
     /// Create new tensor from Vec and Shape.
-    fn from_vec(data: &[Self::T], shape: Self::Sh) -> Self;
+    fn from_slice(data: &[Self::T]) -> Self;
 }
 
 extern crate alloc;

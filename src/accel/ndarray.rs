@@ -7,7 +7,7 @@ use ndarray::{ArrayBase, Dim, IxDynImpl, RawData, DataOwned, Dimension, OwnedRep
 use num_traits::identities::{Zero, One};
 extern crate alloc;
 
-impl<T, D> ops::GetShape for ArrayBase<T, D>
+impl<T, D> ops::HasShape for ArrayBase<T, D>
 where
     D: Dimension,
     T: RawData,

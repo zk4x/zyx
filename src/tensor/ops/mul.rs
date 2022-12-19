@@ -38,7 +38,7 @@ where
 
 impl<'g, YS, T, Sh> Mul<&'g Variable<YS>> for cpu::Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
     Self: Mul<YS>,
     YS: Clone,
 {
@@ -89,7 +89,7 @@ where
 
 impl<S, F, T, Sh> Mul<Tensor<S, F>> for cpu::Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
     Self: Mul<S>,
 {
     type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardST<Self, F>>;

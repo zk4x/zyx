@@ -2,8 +2,8 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom}, shape::{Shape, BinOpShape}, dtype::ScalarType};
-use core::ops::{Add, Mul};
+use crate::{ops::{self, ConvertFrom}, shape::{Shape, BinOpWith, Axes, Ax0}, dtype::DType};
+use core::marker::PhantomData;
 extern crate alloc;
 use alloc::{vec, sync::Arc, format};
 
@@ -13,8 +13,8 @@ use alloc::{vec, sync::Arc, format};
 /// Data is stored in row major order.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Buffer<T, Sh> {
-    shape: Sh,
     data: Arc<alloc::vec::Vec<T>>,
+    shape: PhantomData<Sh>,
 }
 
 impl<T, Sh> Clone for Buffer<T, Sh>
@@ -23,8 +23,8 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            shape: self.shape.clone(),
             data: self.data.clone(),
+            shape: PhantomData,
         }
     }
 }
@@ -39,16 +39,16 @@ impl<T, Sh> Buffer<T, Sh> {
 // Convert between Buffers with different datatypes
 impl<T, T2, Sh> ConvertFrom<Buffer<T2, Sh>> for Buffer<T, Sh>
 where
-    T: ConvertFrom<T2> + Send + Sync + ScalarType,
-    T2: Clone + Send + Sync + ScalarType,
-    Sh: Shape<D = usize>,
+    T: ConvertFrom<T2> + Send + Sync + DType,
+    T2: Clone + Send + Sync + DType,
+    Sh: Shape,
 {
     fn cfrom(x: Buffer<T2, Sh>) -> Self {
         use rayon::prelude::*;
         use crate::ops::ConvertInto;
         Self {
-            shape: x.shape,
             data: Arc::new(x.data.as_ref().par_iter().map(|x| x.clone().cinto()).collect()),
+            shape: PhantomData,
         }
     }
 }
@@ -56,8 +56,8 @@ where
 // Display Buffer
 impl<T, Sh> core::fmt::Display for Buffer<T, Sh>
 where
-    T: core::fmt::Display + ScalarType,
-    Sh: Shape<D = usize>,
+    T: core::fmt::Display + DType,
+    Sh: Shape,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
@@ -112,8 +112,8 @@ where
 /// It is flattened with row major order.
 impl<T, Sh> ops::IntoVec<T> for Buffer<T, Sh>
 where
-    T: Clone + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + DType,
+    Sh: Shape,
 {
     fn to_vec(&self) -> alloc::vec::Vec<T> {
         self.data.as_ref().clone()
@@ -121,48 +121,44 @@ where
 }
 
 /// Create new Buffer from vec
-impl<T, Sh> ops::FromVec for Buffer<T, Sh>
+impl<T, Sh> ops::FromSlice for Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
     T: Clone,
 {
     type T = T;
     type Sh = Sh;
 
-    fn from_vec(data: &[T], shape: Sh) -> Self {
+    fn from_slice(data: &[T], shape: Sh) -> Self {
         assert_eq!(shape.numel(), data.len());
         Self {
-            shape,
             data: Arc::new(data.to_vec()),
+            shape: PhantomData,
         }
     }
 }
 
 /// Get Buffer's shape
-impl<T, Sh> ops::GetShape for Buffer<T, Sh>
+impl<T, Sh> ops::HasShape for Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
-    type Output = Sh;
-
-    fn shape(&self) -> Self::Output {
-        self.shape
-    }
+    type Sh = Sh;
 }
 
 /// Create new Buffer filled with zeros
 impl<T, Sh> ops::Zeros for Buffer<T, Sh>
 where
-    T: Clone + ops::Zeros<Sh = ()> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + ops::Zeros<Sh = Ax0> + DType,
+    Sh: Shape,
 {
     type Sh = Sh;
 
     fn zeros(shape: Sh) -> Self {
         let n = shape.numel();
         Self {
-            shape,
-            data: Arc::new(vec![T::zeros(()); n]),
+            data: Arc::new(vec![T::zeros(); n]),
+            shape: PhantomData,
         }
     }
 }
@@ -170,40 +166,40 @@ where
 /// Create new Buffer filled with ones
 impl<T, Sh> ops::Ones for Buffer<T, Sh>
 where
-    T: Clone + ops::Ones<Sh = ()> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + ops::Ones<Sh = Ax0> + DType,
+    Sh: Shape,
 {
     type Sh = Sh;
 
     fn ones(shape: Sh) -> Self {
         let n = shape.numel();
         Self {
-            shape,
-            data: Arc::new(vec![T::ones(()); n]),
+            data: Arc::new(vec![T::ones(); n]),
+            shape: PhantomData,
         }
     }
 }
 
 fn unary_op<T, Sh, F>(x: Buffer<T, Sh>, f: F) -> Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + ScalarType,
+    T: Clone + Sync + Send + DType,
     F: Fn(T) -> T + Sync + Send,
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     use rayon::prelude::*;
     Buffer {
-        shape: x.shape,
         data: Arc::new(match Arc::try_unwrap(x.data) {
             Ok(vec) => vec.into_par_iter().map(f).collect(),
             Err(rc) => rc.as_ref().par_iter().map(|x| f(x.clone())).collect(),
         }),
+        shape: PhantomData,
     }
 }
 
 impl<T, Sh> ops::ReLU for Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + ops::ReLU<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + Sync + Send + ops::ReLU<Output = T> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn relu(self) -> Self::Output {
@@ -213,8 +209,8 @@ where
 
 impl<T, Sh> ops::DReLU for Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + ops::DReLU<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + Sync + Send + ops::DReLU<Output = T> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn drelu(self) -> Self::Output {
@@ -224,8 +220,8 @@ where
 
 impl<T, Sh> ops::Exp for Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + ops::Exp<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + Sync + Send + ops::Exp<Output = T> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn exp(self) -> Self::Output {
@@ -235,8 +231,8 @@ where
 
 impl<T, Sh> ops::Ln for Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + ops::Ln<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + Sync + Send + ops::Ln<Output = T> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn ln(self) -> Self::Output {
@@ -246,8 +242,8 @@ where
 
 impl<T, Sh> ops::Tanh for Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + ops::Tanh<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + Sync + Send + ops::Tanh<Output = T> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn tanh(self) -> Self::Output {
@@ -257,8 +253,8 @@ where
 
 impl<T, Sh> core::ops::Neg for Buffer<T, Sh>
 where
-    T: Clone + Sync + Send + core::ops::Neg<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Clone + Sync + Send + core::ops::Neg<Output = T> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn neg(self) -> Self::Output {
@@ -268,12 +264,12 @@ where
 
 impl<T, Sh> Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     fn reduce<Dims, F>(self, dims: Dims, init: T, mut f: F) -> Buffer<T, Sh>
     where
-        Dims: Shape<D = i32>,
-        T: Clone + ScalarType,
+        Dims: Axes,
+        T: Clone + DType,
         F: FnMut(T, T) -> T,
     {
         use alloc::borrow::ToOwned;
@@ -312,70 +308,70 @@ where
         }
 
         Buffer {
-            shape,
             data: Arc::new(data),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, Sh, Dims> ops::Sum<Dims> for Buffer<T, Sh>
 where
-    T: Clone + ops::Zeros<Sh = ()> + core::ops::Add<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
-    Dims: Shape<D = i32>,
+    T: Clone + ops::Zeros<Sh = Ax0> + core::ops::Add<Output = T> + DType,
+    Sh: Shape,
+    Dims: Axes,
 {
     type Output = Buffer<T, Sh>;
 
     fn sum(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::zeros(()), |a, b| a + b)
+        self.reduce(dims, T::zeros(), |a, b| a + b)
     }
 }
 
 impl<T, Sh, Dims> ops::Max<Dims> for Buffer<T, Sh>
 where
-    T: Clone + Default + ops::Min<i32, Output = T> + PartialOrd + ScalarType,
-    Sh: Shape<D = usize>,
-    Dims: Shape<D = i32>,
+    T: Clone + Default + ops::Min<Ax0, Output = T> + PartialOrd + DType,
+    Sh: Shape,
+    Dims: Axes,
 {
     type Output = Buffer<T, Sh>;
     fn max(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::min(T::default(), 0), |a, b| if a > b { a } else { b })
+        self.reduce(dims, T::min(T::default()), |a, b| if a > b { a } else { b })
     }
 }
 
 impl<T, Sh, Dims> ops::Min<Dims> for Buffer<T, Sh>
 where
-    T: Clone + Default + ops::Max<i32, Output = T> + PartialOrd + ScalarType,
-    Sh: Shape<D = usize>,
-    Dims: Shape<D = i32>,
+    T: Clone + Default + ops::Max<Ax0, Output = T> + PartialOrd + DType,
+    Sh: Shape,
+    Dims: Axes,
 {
     type Output = Buffer<T, Sh>;
     fn min(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::max(T::default(), 0), |a, b| if a < b { a } else { b })
+        self.reduce(dims, T::max(T::default()), |a, b| if a < b { a } else { b })
     }
 }
 
 impl<T, Sh, Sh2> ops::Reshape<Sh2> for Buffer<T, Sh>
 where
-    T: Clone +ScalarType,
-    Sh: Shape<D = usize>,
-    Sh2: Shape<D = usize>,
+    T: Clone +DType,
+    Sh: Shape,
+    Sh2: Shape,
 {
     type Output = Buffer<T, Sh2>;
     fn reshape(self, shape: Sh2) -> Self::Output {
         assert_eq!(self.shape.numel(), shape.numel());
         Buffer {
-            shape,
             data: self.data,
+            shape: PhantomData,
         }
     }
 }
 
 impl <T, Sh, Sh2> ops::Expand<Sh2> for Buffer<T, Sh>
 where
-    T: Clone + ScalarType,
-    Sh: Shape<D = usize>,
-    Sh2: Shape<D = usize>,
+    T: Clone + DType,
+    Sh: Shape,
+    Sh2: Shape,
 {
     type Output = Buffer<T, Sh2>;
     fn expand(self, res_shape: Sh2) -> Self::Output {
@@ -413,17 +409,17 @@ where
         }
 
         Buffer {
-            shape: res_shape,
             data: Arc::new(data),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, Sh, Dims> ops::Permute<Dims> for Buffer<T, Sh>
 where
-    Sh: Shape<D = usize> + ops::Permute<Dims, Output = Sh>,
-    Dims: Shape<D = i32>,
-    T: Clone + ops::Zeros + ScalarType,
+    Sh: Shape + ops::Permute<Dims, Output = Sh>,
+    Dims: Axes,
+    T: Clone + ops::Zeros<Sh = Ax0> + DType,
 {
     type Output = Buffer<T, Sh>;
     fn permute(self, dims: Dims) -> Self::Output {
@@ -460,8 +456,8 @@ where
         }
 
         Buffer {
-            shape,
             data: Arc::new(data),
+            shape: PhantomData,
         }
     }
 }
@@ -476,18 +472,18 @@ where
     }
 }*/
 
-fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, <XSh as crate::shape::BinOpShape<YSh>>::Output>
+fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, <XSh as BinOpWith<YSh>>::Output>
 where
-    T: Sync + Send + Clone + ScalarType,
+    T: Sync + Send + Clone + DType,
     F: Fn((T, T)) -> T + Sync + Send,
-    XSh: Shape<D = usize> + crate::shape::BinOpShape<YSh>,
-    YSh: Shape<D = usize>,
+    XSh: Shape + BinOpWith<YSh>,
+    YSh: Shape,
 {
     use rayon::prelude::*;
     use ops::Expand;
     use core::cmp::Ordering;
     //let mut shape = x.shape.clone();
-    let mut shape = <XSh as BinOpShape<YSh>>::Output::ones();
+    let mut shape = <XSh as BinOpWith<YSh>>::Output::ones();
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
     // stuff during expanding
     let data = Arc::new(match x.shape.numel().cmp(&y.shape.numel()) {
@@ -496,11 +492,11 @@ where
                 *shape.mut_at(i) = x.shape.at(i);
             }
             match Arc::try_unwrap(x.data) {
-                Ok(vec) => match Arc::try_unwrap(y.expand(x.shape).data) {
+                Ok(vec) => match Arc::try_unwrap(y.expand().data) {
                     Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
                     Err(rc_y) => vec.into_par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
                 }
-                Err(rc) => match Arc::try_unwrap(y.expand(x.shape).data) {
+                Err(rc) => match Arc::try_unwrap(y.expand().data) {
                     Ok(vec_y) => rc.as_ref().par_iter().zip(vec_y.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
                     Err(rc_y) => rc.as_ref().par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
                 }
@@ -511,11 +507,11 @@ where
                 *shape.mut_at(i) = y.shape.at(i);
             }
             match Arc::try_unwrap(y.data) {
-                Ok(vec) => match Arc::try_unwrap(x.expand(y.shape).data) {
+                Ok(vec) => match Arc::try_unwrap(x.expand().data) {
                     Ok(vec_x) => vec_x.into_par_iter().zip(vec.into_par_iter()).map(f).collect(),
                     Err(rc_x) => rc_x.par_iter().zip(vec.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
                 },
-                Err(rc) => match Arc::try_unwrap(x.expand(y.shape).data) {
+                Err(rc) => match Arc::try_unwrap(x.expand().data) {
                     Ok(vec_x) => vec_x.into_par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
                     Err(rc_x) => rc_x.par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
                 }
@@ -538,18 +534,18 @@ where
         }
     });
     Buffer {
-        shape,
         data,
+        shape: PhantomData,
     }
 }
 
 impl<T, XSh, YSh> core::ops::Add<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: Clone + Sync + Send + core::ops::Add<Output = T> + ScalarType,
-    XSh: Shape<D = usize> + BinOpShape<YSh>,
-    YSh: Shape<D = usize>,
+    T: Clone + Sync + Send + core::ops::Add<Output = T> + DType,
+    XSh: Shape + BinOpWith<YSh>,
+    YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
 
     fn add(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a + b)
@@ -560,8 +556,8 @@ use duplicate::duplicate_item;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Add<Buffer<T, Sh>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + core::ops::Add<Output = T> + Clone + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Add<Output = T> + Clone + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn add(self, rhs: Buffer<T, Sh>) -> Self::Output {
@@ -569,21 +565,21 @@ where
         use ops::ConvertInto;
         let x: T = self.cinto();
         Buffer {
-            shape: rhs.shape,
             data: Arc::new(
                 match Arc::try_unwrap(rhs.data) {
                     Ok(vec) => vec.into_par_iter().map(|y| x.clone() + y).collect(),
                     Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() + y.clone()).collect(),
                 }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, T2, Sh> core::ops::Add<T2> for Buffer<T, Sh>
 where
-    T2: ScalarType,
-    T: Clone + Sync + Send + core::ops::Add<Output = T> + ConvertFrom<T2> + ScalarType,
-    Sh: Shape<D = usize>,
+    T2: DType,
+    T: Clone + Sync + Send + core::ops::Add<Output = T> + ConvertFrom<T2> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn add(self, rhs: T2) -> Self::Output {
@@ -591,23 +587,23 @@ where
         use crate::ops::ConvertInto;
         let rhs: T = rhs.cinto();
         Self {
-            shape: self.shape,
             data: Arc::new(
                 match Arc::try_unwrap(self.data) {
                     Ok(vec) => vec.into_par_iter().map(|x| x + rhs.clone()).collect(),
                     Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() + rhs.clone()).collect(),
                 }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, XSh, YSh> core::ops::Sub<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: Clone + Sync + Send + core::ops::Sub<Output = T> + ScalarType,
-    XSh: Shape<D = usize> + BinOpShape<YSh>,
-    YSh: Shape<D = usize>,
+    T: Clone + Sync + Send + core::ops::Sub<Output = T> + DType,
+    XSh: Shape + BinOpWith<YSh>,
+    YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
     fn sub(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a - b)
     }
@@ -616,8 +612,8 @@ where
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Sub<Buffer<T, Sh>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + core::ops::Sub<Output = T> + Clone + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Sub<Output = T> + Clone + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn sub(self, rhs: Buffer<T, Sh>) -> Self::Output {
@@ -625,21 +621,21 @@ where
         use ops::ConvertInto;
         let x: T = self.cinto();
         Buffer {
-            shape: rhs.shape,
             data: Arc::new(
                 match Arc::try_unwrap(rhs.data) {
                     Ok(vec) => vec.into_par_iter().map(|y| x.clone() - y).collect(),
                     Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() - y.clone()).collect(),
                 }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, T2, Sh> core::ops::Sub<T2> for Buffer<T, Sh>
 where
-    T2: ScalarType,
-    T: Clone + Sync + Send + core::ops::Sub<Output = T> + ConvertFrom<T2> + ScalarType,
-    Sh: Shape<D = usize>,
+    T2: DType,
+    T: Clone + Sync + Send + core::ops::Sub<Output = T> + ConvertFrom<T2> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn sub(self, rhs: T2) -> Self::Output {
@@ -647,23 +643,23 @@ where
         use crate::ops::ConvertInto;
         let rhs: T = rhs.cinto();
         Self {
-            shape: self.shape,
             data: Arc::new(
                 match Arc::try_unwrap(self.data) {
                     Ok(vec) => vec.into_par_iter().map(|x| x - rhs.clone()).collect(),
                     Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() - rhs.clone()).collect(),
                 }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, XSh, YSh> core::ops::Mul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ScalarType,
-    XSh: Shape<D = usize> + BinOpShape<YSh>,
-    YSh: Shape<D = usize>,
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + DType,
+    XSh: Shape + BinOpWith<YSh>,
+    YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
     fn mul(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a * b)
     }
@@ -672,8 +668,8 @@ where
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Mul<Buffer<T, Sh>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + core::ops::Mul<Output = T> + Clone + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Mul<Output = T> + Clone + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn mul(self, rhs: Buffer<T, Sh>) -> Self::Output {
@@ -681,20 +677,20 @@ where
         use ops::ConvertInto;
         let x: T = self.cinto();
         Buffer {
-            shape: rhs.shape,
             data: Arc::new(match Arc::try_unwrap(rhs.data) {
                 Ok(vec) => vec.into_par_iter().map(|y| x.clone() * y).collect(),
                 Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() * y.clone()).collect(),
             }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, T2, Sh> core::ops::Mul<T2> for Buffer<T, Sh>
 where
-    T2: ScalarType,
-    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<T2> + ScalarType,
-    Sh: Shape<D = usize>,
+    T2: DType,
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<T2> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn mul(self, rhs: T2) -> Self::Output {
@@ -702,22 +698,22 @@ where
         use ops::ConvertInto;
         let y: T = rhs.cinto();
         Self {
-            shape: self.shape,
             data: Arc::new(match Arc::try_unwrap(self.data) {
                 Ok(vec) => vec.into_par_iter().map(|x| x * y.clone()).collect(),
                 Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() * y.clone()).collect(),
             }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, XSh, YSh> core::ops::Div<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: Clone + Sync + Send + core::ops::Div<Output = T> + ScalarType,
-    XSh: Shape<D = usize> + BinOpShape<YSh>,
-    YSh: Shape<D = usize>,
+    T: Clone + Sync + Send + core::ops::Div<Output = T> + DType,
+    XSh: Shape + BinOpWith<YSh>,
+    YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
     fn div(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a / b)
     }
@@ -726,8 +722,8 @@ where
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Div<Buffer<T, Sh>> for dtype
 where
-    T: Sync + Send + ConvertFrom<Self> + core::ops::Div<Output = T> + Clone + ScalarType,
-    Sh: Shape<D = usize>,
+    T: Sync + Send + ConvertFrom<Self> + core::ops::Div<Output = T> + Clone + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn div(self, rhs: Buffer<T, Sh>) -> Self::Output {
@@ -735,20 +731,20 @@ where
         use ops::ConvertInto;
         let x: T = self.cinto();
         Buffer {
-            shape: rhs.shape,
             data: Arc::new(match Arc::try_unwrap(rhs.data) {
                 Ok(vec) => vec.into_par_iter().map(|y| x.clone()/y).collect(),
                 Err(rc) => rc.as_ref().par_iter().map(|y| x.clone()/y.clone()).collect(),
             }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, T2, Sh> core::ops::Div<T2> for Buffer<T, Sh>
 where
-    T2: ScalarType,
-    T: Clone + Sync + Send + core::ops::Div<Output = T> + ConvertFrom<T2> + ScalarType,
-    Sh: Shape<D = usize>,
+    T2: DType,
+    T: Clone + Sync + Send + core::ops::Div<Output = T> + ConvertFrom<T2> + DType,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn div(self, rhs: T2) -> Self::Output {
@@ -756,22 +752,22 @@ where
         use ops::ConvertInto;
         let rhs: T = rhs.cinto();
         Self {
-            shape: self.shape,
             data: Arc::new(match Arc::try_unwrap(self.data) {
                 Ok(vec) => vec.into_par_iter().map(|x| x / rhs.clone()).collect(),
                 Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() / rhs.clone()).collect(),
             }),
+            shape: PhantomData,
         }
     }
 }
 
 impl<T, XSh, YSh> ops::Pow<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: Sync + Send + Clone + ops::Pow<Output = T> + ScalarType,
-    XSh: Shape<D = usize> + BinOpShape<YSh>,
-    YSh: Shape<D = usize>,
+    T: Sync + Send + Clone + ops::Pow<Output = T> + DType,
+    XSh: Shape + BinOpWith<YSh>,
+    YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpShape<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
     fn pow(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a.pow(b))
     }
@@ -779,19 +775,19 @@ where
 
 impl<T, Sh> ops::Pow<i32> for Buffer<T, Sh>
 where
-    T: Sync + Send + Clone + ops::Pow<i32> + ScalarType,
+    T: Sync + Send + Clone + ops::Pow<i32> + DType,
     <T as ops::Pow<i32>>::Output: Send,
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     type Output = Buffer<<T as ops::Pow<i32>>::Output, Sh>;
     fn pow(self, rhs: i32) -> Self::Output {
         use rayon::prelude::*;
         Buffer {
-            shape: self.shape,
             data: Arc::new(match Arc::try_unwrap(self.data) {
                 Ok(vec) => vec.into_par_iter().map(|x| x.pow(rhs)).collect(),
                 Err(rc) => rc.as_ref().par_iter().map(|x| x.clone().pow(rhs)).collect(),
             }),
+            shape: PhantomData,
         }
     }
 }
@@ -799,9 +795,9 @@ where
 #[cfg(not(feature = "matrixmultiply"))]
 impl<T, Sh> ops::MatMul<Buffer<T, Sh>> for Buffer<T, Sh>
 where
-    T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + ScalarType,
+    T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + DType,
     Buffer<T, Sh>: ops::Transpose<Output = Buffer<T, Sh>>,
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
     fn matmul(self, rhs: Buffer<T, Sh>) -> Self::Output {
@@ -854,8 +850,8 @@ where
         *shape.mut_ati(-2) = n;
 
         Buffer {
-            shape,
             data: Arc::new(data),
+            shape: PhantomData,
         }.transpose()
     }
 }
@@ -864,7 +860,7 @@ where
 #[cfg(feature = "matrixmultiply")]
 impl<Sh> ops::MatMul for Buffer<f32, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     type Output = Buffer<f32, (usize, usize)>;
     fn matmul(self, rhs: Self) -> Self::Output {
@@ -911,7 +907,7 @@ where
 #[cfg(feature = "matrixmultiply")]
 impl<Sh> ops::MatMul for Buffer<f64, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     type Output = Buffer<f64, (usize, usize)>;
     fn matmul(self, rhs: Self) -> Self::Output {
@@ -955,11 +951,11 @@ where
     }
 }
 
-impl<T, Sh, Pd> ops::Conv<Pd> for Buffer<T, Sh>
+/*impl<T, Sh, Pd> ops::Conv<Pd> for Buffer<T, Sh>
 where
-    T: ops::Zeros<Sh = ()> + Clone + Add<Output = T> + Mul<Output = T> + ScalarType,
-    Sh: Shape<D = usize>,
-    Pd: Shape<D = usize>,
+    T: ops::Zeros<Sh = Ax0> + Clone + Add<Output = T> + Mul<Output = T> + DType,
+    Sh: Shape,
+    Pd: Shape,
 {
     type Output = Buffer<T, (usize, usize)>;
 
@@ -1018,8 +1014,7 @@ where
         }
         
         Buffer {
-            shape,
             data: Arc::new(data),
         }
     }
-}
+}*/

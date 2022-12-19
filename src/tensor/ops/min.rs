@@ -1,6 +1,6 @@
 // TODO: This is not correct. Min does not simply expand. It takes
 
-/*use crate::{ops::{Min, Expand, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
+/*use crate::{ops::{Min, Expand, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
 pub struct MinBackwardV<'g, G> {
@@ -20,7 +20,7 @@ where
 
 impl<'g, S> Min for &'g Variable<S>
 where
-    S: Clone + Min + GetShape,
+    S: Clone + Min + HasShape,
 {
     type Output = Tensor<<S as Min>::Output, MinBackwardV<'g, S>>;
     fn min(self, dims: impl Shape<i32>) -> Self::Output {
@@ -52,7 +52,7 @@ where
 
 impl<S, F> Min for Tensor<S, F>
 where
-    S: Min + GetShape,
+    S: Min + HasShape,
     F: Backward<S>,
 {
     type Output = Tensor<<S as Min>::Output, MinBackwardT<F>>;

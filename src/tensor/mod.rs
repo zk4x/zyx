@@ -46,7 +46,7 @@
 
 mod ops;
 
-use crate::{ops::GetShape, module::Parameters};
+use crate::{ops::HasShape, module::Parameters};
 
 // How this works (for contributors)
 //
@@ -114,8 +114,8 @@ impl<S> Gradient<S> {
     }
 }
 
-trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
-impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
+trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = <Self as HasShape>::Sh> + HasShape {}
+impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = <T as HasShape>::Sh>+ HasShape {}
 
 #[derive(Debug, Clone, Copy)]
 struct GradientRef<'g, S>(&'g Gradient<S>);
@@ -133,10 +133,9 @@ impl<'g, S> GradientRef<'g, S> {
         // Unsafe is needed, because we need multiple functions accessing the same gradient.
         let mut x = None;
         unsafe { core::ptr::swap(self.0.0.get(), &mut x); }
-        use crate::shape::Shape;
         let grad = Some(match x {
             Some(grad) => grad + value,
-            None => S::zeros(<S as crate::ops::Zeros>::Sh::ones()) + value,
+            None => S::zeros() + value,
         });
         unsafe { *self.0.0.get() = grad; }
     }
@@ -265,7 +264,7 @@ pub trait Backward<S> {
 
 impl<S, F> Tensor<S, F>
 where
-    S: crate::ops::Ones<Sh = <S as GetShape>::Output> + GetShape,
+    S: crate::ops::Ones<Sh = <S as HasShape>::Sh> + HasShape,
     F: Backward<S>,
 {
     /// # Tensor backward
@@ -302,7 +301,7 @@ where
         // NOTE: right now backward call is recursive.
         // Shall this pose a problem, we can switch to iterative version.
         let shape = self.shape();
-        self.grad_fn.backward(S::ones(shape));
+        self.grad_fn.backward(S::ones());
     }
 }
 
@@ -361,7 +360,7 @@ pub struct GradHookV<'g, G, Hook> {
 
 impl<S, G, HOOK> Backward<S> for GradHookV<'_, G, HOOK>
 where
-    S: Clone,
+    S: Clone + HasShape,
     G: Clone + GradAcc<S>,
     HOOK: FnOnce(S),
 {

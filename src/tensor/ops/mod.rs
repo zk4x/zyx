@@ -24,7 +24,8 @@ mod pow;
 mod matmul;
 mod conv;
 
-// Naming scheme for backward function is FunctionName + Backward + letters of the tensor type:
-// S - Storage = DType
+// Naming scheme for backward function is FunctionName + Backward + letters of the tensor types
+// which are parameters:
+// S - Storage = DType/Buffer
 // V - Variable
 // T - Tensor

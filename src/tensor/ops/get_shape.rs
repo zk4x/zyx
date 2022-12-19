@@ -1,23 +1,15 @@
-use crate::{ops::GetShape, tensor::{Variable, Tensor}};
+use crate::{ops::HasShape, tensor::{Variable, Tensor}};
 
-impl<S> GetShape for Variable<S>
+impl<S> HasShape for Variable<S>
 where
-    S: GetShape,
+    S: HasShape,
 {
-    type Output = <S as GetShape>::Output;
-
-    fn shape(&self) -> Self::Output {
-        self.data().shape()
-    }
+    type Sh = <S as HasShape>::Sh;
 }
 
-impl<S, F> GetShape for Tensor<S, F>
+impl<S, F> HasShape for Tensor<S, F>
 where
-    S: GetShape,
+    S: HasShape,
 {
-    type Output = <S as GetShape>::Output;
-
-    fn shape(&self) -> Self::Output {
-        self.data().shape()
-    }
+    type Sh = <S as HasShape>::Sh;
 }

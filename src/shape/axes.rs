@@ -7,12 +7,38 @@ pub trait Axes: Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> +
     /// Rank
     const RANK: usize;
     // Ordered axes
-    //type Argsort: Axes;
+    type Argsort: Axes;
 }
 
-/// Type that represents all axes
-/*#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct AxA {}*/
+/// Zero axes.
+/// Used in some operations with scalars, such as reduce operations.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Ax0 {}
+
+impl Axes for Ax0 {
+    const RANK: usize = 0;
+    type Argsort = Ax0;
+}
+
+impl Display for Ax0 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("()"))
+    }
+}
+
+impl Index<usize> for Ax0 {
+    type Output = i32;
+    fn index(&self, index: usize) -> &Self::Output {
+        panic!("Index out of range, index is {}, but the length is 0", index)
+    }
+}
+
+impl Index<i32> for Ax0 {
+    type Output = i32;
+    fn index(&self, index: i32) -> &Self::Output {
+        panic!("Index out of range, index is {}, but the length is 0", index)
+    }
+}
 
 /// Single axis
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -20,7 +46,7 @@ pub struct Ax1<const A0: i32> {}
 
 impl<const A0: i32> Axes for Ax1<A0> {
     const RANK: usize = 1;
-    //type Argsort = Ax1<A0>;
+    type Argsort = Ax1<A0>;
 }
 
 impl<const A0: i32> Display for Ax1<A0> {

@@ -89,7 +89,7 @@ where
 // And figure why the above implementation overflows during compilation.
 impl<F, Sh> Div<Tensor<cpu::Buffer<f32, Sh>, F>> for i32
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
 {
     type Output = Tensor<<Self as Div<cpu::Buffer<f32, Sh>>>::Output, DivBackwardST<<Self as Div<cpu::Buffer<f32, Sh>>>::Output, cpu::Buffer<f32, Sh>, F>>;
     fn div(self, rhs: Tensor<cpu::Buffer<f32, Sh>, F>) -> Self::Output {

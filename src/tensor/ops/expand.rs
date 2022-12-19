@@ -1,6 +1,6 @@
 // TODO make this work
 
-/*use crate::{ops::{Expand, Max, GetShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
+/*use crate::{ops::{Expand, Max, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardV<'g, G, Dims> {
@@ -21,7 +21,7 @@ where
 
 impl<'g, S, Sh> Expand<Sh> for &'g Variable<S>
 where
-    S: Clone + Expand<Sh> + GetShape,
+    S: Clone + Expand<Sh> + HasShape,
 {
     type Output = Tensor<<S as Expand<Sh>>::Output, ExpandBackwardV<'g, S>>;
     fn expand(self, shape: Sh) -> Self::Output {
@@ -55,7 +55,7 @@ where
 
 impl<S, F> Expand for Tensor<S, F>
 where
-    S: Expand + GetShape,
+    S: Expand + HasShape,
     F: Backward<S>,
 {
     type Output = Tensor<<S as Expand>::Output, ExpandBackwardT<F>>;

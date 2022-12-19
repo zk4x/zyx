@@ -5,8 +5,8 @@
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
-use crate::{module::Module, ops::{self, GetShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::Shape};
-use core::ops::{Neg, Add, Sub, Div, Mul};
+use crate::{module::Module, ops::{self, HasShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::{Shape, Axes, Ax0}};
+use core::{ops::{Neg, Add, Sub, Div, Mul}, marker::PhantomData};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -106,7 +106,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SoftMax<Dims>
 where
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     /// Dimension to calculate softmax across
     pub dims: Dims
@@ -114,7 +114,7 @@ where
 
 impl<Input, D> Module<'_, Input> for SoftMax<D>
 where
-    D: Clone + Shape<D = i32>,
+    D: Clone + Axes,
     Input: Clone + ops::Max<D> + Sub<<Input as ops::Max<D>>::Output>,
     <Input as Sub<<Input as ops::Max<D>>::Output>>::Output: ops::Exp,
     <<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output: Clone + ops::Sum<D>,
@@ -127,8 +127,8 @@ where
         use crate::ops::{Exp, Sum};
         // TODO: Check if cloning Tensors (that is also cloning their grad_fn)
         // has any effect on correctness of this function's gradient calculation
-        let temp = (x.clone() - x.max(self.dims)).exp();
-        temp.clone() / temp.sum(self.dims)
+        let temp = (x.clone() - x.max()).exp();
+        temp.clone() / temp.sum()
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -161,22 +161,21 @@ fn softmax_test() {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sum<Dims>
 where
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
-    /// [Dimensions](crate::shape::Shape) to sum
-    pub dims: Dims,
+    dims: PhantomData<Dims>,
 }
 
 impl<Input, Dims> Module<'_, Input> for Sum<Dims>
 where
     Input: ops::Sum<Dims>,
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     type Output = Input::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.sum(self.dims)
+        x.sum()
     }
     
     fn parameters(&mut self) -> Self::Params {}
@@ -186,7 +185,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Max<Dims>
 where
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     /// [Dimensions](crate::shape::Shape) to max
     pub dims: Dims,
@@ -195,13 +194,13 @@ where
 impl<Input, Dims> Module<'_, Input> for Max<Dims>
 where
     Input: ops::Max<Dims>,
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     type Output = Input::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.max(self.dims)
+        x.max()
     }
     
     fn parameters(&mut self) -> Self::Params {}
@@ -211,7 +210,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Min<Dims>
 where
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     /// [Dimensions](crate::shape::Shape) to min
     pub dims: Dims,
@@ -220,13 +219,13 @@ where
 impl<Input, Dims> Module<'_, Input> for Min<Dims>
 where
     Input: ops::Min<Dims>,
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     type Output = Input::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.min(self.dims)
+        x.min()
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -236,7 +235,7 @@ where
 /// Mean operation
 pub struct Mean<Dims>
 where
-    Dims: Shape<D = i32>,
+    Dims: Axes,
 {
     /// [Dimensions](crate::shape::Shape) for mean
     pub dims: Dims
@@ -244,16 +243,15 @@ where
 
 impl<Input, Dims> Module<'_, Input> for Mean<Dims>
 where
-    Dims: Shape<D = i32>,
-    Input: GetShape + ops::Sum<Dims>,
+    Dims: Axes,
+    Input: HasShape + ops::Sum<Dims>,
     <Input as ops::Sum<Dims>>::Output: Div<usize>,
 {
     type Output = <<Input as ops::Sum<Dims>>::Output as Div<usize>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        let n = x.shape().numel();
-        x.sum(self.dims)/n
+        x.sum()/Input::Sh::numel()
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -301,13 +299,13 @@ impl<W, B> Linear<W, B> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<T>(in_features: usize, out_features: usize) -> Self
     where
-        T: Zeros<Sh = ()> + Ones<Sh = ()>,
+        T: Zeros<Sh = Ax0> + Ones<Sh = Ax0>,
         W: UniformInit<T = T, Sh = (usize, usize)>,
         B: UniformInit<T = T, Sh = (usize, usize)>,
     {
         Self {
-            w: W::uniform((in_features, out_features), T::zeros(()), T::ones(())).with_grad(),
-            b: B::uniform((1, out_features), T::zeros(()), T::ones(())).with_grad(),
+            w: W::uniform((in_features, out_features), T::zeros(), T::ones()).with_grad(),
+            b: B::uniform((1, out_features), T::zeros(), T::ones()).with_grad(),
         }
     }
 }
@@ -349,17 +347,17 @@ impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
     /// Create new [RNNCell] with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where
-        T: Zeros<Sh = ()> + Ones<Sh = ()>,
+        T: Zeros<Sh = Ax0> + Ones<Sh = Ax0>,
         WI: UniformInit<T = T, Sh = (usize, usize)>,
         BI: UniformInit<T = T, Sh = (usize, usize)>,
         WH: UniformInit<T = T, Sh = (usize, usize)>,
         BH: UniformInit<T = T, Sh = (usize, usize)>,
     {
         Self {
-            wih: WI::uniform((input_size, hidden_size), T::zeros(()), T::ones(())).with_grad(),
-            bih: BI::uniform((1, hidden_size), T::zeros(()), T::ones(())).with_grad(),
-            whh: WH::uniform((hidden_size, hidden_size), T::zeros(()), T::ones(())).with_grad(),
-            bhh: BH::uniform((1, hidden_size), T::zeros(()), T::ones(())).with_grad(),
+            wih: WI::uniform((input_size, hidden_size), T::zeros(), T::ones()).with_grad(),
+            bih: BI::uniform((1, hidden_size), T::zeros(), T::ones()).with_grad(),
+            whh: WH::uniform((hidden_size, hidden_size), T::zeros(), T::ones()).with_grad(),
+            bhh: BH::uniform((1, hidden_size), T::zeros(), T::ones()).with_grad(),
         }
     }
 }

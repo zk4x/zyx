@@ -70,7 +70,7 @@ pub trait Parameters {
 impl<T> ParametersSetter for UniformDistribution<T> {
     fn update_data<S>(&mut self, data: &mut S)
     where
-        S: UniformInit<T> + crate::ops::GetShape,
+        S: UniformInit<T> + crate::ops::HasShape,
     {
         *data = S::uniform(data.shape(), self.low, self.high);
     }

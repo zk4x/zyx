@@ -36,7 +36,7 @@ where
 
 impl<'g, YS, T, Sh> Add<&'g Variable<YS>> for cpu::Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
     Self: Add<YS>,
     YS: Clone + DType,
 {
@@ -68,7 +68,7 @@ where
 
 impl<S, F, T, Sh> Add<Tensor<S, F>> for cpu::Buffer<T, Sh>
 where
-    Sh: Shape<D = usize>,
+    Sh: Shape,
     Self: Add<S>,
     S: DType,
 {
