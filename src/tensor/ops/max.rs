@@ -1,67 +1,70 @@
-/*use crate::{ops::{Max, Expand, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
+/*use crate::{ops::{Maximizable, Expand, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct MaxBackwardV<'g, G> {
+pub struct MaximizableBackwardV<'g, G, I> {
     grad: GradientRef<'g, G>,
-    shape: Shape,
+    indices: I,
 }
 
-impl<S, G> Backward<S> for MaxBackwardV<'_, G>
+impl<S, G, I> Backward<S> for MaximizableBackwardV<'_, G, I>
 where
-    S: Expand,
-    G: GradAcc<<S as Expand>::Output>,
+    //S: ,
+    //G: GradAcc<<S as >::Output>,
 {
     fn backward(self, res_grad: S) {
-        // TODO: This is not correct. Max does not simply expand.
-        // Max sets values at max indices to 1 and other values to 0.
+        // TODO: This is not correct. Maximizable does not simply expand.
+        // Maximizable sets values at max indices to 1 and other values to 0.
         // So res_grad values must be added to indices where there were maximums previously.
         // So Instead of shape, we need to store indices of those values.
-        self.grad.accumulate(res_grad.expand(self.shape));
+        self.grad.accumulate(res_grad.set_values_at_indices(self.indices));
     }
 }
 
-impl<'g, S> Max for &'g Variable<S>
+impl<'g, S, Dims> Maximizable<Dims> for &'g Variable<S>
 where
-    S: Clone + Max + HasShape,
+    S: Clone + Maximizable<Dims>,
 {
-    type Output = Tensor<<S as Max>::Output, MaxBackwardV<'g, S>>;
-    fn max(self, dims: impl Shape<i32>) -> Self::Output {
-        Tensor {
-            data: self.data.clone().max(dims),
-            grad_fn: MaxBackwardV {
+    type Values = Tensor<S::Values, MaximizableBackwardV<'g, S, Self::Indices>>;
+    type Indices = S::Indices;
+
+    fn max(self) -> (Self::Values, Self::Indices) {
+        let (data, indices) = self.data.clone().max();
+        (Tensor {
+            data,
+            grad_fn: MaximizableBackwardV {
                 grad: GradientRef::new(&self.grad),
-                shape: self.data.shape(),
+                indices: indices.clone(),
             }
-        }
+        }, indices)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct MaxBackwardT<F> {
+pub struct MaximizableBackwardT<F, I> {
     grad_fn: F,
-    shape: Shape,
+    indices: I,
 }
 
-impl<S, F> Backward<S> for MaxBackwardT<F>
+impl<S, F> Backward<S> for MaximizableBackwardT<F, I>
 where
-    S: Expand,
-    F: Backward<<S as Expand>::Output>,
+    //S: Expand,
+    //F: Backward<<S as Expand>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.expand(self.shape));
     }
 }
 
-impl<S, F> Max for Tensor<S, F>
+impl<S, F> Maximizable for Tensor<S, F>
 where
-    S: Max + HasShape,
+    S: Maximizable + HasShape,
 {
-    type Output = Tensor<<S as Max>::Output, MaxBackwardT<F>>;
+    type Output = Tensor<<S as Maximizable>::Output, MaximizableBackwardT<F>>;
     fn max(self, dims: impl Shape<i32>) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.max(dims),
-            grad_fn: MaxBackwardT {
+            grad_fn: MaximizableBackwardT {
                 grad_fn: self.grad_fn,
                 shape,
             },

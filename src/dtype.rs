@@ -6,7 +6,16 @@ use crate::{shape::Sh0, ops::{HasShape, HasDType}};
 /// DType is any type that can be stored inside NDType.
 /// It is sometimes necessary to limit some operations to take only DType
 /// in order to avoid some cycles.
-pub trait DType {}
+/// 
+/// There are no requirements on DType, except it must implement Clone.
+/// Although cloning is not necessarily required for every operation with DType,
+/// it is used quite often.
+/// That also means that when you implement DType for your custom type, cloning
+/// should be pretty fast, otherwise you will face serious performance issues with [cpu::Buffer](crate::accel::cpu::Buffer),
+/// since this type assumes that passing DType by value is faster than passing it by reference.
+/// 
+/// If you want to use sparse tensors with chunky DTypes, please create your own accelerator.
+pub trait DType: Clone {}
 
 //use crate::accel::cpu;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]

@@ -6,7 +6,7 @@ use core::{fmt::{Debug, Display}, ops::Index};
 pub trait Axes: Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32>  {
     /// Rank
     const RANK: usize;
-    // Ordered axes
+    // Ordered axes, these will never contain negative numbers
     type Argsort: Axes;
 }
 
@@ -80,8 +80,44 @@ impl<const A0: i32> Index<i32> for Ax1<A0> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax2<const A0: i32, const A1: i32> {}
 
-impl<const A0: i32, const A1: i32> Axes for Ax2<A0, A1> {
+impl Axes for Ax2<0, 1> {
     const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<0, -1> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<-2, 1> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<-2, -1> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<1, 0> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<1, -2> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<-1, 0> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
+}
+
+impl Axes for Ax2<-1, -2> {
+    const RANK: usize = 2;
+    type Argsort = Ax2<0, 1>;
 }
 
 impl<const A0: i32, const A1: i32> Display for Ax2<A0, A1> {
@@ -118,9 +154,10 @@ impl<const A0: i32, const A1: i32> Index<i32> for Ax2<A0, A1> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax3<const A0: i32, const A1: i32, const A2: i32> {}
 
+// TODO Fix this
 impl<const A0: i32, const A1: i32, const A2: i32> Axes for Ax3<A0, A1, A2> {
     const RANK: usize = 3;
-    //type Argsort = Ax3<0, 1, 2>;
+    type Argsort = Ax3<A0, A1, A2>;
 }
 
 impl<const A0: i32, const A1: i32, const A2: i32> Display for Ax3<A0, A1, A2> {

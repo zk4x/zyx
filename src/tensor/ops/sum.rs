@@ -1,33 +1,32 @@
 use core::marker::PhantomData;
 
-use crate::{ops::{Sum, Expand, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, Axes}};
+use crate::{ops::{Summable, Expandable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, Axes}};
 
 #[derive(Debug, Clone)]
-pub struct SumBackwardV<'g, G> {
+pub struct SummableBackwardV<'g, G> {
     grad: GradientRef<'g, G>,
 }
 
-impl<S, G> Backward<S> for SumBackwardV<'_, G>
+impl<S, G> Backward<S> for SummableBackwardV<'_, G>
 where
-    S: Expand<G::Sh>,
-    G: HasShape,
-    //G: GradAcc<<S as Expand<G::Sh>>::Output>,
+    S: Expandable<G::Sh>,
+    G: HasShape + GradAcc<<S as Expandable<G::Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad.expand());
     }
 }
 
-impl<'g, S, Dims> Sum<Dims> for &'g Variable<S>
+impl<'g, S, Dims> Summable<Dims> for &'g Variable<S>
 where
-    S: Clone + Sum<Dims> + HasShape,
+    S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Sum<Dims>>::Output, SumBackwardV<'g, S>>;
+    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardV<'g, S>>;
     fn sum(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone().sum(),
-            grad_fn: SumBackwardV {
+            grad_fn: SummableBackwardV {
                 grad: GradientRef::new(&self.grad),
             }
         }
@@ -35,33 +34,33 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct SumBackwardT<F, Sh> {
+pub struct SummableBackwardT<F, Sh> {
     grad_fn: F,
     shape: PhantomData<Sh>,
 }
 
-impl<S, F, Sh> Backward<S> for SumBackwardT<F, Sh>
+impl<S, F, Sh> Backward<S> for SummableBackwardT<F, Sh>
 where
     Sh: Shape,
-    S: Expand<Sh>,
-    F: Backward<<S as Expand<Sh>>::Output>,
+    S: Expandable<Sh>,
+    F: Backward<<S as Expandable<Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.expand());
     }
 }
 
-impl<S, F, Dims> Sum<Dims> for Tensor<S, F>
+impl<S, F, Dims> Summable<Dims> for Tensor<S, F>
 where
-    S: Clone + Sum<Dims> + HasShape,
+    S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Sum<Dims>>::Output, SumBackwardT<F, <S as HasShape>::Sh>>;
-    fn sum(self, dims: Dims) -> Self::Output {
-        let shape = self.data.shape();
+    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::Sh>>;
+    fn sum(self) -> Self::Output {
+        //let shape = self.data.shape();
         Tensor {
             data: self.data.sum(),
-            grad_fn: SumBackwardT {
+            grad_fn: SummableBackwardT {
                 grad_fn: self.grad_fn,
                 shape: PhantomData,
             }

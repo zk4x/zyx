@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom}, shape::{Shape, BinOpWith, Axes, Ax0}, dtype::DType};
+use crate::{ops::{self, ConvertFrom, Expandable}, shape::{Shape, HasLastDim, HasLast2Dims, BinOpBy, ReducableBy, PermutableBy, MatMulBy, Axes, Ax2}, dtype::DType};
 use core::marker::PhantomData;
 extern crate alloc;
 use alloc::{vec, sync::Arc, format};
@@ -13,7 +13,7 @@ use alloc::{vec, sync::Arc, format};
 /// Data is stored in row major order.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Buffer<T, Sh> {
-    data: Arc<alloc::vec::Vec<T>>,
+    data: Arc<alloc::vec::Vec<T>>, // In the future this will be Arc<[T; Sh::NUMEL]>
     shape: PhantomData<Sh>,
 }
 
@@ -57,15 +57,15 @@ where
 impl<T, Sh> core::fmt::Display for Buffer<T, Sh>
 where
     T: core::fmt::Display + DType,
-    Sh: Shape,
+    Sh: Shape + HasLastDim,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
         use alloc::string::String;
         let mut res = String::new();
         if self.data.is_empty() { return f.write_str(&(res + "[]")); }
-        let n = self.shape.numel();
-        let ndim = Sh::N;
+        let n = Sh::numel();
+        let ndim = Sh::RANK;
         //const PRECISION: usize = 3;
         // get maximal width of single value
         let mut w = 0;
@@ -73,7 +73,7 @@ where
             let l = format!("{x:w$}").len();
             if l > w { w = l; }
         }
-        let d0 = self.shape.ati(-1);
+        let d0 = Sh::LAST_DIM;
         for i in 0..n {
             {
                 let mut var = 1;
@@ -83,7 +83,7 @@ where
                         res += &(" ".repeat(ndim - r)+&"[".repeat(r - 1));
                         break
                     }
-                    var *= self.shape.at(ndim - r);
+                    var *= Sh::at(ndim - r);
                     r -= 1;
                 }
             }
@@ -98,7 +98,7 @@ where
                         res += &"]".repeat(r-1);
                         break
                     }
-                    var *= self.shape.at(ndim - r);
+                    var *= Sh::at(ndim - r);
                     r -= 1;
                 }
             }
@@ -123,19 +123,24 @@ where
 /// Create new Buffer from vec
 impl<T, Sh> ops::FromSlice for Buffer<T, Sh>
 where
+    T: DType,
     Sh: Shape,
-    T: Clone,
 {
-    type T = T;
-    type Sh = Sh;
-
-    fn from_slice(data: &[T], shape: Sh) -> Self {
-        assert_eq!(shape.numel(), data.len());
+    fn from_slice(data: &[T]) -> Self {
+        assert_eq!(Sh::numel(), data.len());
         Self {
             data: Arc::new(data.to_vec()),
             shape: PhantomData,
         }
     }
+}
+
+/// Get Buffer's [DType]
+impl<T, Sh> ops::HasDType for Buffer<T, Sh>
+where
+    T: DType,
+{
+    type T = T;
 }
 
 /// Get Buffer's shape
@@ -149,15 +154,12 @@ where
 /// Create new Buffer filled with zeros
 impl<T, Sh> ops::Zeros for Buffer<T, Sh>
 where
-    T: Clone + ops::Zeros<Sh = Ax0> + DType,
+    T: ops::Zeros + Clone,
     Sh: Shape,
 {
-    type Sh = Sh;
-
-    fn zeros(shape: Sh) -> Self {
-        let n = shape.numel();
+    fn zeros() -> Self {
         Self {
-            data: Arc::new(vec![T::zeros(); n]),
+            data: Arc::new(vec![T::zeros(); Sh::numel()]),
             shape: PhantomData,
         }
     }
@@ -166,15 +168,12 @@ where
 /// Create new Buffer filled with ones
 impl<T, Sh> ops::Ones for Buffer<T, Sh>
 where
-    T: Clone + ops::Ones<Sh = Ax0> + DType,
+    T: ops::Ones + Clone,
     Sh: Shape,
 {
-    type Sh = Sh;
-
-    fn ones(shape: Sh) -> Self {
-        let n = shape.numel();
+    fn ones() -> Self {
         Self {
-            data: Arc::new(vec![T::ones(); n]),
+            data: Arc::new(vec![T::ones(); Sh::numel()]),
             shape: PhantomData,
         }
     }
@@ -266,8 +265,9 @@ impl<T, Sh> Buffer<T, Sh>
 where
     Sh: Shape,
 {
-    fn reduce<Dims, F>(self, dims: Dims, init: T, mut f: F) -> Buffer<T, Sh>
+    fn reduce<Dims, F>(self, init: T, mut f: F) -> (Buffer<T, <Sh as ReducableBy<Dims>>::Output>, Buffer<T, <Sh as ReducableBy<Dims>>::Output>)
     where
+        Sh: ReducableBy<Dims>,
         Dims: Axes,
         T: Clone + DType,
         F: FnMut(T, T) -> T,
@@ -275,20 +275,19 @@ where
         use alloc::borrow::ToOwned;
         // TODO: make this multithreaded
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
-        let mut shape = self.shape;
 
         let mut reduce_dim = |data: &[T], dim: i32| {
-            let strides = shape.strides();
-            let stride = strides.ati(dim);
-            *shape.mut_ati(dim) = 1;
-            let mut res = vec![init.clone(); shape.numel()];
-            if dim == 0 || dim == -(Sh::N as i32) {
+            let strides = Sh::strides();
+            let stride = strides[(Sh::RANK as i32 + dim) as usize % Sh::RANK];
+            //*shape.mut_ati(dim) = 1;
+            let mut res = vec![init.clone(); <Sh as ReducableBy<Dims>>::Output::numel()];
+            if dim == 0 || dim == -(Sh::RANK as i32) {
                 for (i, x) in data.iter().enumerate() {
                     let idx = i % stride;
                     res[idx] = f(res[idx].clone(), x.clone());
                 }
             } else {
-                let width = strides.ati(dim - 1);
+                let width = strides[(Sh::RANK as i32 + dim - 1) as usize % Sh::RANK];
                 for (i, x) in data.iter().enumerate() {
                     let idx = i/width*stride + i % stride;
                     res[idx] = f(res[idx].clone(), x.clone());
@@ -297,14 +296,14 @@ where
             res
         };
 
-        if dims.is_empty() {
+        /*if Dims::RANK == 0 {
             for dim in 0..Sh::N {
                 data = reduce_dim(&data, dim as i32);
             }
-        } else {
-            for i in 0..Dims::N {
-                data = reduce_dim(&data, dims.at(i));
-            }
+        }*/
+
+        for i in 0..Dims::RANK {
+            data = reduce_dim(&data, Dims::at(i));
         }
 
         Buffer {
@@ -314,52 +313,59 @@ where
     }
 }
 
-impl<T, Sh, Dims> ops::Sum<Dims> for Buffer<T, Sh>
+impl<T, Sh, Dims> ops::Summable<Dims> for Buffer<T, Sh>
 where
-    T: Clone + ops::Zeros<Sh = Ax0> + core::ops::Add<Output = T> + DType,
+    Sh: ReducableBy<Dims>,
+    T: Clone + ops::Zeros + core::ops::Add<Output = T> + DType,
     Sh: Shape,
     Dims: Axes,
 {
-    type Output = Buffer<T, Sh>;
+    type Output = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
 
-    fn sum(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::zeros(), |a, b| a + b)
+    fn sum(self) -> Self::Output {
+        self.reduce(T::zeros(), |a, b| a + b).0
     }
 }
 
-impl<T, Sh, Dims> ops::Max<Dims> for Buffer<T, Sh>
+impl<T, Sh, Dims> ops::Maximizable<Dims> for Buffer<T, Sh>
 where
-    T: Clone + Default + ops::Min<Ax0, Output = T> + PartialOrd + DType,
+    Sh: ReducableBy<Dims>,
+    T: ops::HasMin + PartialOrd + DType,
     Sh: Shape,
     Dims: Axes,
 {
-    type Output = Buffer<T, Sh>;
-    fn max(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::min(T::default()), |a, b| if a > b { a } else { b })
+    type Values = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+    type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+
+    fn max(self) -> (Self::Values, Self::Indices) {
+        self.reduce(T::min(), |a, b| if a > b { a } else { b })
     }
 }
 
-impl<T, Sh, Dims> ops::Min<Dims> for Buffer<T, Sh>
+impl<T, Sh, Dims> ops::Minimizable<Dims> for Buffer<T, Sh>
 where
-    T: Clone + Default + ops::Max<Ax0, Output = T> + PartialOrd + DType,
+    Sh: ReducableBy<Dims>,
+    T: ops::HasMax + PartialOrd + DType,
     Sh: Shape,
     Dims: Axes,
 {
-    type Output = Buffer<T, Sh>;
-    fn min(self, dims: Dims) -> Self::Output {
-        self.reduce(dims, T::max(T::default()), |a, b| if a < b { a } else { b })
+    type Values = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+    type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+
+    fn min(self) -> (Self::Values, Self::Indices) {
+        self.reduce(T::max(), |a, b| if a < b { a } else { b })
     }
 }
 
-impl<T, Sh, Sh2> ops::Reshape<Sh2> for Buffer<T, Sh>
+impl<T, Sh, Sh2> ops::Reshapable<Sh2> for Buffer<T, Sh>
 where
     T: Clone +DType,
     Sh: Shape,
     Sh2: Shape,
 {
     type Output = Buffer<T, Sh2>;
-    fn reshape(self, shape: Sh2) -> Self::Output {
-        assert_eq!(self.shape.numel(), shape.numel());
+    fn reshape(self) -> Self::Output {
+        assert_eq!(Sh::numel(), Sh2::numel());
         Buffer {
             data: self.data,
             shape: PhantomData,
@@ -367,22 +373,22 @@ where
     }
 }
 
-impl <T, Sh, Sh2> ops::Expand<Sh2> for Buffer<T, Sh>
+impl <T, Sh, Sh2> ops::Expandable<Sh2> for Buffer<T, Sh>
 where
     T: Clone + DType,
     Sh: Shape,
     Sh2: Shape,
 {
     type Output = Buffer<T, Sh2>;
-    fn expand(self, res_shape: Sh2) -> Self::Output {
-        assert!(Sh2::N >= Sh::N);
+    fn expand(self) -> Self::Output {
+        assert!(Sh2::RANK >= Sh::RANK);
 
-        let n = self.shape.numel();
+        let n = Sh::numel();
         use alloc::borrow::ToOwned;
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
 
         let copy_dim = |data: alloc::vec::Vec<T>, width, times| {
-            let mut res_data = alloc::vec::Vec::with_capacity(res_shape.numel());
+            let mut res_data = alloc::vec::Vec::with_capacity(Sh2::numel());
             for i in (0..n).step_by(width) {
                 // copy this part of vec
                 for _ in 0..times {
@@ -392,20 +398,20 @@ where
             res_data
         };
 
-        let mut i = Sh2::N;
+        let mut i = Sh2::RANK;
         let mut width = 1;
         while i > 0 {
             i -= 1;
-            let d = if Sh::N - i > 0 { self.shape.at(i) } else { 1 };
-            let r = res_shape.at(i);
+            let d = if Sh::RANK - i > 0 { Sh::at(i) } else { 1 };
+            let r = Sh2::at(i);
             if d != r {
                 if d == 1 {
                     data = copy_dim(data, width, r/d);
                 } else {
-                    panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}", self.shape, res_shape, i);
+                    panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}", self.shape, Sh2::array(), i);
                 }
             }
-            width *= res_shape.at(i);
+            width *= Sh2::at(i);
         }
 
         Buffer {
@@ -415,33 +421,33 @@ where
     }
 }
 
-impl<T, Sh, Dims> ops::Permute<Dims> for Buffer<T, Sh>
+impl<T, Sh, Dims> ops::Permutable<Dims> for Buffer<T, Sh>
 where
-    Sh: Shape + ops::Permute<Dims, Output = Sh>,
+    T: ops::Zeros + DType,
+    Sh: Shape + PermutableBy<Dims>,
     Dims: Axes,
-    T: Clone + ops::Zeros<Sh = Ax0> + DType,
 {
     type Output = Buffer<T, Sh>;
-    fn permute(self, dims: Dims) -> Self::Output {
-        let shape = self.shape.permute(dims);
-        let strides = self.shape.strides().permute(dims);
+    fn permute(self) -> Self::Output {
+        //let shape = self.shape.permute();
+        let strides = Sh::strides().permute();
         let mut acc_var = 1;
-        let mut acc = Sh::ones();
-        for i in 0..Sh::N {
-            acc_var *= self.shape.at(Sh::N - i - 1);
-            *acc.mut_at(Sh::N - i - 1) = acc_var;
+        let mut acc = vec![1; Sh::RANK];
+        for i in 0..Sh::RANK {
+            acc_var *= Sh::at(Sh::RANK - i - 1);
+            acc[Sh::RANK - i - 1] = acc_var;
         }
-        acc = acc.permute(dims);
-        let n = shape.numel();
+        acc = acc.permute();
+        //let n = shape.numel();
         // temp is in reverse order
-        let mut temp = vec![(0, 0); Sh::N]; // strides, acc_shape
-        let mut begins = vec![0; Sh::N];
-        for k in 0..Sh::N {
-            temp[Sh::N-k-1] = (strides.at(k), acc.at(k));
+        let mut temp = vec![(0, 0); Sh::RANK]; // strides, acc_shape
+        let mut begins = vec![0; Sh::RANK];
+        for k in 0..Sh::RANK {
+            temp[Sh::RANK-k-1] = (strides.at(k), acc[k]);
         }
-        let mut data = alloc::vec::Vec::with_capacity(n);
+        let mut data = alloc::vec::Vec::with_capacity(Sh::numel());
         let mut i = 0;
-        for _ in  0..n {
+        for _ in  0..Sh::numel() {
             data.push(self.data[i].clone());
             for (j, (st, acc)) in temp.iter().enumerate() {
                 begins[j] += st;
@@ -472,25 +478,23 @@ where
     }
 }*/
 
-fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, <XSh as BinOpWith<YSh>>::Output>
+fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, <XSh as BinOpBy<YSh>>::Output>
 where
     T: Sync + Send + Clone + DType,
     F: Fn((T, T)) -> T + Sync + Send,
-    XSh: Shape + BinOpWith<YSh>,
+    XSh: Shape + BinOpBy<YSh>,
     YSh: Shape,
 {
     use rayon::prelude::*;
-    use ops::Expand;
     use core::cmp::Ordering;
-    //let mut shape = x.shape.clone();
-    let mut shape = <XSh as BinOpWith<YSh>>::Output::ones();
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
     // stuff during expanding
-    let data = Arc::new(match x.shape.numel().cmp(&y.shape.numel()) {
+
+    // It is also necessary to support constant shapes, because it is not possible to write requirements for expand,
+    // since we don't need to expand both parameters
+
+    let data = Arc::new(match XSh::numel().cmp(&YSh::numel()) {
         Ordering::Greater => {
-            for i in 0..XSh::N {
-                *shape.mut_at(i) = x.shape.at(i);
-            }
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.expand().data) {
                     Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
@@ -503,9 +507,6 @@ where
             }
         }
         Ordering::Less => {
-            for i in 0..YSh::N {
-                *shape.mut_at(i) = y.shape.at(i);
-            }
             match Arc::try_unwrap(y.data) {
                 Ok(vec) => match Arc::try_unwrap(x.expand().data) {
                     Ok(vec_x) => vec_x.into_par_iter().zip(vec.into_par_iter()).map(f).collect(),
@@ -518,9 +519,6 @@ where
             }
         }
         Ordering::Equal => {
-            for i in 0..XSh::N {
-                *shape.mut_at(i) = x.shape.at(i);
-            }
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.data) {
                     Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
@@ -542,10 +540,10 @@ where
 impl<T, XSh, YSh> core::ops::Add<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Add<Output = T> + DType,
-    XSh: Shape + BinOpWith<YSh>,
+    XSh: Shape + BinOpBy<YSh>,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
 
     fn add(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a + b)
@@ -600,10 +598,10 @@ where
 impl<T, XSh, YSh> core::ops::Sub<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Sub<Output = T> + DType,
-    XSh: Shape + BinOpWith<YSh>,
+    XSh: Shape + BinOpBy<YSh>,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
     fn sub(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a - b)
     }
@@ -656,10 +654,10 @@ where
 impl<T, XSh, YSh> core::ops::Mul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Mul<Output = T> + DType,
-    XSh: Shape + BinOpWith<YSh>,
+    XSh: Shape + BinOpBy<YSh>,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
     fn mul(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a * b)
     }
@@ -710,10 +708,10 @@ where
 impl<T, XSh, YSh> core::ops::Div<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Div<Output = T> + DType,
-    XSh: Shape + BinOpWith<YSh>,
+    XSh: Shape + BinOpBy<YSh>,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
     fn div(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a / b)
     }
@@ -764,10 +762,10 @@ where
 impl<T, XSh, YSh> ops::Pow<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Sync + Send + Clone + ops::Pow<Output = T> + DType,
-    XSh: Shape + BinOpWith<YSh>,
+    XSh: Shape + BinOpBy<YSh>,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpWith<YSh>>::Output>;
+    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
     fn pow(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a.pow(b))
     }
@@ -793,37 +791,23 @@ where
 }
 
 #[cfg(not(feature = "matrixmultiply"))]
-impl<T, Sh> ops::MatMul<Buffer<T, Sh>> for Buffer<T, Sh>
+impl<T, XSh, YSh> ops::MatMul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + DType,
-    Buffer<T, Sh>: ops::Transpose<Output = Buffer<T, Sh>>,
-    Sh: Shape,
+    Buffer<T, YSh>: ops::Transpose<Output = Buffer<T, <YSh as PermutableBy<Ax2<-2, -1>>>::Output>>,
+    XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
+    YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
 {
-    type Output = Buffer<T, Sh>;
-    fn matmul(self, rhs: Buffer<T, Sh>) -> Self::Output {
+    type Output = Buffer<T, <XSh as MatMulBy<YSh>>::Output>;
+    fn matmul(self, rhs: Buffer<T, YSh>) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
-        let s_shape = self.shape;
-        let r_shape = rhs.shape;
-        // if input shape is shorter than res_shape or vice versa,
-        // add necessary ones to the beginning
-        /*while Sh::N < Sh::N {
-            s_shape.0.insert(0, 1);
+        if XSh::RANK < 2 {
+            panic!("First parameter in matrix multiplication must have at least 2 dimensions.");
         }
-        while s_shape.ndim() > r_shape.ndim() {
-            r_shape.0.insert(0, 1);
-        }
-        let ndim = s_shape.ndim();*/
-        if Sh::N < 2 {
-            panic!("At least one of the buffers must have 2 or more dimensions to do matrix multiplication. Current shapes: {:?}, {:?}", s_shape, r_shape);
-        }
-        //if s_shape[0..Sh::N-2] != r_shape[0..Sh::N-2] ||
-        if s_shape.ati(-1) != r_shape.ati(-2) {
-            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
-        }
-        let m = s_shape.ati(-2);
-        let k = s_shape.ati(-1);
-        let n = r_shape.ati(-1);
+        let m = XSh::LAST_DIM_2;
+        let k = XSh::LAST_DIM;
+        let n = YSh::LAST_DIM;
         use ops::Transpose;
         let ty = rhs.transpose();
         use rayon::prelude::*;
@@ -831,23 +815,23 @@ where
         let ty_data = ty.data.as_ref();
         const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
         let data: alloc::vec::Vec<T> = ty_data
-                .par_chunks(k)
-                .map(|y_row| {
-                    x_data.par_chunks(k)
-                        .map(|x| {
-                            x.chunks(NUM)
-                                .zip(y_row.chunks(NUM))
-                                .map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| a.clone() * b.clone()).sum::<T>())
-                                .sum()
-                        })
-                        .collect::<alloc::vec::Vec<T>>()
-                })
-                .flatten()
-                .collect();
+            .par_chunks(k)
+            .map(|y_row| {
+                x_data.par_chunks(k)
+                    .map(|x| {
+                        x.chunks(NUM)
+                            .zip(y_row.chunks(NUM))
+                            .map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| a.clone() * b.clone()).sum::<T>())
+                            .sum()
+                    })
+                    .collect::<alloc::vec::Vec<T>>()
+            })
+            .flatten()
+            .collect();
         
-        let mut shape = s_shape;
-        *shape.mut_ati(-1) = m;
-        *shape.mut_ati(-2) = n;
+        //let mut shape = s_shape;
+        //*shape.mut_ati(-1) = m;
+        //*shape.mut_ati(-2) = n;
 
         Buffer {
             data: Arc::new(data),

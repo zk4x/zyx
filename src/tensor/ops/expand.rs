@@ -1,6 +1,6 @@
 // TODO make this work
 
-/*use crate::{ops::{Expand, Max, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
+/*use crate::{ops::{Expand, Maximizable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
 pub struct ExpandBackwardV<'g, G, Dims> {
@@ -10,8 +10,8 @@ pub struct ExpandBackwardV<'g, G, Dims> {
 
 impl<S, G, Dims> Backward<S> for ExpandBackwardV<'_, G, Dims>
 where
-    S: Max<Dims>,
-    G: GradAcc<<S as Max<Dims>>::Output>,
+    S: Maximizable<Dims>,
+    G: GradAcc<<S as Maximizable<Dims>>::Output>,
 {
     fn backward(self, res_grad: S) {
         // TODO: is max correct reduce for expand backward?
@@ -45,8 +45,8 @@ pub struct ExpandBackwardT<F, Dims> {
 
 impl<S, F> Backward<S> for ExpandBackwardT<F>
 where
-    S: Max,
-    F: Backward<<S as Max>::Output>,
+    S: Maximizable,
+    F: Backward<<S as Maximizable>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad.max(self.dims));

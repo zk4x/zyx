@@ -1,9 +1,9 @@
 //! # Initialization methods for tensors
 //! 
-//! Includes [eye](EyeInit), [randn](RandnInit) and [uniform](UniformInit) as well as array initialization.
+//! Includes [eye](EyeInit), [randn](RandnInit) and [uniform](UniforMinimizableit) as well as array initialization.
 //! These are implemented for all data structures that implement [FromSlice](crate::ops::FromSlice) trait.
 
-use crate::{ops::{FromSlice, ConvertFrom, Zeros, Ones, HasDType}, shape::{Shape, Sh0, Sh1, Sh2, Sh3, Sh4, Sh5}, dtype::DType};
+use crate::{ops::{FromSlice, HasShape, ConvertFrom, Zeros, Ones, HasDType}, shape::{Shape, Sh1, Sh2, Sh3, Sh4, Sh5}, dtype::DType};
 extern crate alloc;
 use alloc::vec;
 
@@ -37,8 +37,8 @@ pub trait EyeInit {
 
 impl<S, const N: usize> EyeInit for S
 where
-    S: FromSlice<Sh = Sh2<N, N>>,
-    S::T: Zeros<Sh = Sh0> + Ones<Sh = Sh0>,
+    S: FromSlice + HasShape<Sh = Sh2<N, N>>,
+    S::T: Zeros + Ones,
 {
     fn eye() -> Self {
         let mut data = vec![S::T::zeros(); N*N];
@@ -67,27 +67,19 @@ where
 /// println!("{}", x);
 /// ```
 pub trait RandnInit {
-    /// dtype of values stored in random matrix
-    type T;
-    /// [Shape] of random matrix
-    type Sh: Shape;
     /// Initialize tensor with random numbers
-    fn randn(shape: Self::Sh) -> Self;
+    fn randn() -> Self;
 }
 
-impl<S, T, Sh> RandnInit for S
+impl<S> RandnInit for S
 where
-    Sh: Shape,
-    S: FromSlice<T = T, Sh = Sh>,
-    rand::distributions::Standard: rand::prelude::Distribution<T>,
+    S: FromSlice + HasShape, // TODO maybe change this HasShape requirement to HasLen requirement
+    rand::distributions::Standard: rand::prelude::Distribution<S::T>,
 {
-    type T = T;
-    type Sh = Sh;
-
-    fn randn(shape: Sh) -> Self {
+    fn randn() -> Self {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        Self::from_slice(&core::iter::repeat(0).take(shape.numel()).map(|_| rng.gen()).collect::<alloc::vec::Vec<T>>())
+        Self::from_slice(&core::iter::repeat(0).take(S::Sh::numel()).map(|_| rng.gen()).collect::<alloc::vec::Vec<S::T>>())
     }
 }
 
@@ -106,29 +98,21 @@ where
 /// assert_eq!(x.shape(), (3, 2, 3));
 /// println!("{}", x);
 /// ```
-pub trait UniformInit {
-    /// dtype of values stored in random matrix
-    type T;
-    /// [Shape] of matrix initialized from uniform distribution
-    type Sh: Shape;
+pub trait UniformInit: HasDType {
     /// Initialize tensor with random numbers from uniform distribution
-    fn uniform(shape: Self::Sh, low: Self::T, high: Self::T) -> Self;
+    fn uniform(low: Self::T, high: Self::T) -> Self;
 }
 
-impl<S, T, Sh> UniformInit for S
+impl<S> UniformInit for S
 where
-    S: FromSlice<T = T, Sh = Sh>,
-    T: rand::distributions::uniform::SampleUniform,
-    Sh: Shape,
+    S: FromSlice + HasShape,
+    S::T: rand::distributions::uniform::SampleUniform,
 {
-    type T = T;
-    type Sh = Sh;
-
-    fn uniform(shape: Sh, low: T, high: T) -> Self {
+    fn uniform(low: Self::T, high: Self::T) -> Self {
         use rand::distributions::Distribution;
         let mut rng = rand::thread_rng();
         let dist = rand::distributions::Uniform::new(low, high);
-        Self::from_slice(&core::iter::repeat(0).take(shape.numel()).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<T>>())
+        Self::from_slice(&core::iter::repeat(0).take(S::Sh::numel()).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<S::T>>())
     }
 }
 
@@ -157,7 +141,7 @@ where
 
 impl<S, T, const D0: usize> ConvertFrom<[T; D0]> for S
 where
-    S: FromSlice<T = T, Sh = Sh1<D0>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh1<D0>>,
     T: DType + Clone,
 {
     fn cfrom(x: [T; D0]) -> Self {
@@ -167,7 +151,7 @@ where
 
 impl<S, T, const D1: usize, const D0: usize> ConvertFrom<[[T; D0]; D1]> for S
 where
-    S: FromSlice<T = T, Sh = Sh2<D0, D1>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh2<D0, D1>>,
     T: DType + Clone,
 {
     fn cfrom(x: [[T; D0]; D1]) -> Self {
@@ -177,7 +161,7 @@ where
 
 impl<S, T, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[T; D0]; D1]; D2]> for S
 where
-    S: FromSlice<T = T, Sh = Sh3<D0, D1, D2>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh3<D0, D1, D2>>,
     T: DType + Clone
 {
     fn cfrom(x: [[[T; D0]; D1]; D2]) -> Self {
@@ -187,7 +171,7 @@ where
 
 impl<S, T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[T; D0]; D1]; D2]; D3]> for S
 where
-    S: FromSlice<T = T, Sh = Sh4<D0, D1, D2, D3>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh4<D0, D1, D2, D3>>,
     T: DType + Clone
 {
     fn cfrom(x: [[[[T; D0]; D1]; D2]; D3]) -> Self {
@@ -195,12 +179,12 @@ where
     }
 }
 
-impl<S, T, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[[T; D0]; D1]; D2]; D3]; D4]> for S
+impl<S, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[[S::T; D0]; D1]; D2]; D3]; D4]> for S
 where
-    S: FromSlice<T = T, Sh = Sh5<D0, D1, D2, D3, D4>>,
-    T: DType + Clone
+    S: FromSlice + HasShape<Sh = Sh5<D0, D1, D2, D3, D4>>,
+    S::T: DType,
 {
-    fn cfrom(x: [[[[[T; D0]; D1]; D2]; D3]; D4]) -> Self {
-        Self::from_slice(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<T>>())
+    fn cfrom(x: [[[[[S::T; D0]; D1]; D2]; D3]; D4]) -> Self {
+        Self::from_slice(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<S::T>>())
     }
 }

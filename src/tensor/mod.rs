@@ -114,8 +114,8 @@ impl<S> Gradient<S> {
     }
 }
 
-trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = <Self as HasShape>::Sh> + HasShape {}
-impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros<Sh = <T as HasShape>::Sh>+ HasShape {}
+trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
+impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
 
 #[derive(Debug, Clone, Copy)]
 struct GradientRef<'g, S>(&'g Gradient<S>);
@@ -127,6 +127,7 @@ impl<'g, S> GradientRef<'g, S> {
 
     fn accumulate<G>(&self, value: G)
     where
+        //S: core::ops::Add<G, Output = S> + Zeros,
         S: GradAcc<G>,
     {
         // Accumulate is called by backward function to accumulate gradients. This is needed in batch processing.
@@ -264,7 +265,7 @@ pub trait Backward<S> {
 
 impl<S, F> Tensor<S, F>
 where
-    S: crate::ops::Ones<Sh = <S as HasShape>::Sh> + HasShape,
+    S: crate::ops::Ones,
     F: Backward<S>,
 {
     /// # Tensor backward
@@ -300,7 +301,6 @@ where
     pub fn backward(self) {
         // NOTE: right now backward call is recursive.
         // Shall this pose a problem, we can switch to iterative version.
-        let shape = self.shape();
         self.grad_fn.backward(S::ones());
     }
 }

@@ -111,7 +111,7 @@ mod tensor {
     }
 
     mod ops {
-        use crate::{ops::{HasShape, FromVec, IntoVec, ConvertFrom, ConvertInto}, tensor::IntoVariable};
+        use crate::{ops::{HasShape, FromSlice, IntoVec, ConvertFrom, ConvertInto}, tensor::IntoVariable};
         use super::super::{cmp_vec, cmp_vec_f64, Buffer};
         extern crate alloc;
         use alloc::vec;
@@ -240,7 +240,7 @@ mod tensor {
         #[test]
         fn max() {
             // TODO finish all variations
-            /*use crate::ops::Max;
+            /*use crate::ops::Maximizable;
             let vec: Vec<f32> = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = Buffer::from_vec(&vec, (1usize, 3, 1, 3, 1));
             let y = x.max((-1i32, -2));

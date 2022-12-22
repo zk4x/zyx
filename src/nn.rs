@@ -5,7 +5,7 @@
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
-use crate::{module::Module, ops::{self, HasShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::{Shape, Axes, Ax0}};
+use crate::{module::Module, ops::{self, HasShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::{Shape, Sh2, Axes}};
 use core::{ops::{Neg, Add, Sub, Div, Mul}, marker::PhantomData};
 
 /// ReLU operation
@@ -101,7 +101,7 @@ where
 
     fn parameters(&mut self) -> Self::Params {}
 }
-
+/*
 /// Softmax operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SoftMax<Dims>
@@ -115,10 +115,10 @@ where
 impl<Input, D> Module<'_, Input> for SoftMax<D>
 where
     D: Clone + Axes,
-    Input: Clone + ops::Max<D> + Sub<<Input as ops::Max<D>>::Output>,
-    <Input as Sub<<Input as ops::Max<D>>::Output>>::Output: ops::Exp,
-    <<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output: Clone + ops::Sum<D>,
-    <<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output: Div<<<<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output as ops::Sum<D>>::Output>,
+    Input: Clone + ops::Maximizable<D> + Sub<<Input as ops::Maximizable<D>>::Output>,
+    <Input as Sub<<Input as ops::Maximizable<D>>::Output>>::Output: ops::Exp,
+    <<Input as Sub<<Input as ops::Maximizable<D>>::Output>>::Output as ops::Exp>::Output: Clone + ops::Summable<D>,
+    <<Input as Sub<<Input as ops::Maximizable<D>>::Output>>::Output as ops::Exp>::Output: Div<<<<Input as Sub<<Input as ops::Maximizable<D>>::Output>>::Output as ops::Exp>::Output as ops::Summable<D>>::Output>,
 {
     type Output = <<<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output as Div<<<<Input as Sub<<Input as ops::Max<D>>::Output>>::Output as ops::Exp>::Output as ops::Sum<D>>::Output>>::Output;
     type Params = ();
@@ -132,7 +132,7 @@ where
     }
 
     fn parameters(&mut self) -> Self::Params {}
-}
+}*/
 
 #[test]
 fn softmax_test() {
@@ -168,7 +168,7 @@ where
 
 impl<Input, Dims> Module<'_, Input> for Sum<Dims>
 where
-    Input: ops::Sum<Dims>,
+    Input: ops::Summable<Dims>,
     Dims: Axes,
 {
     type Output = Input::Output;
@@ -193,10 +193,10 @@ where
 
 impl<Input, Dims> Module<'_, Input> for Max<Dims>
 where
-    Input: ops::Max<Dims>,
+    Input: ops::Maximizable<Dims>,
     Dims: Axes,
 {
-    type Output = Input::Output;
+    type Output = (Input::Values, Input::Indices);
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
@@ -206,9 +206,9 @@ where
     fn parameters(&mut self) -> Self::Params {}
 }
 
-/// Min operation
+/// Minimizable operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Min<Dims>
+pub struct Minimizable<Dims>
 where
     Dims: Axes,
 {
@@ -216,12 +216,12 @@ where
     pub dims: Dims,
 }
 
-impl<Input, Dims> Module<'_, Input> for Min<Dims>
+impl<Input, Dims> Module<'_, Input> for Minimizable<Dims>
 where
-    Input: ops::Min<Dims>,
+    Input: ops::Minimizable<Dims>,
     Dims: Axes,
 {
-    type Output = Input::Output;
+    type Output = (Input::Values, Input::Indices);
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
@@ -244,10 +244,10 @@ where
 impl<Input, Dims> Module<'_, Input> for Mean<Dims>
 where
     Dims: Axes,
-    Input: HasShape + ops::Sum<Dims>,
-    <Input as ops::Sum<Dims>>::Output: Div<usize>,
+    Input: HasShape + ops::Summable<Dims>,
+    <Input as ops::Summable<Dims>>::Output: Div<usize>,
 {
-    type Output = <<Input as ops::Sum<Dims>>::Output as Div<usize>>::Output;
+    type Output = <<Input as ops::Summable<Dims>>::Output as Div<usize>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
@@ -297,15 +297,17 @@ pub struct Linear<W, B> {
 
 impl<W, B> Linear<W, B> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
-    pub fn new<T>(in_features: usize, out_features: usize) -> Self
+    pub fn new<const IN_FEATURES: usize, const OUT_FEATURES: usize>() -> Self
     where
-        T: Zeros<Sh = Ax0> + Ones<Sh = Ax0>,
-        W: UniformInit<T = T, Sh = (usize, usize)>,
-        B: UniformInit<T = T, Sh = (usize, usize)>,
+        W: UniformInit + HasShape<Sh = Sh2<IN_FEATURES, OUT_FEATURES>>,
+        W::T: Zeros + Ones,
+        B: UniformInit + HasShape<Sh = Sh2<1, OUT_FEATURES>>,
+        B::T: Zeros + Ones,
+        //W::Sh: HasLastDim<Dim = OUT_FEATURES>, // or we can do it like this for w and b with more than two dimensions
     {
         Self {
-            w: W::uniform((in_features, out_features), T::zeros(), T::ones()).with_grad(),
-            b: B::uniform((1, out_features), T::zeros(), T::ones()).with_grad(),
+            w: W::uniform(W::T::zeros(), W::T::ones()).with_grad(),
+            b: B::uniform(B::T::zeros(), B::T::ones()).with_grad(),
         }
     }
 }
@@ -333,9 +335,9 @@ where
     }
 }
 
-/// RNNCell
+// RNNCell
 // TODO: Should we rewrite this as two linear layers?
-#[derive(Debug, Clone)]
+/*#[derive(Debug, Clone)]
 pub struct RNNCell<WI, BI, WH, BH> {
     wih: Variable<WI>,
     bih: Variable<BI>,
@@ -385,7 +387,7 @@ where
     fn parameters(&'a mut self) -> Self::Params {
         (&mut self.wih, &mut self.bih, &mut self.whh, &mut self.bhh)
     }
-}
+}*/
 
 /*#[derive(Debug, Clone)]
 struct Attention<W, WG, F, FG, FB, FBG> {

@@ -48,11 +48,40 @@ mod drelu;
 mod exp;
 mod ln;
 mod tanh;
-mod min;
 mod pow;
-mod max;
 
 use crate::{shape::{Shape, Axes, Ax2, Sh2}, dtype::DType};
+
+/// # HasDType
+pub trait HasDType {
+    type T: DType;
+}
+
+/// # HasShape
+/// 
+/// Stores the shape of the tensor.
+/// 
+/// ## Example
+/// ```
+/// use zyx::{accel::cpu::Buffer, ops::{HasShape, ConvertFrom}};
+/// let x = Buffer::cfrom([2, 3, 1]);
+// /// let y = core::any::type_name::<T>();
+// /// assert_eq!(y, 3);
+/// ```
+pub trait HasShape {
+    /// Type of the shape
+    type Sh: Shape;
+}
+
+/// # HasMax
+pub trait HasMax {
+    fn max() -> Self;
+}
+
+/// # HasMin
+pub trait HasMin {
+    fn min() -> Self;
+}
 
 /// ## Convert between devices and types
 /// 
@@ -100,9 +129,7 @@ where
 ///  0
 ///  0]
 /// ```
-pub trait Zeros: HasShape {
-    // /// Shape of the resulting tensor
-    //type Sh: Shape;
+pub trait Zeros {
     /// Create new tensor initialized with zeros.
     fn zeros() -> Self;
 }
@@ -126,32 +153,28 @@ pub trait Zeros: HasShape {
 ///  1
 ///  1]
 /// ```
-pub trait Ones: HasShape {
-    // /// Shape of the resulting tensor
-    //type Sh: Shape;
+pub trait Ones {
     /// Create new tensor initialized with ones.
     fn ones() -> Self;
 }
 
-/// # Has Shape
-pub trait HasDType {
-    type T: DType;
-}
-
-/// ## HasShape
+/// ## FromSlice operation
 /// 
-/// Stores the shape of the tensor.
+/// Creates new tensor from given slice. Slice is assumed to be in row-major order.
 /// 
 /// ### Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{HasShape, ConvertFrom}};
-/// let x = Buffer::cfrom([2, 3, 1]);
-// /// let y = core::any::type_name::<T>();
-// /// assert_eq!(y, 3);
+/// use zyx::prelude::*;
+/// use zyx::accel::cpu;
+/// let x = cpu::Buffer::<_, Sh2<2, 2>>::from_slice(&[2, 3, 1, 3]);
+/// println!("{}", x);
 /// ```
-pub trait HasShape {
-    /// Type of the shape
-    type Sh: Shape;
+/// ### Output
+/// [2 3
+///  1 3]
+pub trait FromSlice: HasDType {
+    /// Create new tensor from given slice.
+    fn from_slice(data: &[Self::T]) -> Self;
 }
 
 // Unary ops
@@ -260,15 +283,31 @@ pub trait Tanh {
 /// use zyx::accel::cpu::Buffer;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.sum([0]);
+/// let y = x.sum<Ax1<0>>();
 /// println!("{}", y);
 /// ```
 /// ### Output
 /// ```txt
 /// [7 4 2]
 /// ```
-/// 
-pub trait Sum<Dims>
+pub trait Sum {
+    fn sum<Dims>(self) -> Self::Output
+    where
+        Dims: Axes,
+        Self: Summable<Dims>;
+}
+
+impl<T> Sum for T {
+    fn sum<Dims>(self) -> T::Output
+    where
+        Dims: Axes,
+        T: Summable<Dims>,
+    {
+        self.sum()
+    }
+}
+
+pub(crate) trait Summable<Dims>
 where
     Dims: Axes,
 {
@@ -296,17 +335,35 @@ where
 /// ```
 /// ### Output
 /// ```txt
-/// [4 2 1]
+/// ([[4 2 1]], [[1 0 0]])
 /// ```
-/// 
-pub trait Max<Dims>
+pub trait Max {
+    fn max<Dims>(self) -> (Self::Values, Self::Indices)
+    where
+        Dims: Axes,
+        Self: Maximizable<Dims>;
+}
+
+impl<T> Max for T {
+    fn max<Dims>(self) -> (T::Values, T::Indices)
+    where
+        Dims: Axes,
+        T: Maximizable<Dims>
+    {
+        self.max()
+    }
+}
+
+pub(crate) trait Maximizable<Dims>
 where
     Dims: Axes,
 {
     /// Output of the Max operation.
-    type Output;
+    type Values;
+    // Indices of Values.
+    type Indices;
     /// Apply Max operation on given input.
-    fn max(self) -> Self::Output;
+    fn max(self) -> (Self::Values, Self::Indices);
 }
 
 /// ## Min operation
@@ -322,22 +379,40 @@ where
 /// use zyx::accel::cpu::Buffer;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.min([0]);
+/// let y = x.min::<Ax1<0>>();
 /// println!("{}", y);
 /// ```
 /// ### Output
 /// ```txt
-/// [3 2 1]
+/// [[3 2 1]]
 /// ```
-/// 
-pub trait Min<Dims>
+pub trait Min {
+    fn min<Dims>(self) -> (Self::Values, Self::Indices)
+    where
+        Dims: Axes,
+        Self: Minimizable<Dims>;
+}
+
+impl<T> Min for T {
+    fn min<Dims>(self) -> (T::Values, T::Indices)
+    where
+        Dims: Axes,
+        T: Minimizable<Dims>
+    {
+        self.min()
+    }
+}
+
+pub(crate) trait Minimizable<Dims>
 where
     Dims: Axes,
 {
     /// Output of the Min operation.
-    type Output;
+    type Values;
+    // Indices of Values.
+    type Indices;
     /// Apply Min operation on given input.
-    fn min(self) -> Self::Output;
+    fn min(self) -> (Self::Values, Self::Indices);
 }
 
 // Reshape simply changes shape of the tensor.
@@ -366,8 +441,24 @@ where
 /// [[3 2 4 2 4 2]
 ///  [1 4 2 5 1 6]]
 /// ```
-/// 
-pub trait Reshape<Sh>
+pub trait Reshape {
+    fn reshape<Sh>(self) -> Self::Output
+    where
+        Sh: Shape,
+        Self: Reshapable<Sh>;
+}
+
+impl<T> Reshape for T {
+    fn reshape<Sh>(self) -> T::Output
+    where
+        Sh: Shape,
+        T: Reshapable<Sh>
+    {
+        self.reshape()
+    }
+}
+
+pub(crate) trait Reshapable<Sh>
 where
     Sh: Shape,
 {
@@ -383,11 +474,12 @@ where
 /// 
 /// ### Example
 /// ```
-/// use zyx::accel::cpu;
 /// use zyx::prelude::*;
+/// use zyx::accel::cpu;
+/// use zyx::nn;
 /// 
 /// let x = cpu::Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.expand((2usize, 3, 3));
+/// let x = x.expand::<Sh3<2, 3, 3>>();
 /// println!("{}", x);
 /// ```
 /// 
@@ -401,7 +493,25 @@ where
 ///   1 4 2]]
 /// ```
 /// 
-pub trait Expand<Sh>
+pub trait Expand {
+    fn expand<Sh>(self) -> Self::Output
+    where
+        Sh: Shape,
+        Self: Expandable<Sh>;
+}
+
+// For this, as well as [Permute] and so on we need to differentiate public and private API due to compiler reasons
+impl<T> Expand for T {
+    fn expand<Sh>(self) -> T::Output
+    where
+        Sh: Shape,
+        T: Expandable<Sh>
+    {
+        self.expand()
+    }
+}
+
+pub(crate) trait Expandable<Sh>
 where
     Sh: Shape,
 {
@@ -436,7 +546,24 @@ where
 ///  [4
 ///   2]]
 /// ```
-pub trait Permute<Dims>
+pub trait Permute {
+    fn permute<Dims>(self) -> Self::Output
+    where
+        Dims: Axes,
+        Self: Permutable<Dims>;
+}
+
+impl<T> Permute for T {
+    fn permute<Dims>(self) -> T::Output
+    where
+        Dims: Axes,
+        T: Permutable<Dims>
+    {
+        self.permute()
+    }
+}
+
+pub(crate) trait Permutable<Dims>
 where
     Dims: Axes,
 {
@@ -488,11 +615,11 @@ pub trait Transpose {
 
 impl<T> Transpose for T
 where
-    T: Permute<Ax2<-1, -2>>,
+    T: Permutable<Ax2<-1, -2>>,
 {
     type Output = T::Output;
     fn transpose(self) -> Self::Output {
-        self.permute::<Ax2<-1, -2>>()
+        self.permute()
     }
 }
 
@@ -566,29 +693,10 @@ pub trait Conv<const N: usize, const M: usize, Kernel = Self> {
     fn conv(self, kernel: Kernel, padding: Sh2<N, M>) -> Self::Output;
 }
 
-/// ## FromVec operation
-/// 
-/// Creates new tensor from given array and shape. Array is assumed to be in row-major order.
-/// 
-/// ### Example
-/// ```
-/// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::from_vec(&[2, 3, 1, 3], [2usize, 2]);
-/// println!("{}", x);
-/// ```
-/// ### Output
-/// [2 3
-///  1 3]
-pub trait FromSlice: HasShape + HasDType {
-    // /// dtype of values in resulting tensor
-    // type T;
-    // /// Shape of the resulting tensor
-    //type Sh: Shape;
-    /// Create new tensor from Vec and Shape.
-    fn from_slice(data: &[Self::T]) -> Self;
-}
-
+// This is only operation that requires alloc.
+// Maybe figure a way how to do this without alloc?
+// Can we return slice?
+// Can gpu buffer return slice?
 extern crate alloc;
 /// ## IntoVec operation
 /// 
