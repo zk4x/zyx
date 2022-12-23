@@ -7,11 +7,11 @@ use zyx::optim;
 
 fn main() {
     let mut network = (
-        Linear::new(1, 20),
+        Linear::new::<1, 20>(),
         ReLU,
-        Linear::new(20, 50),
+        Linear::new::<20, 50>(),
         Tanh,
-        Linear::new(50, 1),
+        Linear::new::<50, 1>(),
         Sigmoid,
     );
 

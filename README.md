@@ -4,8 +4,7 @@
 [![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
 
 Zyx is open source tensor library. It defines struct [Variable](crate::tensor::Variable) that adds gradient to any datatype.
-Provided is [multidimensional array](crate::accel::cpu::Buffer) that can optionally use matrixmultiply
-crate for faster execution.
+Provided is [multidimensional array](crate::accel::cpu::Buffer) that can optionally use matrixmultiply crate for faster execution.
 
 From user perspective, it works similar to PyTorch. Also names of functions are mostly the same,
 so that you can quickly pick up this library if you are familiar with PyTorch.
@@ -31,7 +30,7 @@ All operations are executed eagerly.
 
 The syntax you will be using as a user is very close to PyTorch.
 Also, although the graph is created at compile time, it behaves completely dynamically (i. e. RNNs are easy). You don't need to do any graph.compile or graph.execute calls.
-Tensor and Variable are both immutable
+Tensor and Variable are both immutable.
 
 ## Features
 
@@ -39,7 +38,7 @@ Tensor and Variable are both immutable
 2. Commitment to support stable Rust.
 3. Zero overhead approach with compile time graph.
 4. Multithreaded CPU Buffer as the default accelerator.
-5. Minimum of runtime errors, primarily thanks to const shapes that are checked at compile time.
+5. Minimum of runtime errors, primarily thanks to constant shapes that are checked at compile time.
 
 ## Missing features
 
@@ -51,7 +50,7 @@ This means some functions that depend on these, such as Softmax are missing as w
 
 In particular convolution would be much easier to implement if stable rust supported generic constant expressions.
 
-## Example of usage
+## Examples
 
 For examples of linear and recurrent neural networks, look at [examples directory](https://github.com/zk4x/zyx/tree/main/examples).
 If you want to accelerate matrix multiplication using matrixmultiply crate, use `--features=matrimultiply`.
@@ -65,13 +64,7 @@ use zyx::accel::cpu::Buffer;
 let x = Buffer::<f32, Sh4<2, 3, 2, 3>>::uniform(-1., 1.).with_grad();
 let y = Buffer::<f32, Sh4<2, 3, 3, 4>>::randn().with_grad();
 
-
-let z = <Buffer<_, _> as Sum::<Ax4<0, 1, 2, 3>>>::sum(x.matmul(&y));
-
 let z = x.matmul(&y).sum::<Ax4<0, 1, 2, 3>>();
-
-let z = x.matmul(&y).apply(Sum<Ax4<0, 1, 2, 3>>{});
-
 
 z.backward();
 
@@ -105,7 +98,7 @@ With that said, we don't have plans to significantly change what has already bee
 ## Notes
 
 - Performance depends on your choice of accelerator.
-- We support rust primitives, [CPU Buffer](crate::accel::cpu::Buffer), and we have preliminary support for ndarray. We push EVERYTHING IS A TENSOR approach.
+- We support rust primitives and [CPU Buffer](crate::accel::cpu::Buffer). We push EVERYTHING IS A TENSOR approach.
 - [CPU Buffer](crate::accel::cpu::Buffer) code is under 1000 lines, so implementing custom accelerators is pretty simple without the need to rewrite the whole library.
 - Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
 - State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients. Accelerators are exception. They may or may not produce runtime errors. [CPU Buffer](crate::accel::cpu::Buffer) panics if you perform operations on [Buffer](crate::accel::cpu::Buffer)s with invalid shapes.
@@ -124,8 +117,7 @@ This is the order of modules from most to least important.
 
 ## Future options
 
-- **no-std support** - it is not that hard, beacuse only thing blocking us is heavy use of rayon in CPU Buffer.
+- **no-std support** - it is not that hard, beacuse only things blocking us are heavy use of rayon in CPU Buffer and some use of random crate.
 - **GPU accelerators** - we would like to create opencl and possibly cuda implementations of buffer. GPU cache and VRAM is much harder than CPU, so we will see about the performance.
-- **const Shape** - not possible because stable rust is missing const-generics. Maybe add --feature nightly?
 
 > Any opinions, issue reports, feature requests as well as code contributions are very welcome.

@@ -18,7 +18,7 @@ use super::{HasLastDim, ReducableBy, PermutableBy, BinOpBy, MatMulBy};
 pub trait Shape: Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32> {
     /// Rank of Shape
     const RANK: usize;
-    /// Output type when calling strides function
+    /// Output type when calling array and strides function
     type AsArray: Index<usize, Output = usize> + IndexMut<usize> + Debug; // This is [usize; RANK], just needed because you can't write it directly
     /// Get shape as arrya
     fn array() -> Self::AsArray;

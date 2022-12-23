@@ -265,13 +265,27 @@ impl<T, Sh> Buffer<T, Sh>
 where
     Sh: Shape,
 {
-    fn reduce<Dims, F>(self, init: T, mut f: F) -> (Buffer<T, <Sh as ReducableBy<Dims>>::Output>, Buffer<T, <Sh as ReducableBy<Dims>>::Output>)
+    fn reduce_sum<Dims, F>(self, init: T, mut f: F) -> Buffer<T, <Sh as ReducableBy<Dims>>::Output>
     where
         Sh: ReducableBy<Dims>,
         Dims: Axes,
         T: Clone + DType,
         F: FnMut(T, T) -> T,
     {
+        todo!()
+    }
+}
+
+impl<T, Sh, Dims> ops::Summable<Dims> for Buffer<T, Sh>
+where
+    Sh: ReducableBy<Dims>,
+    T: ops::Zeros + core::ops::Add<Output = T> + DType,
+    Sh: Shape,
+    Dims: Axes,
+{
+    type Output = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+
+    fn sum(self) -> Self::Output {
         use alloc::borrow::ToOwned;
         // TODO: make this multithreaded
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
@@ -279,51 +293,30 @@ where
         let mut reduce_dim = |data: &[T], dim: i32| {
             let strides = Sh::strides();
             let stride = strides[(Sh::RANK as i32 + dim) as usize % Sh::RANK];
-            //*shape.mut_ati(dim) = 1;
-            let mut res = vec![init.clone(); <Sh as ReducableBy<Dims>>::Output::numel()];
+            let mut res = vec![T::zeros(); <Sh as ReducableBy<Dims>>::Output::numel()];
             if dim == 0 || dim == -(Sh::RANK as i32) {
                 for (i, x) in data.iter().enumerate() {
                     let idx = i % stride;
-                    res[idx] = f(res[idx].clone(), x.clone());
+                    res[idx] = res[idx] + *x;
                 }
             } else {
                 let width = strides[(Sh::RANK as i32 + dim - 1) as usize % Sh::RANK];
                 for (i, x) in data.iter().enumerate() {
                     let idx = i/width*stride + i % stride;
-                    res[idx] = f(res[idx].clone(), x.clone());
+                    res[idx] = res[idx] + *x;
                 }
             }
             res
         };
 
-        /*if Dims::RANK == 0 {
-            for dim in 0..Sh::N {
-                data = reduce_dim(&data, dim as i32);
-            }
-        }*/
-
-        for i in 0..Dims::RANK {
-            data = reduce_dim(&data, Dims::at(i));
+        for dim in Dims::array() {
+            data = reduce_dim(&data, dim);
         }
 
         Buffer {
             data: Arc::new(data),
             shape: PhantomData,
         }
-    }
-}
-
-impl<T, Sh, Dims> ops::Summable<Dims> for Buffer<T, Sh>
-where
-    Sh: ReducableBy<Dims>,
-    T: Clone + ops::Zeros + core::ops::Add<Output = T> + DType,
-    Sh: Shape,
-    Dims: Axes,
-{
-    type Output = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
-
-    fn sum(self) -> Self::Output {
-        self.reduce(T::zeros(), |a, b| a + b).0
     }
 }
 
@@ -338,7 +331,8 @@ where
     type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
 
     fn max(self) -> (Self::Values, Self::Indices) {
-        self.reduce(T::min(), |a, b| if a > b { a } else { b })
+        todo!()
+        //self.reduce(T::min(), |a, b| if a > b { a } else { b })
     }
 }
 
@@ -353,7 +347,8 @@ where
     type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
 
     fn min(self) -> (Self::Values, Self::Indices) {
-        self.reduce(T::max(), |a, b| if a < b { a } else { b })
+        todo!()
+        //self.reduce(T::max(), |a, b| if a < b { a } else { b })
     }
 }
 
@@ -421,29 +416,42 @@ where
     }
 }
 
-impl<T, Sh, Dims> ops::Permutable<Dims> for Buffer<T, Sh>
+impl<T, Sh, Dims, const N: usize> ops::Permutable<Dims> for Buffer<T, Sh>
 where
     T: ops::Zeros + DType,
-    Sh: Shape + PermutableBy<Dims>,
+    Sh: Shape<AsArray = [usize; N]> + PermutableBy<Dims>,
     Dims: Axes,
 {
     type Output = Buffer<T, Sh>;
     fn permute(self) -> Self::Output {
         //let shape = self.shape.permute();
-        let strides = Sh::strides().permute();
-        let mut acc_var = 1;
+        // permute function
+        let permute = |array: &mut [usize]| {
+            let n = array.len();
+            let dims = Dims::array();
+            let index = |idx| (n as i32 + dims[0]) as usize % n;
+            let mut temp = array[index(dims[0])];
+            for i in 0..Dims::RANK {
+                core::mem::swap(&mut array[index(dims[i])], &mut temp);
+            }
+            array[index(dims[0])] = temp;
+        };
+        let mut strides = Sh::strides();
+        permute(&mut strides);
+        let mut acc_var = 1;        if Sh::RANK != 2 {
+            panic!("Only operations on buffers with 2 dimensions are supported.");
+        }
         let mut acc = vec![1; Sh::RANK];
         for i in 0..Sh::RANK {
             acc_var *= Sh::at(Sh::RANK - i - 1);
             acc[Sh::RANK - i - 1] = acc_var;
         }
-        acc = acc.permute();
-        //let n = shape.numel();
+        permute(&mut acc);
         // temp is in reverse order
         let mut temp = vec![(0, 0); Sh::RANK]; // strides, acc_shape
         let mut begins = vec![0; Sh::RANK];
         for k in 0..Sh::RANK {
-            temp[Sh::RANK-k-1] = (strides.at(k), acc[k]);
+            temp[Sh::RANK-k-1] = (strides[k], acc[k]);
         }
         let mut data = alloc::vec::Vec::with_capacity(Sh::numel());
         let mut i = 0;
@@ -488,9 +496,8 @@ where
     use rayon::prelude::*;
     use core::cmp::Ordering;
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
-    // stuff during expanding
-
-    // It is also necessary to support constant shapes, because it is not possible to write requirements for expand,
+    // stuff during expanding.
+    // And it is also necessary to support constant shapes, because it is not possible to write requirements for expand,
     // since we don't need to expand both parameters
 
     let data = Arc::new(match XSh::numel().cmp(&YSh::numel()) {
@@ -794,7 +801,6 @@ where
 impl<T, XSh, YSh> ops::MatMul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + DType,
-    Buffer<T, YSh>: ops::Transpose<Output = Buffer<T, <YSh as PermutableBy<Ax2<-2, -1>>>::Output>>,
     XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
     YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
 {
@@ -809,10 +815,23 @@ where
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
         use ops::Transpose;
-        let ty = rhs.transpose();
+        // transpose function
+        let transpose = |data: &[T], last_dim, n| {
+            let res = alloc::vec::Vec::with_capacity(n);
+            let mut j = 0;
+            while j < last_dim {
+                let mut i = 0;
+                while i < n {
+                    res.push(data[i]);
+                    i += last_dim;
+                }
+                j += 1;
+            }
+            res
+        };
+        let ty_data = transpose(rhs.data.as_ref(), YSh::LAST_DIM, YSh::numel());
         use rayon::prelude::*;
         let x_data = self.data.as_ref();
-        let ty_data = ty.data.as_ref();
         const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
         let data: alloc::vec::Vec<T> = ty_data
             .par_chunks(k)
@@ -828,50 +847,32 @@ where
             })
             .flatten()
             .collect();
-        
-        //let mut shape = s_shape;
-        //*shape.mut_ati(-1) = m;
-        //*shape.mut_ati(-2) = n;
-
+        let data = transpose(&data, <XSh as MatMulBy<YSh>>::Output::LAST_DIM, <XSh as MatMulBy<YSh>>::Output::numel());
         Buffer {
             data: Arc::new(data),
             shape: PhantomData,
-        }.transpose()
+        }
     }
 }
 
 // Let's just use matrixmultiply crate for f32 and f64
 #[cfg(feature = "matrixmultiply")]
-impl<Sh> ops::MatMul for Buffer<f32, Sh>
+impl<XSh, YSh> ops::MatMul<Buffer<f32, YSh>> for Buffer<f32, XSh>
 where
-    Sh: Shape,
+    XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
+    YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
 {
-    type Output = Buffer<f32, (usize, usize)>;
-    fn matmul(self, rhs: Self) -> Self::Output {
+    type Output = Buffer<f32, <XSh as MatMulBy<YSh>>::Output>;
+    fn matmul(self, rhs: Buffer<f32, YSh>) -> Self::Output {
         let s_shape = self.shape;
         let r_shape = rhs.shape;
-        // if input shape is shorter than res_shape or vice versa,
-        // add necessary ones to the beginning
-        /*while Sh::N < r_shape.ndim() {
-            s_shape.0.insert(0, 1);
-        }
-        while s_shape.ndim() > r_shape.ndim() {
-            r_shape.0.insert(0, 1);
-        }*/
-        //let ndim = s_shape.ndim();
         // TODO: support for operations on more than 2 dimensions
-        if Sh::N != 2 {
+        if XSh::RANK != 2 && YSh::RANK != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        /*if Sh::N != r_shape.ndim() {
-            panic!("Matmul buffers have different degrees: {:?}, {:?}", s_shape, r_shape);
-        }*/
-        if s_shape.ati(-1) != r_shape.ati(-2) {
-            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
-        }
-        let m = s_shape.ati(-2);
-        let k = s_shape.ati(-1);
-        let n = r_shape.ati(-1);
+        let m = XSh::LAST_DIM_2;
+        let k = XSh::LAST_DIM;
+        let n = YSh::LAST_DIM;
         let mut data = alloc::vec::Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -883,42 +884,28 @@ where
 
         Buffer {
             data: Arc::new(data),
-            shape: (m, n),
+            shape: PhantomData,
         }
     }
 }
 
 #[cfg(feature = "matrixmultiply")]
-impl<Sh> ops::MatMul for Buffer<f64, Sh>
+impl<XSh, YSh> ops::MatMul<Buffer<f64, YSh>> for Buffer<f64, XSh>
 where
-    Sh: Shape,
+    XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
+    YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
 {
-    type Output = Buffer<f64, (usize, usize)>;
-    fn matmul(self, rhs: Self) -> Self::Output {
+    type Output = Buffer<f64, <XSh as MatMulBy<YSh>>::Output>;
+    fn matmul(self, rhs: Buffer<f64, YSh>) -> Self::Output {
         let s_shape = self.shape;
         let r_shape = rhs.shape;
-        // if input shape is shorter than res_shape or vice versa,
-        // add necessary ones to the beginning
-        /*while Sh::N < r_shape.ndim() {
-            s_shape.0.insert(0, 1);
-        }
-        while s_shape.ndim() > r_shape.ndim() {
-            r_shape.0.insert(0, 1);
-        }*/
-        //let ndim = s_shape.ndim();
         // TODO: support for operations on more than 2 dimensions
-        if Sh::N != 2 {
+        if XSh::RANK != 2 && YSh::RANK != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
         }
-        /*if Sh::N != r_shape.ndim() {
-            panic!("Matmul buffers have different degrees: {:?}, {:?}", s_shape, r_shape);
-        }*/
-        if s_shape.ati(-1) != r_shape.ati(-2) {
-            panic!("Incorrect x and y shapes for matmul: {:?}, {:?}", s_shape, r_shape);
-        }
-        let m = s_shape.ati(-2);
-        let k = s_shape.ati(-1);
-        let n = r_shape.ati(-1);
+        let m = XSh::LAST_DIM_2;
+        let k = XSh::LAST_DIM;
+        let n = YSh::LAST_DIM;
         let mut data = alloc::vec::Vec::with_capacity(m*n);
         unsafe {
             data.set_len(m*n);
@@ -930,7 +917,7 @@ where
 
         Buffer {
             data: Arc::new(data),
-            shape: (m, n),
+            shape: PhantomData,
         }
     }
 }

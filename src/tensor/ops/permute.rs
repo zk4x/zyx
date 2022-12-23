@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{ops::Permutable, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Axes};
+use crate::{ops::Permutable, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Axes, Argsortable}};
 
 #[derive(Debug, Clone)]
 pub struct PermutableBackwardV<'g, G, Dims> {
@@ -10,7 +10,7 @@ pub struct PermutableBackwardV<'g, G, Dims> {
 
 impl<S, G, Dims> Backward<S> for PermutableBackwardV<'_, G, Dims>
 where
-    Dims: Axes,
+    Dims: Axes + Argsortable,
     S: Permutable<Dims::Argsort>,
     G: GradAcc<<S as Permutable<Dims::Argsort>>::Output>,
 {
@@ -44,7 +44,7 @@ pub struct PermutableBackwardT<F, Dims> {
 
 impl<S, F, Dims> Backward<S> for PermutableBackwardT<F, Dims>
 where
-    Dims: Axes,
+    Dims: Axes + Argsortable,
     S: Permutable<Dims::Argsort>,
     F: Backward<<S as Permutable<Dims::Argsort>>::Output>,
 {

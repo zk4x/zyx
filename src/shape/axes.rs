@@ -1,13 +1,15 @@
 //! Axes module
 
-use core::{fmt::{Debug, Display}, ops::Index};
+use core::{fmt::{Debug, Display}, ops::{Index, IndexMut}};
 
 /// Axes trait
-pub trait Axes: Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32>  {
+pub trait Axes: Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32> {
     /// Rank
     const RANK: usize;
-    // Ordered axes, these will never contain negative numbers
-    type Argsort: Axes;
+    /// Output type when calling array and strides function
+    type AsArray: Index<usize, Output = i32> + IndexMut<usize> + Debug + IntoIterator<Item = i32>; // This is [usize; RANK], just needed because you can't write it directly
+    /// Get shape as arrya
+    fn array() -> Self::AsArray; //fn array() -> [i32; Self::RANK];
 }
 
 /// Zero axes.
@@ -17,7 +19,11 @@ pub struct Ax0 {}
 
 impl Axes for Ax0 {
     const RANK: usize = 0;
-    type Argsort = Ax0;
+    //type Argsort = Ax0;
+    type AsArray = [i32; 0];
+    fn array() -> Self::AsArray {
+        []
+    }
 }
 
 impl Display for Ax0 {
@@ -46,7 +52,11 @@ pub struct Ax1<const A0: i32> {}
 
 impl<const A0: i32> Axes for Ax1<A0> {
     const RANK: usize = 1;
-    type Argsort = Ax1<A0>;
+    //type Argsort = Ax1<A0>;
+    type AsArray = [i32; 1];
+    fn array() -> Self::AsArray {
+        [A0]
+    }
 }
 
 impl<const A0: i32> Display for Ax1<A0> {
@@ -80,12 +90,15 @@ impl<const A0: i32> Index<i32> for Ax1<A0> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax2<const A0: i32, const A1: i32> {}
 
-impl Axes for Ax2<0, 1> {
+impl<const A0: i32, const A1: i32> Axes for Ax2<A0, A1> {
     const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
+    type AsArray = [i32; 2];
+    fn array() -> Self::AsArray {
+        [A0, A1]
+    }
 }
 
-impl Axes for Ax2<0, -1> {
+/*impl Axes for Ax2<0, -1> {
     const RANK: usize = 2;
     type Argsort = Ax2<0, 1>;
 }
@@ -119,6 +132,7 @@ impl Axes for Ax2<-1, -2> {
     const RANK: usize = 2;
     type Argsort = Ax2<0, 1>;
 }
+*/
 
 impl<const A0: i32, const A1: i32> Display for Ax2<A0, A1> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -157,7 +171,11 @@ pub struct Ax3<const A0: i32, const A1: i32, const A2: i32> {}
 // TODO Fix this
 impl<const A0: i32, const A1: i32, const A2: i32> Axes for Ax3<A0, A1, A2> {
     const RANK: usize = 3;
-    type Argsort = Ax3<A0, A1, A2>;
+    //type Argsort = Ax3<A0, A1, A2>;
+    type AsArray = [i32; 3];
+    fn array() -> Self::AsArray {
+        [A0, A1, A2]
+    }
 }
 
 impl<const A0: i32, const A1: i32, const A2: i32> Display for Ax3<A0, A1, A2> {
@@ -196,6 +214,14 @@ impl<const A0: i32, const A1: i32, const A2: i32> Index<i32> for Ax3<A0, A1, A2>
 /// Four axes
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax4<const A0: i32, const A1: i32, const A2: i32, const A3: i32> {}
+
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Axes for Ax4<A0, A1, A2, A3> {
+    const RANK: usize = 4;
+    type AsArray = [i32; 4];
+    fn array() -> Self::AsArray {
+        [A0, A1, A2, A3]
+    }
+}
 
 impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Display for Ax4<A0, A1, A2, A3> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -236,6 +262,14 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<i32> for 
 /// Five axes
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax5<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> {}
+
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Axes for Ax5<A0, A1, A2, A3, A4> {
+    const RANK: usize = 5;
+    type AsArray = [i32; 5];
+    fn array() -> Self::AsArray {
+        [A0, A1, A2, A3, A4]
+    }
+}
 
 impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Display for Ax5<A0, A1, A2, A3, A4> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
