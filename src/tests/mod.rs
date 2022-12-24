@@ -525,9 +525,9 @@ mod tensor {
             assert_eq!(y.grad().to_vec(), [2., 2., 3., 3., 4., 4.].to_vec());
         }
 
-        #[test]
+        /*#[test]
         fn conv() {
-            use crate::ops::Conv;
+            //use crate::ops::Conv;
             let x = Buffer::cfrom([[2, 3, 4, 1], [4, 2, 1, 3]]);
             let y = Buffer::cfrom([[2, 3, 2], [3, 4, 1]]);
             //let _ = x.clone().conv(y.clone(), (1usize, 2));
@@ -535,7 +535,7 @@ mod tensor {
             //println!("{}", y);
             //println!("{}", z);
             //panic!()
-        }
+        }*/
     }
 }
 

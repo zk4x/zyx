@@ -2,7 +2,6 @@
 
 pub use crate::{
     ops::*,
-    module::{Module, Parameters},
     shape::Shape,
     init::{EyeInit, RandnInit, UniformInit},
     optim::SGDStep,

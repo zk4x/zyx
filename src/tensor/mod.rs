@@ -46,8 +46,6 @@
 
 mod ops;
 
-use crate::{ops::HasShape, module::Parameters};
-
 // How this works (for contributors)
 //
 // The Buffer and Variable are leaf tensors. Buffer does not have grad, while Variable does (obviously).
@@ -360,7 +358,7 @@ pub struct GradHookV<'g, G, Hook> {
 
 impl<S, G, HOOK> Backward<S> for GradHookV<'_, G, HOOK>
 where
-    S: Clone + HasShape,
+    S: Clone + crate::ops::HasShape,
     G: Clone + GradAcc<S>,
     HOOK: FnOnce(S),
 {
@@ -458,7 +456,7 @@ where
     }
 }
 
-impl<S> Parameters for &mut Variable<S>
+impl<S> crate::nn::parameters::Parameters for &mut Variable<S>
 where
 {
     fn zero_grad(&mut self) {

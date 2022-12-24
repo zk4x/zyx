@@ -58,7 +58,6 @@ pub mod tensor;
 pub mod accel;
 pub mod ops;
 pub mod shape;
-pub mod module;
 pub mod nn;
 pub mod optim;
 pub mod prelude;

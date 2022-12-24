@@ -105,15 +105,10 @@ With that said, we don't have plans to significantly change what has already bee
 
 ## How to orient yourself in the library
 
-This is the order of modules from most to least important.
-1. ops
-2. tensor
-3. accel
-4. optim
-5. module
-6. shape
-7. nn
-8. init
+We would advice you to first look at module ops. There are defined all basic operations you can work with. These are implemented for accelerators. Then any accelerators which implement these operations have implemented operations in tensor::ops, these do automatic gradient calculations.
+Tensors can then use optimizers to update their values using these calculated gradients.
+To initialize your accelerators, you can use methods in init.rs. These are automatically implemented for all accelerators that implement ops::FromSlice.
+Many other functors, such as losses and other higher level functions are in module nn.
 
 ## Future options
 
