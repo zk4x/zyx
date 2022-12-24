@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu, shape::Shape};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType, accel::cpu, shape::Shape};
 use core::ops::Add;
 use duplicate::duplicate_item;
 
@@ -21,7 +21,7 @@ where
 impl<'g, YS> Add<&'g Variable<YS>> for dtype
 where
     Self: Add<YS>,
-    YS: Clone + DType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<Self as Add<YS>>::Output, AddBackwardSV<'g, YS>>;
     fn add(self, rhs: &'g Variable<YS>) -> Self::Output {
@@ -38,7 +38,7 @@ impl<'g, YS, T, Sh> Add<&'g Variable<YS>> for cpu::Buffer<T, Sh>
 where
     Sh: Shape,
     Self: Add<YS>,
-    YS: Clone + DType,
+    YS: Clone,
 {
     type Output = Tensor<<Self as Add<YS>>::Output, AddBackwardSV<'g, YS>>;
     fn add(self, rhs: &'g Variable<YS>) -> Self::Output {
@@ -55,7 +55,7 @@ where
 impl<S, F> Add<Tensor<S, F>> for dtype
 where
     Self: Add<S>,
-    S: DType,
+    S: SType,
 {
     type Output = Tensor<<Self as Add<S>>::Output, F>;
     fn add(self, rhs: Tensor<S, F>) -> Self::Output {
@@ -70,7 +70,7 @@ impl<S, F, T, Sh> Add<Tensor<S, F>> for cpu::Buffer<T, Sh>
 where
     Sh: Shape,
     Self: Add<S>,
-    S: DType,
+    S: SType,
 {
     type Output = Tensor<<Self as Add<S>>::Output, F>;
     fn add(self, rhs: Tensor<S, F>) -> Self::Output {
@@ -99,7 +99,7 @@ where
 impl<'g, XS, YS> Add<YS> for &'g Variable<XS>
 where
     XS: Clone + Add<YS>,
-    YS: DType,
+    YS: SType,
 {
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardVS<'g, XS>>;
     fn add(self, rhs: YS) -> Self::Output {
@@ -184,8 +184,8 @@ where
 
 impl<XS, YS, F> Add<YS> for Tensor<XS, F>
 where
-    XS: Add<YS> + DType,
-    YS: DType,
+    XS: Add<YS> + SType,
+    YS: SType,
 {
     type Output = Tensor<<XS as Add<YS>>::Output, F>;
     fn add(self, rhs: YS) -> Self::Output {
@@ -216,8 +216,8 @@ where
 
 impl<'g, XS, YS, XF> Add<&'g Variable<YS>> for Tensor<XS, XF>
 where
-    XS: Add<YS> + DType,
-    YS: Clone + DType,
+    XS: Add<YS> + SType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardTV<'g, YS, XF>>;
     fn add(self, rhs: &'g Variable<YS>) -> Self::Output {
@@ -251,8 +251,8 @@ where
 
 impl<XS, YS, XF, YF> Add<Tensor<YS, YF>> for Tensor<XS, XF>
 where
-    XS: Add<YS> + DType,
-    YS: DType,
+    XS: Add<YS> + SType,
+    YS: SType,
 {
     type Output = Tensor<<XS as Add<YS>>::Output, AddBackwardTT<XF, YF>>;
     fn add(self, rhs: Tensor<YS, YF>) -> Self::Output {

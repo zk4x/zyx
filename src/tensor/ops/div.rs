@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType, accel::cpu, shape::Shape};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType, accel::cpu, shape::Shape};
 use core::ops::{Neg, Mul, Div};
 //use duplicate::duplicate_item;
 
@@ -25,7 +25,7 @@ where
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<'g, S> Div<&'g Variable<S>> for dtype
 where
-    S: Clone + DType,
+    S: Clone + SType,
     Self: Div<S>,
     <Self as Div<S>>::Output: Clone,
 {
@@ -67,7 +67,7 @@ where
     [cpu::Buffer<u8>]; [cpu::Buffer<u16>]; [cpu::Buffer<u32>]; [cpu::Buffer<u64>]; [cpu::Buffer<u128>]; [cpu::Buffer<bool>];)]
 impl<YS, F> Div<Tensor<YS, F>> for dtype
 where
-    YS: Clone + DType,
+    YS: Clone + SType,
     Self: Div<YS>,
     <Self as Div<YS>>::Output: Clone,
 {
@@ -124,7 +124,7 @@ where
 impl<'g, XS, YS> Div<YS> for &'g Variable<XS>
 where
     XS: Clone + Div<YS>,
-    YS: Clone + DType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVS<'g, XS, YS>>;
     fn div(self, rhs: YS) -> Self::Output {
@@ -165,8 +165,8 @@ where
 
 impl<'g, XS, YS> Div<&'g Variable<YS>> for &'g Variable<XS>
 where
-    XS: Clone + Div<YS> + DType,
-    YS: Clone + DType,
+    XS: Clone + Div<YS> + SType,
+    YS: Clone + SType,
     <XS as Div<YS>>::Output: Clone,
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardVV<'g, <XS as Div<YS>>::Output, XS, YS, YS>>;
@@ -247,7 +247,7 @@ where
 
 impl<S, S2, F> Div<S2> for Tensor<S, F>
 where
-    S2: DType + Clone,
+    S2: SType + Clone,
     S: Clone + Div<S2>,
 {
     type Output = Tensor<<S as Div<S2>>::Output, DivBackwardTS<S2, F>>;
@@ -288,8 +288,8 @@ where
 
 impl<'g, XS, YS, XF> Div<&'g Variable<YS>> for Tensor<XS, XF>
 where
-    XS: Div<YS> + DType,
-    YS: Clone + DType,
+    XS: Div<YS> + SType,
+    YS: Clone + SType,
     <XS as Div<YS>>::Output: Clone,
 {
     type Output = Tensor<<XS as Div<YS>>::Output, DivBackwardTV<'g, <XS as Div<YS>>::Output, YS, YS, XF>>;

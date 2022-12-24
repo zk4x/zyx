@@ -4,7 +4,7 @@
 //extern crate alloc;
 
 fn main() {
-    use zyx::prelude::*;
+    /*use zyx::prelude::*;
     use zyx::accel::cpu;
     use zyx::nn::{RNNCell, Linear, MSELoss, Sum, ReLU, Sigmoid};
     use zyx::optim;
@@ -56,7 +56,7 @@ fn main() {
         (<(RNNCell<_, _, _, _>, zyx::nn::ReLU) as zyx::module::Module<'_, (Buffer<_, _>, Buffer<_, _>)>>::parameters(&mut rnn_net), <(Linear<_, _>, Sigmoid) as zyx::module::Module<'_, Buffer<_, _>>>::parameters(&mut net2)).step(&optimizer);
         // This looks bad right now, eventually types will be elided:
         //(rnn_net.parameters(), net2.parameters()).step(&optimizer);
-    }
+    }*/
 
     //println!("hidden state: {}", hidden_state);
 }

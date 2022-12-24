@@ -54,6 +54,7 @@ use crate::{shape::{Shape, Axes, Ax2, Sh2}, dtype::DType};
 
 /// # HasDType
 pub trait HasDType {
+    /// Type of tensor
     type T: DType;
 }
 
@@ -69,17 +70,24 @@ pub trait HasDType {
 // /// assert_eq!(y, 3);
 /// ```
 pub trait HasShape {
-    /// Type of the shape
+    /// Shape of tensor
     type Sh: Shape;
+
+    /// Get the shape as array
+    fn shape(&self) -> <Self::Sh as Shape>::AsArray {
+        Self::Sh::array()
+    }
 }
 
 /// # HasMax
 pub trait HasMax {
+    /// Global maximum of tensor
     fn max() -> Self;
 }
 
 /// # HasMin
 pub trait HasMin {
+    /// Global minimum of tensor
     fn min() -> Self;
 }
 
@@ -291,6 +299,7 @@ pub trait Tanh {
 /// [7 4 2]
 /// ```
 pub trait Sum {
+    /// Sum over dims
     fn sum<Dims>(self) -> Self::Output
     where
         Dims: Axes,
@@ -303,18 +312,19 @@ impl<T> Sum for T {
         Dims: Axes,
         T: Summable<Dims>,
     {
-        self.sum()
+        self._sum()
     }
 }
 
-pub(crate) trait Summable<Dims>
+/// Summable
+pub trait Summable<Dims>
 where
     Dims: Axes,
 {
     /// Output of the Sum operation.
     type Output;
     /// Apply Sum operation on given input.
-    fn sum(self) -> Self::Output;
+    fn _sum(self) -> Self::Output;
 }
 
 /// ## Max operation
@@ -338,6 +348,7 @@ where
 /// ([[4 2 1]], [[1 0 0]])
 /// ```
 pub trait Max {
+    /// Max over dims
     fn max<Dims>(self) -> (Self::Values, Self::Indices)
     where
         Dims: Axes,
@@ -350,20 +361,21 @@ impl<T> Max for T {
         Dims: Axes,
         T: Maximizable<Dims>
     {
-        self.max()
+        self._max()
     }
 }
 
-pub(crate) trait Maximizable<Dims>
+/// Maximizable
+pub trait Maximizable<Dims>
 where
     Dims: Axes,
 {
     /// Output of the Max operation.
     type Values;
-    // Indices of Values.
+    /// Indices of Values.
     type Indices;
     /// Apply Max operation on given input.
-    fn max(self) -> (Self::Values, Self::Indices);
+    fn _max(self) -> (Self::Values, Self::Indices);
 }
 
 /// ## Min operation
@@ -387,6 +399,7 @@ where
 /// [[3 2 1]]
 /// ```
 pub trait Min {
+    /// Minimize over dims
     fn min<Dims>(self) -> (Self::Values, Self::Indices)
     where
         Dims: Axes,
@@ -399,20 +412,21 @@ impl<T> Min for T {
         Dims: Axes,
         T: Minimizable<Dims>
     {
-        self.min()
+        self._min()
     }
 }
 
-pub(crate) trait Minimizable<Dims>
+/// Minimizable
+pub trait Minimizable<Dims>
 where
     Dims: Axes,
 {
     /// Output of the Min operation.
     type Values;
-    // Indices of Values.
+    /// Indices of Values.
     type Indices;
     /// Apply Min operation on given input.
-    fn min(self) -> (Self::Values, Self::Indices);
+    fn _min(self) -> (Self::Values, Self::Indices);
 }
 
 // Reshape simply changes shape of the tensor.
@@ -442,6 +456,7 @@ where
 ///  [1 4 2 5 1 6]]
 /// ```
 pub trait Reshape {
+    /// Reshape to Sh
     fn reshape<Sh>(self) -> Self::Output
     where
         Sh: Shape,
@@ -454,18 +469,19 @@ impl<T> Reshape for T {
         Sh: Shape,
         T: Reshapable<Sh>
     {
-        self.reshape()
+        self._reshape()
     }
 }
 
-pub(crate) trait Reshapable<Sh>
+/// Reshapable
+pub trait Reshapable<Sh>
 where
     Sh: Shape,
 {
     /// Output of the Reshape operation.
     type Output;
     /// Apply Reshape operation on given input.
-    fn reshape(self) -> Self::Output;
+    fn _reshape(self) -> Self::Output;
 }
 
 /// ## Expand tensor
@@ -494,6 +510,7 @@ where
 /// ```
 /// 
 pub trait Expand {
+    /// Expand to Sh
     fn expand<Sh>(self) -> Self::Output
     where
         Sh: Shape,
@@ -507,18 +524,19 @@ impl<T> Expand for T {
         Sh: Shape,
         T: Expandable<Sh>
     {
-        self.expand()
+        self._expand()
     }
 }
 
-pub(crate) trait Expandable<Sh>
+/// Expandable
+pub trait Expandable<Sh>
 where
     Sh: Shape,
 {
     /// Output of the Expand operation.
     type Output;
     /// Apply Expand operation on given input.
-    fn expand(self) -> Self::Output;
+    fn _expand(self) -> Self::Output;
 }
 
 /// ## Permute tensor
@@ -547,6 +565,7 @@ where
 ///   2]]
 /// ```
 pub trait Permute {
+    /// Permute shape with dims
     fn permute<Dims>(self) -> Self::Output
     where
         Dims: Axes,
@@ -559,18 +578,19 @@ impl<T> Permute for T {
         Dims: Axes,
         T: Permutable<Dims>
     {
-        self.permute()
+        self._permute()
     }
 }
 
-pub(crate) trait Permutable<Dims>
+/// Permutable
+pub trait Permutable<Dims>
 where
     Dims: Axes,
 {
     /// Output of the Permute operation.
     type Output;
     /// Apply Permute operation on given input.
-    fn permute(self) -> Self::Output;
+    fn _permute(self) -> Self::Output;
 }
 
 // TODO: this is only API proposal, it is yet to be finalized

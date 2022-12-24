@@ -35,10 +35,13 @@ where
     type T = T;
 }
 
+/// Storage type is implemented for every type that can have added gradient
+pub trait SType {}
 
+#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+impl SType for dtype {}
 
-
-
+impl<T, Sh> SType for crate::accel::cpu::Buffer<T, Sh> {}
 
 /*
 /// # NDType

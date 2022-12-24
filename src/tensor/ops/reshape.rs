@@ -13,7 +13,7 @@ where
     G: HasShape + GradAcc<<S as Reshapable<G::Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad.reshape());
+        self.grad.accumulate(res_grad._reshape());
     }
 }
 
@@ -23,9 +23,9 @@ where
     S: Clone + Reshapable<Sh> + HasShape,
 {
     type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapableBackwardV<'g, S>>;
-    fn reshape(self) -> Self::Output {
+    fn _reshape(self) -> Self::Output {
         Tensor {
-            data: (*self.data()).clone().reshape(),
+            data: (*self.data()).clone()._reshape(),
             grad_fn: ReshapableBackwardV {
                 grad: GradientRef::new(&self.grad),
             }
@@ -46,7 +46,7 @@ where
     F: Backward<<S as Reshapable<Sh>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad.reshape());
+        self.grad_fn.backward(res_grad._reshape());
     }
 }
 
@@ -56,9 +56,9 @@ where
     S: Reshapable<Sh> + HasShape,
 {
     type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapableBackwardT<F, <S as HasShape>::Sh>>;
-    fn reshape(self) -> Self::Output {
+    fn _reshape(self) -> Self::Output {
         Tensor {
-            data: self.data.reshape(),
+            data: self.data._reshape(),
             grad_fn: ReshapableBackwardT {
                 grad_fn: self.grad_fn,
                 shape: PhantomData,

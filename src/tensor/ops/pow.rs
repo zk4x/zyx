@@ -1,4 +1,4 @@
-use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType};
+use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType};
 use core::{ops::{Add, Mul, Div}};
 
 /*#[derive(Debug, Clone, Copy)]
@@ -19,7 +19,7 @@ where
 
 impl<'g, XS, YS, YG> Pow<&'g Variable<YS, YG>> for XS
 where
-    XS: Clone + Pow<YS> + Ln + DType,
+    XS: Clone + Pow<YS> + Ln + SType,
     YS: Clone,
     <XS as Pow<YS>>::Output: Clone + Mul<<XS as Ln>::Output>,
 {
@@ -89,7 +89,7 @@ where
 impl<'g, XS, YS> Pow<YS> for &'g Variable<XS>
 where
     XS: Clone + Pow<YS>,
-    YS: Clone + DType + Mul<<XS as Pow<YS>>::Output>,
+    YS: Clone + SType + Mul<<XS as Pow<YS>>::Output>,
     <YS as Mul<<XS as Pow<YS>>::Output>>::Output: Div<XS>,
     <XS as Pow<YS>>::Output: Clone,
 {
@@ -215,7 +215,7 @@ where
 impl<S, S2, F> Pow<S2> for Tensor<S, F>
 where
     S: Clone + Pow<S2>,
-    S2: DType + Clone + Mul<<S as Pow<S2>>::Output>,
+    S2: SType + Clone + Mul<<S as Pow<S2>>::Output>,
     <S as Pow<S2>>::Output: Clone,
     <S2 as Mul<<S as Pow<S2>>::Output>>::Output: Div<S>,
 {

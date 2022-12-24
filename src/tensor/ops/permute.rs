@@ -15,7 +15,7 @@ where
     G: GradAcc<<S as Permutable<Dims::Argsort>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad.permute());
+        self.grad.accumulate(res_grad._permute());
     }
 }
 
@@ -25,9 +25,9 @@ where
     S: Clone + Permutable<Dims>,
 {
     type Output = Tensor<<S as Permutable<Dims>>::Output, PermutableBackwardV<'g, S, Dims>>;
-    fn permute(self) -> Self::Output {
+    fn _permute(self) -> Self::Output {
         Tensor {
-            data: self.data.clone().permute(),
+            data: self.data.clone()._permute(),
             grad_fn: PermutableBackwardV {
                 grad: GradientRef::new(&self.grad),
                 dims: PhantomData,
@@ -49,7 +49,7 @@ where
     F: Backward<<S as Permutable<Dims::Argsort>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad.permute());
+        self.grad_fn.backward(res_grad._permute());
     }
 }
 
@@ -59,9 +59,9 @@ where
     S: Permutable<Dims>,
 {
     type Output = Tensor<<S as Permutable<Dims>>::Output, PermutableBackwardT<F, Dims>>;
-    fn permute(self) -> Self::Output {
+    fn _permute(self) -> Self::Output {
         Tensor {
-            data: self.data.permute(),
+            data: self.data._permute(),
             grad_fn: PermutableBackwardT {
                 grad_fn: self.grad_fn,
                 dims: PhantomData,

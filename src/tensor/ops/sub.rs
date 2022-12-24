@@ -1,4 +1,4 @@
-use crate::{tensor::{Tensor, Variable, Backward, GradientRef, GradAcc}, accel::cpu, dtype::DType, shape::Shape};
+use crate::{tensor::{Tensor, Variable, Backward, GradientRef, GradAcc}, accel::cpu, dtype::SType, shape::Shape};
 use core::ops::{Sub, Neg};
 use duplicate::duplicate_item;
 
@@ -21,7 +21,7 @@ where
 impl<'g, YS> Sub<&'g Variable<YS>> for dtype
 where
     Self: Sub<YS>,
-    YS: Clone + DType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<Self as Sub<YS>>::Output, SubBackwardSV<'g, YS>>;
     fn sub(self, rhs: &'g Variable<YS>) -> Self::Output {
@@ -38,7 +38,7 @@ impl<'g, YS, T, Sh> Sub<&'g Variable<YS>> for cpu::Buffer<T, Sh>
 where
     Sh: Shape,
     Self: Sub<YS>,
-    YS: Clone + DType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<Self as Sub<YS>>::Output, SubBackwardSV<'g, YS>>;
     fn sub(self, rhs: &'g Variable<YS>) -> Self::Output {
@@ -55,7 +55,7 @@ where
 impl<S, F> Sub<Tensor<S, F>> for dtype
 where
     Self: Sub<S>,
-    S: DType,
+    S: SType,
 {
     type Output = Tensor<<Self as Sub<S>>::Output, F>;
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
@@ -70,7 +70,7 @@ impl<S, F, T, Sh> Sub<Tensor<S, F>> for cpu::Buffer<T, Sh>
 where
     Sh: Shape,
     Self: Sub<S>,
-    S: DType,
+    S: SType,
 {
     type Output = Tensor<<Self as Sub<S>>::Output, F>;
     fn sub(self, rhs: Tensor<S, F>) -> Self::Output {
@@ -98,7 +98,7 @@ where
 impl<'g, XS, YS> Sub<YS> for &'g Variable<XS>
 where
     XS: Clone + Sub<YS>,
-    YS: DType,
+    YS: SType,
 {
     type Output = Tensor<<XS as Sub<YS>>::Output, SubBackwardVS<'g, XS>>;
     fn sub(self, rhs: YS) -> Self::Output {
@@ -183,7 +183,7 @@ where
 impl<XS, YS, XF> Sub<YS> for Tensor<XS, XF>
 where
     XS: Sub<YS>,
-    YS: DType,
+    YS: SType,
 {
     type Output = Tensor<<XS as Sub<YS>>::Output, XF>;
     fn sub(self, rhs: YS) -> Self::Output {

@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom, Expandable}, shape::{Shape, HasLastDim, HasLast2Dims, BinOpBy, ReducableBy, PermutableBy, MatMulBy, Axes, Ax2}, dtype::DType};
+use crate::{ops::{self, ConvertFrom}, shape::{self, Shape, HasLastDim, ReducableBy, PermutableBy, MatMulBy, Axes}, dtype::DType};
 use core::marker::PhantomData;
 extern crate alloc;
 use alloc::{vec, sync::Arc, format};
@@ -261,21 +261,6 @@ where
     }
 }
 
-impl<T, Sh> Buffer<T, Sh>
-where
-    Sh: Shape,
-{
-    fn reduce_sum<Dims, F>(self, init: T, mut f: F) -> Buffer<T, <Sh as ReducableBy<Dims>>::Output>
-    where
-        Sh: ReducableBy<Dims>,
-        Dims: Axes,
-        T: Clone + DType,
-        F: FnMut(T, T) -> T,
-    {
-        todo!()
-    }
-}
-
 impl<T, Sh, Dims> ops::Summable<Dims> for Buffer<T, Sh>
 where
     Sh: ReducableBy<Dims>,
@@ -285,25 +270,25 @@ where
 {
     type Output = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
 
-    fn sum(self) -> Self::Output {
+    fn _sum(self) -> Self::Output {
         use alloc::borrow::ToOwned;
         // TODO: make this multithreaded
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
 
-        let mut reduce_dim = |data: &[T], dim: i32| {
+        let reduce_dim = |data: &[T], dim: i32| {
             let strides = Sh::strides();
             let stride = strides[(Sh::RANK as i32 + dim) as usize % Sh::RANK];
             let mut res = vec![T::zeros(); <Sh as ReducableBy<Dims>>::Output::numel()];
             if dim == 0 || dim == -(Sh::RANK as i32) {
                 for (i, x) in data.iter().enumerate() {
                     let idx = i % stride;
-                    res[idx] = res[idx] + *x;
+                    res[idx] = res[idx].clone() + x.clone();
                 }
             } else {
                 let width = strides[(Sh::RANK as i32 + dim - 1) as usize % Sh::RANK];
                 for (i, x) in data.iter().enumerate() {
                     let idx = i/width*stride + i % stride;
-                    res[idx] = res[idx] + *x;
+                    res[idx] = res[idx].clone() + x.clone();
                 }
             }
             res
@@ -330,7 +315,7 @@ where
     type Values = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
     type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
 
-    fn max(self) -> (Self::Values, Self::Indices) {
+    fn _max(self) -> (Self::Values, Self::Indices) {
         todo!()
         //self.reduce(T::min(), |a, b| if a > b { a } else { b })
     }
@@ -346,7 +331,7 @@ where
     type Values = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
     type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
 
-    fn min(self) -> (Self::Values, Self::Indices) {
+    fn _min(self) -> (Self::Values, Self::Indices) {
         todo!()
         //self.reduce(T::max(), |a, b| if a < b { a } else { b })
     }
@@ -359,7 +344,7 @@ where
     Sh2: Shape,
 {
     type Output = Buffer<T, Sh2>;
-    fn reshape(self) -> Self::Output {
+    fn _reshape(self) -> Self::Output {
         assert_eq!(Sh::numel(), Sh2::numel());
         Buffer {
             data: self.data,
@@ -375,7 +360,7 @@ where
     Sh2: Shape,
 {
     type Output = Buffer<T, Sh2>;
-    fn expand(self) -> Self::Output {
+    fn _expand(self) -> Self::Output {
         assert!(Sh2::RANK >= Sh::RANK);
 
         let n = Sh::numel();
@@ -423,13 +408,13 @@ where
     Dims: Axes,
 {
     type Output = Buffer<T, Sh>;
-    fn permute(self) -> Self::Output {
+    fn _permute(self) -> Self::Output {
         //let shape = self.shape.permute();
         // permute function
         let permute = |array: &mut [usize]| {
             let n = array.len();
             let dims = Dims::array();
-            let index = |idx| (n as i32 + dims[0]) as usize % n;
+            let index = |idx| (n as i32 + idx) as usize % n;
             let mut temp = array[index(dims[0])];
             for i in 0..Dims::RANK {
                 core::mem::swap(&mut array[index(dims[i])], &mut temp);
@@ -438,9 +423,7 @@ where
         };
         let mut strides = Sh::strides();
         permute(&mut strides);
-        let mut acc_var = 1;        if Sh::RANK != 2 {
-            panic!("Only operations on buffers with 2 dimensions are supported.");
-        }
+        let mut acc_var = 1;
         let mut acc = vec![1; Sh::RANK];
         for i in 0..Sh::RANK {
             acc_var *= Sh::at(Sh::RANK - i - 1);
@@ -486,11 +469,93 @@ where
     }
 }*/
 
-fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, <XSh as BinOpBy<YSh>>::Output>
+/// The idea behind this iterator is that you can provide custom shape and strides
+#[derive(Debug, Clone, PartialEq)]
+pub struct BufferIter<'a, T> {
+    /// Shape can be changed
+    pub shape: alloc::vec::Vec<usize>,
+    /// Strides can be changed
+    pub strides: alloc::vec::Vec<usize>,
+    i: usize,
+    k: usize,
+    data: &'a alloc::vec::Vec<T>,
+}
+
+impl<'a, T, Sh> IntoIterator for &'a Buffer<T, Sh>
+where
+    T: Clone,
+    Sh: Shape,
+{
+    type Item = T;
+    type IntoIter = BufferIter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        BufferIter {
+            shape: Sh::array().into_iter().collect(),
+            strides: Sh::strides().into_iter().collect(),
+            i: 0,
+            k: 0,
+            data: &self.data,
+        }
+    }
+}
+
+impl<T, Sh> Buffer<T, Sh>
+where
+    T: Clone,
+    Sh: Shape,
+{
+    /// Create iterator over Buffer
+    pub fn iter(&self) -> BufferIter<'_, T> {
+        self.into_iter()
+    }
+}
+
+impl<T> Iterator for BufferIter<'_, T>
+where
+    T: Clone,
+{
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        let rank = self.shape.len();
+        let mut acc_var = 1;
+        let mut acc = vec![1; rank];
+        for i in 0..rank {
+            acc_var *= self.shape[rank - i - 1];
+            acc[rank - i - 1] = acc_var;
+        }
+        // temp is in reverse order
+        let mut temp = vec![(0, 0); rank]; // strides, acc_shape
+        let mut begins = vec![0; rank];
+        for k in 0..rank {
+            temp[rank-k-1] = (self.strides[k], acc[k]);
+        }
+        //let mut data = alloc::vec::Vec::with_capacity(Sh::numel());
+        //for _ in  0..Sh::numel() {
+        if self.k < self.shape.iter().product() {
+            let res = self.data[self.i].clone();
+            for (j, (st, acc)) in temp.iter().enumerate() {
+                begins[j] += st;
+                self.i += st;
+                if begins[j] < *acc {
+                    break;
+                } else {
+                    self.i -= begins[j];
+                    begins[j] = 0;
+                }
+            }
+            Some(res)
+        } else {
+            None
+        }
+    }
+}
+
+fn binary_op<T, F, XSh, YSh>(x: Buffer<T, XSh>, y: Buffer<T, YSh>, f: F) -> Buffer<T, XSh>
 where
     T: Sync + Send + Clone + DType,
     F: Fn((T, T)) -> T + Sync + Send,
-    XSh: Shape + BinOpBy<YSh>,
+    XSh: Shape,
     YSh: Shape,
 {
     use rayon::prelude::*;
@@ -502,6 +567,8 @@ where
 
     let data = Arc::new(match XSh::numel().cmp(&YSh::numel()) {
         Ordering::Greater => {
+            todo!()
+            /*let y_it = y.into_iter();
             match Arc::try_unwrap(x.data) {
                 Ok(vec) => match Arc::try_unwrap(y.expand().data) {
                     Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
@@ -511,10 +578,11 @@ where
                     Ok(vec_y) => rc.as_ref().par_iter().zip(vec_y.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
                     Err(rc_y) => rc.as_ref().par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
                 }
-            }
+            }*/
         }
         Ordering::Less => {
-            match Arc::try_unwrap(y.data) {
+            todo!()
+            /*match Arc::try_unwrap(y.data) {
                 Ok(vec) => match Arc::try_unwrap(x.expand().data) {
                     Ok(vec_x) => vec_x.into_par_iter().zip(vec.into_par_iter()).map(f).collect(),
                     Err(rc_x) => rc_x.par_iter().zip(vec.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
@@ -523,7 +591,7 @@ where
                     Ok(vec_x) => vec_x.into_par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
                     Err(rc_x) => rc_x.par_iter().zip(rc.as_ref().par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
                 }
-            }
+            }*/
         }
         Ordering::Equal => {
             match Arc::try_unwrap(x.data) {
@@ -547,10 +615,10 @@ where
 impl<T, XSh, YSh> core::ops::Add<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Add<Output = T> + DType,
-    XSh: Shape + BinOpBy<YSh>,
+    XSh: Shape,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
+    type Output = Buffer<T, XSh>;
 
     fn add(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a + b)
@@ -605,10 +673,10 @@ where
 impl<T, XSh, YSh> core::ops::Sub<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Sub<Output = T> + DType,
-    XSh: Shape + BinOpBy<YSh>,
+    XSh: Shape,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
+    type Output = Buffer<T, XSh>;
     fn sub(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a - b)
     }
@@ -661,10 +729,10 @@ where
 impl<T, XSh, YSh> core::ops::Mul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Mul<Output = T> + DType,
-    XSh: Shape + BinOpBy<YSh>,
+    XSh: Shape,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
+    type Output = Buffer<T, XSh>;
     fn mul(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a * b)
     }
@@ -715,10 +783,10 @@ where
 impl<T, XSh, YSh> core::ops::Div<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Clone + Sync + Send + core::ops::Div<Output = T> + DType,
-    XSh: Shape + BinOpBy<YSh>,
+    XSh: Shape,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
+    type Output = Buffer<T, XSh>;
     fn div(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a / b)
     }
@@ -769,10 +837,10 @@ where
 impl<T, XSh, YSh> ops::Pow<Buffer<T, YSh>> for Buffer<T, XSh>
 where
     T: Sync + Send + Clone + ops::Pow<Output = T> + DType,
-    XSh: Shape + BinOpBy<YSh>,
+    XSh: Shape,
     YSh: Shape,
 {
-    type Output = Buffer<T, <XSh as BinOpBy<YSh>>::Output>;
+    type Output = Buffer<T, XSh>;
     fn pow(self, rhs: Buffer<T, YSh>) -> Self::Output {
         binary_op(self, rhs, |(a, b)| a.pow(b))
     }
@@ -800,9 +868,9 @@ where
 #[cfg(not(feature = "matrixmultiply"))]
 impl<T, XSh, YSh> ops::MatMul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: Sync + Send + Clone + core::ops::Mul<Output = T> + core::ops::Add<Output = T> + core::iter::Sum + DType,
-    XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
-    YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
+    T: DType + Send + Sync + core::ops::Mul<Output = T> + core::iter::Sum,
+    XSh: Shape + shape::MatMulBy<YSh>,
+    YSh: Shape + HasLastDim,
 {
     type Output = Buffer<T, <XSh as MatMulBy<YSh>>::Output>;
     fn matmul(self, rhs: Buffer<T, YSh>) -> Self::Output {
@@ -811,18 +879,17 @@ where
         if XSh::RANK < 2 {
             panic!("First parameter in matrix multiplication must have at least 2 dimensions.");
         }
-        let m = XSh::LAST_DIM_2;
-        let k = XSh::LAST_DIM;
-        let n = YSh::LAST_DIM;
-        use ops::Transpose;
+        //let m = XSh::LAST_DIM_2;
+        //let k = XSh::LAST_DIM;
+        //let n = YSh::LAST_DIM;
         // transpose function
         let transpose = |data: &[T], last_dim, n| {
-            let res = alloc::vec::Vec::with_capacity(n);
+            let mut res = alloc::vec::Vec::with_capacity(n);
             let mut j = 0;
             while j < last_dim {
                 let mut i = 0;
                 while i < n {
-                    res.push(data[i]);
+                    res.push(data[i].clone());
                     i += last_dim;
                 }
                 j += 1;
@@ -834,9 +901,9 @@ where
         let x_data = self.data.as_ref();
         const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
         let data: alloc::vec::Vec<T> = ty_data
-            .par_chunks(k)
+            .par_chunks(XSh::LAST_DIM)
             .map(|y_row| {
-                x_data.par_chunks(k)
+                x_data.par_chunks(XSh::LAST_DIM)
                     .map(|x| {
                         x.chunks(NUM)
                             .zip(y_row.chunks(NUM))
@@ -859,13 +926,11 @@ where
 #[cfg(feature = "matrixmultiply")]
 impl<XSh, YSh> ops::MatMul<Buffer<f32, YSh>> for Buffer<f32, XSh>
 where
-    XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
-    YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
+    XSh: Shape + shape::HasLast2Dims + shape::MatMulBy<YSh>,
+    YSh: Shape + HasLastDim,
 {
     type Output = Buffer<f32, <XSh as MatMulBy<YSh>>::Output>;
     fn matmul(self, rhs: Buffer<f32, YSh>) -> Self::Output {
-        let s_shape = self.shape;
-        let r_shape = rhs.shape;
         // TODO: support for operations on more than 2 dimensions
         if XSh::RANK != 2 && YSh::RANK != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -892,13 +957,11 @@ where
 #[cfg(feature = "matrixmultiply")]
 impl<XSh, YSh> ops::MatMul<Buffer<f64, YSh>> for Buffer<f64, XSh>
 where
-    XSh: Shape + HasLast2Dims + MatMulBy<YSh>,
-    YSh: Shape + HasLastDim + PermutableBy<Ax2<-2, -1>>,
+    XSh: Shape + shape::HasLast2Dims + shape::MatMulBy<YSh>,
+    YSh: Shape + HasLastDim,
 {
     type Output = Buffer<f64, <XSh as MatMulBy<YSh>>::Output>;
     fn matmul(self, rhs: Buffer<f64, YSh>) -> Self::Output {
-        let s_shape = self.shape;
-        let r_shape = rhs.shape;
         // TODO: support for operations on more than 2 dimensions
         if XSh::RANK != 2 && YSh::RANK != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");

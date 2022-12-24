@@ -1,4 +1,4 @@
-use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::DType};
+use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardSV<'g, XS, YG> {
@@ -19,7 +19,7 @@ where
 
 impl<'g, XS, YS> MatMul<&'g Variable<YS>> for XS
 where
-    XS: Clone + MatMul<YS> + DType,
+    XS: Clone + MatMul<YS> + SType,
     YS: Clone,
 {
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardSV<'g, XS, YS>>;
@@ -53,7 +53,7 @@ where
 
 impl<XS, YS, YF> MatMul<Tensor<YS, YF>> for XS
 where
-    XS: Clone + MatMul<YS> + DType,
+    XS: Clone + MatMul<YS> + SType,
     YS: Clone,
 {
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardST<XS, YF>>;
@@ -88,7 +88,7 @@ where
 impl<'g, XS, YS> MatMul<YS> for &'g Variable<XS>
 where
     XS: Clone + MatMul<YS>,
-    YS: Clone + DType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardVS<'g, XS, YS>>;
     fn matmul(self, rhs: YS) -> Self::Output {
@@ -209,7 +209,7 @@ where
 impl<XS, YS, XF> MatMul<YS> for Tensor<XS, XF>
 where
     XS: MatMul<YS>,
-    YS: Clone + DType,
+    YS: Clone + SType,
 {
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardTS<YS, XF>>;
     fn matmul(self, rhs: YS) -> Self::Output {

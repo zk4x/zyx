@@ -175,7 +175,7 @@ where
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.sum()
+        x._sum()
     }
     
     fn parameters(&mut self) -> Self::Params {}
@@ -200,7 +200,7 @@ where
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.max()
+        x._max()
     }
     
     fn parameters(&mut self) -> Self::Params {}
@@ -225,7 +225,7 @@ where
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.min()
+        x._min()
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -251,7 +251,7 @@ where
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x.sum()/Input::Sh::numel()
+        x._sum()/Input::Sh::numel()
     }
 
     fn parameters(&mut self) -> Self::Params {}
