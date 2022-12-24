@@ -151,7 +151,7 @@ where
 
 impl<S, T, const D1: usize, const D0: usize> ConvertFrom<[[T; D0]; D1]> for S
 where
-    S: FromSlice<T = T> + HasShape<Sh = Sh2<D0, D1>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh2<D1, D0>>,
     T: DType + Clone,
 {
     fn cfrom(x: [[T; D0]; D1]) -> Self {
@@ -161,7 +161,7 @@ where
 
 impl<S, T, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[T; D0]; D1]; D2]> for S
 where
-    S: FromSlice<T = T> + HasShape<Sh = Sh3<D0, D1, D2>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh3<D2, D1, D0>>,
     T: DType + Clone
 {
     fn cfrom(x: [[[T; D0]; D1]; D2]) -> Self {
@@ -171,7 +171,7 @@ where
 
 impl<S, T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[T; D0]; D1]; D2]; D3]> for S
 where
-    S: FromSlice<T = T> + HasShape<Sh = Sh4<D0, D1, D2, D3>>,
+    S: FromSlice<T = T> + HasShape<Sh = Sh4<D3, D2, D1, D0>>,
     T: DType + Clone
 {
     fn cfrom(x: [[[[T; D0]; D1]; D2]; D3]) -> Self {
@@ -181,7 +181,7 @@ where
 
 impl<S, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ConvertFrom<[[[[[S::T; D0]; D1]; D2]; D3]; D4]> for S
 where
-    S: FromSlice + HasShape<Sh = Sh5<D0, D1, D2, D3, D4>>,
+    S: FromSlice + HasShape<Sh = Sh5<D4, D3, D2, D1, D0>>,
     S::T: DType,
 {
     fn cfrom(x: [[[[[S::T; D0]; D1]; D2]; D3]; D4]) -> Self {
