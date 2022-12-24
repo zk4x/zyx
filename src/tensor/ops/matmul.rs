@@ -10,7 +10,7 @@ impl<S, XS, YG> Backward<S> for MatMulBackwardSV<'_, XS, YG>
 where
     XS: Transpose,
     <XS as Transpose>::Output: MatMul<S>,
-    YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>
+    YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));

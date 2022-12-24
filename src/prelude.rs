@@ -3,6 +3,7 @@
 pub use crate::{
     ops::*,
     shape::Shape,
+    nn::{module::Module, parameters::Parameters},
     init::{EyeInit, RandnInit, UniformInit},
     optim::SGDStep,
     tensor::IntoVariable

@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{ops::Permutable, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Axes, Argsortable}};
+use crate::{ops::Permutable, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Axes, PermutableBy}};
 
 #[derive(Debug, Clone)]
 pub struct PermutableBackwardV<'g, G, Dims> {
@@ -10,9 +10,10 @@ pub struct PermutableBackwardV<'g, G, Dims> {
 
 impl<S, G, Dims> Backward<S> for PermutableBackwardV<'_, G, Dims>
 where
-    Dims: Axes + Argsortable,
-    S: Permutable<Dims::Argsort>,
-    G: GradAcc<<S as Permutable<Dims::Argsort>>::Output>,
+    Dims: Axes + PermutableBy<Dims>,
+    <Dims as PermutableBy<Dims>>::Output: Axes,
+    S: Permutable<<Dims as PermutableBy<Dims>>::Output>,
+    G: GradAcc<<S as Permutable<<Dims as PermutableBy<Dims>>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad._permute());
@@ -44,9 +45,10 @@ pub struct PermutableBackwardT<F, Dims> {
 
 impl<S, F, Dims> Backward<S> for PermutableBackwardT<F, Dims>
 where
-    Dims: Axes + Argsortable,
-    S: Permutable<Dims::Argsort>,
-    F: Backward<<S as Permutable<Dims::Argsort>>::Output>,
+    Dims: Axes + PermutableBy<Dims>,
+    <Dims as PermutableBy<Dims>>::Output: Axes,
+    S: Permutable<<Dims as PermutableBy<Dims>>::Output>,
+    F: Backward<<S as Permutable<<Dims as PermutableBy<Dims>>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad._permute());

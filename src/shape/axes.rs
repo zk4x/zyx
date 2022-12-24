@@ -2,7 +2,7 @@
 
 use core::{fmt::{Debug, Display}, ops::{Index, IndexMut}};
 
-use super::Argsortable;
+use super::PermutableBy;
 
 /// Axes trait
 pub trait Axes: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32> {
@@ -100,9 +100,6 @@ impl<const A0: i32, const A1: i32> Axes for Ax2<A0, A1> {
     }
 }
 
-impl Argsortable for Ax2<1, 0> { type Argsort = Ax2<0, 1>; }
-impl Argsortable for Ax2<-1, -2> { type Argsort = Ax2<0, 1>; }
-
 impl<const A0: i32, const A1: i32> Display for Ax2<A0, A1> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("({}, {})", A0, A1))
@@ -132,6 +129,9 @@ impl<const A0: i32, const A1: i32> Index<i32> for Ax2<A0, A1> {
         }
     }
 }
+
+impl<const A0: i32, const A1: i32> PermutableBy<Ax2<-1, -2>> for Ax2<A0, A1> { type Output = Ax2<A1, A0>; }
+impl<const A0: i32, const A1: i32> PermutableBy<Ax2<1, 0>>   for Ax2<A0, A1> { type Output = Ax2<A1, A0>; }
 
 /// Three axes
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]

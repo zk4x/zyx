@@ -545,11 +545,11 @@ mod nn {
         use crate::prelude::*;
         use super::Buffer;
         use crate::nn;
-        let linear = nn::Linear::new::<3, 2>();
+        let linear = nn::Linear::<Buffer<_, _>, Buffer<_, _>>::new::<3, 2>();
         //let linear = nn::Linear::new::<f32>(3, 2);
         let x = Buffer::cfrom([[2., 3., 1.]]);
         let z = linear.forward(x);
-        assert_eq!(z.shape(), (1, 2));
+        assert_eq!(z.shape(), [1, 2]);
         //println!("{}", z);
         z.backward();
     }

@@ -21,12 +21,6 @@ pub trait HasLast2Dims: HasLastDim {
     const LAST_DIM_2: usize;
 }
 
-/// This must be implemented for Axes
-pub trait Argsortable {
-    /// Ordered axes, these will never contain negative numbers
-    type Argsort: Axes;
-}
-
 /// ReducableBy
 pub trait ReducableBy<Ax>
 where
@@ -51,8 +45,8 @@ pub trait PermutableBy<Ax>
 where
     Ax: Axes,
 {
-    /// Output shape of permute
-    type Output: Shape;
+    /// Output of permute
+    type Output;
 }
 
 /// MatMulBy

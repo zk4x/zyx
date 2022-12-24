@@ -407,7 +407,7 @@ where
     Sh: Shape<AsArray = [usize; N]> + PermutableBy<Dims>,
     Dims: Axes,
 {
-    type Output = Buffer<T, Sh>;
+    type Output = Buffer<T, <Sh as PermutableBy<Dims>>::Output>;
     fn _permute(self) -> Self::Output {
         //let shape = self.shape.permute();
         // permute function
@@ -879,9 +879,6 @@ where
         if XSh::RANK < 2 {
             panic!("First parameter in matrix multiplication must have at least 2 dimensions.");
         }
-        //let m = XSh::LAST_DIM_2;
-        //let k = XSh::LAST_DIM;
-        //let n = YSh::LAST_DIM;
         // transpose function
         let transpose = |data: &[T], last_dim, n| {
             let mut res = alloc::vec::Vec::with_capacity(n);
