@@ -171,13 +171,15 @@ impl<const D0: usize, const D1: usize> HasLastDim for Sh2<D0, D1> { const LAST_D
 impl<const D0: usize, const D1: usize> HasLast2Dims for Sh2<D0, D1> { const LAST_DIM_2: usize = D0; }
 
 impl<const D0: usize, const D1: usize> PermutableBy<Ax2<-1, -2>> for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
+impl<const D0: usize, const D1: usize> PermutableBy<Ax2<-2, -1>> for Sh2<D0, D1> { type Output = Sh2<D0, D1>; }
+impl<const D0: usize, const D1: usize> PermutableBy<Ax2<0, 1>>   for Sh2<D0, D1> { type Output = Sh2<D0, D1>; }
 impl<const D0: usize, const D1: usize> PermutableBy<Ax2<1, 0>>   for Sh2<D0, D1> { type Output = Sh2<D1, D0>; }
 
 impl<const D0: usize, const D1: usize> ReducableBy<Ax1<0>>    for Sh2<D0, D1> { type Output = Sh2<1, D1>; }
 impl<const D0: usize, const D1: usize> ReducableBy<Ax1<1>>    for Sh2<D0, D1> { type Output = Sh2<D0, 1>; }
 impl<const D0: usize, const D1: usize> ReducableBy<Ax2<0, 1>> for Sh2<D0, D1> { type Output = Sh2<1, 1>; }
 
-impl<const M: usize, const K: usize, const N: usize> MatMulBy<Sh2<M, K>> for Sh2<K, N> { type Output = Sh2<M, N>; }
+impl<const M: usize, const K: usize, const N: usize> MatMulBy<Sh2<K, N>> for Sh2<M, K> { type Output = Sh2<M, N>; }
 
 /// Shape with 3 dimensions
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
@@ -236,6 +238,8 @@ impl<const D0: usize, const D1: usize, const D2: usize> HasLastDim for Sh3<D0, D
 impl<const D0: usize, const D1: usize, const D2: usize> HasLast2Dims for Sh3<D0, D1, D2> { const LAST_DIM_2: usize = D1; }
 
 impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<-1, -2>>  for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax2<-2, -1>>  for Sh3<D0, D1, D2> { type Output = Sh3<D0, D1, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<0, 1, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D1, D2>; }
 impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<0, 2, 1>> for Sh3<D0, D1, D2> { type Output = Sh3<D0, D2, D1>; }
 impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, 0, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D0, D2>; }
 impl<const D0: usize, const D1: usize, const D2: usize> PermutableBy<Ax3<1, 2, 0>> for Sh3<D0, D1, D2> { type Output = Sh3<D1, D2, D0>; }
@@ -249,6 +253,8 @@ impl<const D0: usize, const D1: usize, const D2: usize> ReducableBy<Ax2<0, 1>>  
 impl<const D0: usize, const D1: usize, const D2: usize> ReducableBy<Ax2<0, 2>>    for Sh3<D0, D1, D2> { type Output = Sh3<1, D1, 1>; }
 impl<const D0: usize, const D1: usize, const D2: usize> ReducableBy<Ax2<1, 2>>    for Sh3<D0, D1, D2> { type Output = Sh3<D0, 1, 1>; }
 impl<const D0: usize, const D1: usize, const D2: usize> ReducableBy<Ax3<0, 1, 2>> for Sh3<D0, D1, D2> { type Output = Sh3<1, 1, 1>; }
+
+impl<const D2: usize, const M: usize, const K: usize, const N: usize> MatMulBy<Sh3<D2, K, N>> for Sh3<D2, M, K> { type Output = Sh3<D2, M, N>; }
 
 /// Shape with 4 dimensions
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
@@ -311,6 +317,8 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> HasLast
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> HasLast2Dims for Sh4<D0, D1, D2, D3> { const LAST_DIM_2: usize = D2; }
 
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> PermutableBy<Ax2<-1, -2>> for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0, D1, D3, D2>; }
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> PermutableBy<Ax2<-2, -1>> for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0, D1, D2, D3>; }
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> PermutableBy<Ax4<0, 1, 2, 3>> for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0, D1, D2, D3>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> PermutableBy<Ax4<0, 1, 3, 2>> for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0, D1, D3, D2>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> PermutableBy<Ax4<0, 2, 1, 3>> for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0, D2, D1, D3>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> PermutableBy<Ax4<0, 2, 3, 1>> for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0, D2, D3, D1>; }
@@ -350,6 +358,8 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> Reducab
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax3<0, 2, 3>>    for Sh4<D0, D1, D2, D3> { type Output = Sh4< 1, D1,  1,  1>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax3<1, 2, 3>>    for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0,  1,  1,  1>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax4<1, 2, 3, 4>> for Sh4<D0, D1, D2, D3> { type Output = Sh4< 1,  1,  1,  1>; }
+
+impl<const D3: usize, const D2: usize, const M: usize, const K: usize, const N: usize> MatMulBy<Sh4<D3, D2, K, N>> for Sh4<D3, D2, M, K> { type Output = Sh4<D3, D2, M, N>; }
 
 /// Shape with 5 dimensions
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
@@ -416,6 +426,8 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> HasLast2Dims for Sh5<D0, D1, D2, D3, D4> { const LAST_DIM_2: usize = D4; }
 
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> PermutableBy<Ax2<-1, -2>> for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5<D0, D1, D2, D4, D3>; }
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> PermutableBy<Ax2<-2, -1>> for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5<D0, D1, D2, D3, D4>; }
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> PermutableBy<Ax5<0, 1, 2, 3, 4>> for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5<D0, D1, D2, D3, D4>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> PermutableBy<Ax5<0, 1, 2, 4, 3>> for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5<D0, D1, D2, D4, D3>; }
 
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> ReducableBy<Ax1<0>>             for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5< 1, D1, D2, D3, D4>; }
@@ -449,3 +461,5 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> ReducableBy<Ax4<0, 2, 3, 4>>    for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5< 1, D1,  1,  1,  1>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> ReducableBy<Ax4<1, 2, 3, 4>>    for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5<D0,  1,  1,  1,  1>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> ReducableBy<Ax5<0, 1, 2, 3, 4>> for Sh5<D0, D1, D2, D3, D4> { type Output = Sh5< 1,  1,  1,  1,  1>; }
+
+impl<const D4: usize, const D3: usize, const D2: usize, const M: usize, const K: usize, const N: usize> MatMulBy<Sh5<D4, D3, D2, K, N>> for Sh5<D4, D3, D2, M, K> { type Output = Sh5<D4, D3, D2, M, N>; }
