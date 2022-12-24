@@ -2,6 +2,8 @@
 
 use core::{fmt::{Debug, Display}, ops::{Index, IndexMut}};
 
+use super::Argsortable;
+
 /// Axes trait
 pub trait Axes: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32> {
     /// Rank
@@ -98,41 +100,8 @@ impl<const A0: i32, const A1: i32> Axes for Ax2<A0, A1> {
     }
 }
 
-/*impl Axes for Ax2<0, -1> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-
-impl Axes for Ax2<-2, 1> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-
-impl Axes for Ax2<-2, -1> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-
-impl Axes for Ax2<1, 0> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-
-impl Axes for Ax2<1, -2> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-
-impl Axes for Ax2<-1, 0> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-
-impl Axes for Ax2<-1, -2> {
-    const RANK: usize = 2;
-    type Argsort = Ax2<0, 1>;
-}
-*/
+impl Argsortable for Ax2<1, 0> { type Argsort = Ax2<0, 1>; }
+impl Argsortable for Ax2<-1, -2> { type Argsort = Ax2<0, 1>; }
 
 impl<const A0: i32, const A1: i32> Display for Ax2<A0, A1> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
