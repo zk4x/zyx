@@ -1,11 +1,7 @@
 use super::Zeros;
 use duplicate::duplicate_item;
 
-#[duplicate_item(
-    dtype;
-    [f32];
-    [f64];
-)]
+#[duplicate_item( dtype; [f32]; [f64];)]
 
 impl Zeros for dtype {
     fn zeros() -> Self {
@@ -13,22 +9,7 @@ impl Zeros for dtype {
     }
 }
 
-#[duplicate_item(
-    dtype;
-    [i8];
-    [i16];
-    [i32];
-    [i64];
-    [i128];
-    [u8];
-    [u16];
-    [u32];
-    [u64];
-    [u128];
-    [isize];
-    [usize];
-)]
-
+#[duplicate_item( dtype; [i8]; [i16]; [i32]; [i64]; [i128]; [u8]; [u16]; [u32]; [u64]; [u128]; [isize]; [usize];)]
 impl Zeros for dtype {
     fn zeros() -> Self {
         0

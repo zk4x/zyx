@@ -16,10 +16,11 @@ use alloc::vec;
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
+/// use zyx::shape::Sh2;
 /// 
-/// let x = Buffer::<i32, _>::eye(3);
+/// let x = Buffer::<Sh2<3, 3>, i32>::eye();
 /// assert_eq!(x.to_vec(), vec![1, 0, 0, 0, 1, 0, 0, 0, 1]);
-/// assert_eq!(x.shape(), (3, 3));
+/// assert_eq!(x.shape(), [3, 3]);
 /// println!("{}", x);
 /// ```
 /// 
@@ -61,9 +62,10 @@ where
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
+/// use zyx::shape::Sh3;
 /// 
-/// let x = Buffer::<f32, _>::randn((3usize, 2, 3));
-/// assert_eq!(x.shape(), (3, 2, 3));
+/// let x = Buffer::<Sh3<3, 2, 3>>::randn();
+/// assert_eq!(x.shape(), [3, 2, 3]);
 /// println!("{}", x);
 /// ```
 pub trait RandnInit {
@@ -93,9 +95,10 @@ where
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
+/// use zyx::shape::Sh3;
 /// 
-/// let x = Buffer::uniform((3usize, 2, 3), -1., 1.);
-/// assert_eq!(x.shape(), (3, 2, 3));
+/// let x = Buffer::<Sh3<3, 2, 3>>::uniform(-1., 1.);
+/// assert_eq!(x.shape(), [3, 2, 3]);
 /// println!("{}", x);
 /// ```
 pub trait UniformInit: HasDType {

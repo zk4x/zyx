@@ -53,7 +53,7 @@ where
 // Display Buffer
 impl<Sh, T> core::fmt::Display for Buffer<Sh, T>
 where
-    T: core::fmt::Display + DType,
+    T: core::fmt::Display,
     Sh: Shape + HasLastDim,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -258,7 +258,7 @@ where
     }
 }
 
-impl<T, Sh, Dims> ops::Summable<Dims> for Buffer<Sh, T>
+impl<Sh, T, Dims> ops::Summable<Dims> for Buffer<Sh, T>
 where
     Sh: ReducableBy<Dims>,
     T: ops::Zeros + core::ops::Add<Output = T> + DType,
@@ -302,15 +302,15 @@ where
     }
 }
 
-impl<T, Sh, Dims> ops::Maximizable<Dims> for Buffer<Sh, T>
+impl<Sh, T, Dims> ops::Maximizable<Dims> for Buffer<Sh, T>
 where
     Sh: ReducableBy<Dims>,
     T: ops::HasMin + PartialOrd + DType,
     Sh: Shape,
     Dims: Axes,
 {
-    type Values = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
-    type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+    type Values = Buffer<<Sh as ReducableBy<Dims>>::Output, T>;
+    type Indices = Buffer<<Sh as ReducableBy<Dims>>::Output, T>;
 
     fn _max(self) -> (Self::Values, Self::Indices) {
         todo!()
@@ -318,15 +318,15 @@ where
     }
 }
 
-impl<T, Sh, Dims> ops::Minimizable<Dims> for Buffer<Sh, T>
+impl<Sh, T, Dims> ops::Minimizable<Dims> for Buffer<Sh, T>
 where
     Sh: ReducableBy<Dims>,
     T: ops::HasMax + PartialOrd + DType,
     Sh: Shape,
     Dims: Axes,
 {
-    type Values = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
-    type Indices = Buffer<T, <Sh as ReducableBy<Dims>>::Output>;
+    type Values = Buffer<<Sh as ReducableBy<Dims>>::Output, T>;
+    type Indices = Buffer<<Sh as ReducableBy<Dims>>::Output, T>;
 
     fn _min(self) -> (Self::Values, Self::Indices) {
         todo!()

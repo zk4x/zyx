@@ -49,6 +49,8 @@ mod exp;
 mod ln;
 mod tanh;
 mod pow;
+mod has_min;
+mod has_max;
 
 use crate::{shape::{Shape, Axes, Ax2, Sh2}, dtype::DType};
 
@@ -126,7 +128,9 @@ where
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::<i32, Sh3<2, 3, 1>>::zeros();
+/// use zyx::shape::Sh3;
+///
+/// let x = Buffer::<Sh3<2, 3, 1>, i32>::zeros();
 /// ```
 /// ### Output
 /// ```txt
@@ -149,7 +153,9 @@ pub trait Zeros {
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
-/// let x = Buffer::<i32, Sh3<2, 3, 1>>::ones();
+/// use zyx::shape::Sh3;
+///
+/// let x = Buffer::<Sh3<2, 3, 1>, i32>::ones();
 /// let y = x.shape();
 /// ```
 /// ### Output
@@ -174,7 +180,8 @@ pub trait Ones {
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu;
-/// let x = cpu::Buffer::<_, Sh2<2, 2>>::from_slice(&[2, 3, 1, 3]);
+/// use zyx::shape::Sh2;
+/// let x = cpu::Buffer::<Sh2<2, 2>, _>::from_slice(&[2, 3, 1, 3]);
 /// println!("{}", x);
 /// ```
 /// ### Output
@@ -289,9 +296,10 @@ pub trait Tanh {
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
+/// use zyx::shape::Ax1;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.sum<Ax1<0>>();
+/// let y = x.sum::<Ax1<0>>();
 /// println!("{}", y);
 /// ```
 /// ### Output
@@ -335,17 +343,18 @@ where
 /// 
 /// ### Example
 /// 
-/// ```
+/// ```ignore
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
+/// use zyx::shape::Ax1;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
-/// let y = x.max([0]);
-/// println!("{}", y);
+/// let y = x.max::<Ax1<0>>();
+/// println!("{}, {}", y.0, y.1);
 /// ```
 /// ### Output
 /// ```txt
-/// ([[4 2 1]], [[1 0 0]])
+/// [[4 2 1]], [[1 0 0]]
 /// ```
 pub trait Max {
     /// Max over dims
@@ -386,13 +395,14 @@ where
 /// 
 /// ### Example
 /// 
-/// ```
+/// ```ignore
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu::Buffer;
+/// use zyx::shape::Ax1;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.min::<Ax1<0>>();
-/// println!("{}", y);
+/// println!("{}", y.0);
 /// ```
 /// ### Output
 /// ```txt
@@ -444,9 +454,10 @@ where
 /// ```
 /// use zyx::accel::cpu::Buffer;
 /// use zyx::prelude::*;
+/// use zyx::shape::Sh3;
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
-/// let x = x.reshape([2usize, 1, 6]);
+/// let x = x.reshape::<Sh3<2, 1, 6>>();
 /// println!("{}", x);
 /// ```
 /// 
@@ -492,7 +503,7 @@ where
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::accel::cpu;
-/// use zyx::nn;
+/// use zyx::shape::Sh3;
 /// 
 /// let x = cpu::Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.expand::<Sh3<2, 3, 3>>();
@@ -547,12 +558,13 @@ where
 /// ```
 /// use zyx::accel::cpu::Buffer;
 /// use zyx::prelude::*;
+/// use zyx::shape::Ax3;
 /// 
 /// let x = Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.permute((2, 0, 1));
-/// assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
-/// assert_eq!(x.shape(), (3, 2, 1));
+/// let x = x.permute::<Ax3<2, 0, 1>>();
 /// println!("{}", x);
+/// # assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
+/// # assert_eq!(x.shape(), [3, 2, 1]);
 /// ```
 /// 
 /// ### Output
@@ -615,9 +627,9 @@ where
 ///
 /// let x = Buffer::cfrom([[3, 2, 4], [1, 4, 2]]);
 /// let x = x.transpose();
-/// assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
-/// assert_eq!(x.shape(), (3, 2));
 /// println!("{}", x);
+/// # assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
+/// # assert_eq!(x.shape(), [3, 2]);
 /// ```
 ///
 /// ### Output

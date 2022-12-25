@@ -9,7 +9,7 @@
 //! # use zyx::nn::Linear;
 //! # use zyx::optim::SGD;
 //! # use zyx::accel::cpu::Buffer;
-//! let net = Linear::<Buffer<f32, _>, Buffer<f32, _>>::new(2, 4);
+//! let net = Linear::<Buffer<_>, Buffer<_>>::new::<2, 4>();
 //! ```
 //! Then we create an optimizer. We do not pass [parameters](crate::module::Parameters) into it.
 //! ```
@@ -17,7 +17,7 @@
 //! # use zyx::nn::Linear;
 //! # use zyx::optim::SGD;
 //! # use zyx::accel::cpu::Buffer;
-//! # let net = Linear::<Buffer<f32, _>, Buffer<f32, _>>::new(2, 4);
+//! # let net = Linear::<Buffer<_>, Buffer<_>>::new::<2, 4>();
 //! let optim = SGD::new().with_learning_rate(0.03);
 //! ```
 //! When we want to update our [parameters](crate::module::Parameters) using the optimizer we call the step function.
@@ -28,7 +28,7 @@
 //! # use zyx::nn::Linear;
 //! # use zyx::optim::SGD;
 //! # use zyx::accel::cpu::Buffer;
-//! # let net = Linear::<Buffer<f32>, Buffer<f32>>::new(2, 4);
+//! # let net = Linear::<Buffer<_>, Buffer<_>>::new::<2, 4>();
 //! # let optim = SGD::new().with_learning_rate(0.03);
 //! net.parameters().step(&optim);
 //! ```
@@ -38,11 +38,12 @@
 //! ```
 //! use zyx::prelude::*;
 //! use zyx::accel::cpu::Buffer;
+//! use zyx::shape::Sh2;
 //! use zyx::optim::SGD;
 //!
-//! let mut x = Buffer::uniform((2, 3), 0., 1.).with_grad();
-//! let mut y = Buffer::<f32, (usize, usize)>::randn((2, 3)).with_grad();
-//! let mut z = Buffer::<f32, (usize, usize)>::eye(3).with_grad();
+//! let mut x = Buffer::<Sh2<2, 3>>::uniform(0., 1.).with_grad();
+//! let mut y = Buffer::<Sh2<2, 3>>::randn().with_grad();
+//! let mut z = Buffer::<Sh2<3, 3>>::eye().with_grad();
 //!
 //! let optim = SGD::new();
 //!

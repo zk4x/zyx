@@ -357,7 +357,7 @@ impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> Reducab
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax3<0, 1, 3>>    for Sh4<D0, D1, D2, D3> { type Output = Sh4< 1,  1, D2,  1>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax3<0, 2, 3>>    for Sh4<D0, D1, D2, D3> { type Output = Sh4< 1, D1,  1,  1>; }
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax3<1, 2, 3>>    for Sh4<D0, D1, D2, D3> { type Output = Sh4<D0,  1,  1,  1>; }
-impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax4<1, 2, 3, 4>> for Sh4<D0, D1, D2, D3> { type Output = Sh4< 1,  1,  1,  1>; }
+impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> ReducableBy<Ax4<0, 1, 2, 3>> for Sh4<D0, D1, D2, D3> { type Output = Sh4< 1,  1,  1,  1>; }
 
 impl<const D3: usize, const D2: usize, const M: usize, const K: usize, const N: usize> MatMulBy<Sh4<D3, D2, K, N>> for Sh4<D3, D2, M, K> { type Output = Sh4<D3, D2, M, N>; }
 

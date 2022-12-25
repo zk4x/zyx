@@ -1,7 +1,7 @@
 //! ## This is an example of linear neural network with sequential model
 
 fn main() {
-    use zyx::prelude::*;
+    /*use zyx::prelude::*;
     use zyx::accel::cpu;
     use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
     use zyx::optim;
@@ -40,5 +40,5 @@ fn main() {
             // Right now it looks bad, but eventually it will look like this:
             network.parameters().step(&optimizer);
         }
-    }
+    }*/
 }
