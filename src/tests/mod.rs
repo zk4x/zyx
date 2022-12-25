@@ -1,7 +1,7 @@
 // TODO: move all the tests into the respective modules.
 // No reason to have them all in here like this.
 
-type Buffer<T, Sh> = crate::accel::cpu::Buffer<T, Sh>;
+use crate::accel::cpu::Buffer;
 
 fn cmp_vec(x: &[f32], y: &[f32]) {
     const PRECISION: i32 = 3;
@@ -51,10 +51,12 @@ fn ndarray() {
 }
 
 mod tensor {
+    use super::Buffer;
+
     mod init {
         use crate::ops::ConvertFrom;
-        use super::super::Buffer;
         use crate::shape::{Sh3, Sh4, Sh5};
+        use super::Buffer;
 
         #[test]
         fn cfrom() {
@@ -73,25 +75,25 @@ mod tensor {
         #[test]
         fn ones() {
             use crate::ops::Ones;
-            let _ = Buffer::<i32, Sh4<3, 4, 2, 5>>::ones();
+            let _ = Buffer::<Sh4<3, 4, 2, 5>>::ones();
         }
 
         #[test]
         fn zeros() {
             use crate::ops::Zeros;
-            let _ = Buffer::<i128, Sh3<2, 3, 4>>::zeros();
+            let _ = Buffer::<Sh3<2, 3, 4>>::zeros();
         }
 
         #[test]
         fn randn() {
             use crate::init::RandnInit;
-            let _ = Buffer::<f32, Sh3<3, 1, 4>>::randn();
+            let _ = Buffer::<Sh3<3, 1, 4>>::randn();
         }
 
         #[test]
         fn uniform() {
             use crate::init::UniformInit;
-            let _ = Buffer::<_, Sh5<2, 4, 1, 6, 3>>::uniform(0., 1.);
+            let _ = Buffer::<Sh5<2, 4, 1, 6, 3>>::uniform(0., 1.);
         }
     }
 
@@ -108,10 +110,10 @@ mod tensor {
             // TODO finish all variations, including type and accelerator conversions
             use crate::ops::ConvertInto;
             let vec = vec![3f32, 1., 2., 4.];
-            let x = Buffer::<_, Sh3<1, 4, 1>>::from_slice(&vec);
-            let y = Buffer::<f64, _>::cfrom(x.clone());
+            let x = Buffer::<Sh3<1, 4, 1>>::from_slice(&vec);
+            let y = Buffer::<_, f64>::cfrom(x.clone());
             cmp_vec_f64(&vec.clone().into_iter().map(|x| x as f64).collect::<Vec<f64>>(), &y.to_vec());
-            let y: Buffer::<f64, _> = x.cinto();
+            let y: Buffer::<_, f64> = x.cinto();
             cmp_vec_f64(&vec.into_iter().map(|x| x as f64).collect::<Vec<f64>>(), &y.to_vec());
         }
 
@@ -119,7 +121,7 @@ mod tensor {
         fn get_shape() {
             // TODO finish all variations
             let vec = vec![3., 1., 2., 4.];
-            let x = Buffer::<_, Sh3<1, 4, 1>>::from_slice(&vec);
+            let x = Buffer::<Sh3<1, 4, 1>>::from_slice(&vec);
             assert_eq!([1, 4, 1], x.shape());
         }
 
@@ -130,7 +132,7 @@ mod tensor {
             use crate::ops::ReLU;
             let vec = vec![3., 1., 2., 4.];
             // test Buffer
-            let x = Buffer::<_, Sh1<4>>::from_slice(&vec);
+            let x = Buffer::<Sh1<4>>::from_slice(&vec);
             let y = x.clone().relu();
             cmp_vec(&vec.iter().map(|x| if *x > 0. { *x } else { 0. }).collect::<Vec<f32>>(), &y.to_vec());
             // test Variable
@@ -151,7 +153,7 @@ mod tensor {
             use crate::ops::Exp;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             // test Buffer
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
             let y = x.clone().exp();
             cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &y.to_vec());
             // test Variable
@@ -173,7 +175,7 @@ mod tensor {
             use crate::ops::Ln;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             // test Buffer
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
             let y = x.clone().ln();
             cmp_vec(&vec.iter().map(|x| x.ln()).collect::<Vec<f32>>(), &y.to_vec());
             // test Variable
@@ -194,7 +196,7 @@ mod tensor {
             // TODO finish all variations
             use crate::ops::Tanh;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
             let y = x.tanh();
             assert_eq!(vec.iter().map(|x| x.tanh()).collect::<Vec<f32>>(), y.data().clone().to_vec());
             y.backward();
@@ -206,7 +208,7 @@ mod tensor {
             // TODO finish all variations
             use crate::ops::IntoVec;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
             let y = -&x;
             assert_eq!(vec.iter().map(|x| -x).collect::<Vec<f32>>(), y.data().to_vec());
             y.backward();
@@ -240,7 +242,7 @@ mod tensor {
             // TODO finish all variations
             use crate::ops::Reshape;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
-            let x = Buffer::<_, Sh3<1, 1, 9>>::from_slice(&vec);
+            let x = Buffer::<Sh3<1, 1, 9>>::from_slice(&vec);
             let y = x.reshape::<Sh2<3, 3>>();
             assert_eq!(vec, y.to_vec())
         }
@@ -250,7 +252,7 @@ mod tensor {
             // TODO finish all variations
             use crate::ops::Expand;
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
-            let x = Buffer::<_, Sh3<1, 1, 9>>::from_slice(&vec);
+            let x = Buffer::<Sh3<1, 1, 9>>::from_slice(&vec);
             let y = x.expand::<Sh3<3, 1, 9>>();
             assert_eq!(y.shape(), [3, 1, 9]);
             //assert_eq!(vec, &y.to_vec().into_iter().repeat(3).collect::<Vec<f32>>())
@@ -285,7 +287,7 @@ mod tensor {
             assert_eq!(y.shape(), [2, 2, 3]);
 
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
-            let x = Buffer::<_, Sh2<9, 1>>::from_slice(&vec).with_grad();
+            let x = Buffer::<Sh2<9, 1>>::from_slice(&vec).with_grad();
             //let y = (&x).permute::<Ax2<1, 0>>();
             use crate::ops::Transpose;
             let y = x.transpose();
@@ -301,28 +303,28 @@ mod tensor {
             let vec2 = vec![4., 2., 2., 4., 1., -2., 4., 3., 7.];
 
             // test Buffer
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2);
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2);
             let z = x + y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
 
             // test Variable
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = x + &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
 
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2);
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2);
             let z = &x + y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec.iter().map(|_| 1.).collect::<Vec<f32>>(), &x.grad().to_vec());
 
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = &x + &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
@@ -330,38 +332,38 @@ mod tensor {
             cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
 
             // test Tensor
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = y.exp() + x.exp();
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().to_vec());
 
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2);
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2);
             let z = x.exp() + y.exp();
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &x.grad().to_vec());
 
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = &x + y.exp();
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec.iter().map(|_| 1.).collect::<Vec<f32>>(), &x.grad().to_vec());
             cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().to_vec());
 
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = x.exp() + &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
             cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &x.grad().to_vec());
             cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
 
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec).with_grad();
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec).with_grad();
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = x.exp() + y.exp();
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
@@ -372,7 +374,7 @@ mod tensor {
         #[test]
         fn add_scalar() {
             // TODO
-            let x = Buffer::<f32, _>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
+            let x = Buffer::cfrom([[2., 3., 1.], [3., 4., 5.]]);
             /*let _y = x.clone()/2f32;
             let _y = x.clone()/2f64;
             let _y = x.clone()/2i8;
@@ -387,7 +389,7 @@ mod tensor {
             let _y = x.clone()/2u64;
             let _y = x.clone()/2u128;
             let _y = x.clone()/2usize;*/
-            let _x: Buffer<i32, _> = x.cinto();
+            let _x: Buffer<_, i32> = x.cinto();
             //println!("{}", x);
             //panic!();
         }
@@ -403,14 +405,14 @@ mod tensor {
             let vec2 = vec![4., 2., 2., 4., 1., -2., 4., 3., 7.];
 
             // test Buffer
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2);
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2);
             let z = x * y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x * *y).collect::<Vec<f32>>(), &z.to_vec());
 
             // test Variable
-            let x = Buffer::<_, Sh1<9>>::from_slice(&vec);
-            let y = Buffer::<_, Sh1<9>>::from_slice(&vec2).with_grad();
+            let x = Buffer::<Sh1<9>>::from_slice(&vec);
+            let y = Buffer::<Sh1<9>>::from_slice(&vec2).with_grad();
             let z = x * &y;
             cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x * *y).collect::<Vec<f32>>(), &z.to_vec());
             z.backward();
@@ -486,9 +488,9 @@ mod tensor {
         fn pow_scalar() {
             // TODO
             use crate::ops::Pow;
-            let x = Buffer::<f32, _>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
-            let _y = x.clone().pow(2i32);
-            let _x: Buffer<i32, _> = x.cinto();
+            let x = Buffer::cfrom([[2., 3., 1.], [3., 4., 5.]]);
+            let _y = x.clone().pow(2);
+            let _x: Buffer<_, i32> = x.cinto();
             //println!("{}", x);
             //panic!();
         }
@@ -516,7 +518,7 @@ mod tensor {
             z.backward();
             assert_eq!(x.grad().to_vec(), [5., 7., 8.].to_vec());
 
-            let x = Buffer::<f32, _>::cfrom([[2., 3., 4.]]).with_grad();
+            let x = Buffer::cfrom([[2., 3., 4.]]).with_grad();
             let y = Buffer::cfrom([[2., 3.], [3., 4.], [5., 3.]]).with_grad();
             let z = x.matmul(&y);
             assert_eq!(z.data().to_vec(), [33., 30.]);
@@ -540,10 +542,11 @@ mod tensor {
 }
 
 mod nn {
+    use super::Buffer;
+
     #[test]
     fn linear() {
         use crate::prelude::*;
-        use super::Buffer;
         use crate::nn;
 
         let linear = nn::Linear::<Buffer<_, _>, Buffer<_, _>>::new::<3, 2>();

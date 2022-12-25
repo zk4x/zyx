@@ -78,10 +78,10 @@ fn sum() {
     extern crate alloc;
 
     let vec = alloc::vec![3, 1, 2, 4, 1, 0, 4, 3, 5];
-    let x = Buffer::<_, Sh3<3, 3, 1>>::from_slice(&vec);
+    let x = Buffer::<Sh3<3, 3, 1>, _>::from_slice(&vec);
     let _y = x.sum::<Ax2<0, 1>>();
 
-    let x = Buffer::<_, Sh3<3, 3, 1>>::from_slice(&vec).with_grad();
+    let x = Buffer::<Sh3<3, 3, 1>, _>::from_slice(&vec).with_grad();
     //let x = Buffer::<_, Sh5<1, 3, 1, 3, 1>>::from_slice(&vec).with_grad();
     let y = (&x).sum::<Ax2<0, 1>>();
 

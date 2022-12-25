@@ -284,9 +284,9 @@ where
 /*#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NormLayer {}
 
-impl<Input> Module<Input> for &NormLayer {
+impl<Input> Module<Input> for NormLayer {
     type Output = Self;
-    fn forward(self, x: Input) -> Self::Output {
+    fn forward(&self, x: Input) -> Self::Output {
         (x - x.apply(&Mean))/x.apply(&STD)
     }
 }*/

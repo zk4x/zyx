@@ -34,7 +34,7 @@ where
     }
 }
 
-impl<'g, YS, T, Sh> Add<&'g Variable<YS>> for cpu::Buffer<T, Sh>
+impl<'g, YS, Sh, T> Add<&'g Variable<YS>> for cpu::Buffer<Sh, T>
 where
     Sh: Shape,
     Self: Add<YS>,
