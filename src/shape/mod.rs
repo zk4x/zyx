@@ -56,6 +56,5 @@ where
     Self: HasLastDim,
 {
     /// Output shape of matmul
-    type Output: Shape + HasLastDim;
+    type Output: Shape + HasLast2Dims;
 }
-

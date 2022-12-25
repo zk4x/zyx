@@ -9,7 +9,7 @@ pub mod module;
 pub mod parameters;
 
 use crate::{nn::module::Module, ops::{self, HasShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::{Shape, Sh2, Axes}};
-use core::{ops::{Neg, Add, Sub, Div, Mul}, marker::PhantomData};
+use core::{ops::{Neg, Add, Sub, Div}, marker::PhantomData};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -91,15 +91,15 @@ impl<Input> Module<'_, Input> for Sigmoid
 where
     Input: Neg,
     <Input as Neg>::Output: ops::Exp,
-    i32: Add<<<Input as Neg>::Output as ops::Exp>::Output>,
-    i32: Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>,
+    <<Input as Neg>::Output as ops::Exp>::Output: Add<i32>,
+    <<<Input as Neg>::Output as ops::Exp>::Output as Add<i32>>::Output: Pow<i32>,
 {
-    type Output = <i32 as Div<<i32 as Add<<<Input as Neg>::Output as ops::Exp>::Output>>::Output>>::Output;
+    type Output = <<<<Input as Neg>::Output as ops::Exp>::Output as Add<i32>>::Output as Pow<i32>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
         use ops::Exp;
-        1/(1+(-x).exp())
+        ((-x).exp() + 1).pow(-1)
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -248,13 +248,13 @@ impl<Input, Dims> Module<'_, Input> for Mean<Dims>
 where
     Dims: Axes,
     Input: HasShape + ops::Summable<Dims>,
-    <Input as ops::Summable<Dims>>::Output: Div<usize>,
+    <Input as ops::Summable<Dims>>::Output: Div<i32>,
 {
-    type Output = <<Input as ops::Summable<Dims>>::Output as Div<usize>>::Output;
+    type Output = <<Input as ops::Summable<Dims>>::Output as Div<i32>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x._sum()/Input::Sh::numel()
+        x._sum()/(Input::Sh::numel() as i32)
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -293,12 +293,12 @@ impl<Input> Module<Input> for &NormLayer {
 
 /// Linear layer
 #[derive(Debug, Clone)]
-pub struct Linear<W, B> {
+pub struct Linear<W: crate::dtype::SType, B: crate::dtype::SType> {
     w: Variable<W>,
     b: Variable<B>,
 }
 
-impl<W, B> Linear<W, B> {
+impl<W: crate::dtype::SType, B: crate::dtype::SType> Linear<W, B> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<const IN_FEATURES: usize, const OUT_FEATURES: usize>() -> Self
     where
@@ -317,12 +317,8 @@ impl<W, B> Linear<W, B> {
 
 impl<'p, W, B, Input> Module<'p, Input> for Linear<W, B>
 where
-    W: Clone + Sub<<W as Mul<f64>>::Output, Output = W> + Mul<f64>,
-    B: Clone + Sub<<B as Mul<f64>>::Output, Output = B> + Mul<f64>,
-
-    W: 'p,
-    B: 'p,
-
+    W: 'p + crate::dtype::SType,
+    B: 'p + crate::dtype::SType,
     Input: MatMul<&'p Variable<W>>,
     <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
 {

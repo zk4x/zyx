@@ -101,7 +101,7 @@ mod tensor {
         extern crate alloc;
         use alloc::vec;
         use alloc::vec::Vec;
-        use crate::shape::{Sh1, Sh2, Sh3, Sh4, Sh5, Ax2, Ax3};
+        use crate::shape::{Sh1, Sh2, Sh3, Ax3};
 
         #[test]
         fn convert_from() {
@@ -260,8 +260,8 @@ mod tensor {
         fn permute() {
             // TODO finish all variations
             use crate::ops::Permute;
-            let x = Buffer::cfrom([[2, 3, 1], [3, 4, 5]]);
-            let _ = x.permute::<Ax2<-1, -2>>();
+            //let x = Buffer::cfrom([[2, 3, 1], [3, 4, 5]]);
+            //let _ = x.permute::<Ax2<-1, -2>>();
 
             let x = Buffer::cfrom([[[3, 2], [4, 1], [4, 2]], [[2, 3], [3, 4], [4, 1]]]);
             let y = x.clone().permute::<Ax3<2, 1, 0>>();
@@ -286,7 +286,7 @@ mod tensor {
 
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x = Buffer::<_, Sh2<9, 1>>::from_slice(&vec).with_grad();
-            let y = (&x).permute::<Ax2<1, 0>>();
+            //let y = (&x).permute::<Ax2<1, 0>>();
             use crate::ops::Transpose;
             let y = x.transpose();
             assert_eq!(vec, y.to_vec());
@@ -373,7 +373,7 @@ mod tensor {
         fn add_scalar() {
             // TODO
             let x = Buffer::<f32, _>::cfrom([[2., 3., 1.], [3., 4., 5.]]);
-            let _y = x.clone()/2f32;
+            /*let _y = x.clone()/2f32;
             let _y = x.clone()/2f64;
             let _y = x.clone()/2i8;
             let _y = x.clone()/2i16;
@@ -386,7 +386,7 @@ mod tensor {
             let _y = x.clone()/2u32;
             let _y = x.clone()/2u64;
             let _y = x.clone()/2u128;
-            let _y = x.clone()/2usize;
+            let _y = x.clone()/2usize;*/
             let _x: Buffer<i32, _> = x.cinto();
             //println!("{}", x);
             //panic!();
@@ -545,11 +545,11 @@ mod nn {
         use crate::prelude::*;
         use super::Buffer;
         use crate::nn;
+
         let linear = nn::Linear::<Buffer<_, _>, Buffer<_, _>>::new::<3, 2>();
-        //let linear = nn::Linear::new::<f32>(3, 2);
         let x = Buffer::cfrom([[2., 3., 1.]]);
         let z = linear.forward(x);
-        assert_eq!(z.shape(), [1, 2]);
+        assert_eq!(z.shape(), [1usize, 2]);
         //println!("{}", z);
         z.backward();
     }

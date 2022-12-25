@@ -20,7 +20,7 @@ where
 impl<'g, XS, YS> MatMul<&'g Variable<YS>> for XS
 where
     XS: Clone + MatMul<YS> + SType,
-    YS: Clone,
+    YS: Clone + SType,
 {
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardSV<'g, XS, YS>>;
     fn matmul(self, rhs: &'g Variable<YS>) -> Self::Output {
@@ -54,7 +54,7 @@ where
 impl<XS, YS, YF> MatMul<Tensor<YS, YF>> for XS
 where
     XS: Clone + MatMul<YS> + SType,
-    YS: Clone,
+    YS: Clone + SType,
 {
     type Output = Tensor<<XS as MatMul<YS>>::Output, MatMulBackwardST<XS, YF>>;
     fn matmul(self, rhs: Tensor<YS, YF>) -> Self::Output {

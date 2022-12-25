@@ -61,7 +61,7 @@ use core::ops::{Sub, Mul};
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct SGD {
-    learning_rate: f64,
+    learning_rate: f32,
 }
 
 impl Default for SGD {
@@ -81,7 +81,7 @@ impl SGD {
     }
 
     /// Set learning rate for [SGD]
-    pub fn with_learning_rate(mut self, learning_rate: f64) -> Self {
+    pub fn with_learning_rate(mut self, learning_rate: f32) -> Self {
         self.learning_rate = learning_rate;
         self
     }
@@ -99,7 +99,7 @@ pub trait SGDStep {
 use crate::tensor::Variable;
 impl<S> SGDStep for &mut Variable<S>
 where
-    S: Clone + Mul<f64> + Sub<<S as Mul<f64>>::Output, Output = S>,
+    S: Clone + Mul<f32> + Sub<<S as Mul<f32>>::Output, Output = S>,
 {
     fn step(self, optim: &SGD) {
         if let Some(grad) = self.grad().value().clone() {

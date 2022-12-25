@@ -15,7 +15,7 @@ use super::{Ax1, Ax2, Ax3, Ax4, Ax5};
 use super::{HasLastDim, HasLast2Dims, ReducableBy, PermutableBy, MatMulBy};
 
 /// Shape trait
-pub trait Shape: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32> {
+pub trait Shape: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize, Output = usize> + Index<i32, Output = usize> {
     /// Rank of Shape
     const RANK: usize;
     /// Output type when calling array and strides function

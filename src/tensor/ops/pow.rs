@@ -215,18 +215,19 @@ where
 impl<S, S2, F> Pow<S2> for Tensor<S, F>
 where
     S: Clone + Pow<S2>,
-    S2: SType + Clone + Mul<<S as Pow<S2>>::Output>,
+    S2: SType + Clone,
+    <S as Pow<S2>>::Output: Mul<S2>,
     <S as Pow<S2>>::Output: Clone,
-    <S2 as Mul<<S as Pow<S2>>::Output>>::Output: Div<S>,
+    <<S as Pow<S2>>::Output as Mul<S2>>::Output: Div<S>,
 {
-    type Output = Tensor<<S as Pow<S2>>::Output, PowBackwardTS<<<S2 as Mul<<S as Pow<S2>>::Output>>::Output as Div<S>>::Output, F>>;
+    type Output = Tensor<<S as Pow<S2>>::Output, PowBackwardTS<<<<S as Pow<S2>>::Output as Mul<S2>>::Output as Div<S>>::Output, F>>;
     fn pow(self, rhs: S2) -> Self::Output {
         let res = self.data.clone().pow(rhs.clone());
         Tensor {
             data: res.clone(),
             grad_fn: PowBackwardTS {
                 xgrad_fn: self.grad_fn,
-                xtemp: rhs * res/self.data,
+                xtemp: res*rhs/self.data,
             },
         }
     }

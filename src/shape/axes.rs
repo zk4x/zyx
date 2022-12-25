@@ -5,7 +5,7 @@ use core::{fmt::{Debug, Display}, ops::{Index, IndexMut}};
 use super::PermutableBy;
 
 /// Axes trait
-pub trait Axes: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize> + Index<i32> {
+pub trait Axes: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize, Output = i32> + Index<i32, Output = i32> {
     /// Rank
     const RANK: usize;
     /// Output type when calling array and strides function

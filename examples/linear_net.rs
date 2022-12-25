@@ -1,18 +1,18 @@
 //! ## This is an example of linear neural network with sequential model
 
-use zyx::prelude::*;
-use zyx::accel::cpu;
-use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
-use zyx::optim;
-use zyx::shape::Ax1;
-
 fn main() {
-    /*let mut network = (
-        Linear::new::<1, 20>(),
+    use zyx::prelude::*;
+    use zyx::accel::cpu;
+    use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
+    use zyx::optim;
+    use zyx::shape::Ax1;
+
+    let mut network = (
+        Linear::<cpu::Buffer<_, _>, cpu::Buffer<_, _>>::new::<1, 20>(),
         ReLU,
-        Linear::new::<20, 50>(),
+        Linear::<cpu::Buffer<_, _>, cpu::Buffer<_, _>>::new::<20, 50>(),
         Tanh,
-        Linear::new::<50, 1>(),
+        Linear::<cpu::Buffer<_, _>, cpu::Buffer<_, _>>::new::<50, 1>(),
         Sigmoid,
     );
 
@@ -23,7 +23,7 @@ fn main() {
 
     for _ in 0..100 {
         for i in 0..100 {
-            //<(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::module::Module<'_, cpu::Buffer<_, _>>>::parameters(&mut network).zero_grad();
+            <(Linear<_, _>, zyx::nn::ReLU, Linear<_, _>, zyx::nn::Tanh, Linear<_, _>, Sigmoid) as zyx::nn::module::Module<cpu::Buffer<_, _>>>::parameters(&mut network).zero_grad();
             network.parameters().zero_grad();
 
             let x = cpu::Buffer::cfrom([[i as f32 / 10.]]);
@@ -40,5 +40,5 @@ fn main() {
             // Right now it looks bad, but eventually it will look like this:
             network.parameters().step(&optimizer);
         }
-    }*/
+    }
 }

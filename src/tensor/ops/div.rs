@@ -1,4 +1,4 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType, accel::cpu, shape::Shape};
+use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType};
 use core::ops::{Neg, Mul, Div};
 //use duplicate::duplicate_item;
 
@@ -43,7 +43,7 @@ where
     }
 }*/
 
-#[derive(Debug, Clone, Copy)]
+/*#[derive(Debug, Clone, Copy)]
 pub struct DivBackwardST<S, YS, YF> {
     res: S,
     ygrad_fn: YF,
@@ -60,7 +60,7 @@ where
     fn backward(self, res_grad: S3) {
         self.ygrad_fn.backward(-self.res / self.ydata * res_grad);
     }
-}
+}*/
 
 /*#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];
     [cpu::Buffer<f32>]; [cpu::Buffer<f64>]; [cpu::Buffer<i32>]; [cpu::Buffer<i64>]; [cpu::Buffer<i128>];
@@ -87,7 +87,7 @@ where
 
 // TODO: remove this and put it into the implementation above.
 // And figure why the above implementation overflows during compilation.
-impl<F, Sh> Div<Tensor<cpu::Buffer<f32, Sh>, F>> for i32
+/*impl<F, Sh> Div<Tensor<cpu::Buffer<T, Sh>, F>> for i32
 where
     Sh: Shape,
 {
@@ -103,7 +103,7 @@ where
             },
         }
     }
-}
+}*/
 
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVS<'g, XG, YS> {

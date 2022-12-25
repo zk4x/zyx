@@ -16,40 +16,44 @@
 /// 
 /// Module can be implemented for anything that can have forward function.
 /// Forward simply takes any input, applies some operation and returns output.
-/// Every module also has some or zero [parameters](Parameters) that can be optimized
-/// by [optimizers](crate::optim).
-pub trait Module<'p, Input> {
+///
+/// Functions are modules.
+/// Layers are modules.
+/// Tuples of modules are modules.
+pub trait Module<Input> {
     /// Output of forward operation on [Module]
     type Output;
-    /// [Parameters] of [Module]
-    type Params: crate::nn::parameters::Parameters;
     /// Forward operation on [Module]
-    fn forward(&'p self, x: Input) -> Self::Output;
+    fn forward(self, x: Input) -> Self::Output;
+}
+
+/// Some modules can also have [parameters](Parameters).
+/// These can be passed to [optimizers](crate::optim) or are used in initialization methods.
+pub trait ModuleWithParameters: Module<Input> {
+    /// [Parameters] of [Module]
+    type Params: super::parameters::Parameters;
     /// Get parameters of [Module]
-    fn parameters(&'p mut self) -> Self::Params;
+    fn parameters(self) -> Self::Params;
 }
 
 /// Apply trait allows us to use monads
-pub trait Apply<'p, Operation> {
+pub trait Apply<Operation> {
     /// Output of forward operation on [Module]
     type Output;
     /// Forward operation on [Module]
-    fn apply(self, x: &'p Operation) -> Self::Output;
+    fn apply(self, x: Operation) -> Self::Output;
 }
 
-impl<'p, Input, Operation> Apply<'p, Operation> for Input
+impl<Input, Operation> Apply<Operation> for Input
 where
-    Operation: Module<'p, Input>
+    Operation: Module<Input>
 {
-    type Output = <Operation as Module<'p, Input>>::Output;
-    fn apply(self, x: &'p Operation) -> Self::Output {
+    type Output = <Operation as Module<Input>>::Output;
+    fn apply(self, x: Operation) -> Self::Output {
         x.forward(self)
     }
 }
 
-// Functions are modules
-// Layers are modules
-// Tuples of modules are modules
 impl<'p, Input, M0, M1> Module<'p, Input> for (M0, M1)
 where
     M0: Module<'p, Input>,

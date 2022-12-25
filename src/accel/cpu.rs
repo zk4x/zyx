@@ -405,37 +405,53 @@ impl<T, Sh, Dims, const N: usize> ops::Permutable<Dims> for Buffer<T, Sh>
 where
     T: ops::Zeros + DType,
     Sh: Shape<AsArray = [usize; N]> + PermutableBy<Dims>,
-    Dims: Axes,
+    Dims: Axes + 'static,
 {
     type Output = Buffer<T, <Sh as PermutableBy<Dims>>::Output>;
     fn _permute(self) -> Self::Output {
-        //let shape = self.shape.permute();
         // permute function
-        let permute = |array: &mut [usize]| {
-            let n = array.len();
+        let permute = |array: &[usize]| {
+            /*let n = array.len();
             let dims = Dims::array();
-            let index = |idx| (n as i32 + idx) as usize % n;
             let mut temp = array[index(dims[0])];
             for i in 0..Dims::RANK {
                 core::mem::swap(&mut array[index(dims[i])], &mut temp);
             }
-            array[index(dims[0])] = temp;
+            array[index(dims[0])] = temp;*/
+            if Dims::default()[-1] == -2 {
+                let mut res = array.to_vec(); // TODO once stable rust supports it, this can be just array, not vecto
+                res.swap(Sh::RANK - 1, Sh::RANK - 2);
+                return res;
+            } else if Dims::default()[-1] == -1 {
+                return array.to_vec(); // TODO once stable rust supports it, this can be just array, not vecto
+            }
+            let mut res = vec![0; Sh::RANK]; // TODO once stable rust supports it, this can be just array, not vecto
+            for (i, dim) in Dims::array().into_iter().enumerate() {
+                res[i] = array[dim as usize];
+            }
+            res
         };
-        let mut strides = Sh::strides();
-        permute(&mut strides);
+        // we permute strides and acc
+        // acc is like strides but it is moved one dimension to the right,
+        // so for example for Sh3
+        // strides [   D1*D2,    D2,  1]
+        // acc     [D0*D1*D2, D1*D2, D2]
+        let strides = permute(&Sh::strides());
         let mut acc_var = 1;
-        let mut acc = vec![1; Sh::RANK];
+        let mut acc = vec![0; Sh::RANK]; // TODO once stable rust supports it, this can be just array, not vector
         for i in 0..Sh::RANK {
             acc_var *= Sh::at(Sh::RANK - i - 1);
             acc[Sh::RANK - i - 1] = acc_var;
         }
-        permute(&mut acc);
+        let acc = permute(&acc);
         // temp is in reverse order
-        let mut temp = vec![(0, 0); Sh::RANK]; // strides, acc_shape
-        let mut begins = vec![0; Sh::RANK];
+        let mut temp = vec![(0, 0); Sh::RANK]; // (strides, acc) // TODO once stable rust supports it, this can be just array, not vector
+        let mut begins = vec![0; Sh::RANK]; // TODO once stable rust supports it, this can be just array, not vector
         for k in 0..Sh::RANK {
             temp[Sh::RANK-k-1] = (strides[k], acc[k]);
         }
+        // begins is array of indices over each of dimensions. They are slowly increased by strides until it reaches dimension size stored in acc
+        // then we increase index in higher dimension and we go over lower dimension again kinda like revolution counter
         let mut data = alloc::vec::Vec::with_capacity(Sh::numel());
         let mut i = 0;
         for _ in  0..Sh::numel() {
@@ -444,7 +460,7 @@ where
                 begins[j] += st;
                 i += st;
                 if begins[j] < *acc {
-                    break;
+                    break; // this happens more often than the other branch, hopefully branch predictor will be smart enough about it
                 } else {
                     i -= begins[j];
                     begins[j] = 0;
@@ -625,7 +641,7 @@ where
     }
 }
 
-use duplicate::duplicate_item;
+/*use duplicate::duplicate_item;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Add<Buffer<T, Sh>> for dtype
 where
@@ -646,16 +662,15 @@ where
             shape: PhantomData,
         }
     }
-}
+}*/
 
-impl<T, T2, Sh> core::ops::Add<T2> for Buffer<T, Sh>
+impl<T, Sh> core::ops::Add<i32> for Buffer<T, Sh>
 where
-    T2: DType,
-    T: Clone + Sync + Send + core::ops::Add<Output = T> + ConvertFrom<T2> + DType,
+    T: DType + ConvertFrom<i32> + Sync + Send + core::ops::Add<Output = T>,
     Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
-    fn add(self, rhs: T2) -> Self::Output {
+    fn add(self, rhs: i32) -> Self::Output {
         use rayon::prelude::*;
         use crate::ops::ConvertInto;
         let rhs: T = rhs.cinto();
@@ -682,8 +697,8 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl<T, Sh> core::ops::Sub<Buffer<T, Sh>> for dtype
+//#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+impl<T, Sh> core::ops::Sub<Buffer<T, Sh>> for i32
 where
     T: Sync + Send + ConvertFrom<Self> + core::ops::Sub<Output = T> + Clone + DType,
     Sh: Shape,
@@ -704,7 +719,7 @@ where
     }
 }
 
-impl<T, T2, Sh> core::ops::Sub<T2> for Buffer<T, Sh>
+/*impl<T, T2, Sh> core::ops::Sub<T2> for Buffer<T, Sh>
 where
     T2: DType,
     T: Clone + Sync + Send + core::ops::Sub<Output = T> + ConvertFrom<T2> + DType,
@@ -724,7 +739,7 @@ where
             shape: PhantomData,
         }
     }
-}
+}*/
 
 impl<T, XSh, YSh> core::ops::Mul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
@@ -738,7 +753,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+/*#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Mul<Buffer<T, Sh>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + core::ops::Mul<Output = T> + Clone + DType,
@@ -757,16 +772,35 @@ where
             shape: PhantomData,
         }
     }
-}
+}*/
 
-impl<T, T2, Sh> core::ops::Mul<T2> for Buffer<T, Sh>
+impl<T, Sh> core::ops::Mul<f32> for Buffer<T, Sh>
 where
-    T2: DType,
-    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<T2> + DType,
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<f32> + DType,
     Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
-    fn mul(self, rhs: T2) -> Self::Output {
+    fn mul(self, rhs: f32) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let y: T = rhs.cinto();
+        Self {
+            data: Arc::new(match Arc::try_unwrap(self.data) {
+                Ok(vec) => vec.into_par_iter().map(|x| x * y.clone()).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() * y.clone()).collect(),
+            }),
+            shape: PhantomData,
+        }
+    }
+}
+
+impl<T, Sh> core::ops::Mul<i32> for Buffer<T, Sh>
+where
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<i32> + DType,
+    Sh: Shape,
+{
+    type Output = Buffer<T, Sh>;
+    fn mul(self, rhs: i32) -> Self::Output {
         use rayon::prelude::*;
         use ops::ConvertInto;
         let y: T = rhs.cinto();
@@ -792,7 +826,7 @@ where
     }
 }
 
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
+/*#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl<T, Sh> core::ops::Div<Buffer<T, Sh>> for dtype
 where
     T: Sync + Send + ConvertFrom<Self> + core::ops::Div<Output = T> + Clone + DType,
@@ -811,16 +845,15 @@ where
             shape: PhantomData,
         }
     }
-}
+}*/
 
-impl<T, T2, Sh> core::ops::Div<T2> for Buffer<T, Sh>
+impl<T, Sh> core::ops::Div<i32> for Buffer<T, Sh>
 where
-    T2: DType,
-    T: Clone + Sync + Send + core::ops::Div<Output = T> + ConvertFrom<T2> + DType,
+    T: Sync + Send + core::ops::Div<Output = T> + ConvertFrom<i32> + DType,
     Sh: Shape,
 {
     type Output = Buffer<T, Sh>;
-    fn div(self, rhs: T2) -> Self::Output {
+    fn div(self, rhs: i32) -> Self::Output {
         use rayon::prelude::*;
         use ops::ConvertInto;
         let rhs: T = rhs.cinto();
@@ -868,7 +901,7 @@ where
 #[cfg(not(feature = "matrixmultiply"))]
 impl<T, XSh, YSh> ops::MatMul<Buffer<T, YSh>> for Buffer<T, XSh>
 where
-    T: DType + Send + Sync + core::ops::Mul<Output = T> + core::iter::Sum,
+    T: DType + Send + Sync + core::ops::Mul<Output = T> + core::iter::Sum + core::fmt::Debug,
     XSh: Shape + shape::MatMulBy<YSh>,
     YSh: Shape + HasLastDim,
 {
@@ -884,7 +917,7 @@ where
             let mut res = alloc::vec::Vec::with_capacity(n);
             let mut j = 0;
             while j < last_dim {
-                let mut i = 0;
+                let mut i = j;
                 while i < n {
                     res.push(data[i].clone());
                     i += last_dim;
@@ -911,7 +944,8 @@ where
             })
             .flatten()
             .collect();
-        let data = transpose(&data, <XSh as MatMulBy<YSh>>::Output::LAST_DIM, <XSh as MatMulBy<YSh>>::Output::numel());
+        use crate::shape::HasLast2Dims;
+        let data = transpose(&data, <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2, <XSh as MatMulBy<YSh>>::Output::numel());
         Buffer {
             data: Arc::new(data),
             shape: PhantomData,
