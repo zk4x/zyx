@@ -36,7 +36,7 @@ where
     }
 }
 
-impl<'g, YS, T, Sh> Mul<&'g Variable<YS>> for cpu::Buffer<T, Sh>
+impl<'g, YS, Sh, T> Mul<&'g Variable<YS>> for cpu::Buffer<Sh, T>
 where
     Sh: Shape,
     Self: Mul<YS>,
