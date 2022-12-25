@@ -293,12 +293,12 @@ impl<Input> Module<Input> for &NormLayer {
 
 /// Linear layer
 #[derive(Debug, Clone)]
-pub struct Linear<W: crate::dtype::SType, B: crate::dtype::SType> {
+pub struct Linear<W, B> {
     w: Variable<W>,
     b: Variable<B>,
 }
 
-impl<W: crate::dtype::SType, B: crate::dtype::SType> Linear<W, B> {
+impl<W, B> Linear<W, B> {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new<const IN_FEATURES: usize, const OUT_FEATURES: usize>() -> Self
     where
@@ -317,8 +317,8 @@ impl<W: crate::dtype::SType, B: crate::dtype::SType> Linear<W, B> {
 
 impl<'p, W, B, Input> Module<'p, Input> for Linear<W, B>
 where
-    W: 'p + crate::dtype::SType,
-    B: 'p + crate::dtype::SType,
+    W: 'p,
+    B: 'p,
     Input: MatMul<&'p Variable<W>>,
     <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
 {
