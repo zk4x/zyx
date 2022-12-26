@@ -18,6 +18,7 @@ categories = ["computer-vision", "science", "simulation", "text-processing"]
 duplicate = { version = "0.4.*" }
 rand = { version = "0.8.*" }
 rayon = { version = "1.*" }
+ocl = "0.19"
 
 # optional dependencies
 matrixmultiply = { version = "0.3.*", features = ["threading"], optional = true }

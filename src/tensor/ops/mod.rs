@@ -1,10 +1,9 @@
 // This module contains tensor implementations of operations defined in ops module.
 
 mod into_vec;
-mod get_shape;
-mod from_vec;
-mod ones;
-mod zeros;
+mod has_dtype;
+mod has_device;
+mod has_shape;
 mod relu;
 mod exp;
 mod ln;

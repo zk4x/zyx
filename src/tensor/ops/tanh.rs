@@ -11,11 +11,11 @@ impl<S, S2, G> Backward<S> for TanhBackwardV<'_, S2, G>
 where
     S2: Pow<i32>,
     i32: Sub<<S2 as Pow<i32>>::Output>,
-    S: Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>,
-    G: GradAcc<<S as Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>>::Output>,
+    <i32 as Sub<<S2 as Pow<i32>>::Output>>::Output: Mul<S>,
+    G: GradAcc<<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad * (1 - self.res.pow(2)));
+        self.grad.accumulate((1 - self.res.pow(2)) * res_grad);
     }
 }
 
@@ -47,11 +47,11 @@ impl<S, S2, F> Backward<S> for TanhBackwardT<S2, F>
 where
     S2: Pow<i32>,
     i32: Sub<<S2 as Pow<i32>>::Output>,
-    S: Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>,
-    F: Backward<<S as Mul<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output>>::Output>,
+    <i32 as Sub<<S2 as Pow<i32>>::Output>>::Output: Mul<S>,
+    F: Backward<<<i32 as Sub<<S2 as Pow<i32>>::Output>>::Output as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad * (1 - self.res.pow(2)));
+        self.grad_fn.backward((1 - self.res.pow(2)) * res_grad);
     }
 }
 

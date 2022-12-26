@@ -11,34 +11,39 @@
 //!
 //! Basic buffer
 //! ```
-//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! let x: Buffer<_, _> = Buffer::cfrom([2., 1., 4.]);
+//! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor}, shape::Sh1};
+//! let mut device = cpu::Device::default();
+//! let x: Buffer<Sh1<3>, f32> = device.buffer([2., 1., 4.]);
 //! ```
 //!
 //! By calling [IntoVariable::with_grad()] on any datatype, you get [Variable], which adds gradient to the buffer.
 //! ```
-//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let x: Buffer<_, _> = Buffer::cfrom([2., 1., 4.]);
-//! let y: Variable<_> = x.clone().with_grad();
+//! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor}, shape::Sh1};
+//! # let mut device = cpu::Device::default();
+//! # let x: Buffer<Sh1<3>, f32> = device.buffer([2., 1., 4.]);
+//! let y: Variable<Buffer<Sh1<3>, f32>> = x.clone().with_grad();
 //! ```
 //!
 //! Applying function to [Variable] returns [Tensor].
 //! [Tensor] stores references to [Variable's](Variable) gradients and some data buffers used during gradient calculation.
 //! ```
-//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let y: Variable<_> = Buffer::cfrom([2., 1., 4.]).with_grad();
-//! let z: Tensor<_, _> = y.relu();
+//! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor}, shape::Sh1};
+//! # let mut device = cpu::Device::default();
+//! # let x: Buffer<Sh1<3>, f32> = device.buffer([2., 1., 4.]);
+//! # let y: Variable<Buffer<Sh1<3>, f32>> = x.clone().with_grad();
+//! let z: Tensor<Buffer<Sh1<3>, f32>, _/* ReLUBackwardT<_> */> = y.relu();
 //! ```
 //!
 //! Applying function to buffer simply returns buffer.
 //! ```
-//! # use zyx::{accel::cpu::Buffer, tensor::{Variable, Tensor}};
 //! # use zyx::prelude::*;
-//! # let x: Buffer<_, _> = Buffer::cfrom([2., 1., 4.]);
-//! let z: Buffer<_, _> = x.relu();
+//! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor}, shape::Sh1};
+//! # let mut device = cpu::Device::default();
+//! # let x: Buffer<Sh1<3>, f32> = device.buffer([2., 1., 4.]);
+//! let z: Buffer<Sh1<3>, f32> = x.relu();
 //! ```
 //!
 
@@ -85,7 +90,7 @@ pub struct Variable<S> {
 // So we just make sure that backward can not be called on buffer that is borrowed
 // and that is it.
 #[derive(Default, Debug)]
-pub struct Gradient<S>(core::cell::UnsafeCell<Option<S>>);
+pub struct Gradient<S>(core::cell::UnsafeCell<S>);
 
 impl<S> Clone for Gradient<S>
 where
@@ -97,23 +102,26 @@ where
     }
 }
 
-impl<S> Gradient<S> {
-    fn new() -> Self {
-        Self(core::cell::UnsafeCell::new(None))
+impl<G> Gradient<G> {
+    fn new(data: G) -> Self {
+        Self(core::cell::UnsafeCell::new(data))
     }
 
     /// Get value stored inside of the gradient
-    pub fn value(&self) -> &Option<S> {
+    pub fn buffer(&self) -> &G {
         unsafe { &*self.0.get() }
     }
 
-    fn zero(&mut self) {
-        *self.0.get_mut() = None;
+    fn zero(&mut self)
+    where
+        G: crate::ops::ZerosLike,
+    {
+        self.0.get_mut().zeros_like();
     }
 }
 
-trait GradAcc<G>: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
-impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + crate::ops::Zeros {}
+trait GradAcc<G>: core::ops::Add<G, Output = Self> + Clone {}
+impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + Clone {}
 
 #[derive(Debug, Clone, Copy)]
 struct GradientRef<'g, S>(&'g Gradient<S>);
@@ -125,33 +133,22 @@ impl<'g, S> GradientRef<'g, S> {
 
     fn accumulate<G>(&self, value: G)
     where
-        //S: core::ops::Add<G, Output = S> + Zeros,
         S: GradAcc<G>,
     {
         // Accumulate is called by backward function to accumulate gradients. This is needed in batch processing.
         // Unsafe is needed, because we need multiple functions accessing the same gradient.
-        let mut x = None;
-        unsafe { core::ptr::swap(self.0.0.get(), &mut x); }
-        let grad = Some(match x {
-            Some(grad) => grad + value,
-            None => S::zeros() + value,
-        });
-        unsafe { *self.0.0.get() = grad; }
+        unsafe { *self.0.0.get() = (*self.0.0.get()).clone() + value; }
     }
 }
 
-impl<S, Rhs> PartialEq<Rhs> for Gradient<S>
+/*impl<S, Rhs> PartialEq<Rhs> for Gradient<S>
 where
    S: PartialEq<Rhs>,
 {
     fn eq(&self, rhs: &Rhs) -> bool {
-        if let Some(grad) = unsafe { &*self.0.get() } {
-            grad == rhs
-        } else {
-            false
-        }
+        unsafe { &*self.0.get() == rhs }
     }
-}
+}*/
 
 impl<G> core::fmt::Display for Gradient<G>
 where
@@ -162,12 +159,7 @@ where
         use alloc::string::ToString;
         // This is save, beacause it is read only access
         let grad = unsafe { &*self.0.get() };
-        let s = if grad.is_some() {
-            grad.as_ref().unwrap().to_string()
-        } else {
-            "None".into()
-        };
-        f.write_str(&s)
+        f.write_str(&grad.to_string())
     }
 }
 
@@ -234,7 +226,9 @@ impl<S> Variable<S> {
     /// ```
     /// use zyx::prelude::*;
     /// let mut x = 3.with_grad();
+    /// println!("Grad: {}", x.grad());
     /// x.backward();
+    /// println!("Grad: {}", x.grad());
     /// assert_eq!(x.grad(), &1);
     /// ```
     /// And gradient gets accumulated if we call backward again.
@@ -247,9 +241,11 @@ impl<S> Variable<S> {
     /// ```
     pub fn backward(&mut self)
     where
-        S: core::ops::Add<i32, Output = S> + crate::ops::Zeros,
+        S: crate::ops::HasDType + core::ops::Add<S::T, Output = S> + Clone,
+        S::T: crate::ops::One,
     {
-        GradientRef(&self.grad).accumulate(1);
+        use crate::ops::One;
+        GradientRef(&self.grad).accumulate(S::T::one());
     }
 }
 
@@ -261,11 +257,7 @@ pub trait Backward<S> {
     fn backward(self, res_grad: S);
 }
 
-impl<S, F> Tensor<S, F>
-where
-    S: crate::ops::Ones,
-    F: Backward<S>,
-{
+impl<S, F> Tensor<S, F> {
     /// # Tensor backward
     /// 
     /// Calls backward function on [Tensor].
@@ -275,48 +267,52 @@ where
     /// # Example
     /// ```
     /// # use zyx::prelude::*;
-    /// # use zyx::accel::cpu;
-    /// let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// # use zyx::device::cpu;
+    /// let mut device = cpu::Device::default();
+    /// let x = device.buffer([2., 3., 1.]).with_grad();
     /// let y = x.exp();
     /// ```
     /// y is now [Tensor], so we can call backward on it.
     /// ```
     /// # use zyx::prelude::*;
-    /// # use zyx::accel::cpu;
-    /// # let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// # use zyx::device::cpu;
+    /// # let mut device = cpu::Device::default();
+    /// # let x = device.buffer([2., 3., 1.]).with_grad();
     /// # let y = x.exp();
     /// y.backward();
     /// ```
     /// and the gradient of [Variable] x will now get populated:
     /// ```
     /// # use zyx::prelude::*;
-    /// # use zyx::accel::cpu;
-    /// # let x = cpu::Buffer::cfrom([2., 3., 1.]).with_grad();
+    /// # use zyx::device::cpu;
+    /// # let mut device = cpu::Device::default();
+    /// # let x = device.buffer([2., 3., 1.]).with_grad();
     /// # let y = x.exp();
     /// # y.backward();
-    /// assert_eq!(x.grad().to_vec(), x.data().clone().exp().to_vec());
+    /// assert_eq!(x.grad(), &x.data().clone().exp());
     /// ```
-    pub fn backward(self) {
+    pub fn backward(self)
+    where
+        S: crate::ops::HasDType + crate::ops::ZerosLike + core::ops::Add<S::T>,
+        S::T: crate::ops::One,
+        F: Backward<<S as core::ops::Add<S::T>>::Output>,
+    {
         // NOTE: right now backward call is recursive.
         // Shall this pose a problem, we can switch to iterative version.
-        self.grad_fn.backward(S::ones());
+        use crate::ops::One;
+        self.grad_fn.backward(self.data.zeros_like() + S::T::one());
     }
 }
 
-/// Turn any datatype into [Variable].
-pub trait IntoVariable {
-    /// Calling this function turns input into [Variable] adding gradient in the process.
-    fn with_grad(self) -> Variable<Self>
-    where
-        Self: Sized;
-}
-
 /// Create new [Variable] that requires gradient
-impl<S> IntoVariable for S {
+impl<S> crate::ops::IntoVariable for S
+where
+    S: crate::ops::ZerosLike,
+{
     fn with_grad(self) -> Variable<Self> {
         Variable {
+            grad: Gradient::new(self.zeros_like()),
             data: self,
-            grad: Gradient::new(),
         }
     }
 }
@@ -337,8 +333,8 @@ impl<S, GradFn> Tensor<S, GradFn> {
 
 impl<S> Variable<S> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> &Gradient<S> {
-        &self.grad
+    pub fn grad(&self) -> &S {
+        self.grad.buffer()
     }
 }
 
@@ -429,13 +425,14 @@ impl<S, GradFn> Tensor<S, GradFn> {
 // before using it in optimizer
 impl<S, S2> crate::ops::ConvertFrom<Variable<S2>> for Variable<S>
 where
-    S: crate::ops::ConvertFrom<S2>,
+    S: crate::ops::ConvertFrom<S2> + crate::ops::ZerosLike,
     S2: Clone,
 {
     fn cfrom(x: Variable<S2>) -> Self {
+        let data = S::cfrom(x.data);
         Self {
-            data: S::cfrom(x.data),
-            grad: Gradient::new(),
+            grad: Gradient::new(data.zeros_like()),
+            data,
         }
     }
 }
@@ -458,6 +455,7 @@ where
 
 impl<S> crate::nn::parameters::Parameters for &mut Variable<S>
 where
+    S: crate::ops::ZerosLike,
 {
     fn zero_grad(&mut self) {
         self.grad.zero();

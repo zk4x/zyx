@@ -2,7 +2,7 @@
 
 fn main() {
     /*use zyx::prelude::*;
-    use zyx::accel::cpu;
+    use zyx::device::cpu;
     use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
     use zyx::optim;
     use zyx::shape::Ax1;

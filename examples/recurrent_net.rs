@@ -5,7 +5,7 @@
 
 fn main() {
     /*use zyx::prelude::*;
-    use zyx::accel::cpu;
+    use zyx::device::cpu;
     use zyx::nn::{RNNCell, Linear, MSELoss, Sum, ReLU, Sigmoid};
     use zyx::optim;
 

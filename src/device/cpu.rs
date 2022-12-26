@@ -3,21 +3,49 @@
 //!
 
 use crate::{ops::{self, ConvertFrom}, shape::{self, Shape, HasLastDim, ReducableBy, PermutableBy, MatMulBy, Axes}, dtype::DType};
+use super::BufferFromSlice;
 use core::marker::PhantomData;
 extern crate alloc;
 use alloc::{vec, sync::Arc, format};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Device {}
+
+impl super::Device for Device {}
+
+impl<Sh, T> BufferFromSlice<Sh, T> for Device 
+where
+    Sh: Shape,
+    T: DType,
+{
+    type Buffer = Buffer<Sh, T>;
+    fn _slice(&mut self, slice: &[T]) -> Self::Buffer {
+        Self::Buffer {
+            data: Arc::new(slice.to_vec()),
+            shape: PhantomData,
+        }
+    }
+}
 
 /// Generic multidimensional buffer
 /// 
 /// Each buffer has a shape and data stored in vec.
 /// Data is stored in row major order.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Buffer<Sh, T = f32> {
+#[derive(Debug, Default, PartialEq, Eq, Hash)]
+pub struct Buffer<Sh, T = f32>
+where
+    Sh: Shape,
+    T: DType,
+{
     data: Arc<alloc::vec::Vec<T>>, // In the future this will be Arc<[T; Sh::NUMEL]>
     shape: PhantomData<Sh>,
 }
 
-impl<Sh, T> Clone for Buffer<Sh, T> {
+impl<T, Sh> Clone for Buffer<Sh, T>
+where
+    Sh: Shape,
+    T: DType,
+{
     fn clone(&self) -> Self {
         Self {
             data: self.data.clone(),
@@ -26,7 +54,11 @@ impl<Sh, T> Clone for Buffer<Sh, T> {
     }
 }
 
-impl<Sh, T> Buffer<Sh, T> {
+impl<Sh, T> Buffer<Sh, T>
+where
+    Sh: Shape,
+    T: DType,
+{
     /// Get Buffer's estimated memory size
     pub fn est_mem_size(&self) -> usize {
         self.data.len() * core::mem::size_of::<T>()
@@ -53,8 +85,8 @@ where
 // Display Buffer
 impl<Sh, T> core::fmt::Display for Buffer<Sh, T>
 where
-    T: core::fmt::Display,
     Sh: Shape + HasLastDim,
+    T: DType + core::fmt::Display,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
@@ -105,36 +137,22 @@ where
     }
 }
 
-/// Get Buffer represented as vector.
-/// It is flattened with row major order.
-impl<Sh, T> ops::IntoVec<T> for Buffer<Sh, T>
+/// Get Buffer's [Device]
+impl<Sh, T> ops::HasDevice for Buffer<Sh, T>
 where
-    T: Clone + DType,
     Sh: Shape,
-{
-    fn to_vec(&self) -> alloc::vec::Vec<T> {
-        self.data.as_ref().clone()
-    }
-}
-
-/// Create new Buffer from vec
-impl<Sh, T> ops::FromSlice for Buffer<Sh, T>
-where
     T: DType,
-    Sh: Shape,
 {
-    fn from_slice(data: &[T]) -> Self {
-        assert_eq!(Sh::numel(), data.len());
-        Self {
-            data: Arc::new(data.to_vec()),
-            shape: PhantomData,
-        }
+    type Dev = Device;
+    fn device(&self) -> Self::Dev {
+        Device::default()
     }
 }
 
 /// Get Buffer's [DType]
 impl<Sh, T> ops::HasDType for Buffer<Sh, T>
 where
+    Sh: Shape,
     T: DType,
 {
     type T = T;
@@ -144,33 +162,19 @@ where
 impl<Sh, T> ops::HasShape for Buffer<Sh, T>
 where
     Sh: Shape,
+    T: DType,
 {
     type Sh = Sh;
 }
 
-/// Create new Buffer filled with zeros
-impl<Sh, T> ops::Zeros for Buffer<Sh, T>
+impl<Sh, T> ops::ZerosLike for Buffer<Sh, T>
 where
-    T: ops::Zeros + Clone,
     Sh: Shape,
+    T: DType + ops::Zero,
 {
-    fn zeros() -> Self {
+    fn zeros_like(&self) -> Self {
         Self {
-            data: Arc::new(vec![T::zeros(); Sh::numel()]),
-            shape: PhantomData,
-        }
-    }
-}
-
-/// Create new Buffer filled with ones
-impl<Sh, T> ops::Ones for Buffer<Sh, T>
-where
-    T: ops::Ones + Clone,
-    Sh: Shape,
-{
-    fn ones() -> Self {
-        Self {
-            data: Arc::new(vec![T::ones(); Sh::numel()]),
+            data: Arc::new(vec![T::zero(); Sh::numel()]),
             shape: PhantomData,
         }
     }
@@ -261,18 +265,33 @@ where
 impl<Sh, T, Dims> ops::Summable<Dims> for Buffer<Sh, T>
 where
     Sh: ReducableBy<Dims>,
-    T: ops::Zeros + core::ops::Add<Output = T> + DType,
+    T: ops::Zero + core::ops::Add<Output = T> + DType,
     Sh: Shape,
     Dims: Axes,
 {
     type Output = Buffer<<Sh as ReducableBy<Dims>>::Output, T>;
 
     fn _sum(self) -> Self::Output {
-        use alloc::borrow::ToOwned;
-        // TODO: make this multithreaded
-        let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
+        //let res = vec![T::zeros(); <Sh as ReducableBy<Dims>>::Output::numel()];
 
-        let reduce_dim = |data: &[T], dim: i32| {
+        // Go over all data and apply sum function to correct values
+        // then indices can be added just by making another vector and constantly updating it
+        // with new indices as new max/min are found
+        /*let mut i = 0; // i iterates over the result vec
+        for x in self.data.as_ref() {
+            if something {
+                i -= stride at that dimension
+            }
+            i += 1;
+        }*/
+
+
+
+        // TODO: make this multithreaded
+        //use alloc::borrow::ToOwned;
+        //let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
+
+        /*let reduce_dim = |data: &[T], dim: i32| {
             let strides = Sh::strides();
             let stride = strides[(Sh::RANK as i32 + dim) as usize % Sh::RANK];
             let mut res = vec![T::zeros(); <Sh as ReducableBy<Dims>>::Output::numel()];
@@ -298,7 +317,8 @@ where
         Buffer {
             data: Arc::new(data),
             shape: PhantomData,
-        }
+        }*/
+        todo!()
     }
 }
 
@@ -336,7 +356,7 @@ where
 
 impl<T, Sh, Sh2> ops::Reshapable<Sh2> for Buffer<Sh, T>
 where
-    T: Clone +DType,
+    T: Clone + DType,
     Sh: Shape,
     Sh2: Shape,
 {
@@ -384,9 +404,9 @@ where
             if d != r {
                 if d == 1 {
                     data = copy_dim(data, width, r/d);
-                } else {
-                    panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}", self.shape, Sh2::array(), i);
-                }
+                }/* else {
+                    //panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}", self.shape, Sh2::array(), i);
+                }*/
             }
             width *= Sh2::at(i);
         }
@@ -400,8 +420,9 @@ where
 
 impl<T, Sh, Dims, const N: usize> ops::Permutable<Dims> for Buffer<Sh, T>
 where
-    T: ops::Zeros + DType,
+    T: ops::Zero + DType,
     Sh: Shape<AsArray = [usize; N]> + PermutableBy<Dims>,
+    <Sh as PermutableBy<Dims>>::Output: Shape,
     Dims: Axes + 'static,
 {
     type Output = Buffer<<Sh as PermutableBy<Dims>>::Output, T>;
@@ -496,8 +517,8 @@ pub struct BufferIter<'a, T> {
 
 impl<'a, T, Sh> IntoIterator for &'a Buffer<Sh, T>
 where
-    T: Clone,
     Sh: Shape,
+    T: DType,
 {
     type Item = T;
     type IntoIter = BufferIter<'a, T>;
@@ -515,8 +536,8 @@ where
 
 impl<Sh, T> Buffer<Sh, T>
 where
-    T: Clone,
     Sh: Shape,
+    T: DType,
 {
     /// Create iterator over Buffer
     pub fn iter(&self) -> BufferIter<'_, T> {
@@ -661,16 +682,14 @@ where
     }
 }*/
 
-impl<Sh, T> core::ops::Add<i32> for Buffer<Sh, T>
+impl<Sh, T> core::ops::Add<T> for Buffer<Sh, T>
 where
-    T: DType + ConvertFrom<i32> + Sync + Send + core::ops::Add<Output = T>,
+    T: DType + Sync + Send + core::ops::Add<Output = T>,
     Sh: Shape,
 {
     type Output = Buffer<Sh, T>;
-    fn add(self, rhs: i32) -> Self::Output {
+    fn add(self, rhs: T) -> Self::Output {
         use rayon::prelude::*;
-        use crate::ops::ConvertInto;
-        let rhs: T = rhs.cinto();
         Self {
             data: Arc::new(
                 match Arc::try_unwrap(self.data) {
@@ -791,7 +810,7 @@ where
     }
 }
 
-impl<Sh, T> core::ops::Mul<i32> for Buffer<Sh, T>
+/*impl<Sh, T> core::ops::Mul<i32> for Buffer<Sh, T>
 where
     T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<i32> + DType,
     Sh: Shape,
@@ -809,7 +828,7 @@ where
             shape: PhantomData,
         }
     }
-}
+}*/
 
 impl<T, XSh, YSh> core::ops::Div<Buffer<YSh, T>> for Buffer<XSh, T>
 where
@@ -878,8 +897,8 @@ where
 
 impl<Sh, T> ops::Pow<i32> for Buffer<Sh, T>
 where
-    T: Sync + Send + Clone + ops::Pow<i32> + DType,
-    <T as ops::Pow<i32>>::Output: Send,
+    T: Sync + Send + ops::Pow<i32> + DType,
+    <T as ops::Pow<i32>>::Output: Send + DType,
     Sh: Shape,
 {
     type Output = Buffer<Sh, <T as ops::Pow<i32>>::Output>;
@@ -906,9 +925,9 @@ where
     fn matmul(self, rhs: Buffer<YSh, T>) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
-        if XSh::RANK < 2 {
-            panic!("First parameter in matrix multiplication must have at least 2 dimensions.");
-        }
+        /*if XSh::RANK < 2 {
+            //panic!("First parameter in matrix multiplication must have at least 2 dimensions.");
+        }*/
         // transpose function
         let transpose = |data: &[T], last_dim, n| {
             let mut res = alloc::vec::Vec::with_capacity(n);
@@ -1028,7 +1047,7 @@ where
         // go over resulting buffer, i iterates over result
         //let ndim = self.shape.ndim();
         if Sh::N != 2 {
-            panic!("Only operations on buffers with 2 dimensions are supported.");
+            //panic!("Only operations on buffers with 2 dimensions are supported.");
         }
         // TODO: this is not correct result shape, fix it!
         let shape = (
@@ -1080,3 +1099,15 @@ where
         }
     }
 }*/
+
+/// Get Buffer represented as vector.
+/// It is flattened with row major order.
+impl<Sh, T> ops::IntoVec<T> for Buffer<Sh, T>
+where
+    T: Clone + DType,
+    Sh: Shape,
+{
+    fn to_vec(&self) -> alloc::vec::Vec<T> {
+        self.data.as_ref().clone()
+    }
+}

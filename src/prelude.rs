@@ -4,7 +4,6 @@ pub use crate::{
     ops::*,
     shape::Shape,
     nn::{module::Module, parameters::Parameters},
-    init::{EyeInit, RandnInit, UniformInit},
+    device::{BufferInit, ShapedBufferInit},
     optim::SGDStep,
-    tensor::IntoVariable
 };

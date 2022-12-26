@@ -9,11 +9,11 @@ pub struct ExpBackwardV<'g, S2, G> {
 
 impl<S, S2, G> Backward<S> for ExpBackwardV<'_, S2, G>
 where
-    S: Mul<S2, Output = G>,
-    G: GradAcc<<S as Mul<S2>>::Output>,
+    S2: Mul<S, Output = G>,
+    G: GradAcc<<S2 as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad * self.res);
+        self.grad.accumulate(self.res * res_grad);
     }
 }
 
@@ -43,11 +43,11 @@ pub struct ExpBackwardT<S2, F> {
 
 impl<S, S2, F> Backward<S> for ExpBackwardT<S2, F>
 where
-    S: Mul<S2>,
-    F: Backward<<S as Mul<S2>>::Output>,
+    S2: Mul<S>,
+    F: Backward<<S2 as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad * self.data);
+        self.grad_fn.backward(self.data * res_grad);
     }
 }
 

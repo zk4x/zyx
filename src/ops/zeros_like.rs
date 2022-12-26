@@ -1,4 +1,4 @@
-use super::Ones;
+use super::ZerosLike;
 use duplicate::duplicate_item;
 
 #[duplicate_item(
@@ -7,9 +7,9 @@ use duplicate::duplicate_item;
     [f64];
 )]
 
-impl Ones for dtype {
-    fn ones() -> Self {
-        1.
+impl ZerosLike for dtype {
+    fn zeros_like(&self) -> Self {
+        0.
     }
 }
 
@@ -29,8 +29,8 @@ impl Ones for dtype {
     [usize];
 )]
 
-impl Ones for dtype {
-    fn ones() -> Self {
-        1
+impl ZerosLike for dtype {
+    fn zeros_like(&self) -> Self {
+        0
     }
 }

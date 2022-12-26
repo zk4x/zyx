@@ -10,11 +10,11 @@ pub struct LnBackwardV<'g, S, G> {
 impl<S, S2, G> Backward<S> for LnBackwardV<'_, S2, G>
 where
     S2: Pow<i32>,
-    S: Mul<<S2 as Pow<i32>>::Output>,
-    G: GradAcc<<S as Mul<<S2 as Pow<i32>>::Output>>::Output>,
+    <S2 as Pow<i32>>::Output: Mul<S>,
+    G: GradAcc<<<S2 as Pow<i32>>::Output as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad * self.data.pow(-1));
+        self.grad.accumulate(self.data.pow(-1) * res_grad);
     }
 }
 
@@ -43,11 +43,11 @@ pub struct LnBackwardT<S, F> {
 impl<S, S2, F> Backward<S> for LnBackwardT<S2, F>
 where
     S2: Pow<i32>,
-    S: Mul<<S2 as Pow<i32>>::Output>,
-    F: Backward<<S as Mul<<S2 as Pow<i32>>::Output>>::Output>,
+    <S2 as Pow<i32>>::Output: Mul<S>,
+    F: Backward<<<S2 as Pow<i32>>::Output as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad * self.data.pow(-1));
+        self.grad_fn.backward(self.data.pow(-1) * res_grad);
     }
 }
 

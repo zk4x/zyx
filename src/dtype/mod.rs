@@ -11,13 +11,13 @@ use crate::{shape::Sh0, ops::{HasShape, HasDType}};
 /// Although cloning is not necessarily required for every operation with DType,
 /// it is used quite often.
 /// That also means that when you implement DType for your custom type, cloning
-/// should be pretty fast, otherwise you will face serious performance issues with [cpu::Buffer](crate::accel::cpu::Buffer),
+/// should be pretty fast, otherwise you will face serious performance issues with [cpu::Buffer](crate::device::cpu::Buffer),
 /// since this type assumes that passing DType by value is faster than passing it by reference.
 /// 
-/// If you want to use sparse tensors with chunky DTypes, please create your own accelerator.
+/// If you want to use sparse tensors with chunky DTypes, please create your own deviceerator.
 pub trait DType: Clone {}
 
-//use crate::accel::cpu;
+//use crate::device::cpu;
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl DType for dtype {}
 
@@ -41,7 +41,11 @@ pub trait SType {}
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl SType for dtype {}
 
-impl<T, Sh> SType for crate::accel::cpu::Buffer<T, Sh> {}
+impl<Sh, T> SType for crate::device::cpu::Buffer<Sh, T>
+where
+    Sh: crate::shape::Shape,
+    T: DType
+{}
 
 /*
 /// # NDType
@@ -53,13 +57,13 @@ pub(crate) trait NDType {
     type Sh: Shape;
 }
 
-impl<T, Sh> NDType for crate::accel::cpu::Buffer<T, Sh> {
+impl<T, Sh> NDType for crate::device::cpu::Buffer<T, Sh> {
     type T = T;
     type Sh = Sh;
 }
 */
 
-//impl<T, Sh> DType for crate::accel::cpu::Buffer<T, Sh> {}
+//impl<T, Sh> DType for crate::device::cpu::Buffer<T, Sh> {}
 
 /*pub trait ScalarType {}
 

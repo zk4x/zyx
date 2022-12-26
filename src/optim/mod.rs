@@ -8,16 +8,18 @@
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
 //! # use zyx::optim::SGD;
-//! # use zyx::accel::cpu::Buffer;
-//! let net = Linear::<Buffer<_>, Buffer<_>>::new::<2, 4>();
+//! # use zyx::device::cpu;
+//! # let mut device = cpu::Device::default();
+//! let net = Linear::<2, 4>::new(&mut device);
 //! ```
 //! Then we create an optimizer. We do not pass [parameters](crate::module::Parameters) into it.
 //! ```
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
 //! # use zyx::optim::SGD;
-//! # use zyx::accel::cpu::Buffer;
-//! # let net = Linear::<Buffer<_>, Buffer<_>>::new::<2, 4>();
+//! # use zyx::device::cpu;
+//! # let mut device = cpu::Device::default();
+//! # let net = Linear::<2, 4>::new(&mut device);
 //! let optim = SGD::new().with_learning_rate(0.03);
 //! ```
 //! When we want to update our [parameters](crate::module::Parameters) using the optimizer we call the step function.
@@ -26,24 +28,27 @@
 //! ```ignore
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
+//! # use zyx::device::cpu;
 //! # use zyx::optim::SGD;
-//! # use zyx::accel::cpu::Buffer;
-//! # let net = Linear::<Buffer<_>, Buffer<_>>::new::<2, 4>();
+//! # let mut device = cpu::Device::default();
+//! # let net = Linear::<2, 4>::new(&mut device);
 //! # let optim = SGD::new().with_learning_rate(0.03);
 //! net.parameters().step(&optim);
 //! ```
 //! Calling net.parameters() gives us mutable reference to network's [parameters](crate::module::Parameters).
 //! If we would like to define our own updatable [parameters](crate::module::Parameters), it is easy,
 //! since [parameters](crate::module::Parameters) is simply a tuple of [Variables](crate::tensor::Variable)
-//! ```
+//! ```ignore
 //! use zyx::prelude::*;
-//! use zyx::accel::cpu::Buffer;
+//! use zyx::device::cpu;
 //! use zyx::shape::Sh2;
 //! use zyx::optim::SGD;
 //!
-//! let mut x = Buffer::<Sh2<2, 3>>::uniform(0., 1.).with_grad();
-//! let mut y = Buffer::<Sh2<2, 3>>::randn().with_grad();
-//! let mut z = Buffer::<Sh2<3, 3>>::eye().with_grad();
+//! let mut device = cpu::Device::default();
+//!
+//! let mut x = device.uniform::<Sh2<2, 3>, f64>(0., 1.).with_grad();
+//! let mut y = device.randn::<Sh2<2, 3>, i32>().with_grad();
+//! let mut z = device.eye::<3, bool>().with_grad();
 //!
 //! let optim = SGD::new();
 //!
@@ -103,9 +108,7 @@ where
     S: Clone + Mul<f32> + Sub<<S as Mul<f32>>::Output, Output = S>,
 {
     fn step(self, optim: &SGD) {
-        if let Some(grad) = self.grad().value().clone() {
-            self.data = self.data.clone() - grad * optim.learning_rate;
-        }
+        self.data = self.data.clone() - self.grad().clone() * optim.learning_rate;
     }
 }
 

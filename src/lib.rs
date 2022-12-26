@@ -33,7 +33,7 @@
 #![deny(meta_variable_misuse)]
 #![deny(missing_abi)]
 #![deny(missing_copy_implementations)]
-#![deny(missing_debug_implementations)]
+#![warn(missing_debug_implementations)]
 #![deny(non_ascii_idents)]
 #![warn(noop_method_call)]
 #![deny(pointer_structural_match)]
@@ -55,13 +55,12 @@
 #[warn(unused_tuple_struct_fields)]
 
 pub mod tensor;
-pub mod accel;
+pub mod device;
 pub mod ops;
 pub mod shape;
 pub mod nn;
 pub mod optim;
 pub mod prelude;
-pub mod init;
 mod dtype;
 
 #[cfg(test)]

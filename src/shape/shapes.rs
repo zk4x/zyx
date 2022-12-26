@@ -20,7 +20,7 @@ pub trait Shape: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Ind
     const RANK: usize;
     /// Output type when calling array and strides function
     type AsArray: Index<usize, Output = usize> + IndexMut<usize> + Debug + IntoIterator<Item = usize>; // This is [usize; RANK], just needed because you can't write it directly
-    /// Get shape as arrya
+    /// Get shape as array
     fn array() -> Self::AsArray;
     /// Get shape's strides
     fn strides() -> Self::AsArray;

@@ -1,4 +1,4 @@
-use crate::{tensor::{Tensor, Variable, Backward, GradientRef, GradAcc}, accel::cpu, dtype::SType, shape::Shape};
+use crate::{tensor::{Tensor, Variable, Backward, GradientRef, GradAcc}, device::cpu, dtype::SType, shape::Shape};
 use core::ops::{Sub, Neg};
 use duplicate::duplicate_item;
 
@@ -34,9 +34,10 @@ where
     }
 }
 
-impl<'g, YS, T, Sh> Sub<&'g Variable<YS>> for cpu::Buffer<T, Sh>
+impl<'g, YS, Sh, T> Sub<&'g Variable<YS>> for cpu::Buffer<Sh, T>
 where
     Sh: Shape,
+    T: crate::dtype::DType,
     Self: Sub<YS>,
     YS: Clone + SType,
 {
@@ -66,9 +67,10 @@ where
     }
 }
 
-impl<S, F, T, Sh> Sub<Tensor<S, F>> for cpu::Buffer<T, Sh>
+impl<S, F, Sh, T> Sub<Tensor<S, F>> for cpu::Buffer<Sh, T>
 where
     Sh: Shape,
+    T: crate::dtype::DType,
     Self: Sub<S>,
     S: SType,
 {

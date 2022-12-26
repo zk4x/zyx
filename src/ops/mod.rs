@@ -5,8 +5,8 @@
 //! ## Operations are separated into categories
 //! 
 //! ```txt
-//! Initialization ops:   ConvertFrom, Zeros, Ones, FromVec
-//! Getters:              IntoVec, HasShape
+//! Initialization ops:   ConvertFrom, Zeros, Ones
+//! Getters:              IntoVariable, IntoVec, HasShape
 //! Unary ops:            ReLU, DReLU, Exp, Ln, Tanh
 //! Reduce ops:           Sum, Max, Min
 //! Movement ops:         Reshape, Expand, Permute
@@ -14,35 +14,10 @@
 //! Processing ops:       MatMul, Conv
 //! ```
 //! 
-//! ## List of all operations
-//! 
-//! This list excludes ops that are automatically implemented.
-//! 
-//! - [ConvertFrom]
-//! - [Zeros]
-//! - [Ones]
-//! - [IntoVec]
-//! - [FromVec]
-//! - [HasShape]
-//! - [ReLU]
-//! - [DReLU]
-//! - [Exp]
-//! - [Ln]
-//! - [Tanh]
-//! - [Sum]
-//! - [Max]
-//! - [Min]
-//! - [Reshape]
-//! - [Expand]
-//! - [Permute]
-//! - [Pow]
-//! - [MatMul]
-//! - [Conv]
-//! 
 
 mod convert_from;
-mod zeros;
-mod ones;
+mod zero;
+mod one;
 mod relu;
 mod drelu;
 mod exp;
@@ -51,13 +26,20 @@ mod tanh;
 mod pow;
 mod has_min;
 mod has_max;
+mod zeros_like;
 
-use crate::{shape::{Shape, Axes, Ax2, Sh2}, dtype::DType};
+use crate::shape::{Shape, Axes};
+
+/// # HasDevice
+pub trait HasDevice {
+    type Dev: crate::device::Device;
+    fn device(&self) -> Self::Dev;
+}
 
 /// # HasDType
 pub trait HasDType {
     /// Type of tensor
-    type T: DType;
+    type T: crate::dtype::DType;
 }
 
 /// # HasShape
@@ -66,10 +48,11 @@ pub trait HasDType {
 /// 
 /// ## Example
 /// ```
-/// use zyx::{accel::cpu::Buffer, ops::{HasShape, ConvertFrom}};
-/// let x = Buffer::cfrom([2, 3, 1]);
-// /// let y = core::any::type_name::<T>();
-// /// assert_eq!(y, 3);
+/// use zyx::prelude::*;
+/// use zyx::device::cpu;
+/// let mut device = cpu::Device::default();
+/// let x = device.buffer([2, 3, 1]);
+/// assert_eq!(x.shape(), [3]);
 /// ```
 pub trait HasShape {
     /// Shape of tensor
@@ -91,6 +74,14 @@ pub trait HasMax {
 pub trait HasMin {
     /// Global minimum of tensor
     fn min() -> Self;
+}
+
+/// # ZerosLike
+///
+/// Returns a tensor filled with the scalar value 0, with the same size as input.
+pub trait ZerosLike {
+    /// Returns a tensor filled with the scalar value 0, with the same size as input.
+    fn zeros_like(&self) -> Self;
 }
 
 /// ## Convert between devices and types
@@ -121,16 +112,18 @@ where
     }
 }
 
-/// ## Zeros operation
+/// ## Zero operation
 /// 
 /// Create new tensor initialized with zeros.
 /// ### Example
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu;
 /// use zyx::shape::Sh3;
 ///
-/// let x = Buffer::<Sh3<2, 3, 1>, i32>::zeros();
+/// let mut device = cpu::Device::default();
+///
+/// let x = device.zeros::<Sh3<2, 3, 1>, i32>();
 /// ```
 /// ### Output
 /// ```txt
@@ -141,21 +134,23 @@ where
 ///  0
 ///  0]
 /// ```
-pub trait Zeros {
+pub trait Zero {
     /// Create new tensor initialized with zeros.
-    fn zeros() -> Self;
+    fn zero() -> Self;
 }
 
-/// ## Ones operation
+/// ## One operation
 /// 
 /// Create new tensor initialized with ones.
 /// ### Example
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu::{Device, Buffer};
 /// use zyx::shape::Sh3;
 ///
-/// let x = Buffer::<Sh3<2, 3, 1>, i32>::ones();
+/// let mut device = Device::default();
+/// 
+/// let x: Buffer<Sh3<2, 3, 1>, i32> = device.ones();
 /// let y = x.shape();
 /// ```
 /// ### Output
@@ -167,29 +162,9 @@ pub trait Zeros {
 ///  1
 ///  1]
 /// ```
-pub trait Ones {
+pub trait One {
     /// Create new tensor initialized with ones.
-    fn ones() -> Self;
-}
-
-/// ## FromSlice operation
-/// 
-/// Creates new tensor from given slice. Slice is assumed to be in row-major order.
-/// 
-/// ### Example
-/// ```
-/// use zyx::prelude::*;
-/// use zyx::accel::cpu;
-/// use zyx::shape::Sh2;
-/// let x = cpu::Buffer::<Sh2<2, 2>, _>::from_slice(&[2, 3, 1, 3]);
-/// println!("{}", x);
-/// ```
-/// ### Output
-/// [2 3
-///  1 3]
-pub trait FromSlice: HasDType {
-    /// Create new tensor from given slice.
-    fn from_slice(data: &[Self::T]) -> Self;
+    fn one() -> Self;
 }
 
 // Unary ops
@@ -295,10 +270,12 @@ pub trait Tanh {
 /// 
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu;
 /// use zyx::shape::Ax1;
+///
+/// let mut device = cpu::Device::default();
 /// 
-/// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
+/// let x = device.buffer([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.sum::<Ax1<0>>();
 /// println!("{}", y);
 /// ```
@@ -345,7 +322,7 @@ where
 /// 
 /// ```ignore
 /// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu::Buffer;
 /// use zyx::shape::Ax1;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
@@ -397,7 +374,7 @@ where
 /// 
 /// ```ignore
 /// use zyx::prelude::*;
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu::Buffer;
 /// use zyx::shape::Ax1;
 /// 
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
@@ -452,11 +429,13 @@ where
 /// 
 /// ### Example
 /// ```
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu;
 /// use zyx::prelude::*;
 /// use zyx::shape::Sh3;
+///
+/// let mut device = cpu::Device::default();
 /// 
-/// let x = Buffer::cfrom([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
+/// let x = device.buffer([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
 /// let x = x.reshape::<Sh3<2, 1, 6>>();
 /// println!("{}", x);
 /// ```
@@ -502,10 +481,12 @@ where
 /// ### Example
 /// ```
 /// use zyx::prelude::*;
-/// use zyx::accel::cpu;
+/// use zyx::device::cpu;
 /// use zyx::shape::Sh3;
+///
+/// let mut device = cpu::Device::default();
 /// 
-/// let x = cpu::Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
+/// let x = device.buffer([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.expand::<Sh3<2, 3, 3>>();
 /// println!("{}", x);
 /// ```
@@ -556,11 +537,13 @@ where
 /// 
 /// ### Example
 /// ```
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu;
 /// use zyx::prelude::*;
 /// use zyx::shape::Ax3;
+///
+/// let mut device = cpu::Device::default();
 /// 
-/// let x = Buffer::cfrom([[[3, 2, 4]], [[1, 4, 2]]]);
+/// let x = device.buffer([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.permute::<Ax3<2, 0, 1>>();
 /// println!("{}", x);
 /// # assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
@@ -622,10 +605,12 @@ where
 ///
 /// ### Example
 /// ```
-/// use zyx::accel::cpu::Buffer;
 /// use zyx::prelude::*;
+/// use zyx::device::cpu;
 ///
-/// let x = Buffer::cfrom([[3, 2, 4], [1, 4, 2]]);
+/// let mut device = cpu::Device::default();
+///
+/// let x = device.buffer([[3, 2, 4], [1, 4, 2]]);
 /// let x = x.transpose();
 /// println!("{}", x);
 /// # assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
@@ -647,7 +632,7 @@ pub trait Transpose {
 
 impl<T> Transpose for T
 where
-    T: Permutable<Ax2<-1, -2>>,
+    T: Permutable<crate::shape::Ax2<-1, -2>>,
 {
     type Output = T::Output;
     fn transpose(self) -> Self::Output {
@@ -665,10 +650,12 @@ where
 ///
 /// ### Example
 /// ```
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu;
 /// use zyx::prelude::*;
 ///
-/// let x = Buffer::cfrom([[3., 2., 4.], [1., 4., 2.]]);
+/// let mut device = cpu::Device::default();
+///
+/// let x = device.buffer([[3., 2., 4.], [1., 4., 2.]]);
 /// let z = x.pow(2);
 /// println!("{}", z);
 /// ```
@@ -691,11 +678,13 @@ pub trait Pow<Rhs = Self> {
 /// 
 /// ### Example
 /// ```
-/// use zyx::accel::cpu::Buffer;
+/// use zyx::device::cpu;
 /// use zyx::prelude::*;
-/// 
-/// let x = Buffer::cfrom([[3., 2., 4.], [1., 4., 2.]]);
-/// let y = Buffer::cfrom([[3., 2.], [4., 1.], [4., 2.]]);
+///
+/// let mut device = cpu::Device::default();
+///
+/// let x = device.buffer([[3., 2., 4.], [1., 4., 2.]]);
+/// let y = device.buffer([[3., 2.], [4., 1.], [4., 2.]]);
 /// let z = x.matmul(y);
 /// println!("{}", z);
 /// ```
@@ -722,7 +711,7 @@ pub trait Conv<const N: usize, const M: usize, Kernel = Self> {
     /// Output of the Conv operation.
     type Output;
     /// Apply Conv operation on given input.
-    fn conv(self, kernel: Kernel, padding: Sh2<N, M>) -> Self::Output;
+    fn conv(self, kernel: Kernel, padding: crate::shape::Sh2<N, M>) -> Self::Output;
 }
 
 // This is only operation that requires alloc.
@@ -737,4 +726,12 @@ extern crate alloc;
 pub trait IntoVec<T> {
     /// Returns values from tensor as a Vec with row-major order.
     fn to_vec(&self) -> alloc::vec::Vec<T>;
+}
+
+/// Turn any datatype into [Variable].
+pub trait IntoVariable {
+    /// Calling this function turns input into [Variable] adding gradient in the process.
+    fn with_grad(self) -> crate::tensor::Variable<Self>
+    where
+        Self: Sized;
 }

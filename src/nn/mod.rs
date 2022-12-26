@@ -8,7 +8,7 @@
 pub mod module;
 pub mod parameters;
 
-use crate::{nn::module::Module, ops::{self, HasShape, Pow, MatMul, Zeros, Ones}, tensor::{IntoVariable, Variable}, init::UniformInit, shape::{Shape, Sh2, Axes}};
+use crate::{nn::module::Module, ops::{self, HasShape, Pow, Zero, One, MatMul}, tensor::Variable, device::BufferInit, shape::{Shape, Sh2, Axes}};
 use core::{ops::{Neg, Add, Sub, Div}, marker::PhantomData};
 
 /// ReLU operation
@@ -140,7 +140,7 @@ where
 #[test]
 fn softmax_test() {
     //use crate::prelude::*;
-    //use crate::accel::cpu::Buffer;
+    //use crate::device::cpu::Buffer;
 
     //let x = Buffer::<f32, _>::cfrom([[3., 2., 4.], [4., 2., 5.]]).with_grad();
 
@@ -291,39 +291,44 @@ impl<Input> Module<Input> for NormLayer {
     }
 }*/
 
+use crate::device::BufferFromSlice;
 /// Linear layer
-#[derive(Debug, Clone)]
-pub struct Linear<W, B> {
-    w: Variable<W>,
-    b: Variable<B>,
+//#[derive(Debug, Clone)]
+pub struct Linear<const IN_FEATURES: usize, const OUT_FEATURES: usize, T = f32, D = crate::device::cpu::Device>
+where
+    D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
+{
+    w: Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>,
+    b: Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>,
 }
 
-impl<W, B> Linear<W, B> {
+impl<T, D, const IN_FEATURES: usize, const OUT_FEATURES: usize> Linear<IN_FEATURES, OUT_FEATURES, T, D>
+where
+    D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
+    T: Zero + One + rand::distributions::uniform::SampleUniform,
+    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike,
+    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike,
+{
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
-    pub fn new<const IN_FEATURES: usize, const OUT_FEATURES: usize>() -> Self
-    where
-        W: UniformInit + HasShape<Sh = Sh2<IN_FEATURES, OUT_FEATURES>>,
-        W::T: Zeros + Ones,
-        B: UniformInit + HasShape<Sh = Sh2<1, OUT_FEATURES>>,
-        B::T: Zeros + Ones,
-        //W::Sh: HasLastDim<Dim = OUT_FEATURES>, // or we can do it like this for w and b with more than two dimensions
-    {
+    pub fn new(device: &mut D) -> Self {
+        use crate::ops::IntoVariable;
         Self {
-            w: W::uniform(W::T::zeros(), W::T::ones()).with_grad(),
-            b: B::uniform(B::T::zeros(), B::T::ones()).with_grad(),
+            w: device.uniform::<Sh2<IN_FEATURES, OUT_FEATURES>, T>(T::zero(), T::one()).with_grad(),
+            b: device.uniform::<Sh2<1, OUT_FEATURES>, T>(T::zero(), T::one()).with_grad(),
         }
     }
 }
 
-impl<'p, W, B, Input> Module<'p, Input> for Linear<W, B>
+impl<'p, Input, T, D, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input> for Linear<IN_FEATURES, OUT_FEATURES, T, D>
 where
-    W: 'p,
-    B: 'p,
-    Input: MatMul<&'p Variable<W>>,
-    <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
+    D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
+    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike,
+    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike,
+    Input: MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>,
+    <Input as MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>>::Output: Add<&'p Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>>,
 {
-    type Output = <<Input as MatMul<&'p Variable<W>>>::Output as Add<&'p Variable<B>>>::Output;
-    type Params = (&'p mut Variable<W>, &'p mut Variable<B>);
+    type Output = <<Input as MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>>::Output as Add<&'p Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>>>::Output;
+    type Params = (&'p mut Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>, &'p mut Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>);
 
     fn forward(&'p self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b

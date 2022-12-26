@@ -73,7 +73,7 @@ fn sum() {
     // TODO finish all variations
     /*use crate::prelude::*;
     use crate::shape::{Sh3, Ax2};
-    use crate::accel::cpu::Buffer;
+    use crate::device::cpu::Buffer;
 
     extern crate alloc;
 

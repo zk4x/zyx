@@ -10,11 +10,11 @@ pub struct ReLUBackwardV<'g, S, G> {
 impl<S, S2, G> Backward<S> for ReLUBackwardV<'_, S2, G>
 where
     S2: DReLU,
-    S: Mul<<S2 as DReLU>::Output>,
-    G: GradAcc<<S as Mul<<S2 as DReLU>::Output>>::Output>,
+    <S2 as DReLU>::Output: Mul<S>,
+    G: GradAcc<<<S2 as DReLU>::Output as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad.accumulate(res_grad * self.data.drelu());
+        self.grad.accumulate(self.data.drelu() * res_grad);
     }
 }
 
@@ -43,11 +43,11 @@ pub struct ReLUBackwardT<S, F> {
 impl<S, S2, F> Backward<S> for ReLUBackwardT<S2, F>
 where
     S2: DReLU,
-    S: Mul<<S2 as DReLU>::Output>,
-    F: Backward<<S as Mul<<S2 as DReLU>::Output>>::Output>,
+    <S2 as DReLU>::Output: Mul<S>,
+    F: Backward<<<S2 as DReLU>::Output as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.grad_fn.backward(res_grad * self.data.drelu());
+        self.grad_fn.backward(self.data.drelu() * res_grad);
     }
 }
 
