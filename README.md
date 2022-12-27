@@ -66,12 +66,13 @@ If you want to accelerate matrix multiplication using matrixmultiply crate, use 
 # {
 use zyx::prelude::*;
 use zyx::device::cpu;
+use zyx::tensor::Variable;
 use zyx::shape::{Sh4, Ax4};
 
-let mut device = cpu::Device::default();
+let device = cpu::Device::default();
 
-let x = device.uniform::<Sh4<2, 3, 2, 3>, f32>(-1., 1.).with_grad();
-let y = device.randn::<Sh4<2, 3, 3, 4>, _>().with_grad();
+let x: Variable<cpu::Buffer<'_, Sh4<2, 3, 2, 3>>> = device.uniform(-1., 1.).with_grad();
+let y: Variable<cpu::Buffer<'_, Sh4<2, 3, 3, 4>>> = device.randn().with_grad();
 
 let z = x.matmul(&y).sum::<Ax4<0, 1, 2, 3>>();
 

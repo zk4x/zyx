@@ -35,7 +35,7 @@ pub trait HasDevice {
     /// Type of device that tensor is stored on
     type Dev: crate::device::Device;
     /// Device that tensor is stored on
-    fn device(&self) -> Self::Dev;
+    fn device(&self) -> &Self::Dev;
 }
 
 /// # HasDType
@@ -125,7 +125,7 @@ where
 ///
 /// let mut device = cpu::Device::default();
 ///
-/// let x = device.zeros::<Sh3<2, 3, 1>, i32>();
+/// let x: cpu::Buffer<'_, Sh3<2, 3, 1>> = device.zeros();
 /// ```
 /// ### Output
 /// ```txt
@@ -152,7 +152,7 @@ pub trait Zero {
 ///
 /// let mut device = Device::default();
 /// 
-/// let x: Buffer<Sh3<2, 3, 1>, i32> = device.ones();
+/// let x: Buffer<'_, Sh3<2, 3, 1>, i32> = device.ones();
 /// let y = x.shape();
 /// ```
 /// ### Output

@@ -15,11 +15,25 @@ use crate::{shape::Sh0, ops::{HasShape, HasDType}};
 /// since this type assumes that passing DType by value is faster than passing it by reference.
 /// 
 /// If you want to use sparse tensors with chunky DTypes, please create your own deviceerator.
-pub trait DType: Clone {}
+pub trait DType: Clone {
+    const STR: &'static str;
+}
 
-//use crate::device::cpu;
-#[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
-impl DType for dtype {}
+impl DType for f32 { const STR: &'static str = "f32"; }
+impl DType for f64 { const STR: &'static str = "f64"; }
+impl DType for i8 { const STR: &'static str = "i8"; }
+impl DType for i16 { const STR: &'static str = "i16"; }
+impl DType for i32 { const STR: &'static str = "i32"; }
+impl DType for i64 { const STR: &'static str = "i64"; }
+impl DType for i128 { const STR: &'static str = "i128"; }
+impl DType for isize { const STR: &'static str = "isize"; }
+impl DType for u8 { const STR: &'static str = "u8"; }
+impl DType for u16 { const STR: &'static str = "u16"; }
+impl DType for u32 { const STR: &'static str = "u32"; }
+impl DType for u64 { const STR: &'static str = "u64"; }
+impl DType for u128 { const STR: &'static str = "u128"; }
+impl DType for usize { const STR: &'static str = "usize"; }
+impl DType for bool { const STR: &'static str = "bool"; }
 
 impl<T> HasShape for T
 where
@@ -41,10 +55,16 @@ pub trait SType {}
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl SType for dtype {}
 
-impl<Sh, T> SType for crate::device::cpu::Buffer<Sh, T>
+impl<Sh, T> SType for crate::device::cpu::Buffer<'_, Sh, T>
 where
     Sh: crate::shape::Shape,
-    T: DType
+    T: DType,
+{}
+
+impl<Sh, T> SType for crate::device::opencl::Buffer<'_, Sh, T>
+where
+    Sh: crate::shape::Shape,
+    T: DType + ocl::OclPrm,
 {}
 
 /*

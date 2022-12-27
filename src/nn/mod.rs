@@ -8,7 +8,7 @@
 pub mod module;
 pub mod parameters;
 
-use crate::{nn::module::Module, ops::{self, HasShape, Pow, Zero, One, MatMul}, tensor::Variable, device::BufferInit, shape::{Shape, Sh2, Axes}};
+use crate::{nn::module::Module, ops::{self, HasShape, Pow, Zero, One, MatMul, HasDType, IntoVariable}, tensor::Variable, device::{BufferInit, cpu::Buffer}, shape::{Shape, Sh2, Axes}};
 use core::{ops::{Neg, Add, Sub, Div}, marker::PhantomData};
 
 /// ReLU operation
@@ -291,55 +291,64 @@ impl<Input> Module<Input> for NormLayer {
     }
 }*/
 
-/*use crate::device::BufferFromSlice;
+use crate::device::BufferFromSlice;
 /// Linear layer
 #[derive(Debug)]
-pub struct Linear<const IN_FEATURES: usize, const OUT_FEATURES: usize, T = f32, D = crate::device::cpu::Device>
+pub struct Linear<'d, const IN_FEATURES: usize, const OUT_FEATURES: usize, W = Buffer<'d, Sh2<IN_FEATURES, OUT_FEATURES>>, B = Buffer<'d, Sh2<1, OUT_FEATURES>>>
 where
-    D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
-    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: core::fmt::Debug,
-    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: core::fmt::Debug,
+    W: HasShape + HasDType,
+    B: HasShape + HasDType,
 {
-    w: Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>,
-    b: Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>,
+    dev: PhantomData<&'d W>,
+    w: Variable<W>,
+    b: Variable<B>,
 }
 
-impl<T, D, const IN_FEATURES: usize, const OUT_FEATURES: usize> Linear<IN_FEATURES, OUT_FEATURES, T, D>
+impl<'d, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Linear<'d, IN_FEATURES, OUT_FEATURES, W, B>
 where
-    D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
-    T: Zero + One + rand::distributions::uniform::SampleUniform,
-    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike + core::fmt::Debug,
-    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike + core::fmt::Debug,
+    W: HasShape + HasDType,
+    W::T: Zero + One,
+    B: HasShape + HasDType,
+    B::T: Zero + One,
 {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
-    pub fn new(device: &mut D) -> Self {
-        use crate::ops::IntoVariable;
+    /// with parameters stored on given device.
+    pub fn new<Dev>(device: &'d Dev) -> Self
+    where
+        Dev: BufferFromSlice<'d, W> + BufferFromSlice<'d, B>,
+        W: 'd + IntoVariable,
+        W::T: rand::distributions::uniform::SampleUniform,
+        B: 'd + IntoVariable,
+        B::T: rand::distributions::uniform::SampleUniform,
+    {
         Self {
-            w: device.uniform::<Sh2<IN_FEATURES, OUT_FEATURES>, T>(T::zero(), T::one()).with_grad(),
-            b: device.uniform::<Sh2<1, OUT_FEATURES>, T>(T::zero(), T::one()).with_grad(),
+            dev: PhantomData,
+            w: <Dev as BufferInit<'d, W>>::uniform(device, W::T::zero(), W::T::one()).with_grad(),
+            b: <Dev as BufferInit<'d, B>>::uniform(device, B::T::zero(), B::T::one()).with_grad(),
         }
     }
 }
 
-impl<'p, Input, T, D, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input> for Linear<IN_FEATURES, OUT_FEATURES, T, D>
+impl<'d, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'d, Input> for Linear<'d, IN_FEATURES, OUT_FEATURES, W, B>
 where
-    D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
-    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike + core::fmt::Debug,
-    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike + core::fmt::Debug,
-    Input: MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>,
-    <Input as MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>>::Output: Add<&'p Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>>,
+    W: HasShape + HasDType + ops::ZerosLike,
+    W::T: Zero + One,
+    B: 'd + HasShape + HasDType + ops::ZerosLike,
+    B::T: Zero + One,
+    Input: MatMul<&'d Variable<W>>,
+    <Input as MatMul<&'d Variable<W>>>::Output: Add<&'d Variable<B>>,
 {
-    type Output = <<Input as MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>>::Output as Add<&'p Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>>>::Output;
-    type Params = (&'p mut Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>, &'p mut Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>);
+    type Output = <<Input as MatMul<&'d Variable<W>>>::Output as Add<&'d Variable<B>>>::Output;
+    type Params = (&'d mut Variable<W>, &'d mut Variable<B>);
 
-    fn forward(&'p self, x: Input) -> Self::Output {
+    fn forward(&'d self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
     }
 
-    fn parameters(&'p mut self) -> Self::Params {
+    fn parameters(&'d mut self) -> Self::Params {
         (&mut self.w, &mut self.b)
     }
-}*/
+}
 
 // RNNCell
 // TODO: Should we rewrite this as two linear layers?

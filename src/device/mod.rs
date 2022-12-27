@@ -35,7 +35,8 @@ use crate::{ops::{HasDType, HasShape}, shape::{Shape, Sh1, Sh2, Sh3, Sh4, Sh5, H
 /// This is the only trait that must be implemented for all devices,
 /// all other initialization methods are automatically implemented.
 pub trait BufferFromSlice<'d, Buf: 'd + HasDType + HasShape> {
-    fn slice(&'d mut self, slice: &[Buf::T]) -> Buf;
+    /// Create new buffer from given slice
+    fn slice(&'d self, slice: &[Buf::T]) -> Buf;
 }
 
 /// Various methods to create a new buffer
@@ -44,7 +45,7 @@ where
     Buf: 'd + HasDType + HasShape,
 {
     /// Create new buffer filled with random values
-    fn randn(&'d mut self) -> Buf
+    fn randn(&'d self) -> Buf
     where
         rand::distributions::Standard: rand::prelude::Distribution<Buf::T>,
     {
@@ -55,7 +56,7 @@ where
     }
     
     /// Create new buffer filled with values from uniform distribution
-    fn uniform(&'d mut self, low: Buf::T, high: Buf::T) -> Buf
+    fn uniform(&'d self, low: Buf::T, high: Buf::T) -> Buf
     where
         Buf::T: rand::distributions::uniform::SampleUniform,
     {
@@ -67,7 +68,7 @@ where
     }
     
     /// Create new buffer filled with zeros
-    fn zeros(&'d mut self) -> Buf
+    fn zeros(&'d self) -> Buf
     where
         Buf::T: Clone + crate::ops::Zero,
     {
@@ -77,7 +78,7 @@ where
     }
     
     /// Create new buffer filled with ones
-    fn ones(&'d mut self) -> Buf
+    fn ones(&'d self) -> Buf
     where
         Buf::T: Clone + crate::ops::One,
     {
@@ -89,11 +90,13 @@ where
 
 impl<'d, Buf, Dev> BufferInit<'d, Buf> for Dev where Dev: BufferFromSlice<'d, Buf>, Buf: 'd + HasDType + HasShape {}
 
+/// Create new buffer with shape automatically inferred
 pub trait ShapedBufferInit<'d, Input, Buf, Sh>: BufferFromSlice<'d, Buf>
 where
     Buf: 'd + HasDType + HasShape<Sh = Sh>,
 {
-    fn buffer(&'d mut self, x: Input) -> Buf;
+    /// Create new buffer with shape automatically inferred
+    fn buffer(&'d self, x: Input) -> Buf;
 }
 
 impl<'d, Dev, Buf, const D0: usize> ShapedBufferInit<'d, [Buf::T; D0], Buf, Sh1<D0>> for Dev
@@ -101,7 +104,7 @@ where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh1<D0>>,
 {
-    fn buffer(&'d mut self, x: [Buf::T; D0]) -> Buf {
+    fn buffer(&'d self, x: [Buf::T; D0]) -> Buf {
         self.slice(&x)
     }
 }
@@ -111,7 +114,7 @@ where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh2<D1, D0>>,
 {
-    fn buffer(&'d mut self, x: [[Buf::T; D0]; D1]) -> Buf {
+    fn buffer(&'d self, x: [[Buf::T; D0]; D1]) -> Buf {
         extern crate alloc;
         self.slice(&x.into_iter().flatten().collect::<alloc::vec::Vec<Buf::T>>())
     }
@@ -122,7 +125,7 @@ where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh3<D2, D1, D0>>,
 {
-    fn buffer(&'d mut self, x: [[[Buf::T; D0]; D1]; D2]) -> Buf {
+    fn buffer(&'d self, x: [[[Buf::T; D0]; D1]; D2]) -> Buf {
         extern crate alloc;
         self.slice(&x.into_iter().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
     }
@@ -133,7 +136,7 @@ where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh4<D3, D2, D1, D0>>,
 {
-    fn buffer(&'d mut self, x: [[[[Buf::T; D0]; D1]; D2]; D3]) -> Buf {
+    fn buffer(&'d self, x: [[[[Buf::T; D0]; D1]; D2]; D3]) -> Buf {
         extern crate alloc;
         self.slice(&x.into_iter().flatten().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
     }
@@ -144,7 +147,7 @@ where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh5<D4, D3, D2, D1, D0>>,
 {
-    fn buffer(&'d mut self, x: [[[[[Buf::T; D0]; D1]; D2]; D3]; D4]) -> Buf {
+    fn buffer(&'d self, x: [[[[[Buf::T; D0]; D1]; D2]; D3]; D4]) -> Buf {
         extern crate alloc;
         self.slice(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
     }

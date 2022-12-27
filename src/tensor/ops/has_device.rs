@@ -5,7 +5,7 @@ where
     S: HasDevice,
 {
     type Dev = <S as HasDevice>::Dev;
-    fn device(&self) -> Self::Dev {
+    fn device(&self) -> &Self::Dev {
         self.data.device()
     }
 }
@@ -15,7 +15,7 @@ where
     S: HasDevice,
 {
     type Dev = <S as HasDevice>::Dev;
-    fn device(&self) -> Self::Dev {
+    fn device(&self) -> &Self::Dev {
         self.data.device()
     }
 }

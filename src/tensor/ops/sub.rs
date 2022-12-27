@@ -34,7 +34,7 @@ where
     }
 }
 
-impl<'g, YS, Sh, T> Sub<&'g Variable<YS>> for cpu::Buffer<Sh, T>
+impl<'g, YS, Sh, T> Sub<&'g Variable<YS>> for cpu::Buffer<'_, Sh, T>
 where
     Sh: Shape,
     T: crate::dtype::DType,
@@ -67,7 +67,7 @@ where
     }
 }
 
-impl<S, F, Sh, T> Sub<Tensor<S, F>> for cpu::Buffer<Sh, T>
+impl<S, F, Sh, T> Sub<Tensor<S, F>> for cpu::Buffer<'_, Sh, T>
 where
     Sh: Shape,
     T: crate::dtype::DType,

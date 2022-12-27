@@ -5,10 +5,12 @@ use crate::{dtype::DType, shape::Shape, ops};
 
 use ocl::{self, OclPrm};
 
+extern crate alloc;
+
 use super::BufferFromSlice;
 
 static UNARY_KERNEL: &str = "
-    __kernel void NAME(__global float* data, __global float* res) {
+    __kernel void NAME_DTYPE(__global DTYPE* data, __global DTYPE* res) {
         int id = get_global_id(0);
         res[id] = OP(data[id]);
     }
@@ -20,18 +22,25 @@ static UNARY_KERNEL: &str = "
 /// Buffers created using this device are stored in GPU memory and computations are done using the GPU.
 #[derive(Debug, Clone)]
 pub struct Device {
-    pro_que: ocl::ProQue,
+    context: ocl::Context,
+    device: ocl::Device, // TODO support multiple devices
 }
 
-impl super::Device for Device {}
+impl crate::device::Device for Device {}
 
 impl Default for Device {
     fn default() -> Self {
+        // Compile all the kernels. THIS CAN TAKE SOME TIME!
+        //let pro_que = ocl::ProQue::builder() .dims(1 << 20)
+            //.src(UNARY_KERNEL.replace("NAME", "exp_kernel").replace("OP", "exp").replace("DTYPE", "f32"))
+            //.src(UNARY_KERNEL.replace("NAME", "exp_kernel").replace("OP", "exp").replace("DTYPE", "f64"))
+            //.build().expect("Couldn't create opencl pro_que");
+        let context = ocl::Context::builder().build().expect("Couldn't create context");
+        let device = context.devices()[0];
+        //let queue = ocl::Queue::new(&context, devices[0], None).expect("Couldn't create queue");
         Self {
-            pro_que: ocl::ProQue::builder()
-                .src(UNARY_KERNEL.replace("NAME", "exp_kernel").replace("OP", "exp"))
-                .dims(1 << 20)
-                .build().expect("Couldn't create opencl pro_que"),
+            context,
+            device,
         }
     }
 }
@@ -41,10 +50,12 @@ where
     T: OclPrm + DType,
     Sh: 'd + Shape,
 {
-    fn slice(&'d mut self, slice: &[T]) -> Buffer<'d, Sh, T> {
+    fn slice(&'d self, slice: &[T]) -> Buffer<'d, Sh, T> {
         Buffer::<'d, Sh, T> {
-            pro_que: &self.pro_que,
-            data: self.pro_que.buffer_builder().copy_host_slice(slice).len(Sh::numel()).flags(ocl::flags::MEM_READ_ONLY).build().expect("Unable to create buffer"),
+            device: &self,
+            data: ocl::Buffer::builder()
+                .queue(ocl::Queue::new(&self.context, self.device, None).expect("Couldn't create queue"))
+                .copy_host_slice(slice).len(Sh::numel()).flags(ocl::flags::MEM_READ_ONLY).build().expect("Unable to create buffer"),
             shape: PhantomData,
         }
     }
@@ -55,24 +66,24 @@ fn opencl_device() {
     use crate::prelude::*;
     use crate::device::opencl;
 
-    let mut device = opencl::Device::default();
+    let device = opencl::Device::default();
 
     let x = device.buffer([3, 4, 2]);
 
     std::println!("{}", x);
 
-    panic!();
+    //panic!();
 }
 
 /// OpenCL buffer
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Buffer<'d, Sh, T>
 where
     T: OclPrm + DType,
     Sh: Shape,
 {
     data: ocl::Buffer<T>,
-    pro_que: &'d ocl::ProQue,
+    device: &'d Device,
     shape: PhantomData<Sh>,
 }
 
@@ -93,11 +104,8 @@ where
     Sh: Shape,
 {
     type Dev = Device;
-    fn device(&self) -> Self::Dev {
-        Device {
-            // TODO is this ok?
-            pro_que: self.pro_que.clone(),
-        }
+    fn device(&self) -> &Self::Dev {
+        &self.device
     }
 }
 
@@ -117,7 +125,6 @@ where
     type Sh = Sh;
 }
 
-extern crate alloc;
 impl<Sh, T> ops::IntoVec<T> for Buffer<'_, Sh, T>
 where
     T: OclPrm + DType + ops::Zero,
