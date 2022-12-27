@@ -293,10 +293,12 @@ impl<Input> Module<Input> for NormLayer {
 
 use crate::device::BufferFromSlice;
 /// Linear layer
-//#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Linear<const IN_FEATURES: usize, const OUT_FEATURES: usize, T = f32, D = crate::device::cpu::Device>
 where
     D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
+    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: core::fmt::Debug,
+    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: core::fmt::Debug,
 {
     w: Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>,
     b: Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>,
@@ -306,8 +308,8 @@ impl<T, D, const IN_FEATURES: usize, const OUT_FEATURES: usize> Linear<IN_FEATUR
 where
     D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
     T: Zero + One + rand::distributions::uniform::SampleUniform,
-    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike,
-    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike,
+    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike + core::fmt::Debug,
+    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: ops::ZerosLike + core::fmt::Debug,
 {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     pub fn new(device: &mut D) -> Self {
@@ -322,8 +324,8 @@ where
 impl<'p, Input, T, D, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input> for Linear<IN_FEATURES, OUT_FEATURES, T, D>
 where
     D: BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T> + BufferFromSlice<Sh2<1, OUT_FEATURES>, T>,
-    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike,
-    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike,
+    <D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike + core::fmt::Debug,
+    <D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer: 'p + crate::ops::ZerosLike + core::fmt::Debug,
     Input: MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>,
     <Input as MatMul<&'p Variable<<D as BufferFromSlice<Sh2<IN_FEATURES, OUT_FEATURES>, T>>::Buffer>>>::Output: Add<&'p Variable<<D as BufferFromSlice<Sh2<1, OUT_FEATURES>, T>>::Buffer>>,
 {
