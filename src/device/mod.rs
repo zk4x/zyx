@@ -26,51 +26,134 @@ pub mod opencl;
 //#[cfg(feature = "ndarray")]
 //pub mod ndarray;
 
+/// This trait must be implemented for all devices
 pub trait Device {}
 
-use crate::{ops::{HasDType, HasShape}, shape::{Shape, Sh1, Sh2, Sh3, Sh4, Sh5}, dtype::DType};
+use crate::{ops::{HasDType, HasShape}, shape::{Shape, Sh1, Sh2, Sh3, Sh4, Sh5, HasLastDim}};
 
-pub trait BufferFromSlice<Sh, T = f32> {
-    type Buffer: HasDType<T = T> + HasShape<Sh = Sh>;
-    fn _slice(&mut self, slice: &[T]) -> Self::Buffer;
+/// Trait that allows us to create new buffer from given slice.
+/// This is the only trait that must be implemented for all devices,
+/// all other initialization methods are automatically implemented.
+pub trait BufferFromSlice<'d, Buf: 'd + HasDType + HasShape> {
+    fn slice(&'d mut self, slice: &[Buf::T]) -> Buf;
 }
 
-pub trait BufferInit {
-    fn slice<Sh, T>(&mut self, slice: &[T]) -> <Self as BufferFromSlice<Sh, T>>::Buffer
+/// Various methods to create a new buffer
+pub trait BufferInit<'d, Buf>: BufferFromSlice<'d, Buf>
+where
+    Buf: 'd + HasDType + HasShape,
+{
+    /// Create new buffer filled with random values
+    fn randn(&'d mut self) -> Buf
     where
-        Self: BufferFromSlice<Sh, T>,
-    {
-        self._slice(slice)
-    }
-    
-    fn randn<Sh, T>(&mut self) -> <Self as BufferFromSlice<Sh, T>>::Buffer
-    where
-        Sh: Shape,
-        Self: BufferFromSlice<Sh, T>,
-        rand::distributions::Standard: rand::prelude::Distribution<T>,
+        rand::distributions::Standard: rand::prelude::Distribution<Buf::T>,
     {
         use rand::Rng;
         extern crate alloc;
         let mut rng = rand::thread_rng();
-        self._slice(&core::iter::repeat(0).take(Sh::numel()).map(|_| rng.gen()).collect::<alloc::vec::Vec<T>>())
+        self.slice(&core::iter::repeat(0).take(Buf::Sh::numel()).map(|_| rng.gen()).collect::<alloc::vec::Vec<Buf::T>>())
     }
     
-    fn uniform<Sh, T>(&mut self, low: T, high: T) -> <Self as BufferFromSlice<Sh, T>>::Buffer
+    /// Create new buffer filled with values from uniform distribution
+    fn uniform(&'d mut self, low: Buf::T, high: Buf::T) -> Buf
     where
-        Sh: Shape,
-        Self: BufferFromSlice<Sh, T>,
-        T: rand::distributions::uniform::SampleUniform,
+        Buf::T: rand::distributions::uniform::SampleUniform,
     {
         use rand::distributions::Distribution;
         extern crate alloc;
         let mut rng = rand::thread_rng();
         let dist = rand::distributions::Uniform::new(low, high);
-        self._slice(&core::iter::repeat(0).take(Sh::numel()).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<T>>())
+        self.slice(&core::iter::repeat(0).take(Buf::Sh::numel()).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<Buf::T>>())
     }
-
-    fn eye<const N: usize, T>(&mut self) -> <Self as BufferFromSlice<Sh2<N, N>, T>>::Buffer
+    
+    /// Create new buffer filled with zeros
+    fn zeros(&'d mut self) -> Buf
     where
-        Self: BufferFromSlice<Sh2<N, N>, T>,
+        Buf::T: Clone + crate::ops::Zero,
+    {
+        extern crate alloc;
+        use crate::ops::Zero;
+        self.slice(&alloc::vec![Buf::T::zero(); Buf::Sh::numel()])
+    }
+    
+    /// Create new buffer filled with ones
+    fn ones(&'d mut self) -> Buf
+    where
+        Buf::T: Clone + crate::ops::One,
+    {
+        extern crate alloc;
+        use crate::ops::One;
+        self.slice(&alloc::vec![Buf::T::one(); Buf::Sh::numel()])
+    }
+}
+
+impl<'d, Buf, Dev> BufferInit<'d, Buf> for Dev where Dev: BufferFromSlice<'d, Buf>, Buf: 'd + HasDType + HasShape {}
+
+pub trait ShapedBufferInit<'d, Input, Buf, Sh>: BufferFromSlice<'d, Buf>
+where
+    Buf: 'd + HasDType + HasShape<Sh = Sh>,
+{
+    fn buffer(&'d mut self, x: Input) -> Buf;
+}
+
+impl<'d, Dev, Buf, const D0: usize> ShapedBufferInit<'d, [Buf::T; D0], Buf, Sh1<D0>> for Dev
+where
+    Dev: BufferFromSlice<'d, Buf>,
+    Buf: 'd + HasDType + HasShape<Sh = Sh1<D0>>,
+{
+    fn buffer(&'d mut self, x: [Buf::T; D0]) -> Buf {
+        self.slice(&x)
+    }
+}
+
+impl<'d, Dev, Buf, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[Buf::T; D0]; D1], Buf, Sh2<D1, D0>> for Dev
+where
+    Dev: BufferFromSlice<'d, Buf>,
+    Buf: 'd + HasDType + HasShape<Sh = Sh2<D1, D0>>,
+{
+    fn buffer(&'d mut self, x: [[Buf::T; D0]; D1]) -> Buf {
+        extern crate alloc;
+        self.slice(&x.into_iter().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+    }
+}
+
+impl<'d, Dev, Buf, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[[Buf::T; D0]; D1]; D2], Buf, Sh3<D2, D1, D0>> for Dev
+where
+    Dev: BufferFromSlice<'d, Buf>,
+    Buf: 'd + HasDType + HasShape<Sh = Sh3<D2, D1, D0>>,
+{
+    fn buffer(&'d mut self, x: [[[Buf::T; D0]; D1]; D2]) -> Buf {
+        extern crate alloc;
+        self.slice(&x.into_iter().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+    }
+}
+
+impl<'d, Dev, Buf, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[[[Buf::T; D0]; D1]; D2]; D3], Buf, Sh4<D3, D2, D1, D0>> for Dev
+where
+    Dev: BufferFromSlice<'d, Buf>,
+    Buf: 'd + HasDType + HasShape<Sh = Sh4<D3, D2, D1, D0>>,
+{
+    fn buffer(&'d mut self, x: [[[[Buf::T; D0]; D1]; D2]; D3]) -> Buf {
+        extern crate alloc;
+        self.slice(&x.into_iter().flatten().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+    }
+}
+
+impl<'d, Dev, Buf, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[[[[Buf::T; D0]; D1]; D2]; D3]; D4], Buf, Sh5<D4, D3, D2, D1, D0>> for Dev
+where
+    Dev: BufferFromSlice<'d, Buf>,
+    Buf: 'd + HasDType + HasShape<Sh = Sh5<D4, D3, D2, D1, D0>>,
+{
+    fn buffer(&'d mut self, x: [[[[[Buf::T; D0]; D1]; D2]; D3]; D4]) -> Buf {
+        extern crate alloc;
+        self.slice(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+    }
+}
+
+/*
+    fn eye<const N: usize>(&mut self) -> Buf
+    where
+        Buf::Sh: Sh2<N>,
         T: Clone + crate::ops::Zero + crate::ops::One,
     {
         extern crate alloc;
@@ -82,84 +165,67 @@ pub trait BufferInit {
         }
         self._slice(&data)
     }
-    
-    fn zeros<Sh, T>(&mut self) -> <Self as BufferFromSlice<Sh, T>>::Buffer
-    where
-        Sh: Shape,
-        Self: BufferFromSlice<Sh, T>,
-        T: Clone + crate::ops::Zero,
-    {
-        extern crate alloc;
-        self._slice(&alloc::vec![T::zero(); Sh::numel()])
-    }
-    
-    fn ones<Sh, T>(&mut self) -> <Self as BufferFromSlice<Sh, T>>::Buffer
-    where
-        Sh: Shape,
-        Self: BufferFromSlice<Sh, T>,
-        T: Clone + crate::ops::One,
-    {
-        extern crate alloc;
-        self._slice(&alloc::vec![T::one(); Sh::numel()])
-    }
-}
+*/
 
-impl<S> BufferInit for S {}
-
-pub trait ShapedBufferInit<Input, Sh, T>: BufferFromSlice<Sh, T> {
-    fn buffer(&mut self, x: Input) -> Self::Buffer;
-}
-
-impl<S, T, const D0: usize> ShapedBufferInit<[T; D0], Sh1<D0>, T> for S
+extern crate alloc;
+trait NDBufferToString: HasDType + HasShape + crate::ops::IntoVec<Self::T>
 where
-    S: BufferFromSlice<Sh1<D0>, T>,
-    T: DType,
+    Self::Sh: HasLastDim,
+    Self::T: core::fmt::Display,
 {
-    fn buffer(&mut self, x: [T; D0]) -> Self::Buffer {
-        self._slice(&x)
+    fn buffer_to_string(&self) -> alloc::string::String {
+        extern crate alloc;
+        use alloc::string::String;
+        let mut res = String::new();
+        let data = self.to_vec();
+        if data.is_empty() { return res + "[]"; }
+        let n = Self::Sh::numel();
+        let ndim = Self::Sh::RANK;
+        //const PRECISION: usize = 3;
+        // get maximal width of single value
+        let mut w = 0;
+        for x in data.iter() {
+            let l = alloc::format!("{x:w$}").len();
+            if l > w { w = l; }
+        }
+        let d0 = Self::Sh::LAST_DIM;
+        for i in 0..n {
+            {
+                let mut var = 1;
+                let mut r = ndim;
+                while r > 0 {
+                    if i % (n/var) == 0 {
+                        res += &(" ".repeat(ndim - r)+&"[".repeat(r - 1));
+                        break
+                    }
+                    var *= Self::Sh::at(ndim - r);
+                    r -= 1;
+                }
+            }
+            use core::fmt::Write;
+            let _ = write!(res, "{0:>1$}", data[i], w);
+            if (i + 1) % d0 != 0usize { res += " "; }
+            {
+                let mut var = 1;
+                let mut r = ndim;
+                while r > 0 {
+                    if (i + 1) % (n/var) == 0 {
+                        res += &"]".repeat(r-1);
+                        break
+                    }
+                    var *= Self::Sh::at(ndim - r);
+                    r -= 1;
+                }
+            }
+            if (i + 1) % d0 == 0usize && i != n - 1 { res += "\n"; }
+        }
+        res
     }
 }
 
-impl<S, T, const D1: usize, const D0: usize> ShapedBufferInit<[[T; D0]; D1], Sh2<D1, D0>, T> for S
+impl<Buf> NDBufferToString for Buf
 where
-    S: BufferFromSlice<Sh2<D1, D0>, T>,
-    T: DType,
-{
-    fn buffer(&mut self, x: [[T; D0]; D1]) -> Self::Buffer {
-        extern crate alloc;
-        self._slice(&x.into_iter().flatten().collect::<alloc::vec::Vec<T>>())
-    }
-}
-
-impl<S, T, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<[[[T; D0]; D1]; D2], Sh3<D2, D1, D0>, T> for S
-where
-    S: BufferFromSlice<Sh3<D2, D1, D0>, T>,
-    T: DType,
-{
-    fn buffer(&mut self, x: [[[T; D0]; D1]; D2]) -> Self::Buffer {
-        extern crate alloc;
-        self._slice(&x.into_iter().flatten().flatten().collect::<alloc::vec::Vec<T>>())
-    }
-}
-
-impl<S, T, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<[[[[T; D0]; D1]; D2]; D3], Sh4<D3, D2, D1, D0>, T> for S
-where
-    S: BufferFromSlice<Sh4<D3, D2, D1, D0>, T>,
-    T: DType,
-{
-    fn buffer(&mut self, x: [[[[T; D0]; D1]; D2]; D3]) -> Self::Buffer {
-        extern crate alloc;
-        self._slice(&x.into_iter().flatten().flatten().flatten().collect::<alloc::vec::Vec<T>>())
-    }
-}
-
-impl<S, T, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<[[[[[T; D0]; D1]; D2]; D3]; D4], Sh5<D4, D3, D2, D1, D0>, T> for S
-where
-    S: BufferFromSlice<Sh5<D4, D3, D2, D1, D0>, T>,
-    T: DType,
-{
-    fn buffer(&mut self, x: [[[[[T; D0]; D1]; D2]; D3]; D4]) -> Self::Buffer {
-        extern crate alloc;
-        self._slice(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<T>>())
-    }
-}
+    Buf: HasDType + HasShape + crate::ops::IntoVec<Buf::T>,
+    Buf::T: core::fmt::Display,
+    Buf::Sh: HasLastDim,
+{}
