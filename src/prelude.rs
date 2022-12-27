@@ -4,6 +4,6 @@ pub use crate::{
     ops::*,
     shape::Shape,
     nn::{module::Module, parameters::Parameters},
-    device::{BufferInit, ShapedBufferInit},
+    device::{BufferFromSlice, BufferInit, ShapedBufferInit},
     optim::SGDStep,
 };

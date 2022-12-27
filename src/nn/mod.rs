@@ -291,7 +291,7 @@ impl<Input> Module<Input> for NormLayer {
     }
 }*/
 
-use crate::device::BufferFromSlice;
+/*use crate::device::BufferFromSlice;
 /// Linear layer
 #[derive(Debug)]
 pub struct Linear<const IN_FEATURES: usize, const OUT_FEATURES: usize, T = f32, D = crate::device::cpu::Device>
@@ -339,7 +339,7 @@ where
     fn parameters(&'p mut self) -> Self::Params {
         (&mut self.w, &mut self.b)
     }
-}
+}*/
 
 // RNNCell
 // TODO: Should we rewrite this as two linear layers?

@@ -64,6 +64,9 @@ pub mod prelude;
 mod dtype;
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod tests;
 
 // TODO: saving of models and buffers (probably via .to_vec() and .shape(), and ::from_vec())

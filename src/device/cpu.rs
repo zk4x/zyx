@@ -6,21 +6,23 @@ use crate::{ops::{self, ConvertFrom}, shape::{self, Shape, HasLastDim, Reducable
 use super::BufferFromSlice;
 use core::marker::PhantomData;
 extern crate alloc;
-use alloc::{vec, sync::Arc, format};
+use alloc::{vec, sync::Arc};
 
+/// CPU Device
+/// 
+/// When you use this device to create buffers, they are stored in system RAM and CPU is used for computations.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Device {}
 
 impl super::Device for Device {}
 
-impl<Sh, T> BufferFromSlice<Sh, T> for Device 
+impl<'d, Sh, T> BufferFromSlice<'d, Buffer<Sh, T>> for Device 
 where
-    Sh: Shape,
-    T: DType,
+    Sh: 'd + Shape,
+    T: 'd + DType,
 {
-    type Buffer = Buffer<Sh, T>;
-    fn _slice(&mut self, slice: &[T]) -> Self::Buffer {
-        Self::Buffer {
+    fn slice(&'d mut self, slice: &[T]) -> Buffer<Sh, T> {
+        Buffer {
             data: Arc::new(slice.to_vec()),
             shape: PhantomData,
         }
@@ -39,6 +41,17 @@ where
 {
     data: Arc<alloc::vec::Vec<T>>, // In the future this will be Arc<[T; Sh::NUMEL]>
     shape: PhantomData<Sh>,
+}
+
+impl<Sh, T> core::fmt::Display for Buffer<Sh, T>
+where
+    Sh: Shape + HasLastDim,
+    T: DType + core::fmt::Display,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use super::NDBufferToString;
+        f.write_str(&self.buffer_to_string())
+    }
 }
 
 impl<T, Sh> Clone for Buffer<Sh, T>
@@ -79,61 +92,6 @@ where
             data: Arc::new(x.data.as_ref().par_iter().map(|x| x.clone().cinto()).collect()),
             shape: PhantomData,
         }
-    }
-}
-
-// Display Buffer
-impl<Sh, T> core::fmt::Display for Buffer<Sh, T>
-where
-    Sh: Shape + HasLastDim,
-    T: DType + core::fmt::Display,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        extern crate alloc;
-        use alloc::string::String;
-        let mut res = String::new();
-        if self.data.is_empty() { return f.write_str(&(res + "[]")); }
-        let n = Sh::numel();
-        let ndim = Sh::RANK;
-        //const PRECISION: usize = 3;
-        // get maximal width of single value
-        let mut w = 0;
-        for x in self.data.as_ref().iter() {
-            let l = format!("{x:w$}").len();
-            if l > w { w = l; }
-        }
-        let d0 = Sh::LAST_DIM;
-        for i in 0..n {
-            {
-                let mut var = 1;
-                let mut r = ndim;
-                while r > 0 {
-                    if i % (n/var) == 0 {
-                        res += &(" ".repeat(ndim - r)+&"[".repeat(r - 1));
-                        break
-                    }
-                    var *= Sh::at(ndim - r);
-                    r -= 1;
-                }
-            }
-            use core::fmt::Write;
-            let _ = write!(res, "{0:>1$}", self.data[i], w);
-            if (i + 1) % d0 != 0usize { res += " "; }
-            {
-                let mut var = 1;
-                let mut r = ndim;
-                while r > 0 {
-                    if (i + 1) % (n/var) == 0 {
-                        res += &"]".repeat(r-1);
-                        break
-                    }
-                    var *= Sh::at(ndim - r);
-                    r -= 1;
-                }
-            }
-            if (i + 1) % d0 == 0usize && i != n - 1 { res += "\n"; }
-        }
-        f.write_str(&res)
     }
 }
 
