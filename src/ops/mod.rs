@@ -32,7 +32,9 @@ use crate::shape::{Shape, Axes};
 
 /// # HasDevice
 pub trait HasDevice {
+    /// Type of device that tensor is stored on
     type Dev: crate::device::Device;
+    /// Device that tensor is stored on
     fn device(&self) -> Self::Dev;
 }
 
