@@ -1,5 +1,5 @@
 use crate::{ops::{Pow, Ln}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType};
-use core::{ops::{Add, Mul, Div}};
+use core::{ops::{Mul, Div}};
 
 /*#[derive(Debug, Clone, Copy)]
 pub struct PowBackwardSV<'g, YG, YT> {
@@ -44,8 +44,8 @@ pub struct PowBackwardST<S, YF> {
 
 impl<YF, S> Backward<S> for PowBackwardST<S, YF>
 where
-    S: Default + Add<Output = S> + Mul<Output = S>,
-    YF: Backward<S>,
+    S: Mul,
+    YF: Backward<<S as Mul>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.ygrad_fn.backward(res_grad * self.ytemp);
@@ -204,8 +204,8 @@ pub struct PowBackwardTS<S2, XF> {
 
 impl<S, S2, XF> Backward<S> for PowBackwardTS<S2, XF>
 where
-    S2: Default + Mul<S, Output = S>,
-    XF: Backward<S>,
+    S2: Mul<S>,
+    XF: Backward<<S2 as Mul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.xgrad_fn.backward(self.xtemp * res_grad);

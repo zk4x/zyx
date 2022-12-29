@@ -3,13 +3,13 @@ use core::marker::PhantomData;
 use crate::{ops::{Summable, Expandable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, Axes, ReducableBy}};
 
 #[derive(Debug, Clone)]
-pub struct SummableBackwardV<'g, G, Sh, Ax> {
+pub struct SumBackward<'g, G, Sh, Ax> {
     grad: GradientRef<'g, G>,
     shape: PhantomData<Sh>,
     axes: PhantomData<Ax>,
 }
 
-impl<S, G, Sh, Ax> Backward<S> for SummableBackwardV<'_, G, Sh, Ax>
+impl<S, G, Sh, Ax> Backward<S> for SumBackward<'_, G, Sh, Ax>
 where
     Sh: Shape,
     Ax: Axes,
@@ -27,11 +27,11 @@ where
     S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardV<'g, S, <S as HasShape>::Sh, Dims>>;
+    type Output = Tensor<<S as Summable<Dims>>::Output, SumBackward<'g, S, <S as HasShape>::Sh, Dims>>;
     fn _sum(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone()._sum(),
-            grad_fn: SummableBackwardV {
+            grad_fn: SumBackward {
                 grad: GradientRef::new(&self.grad),
                 shape: PhantomData,
                 axes: PhantomData,

@@ -597,7 +597,7 @@ mod tensor {
             z.backward();
             assert_eq!(x.grad().to_vec(), [5., 7., 8.].to_vec());
 
-            let x = device.buffer([[2., 3., 4.]]).with_grad();
+            let x = device.buffer([[2f32, 3., 4.]]).with_grad();
             let y = device.buffer([[2., 3.], [3., 4.], [5., 3.]]).with_grad();
             let z = x.matmul(&y);
             assert_eq!(z.data().to_vec(), [33., 30.]);
@@ -624,16 +624,20 @@ mod nn {
     #[test]
     fn linear() {
         use crate::prelude::*;
+        use crate::device::cpu::{Device, Buffer};
+        use crate::shape::Sh2;
         use crate::nn;
-        use crate::device::cpu::Device;
 
         let device = Device::default();
 
-        let linear = nn::Linear::<3, 2>::new(&device);
+        let mut linear = nn::Linear::<3, 2>::new(&device);
         let x = device.buffer([[2., 3., 1.]]);
         let z = linear.forward(x);
         assert_eq!(z.shape(), [1, 2]);
         //println!("{}", z);
         z.backward();
+        let params = <nn::Linear<'_, 3, 2, _, _> as nn::module::Module<'_, Buffer<'_, Sh2<1, 3>, _>>>::parameters(&mut linear);
+        std::println!("{}\n{}", params.0, params.1);
+        panic!();
     }
 }

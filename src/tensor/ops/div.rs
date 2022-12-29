@@ -11,7 +11,7 @@ pub struct DivBackwardSV<'g, S, S2> {
 
 impl<S, S2> Backward<S> for DivBackwardSV<'_, S, S2>
 where
-    S: Default + Sub<<<S2 as Div<S>>::Output as Mul<S>>::Output, Output = S>,
+    S: Sub<<<S2 as Div<S>>::Output as Mul<S>>::Output, Output = S>,
     S2: Div<S>,
     <S2 as Div<S>>::Output: Mul<S>,
 {

@@ -89,17 +89,18 @@ pub struct Sigmoid;
 
 impl<Input> Module<'_, Input> for Sigmoid
 where
-    Input: Neg,
+    Input: Neg + HasDType,
+    Input::T: ops::One,
     <Input as Neg>::Output: ops::Exp,
-    <<Input as Neg>::Output as ops::Exp>::Output: Add<i32>,
-    <<<Input as Neg>::Output as ops::Exp>::Output as Add<i32>>::Output: Pow<i32>,
+    <<Input as Neg>::Output as ops::Exp>::Output: Add<Input::T>,
+    <<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output: Pow<i32>,
 {
-    type Output = <<<<Input as Neg>::Output as ops::Exp>::Output as Add<i32>>::Output as Pow<i32>>::Output;
+    type Output = <<<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output as Pow<i32>>::Output;
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
         use ops::Exp;
-        ((-x).exp() + 1).pow(-1)
+        ((-x).exp() + Input::T::one()).pow(-1)
     }
 
     fn parameters(&mut self) -> Self::Params {}
@@ -329,23 +330,23 @@ where
     }
 }
 
-impl<'d, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'d, Input> for Linear<'d, IN_FEATURES, OUT_FEATURES, W, B>
+impl<'p, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input> for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
 where
-    W: HasShape + HasDType + ops::ZerosLike,
+    W: 'p + HasShape + HasDType + ops::ZerosLike,
     W::T: Zero + One,
-    B: 'd + HasShape + HasDType + ops::ZerosLike,
+    B: 'p + HasShape + HasDType + ops::ZerosLike,
     B::T: Zero + One,
-    Input: MatMul<&'d Variable<W>>,
-    <Input as MatMul<&'d Variable<W>>>::Output: Add<&'d Variable<B>>,
+    Input: MatMul<&'p Variable<W>>,
+    <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
 {
-    type Output = <<Input as MatMul<&'d Variable<W>>>::Output as Add<&'d Variable<B>>>::Output;
-    type Params = (&'d mut Variable<W>, &'d mut Variable<B>);
+    type Output = <<Input as MatMul<&'p Variable<W>>>::Output as Add<&'p Variable<B>>>::Output;
+    type Params = (&'p mut Variable<W>, &'p mut Variable<B>);
 
-    fn forward(&'d self, x: Input) -> Self::Output {
+    fn forward(&'p self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
     }
 
-    fn parameters(&'d mut self) -> Self::Params {
+    fn parameters(&'p mut self) -> Self::Params {
         (&mut self.w, &mut self.b)
     }
 }

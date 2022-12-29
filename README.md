@@ -39,22 +39,19 @@ Buffer, Tensor and Variable are immutable.
 
 Thanks to typestate API there are **ZERO** runtime errors when running on CPU. Well, technically you can run out of RAM...
 
+If you have supported IDE, you can look at your whole graph just by hovering over your loss variable and inspecting it's type.
+The second generic parameter of [Tensor](crate::tensor::Tensor) represents the graph.
+
 GPU execution uses OpenCL through [ocl](https://github.com/cogciprocate/ocl).
-You can also turn custom datatypes into tensors by calling .with_grad(). They will run on CPU.
 
 The current architecture makes it easy to add other accelerators should the need arise.
 It is because new accelerators can be added gradually and number of required operations is low.
 
+You can also turn custom datatypes into tensors by calling .with_grad(). They will run on CPU.
+
 ## Missing features
 
-These features are important and in the works but not ready yet:
-1. Min opration
-2. Max operation
-3. Convolution
-
-This means that some functions which depend on these, such as Softmax are missing as well.
-
-In particular convolution would be much easier to implement if stable rust supported generic constant expressions.
+Convolution is not currently possible on stable rust. We need generic constant expressions to calculate the output shape.
 
 ## Examples
 
@@ -65,7 +62,7 @@ If you want to accelerate matrix multiplication using matrixmultiply crate, use 
 # #[cfg(not(feature = "matrixmultiply"))]
 # {
 use zyx::prelude::*;
-use zyx::device::cpu;
+use zyx::device::cpu; // If you want this to run on GPU, just use zyx::device::opencl;
 use zyx::tensor::Variable;
 use zyx::shape::{Sh4, Ax4};
 
@@ -101,8 +98,8 @@ The library is available on crates.io: <https://crates.io/crates/zyx>
 
 ## Important
 
-Not all features are implemented and not all tests are written.
-Therefore this library can not be considered stable yet.
+Many features are not implemented and many tests are missing. We would appreciate help writing more thorough tests and feature requests so that we know where to direct our focus.
+Therefore zyx can not be considered stable yet.
 With that said, we don't have plans to significantly change APIs that have already been written.
 
 ## Notes
@@ -112,6 +109,7 @@ With that said, we don't have plans to significantly change APIs that have alrea
 - [CPU Buffer](crate::device::cpu::Buffer) code is under 1000 lines, so implementing custom devices is simple.
 - Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
 - State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients.
+- FUN NOTE: If you have supported hardware, you can try using zyx with the new opencl mesa driver rusticl that was written in rust!
 
 ## How to orient yourself in the library
 

@@ -768,6 +768,27 @@ where
     }
 }
 
+impl<'d, Sh, T> core::ops::Mul<i32> for Buffer<'d, Sh, T>
+where
+    T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<i32> + DType,
+    Sh: Shape,
+{
+    type Output = Buffer<'d, Sh, T>;
+    fn mul(self, rhs: i32) -> Self::Output {
+        use rayon::prelude::*;
+        use ops::ConvertInto;
+        let y: T = rhs.cinto();
+        Self {
+            data: Arc::new(match Arc::try_unwrap(self.data) {
+                Ok(vec) => vec.into_par_iter().map(|x| x * y.clone()).collect(),
+                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() * y.clone()).collect(),
+            }),
+            device: self.device,
+            shape: PhantomData,
+        }
+    }
+}
+
 /*impl<Sh, T> core::ops::Mul<i32> for Buffer<Sh, T>
 where
     T: Clone + Sync + Send + core::ops::Mul<Output = T> + ops::ConvertFrom<i32> + DType,
@@ -933,13 +954,13 @@ where
 
 // Let's just use matrixmultiply crate for f32 and f64
 #[cfg(feature = "matrixmultiply")]
-impl<XSh, YSh> ops::MatMul<Buffer<f32, YSh>> for Buffer<f32, XSh>
+impl<'d, XSh, YSh> ops::MatMul<Buffer<'d, YSh, f32>> for Buffer<'d, XSh, f32>
 where
     XSh: Shape + shape::HasLast2Dims + shape::MatMulBy<YSh>,
     YSh: Shape + HasLastDim,
 {
-    type Output = Buffer<f32, <XSh as MatMulBy<YSh>>::Output>;
-    fn matmul(self, rhs: Buffer<f32, YSh>) -> Self::Output {
+    type Output = Buffer<'d, <XSh as MatMulBy<YSh>>::Output, f32>;
+    fn matmul(self, rhs: Buffer<'d, YSh, f32>) -> Self::Output {
         // TODO: support for operations on more than 2 dimensions
         if XSh::RANK != 2 && YSh::RANK != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -958,19 +979,20 @@ where
 
         Buffer {
             data: Arc::new(data),
+            device: self.device,
             shape: PhantomData,
         }
     }
 }
 
 #[cfg(feature = "matrixmultiply")]
-impl<XSh, YSh> ops::MatMul<Buffer<f64, YSh>> for Buffer<f64, XSh>
+impl<'d, XSh, YSh> ops::MatMul<Buffer<'d, YSh, f64>> for Buffer<'d, XSh, f64>
 where
     XSh: Shape + shape::HasLast2Dims + shape::MatMulBy<YSh>,
     YSh: Shape + HasLastDim,
 {
-    type Output = Buffer<f64, <XSh as MatMulBy<YSh>>::Output>;
-    fn matmul(self, rhs: Buffer<f64, YSh>) -> Self::Output {
+    type Output = Buffer<'d, <XSh as MatMulBy<YSh>>::Output, f64>;
+    fn matmul(self, rhs: Buffer<'d, YSh, f64>) -> Self::Output {
         // TODO: support for operations on more than 2 dimensions
         if XSh::RANK != 2 && YSh::RANK != 2 {
             panic!("Only operations on buffers with 2 dimensions are supported.");
@@ -989,6 +1011,7 @@ where
 
         Buffer {
             data: Arc::new(data),
+            device: self.device,
             shape: PhantomData,
         }
     }
