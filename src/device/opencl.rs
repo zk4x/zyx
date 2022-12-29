@@ -9,12 +9,12 @@ extern crate alloc;
 
 use super::BufferFromSlice;
 
-static UNARY_KERNEL: &str = "
+/*static UNARY_KERNEL: &str = "
     __kernel void NAME_DTYPE(__global DTYPE* data, __global DTYPE* res) {
         int id = get_global_id(0);
         res[id] = OP(data[id]);
     }
-";
+";*/
 
 /// OpenCL device
 /// 

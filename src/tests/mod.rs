@@ -624,20 +624,18 @@ mod nn {
     #[test]
     fn linear() {
         use crate::prelude::*;
-        use crate::device::cpu::{Device, Buffer};
-        use crate::shape::Sh2;
+        use crate::device::cpu::Device;
         use crate::nn;
 
         let device = Device::default();
 
-        let mut linear = nn::Linear::<3, 2>::new(&device);
+        let linear = nn::Linear::<3, 2>::new(&device);
         let x = device.buffer([[2., 3., 1.]]);
         let z = linear.forward(x);
         assert_eq!(z.shape(), [1, 2]);
         //println!("{}", z);
         z.backward();
-        let params = <nn::Linear<'_, 3, 2, _, _> as nn::module::Module<'_, Buffer<'_, Sh2<1, 3>, _>>>::parameters(&mut linear);
-        std::println!("{}\n{}", params.0, params.1);
-        panic!();
+        //let params = <nn::Linear<'_, 3, 2, _, _> as nn::module::Module<'_, Buffer<'_, Sh2<1, 3>, _>>>::parameters(&mut linear);
+        //std::println!("{}\n{}", params.0, params.1);
     }
 }
