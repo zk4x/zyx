@@ -98,14 +98,14 @@ fn sum() {
 
     let vec = alloc::vec![3, 1, 2, 4, 1, 0, 4, 3, 5];
     let x: cpu::Buffer<'_, Sh3<3, 3, 1>, _> = device.slice(&vec);
+    //let x = device.buffer([3, 1, 2, 4, 1, 0, 4, 3, 5]).reshape::<Sh3<3, 3, 1>>();
 
-    std::println!("{}", x);
+    //std::println!("{}", x);
 
     let _y = x.sum::<Ax2<0, 1>>();
 
     let x: Variable<cpu::Buffer<'_, Sh3<3, 3, 1>, _>> = device.slice(&vec).with_grad();
-    //let x = Buffer::<Sh5<1, 3, 1, 3, 1>>::from_slice(&vec).with_grad();
-    let y = (&x).sum::<Ax2<0, 1>>();
+    let y = (&x).sum::<Ax2<1, 2>>();
 
     assert_eq!([6, 5, 12].to_vec(), y.to_vec());
 

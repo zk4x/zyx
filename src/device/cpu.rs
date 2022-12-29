@@ -245,12 +245,10 @@ where
         // Strides of the result
         let res_strides = <Sh as ReducableBy<Dims>>::Output::strides();
 
-        use alloc::vec::Vec;
-
         // indices of dimensions that are reduced
-        let dims: Vec<usize> = Dims::array().into_iter().map(|x| x as usize).collect();
+        let dims: alloc::vec::Vec<usize> = Dims::array().into_iter().map(|x| x as usize).collect();
         // indices of dimensions that are not reduced
-        let included_dims: Vec<usize> = (0..Sh::RANK).into_iter().filter(|x| !dims.contains(x)).collect();
+        let included_dims: alloc::vec::Vec<usize> = (0..Sh::RANK).into_iter().filter(|x| !dims.contains(x)).collect();
 
         #[cfg(test)]
         std::println!("Dims {:?}\nIncluded dims {:?}\nShape {}\nStrides {:?}\nRes strides {:?}", dims, included_dims, shape, strides, res_strides);
@@ -317,6 +315,7 @@ where
     type Output = Buffer<'d, Sh2, T>;
     fn _reshape(self) -> Self::Output {
         assert_eq!(Sh::NUMEL, Sh2::NUMEL);
+        //static_assertions::const_assert_eq!(Sh::NUMEL, Sh2::NUMEL); // This unfortunately doesn't work :(
         Buffer {
             data: self.data,
             device: self.device,
@@ -1085,7 +1084,7 @@ where
                 return false;
             }
         }
-        return true
+        true
     }
 }
 
@@ -1099,7 +1098,7 @@ where
                 return false;
             }
         }
-        return true
+        true
     }
 }
 
@@ -1113,7 +1112,7 @@ where
                 return false;
             }
         }
-        return true
+        true
     }
 }
 
@@ -1127,7 +1126,7 @@ where
                 return false;
             }
         }
-        return true
+        true
     }
 }
 
@@ -1141,6 +1140,6 @@ where
                 return false;
             }
         }
-        return true
+        true
     }
 }
