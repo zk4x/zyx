@@ -5,22 +5,22 @@
 
 Zyx is open source tensor library designed to be zero cost abstraction and to provide lot of compile-time guarantees.
 
-From user perspective it works similar to PyTorch. Also names of functions are mostly the same, so that you can quickly pick up this library if you are familiar with PyTorch.
+From user perspective it works similar to PyTorch. Also names of functions are mostly the same, so that you can quickly pick up zyx if you are familiar with PyTorch.
 
 ## Main Ideas
 
 We want to provide a way to do automatic differentiation and backpropagation for any datatypes, whether are those scalars, arrays, matrices, or tensors.
-This library aims to be zero cost abstraction and use simple Rust syntax for this autodiff and backprop.
+Zyx aims to be zero cost abstraction and use simple Rust syntax for this autodiff and backprop.
 
 ### Zero cost abstraction
 
 By passing datatype into [.with_grad()](crate::ops::IntoVariable::with_grad()) function you create Variable. Variable stores your datatype and adds gradient
-to this datatype. Gradient is of the same type as your datatype. To manage access to the gradient we use [UnsafeCell](core::cell::UnsafeCell) as gradients must
-be accessed from different places and we saw significant performance improvements over using [RefCell](core::cell::RefCell) in certain benchmarks.
+to the datatype. Gradient is of the same type as your datatype. To manage access to the gradient we use [UnsafeCell](core::cell::UnsafeCell) as gradients must
+be accessed from different places and we saw significant performance improvements over [RefCell](core::cell::RefCell) in certain benchmarks.
 
 [Tensor](crate::tensor::Tensor) is a result of a mathematical or other operation performed on Variable. Tensor creates the graph needed for backpropagation at compile time.
 
-All operations are executed eagerly.
+Tensors are immutable and all operations are executed eagerly.
 
 **TL DR:** By zero cost abstraction we mean zero dyn, zero Rc, zero RefCell and minimal number of branches.
 
@@ -42,7 +42,7 @@ Thanks to typestate API there are **ZERO** runtime errors when running on CPU. W
 If you have supported IDE, you can look at your whole graph just by hovering over your loss variable and inspecting it's type.
 The second generic parameter of [Tensor](crate::tensor::Tensor) represents the graph.
 
-GPU execution uses OpenCL through [ocl](https://github.com/cogciprocate/ocl).
+GPU acceleration uses OpenCL through [ocl](https://github.com/cogciprocate/ocl).
 
 The current architecture makes it easy to add other accelerators should the need arise.
 It is because new accelerators can be added gradually and number of required operations is low.
@@ -55,7 +55,7 @@ Convolution is not currently possible on stable rust. We need generic constant e
 
 ## Examples
 
-For examples of linear and recurrent neural networks, look at [examples directory](https://github.com/zk4x/zyx/tree/main/examples).
+For examples of linear neural networks, look at [examples directory](https://github.com/zk4x/zyx/tree/main/examples).
 If you want to accelerate matrix multiplication using matrixmultiply crate, use `--features=matrimultiply`.
 
 ```rust
@@ -94,7 +94,7 @@ println!("{}", x.grad());
 
 ## Installation
 
-The library is available on crates.io: <https://crates.io/crates/zyx>
+Zyx is available on crates.io: <https://crates.io/crates/zyx>
 
 ## Important
 
@@ -111,7 +111,7 @@ With that said, we don't have plans to significantly change APIs that have alrea
 - State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients.
 - FUN NOTE: If you have supported hardware, you can try using zyx with the new opencl mesa driver rusticl that was written in rust!
 
-## How to orient yourself in the library
+## How to orient yourself in zyx
 
 We would advice you to first look at module ops. There are defined all basic operations you can work with. Any device which implements these operations automatically implementes operations in tensor::ops, these do automatic gradient calculations.
 Tensors can use optimizers to update their values using calculated gradients.
