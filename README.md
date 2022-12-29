@@ -59,8 +59,6 @@ For examples of linear neural networks, look at [examples directory](https://git
 If you want to accelerate matrix multiplication using matrixmultiply crate, use `--features=matrimultiply`.
 
 ```rust
-# #[cfg(not(feature = "matrixmultiply"))]
-# {
 use zyx::prelude::*;
 use zyx::device::cpu; // If you want this to run on GPU, just use zyx::device::opencl;
 use zyx::tensor::Variable;
@@ -77,7 +75,6 @@ z.backward();
 
 println!("{}", x.grad());
 println!("{}", y.grad());
-# }
 ```
 
 Want to use scalars? Just give them gradients!
