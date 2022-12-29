@@ -8,7 +8,7 @@
 pub mod module;
 pub mod parameters;
 
-use crate::{nn::module::Module, ops::{self, HasShape, Pow, Zero, One, MatMul, HasDType, IntoVariable}, tensor::Variable, device::{BufferInit, cpu::Buffer}, shape::{Shape, Sh2, Axes}};
+use crate::{nn::module::Module, ops::{self, HasShape, Pow, Zero, One, MatMul, HasDType, IntoVariable, ZerosLike}, tensor::Variable, device::{BufferInit, cpu::Buffer}, shape::{Shape, Sh2, Axes}};
 use core::{ops::{Neg, Add, Sub, Div}, marker::PhantomData};
 
 /// ReLU operation
@@ -20,13 +20,12 @@ where
     Input: ops::ReLU,
 {
     type Output = Input::Output;
+    fn forward(&self, x: Input) -> Self::Output { x.relu() }
+}
+
+impl<'p> HasParameters<'p> for ReLU {
     type Params = ();
-
-    fn forward(&self, x: Input) -> Self::Output {
-        x.relu()
-    }
-
-    fn parameters(&mut self) -> Self::Params {}
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// Exp operation
@@ -38,13 +37,12 @@ where
     Input: ops::Exp,
 {
     type Output = Input::Output;
+    fn forward(&self, x: Input) -> Self::Output { x.exp() }
+}
+
+impl<'p> HasParameters<'p> for Exp {
     type Params = ();
-
-    fn forward(&self, x: Input) -> Self::Output {
-        x.exp()
-    }
-
-    fn parameters(&mut self) -> Self::Params {}
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// Ln operation
@@ -56,13 +54,12 @@ where
     Input: ops::Ln,
 {
     type Output = Input::Output;
+    fn forward(&self, x: Input) -> Self::Output { x.ln() }
+}
+
+impl<'p> HasParameters<'p> for Ln {
     type Params = ();
-
-    fn forward(&self, x: Input) -> Self::Output {
-        x.ln()
-    }
-
-    fn parameters(&mut self) -> Self::Params {}
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// Tanh operation
@@ -74,13 +71,14 @@ where
     Input: ops::Tanh,
 {
     type Output = Input::Output;
-    type Params = ();
-
     fn forward(&self, x: Input) -> Self::Output {
         x.tanh()
     }
+}
 
-    fn parameters(&mut self) -> Self::Params {}
+impl<'p> HasParameters<'p> for Tanh {
+    type Params = ();
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// Sigmoid operation
@@ -96,15 +94,17 @@ where
     <<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output: Pow<i32>,
 {
     type Output = <<<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output as Pow<i32>>::Output;
-    type Params = ();
-
     fn forward(&self, x: Input) -> Self::Output {
         use ops::Exp;
         ((-x).exp() + Input::T::one()).pow(-1)
     }
-
-    fn parameters(&mut self) -> Self::Params {}
 }
+
+impl<'p> HasParameters<'p> for Sigmoid {
+    type Params = ();
+    fn parameters(&'p mut self) -> Self::Params { () }
+}
+
 /*
 /// Softmax operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -176,13 +176,17 @@ where
     Dims: Axes,
 {
     type Output = Input::Output;
-    type Params = ();
-
     fn forward(&self, x: Input) -> Self::Output {
         x._sum()
     }
-    
-    fn parameters(&mut self) -> Self::Params {}
+}
+
+impl<'p, Dims> HasParameters<'p> for Sum<Dims>
+where
+    Dims: Axes,
+{
+    type Params = ();
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// Max operation
@@ -201,18 +205,20 @@ where
     Dims: Axes,
 {
     type Output = (Input::Values, Input::Indices);
-    type Params = ();
+    fn forward(&self, x: Input) -> Self::Output { x._max() }
+}
 
-    fn forward(&self, x: Input) -> Self::Output {
-        x._max()
-    }
-    
-    fn parameters(&mut self) -> Self::Params {}
+impl<'p, Dims> HasParameters<'p> for Max<Dims>
+where
+    Dims: Axes,
+{
+    type Params = ();
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// Minimizable operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Minimizable<Dims>
+pub struct Min<Dims>
 where
     Dims: Axes,
 {
@@ -220,19 +226,21 @@ where
     pub dims: Dims,
 }
 
-impl<Input, Dims> Module<'_, Input> for Minimizable<Dims>
+impl<Input, Dims> Module<'_, Input> for Min<Dims>
 where
     Input: ops::Minimizable<Dims>,
     Dims: Axes,
 {
     type Output = (Input::Values, Input::Indices);
+    fn forward(&self, x: Input) -> Self::Output { x._min() }
+}
+
+impl<'p, Dims> HasParameters<'p> for Min<Dims>
+where
+    Dims: Axes,
+{
     type Params = ();
-
-    fn forward(&self, x: Input) -> Self::Output {
-        x._min()
-    }
-
-    fn parameters(&mut self) -> Self::Params {}
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -252,13 +260,17 @@ where
     <Input as ops::Summable<Dims>>::Output: Div<i32>,
 {
     type Output = <<Input as ops::Summable<Dims>>::Output as Div<i32>>::Output;
-    type Params = ();
-
     fn forward(&self, x: Input) -> Self::Output {
         x._sum()/(Input::Sh::NUMEL as i32)
     }
+}
 
-    fn parameters(&mut self) -> Self::Params {}
+impl<'p, Dims> HasParameters<'p> for Mean<Dims>
+where
+    Dims: Axes,
+{
+    type Params = ();
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 /// MSE loss
@@ -271,13 +283,14 @@ where
     <Y as Sub<YP>>::Output: Pow<i32>,
 {
     type Output = <<Y as Sub<YP>>::Output as Pow<i32>>::Output;
-    type Params = ();
-
     fn forward(&self, x: (Y, YP)) -> Self::Output {
         (x.0 - x.1).pow(2)
     }
+}
 
-    fn parameters(&mut self) -> Self::Params {}
+impl<'p> HasParameters<'p> for MSELoss {
+    type Params = ();
+    fn parameters(&'p mut self) -> Self::Params { () }
 }
 
 //pub struct STD {}
@@ -293,6 +306,8 @@ impl<Input> Module<Input> for NormLayer {
 }*/
 
 use crate::device::BufferFromSlice;
+
+use self::parameters::HasParameters;
 /// Linear layer
 #[derive(Debug)]
 pub struct Linear<'d, const IN_FEATURES: usize, const OUT_FEATURES: usize, W = Buffer<'d, Sh2<IN_FEATURES, OUT_FEATURES>>, B = Buffer<'d, Sh2<1, OUT_FEATURES>>>
@@ -332,23 +347,26 @@ where
 
 impl<'p, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input> for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
 where
-    W: 'p + HasShape + HasDType + ops::ZerosLike,
+    W: 'p + HasShape + HasDType,
     W::T: Zero + One,
-    B: 'p + HasShape + HasDType + ops::ZerosLike,
+    B: 'p + HasShape + HasDType,
     B::T: Zero + One,
     Input: MatMul<&'p Variable<W>>,
     <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
 {
     type Output = <<Input as MatMul<&'p Variable<W>>>::Output as Add<&'p Variable<B>>>::Output;
-    type Params = (&'p mut Variable<W>, &'p mut Variable<B>);
-
     fn forward(&'p self, x: Input) -> Self::Output {
         x.matmul(&self.w) + &self.b
     }
+}
 
-    fn parameters(&'p mut self) -> Self::Params {
-        (&mut self.w, &mut self.b)
-    }
+impl<'p, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> HasParameters<'p> for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
+where
+    W: 'p + HasShape + HasDType + ZerosLike,
+    B: 'p + HasShape + HasDType + ZerosLike,
+{
+    type Params = (&'p mut Variable<W>, &'p mut Variable<B>);
+    fn parameters(&'p mut self) -> Self::Params { (&mut self.w, &mut self.b) }
 }
 
 // RNNCell

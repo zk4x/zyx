@@ -622,6 +622,21 @@ mod tensor {
 
 mod nn {
     #[test]
+    fn parameters() {
+        use crate::prelude::*;
+        use crate::device::cpu;
+
+        let dev = cpu::Device::default();
+
+        let mut x = dev.buffer([[2, 3, 1]]).with_grad();
+        let mut y = dev.buffer([3., 4., 2.]).with_grad();
+
+        let mut params = (&mut x, &mut y);
+
+        params.zero_grad();
+    }
+
+    #[test]
     fn linear() {
         use crate::prelude::*;
         use crate::device::cpu::Device;

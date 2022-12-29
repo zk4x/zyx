@@ -10,11 +10,11 @@ fn main() {
     let device = cpu::Device::default();
 
     let mut network = (
-        Linear::<1, 20>::new(&device),
+        Linear::<1, 2000>::new(&device),
         ReLU,
-        Linear::<20, 50>::new(&device),
+        Linear::<2000, 5000>::new(&device),
         Tanh,
-        Linear::<50, 1>::new(&device),
+        Linear::<5000, 1>::new(&device),
         Sigmoid,
     );
 
@@ -23,7 +23,7 @@ fn main() {
 
     let optimizer = optim::SGD::new().with_learning_rate(0.03);
 
-    for _ in 0..100 {
+    for _ in 0..1 {
         for i in 0..100 {
             network.parameters().zero_grad();
 

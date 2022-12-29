@@ -21,12 +21,8 @@
 pub trait Module<'p, Input> { // TODO 'p is probably not needed anymore, because Device has it's lifetime parameter, although is it needed for deviceless datatypes?
     /// Output of forward operation on [Module]
     type Output;
-    /// [Parameters](super::parameters::Parameters) of [Module]
-    type Params: super::parameters::Parameters;
     /// Forward operation on [Module]
     fn forward(&'p self, x: Input) -> Self::Output;
-    /// Get parameters of [Module]
-    fn parameters(&'p mut self) -> Self::Params;
 }
 
 /// Apply trait allows us to use monads
@@ -56,14 +52,8 @@ where
     M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
 {
     type Output = <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output;
-    type Params = (<M0 as Module<'p, Input>>::Params, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params);
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.1.forward(self.0.forward(x))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters())
     }
 }
 
@@ -74,18 +64,8 @@ where
     M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
 {
     type Output = <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output;
-    type Params = (
-        <M0 as Module<'p, Input>>::Params,
-        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
-        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
-    );
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.2.forward(self.1.forward(self.0.forward(x)))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters(), self.2.parameters())
     }
 }
 
@@ -97,19 +77,8 @@ where
     M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
 {
     type Output = <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output;
-    type Params = (
-        <M0 as Module<'p, Input>>::Params,
-        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
-        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
-        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
-    );
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters())
     }
 }
 
@@ -122,20 +91,8 @@ where
     M4: Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>,
 {
     type Output = <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output;
-    type Params = (
-        <M0 as Module<'p, Input>>::Params,
-        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
-        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
-        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
-        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-    );
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x)))))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters())
     }
 }
 
@@ -149,21 +106,8 @@ where
     M5: Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>,
 {
     type Output = <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
-    type Params = (
-        <M0 as Module<'p, Input>>::Params,
-        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
-        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
-        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
-        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-    );
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters(), self.5.parameters())
     }
 }
 
@@ -178,22 +122,8 @@ where
     M6: Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
 {
     type Output = <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
-    type Params = (
-        <M0 as Module<'p, Input>>::Params,
-        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
-        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
-        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
-        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-    );
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.6.forward(self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x)))))))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters(), self.5.parameters(), self.6.parameters())
     }
 }
 
@@ -209,23 +139,8 @@ where
     M7: Module<'p, <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>,
 {
     type Output = <M7 as Module<'p, <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output;
-    type Params = (
-        <M0 as Module<'p, Input>>::Params,
-        <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Params,
-        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Params,
-        <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Params,
-        <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-        <M7 as Module<'p, <M6 as Module<'p, <M5 as Module<'p, <M4 as Module<'p, <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Output>>::Params,
-    );
-
     fn forward(&'p self, x: Input) -> Self::Output {
         self.7.forward(self.6.forward(self.5.forward(self.4.forward(self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))))))
-    }
-
-    fn parameters(&'p mut self) -> Self::Params {
-        (self.0.parameters(), self.1.parameters(), self.2.parameters(), self.3.parameters(), self.4.parameters(), self.5.parameters(), self.6.parameters(), self.7.parameters())
     }
 }
 
