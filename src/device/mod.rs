@@ -192,7 +192,7 @@ where
             if l > w { w = l; }
         }
         let d0 = Self::Sh::LAST_DIM;
-        for i in 0..n {
+        for (i, x) in data.iter().enumerate() {
             {
                 let mut var = 1;
                 let mut r = ndim;
@@ -206,7 +206,7 @@ where
                 }
             }
             use core::fmt::Write;
-            let _ = write!(res, "{0:>1$}", data[i], w);
+            let _ = write!(res, "{0:>1$}", x, w);
             if (i + 1) % d0 != 0usize { res += " "; }
             {
                 let mut var = 1;

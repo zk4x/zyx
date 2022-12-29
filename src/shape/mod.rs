@@ -58,3 +58,6 @@ where
     /// Output shape of matmul
     type Output: Shape + HasLast2Dims;
 }
+
+// ExpandableTo
+//pub trait ExpandableTo<Sh, Ax>: Shape + ReducableBy<Ax, Output = Sh> where Sh: Shape {}

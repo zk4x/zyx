@@ -14,7 +14,7 @@ This library aims to be zero cost abstraction and use simple Rust syntax for thi
 
 ### Zero cost abstraction
 
-By passing datatype into [.with_grad()](crate::tensor::IntoVariable::with_grad()) function you create Variable. Variable stores your datatype and adds gradient
+By passing datatype into [.with_grad()](crate::ops::IntoVariable::with_grad()) function you create Variable. Variable stores your datatype and adds gradient
 to this datatype. Gradient is of the same type as your datatype. To manage access to the gradient we use [UnsafeCell](core::cell::UnsafeCell) as gradients must
 be accessed from different places and we saw significant performance improvements over using [RefCell](core::cell::RefCell) in certain benchmarks.
 

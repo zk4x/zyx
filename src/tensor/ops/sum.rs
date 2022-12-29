@@ -1,16 +1,21 @@
 use core::marker::PhantomData;
 
-use crate::{ops::{Summable, Expandable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, Axes}};
+use crate::{ops::{Summable, Expandable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, Axes, ReducableBy}};
 
 #[derive(Debug, Clone)]
-pub struct SummableBackwardV<'g, G> {
+pub struct SummableBackwardV<'g, G, Sh, Ax> {
     grad: GradientRef<'g, G>,
+    shape: PhantomData<Sh>,
+    axes: PhantomData<Ax>,
 }
 
-impl<S, G> Backward<S> for SummableBackwardV<'_, G>
+impl<S, G, Sh, Ax> Backward<S> for SummableBackwardV<'_, G, Sh, Ax>
 where
-    S: Expandable<G::Sh>,
-    G: HasShape + GradAcc<<S as Expandable<G::Sh>>::Output>,
+    Sh: Shape,
+    Ax: Axes,
+    S: Expandable<Sh, Ax>,
+    Sh: ReducableBy<Ax, Output = <S as HasShape>::Sh>,
+    G: GradAcc<<S as Expandable<Sh, Ax>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad.accumulate(res_grad._expand());
@@ -19,31 +24,36 @@ where
 
 impl<'g, S, Dims> Summable<Dims> for &'g Variable<S>
 where
-    S: Clone + Summable<Dims>,
+    S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardV<'g, S>>;
+    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardV<'g, S, <S as HasShape>::Sh, Dims>>;
     fn _sum(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone()._sum(),
             grad_fn: SummableBackwardV {
                 grad: GradientRef::new(&self.grad),
+                shape: PhantomData,
+                axes: PhantomData,
             }
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct SummableBackwardT<F, Sh> {
+pub struct SummableBackwardT<F, Sh, Ax> {
     grad_fn: F,
     shape: PhantomData<Sh>,
+    axes: PhantomData<Ax>,
 }
 
-impl<S, F, Sh> Backward<S> for SummableBackwardT<F, Sh>
+impl<S, F, Sh, Ax> Backward<S> for SummableBackwardT<F, Sh, Ax>
 where
     Sh: Shape,
-    S: Expandable<Sh>,
-    F: Backward<<S as Expandable<Sh>>::Output>,
+    Ax: Axes,
+    S: Expandable<Sh, Ax>,
+    Sh: ReducableBy<Ax, Output = <S as HasShape>::Sh>,
+    F: Backward<<S as Expandable<Sh, Ax>>::Output>,
 {
     fn backward(self, res_grad: S) {
         self.grad_fn.backward(res_grad._expand());
@@ -55,14 +65,14 @@ where
     S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::Sh>>;
+    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::Sh, Dims>>;
     fn _sum(self) -> Self::Output {
-        //let shape = self.data.shape();
         Tensor {
             data: self.data._sum(),
             grad_fn: SummableBackwardT {
                 grad_fn: self.grad_fn,
                 shape: PhantomData,
+                axes: PhantomData,
             }
         }
     }
@@ -71,21 +81,33 @@ where
 #[test]
 fn sum() {
     // TODO finish all variations
-    /*use crate::prelude::*;
+    use crate::prelude::*;
     use crate::shape::{Sh3, Ax2};
-    use crate::device::cpu::Buffer;
+    use crate::device::cpu;
+    use crate::tensor::Variable;
 
     extern crate alloc;
 
+    let device = cpu::Device::default();
+
+    let x = device.buffer([[[[2, 3, 1], [3, 4, 5]], [[5, 6, 7], [7, 8, 9]]], [[[3, 8, 9], [4, 5, 3]], [[3, 2, 1], [6, 5, 3]]]]);
+    let y = x.sum::<Ax2<0, 2>>().reshape();
+    assert_eq!(y, [[12, 20, 18], [21, 21, 20]]);
+
+    //panic!();
+
     let vec = alloc::vec![3, 1, 2, 4, 1, 0, 4, 3, 5];
-    let x = Buffer::<Sh3<3, 3, 1>>::from_slice(&vec);
+    let x: cpu::Buffer<'_, Sh3<3, 3, 1>, _> = device.slice(&vec);
+
+    std::println!("{}", x);
+
     let _y = x.sum::<Ax2<0, 1>>();
 
-    let x = Buffer::<Sh3<3, 3, 1>>::from_slice(&vec).with_grad();
+    let x: Variable<cpu::Buffer<'_, Sh3<3, 3, 1>, _>> = device.slice(&vec).with_grad();
     //let x = Buffer::<Sh5<1, 3, 1, 3, 1>>::from_slice(&vec).with_grad();
     let y = (&x).sum::<Ax2<0, 1>>();
 
     assert_eq!([6, 5, 12].to_vec(), y.to_vec());
 
-    y.backward();*/
+    y.backward();
 }

@@ -28,7 +28,7 @@ mod has_min;
 mod has_max;
 mod zeros_like;
 
-use crate::shape::{Shape, Axes};
+use crate::shape::{Shape, Axes, ReducableBy};
 
 /// # HasDevice
 pub trait HasDevice {
@@ -478,18 +478,23 @@ where
 
 /// ## Expand tensor
 /// 
-/// Expands tensor to given shape, if some dimensions are 1. Data is cloned to fill the required size.
+/// Expands tensor to given shape, if some dimensions are 1.
+/// These dimensions must be specified as second generic argument.
+/// It is enforced at compile time that they will be correct.
+/// For example, if you passed Ax1<0> in the following example,
+/// the program would not compile.
+/// Data is cloned to fill the required size.
 /// 
 /// ### Example
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::device::cpu;
-/// use zyx::shape::Sh3;
+/// use zyx::shape::{Sh3, Ax1};
 ///
 /// let mut device = cpu::Device::default();
 /// 
 /// let x = device.buffer([[[3, 2, 4]], [[1, 4, 2]]]);
-/// let x = x.expand::<Sh3<2, 3, 3>>();
+/// let x = x.expand::<Sh3<2, 3, 3>, Ax1<1>>();
 /// println!("{}", x);
 /// ```
 /// 
@@ -505,27 +510,36 @@ where
 /// 
 pub trait Expand {
     /// Expand to Sh
-    fn expand<Sh>(self) -> Self::Output
+    fn expand<Sh, Ax>(self) -> Self::Output
     where
         Sh: Shape,
-        Self: Expandable<Sh>;
+        Ax: Axes,
+        Self: HasShape,
+        Sh: ReducableBy<Ax, Output = Self::Sh>,
+        Self: Expandable<Sh, Ax>;
 }
 
 // For this, as well as [Permute] and so on we need to differentiate public and private API due to compiler reasons
 impl<T> Expand for T {
-    fn expand<Sh>(self) -> T::Output
+    fn expand<Sh, Ax>(self) -> T::Output
     where
         Sh: Shape,
-        T: Expandable<Sh>
+        Ax: Axes,
+        Self: HasShape,
+        Sh: ReducableBy<Ax, Output = <Self as HasShape>::Sh>,
+        T: Expandable<Sh, Ax>,
     {
         self._expand()
     }
 }
 
 /// Expandable
-pub trait Expandable<Sh>
+pub trait Expandable<Sh, Ax>
 where
     Sh: Shape,
+    Ax: Axes,
+    Self: HasShape,
+    Sh: ReducableBy<Ax, Output = Self::Sh>,
 {
     /// Output of the Expand operation.
     type Output;
@@ -730,9 +744,9 @@ pub trait IntoVec<T> {
     fn to_vec(&self) -> alloc::vec::Vec<T>;
 }
 
-/// Turn any datatype into [Variable].
+/// Turn any datatype into [crate::tensor::Variable].
 pub trait IntoVariable {
-    /// Calling this function turns input into [Variable] adding gradient in the process.
+    /// Calling this function turns input into [crate::tensor::Variable] adding gradient in the process.
     fn with_grad(self) -> crate::tensor::Variable<Self>
     where
         Self: Sized;

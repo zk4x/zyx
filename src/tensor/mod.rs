@@ -17,7 +17,7 @@
 //! let x: Buffer<Sh1<3>, f32> = device.buffer([2., 1., 4.]);
 //! ```
 //!
-//! By calling [IntoVariable::with_grad()] on any datatype, you get [Variable], which adds gradient to the buffer.
+//! By calling [.with_grad()](crate::ops::IntoVariable::with_grad()) on any datatype, you get [Variable], which adds gradient to the buffer.
 //! ```
 //! # use zyx::prelude::*;
 //! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor}, shape::Sh1};
@@ -262,7 +262,7 @@ impl<S, F> Tensor<S, F> {
     /// 
     /// Calls backward function on [Tensor].
     /// Computes gradient of all [Variables](Variable) that were used as inputs to operations that resulted in creation of this [Tensor].
-    /// This function accumulates gradients in those [Variables](Variable). If you want to clear [Variable's](Variable) gradients, call [Parameters::zero_grad()] on that [Variable].
+    /// This function accumulates gradients in those [Variables](Variable). If you want to clear [Variable's](Variable) gradients, call [.zero_grad()](crate::nn::parameters::Parameters::zero_grad()) on that [Variable].
     ///
     /// # Example
     /// ```

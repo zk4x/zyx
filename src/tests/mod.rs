@@ -292,11 +292,12 @@ mod tensor {
         fn expand() {
             // TODO finish all variations
             use crate::prelude::*;
+            use crate::shape::Ax1;
             use crate::device::cpu::Device;
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x: Buffer<'_, Sh3<1, 1, 9>> = device.slice(&vec);
-            let y = x.expand::<Sh3<3, 1, 9>>();
+            let y = x.expand::<Sh3<3, 1, 9>, Ax1<0>>();
             assert_eq!(y.shape(), [3, 1, 9]);
             //assert_eq!(vec, &y.to_vec().into_iter().repeat(3).collect::<Vec<f32>>())
         }

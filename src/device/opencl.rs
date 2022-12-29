@@ -30,14 +30,11 @@ impl crate::device::Device for Device {}
 
 impl Default for Device {
     fn default() -> Self {
-        // Compile all the kernels. THIS CAN TAKE SOME TIME!
-        //let pro_que = ocl::ProQue::builder() .dims(1 << 20)
-            //.src(UNARY_KERNEL.replace("NAME", "exp_kernel").replace("OP", "exp").replace("DTYPE", "f32"))
-            //.src(UNARY_KERNEL.replace("NAME", "exp_kernel").replace("OP", "exp").replace("DTYPE", "f64"))
-            //.build().expect("Couldn't create opencl pro_que");
-        let context = ocl::Context::builder().build().expect("Couldn't create context");
+        let platform = ocl::Platform::list()[0];
+        //std::println!("Using platform {}", platform);
+        let context = ocl::Context::builder().platform(platform).devices(ocl::builders::DeviceSpecifier::First).build().expect("Couldn't create context");
         let device = context.devices()[0];
-        //let queue = ocl::Queue::new(&context, devices[0], None).expect("Couldn't create queue");
+        //std::println!("{}", context);
         Self {
             context,
             device,
@@ -52,7 +49,7 @@ where
 {
     fn slice(&'d self, slice: &[T]) -> Buffer<'d, Sh, T> {
         Buffer::<'d, Sh, T> {
-            device: &self,
+            device: self,
             data: ocl::Buffer::builder()
                 .queue(ocl::Queue::new(&self.context, self.device, None).expect("Couldn't create queue"))
                 .copy_host_slice(slice).len(Sh::numel()).flags(ocl::flags::MEM_READ_ONLY).build().expect("Unable to create buffer"),
@@ -64,11 +61,14 @@ where
 #[test]
 fn opencl_device() {
     use crate::prelude::*;
+    use crate::shape::Sh3;
     use crate::device::opencl;
 
     let device = opencl::Device::default();
 
-    let x = device.buffer([3, 4, 2]);
+    let _x = device.buffer([3, 4, 2]);
+    
+    let x: opencl::Buffer<'_, Sh3<2, 4, 3>> = device.uniform(0., 4.);
 
     std::println!("{}", x);
 
@@ -77,7 +77,7 @@ fn opencl_device() {
 
 /// OpenCL buffer
 #[derive(Debug, Clone)]
-pub struct Buffer<'d, Sh, T>
+pub struct Buffer<'d, Sh, T = f32>
 where
     T: OclPrm + DType,
     Sh: Shape,
@@ -105,7 +105,7 @@ where
 {
     type Dev = Device;
     fn device(&self) -> &Self::Dev {
-        &self.device
+        self.device
     }
 }
 

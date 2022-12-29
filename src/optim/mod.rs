@@ -1,9 +1,9 @@
 //! Various optimizers to update [Variables](crate::tensor::Variable).
 //! 
 //! This is a major change from the way PyTorch handles things.
-//! [Parameters](crate::module::Parameters) are neither stored nor referenced by optimizers.
+//! [Parameters](crate::nn::parameters::Parameters) are neither stored nor referenced by optimizers.
 //!
-//! We crate new network. [Parameters](crate::module::Parameters) are held in this network.
+//! We crate new network. [Parameters](crate::nn::parameters::Parameters) are held in this network.
 //! ```
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
@@ -12,7 +12,7 @@
 //! # let mut device = cpu::Device::default();
 //! let net = Linear::<2, 4>::new(&mut device);
 //! ```
-//! Then we create an optimizer. We do not pass [parameters](crate::module::Parameters) into it.
+//! Then we create an optimizer. We do not pass [parameters](crate::nn::parameters::Parameters) into it.
 //! ```
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
@@ -22,9 +22,9 @@
 //! # let net = Linear::<2, 4>::new(&mut device);
 //! let optim = SGD::new().with_learning_rate(0.03);
 //! ```
-//! When we want to update our [parameters](crate::module::Parameters) using the optimizer we call the step function.
-//! Name of the function is similar to PyTorch, but instead of passing [parameters](crate::module::Parameters)
-//! into optimizer, we pass optimizer into [parameters](crate::module::Parameters).
+//! When we want to update our [parameters](crate::nn::parameters::Parameters) using the optimizer we call the step function.
+//! Name of the function is similar to PyTorch, but instead of passing [parameters](crate::nn::parameters::Parameters)
+//! into optimizer, we pass optimizer into [parameters](crate::nn::parameters::Parameters).
 //! ```ignore
 //! # use zyx::prelude::*;
 //! # use zyx::nn::Linear;
@@ -35,9 +35,9 @@
 //! # let optim = SGD::new().with_learning_rate(0.03);
 //! net.parameters().step(&optim);
 //! ```
-//! Calling net.parameters() gives us mutable reference to network's [parameters](crate::module::Parameters).
-//! If we would like to define our own updatable [parameters](crate::module::Parameters), it is easy,
-//! since [parameters](crate::module::Parameters) is simply a tuple of [Variables](crate::tensor::Variable)
+//! Calling net.parameters() gives us mutable reference to network's [parameters](crate::nn::parameters::Parameters).
+//! If we would like to define our own updatable [parameters](crate::nn::parameters::Parameters), it is easy,
+//! since [parameters](crate::nn::parameters::Parameters) is simply a tuple of [Variables](crate::tensor::Variable)
 //! ```ignore
 //! use zyx::prelude::*;
 //! use zyx::device::cpu;
@@ -61,7 +61,7 @@ use core::ops::{Sub, Mul};
 
 /// # Stochastic gradient descent optimizer
 ///
-/// Updates [parameter's](crate::module::Parameters) data using following function:
+/// Updates [parameter's](crate::nn::parameters::Parameters) data using following function:
 /// ```txt
 /// x.data = x.data - x.grad * learning_rate;
 /// ```

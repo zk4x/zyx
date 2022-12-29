@@ -16,12 +16,12 @@
 /// 
 /// Module can be implemented for anything that can have forward function.
 /// Forward simply takes any input, applies some operation and returns output.
-/// Every module also has some or zero [parameters](Parameters) that can be optimized
+/// Every module also has some or zero [parameters](super::parameters::Parameters) that can be optimized
 /// by [optimizers](crate::optim).
-pub trait Module<'p, Input> {
+pub trait Module<'p, Input> { // TODO 'p is probably not needed anymore, because Device has it's lifetime parameter, although is it needed for deviceless datatypes?
     /// Output of forward operation on [Module]
     type Output;
-    /// [Parameters] of [Module]
+    /// [Parameters](super::parameters::Parameters) of [Module]
     type Params: super::parameters::Parameters;
     /// Forward operation on [Module]
     fn forward(&'p self, x: Input) -> Self::Output;
