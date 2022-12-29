@@ -52,7 +52,7 @@ where
         use rand::Rng;
         extern crate alloc;
         let mut rng = rand::thread_rng();
-        self.slice(&core::iter::repeat(0).take(Buf::Sh::numel()).map(|_| rng.gen()).collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(&core::iter::repeat(0).take(Buf::Sh::NUMEL).map(|_| rng.gen()).collect::<alloc::vec::Vec<Buf::T>>())
     }
     
     /// Create new buffer filled with values from uniform distribution
@@ -64,7 +64,7 @@ where
         extern crate alloc;
         let mut rng = rand::thread_rng();
         let dist = rand::distributions::Uniform::new(low, high);
-        self.slice(&core::iter::repeat(0).take(Buf::Sh::numel()).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(&core::iter::repeat(0).take(Buf::Sh::NUMEL).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<Buf::T>>())
     }
     
     /// Create new buffer filled with zeros
@@ -74,7 +74,7 @@ where
     {
         extern crate alloc;
         use crate::ops::Zero;
-        self.slice(&alloc::vec![Buf::T::zero(); Buf::Sh::numel()])
+        self.slice(&alloc::vec![Buf::T::zero(); Buf::Sh::NUMEL])
     }
     
     /// Create new buffer filled with ones
@@ -84,7 +84,7 @@ where
     {
         extern crate alloc;
         use crate::ops::One;
-        self.slice(&alloc::vec![Buf::T::one(); Buf::Sh::numel()])
+        self.slice(&alloc::vec![Buf::T::one(); Buf::Sh::NUMEL])
     }
 }
 
@@ -182,7 +182,7 @@ where
         let mut res = String::new();
         let data = self.to_vec();
         if data.is_empty() { return res + "[]"; }
-        let n = Self::Sh::numel();
+        let n = Self::Sh::NUMEL;
         let ndim = Self::Sh::RANK;
         //const PRECISION: usize = 3;
         // get maximal width of single value

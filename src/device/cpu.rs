@@ -2,7 +2,7 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom}, shape::{self, Shape, HasLastDim, ReducableBy, PermutableBy, MatMulBy, Axes}, dtype::DType};
+use crate::{ops::{self, ConvertFrom}, shape::{self, Shape, HasLastDim, ReducableBy, PermutableBy, MatMulBy, Axes, Sh1, Sh2, Sh3, Sh4, Sh5}, dtype::DType};
 use super::BufferFromSlice;
 use core::marker::PhantomData;
 extern crate alloc;
@@ -12,7 +12,7 @@ use alloc::{vec, sync::Arc};
 /// 
 /// When you use this device to create buffers, they are stored in system RAM and CPU is used for computations.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Device {}
+pub struct Device {} // TODO try arena allocator (bumpalo) and compare the performance
 
 impl super::Device for Device {}
 
@@ -107,11 +107,11 @@ where
 {
     type Dev = Device;
     fn device(&self) -> &Self::Dev {
-        &self.device
+        self.device
     }
 }
 
-/// Get Buffer's [DType]
+/// Get Buffer's DType
 impl<Sh, T> ops::HasDType for Buffer<'_, Sh, T>
 where
     Sh: Shape,
@@ -136,7 +136,7 @@ where
 {
     fn zeros_like(&self) -> Self {
         Self {
-            data: Arc::new(vec![T::zero(); Sh::numel()]),
+            data: Arc::new(vec![T::zero(); Sh::NUMEL]),
             device: self.device,
             shape: PhantomData,
         }
@@ -236,53 +236,43 @@ where
     type Output = Buffer<'d, <Sh as ReducableBy<Dims>>::Output, T>;
 
     fn _sum(self) -> Self::Output {
-        //let res = vec![T::zeros(); <Sh as ReducableBy<Dims>>::Output::numel()];
+        // final resulting buffer
+        let mut res = vec![T::zero(); <Sh as ReducableBy<Dims>>::Output::NUMEL];
+        // Shape of the input
+        let shape = Sh::default();
+        // Strides of the input
+        let strides = Sh::strides();
+        // Strides of the result
+        let res_strides = <Sh as ReducableBy<Dims>>::Output::strides();
+
+        use alloc::vec::Vec;
+
+        // indices of dimensions that are reduced
+        let dims: Vec<usize> = Dims::array().into_iter().map(|x| x as usize).collect();
+        // indices of dimensions that are not reduced
+        let included_dims: Vec<usize> = (0..Sh::RANK).into_iter().filter(|x| !dims.contains(x)).collect();
+
+        #[cfg(test)]
+        std::println!("Dims {:?}\nIncluded dims {:?}\nShape {}\nStrides {:?}\nRes strides {:?}", dims, included_dims, shape, strides, res_strides);
 
         // Go over all data and apply sum function to correct values
-        // then indices can be added just by making another vector and constantly updating it
-        // with new indices as new max/min are found
-        /*let mut i = 0; // i iterates over the result vec
-        for x in self.data.as_ref() {
-            if something {
-                i -= stride at that dimension
+        // then indices can be added just by making another vector and constantly
+        // updating it (adding in case of sum) with new indices as new max/min are found
+        for (i, x) in self.data.as_ref().iter().enumerate() {
+            // calculate index in result
+            let mut j = 0;
+            for dim in &included_dims {
+                j += ((i/strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
             }
-            i += 1;
-        }*/
-
-
-
-        // TODO: make this multithreaded
-        //use alloc::borrow::ToOwned;
-        //let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
-
-        /*let reduce_dim = |data: &[T], dim: i32| {
-            let strides = Sh::strides();
-            let stride = strides[(Sh::RANK as i32 + dim) as usize % Sh::RANK];
-            let mut res = vec![T::zeros(); <Sh as ReducableBy<Dims>>::Output::numel()];
-            if dim == 0 || dim == -(Sh::RANK as i32) {
-                for (i, x) in data.iter().enumerate() {
-                    let idx = i % stride;
-                    res[idx] = res[idx].clone() + x.clone();
-                }
-            } else {
-                let width = strides[(Sh::RANK as i32 + dim - 1) as usize % Sh::RANK];
-                for (i, x) in data.iter().enumerate() {
-                    let idx = i/width*stride + i % stride;
-                    res[idx] = res[idx].clone() + x.clone();
-                }
-            }
-            res
-        };
-
-        for dim in Dims::array() {
-            data = reduce_dim(&data, dim);
+            // apply reduce function, in this case sum
+            res[j] = res[j].clone() + x.clone();
         }
 
         Buffer {
-            data: Arc::new(data),
+            data: Arc::new(res),
+            device: self.device,
             shape: PhantomData,
-        }*/
-        todo!()
+        }
     }
 }
 
@@ -326,7 +316,7 @@ where
 {
     type Output = Buffer<'d, Sh2, T>;
     fn _reshape(self) -> Self::Output {
-        assert_eq!(Sh::numel(), Sh2::numel());
+        assert_eq!(Sh::NUMEL, Sh2::NUMEL);
         Buffer {
             data: self.data,
             device: self.device,
@@ -335,22 +325,24 @@ where
     }
 }
 
-impl<'d, T, Sh, Sh2> ops::Expandable<Sh2> for Buffer<'d, Sh, T>
+impl<'d, T, Sh, Sh2, Ax> ops::Expandable<Sh2, Ax> for Buffer<'d, Sh, T>
 where
     T: Clone + DType,
     Sh: Shape,
     Sh2: Shape,
+    Ax: Axes,
+    Sh2: ReducableBy<Ax, Output = Sh>,
 {
     type Output = Buffer<'d, Sh2, T>;
     fn _expand(self) -> Self::Output {
         assert!(Sh2::RANK >= Sh::RANK);
 
-        let n = Sh::numel();
+        let n = Sh::NUMEL;
         use alloc::borrow::ToOwned;
         let mut data = Arc::try_unwrap(self.data).unwrap_or_else(|x| x.as_ref().to_owned());
 
         let copy_dim = |data: alloc::vec::Vec<T>, width, times| {
-            let mut res_data = alloc::vec::Vec::with_capacity(Sh2::numel());
+            let mut res_data = alloc::vec::Vec::with_capacity(Sh2::NUMEL);
             for i in (0..n).step_by(width) {
                 // copy this part of vec
                 for _ in 0..times {
@@ -366,12 +358,8 @@ where
             i -= 1;
             let d = if Sh::RANK - i > 0 { Sh::at(i) } else { 1 };
             let r = Sh2::at(i);
-            if d != r {
-                if d == 1 {
-                    data = copy_dim(data, width, r/d);
-                }/* else {
-                    //panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}", self.shape, Sh2::array(), i);
-                }*/
+            if d != r  { // Then d == 1 as guaranteed by ReducableBy trait
+                data = copy_dim(data, width, r/d);
             }
             width *= Sh2::at(i);
         }
@@ -436,9 +424,9 @@ where
         }
         // begins is array of indices over each of dimensions. They are slowly increased by strides until it reaches dimension size stored in acc
         // then we increase index in higher dimension and we go over lower dimension again kinda like revolution counter
-        let mut data = alloc::vec::Vec::with_capacity(Sh::numel());
+        let mut data = alloc::vec::Vec::with_capacity(Sh::NUMEL);
         let mut i = 0;
-        for _ in  0..Sh::numel() {
+        for _ in  0..Sh::NUMEL {
             data.push(self.data[i].clone());
             for (j, (st, acc)) in temp.iter().enumerate() {
                 begins[j] += st;
@@ -531,8 +519,8 @@ where
         for k in 0..rank {
             temp[rank-k-1] = (self.strides[k], acc[k]);
         }
-        //let mut data = alloc::vec::Vec::with_capacity(Sh::numel());
-        //for _ in  0..Sh::numel() {
+        //let mut data = alloc::vec::Vec::with_capacity(Sh::NUMEL);
+        //for _ in  0..Sh::NUMEL {
         if self.k < self.shape.iter().product() {
             let res = self.data[self.i].clone();
             for (j, (st, acc)) in temp.iter().enumerate() {
@@ -566,7 +554,7 @@ where
     // And it is also necessary to support constant shapes, because it is not possible to write requirements for expand,
     // since we don't need to expand both parameters
 
-    let data = Arc::new(match XSh::numel().cmp(&YSh::numel()) {
+    let data = Arc::new(match XSh::NUMEL.cmp(&YSh::NUMEL) {
         Ordering::Greater => {
             todo!()
             /*let y_it = y.into_iter();
@@ -916,7 +904,7 @@ where
             }
             res
         };
-        let ty_data = transpose(rhs.data.as_ref(), YSh::LAST_DIM, YSh::numel());
+        let ty_data = transpose(rhs.data.as_ref(), YSh::LAST_DIM, YSh::NUMEL);
         use rayon::prelude::*;
         let x_data = self.data.as_ref();
         const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
@@ -935,7 +923,7 @@ where
             .flatten()
             .collect();
         use crate::shape::HasLast2Dims;
-        let data = transpose(&data, <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2, <XSh as MatMulBy<YSh>>::Output::numel());
+        let data = transpose(&data, <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2, <XSh as MatMulBy<YSh>>::Output::NUMEL);
         Buffer {
             data: Arc::new(data),
             device: self.device,
@@ -1079,10 +1067,80 @@ where
 /// It is flattened with row major order.
 impl<Sh, T> ops::IntoVec<T> for Buffer<'_, Sh, T>
 where
-    T: Clone + DType,
+    T: DType,
     Sh: Shape,
 {
     fn to_vec(&self) -> alloc::vec::Vec<T> {
         self.data.as_ref().clone()
+    }
+}
+
+impl<T, const D0: usize> PartialEq<[T; D0]> for Buffer<'_, Sh1<D0>, T>
+where
+    T: DType + PartialEq,
+{
+    fn eq(&self, other: &[T; D0]) -> bool {
+        for (x, y) in other.iter().zip(self.data.as_ref().iter()) {
+            if x != y {
+                return false;
+            }
+        }
+        return true
+    }
+}
+
+impl<T, const D0: usize, const D1: usize> PartialEq<[[T; D0]; D1]> for Buffer<'_, Sh2<D1, D0>, T>
+where
+    T: DType + PartialEq,
+{
+    fn eq(&self, other: &[[T; D0]; D1]) -> bool {
+        for (x, y) in other.iter().flatten().zip(self.data.as_ref().iter()) {
+            if x != y {
+                return false;
+            }
+        }
+        return true
+    }
+}
+
+impl<T, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[T; D0]; D1]; D2]> for Buffer<'_, Sh3<D2, D1, D0>, T>
+where
+    T: DType + PartialEq,
+{
+    fn eq(&self, other: &[[[T; D0]; D1]; D2]) -> bool {
+        for (x, y) in other.iter().flatten().flatten().zip(self.data.as_ref().iter()) {
+            if x != y {
+                return false;
+            }
+        }
+        return true
+    }
+}
+
+impl<T, const D0: usize, const D1: usize, const D2: usize, const D3: usize> PartialEq<[[[[T; D0]; D1]; D2]; D3]> for Buffer<'_, Sh4<D3, D2, D1, D0>, T>
+where
+    T: DType + PartialEq,
+{
+    fn eq(&self, other: &[[[[T; D0]; D1]; D2]; D3]) -> bool {
+        for (x, y) in other.iter().flatten().flatten().flatten().zip(self.data.as_ref().iter()) {
+            if x != y {
+                return false;
+            }
+        }
+        return true
+    }
+}
+
+impl<T, const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> PartialEq<[[[[[T; D0]; D1]; D2]; D3]; D4]> for Buffer<'_, Sh5<D4, D3, D2, D1, D0>, T>
+where
+    T: DType + PartialEq,
+{
+    fn eq(&self, other: &[[[[[T; D0]; D1]; D2]; D3]; D4]) -> bool {
+        for (x, y) in other.iter().flatten().flatten().flatten().flatten().zip(self.data.as_ref().iter()) {
+            if x != y {
+                return false;
+            }
+        }
+        return true
     }
 }

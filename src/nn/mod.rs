@@ -254,7 +254,7 @@ where
     type Params = ();
 
     fn forward(&self, x: Input) -> Self::Output {
-        x._sum()/(Input::Sh::numel() as i32)
+        x._sum()/(Input::Sh::NUMEL as i32)
     }
 
     fn parameters(&mut self) -> Self::Params {}

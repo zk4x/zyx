@@ -468,6 +468,7 @@ impl<T> Reshape for T {
 /// Reshapable
 pub trait Reshapable<Sh>
 where
+    // TODO add check using static assertions const_assert Sh::NUMEL == Self::Sh::NUMEL
     Sh: Shape,
 {
     /// Output of the Reshape operation.

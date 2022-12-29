@@ -52,7 +52,7 @@ where
             device: self,
             data: ocl::Buffer::builder()
                 .queue(ocl::Queue::new(&self.context, self.device, None).expect("Couldn't create queue"))
-                .copy_host_slice(slice).len(Sh::numel()).flags(ocl::flags::MEM_READ_ONLY).build().expect("Unable to create buffer"),
+                .copy_host_slice(slice).len(Sh::NUMEL).flags(ocl::flags::MEM_READ_ONLY).build().expect("Unable to create buffer"),
             shape: PhantomData,
         }
     }
@@ -132,7 +132,7 @@ where
 {
     fn to_vec(&self) -> alloc::vec::Vec<T> {
         extern crate alloc;
-        let mut res = alloc::vec![T::zero(); Sh::numel()];
+        let mut res = alloc::vec![T::zero(); Sh::NUMEL];
         self.data.read(&mut res).enq().expect("Couldn't read buffer");
         res
     }

@@ -25,11 +25,9 @@ pub trait Shape: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Ind
     /// Get shape's strides
     fn strides() -> Self::AsArray;
     /// Get shape's number of elements
-    fn numel() -> usize;
-    // Self::numel() will be replaced with:
-    // const NUMEL: usize; // when the compiler supports D0 * D1 * ... * DN
-    /// Check if the shape is empty, that is if Self::numel() == 0
-    fn is_empty() -> bool { Self::numel() == 0 }
+    const NUMEL: usize;
+    /// Check if the shape is empty, that is if Self::NUMEL == 0
+    const IS_EMPTY: bool = Self::NUMEL == 0;
     /// Acces dimension at give index
     fn at(dim: usize) -> usize;
 }
@@ -40,10 +38,10 @@ pub struct Sh0 {}
 
 impl Shape for Sh0 {
     const RANK: usize = 0;
+    const NUMEL: usize = 0;
     type AsArray = [usize; 0];
     fn array() -> Self::AsArray { [] }
     fn strides() -> Self::AsArray { [] }
-    fn numel() -> usize { 0 }
     fn at(dim: usize) -> usize {
         panic!("Index out of range, index is {}, but the length is 0", dim)
     }
@@ -75,10 +73,10 @@ pub struct Sh1<const D0: usize> {}
 
 impl<const D0: usize> Shape for Sh1<D0> {
     const RANK: usize = 1;
+    const NUMEL: usize = D0;
     type AsArray = [usize; 1];
     fn array() -> Self::AsArray { [D0] }
     fn strides() -> Self::AsArray { [1] }
-    fn numel() -> usize { D0 }
     fn at(dim: usize) -> usize {
         match dim {
             0 => D0,
@@ -124,10 +122,10 @@ pub struct Sh2<const D0: usize, const D1: usize> {}
 
 impl<const D0: usize, const D1: usize> Shape for Sh2<D0, D1> {
     const RANK: usize = 2;
+    const NUMEL: usize = D0*D1;
     type AsArray = [usize; 2];
     fn array() -> Self::AsArray { [D0, D1] }
     fn strides() -> Self::AsArray { [D1, 1] }
-    fn numel() -> usize { D0*D1 }
     fn at(dim: usize) -> usize {
         match dim {
             0 => D0,
@@ -187,10 +185,10 @@ pub struct Sh3<const D0: usize, const D1: usize, const D2: usize> {}
 
 impl<const D0: usize, const D1: usize, const D2: usize> Shape for Sh3<D0, D1, D2> {
     const RANK: usize = 3;
+    const NUMEL: usize = D0*D1*D2;
     type AsArray = [usize; 3];
     fn array() -> Self::AsArray { [D0, D1, D2] }
     fn strides() -> Self::AsArray { [D1*D2, D2, 1] }
-    fn numel() -> usize { D0*D1*D2 }
     fn at(dim: usize) -> usize {
         match dim {
             0 => D0,
@@ -262,10 +260,10 @@ pub struct Sh4<const D0: usize, const D1: usize, const D2: usize, const D3: usiz
 
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize> Shape for Sh4<D0, D1, D2, D3> {
     const RANK: usize = 4;
+    const NUMEL: usize = D0*D1*D2*D3;
     type AsArray = [usize; 4];
     fn array() -> Self::AsArray { [D0, D1, D2, D3] }
     fn strides() -> Self::AsArray { [D1*D2*D3, D2*D3, D3, 1] }
-    fn numel() -> usize { D0*D1*D2*D3 }
     fn at(dim: usize) -> usize {
         match dim {
             0 => D0,
@@ -367,10 +365,10 @@ pub struct Sh5<const D0: usize, const D1: usize, const D2: usize, const D3: usiz
 
 impl<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> Shape for Sh5<D0, D1, D2, D3, D4> {
     const RANK: usize = 5;
+    const NUMEL: usize = D0*D1*D2*D3*D4;
     type AsArray = [usize; 5];
     fn array() -> Self::AsArray { [D0, D1, D2, D3, D4] }
     fn strides() -> Self::AsArray { [D1*D2*D3*D4, D2*D3*D4, D3*D4, D4, 1] }
-    fn numel() -> usize { D0*D1*D2*D3 }
     fn at(dim: usize) -> usize {
         match dim {
             0 => D0,
