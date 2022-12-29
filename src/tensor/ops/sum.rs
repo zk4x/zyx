@@ -82,11 +82,8 @@ where
 fn sum() {
     // TODO finish all variations
     use crate::prelude::*;
-    use crate::shape::{Sh3, Ax2};
+    use crate::shape::Ax2;
     use crate::device::cpu;
-    use crate::tensor::Variable;
-
-    extern crate alloc;
 
     let device = cpu::Device::default();
 
@@ -96,18 +93,10 @@ fn sum() {
 
     //panic!();
 
-    let vec = alloc::vec![3, 1, 2, 4, 1, 0, 4, 3, 5];
-    let x: cpu::Buffer<'_, Sh3<3, 3, 1>, _> = device.slice(&vec);
-    //let x = device.buffer([3, 1, 2, 4, 1, 0, 4, 3, 5]).reshape::<Sh3<3, 3, 1>>();
+    let x = device.buffer([[[3], [1], [2]], [[4], [1], [0]], [[4], [3], [5]]]).with_grad();
+    let y = (&x).sum::<Ax2<1, 2>>().reshape();
 
-    //std::println!("{}", x);
-
-    let _y = x.sum::<Ax2<0, 1>>();
-
-    let x: Variable<cpu::Buffer<'_, Sh3<3, 3, 1>, _>> = device.slice(&vec).with_grad();
-    let y = (&x).sum::<Ax2<1, 2>>();
-
-    assert_eq!([6, 5, 12].to_vec(), y.to_vec());
+    assert_eq!(y.data().clone(), [6, 5, 12]);
 
     y.backward();
 }

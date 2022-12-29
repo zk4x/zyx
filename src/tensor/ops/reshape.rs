@@ -3,11 +3,11 @@ use core::marker::PhantomData;
 use crate::{ops::{Reshapable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct ReshapableBackwardV<'g, G> {
+pub struct ReshapeBackwardV<'g, G> {
     grad: GradientRef<'g, G>,
 }
 
-impl<S, G> Backward<S> for ReshapableBackwardV<'_, G>
+impl<S, G> Backward<S> for ReshapeBackwardV<'_, G>
 where
     S: Reshapable<G::Sh>,
     G: HasShape + GradAcc<<S as Reshapable<G::Sh>>::Output>,
@@ -22,11 +22,11 @@ where
     Sh: Shape,
     S: Clone + Reshapable<Sh> + HasShape,
 {
-    type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapableBackwardV<'g, S>>;
+    type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapeBackwardV<'g, S>>;
     fn _reshape(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone()._reshape(),
-            grad_fn: ReshapableBackwardV {
+            grad_fn: ReshapeBackwardV {
                 grad: GradientRef::new(&self.grad),
             }
         }
@@ -34,12 +34,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ReshapableBackwardT<F, Sh> {
+pub struct ReshapeBackwardT<F, Sh> {
     grad_fn: F,
     shape: PhantomData<Sh>,
 }
 
-impl<S, F, Sh> Backward<S> for ReshapableBackwardT<F, Sh>
+impl<S, F, Sh> Backward<S> for ReshapeBackwardT<F, Sh>
 where
     Sh: Shape,
     S: Reshapable<Sh>,
@@ -55,11 +55,11 @@ where
     Sh: Shape,
     S: Reshapable<Sh> + HasShape,
 {
-    type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapableBackwardT<F, <S as HasShape>::Sh>>;
+    type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapeBackwardT<F, <S as HasShape>::Sh>>;
     fn _reshape(self) -> Self::Output {
         Tensor {
             data: self.data._reshape(),
-            grad_fn: ReshapableBackwardT {
+            grad_fn: ReshapeBackwardT {
                 grad_fn: self.grad_fn,
                 shape: PhantomData,
             }

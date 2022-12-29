@@ -3,12 +3,12 @@
 /*use crate::{ops::{Minimizable, Expand, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
 
 #[derive(Debug, Clone)]
-pub struct MinimizableBackwardV<'g, G> {
+pub struct MinBackwardV<'g, G> {
     grad: GradientRef<'g, G>,
     shape: Shape,
 }
 
-impl<S, G> Backward<S> for MinimizableBackwardV<'_, G>
+impl<S, G> Backward<S> for MinBackwardV<'_, G>
 where
     S: Expand,
     G: GradAcc<<S as Expand>::Output>,
@@ -22,11 +22,11 @@ impl<'g, S> Minimizable for &'g Variable<S>
 where
     S: Clone + Minimizable + HasShape,
 {
-    type Output = Tensor<<S as Minimizable>::Output, MinimizableBackwardV<'g, S>>;
+    type Output = Tensor<<S as Minimizable>::Output, MinBackwardV<'g, S>>;
     fn min(self, dims: impl Shape<i32>) -> Self::Output {
         Tensor {
             data: self.data.clone().min(dims),
-            grad_fn: MinimizableBackwardV {
+            grad_fn: MinBackwardV {
                 grad: GradientRef::new(&self.grad),
                 shape: self.data.shape(),
             }
@@ -35,12 +35,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct MinimizableBackwardT<F> {
+pub struct MinBackwardT<F> {
     grad_fn: F,
     shape: Shape,
 }
 
-impl<S, F> Backward<S> for MinimizableBackwardT<F>
+impl<S, F> Backward<S> for MinBackwardT<F>
 where
     S: Expand,
     F: Backward<<S as Expand>::Output>,
@@ -55,12 +55,12 @@ where
     S: Minimizable + HasShape,
     F: Backward<S>,
 {
-    type Output = Tensor<<S as Minimizable>::Output, MinimizableBackwardT<F>>;
+    type Output = Tensor<<S as Minimizable>::Output, MinBackwardT<F>>;
     fn min(self, dims: impl Shape<i32>) -> Self::Output {
         let shape = self.data.shape();
         Tensor {
             data: self.data.min(dims),
-            grad_fn: MinimizableBackwardT {
+            grad_fn: MinBackwardT {
                 grad_fn: self.grad_fn,
                 shape,
             }

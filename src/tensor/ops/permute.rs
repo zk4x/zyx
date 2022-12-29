@@ -3,12 +3,12 @@ use core::marker::PhantomData;
 use crate::{ops::Permutable, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Axes, PermutableBy}};
 
 #[derive(Debug, Clone)]
-pub struct PermutableBackwardV<'g, G, Dims> {
+pub struct PermuteBackwardV<'g, G, Dims> {
     grad: GradientRef<'g, G>,
     dims: PhantomData<Dims>,
 }
 
-impl<S, G, Dims> Backward<S> for PermutableBackwardV<'_, G, Dims>
+impl<S, G, Dims> Backward<S> for PermuteBackwardV<'_, G, Dims>
 where
     Dims: Axes + PermutableBy<Dims>,
     <Dims as PermutableBy<Dims>>::Output: Axes,
@@ -25,11 +25,11 @@ where
     Dims: Axes,
     S: Clone + Permutable<Dims>,
 {
-    type Output = Tensor<<S as Permutable<Dims>>::Output, PermutableBackwardV<'g, S, Dims>>;
+    type Output = Tensor<<S as Permutable<Dims>>::Output, PermuteBackwardV<'g, S, Dims>>;
     fn _permute(self) -> Self::Output {
         Tensor {
             data: self.data.clone()._permute(),
-            grad_fn: PermutableBackwardV {
+            grad_fn: PermuteBackwardV {
                 grad: GradientRef::new(&self.grad),
                 dims: PhantomData,
             }
@@ -38,12 +38,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct PermutableBackwardT<F, Dims> {
+pub struct PermuteBackwardT<F, Dims> {
     grad_fn: F,
     dims: PhantomData<Dims>,
 }
 
-impl<S, F, Dims> Backward<S> for PermutableBackwardT<F, Dims>
+impl<S, F, Dims> Backward<S> for PermuteBackwardT<F, Dims>
 where
     Dims: Axes + PermutableBy<Dims>,
     <Dims as PermutableBy<Dims>>::Output: Axes,
@@ -60,11 +60,11 @@ where
     Dims: Axes,
     S: Permutable<Dims>,
 {
-    type Output = Tensor<<S as Permutable<Dims>>::Output, PermutableBackwardT<F, Dims>>;
+    type Output = Tensor<<S as Permutable<Dims>>::Output, PermuteBackwardT<F, Dims>>;
     fn _permute(self) -> Self::Output {
         Tensor {
             data: self.data._permute(),
-            grad_fn: PermutableBackwardT {
+            grad_fn: PermuteBackwardT {
                 grad_fn: self.grad_fn,
                 dims: PhantomData,
             }
