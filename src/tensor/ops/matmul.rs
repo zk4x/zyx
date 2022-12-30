@@ -1,5 +1,6 @@
 use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType};
 
+/// Backward function for calculating gradients of matmultiplying SType and Variable
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardSV<'g, XS, YG> {
     xdata: XS,
@@ -34,6 +35,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying SType and Tensor
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardST<XS, YF> {
     xdata: XS,
@@ -68,6 +70,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying Variable and SType
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVS<'g, XG, YS> {
     xgrad: GradientRef<'g, XG>,
@@ -102,6 +105,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying two Variables
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVV<'g, XS, XG, YS, YG> {
     xgrad: GradientRef<'g, XG>,
@@ -146,6 +150,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying Variable and Tensor
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardVT<'g, XG, XS, YS, YF> {
     xgrad: GradientRef<'g, XG>,
@@ -189,6 +194,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying Tensor and SType
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardTS<YS, XF> {
     xgrad_fn: XF,
@@ -223,6 +229,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying Tensor and Variable
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardTV<'g, YG, XS, YS, XF> {
     xgrad_fn: XF,
@@ -266,6 +273,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of matmultiplying two Tensors
 #[derive(Debug, Clone, Copy)]
 pub struct MatMulBackwardTT<XS, YS, XF, YF> {
     xgrad_fn: XF,

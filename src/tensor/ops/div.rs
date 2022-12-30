@@ -105,6 +105,7 @@ where
     }
 }*/
 
+/// Backward function for calculating gradients of dividing Variable and SType
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVS<'g, XG, YS> {
     xgrad: GradientRef<'g, XG>,
@@ -138,6 +139,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of dividing two Variables
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVV<'g, S, XG, YS, YG> {
     res: S,
@@ -184,6 +186,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of dividing Variable and Tensor
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardVT<'g, S, XG, YS, YF> {
     res: S,
@@ -229,6 +232,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of dividing Tensor and SType
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardTS<S, XF> {
     xgrad_fn: XF,
@@ -262,6 +266,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of dividing two Tensors
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardTV<'g, S, YS, YG, XF> {
     res: S,
@@ -307,6 +312,7 @@ where
     }
 }
 
+/// Backward function for calculating gradients of dividing two Tensors
 #[derive(Debug, Clone, Copy)]
 pub struct DivBackwardTT<S, S2, XF, YF> {
     res: S2,
