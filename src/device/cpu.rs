@@ -1,6 +1,22 @@
+//! CPU Module
+//! 
+//! CPU [device](super::Device) is a struct that holds information about your CPU.
+//! 
 //! Buffer is multidimensional storage type using cpu for the calculations
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
-//!
+//! 
+//! Create cpu [Device]:
+//! ```
+//! use zyx::device::cpu;
+//! let device = cpu::Device::default();
+//! ```
+//! Create a [Buffer] on this [Device]:
+//! ```
+//! # use zyx::prelude::*;
+//! # use zyx::device::cpu;
+//! # let device = cpu::Device::default();
+//! let buffer = device.buffer([[4, 5, 2], [5, 2, 1]]);
+//! ```
 
 use super::BufferFromSlice;
 use crate::{
@@ -17,6 +33,14 @@ use alloc::{sync::Arc, vec};
 /// CPU Device
 ///
 /// When you use this device to create buffers, they are stored in system RAM and CPU is used for computations.
+/// Currently we do not provide any settings that you could set on your cpu [Device], but it might be an option
+/// in the future.
+/// 
+/// Create cpu [Device]:
+/// ```
+/// use zyx::device::cpu;
+/// let device = cpu::Device::default();
+/// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Device {} // TODO try arena allocator (bumpalo) and compare the performance
 
@@ -36,10 +60,20 @@ where
     }
 }
 
-/// Generic multidimensional buffer
+/// CPU Buffer
 ///
 /// Each buffer has a shape and data stored in vec.
 /// Data is stored in row major order.
+/// 
+/// By default buffers use f32 [DType](crate::dtype::DType).
+/// 
+/// Create cpu [Buffer]:
+/// ```
+/// use zyx::prelude::*;
+/// use zyx::device::cpu;
+/// let device = cpu::Device::default();
+/// let buffer = device.buffer([4, 1, 6]);
+/// ```
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Buffer<'d, Sh, T = f32>
 where
@@ -81,9 +115,19 @@ where
     Sh: Shape,
     T: DType,
 {
-    /// Get Buffer's estimated memory size
+    /// Get Buffer's estimated memory size.
+    /// 
+    /// This returns estimated memory size that this [Buffer] is taking in the RAM.
+    /// The output is in bytes.
+    /// ```
+    /// use zyx::prelude::*;
+    /// use zyx::device::cpu;
+    /// let dev = cpu::Device::default();
+    /// let buf = dev.buffer([3, 4, 2, 1]);
+    /// assert_eq!(buf.est_mem_size(), 4*4);
+    /// ```
     pub fn est_mem_size(&self) -> usize {
-        self.data.len() * core::mem::size_of::<T>()
+        self.data.capacity() * core::mem::size_of::<T>()
     }
 }
 

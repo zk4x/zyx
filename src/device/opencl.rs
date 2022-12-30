@@ -1,4 +1,23 @@
+//! CPU Module
+//! 
 //! This module contains implementation of opencl device and buffer
+//! OpenCL [device]super::Device) is a struct that holds information about your GPU.
+//! Optionally, this can also use your CPU, with appropriate runtime, such as [pocl](http://portablecl.org/).
+//! 
+//! [Buffer] is multidimensional storage type using gpu for the calculations.
+//! 
+//! Create [opencl device](Device):
+//! ```
+//! use zyx::device::opencl;
+//! let device = opencl::Device::default();
+//! ```
+//! Create a [Buffer] on this [Device]:
+//! ```
+//! # use zyx::prelude::*;
+//! # use zyx::device::opencl;
+//! # let device = opencl::Device::default();
+//! let buffer = device.buffer([[4, 5, 2], [5, 2, 1]]);
+//! ```
 
 use crate::{dtype::DType, ops, shape::Shape};
 use core::marker::PhantomData;
@@ -20,6 +39,12 @@ use super::BufferFromSlice;
 ///
 /// This device provides acces to OpenCL devices on your computer.
 /// Buffers created using this device are stored in GPU memory and computations are done using the GPU.
+/// 
+/// Create [opencl device](Device):
+/// ```
+/// use zyx::device::opencl;
+/// let device = opencl::Device::default();
+/// ```
 #[derive(Debug, Clone)]
 pub struct Device {
     context: ocl::Context,
@@ -84,6 +109,19 @@ fn opencl_device() {
 }
 
 /// OpenCL buffer
+///
+/// Each buffer has a shape and data.
+/// Data is stored in row major order.
+/// 
+/// By default buffers use f32 [DType](crate::dtype::DType).
+/// 
+/// Create opencl [Buffer]:
+/// ```
+/// use zyx::prelude::*;
+/// use zyx::device::opencl;
+/// let device = opencl::Device::default();
+/// let buffer = device.buffer([4, 1, 6]);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Buffer<'d, Sh, T = f32>
 where
@@ -131,6 +169,17 @@ where
     Sh: Shape,
 {
     type Sh = Sh;
+}
+
+impl<Sh, T> ops::ZerosLike for Buffer<'_, Sh, T>
+where
+    for<'a> Sh: Shape + 'a,
+    T: DType + ocl::OclPrm + ops::Zero,
+{
+    fn zeros_like(&self) -> Self {
+        use super::BufferInit;
+        self.device.zeros()
+    }
 }
 
 impl<Sh, T> ops::IntoVec<T> for Buffer<'_, Sh, T>
