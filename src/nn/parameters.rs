@@ -15,10 +15,7 @@ where
 {
     type Params = (M0::Params, M1::Params);
     fn parameters(&'p mut self) -> Self::Params {
-        (
-            self.0.parameters(),
-            self.1.parameters(),
-        )
+        (self.0.parameters(), self.1.parameters())
     }
 }
 
@@ -85,7 +82,14 @@ where
     M4: HasParameters<'p>,
     M5: HasParameters<'p>,
 {
-    type Params = (M0::Params, M1::Params, M2::Params, M3::Params, M4::Params, M5::Params);
+    type Params = (
+        M0::Params,
+        M1::Params,
+        M2::Params,
+        M3::Params,
+        M4::Params,
+        M5::Params,
+    );
     fn parameters(&'p mut self) -> Self::Params {
         (
             self.0.parameters(),
@@ -108,7 +112,15 @@ where
     M5: HasParameters<'p>,
     M6: HasParameters<'p>,
 {
-    type Params = (M0::Params, M1::Params, M2::Params, M3::Params, M4::Params, M5::Params, M6::Params);
+    type Params = (
+        M0::Params,
+        M1::Params,
+        M2::Params,
+        M3::Params,
+        M4::Params,
+        M5::Params,
+        M6::Params,
+    );
     fn parameters(&'p mut self) -> Self::Params {
         (
             self.0.parameters(),
@@ -133,7 +145,16 @@ where
     M6: HasParameters<'p>,
     M7: HasParameters<'p>,
 {
-    type Params = (M0::Params, M1::Params, M2::Params, M3::Params, M4::Params, M5::Params, M6::Params, M7::Params);
+    type Params = (
+        M0::Params,
+        M1::Params,
+        M2::Params,
+        M3::Params,
+        M4::Params,
+        M5::Params,
+        M6::Params,
+        M7::Params,
+    );
     fn parameters(&'p mut self) -> Self::Params {
         (
             self.0.parameters(),
@@ -148,7 +169,8 @@ where
     }
 }
 
-impl<'p, M0, M1, M2, M3, M4, M5, M6, M7, M8> HasParameters<'p> for (M0, M1, M2, M3, M4, M5, M6, M7, M8)
+impl<'p, M0, M1, M2, M3, M4, M5, M6, M7, M8> HasParameters<'p>
+    for (M0, M1, M2, M3, M4, M5, M6, M7, M8)
 where
     M0: HasParameters<'p>,
     M1: HasParameters<'p>,
@@ -160,7 +182,17 @@ where
     M7: HasParameters<'p>,
     M8: HasParameters<'p>,
 {
-    type Params = (M0::Params, M1::Params, M2::Params, M3::Params, M4::Params, M5::Params, M6::Params, M7::Params, M8::Params);
+    type Params = (
+        M0::Params,
+        M1::Params,
+        M2::Params,
+        M3::Params,
+        M4::Params,
+        M5::Params,
+        M6::Params,
+        M7::Params,
+        M8::Params,
+    );
     fn parameters(&'p mut self) -> Self::Params {
         (
             self.0.parameters(),
@@ -176,7 +208,8 @@ where
     }
 }
 
-impl<'p, M0, M1, M2, M3, M4, M5, M6, M7, M8, M9> HasParameters<'p> for (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9)
+impl<'p, M0, M1, M2, M3, M4, M5, M6, M7, M8, M9> HasParameters<'p>
+    for (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9)
 where
     M0: HasParameters<'p>,
     M1: HasParameters<'p>,
@@ -189,7 +222,18 @@ where
     M8: HasParameters<'p>,
     M9: HasParameters<'p>,
 {
-    type Params = (M0::Params, M1::Params, M2::Params, M3::Params, M4::Params, M5::Params, M6::Params, M7::Params, M8::Params, M9::Params);
+    type Params = (
+        M0::Params,
+        M1::Params,
+        M2::Params,
+        M3::Params,
+        M4::Params,
+        M5::Params,
+        M6::Params,
+        M7::Params,
+        M8::Params,
+        M9::Params,
+    );
     fn parameters(&'p mut self) -> Self::Params {
         (
             self.0.parameters(),
@@ -207,7 +251,7 @@ where
 }
 
 /// # Parameters trait
-/// 
+///
 /// Implemented for different tuples of [Variables](crate::tensor::Variable).
 /// These can then be used by [optimizers](crate::optim).
 /// Parameters are just a tuple of mutable references to [Variables](crate::tensor::Variable).
@@ -288,7 +332,8 @@ where
     }
 }
 
-impl<Params1, Params2, Params3, Params4, Params5> Parameters for (Params1, Params2, Params3, Params4, Params5)
+impl<Params1, Params2, Params3, Params4, Params5> Parameters
+    for (Params1, Params2, Params3, Params4, Params5)
 where
     Params1: Parameters,
     Params2: Parameters,
@@ -305,7 +350,8 @@ where
     }
 }
 
-impl<Params1, Params2, Params3, Params4, Params5, Params6> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6)
+impl<Params1, Params2, Params3, Params4, Params5, Params6> Parameters
+    for (Params1, Params2, Params3, Params4, Params5, Params6)
 where
     Params1: Parameters,
     Params2: Parameters,
@@ -324,7 +370,16 @@ where
     }
 }
 
-impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6, Params7)
+impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7> Parameters
+    for (
+        Params1,
+        Params2,
+        Params3,
+        Params4,
+        Params5,
+        Params6,
+        Params7,
+    )
 where
     Params1: Parameters,
     Params2: Parameters,
@@ -345,7 +400,17 @@ where
     }
 }
 
-impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8)
+impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8> Parameters
+    for (
+        Params1,
+        Params2,
+        Params3,
+        Params4,
+        Params5,
+        Params6,
+        Params7,
+        Params8,
+    )
 where
     Params1: Parameters,
     Params2: Parameters,
@@ -368,7 +433,18 @@ where
     }
 }
 
-impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9> Parameters for (Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9)
+impl<Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9> Parameters
+    for (
+        Params1,
+        Params2,
+        Params3,
+        Params4,
+        Params5,
+        Params6,
+        Params7,
+        Params8,
+        Params9,
+    )
 where
     Params1: Parameters,
     Params2: Parameters,
@@ -393,7 +469,20 @@ where
     }
 }
 
-impl<Params0, Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9> Parameters for (Params0, Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9)
+impl<Params0, Params1, Params2, Params3, Params4, Params5, Params6, Params7, Params8, Params9>
+    Parameters
+    for (
+        Params0,
+        Params1,
+        Params2,
+        Params3,
+        Params4,
+        Params5,
+        Params6,
+        Params7,
+        Params8,
+        Params9,
+    )
 where
     Params0: Parameters,
     Params1: Parameters,

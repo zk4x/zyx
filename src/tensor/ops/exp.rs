@@ -1,4 +1,7 @@
-use crate::{ops::Exp, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use crate::{
+    ops::Exp,
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 use core::ops::Mul;
 
 #[derive(Debug, Clone, Copy)]

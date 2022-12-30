@@ -1,5 +1,5 @@
 //! Various optimizers to update [Variables](crate::tensor::Variable).
-//! 
+//!
 //! This is a major change from the way PyTorch handles things.
 //! [Parameters](crate::nn::parameters::Parameters) are neither stored nor referenced by optimizers.
 //!
@@ -56,9 +56,9 @@
 //! (&mut x, &mut y, &mut z).step(&optim);
 //! ```
 //! Note that in these examples we do not populate gradients, therefore calling .step() has no actual effect.
-//! 
+//!
 
-use core::ops::{Sub, Mul};
+use core::ops::{Mul, Sub};
 
 /// # Stochastic gradient descent optimizer
 ///
@@ -125,8 +125,8 @@ where
     V2: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
     }
 }
 
@@ -138,9 +138,9 @@ where
     V3: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
-         self.2.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
     }
 }
 
@@ -153,10 +153,10 @@ where
     V4: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
-         self.2.step(optim);
-         self.3.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
     }
 }
 
@@ -170,11 +170,11 @@ where
     V5: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
-         self.2.step(optim);
-         self.3.step(optim);
-         self.4.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
     }
 }
 
@@ -189,12 +189,12 @@ where
     V6: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
-         self.2.step(optim);
-         self.3.step(optim);
-         self.4.step(optim);
-         self.5.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
     }
 }
 
@@ -210,13 +210,13 @@ where
     V7: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
-         self.2.step(optim);
-         self.3.step(optim);
-         self.4.step(optim);
-         self.5.step(optim);
-         self.6.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
+        self.6.step(optim);
     }
 }
 
@@ -233,13 +233,13 @@ where
     V8: SGDStep,
 {
     fn step(self, optim: &SGD) {
-         self.0.step(optim);
-         self.1.step(optim);
-         self.2.step(optim);
-         self.3.step(optim);
-         self.4.step(optim);
-         self.5.step(optim);
-         self.6.step(optim);
-         self.7.step(optim);
+        self.0.step(optim);
+        self.1.step(optim);
+        self.2.step(optim);
+        self.3.step(optim);
+        self.4.step(optim);
+        self.5.step(optim);
+        self.6.step(optim);
+        self.7.step(optim);
     }
 }

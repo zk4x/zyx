@@ -1,4 +1,7 @@
-use crate::{ops::HasDType, tensor::{Variable, Tensor}};
+use crate::{
+    ops::HasDType,
+    tensor::{Tensor, Variable},
+};
 
 impl<S> HasDType for Variable<S>
 where

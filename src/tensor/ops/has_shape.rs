@@ -1,4 +1,7 @@
-use crate::{ops::HasShape, tensor::{Variable, Tensor}};
+use crate::{
+    ops::HasShape,
+    tensor::{Tensor, Variable},
+};
 
 impl<S> HasShape for Variable<S>
 where

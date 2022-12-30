@@ -1,39 +1,72 @@
+use crate::{
+    ops::{HasDType, HasShape},
+    shape::Sh0,
+};
 use duplicate::duplicate_item;
-use crate::{shape::Sh0, ops::{HasShape, HasDType}};
 
 /// # DType
 ///
 /// DType is any type that can be stored inside NDType.
 /// It is sometimes necessary to limit some operations to take only DType
 /// in order to avoid some cycles.
-/// 
+///
 /// There are no requirements on DType, except it must implement Clone.
 /// Although cloning is not necessarily required for every operation with DType,
 /// it is used quite often.
 /// That also means that when you implement DType for your custom type, cloning
 /// should be pretty fast, otherwise you will face serious performance issues with [cpu::Buffer](crate::device::cpu::Buffer),
 /// since this type assumes that passing DType by value is faster than passing it by reference.
-/// 
-/// If you want to use sparse tensors with chunky DTypes, please create your own deviceerator.
+///
+/// If you want to use sparse tensors with chunky DTypes, please provide your own device for best performance.
 pub trait DType: Clone {
     const STR: &'static str;
 }
 
-impl DType for f32 { const STR: &'static str = "f32"; }
-impl DType for f64 { const STR: &'static str = "f64"; }
-impl DType for i8 { const STR: &'static str = "i8"; }
-impl DType for i16 { const STR: &'static str = "i16"; }
-impl DType for i32 { const STR: &'static str = "i32"; }
-impl DType for i64 { const STR: &'static str = "i64"; }
-impl DType for i128 { const STR: &'static str = "i128"; }
-impl DType for isize { const STR: &'static str = "isize"; }
-impl DType for u8 { const STR: &'static str = "u8"; }
-impl DType for u16 { const STR: &'static str = "u16"; }
-impl DType for u32 { const STR: &'static str = "u32"; }
-impl DType for u64 { const STR: &'static str = "u64"; }
-impl DType for u128 { const STR: &'static str = "u128"; }
-impl DType for usize { const STR: &'static str = "usize"; }
-impl DType for bool { const STR: &'static str = "bool"; }
+impl DType for f32 {
+    const STR: &'static str = "f32";
+}
+impl DType for f64 {
+    const STR: &'static str = "f64";
+}
+impl DType for i8 {
+    const STR: &'static str = "i8";
+}
+impl DType for i16 {
+    const STR: &'static str = "i16";
+}
+impl DType for i32 {
+    const STR: &'static str = "i32";
+}
+impl DType for i64 {
+    const STR: &'static str = "i64";
+}
+impl DType for i128 {
+    const STR: &'static str = "i128";
+}
+impl DType for isize {
+    const STR: &'static str = "isize";
+}
+impl DType for u8 {
+    const STR: &'static str = "u8";
+}
+impl DType for u16 {
+    const STR: &'static str = "u16";
+}
+impl DType for u32 {
+    const STR: &'static str = "u32";
+}
+impl DType for u64 {
+    const STR: &'static str = "u64";
+}
+impl DType for u128 {
+    const STR: &'static str = "u128";
+}
+impl DType for usize {
+    const STR: &'static str = "usize";
+}
+impl DType for bool {
+    const STR: &'static str = "bool";
+}
 
 impl<T> HasShape for T
 where
@@ -59,17 +92,19 @@ impl<Sh, T> SType for crate::device::cpu::Buffer<'_, Sh, T>
 where
     Sh: crate::shape::Shape,
     T: DType,
-{}
+{
+}
 
 impl<Sh, T> SType for crate::device::opencl::Buffer<'_, Sh, T>
 where
     Sh: crate::shape::Shape,
     T: DType + ocl::OclPrm,
-{}
+{
+}
 
 /*
 /// # NDType
-/// 
+///
 /// NDType is any type that has more than one dimension.
 /// Each NDType has [Shape] and some [DType] stored inside some type of collection.
 pub(crate) trait NDType {

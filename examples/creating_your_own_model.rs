@@ -15,11 +15,12 @@ struct MyNet<'d, const IN: usize, const OUT: usize> {
     a2: nn::Tanh,
 }
 
-use zyx::shape::{Sh2, Ax2}; // get access to shapes and axes
+use zyx::shape::{Ax2, Sh2}; // get access to shapes and axes
 use zyx::tensor::*; // here we get access to Variable, Tensor and backward ops
 
 // Implement nn::Module for your model to get forward function:
-impl<'p, 'd, const IN: usize, const OUT: usize> nn::Module<'p, cpu::Buffer<'d, Sh2<1, IN>>> for MyNet<'d, IN, OUT>
+impl<'p, 'd, const IN: usize, const OUT: usize> nn::Module<'p, cpu::Buffer<'d, Sh2<1, IN>>>
+    for MyNet<'d, IN, OUT>
 where
     'd: 'p,
     // Beware the lifetimes here. Buffers live for device lifetime, while borrows of parameters
@@ -29,18 +30,39 @@ where
 {
     // Since the graph is created at compile time, it is necessary to write the whole backward pass here.
     // It is a very long type, but it is automatically inferred by the compiler, it just requires you to write it explicitly
-    type Output = Tensor<cpu::Buffer<'d, Sh2<1, OUT>>,
-        TanhBackwardT<cpu::Buffer<'d, Sh2<1, OUT>>,
-        AddBackwardTV<'p, cpu::Buffer<'d, Sh2<1, OUT>>,
-        MatMulBackwardTV<'p, cpu::Buffer<'d, Sh2<1000, OUT>>, cpu::Buffer<'d, Sh2<1, 1000>>, cpu::Buffer<'d, Sh2<1000, OUT>>,
-        ReLUBackwardT<cpu::Buffer<'d, Sh2<1, 1000>>,
-        AddBackwardTV<'p, cpu::Buffer<'d, Sh2<1, 1000>>,
-        MatMulBackwardSV<'p, cpu::Buffer<'d, Sh2<1, IN>>, cpu::Buffer<'d, Sh2<IN, 1000>>>>>>>>>;
+    type Output = Tensor<
+        cpu::Buffer<'d, Sh2<1, OUT>>,
+        TanhBackwardT<
+            cpu::Buffer<'d, Sh2<1, OUT>>,
+            AddBackwardTV<
+                'p,
+                cpu::Buffer<'d, Sh2<1, OUT>>,
+                MatMulBackwardTV<
+                    'p,
+                    cpu::Buffer<'d, Sh2<1000, OUT>>,
+                    cpu::Buffer<'d, Sh2<1, 1000>>,
+                    cpu::Buffer<'d, Sh2<1000, OUT>>,
+                    ReLUBackwardT<
+                        cpu::Buffer<'d, Sh2<1, 1000>>,
+                        AddBackwardTV<
+                            'p,
+                            cpu::Buffer<'d, Sh2<1, 1000>>,
+                            MatMulBackwardSV<
+                                'p,
+                                cpu::Buffer<'d, Sh2<1, IN>>,
+                                cpu::Buffer<'d, Sh2<IN, 1000>>,
+                            >,
+                        >,
+                    >,
+                >,
+            >,
+        >,
+    >;
 
     fn forward(&'p self, x: cpu::Buffer<'d, Sh2<1, IN>>) -> Self::Output {
         // use nn::ApplyModule to get access to the following syntax
         use nn::ApplyModule;
-        
+
         // Without ApplyModule you would need to write the forward pass like this:
         // let x = self.l1.forward(x);
         // let x = self.a1.forward(x);
@@ -49,24 +71,33 @@ where
         // return x;
 
         // But with ApplyModule you can just use this syntax:
-        x.apply(&self.l1).apply(&self.a1).apply(&self.l2).apply(&self.a2)
+        x.apply(&self.l1)
+            .apply(&self.a1)
+            .apply(&self.l2)
+            .apply(&self.a2)
     }
 }
 
 // We also need to get simple access to your Module's parameters:
 // Again be carefull with lifetimes.
-impl<'p, 'd, const IN: usize, const OUT: usize> nn::parameters::HasParameters<'p> for MyNet<'d, IN, OUT>
+impl<'p, 'd, const IN: usize, const OUT: usize> nn::parameters::HasParameters<'p>
+    for MyNet<'d, IN, OUT>
 where
     'd: 'p,
 {
     // Compiler will automatically infer the return type, but we still need to copy it here.
     // Note that all parameters have lifetime 'p which is generic parameter to HasParameters trait.
     type Params = (
-        (&'p mut Variable<cpu::Buffer<'d, Sh2<IN, 1000>>>,
-         &'p mut Variable<cpu::Buffer<'d, Sh2<1, 1000>>>),
-        (&'p mut Variable<cpu::Buffer<'d, Sh2<1000, OUT>>>,
-         &'p mut Variable<cpu::Buffer<'d, Sh2<1, OUT>>>));
-    
+        (
+            &'p mut Variable<cpu::Buffer<'d, Sh2<IN, 1000>>>,
+            &'p mut Variable<cpu::Buffer<'d, Sh2<1, 1000>>>,
+        ),
+        (
+            &'p mut Variable<cpu::Buffer<'d, Sh2<1000, OUT>>>,
+            &'p mut Variable<cpu::Buffer<'d, Sh2<1, OUT>>>,
+        ),
+    );
+
     // One advantage of such verbosity is that we can exactly see what are parameters of your network.
     // Then we can simply calculate the number of f32 numbers stored as parameters of your network:
     // IN * 1000 + 1 * 1000 + 1000 * OUT + 1 * OUT
@@ -102,24 +133,69 @@ fn main() {
     // The first value in each tuple is input, the second value represents the correct output
     let dataset = vec![
         (
-            device.buffer([[0.7507571, 0.7217026, 0.6980746, 0.7066041, 0.8864105, 0.61744523, 0.7969053, 0.18718922, 0.9568634, 0.5328448, 0.92357934, 0.5294405, 0.7425239, 0.8428292, 0.7640828, 0.9104457, 0.15281391, 0.06508052, 0.03200066, 0.20160127]]),
-            device.buffer([[0.7507571, 0.7217026, 0.6980746, 0.7066041, 0.8864105, 0.61744523, 0.7969053, 0.18718922, 0.9568634, 0.5328448]])),
+            device.buffer([[
+                0.7507571, 0.7217026, 0.6980746, 0.7066041, 0.8864105, 0.61744523, 0.7969053,
+                0.18718922, 0.9568634, 0.5328448, 0.92357934, 0.5294405, 0.7425239, 0.8428292,
+                0.7640828, 0.9104457, 0.15281391, 0.06508052, 0.03200066, 0.20160127,
+            ]]),
+            device.buffer([[
+                0.7507571, 0.7217026, 0.6980746, 0.7066041, 0.8864105, 0.61744523, 0.7969053,
+                0.18718922, 0.9568634, 0.5328448,
+            ]]),
+        ),
         (
-            device.buffer([[0.9024651, 0.7985842, 0.70478046, 0.7703233, 0.70260584, 0.32990253, 0.9954214, 0.61785877, 0.7901434, 0.3326832, 0.21076417, 0.66955245, 0.8554325, 0.6663033, 0.24682295, 0.4037094, 0.43269646, 0.48595917, 0.08413601, 0.06380451]]),
-            device.buffer([[0.9024651, 0.7985842, 0.70478046, 0.7703233, 0.70260584, 0.32990253, 0.9954214, 0.61785877, 0.7901434, 0.3326832]])),
+            device.buffer([[
+                0.9024651, 0.7985842, 0.70478046, 0.7703233, 0.70260584, 0.32990253, 0.9954214,
+                0.61785877, 0.7901434, 0.3326832, 0.21076417, 0.66955245, 0.8554325, 0.6663033,
+                0.24682295, 0.4037094, 0.43269646, 0.48595917, 0.08413601, 0.06380451,
+            ]]),
+            device.buffer([[
+                0.9024651, 0.7985842, 0.70478046, 0.7703233, 0.70260584, 0.32990253, 0.9954214,
+                0.61785877, 0.7901434, 0.3326832,
+            ]]),
+        ),
         (
-            device.buffer([[0.5865792, 0.6768781, 0.14213097, 0.5009351, 0.61870027, 0.54153633, 0.22999549, 0.9271833, 0.42734194, 0.9949113, 0.83520794, 0.5763148, 0.2692014, 0.37496507, 0.9917865, 0.74197793, 0.19458747, 0.6341822, 0.28314948, 0.8105364]]),
-            device.buffer([[0.5865792, 0.6768781, 0.14213097, 0.5009351, 0.61870027, 0.54153633, 0.22999549, 0.9271833, 0.42734194, 0.9949113]])),
+            device.buffer([[
+                0.5865792, 0.6768781, 0.14213097, 0.5009351, 0.61870027, 0.54153633, 0.22999549,
+                0.9271833, 0.42734194, 0.9949113, 0.83520794, 0.5763148, 0.2692014, 0.37496507,
+                0.9917865, 0.74197793, 0.19458747, 0.6341822, 0.28314948, 0.8105364,
+            ]]),
+            device.buffer([[
+                0.5865792, 0.6768781, 0.14213097, 0.5009351, 0.61870027, 0.54153633, 0.22999549,
+                0.9271833, 0.42734194, 0.9949113,
+            ]]),
+        ),
         (
-            device.buffer([[0.6747533, 0.05631852, 0.62192833, 0.81391823, 0.71077156, 0.8345542, 0.6213664, 0.93497634, 0.8096837, 0.8661665, 0.5389962, 0.72498846, 0.67866004, 0.8322798, 0.08960307, 0.24475288, 0.17254615, 0.85972965, 0.3564037, 0.8204987]]),
-            device.buffer([[0.6747533, 0.05631852, 0.62192833, 0.81391823, 0.71077156, 0.8345542, 0.6213664, 0.93497634, 0.8096837, 0.8661665]])),
+            device.buffer([[
+                0.6747533, 0.05631852, 0.62192833, 0.81391823, 0.71077156, 0.8345542, 0.6213664,
+                0.93497634, 0.8096837, 0.8661665, 0.5389962, 0.72498846, 0.67866004, 0.8322798,
+                0.08960307, 0.24475288, 0.17254615, 0.85972965, 0.3564037, 0.8204987,
+            ]]),
+            device.buffer([[
+                0.6747533, 0.05631852, 0.62192833, 0.81391823, 0.71077156, 0.8345542, 0.6213664,
+                0.93497634, 0.8096837, 0.8661665,
+            ]]),
+        ),
         (
-            device.buffer([[0.9909533, 0.74521554, 0.46223414, 0.5594574, 0.5624963, 0.10301626, 0.67522275, 0.6146512, 0.9411292, 0.08030832, 0.7745633, 0.79155946, 0.6679106, 0.29721928, 0.93910086, 0.9580766, 0.8319746, 0.854673, 0.56412864, 0.8099259]]),
-            device.buffer([[0.9909533, 0.74521554, 0.46223414, 0.5594574, 0.5624963, 0.10301626, 0.67522275, 0.6146512, 0.9411292, 0.08030832]])),
+            device.buffer([[
+                0.9909533, 0.74521554, 0.46223414, 0.5594574, 0.5624963, 0.10301626, 0.67522275,
+                0.6146512, 0.9411292, 0.08030832, 0.7745633, 0.79155946, 0.6679106, 0.29721928,
+                0.93910086, 0.9580766, 0.8319746, 0.854673, 0.56412864, 0.8099259,
+            ]]),
+            device.buffer([[
+                0.9909533, 0.74521554, 0.46223414, 0.5594574, 0.5624963, 0.10301626, 0.67522275,
+                0.6146512, 0.9411292, 0.08030832,
+            ]]),
+        ),
     ];
 
     // let's choose a loss function
-    let mse_loss = (nn::MSELoss, nn::Mean { dims: Ax2::<0, 1>{} } );
+    let mse_loss = (
+        nn::MSELoss,
+        nn::Mean {
+            dims: Ax2::<0, 1> {},
+        },
+    );
 
     // Choose your optimizer
     let optimizer = zyx::optim::SGD::new().with_learning_rate(0.01);

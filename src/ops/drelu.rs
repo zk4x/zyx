@@ -10,20 +10,11 @@ use duplicate::duplicate_item;
 impl DReLU for dtype {
     type Output = Self;
     fn drelu(self) -> Self::Output {
-        if self < 0. { 0. } else { 1. }
-    }
-}
-
-#[duplicate_item(
-    dtype;
-    [f32];
-    [f64];
-)]
-
-impl DReLU for &dtype {
-    type Output = dtype;
-    fn drelu(self) -> Self::Output {
-        if *self < 0. { 0. } else { 1. }
+        if self < 0. {
+            0.
+        } else {
+            1.
+        }
     }
 }
 
@@ -46,23 +37,6 @@ impl DReLU for dtype {
 
 #[duplicate_item(
     dtype;
-    [i8];
-    [i16];
-    [i32];
-    [i64];
-    [i128];
-    [isize];
-)]
-
-impl DReLU for &dtype {
-    type Output = dtype;
-    fn drelu(self) -> Self::Output {
-        dtype::from(*self >= 0)
-    }
-}
-
-#[duplicate_item(
-    dtype;
     [u8];
     [u16];
     [u32];
@@ -73,23 +47,6 @@ impl DReLU for &dtype {
 
 impl DReLU for dtype {
     type Output = Self;
-    fn drelu(self) -> Self::Output {
-        1
-    }
-}
-
-#[duplicate_item(
-    dtype;
-    [u8];
-    [u16];
-    [u32];
-    [u64];
-    [u128];
-    [usize];
-)]
-
-impl DReLU for &dtype {
-    type Output = dtype;
     fn drelu(self) -> Self::Output {
         1
     }

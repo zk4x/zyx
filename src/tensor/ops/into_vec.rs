@@ -1,4 +1,7 @@
-use crate::{ops::IntoVec, tensor::{Variable, Tensor, Gradient}};
+use crate::{
+    ops::IntoVec,
+    tensor::{Gradient, Tensor, Variable},
+};
 extern crate alloc;
 use alloc::vec::Vec;
 

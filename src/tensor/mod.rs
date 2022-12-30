@@ -53,13 +53,18 @@ mod ops;
 
 // re export backward ops
 pub use ops::{
-    tanh::{TanhBackwardT, TanhBackwardV},
-    relu::{ReLUBackwardT, ReLUBackwardV},
-    add::{AddBackwardSV, AddBackwardVV, AddBackwardVT, AddBackwardTT, AddBackwardTV, AddBackwardVS},
+    add::{
+        AddBackwardSV, AddBackwardTT, AddBackwardTV, AddBackwardVS, AddBackwardVT, AddBackwardVV,
+    },
     //sub::{SubBackwardSV, SubBackwardVV, SubBackwardVT, SubBackwardTT, SubBackwardTV, SubBackwardVS},
     //div::{DivBackwardTS, DivBackwardTT, DivBackwardTV, DivBackwardVS, DivBackwardVT, DivBackwardVV},
     //mul::{MulBackwardTS, MulBackwardTT, MulBackwardTV, MulBackwardVS, MulBackwardVT, MulBackwardVV},
-    matmul::{MatMulBackwardST, MatMulBackwardSV, MatMulBackwardTS, MatMulBackwardTT, MatMulBackwardTV, MatMulBackwardVS, MatMulBackwardVT, MatMulBackwardVV},
+    matmul::{
+        MatMulBackwardST, MatMulBackwardSV, MatMulBackwardTS, MatMulBackwardTT, MatMulBackwardTV,
+        MatMulBackwardVS, MatMulBackwardVT, MatMulBackwardVV,
+    },
+    relu::{ReLUBackwardT, ReLUBackwardV},
+    tanh::{TanhBackwardT, TanhBackwardV},
 };
 
 // How this works (for contributors)
@@ -80,7 +85,7 @@ pub use ops::{
 // Tensors are moved into operations, while Variables are passed by reference!
 
 /// # Variable
-/// 
+///
 /// Variable holds data and it's gradient.
 #[derive(Debug, Clone, Default)]
 pub struct Variable<S> {
@@ -90,7 +95,7 @@ pub struct Variable<S> {
 }
 
 /// Gradient of [Variable]
-/// 
+///
 /// User has read-only access to [Gradient] with to_vec and to_string.
 // This is using UnsafeCell to store value inside gradient.
 // Since UnsafeCell is not Sync, there is just few times that we access gradient,
@@ -148,7 +153,9 @@ impl<'g, S> GradientRef<'g, S> {
     {
         // Accumulate is called by backward function to accumulate gradients. This is needed in batch processing.
         // Unsafe is needed, because we need multiple functions accessing the same gradient.
-        unsafe { *self.0.0.get() = (*self.0.0.get()).clone() + value; }
+        unsafe {
+            *self.0 .0.get() = (*self.0 .0.get()).clone() + value;
+        }
     }
 }
 
@@ -175,7 +182,7 @@ where
 }
 
 /// # Tensor
-/// 
+///
 /// Tensor holds data and grad_fn to calculate gradients of [Variables](Variable).
 /// Tensor is only created as a result of some operations on at least one [Variable].
 /// Tensor does not store it's gradient, but the gradient can be accessed during backward
@@ -187,7 +194,7 @@ pub struct Tensor<S, GradFn> {
 }
 
 /// # Display Variable
-/// 
+///
 /// Shows [Variable] and it's gradient.
 impl<S> core::fmt::Display for Variable<S>
 where
@@ -196,16 +203,12 @@ where
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
         use alloc::format;
-        f.write_str(&format!(
-            "{} with grad:\n{}",
-            self.data,
-            &self.grad,
-        ))
+        f.write_str(&format!("{} with grad:\n{}", self.data, &self.grad,))
     }
 }
 
 /// # Display Tensor
-/// 
+///
 /// Shows [Tensor] and it's grad_fn.
 impl<S, GradFn> core::fmt::Display for Tensor<S, GradFn>
 where
@@ -217,17 +220,21 @@ where
         // and creating debug string of all the buffers stored in grad_fn
         extern crate alloc;
         use alloc::format;
-        f.write_str(&format!("{} with grad_fn: {}", self.data, format!("{:?}", self.grad_fn).split_once(" {").unwrap().0))
+        f.write_str(&format!(
+            "{} with grad_fn: {}",
+            self.data,
+            format!("{:?}", self.grad_fn).split_once(" {").unwrap().0
+        ))
     }
 }
 
 impl<S> Variable<S> {
     /// # Variable backward
-    /// 
+    ///
     /// Calls backward function on [Variable].
     /// This results in [Variable's](Variable) gradient being increased by one.
     /// We take [Variable] with mutable reference, so that we have exclusive access during mutation of gradient.
-    /// 
+    ///
     /// ```txt
     /// x.grad += 1;
     /// ```
@@ -261,7 +268,7 @@ impl<S> Variable<S> {
 }
 
 /// # Backward trait
-/// 
+///
 /// This trait is implemented by all functions that allow us to calculate gradients.
 pub trait Backward<S> {
     /// Calls backward on a grad_fn, passing calculated output's gradient as parameter.
@@ -270,7 +277,7 @@ pub trait Backward<S> {
 
 impl<S, F> Tensor<S, F> {
     /// # Tensor backward
-    /// 
+    ///
     /// Calls backward function on [Tensor].
     /// Computes gradient of all [Variables](Variable) that were used as inputs to operations that resulted in creation of this [Tensor].
     /// This function accumulates gradients in those [Variables](Variable). If you want to clear [Variable's](Variable) gradients, call [.zero_grad()](crate::nn::parameters::Parameters::zero_grad()) on that [Variable].

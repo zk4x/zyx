@@ -2,21 +2,27 @@
 //! and rayon for multithreading. It can optionally use matrixmultiply crate.
 //!
 
-use crate::{ops::{self, ConvertFrom}, shape::{self, Shape, HasLastDim, ReducableBy, PermutableBy, MatMulBy, Axes, Sh1, Sh2, Sh3, Sh4, Sh5}, dtype::DType};
 use super::BufferFromSlice;
+use crate::{
+    dtype::DType,
+    ops::{self, ConvertFrom},
+    shape::{
+        self, Axes, HasLastDim, MatMulBy, PermutableBy, ReducableBy, Sh1, Sh2, Sh3, Sh4, Sh5, Shape,
+    },
+};
 use core::marker::PhantomData;
 extern crate alloc;
-use alloc::{vec, sync::Arc};
+use alloc::{sync::Arc, vec};
 
 /// CPU Device
-/// 
+///
 /// When you use this device to create buffers, they are stored in system RAM and CPU is used for computations.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Device {} // TODO try arena allocator (bumpalo) and compare the performance
 
 impl super::Device for Device {}
 
-impl<'d, Sh, T> BufferFromSlice<'d, Buffer<'d, Sh, T>> for Device 
+impl<'d, Sh, T> BufferFromSlice<'d, Buffer<'d, Sh, T>> for Device
 where
     Sh: 'd + Shape,
     T: 'd + DType,
@@ -31,7 +37,7 @@ where
 }
 
 /// Generic multidimensional buffer
-/// 
+///
 /// Each buffer has a shape and data stored in vec.
 /// Data is stored in row major order.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -89,10 +95,16 @@ where
     Sh: Shape,
 {
     fn cfrom(x: Buffer<'d, Sh, T2>) -> Self {
-        use rayon::prelude::*;
         use crate::ops::ConvertInto;
+        use rayon::prelude::*;
         Self {
-            data: Arc::new(x.data.as_ref().par_iter().map(|x| x.clone().cinto()).collect()),
+            data: Arc::new(
+                x.data
+                    .as_ref()
+                    .par_iter()
+                    .map(|x| x.clone().cinto())
+                    .collect(),
+            ),
             device: x.device,
             shape: PhantomData,
         }
@@ -248,10 +260,20 @@ where
         // indices of dimensions that are reduced
         let dims: alloc::vec::Vec<usize> = Dims::array().into_iter().map(|x| x as usize).collect();
         // indices of dimensions that are not reduced
-        let included_dims: alloc::vec::Vec<usize> = (0..Sh::RANK).into_iter().filter(|x| !dims.contains(x)).collect();
+        let included_dims: alloc::vec::Vec<usize> = (0..Sh::RANK)
+            .into_iter()
+            .filter(|x| !dims.contains(x))
+            .collect();
 
         #[cfg(test)]
-        std::println!("Dims {:?}\nIncluded dims {:?}\nShape {}\nStrides {:?}\nRes strides {:?}", dims, included_dims, shape, strides, res_strides);
+        std::println!(
+            "Dims {:?}\nIncluded dims {:?}\nShape {}\nStrides {:?}\nRes strides {:?}",
+            dims,
+            included_dims,
+            shape,
+            strides,
+            res_strides
+        );
 
         // Go over all data and apply sum function to correct values
         // then indices can be added just by making another vector and constantly
@@ -260,7 +282,7 @@ where
             // calculate index in result
             let mut j = 0;
             for dim in &included_dims {
-                j += ((i/strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
+                j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
             }
             // apply reduce function, in this case sum
             res[j] = res[j].clone() + x.clone();
@@ -345,7 +367,7 @@ where
             for i in (0..n).step_by(width) {
                 // copy this part of vec
                 for _ in 0..times {
-                    res_data.extend_from_slice(&data[i..i+width]);
+                    res_data.extend_from_slice(&data[i..i + width]);
                 }
             }
             res_data
@@ -357,8 +379,9 @@ where
             i -= 1;
             let d = if Sh::RANK - i > 0 { Sh::at(i) } else { 1 };
             let r = Sh2::at(i);
-            if d != r  { // Then d == 1 as guaranteed by ReducableBy trait
-                data = copy_dim(data, width, r/d);
+            if d != r {
+                // Then d == 1 as guaranteed by ReducableBy trait
+                data = copy_dim(data, width, r / d);
             }
             width *= Sh2::at(i);
         }
@@ -419,13 +442,13 @@ where
         let mut temp = vec![(0, 0); Sh::RANK]; // (strides, acc) // TODO once stable rust supports it, this can be just array, not vector
         let mut begins = vec![0; Sh::RANK]; // TODO once stable rust supports it, this can be just array, not vector
         for k in 0..Sh::RANK {
-            temp[Sh::RANK-k-1] = (strides[k], acc[k]);
+            temp[Sh::RANK - k - 1] = (strides[k], acc[k]);
         }
         // begins is array of indices over each of dimensions. They are slowly increased by strides until it reaches dimension size stored in acc
         // then we increase index in higher dimension and we go over lower dimension again kinda like revolution counter
         let mut data = alloc::vec::Vec::with_capacity(Sh::NUMEL);
         let mut i = 0;
-        for _ in  0..Sh::NUMEL {
+        for _ in 0..Sh::NUMEL {
             data.push(self.data[i].clone());
             for (j, (st, acc)) in temp.iter().enumerate() {
                 begins[j] += st;
@@ -516,7 +539,7 @@ where
         let mut temp = vec![(0, 0); rank]; // strides, acc_shape
         let mut begins = vec![0; rank];
         for k in 0..rank {
-            temp[rank-k-1] = (self.strides[k], acc[k]);
+            temp[rank - k - 1] = (self.strides[k], acc[k]);
         }
         //let mut data = alloc::vec::Vec::with_capacity(Sh::NUMEL);
         //for _ in  0..Sh::NUMEL {
@@ -539,15 +562,19 @@ where
     }
 }
 
-fn binary_op<'d, T, F, XSh, YSh>(x: Buffer<'d, XSh, T>, y: Buffer<'d, YSh, T>, f: F) -> Buffer<'d, XSh, T>
+fn binary_op<'d, T, F, XSh, YSh>(
+    x: Buffer<'d, XSh, T>,
+    y: Buffer<'d, YSh, T>,
+    f: F,
+) -> Buffer<'d, XSh, T>
 where
     T: Sync + Send + Clone + DType,
     F: Fn((T, T)) -> T + Sync + Send,
     XSh: Shape,
     YSh: Shape,
 {
-    use rayon::prelude::*;
     use core::cmp::Ordering;
+    use rayon::prelude::*;
     // TODO: fix this, so that it is not expanding, but rather using strides to not have to copy
     // stuff during expanding.
     // And it is also necessary to support constant shapes, because it is not possible to write requirements for expand,
@@ -581,18 +608,32 @@ where
                 }
             }*/
         }
-        Ordering::Equal => {
-            match Arc::try_unwrap(x.data) {
-                Ok(vec) => match Arc::try_unwrap(y.data) {
-                    Ok(vec_y) => vec.into_par_iter().zip(vec_y.into_par_iter()).map(f).collect(),
-                    Err(rc_y) => vec.into_par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x, y.clone()))).collect(),
-                },
-                Err(rc) => match Arc::try_unwrap(y.data) {
-                    Ok(vec_y) => rc.par_iter().zip(vec_y.into_par_iter()).map(|(x, y)| f((x.clone(), y))).collect(),
-                    Err(rc_y) => rc.par_iter().zip(rc_y.par_iter()).map(|(x, y)| f((x.clone(), y.clone()))).collect(),
-                }
-            }
-        }
+        Ordering::Equal => match Arc::try_unwrap(x.data) {
+            Ok(vec) => match Arc::try_unwrap(y.data) {
+                Ok(vec_y) => vec
+                    .into_par_iter()
+                    .zip(vec_y.into_par_iter())
+                    .map(f)
+                    .collect(),
+                Err(rc_y) => vec
+                    .into_par_iter()
+                    .zip(rc_y.par_iter())
+                    .map(|(x, y)| f((x, y.clone())))
+                    .collect(),
+            },
+            Err(rc) => match Arc::try_unwrap(y.data) {
+                Ok(vec_y) => rc
+                    .par_iter()
+                    .zip(vec_y.into_par_iter())
+                    .map(|(x, y)| f((x.clone(), y)))
+                    .collect(),
+                Err(rc_y) => rc
+                    .par_iter()
+                    .zip(rc_y.par_iter())
+                    .map(|(x, y)| f((x.clone(), y.clone())))
+                    .collect(),
+            },
+        },
     });
     Buffer {
         data,
@@ -646,11 +687,14 @@ where
     fn add(self, rhs: T) -> Self::Output {
         use rayon::prelude::*;
         Self {
-            data: Arc::new(
-                match Arc::try_unwrap(self.data) {
-                    Ok(vec) => vec.into_par_iter().map(|x| x + rhs.clone()).collect(),
-                    Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() + rhs.clone()).collect(),
-                }),
+            data: Arc::new(match Arc::try_unwrap(self.data) {
+                Ok(vec) => vec.into_par_iter().map(|x| x + rhs.clone()).collect(),
+                Err(rc) => rc
+                    .as_ref()
+                    .par_iter()
+                    .map(|x| x.clone() + rhs.clone())
+                    .collect(),
+            }),
             device: self.device,
             shape: PhantomData,
         }
@@ -677,15 +721,18 @@ where
 {
     type Output = Buffer<'d, Sh, T>;
     fn sub(self, rhs: Buffer<'d, Sh, T>) -> Self::Output {
-        use rayon::prelude::*;
         use ops::ConvertInto;
+        use rayon::prelude::*;
         let x: T = self.cinto();
         Buffer {
-            data: Arc::new(
-                match Arc::try_unwrap(rhs.data) {
-                    Ok(vec) => vec.into_par_iter().map(|y| x.clone() - y).collect(),
-                    Err(rc) => rc.as_ref().par_iter().map(|y| x.clone() - y.clone()).collect(),
-                }),
+            data: Arc::new(match Arc::try_unwrap(rhs.data) {
+                Ok(vec) => vec.into_par_iter().map(|y| x.clone() - y).collect(),
+                Err(rc) => rc
+                    .as_ref()
+                    .par_iter()
+                    .map(|y| x.clone() - y.clone())
+                    .collect(),
+            }),
             device: rhs.device,
             shape: PhantomData,
         }
@@ -754,13 +801,17 @@ where
 {
     type Output = Buffer<'d, Sh, T>;
     fn mul(self, rhs: f32) -> Self::Output {
-        use rayon::prelude::*;
         use ops::ConvertInto;
+        use rayon::prelude::*;
         let y: T = rhs.cinto();
         Self {
             data: Arc::new(match Arc::try_unwrap(self.data) {
                 Ok(vec) => vec.into_par_iter().map(|x| x * y.clone()).collect(),
-                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() * y.clone()).collect(),
+                Err(rc) => rc
+                    .as_ref()
+                    .par_iter()
+                    .map(|x| x.clone() * y.clone())
+                    .collect(),
             }),
             device: self.device,
             shape: PhantomData,
@@ -775,13 +826,17 @@ where
 {
     type Output = Buffer<'d, Sh, T>;
     fn mul(self, rhs: i32) -> Self::Output {
-        use rayon::prelude::*;
         use ops::ConvertInto;
+        use rayon::prelude::*;
         let y: T = rhs.cinto();
         Self {
             data: Arc::new(match Arc::try_unwrap(self.data) {
                 Ok(vec) => vec.into_par_iter().map(|x| x * y.clone()).collect(),
-                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() * y.clone()).collect(),
+                Err(rc) => rc
+                    .as_ref()
+                    .par_iter()
+                    .map(|x| x.clone() * y.clone())
+                    .collect(),
             }),
             device: self.device,
             shape: PhantomData,
@@ -849,13 +904,17 @@ where
 {
     type Output = Buffer<'d, Sh, T>;
     fn div(self, rhs: i32) -> Self::Output {
-        use rayon::prelude::*;
         use ops::ConvertInto;
+        use rayon::prelude::*;
         let rhs: T = rhs.cinto();
         Self {
             data: Arc::new(match Arc::try_unwrap(self.data) {
                 Ok(vec) => vec.into_par_iter().map(|x| x / rhs.clone()).collect(),
-                Err(rc) => rc.as_ref().par_iter().map(|x| x.clone() / rhs.clone()).collect(),
+                Err(rc) => rc
+                    .as_ref()
+                    .par_iter()
+                    .map(|x| x.clone() / rhs.clone())
+                    .collect(),
             }),
             device: self.device,
 
@@ -924,24 +983,39 @@ where
         use rayon::prelude::*;
         let x_data = self.data.as_ref();
         const NUM: usize = 16; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
-        let data: alloc::vec::Vec<T> = rhs.data.as_ref().par_chunks(XSh::LAST_DIM*YSh::LAST_DIM)
-            .zip(x_data.par_chunks(<XSh as MatMulBy<YSh>>::Output::LAST_DIM_2*XSh::LAST_DIM)).map(|(y_chunk, x_chunk)| {
-                    transpose(&transpose(y_chunk, YSh::LAST_DIM, XSh::LAST_DIM*YSh::LAST_DIM)
-                    .par_chunks(XSh::LAST_DIM)
-                    .map(|y_row| {
-                        x_chunk.par_chunks(XSh::LAST_DIM)
-                            .map(|x| {
-                                x.chunks(NUM)
-                                    .zip(y_row.chunks(NUM))
-                                    .map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| a.clone() * b.clone()).sum::<T>())
-                                    .sum()
-                            })
-                            .collect::<alloc::vec::Vec<T>>()
-                    })
-                    .flatten()
-                    .collect::<alloc::vec::Vec<T>>(), <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2, <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2*YSh::LAST_DIM)
-                }
-            ).flatten().collect();
+        let data: alloc::vec::Vec<T> = rhs
+            .data
+            .as_ref()
+            .par_chunks(XSh::LAST_DIM * YSh::LAST_DIM)
+            .zip(x_data.par_chunks(<XSh as MatMulBy<YSh>>::Output::LAST_DIM_2 * XSh::LAST_DIM))
+            .map(|(y_chunk, x_chunk)| {
+                transpose(
+                    &transpose(y_chunk, YSh::LAST_DIM, XSh::LAST_DIM * YSh::LAST_DIM)
+                        .par_chunks(XSh::LAST_DIM)
+                        .map(|y_row| {
+                            x_chunk
+                                .par_chunks(XSh::LAST_DIM)
+                                .map(|x| {
+                                    x.chunks(NUM)
+                                        .zip(y_row.chunks(NUM))
+                                        .map(|(a, b)| {
+                                            a.iter()
+                                                .zip(b.iter())
+                                                .map(|(a, b)| a.clone() * b.clone())
+                                                .sum::<T>()
+                                        })
+                                        .sum()
+                                })
+                                .collect::<alloc::vec::Vec<T>>()
+                        })
+                        .flatten()
+                        .collect::<alloc::vec::Vec<T>>(),
+                    <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2,
+                    <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2 * YSh::LAST_DIM,
+                )
+            })
+            .flatten()
+            .collect();
         use crate::shape::HasLast2Dims;
         Buffer {
             data: Arc::new(data),
@@ -965,14 +1039,28 @@ where
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
         let mut data = alloc::vec::Vec::<f32>::with_capacity(<XSh as MatMulBy<YSh>>::Output::NUMEL);
-        unsafe { data.set_len(<XSh as MatMulBy<YSh>>::Output::NUMEL); } // no need to initialize
+        unsafe {
+            data.set_len(<XSh as MatMulBy<YSh>>::Output::NUMEL);
+        } // no need to initialize
         let mut i = 0;
-        while i < XSh::NUMEL/(m*k) {
+        while i < XSh::NUMEL / (m * k) {
             unsafe {
-                matrixmultiply::sgemm(m, k, n, 1.,
-                    self.data.as_ptr().offset((i*m*k) as isize), k as isize, 1,
-                    rhs.data.as_ptr().offset((i*k*n) as isize), n as isize, 1, 0.,
-                    data.as_mut_ptr().offset((i*m*n) as isize), n as isize, 1);
+                matrixmultiply::sgemm(
+                    m,
+                    k,
+                    n,
+                    1.,
+                    self.data.as_ptr().offset((i * m * k) as isize),
+                    k as isize,
+                    1,
+                    rhs.data.as_ptr().offset((i * k * n) as isize),
+                    n as isize,
+                    1,
+                    0.,
+                    data.as_mut_ptr().offset((i * m * n) as isize),
+                    n as isize,
+                    1,
+                );
             }
             i += 1;
         }
@@ -987,8 +1075,8 @@ where
 
 #[test]
 fn matmul_cpu() {
-    use crate::prelude::*;
     use crate::device::cpu;
+    use crate::prelude::*;
 
     let device = cpu::Device::default();
 
@@ -1015,14 +1103,28 @@ where
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
         let mut data = alloc::vec::Vec::<f64>::with_capacity(<XSh as MatMulBy<YSh>>::Output::NUMEL);
-        unsafe { data.set_len(<XSh as MatMulBy<YSh>>::Output::NUMEL); } // no need to initialize
+        unsafe {
+            data.set_len(<XSh as MatMulBy<YSh>>::Output::NUMEL);
+        } // no need to initialize
         let mut i = 0;
-        while i < XSh::NUMEL/(m*k) {
+        while i < XSh::NUMEL / (m * k) {
             unsafe {
-                matrixmultiply::dgemm(m, k, n, 1.,
-                    self.data.as_ptr().offset((i*m*k) as isize), k as isize, 1,
-                    rhs.data.as_ptr().offset((i*k*n) as isize), n as isize, 1, 0.,
-                    data.as_mut_ptr().offset((i*m*n) as isize), n as isize, 1);
+                matrixmultiply::dgemm(
+                    m,
+                    k,
+                    n,
+                    1.,
+                    self.data.as_ptr().offset((i * m * k) as isize),
+                    k as isize,
+                    1,
+                    rhs.data.as_ptr().offset((i * k * n) as isize),
+                    n as isize,
+                    1,
+                    0.,
+                    data.as_mut_ptr().offset((i * m * n) as isize),
+                    n as isize,
+                    1,
+                );
             }
             i += 1;
         }
@@ -1096,7 +1198,7 @@ where
 
             i += 1;
         }
-        
+
         Buffer {
             data: Arc::new(data),
         }
@@ -1143,12 +1245,18 @@ where
     }
 }
 
-impl<T, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[T; D0]; D1]; D2]> for Buffer<'_, Sh3<D2, D1, D0>, T>
+impl<T, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[T; D0]; D1]; D2]>
+    for Buffer<'_, Sh3<D2, D1, D0>, T>
 where
     T: DType + PartialEq,
 {
     fn eq(&self, other: &[[[T; D0]; D1]; D2]) -> bool {
-        for (x, y) in other.iter().flatten().flatten().zip(self.data.as_ref().iter()) {
+        for (x, y) in other
+            .iter()
+            .flatten()
+            .flatten()
+            .zip(self.data.as_ref().iter())
+        {
             if x != y {
                 return false;
             }
@@ -1157,12 +1265,19 @@ where
     }
 }
 
-impl<T, const D0: usize, const D1: usize, const D2: usize, const D3: usize> PartialEq<[[[[T; D0]; D1]; D2]; D3]> for Buffer<'_, Sh4<D3, D2, D1, D0>, T>
+impl<T, const D0: usize, const D1: usize, const D2: usize, const D3: usize>
+    PartialEq<[[[[T; D0]; D1]; D2]; D3]> for Buffer<'_, Sh4<D3, D2, D1, D0>, T>
 where
     T: DType + PartialEq,
 {
     fn eq(&self, other: &[[[[T; D0]; D1]; D2]; D3]) -> bool {
-        for (x, y) in other.iter().flatten().flatten().flatten().zip(self.data.as_ref().iter()) {
+        for (x, y) in other
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .zip(self.data.as_ref().iter())
+        {
             if x != y {
                 return false;
             }
@@ -1171,12 +1286,20 @@ where
     }
 }
 
-impl<T, const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize> PartialEq<[[[[[T; D0]; D1]; D2]; D3]; D4]> for Buffer<'_, Sh5<D4, D3, D2, D1, D0>, T>
+impl<T, const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize>
+    PartialEq<[[[[[T; D0]; D1]; D2]; D3]; D4]> for Buffer<'_, Sh5<D4, D3, D2, D1, D0>, T>
 where
     T: DType + PartialEq,
 {
     fn eq(&self, other: &[[[[[T; D0]; D1]; D2]; D3]; D4]) -> bool {
-        for (x, y) in other.iter().flatten().flatten().flatten().flatten().zip(self.data.as_ref().iter()) {
+        for (x, y) in other
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .flatten()
+            .zip(self.data.as_ref().iter())
+        {
             if x != y {
                 return false;
             }

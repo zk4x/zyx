@@ -1,5 +1,4 @@
 #![no_std]
-
 //#![feature(adt_const_params)]
 //#![feature(generic_const_exprs)]
 
@@ -24,7 +23,6 @@
 #![warn(rustdoc::invalid_html_tags)]
 #![warn(rustdoc::invalid_rust_codeblocks)]
 #![warn(rustdoc::bare_urls)]
-
 // Clippy lints
 #![deny(absolute_paths_not_starting_with_crate)]
 #![deny(elided_lifetimes_in_paths)]
@@ -51,18 +49,17 @@
 #![deny(unused_crate_dependencies)]
 #![deny(unused_extern_crates)]
 #![deny(unused_import_braces)]
+pub mod device;
+mod dtype;
+pub mod nn;
+pub mod ops;
+pub mod optim;
+pub mod prelude;
+pub mod shape;
 #[deny(unused_lifetimes)]
 #[warn(unused_macro_rules)]
 #[warn(unused_tuple_struct_fields)]
-
 pub mod tensor;
-pub mod device;
-pub mod ops;
-pub mod shape;
-pub mod nn;
-pub mod optim;
-pub mod prelude;
-mod dtype;
 
 #[cfg(test)]
 extern crate std;

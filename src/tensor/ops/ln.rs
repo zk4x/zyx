@@ -1,4 +1,7 @@
-use crate::{ops::{Ln, Pow}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use crate::{
+    ops::{Ln, Pow},
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 use core::ops::Mul;
 
 #[derive(Debug, Clone, Copy)]
@@ -62,7 +65,7 @@ where
             grad_fn: LnBackwardT {
                 grad_fn: self.grad_fn,
                 data: self.data,
-            }
+            },
         }
     }
 }

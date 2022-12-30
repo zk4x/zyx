@@ -1,10 +1,10 @@
 //! ## This is an example of linear neural network with sequential model
 
 fn main() {
-    use zyx::prelude::*;
     use zyx::device::cpu;
     use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
     use zyx::optim;
+    use zyx::prelude::*;
     use zyx::shape::Ax1;
 
     let device = cpu::Device::default();
@@ -19,7 +19,12 @@ fn main() {
     );
 
     // MSELoss does not reduce it's output (it's just (y-yp)^2), you need to add some reduce function if you want to apply reduce
-    let mse_loss = (MSELoss, Mean { dims: Ax1::<0>::default() });
+    let mse_loss = (
+        MSELoss,
+        Mean {
+            dims: Ax1::<0>::default(),
+        },
+    );
 
     let optimizer = optim::SGD::new().with_learning_rate(0.03);
 

@@ -1,5 +1,8 @@
-use crate::{ops::{Tanh, Pow}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
-use core::ops::{Sub, Mul};
+use crate::{
+    ops::{Pow, Tanh},
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
+use core::ops::{Mul, Sub};
 
 /// Backward function for calculating gradient of Tanh on Variable
 #[derive(Debug, Clone, Copy)]
@@ -33,7 +36,7 @@ where
             grad_fn: TanhBackwardV {
                 grad: GradientRef::new(&self.grad),
                 res,
-            }
+            },
         }
     }
 }

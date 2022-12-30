@@ -1,4 +1,9 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, device::cpu, dtype::SType, shape::Shape};
+use crate::{
+    device::cpu,
+    dtype::SType,
+    shape::Shape,
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 use core::ops::Mul;
 use duplicate::duplicate_item;
 
@@ -31,7 +36,7 @@ where
             grad_fn: MulBackwardSV {
                 xdata: self,
                 ygrad: GradientRef::new(&rhs.grad),
-            }
+            },
         }
     }
 }
@@ -50,7 +55,7 @@ where
             grad_fn: MulBackwardSV {
                 xdata: self,
                 ygrad: GradientRef::new(&rhs.grad),
-            }
+            },
         }
     }
 }
@@ -134,7 +139,7 @@ where
             grad_fn: MulBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
-            }
+            },
         }
     }
 }
@@ -175,7 +180,7 @@ where
                 xdata: self.data.clone(),
                 ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data.clone(),
-            }
+            },
         }
     }
 }
@@ -216,7 +221,7 @@ where
                 xdata: self.data.clone(),
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
-            }
+            },
         }
     }
 }
@@ -335,7 +340,7 @@ where
                 xdata: self.data,
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
-            }
+            },
         }
     }
 }

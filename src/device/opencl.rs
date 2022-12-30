@@ -1,7 +1,7 @@
 //! This module contains implementation of opencl device and buffer
 
+use crate::{dtype::DType, ops, shape::Shape};
 use core::marker::PhantomData;
-use crate::{dtype::DType, shape::Shape, ops};
 
 use ocl::{self, OclPrm};
 
@@ -17,7 +17,7 @@ use super::BufferFromSlice;
 ";*/
 
 /// OpenCL device
-/// 
+///
 /// This device provides acces to OpenCL devices on your computer.
 /// Buffers created using this device are stored in GPU memory and computations are done using the GPU.
 #[derive(Debug, Clone)]
@@ -32,13 +32,14 @@ impl Default for Device {
     fn default() -> Self {
         let platform = ocl::Platform::list()[0];
         //std::println!("Using platform {}", platform);
-        let context = ocl::Context::builder().platform(platform).devices(ocl::builders::DeviceSpecifier::First).build().expect("Couldn't create context");
+        let context = ocl::Context::builder()
+            .platform(platform)
+            .devices(ocl::builders::DeviceSpecifier::First)
+            .build()
+            .expect("Couldn't create context");
         let device = context.devices()[0];
         //std::println!("{}", context);
-        Self {
-            context,
-            device,
-        }
+        Self { context, device }
     }
 }
 
@@ -51,8 +52,15 @@ where
         Buffer::<'d, Sh, T> {
             device: self,
             data: ocl::Buffer::builder()
-                .queue(ocl::Queue::new(&self.context, self.device, None).expect("Couldn't create queue"))
-                .copy_host_slice(slice).len(Sh::NUMEL).flags(ocl::flags::MEM_READ_ONLY).build().expect("Unable to create buffer"),
+                .queue(
+                    ocl::Queue::new(&self.context, self.device, None)
+                        .expect("Couldn't create queue"),
+                )
+                .copy_host_slice(slice)
+                .len(Sh::NUMEL)
+                .flags(ocl::flags::MEM_READ_ONLY)
+                .build()
+                .expect("Unable to create buffer"),
             shape: PhantomData,
         }
     }
@@ -60,14 +68,14 @@ where
 
 #[test]
 fn opencl_device() {
+    use crate::device::opencl;
     use crate::prelude::*;
     use crate::shape::Sh3;
-    use crate::device::opencl;
 
     let device = opencl::Device::default();
 
     let _x = device.buffer([3, 4, 2]);
-    
+
     let x: opencl::Buffer<'_, Sh3<2, 4, 3>> = device.uniform(0., 4.);
 
     std::println!("{}", x);
@@ -133,7 +141,10 @@ where
     fn to_vec(&self) -> alloc::vec::Vec<T> {
         extern crate alloc;
         let mut res = alloc::vec![T::zero(); Sh::NUMEL];
-        self.data.read(&mut res).enq().expect("Couldn't read buffer");
+        self.data
+            .read(&mut res)
+            .enq()
+            .expect("Couldn't read buffer");
         res
     }
 }

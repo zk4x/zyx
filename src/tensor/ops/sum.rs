@@ -1,6 +1,10 @@
 use core::marker::PhantomData;
 
-use crate::{ops::{Summable, Expandable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Shape, Axes, ReducableBy}};
+use crate::{
+    ops::{Expandable, HasShape, Summable},
+    shape::{Axes, ReducableBy, Shape},
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 
 #[derive(Debug, Clone)]
 pub struct SumBackward<'g, G, Sh, Ax> {
@@ -27,7 +31,8 @@ where
     S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Summable<Dims>>::Output, SumBackward<'g, S, <S as HasShape>::Sh, Dims>>;
+    type Output =
+        Tensor<<S as Summable<Dims>>::Output, SumBackward<'g, S, <S as HasShape>::Sh, Dims>>;
     fn _sum(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone()._sum(),
@@ -35,7 +40,7 @@ where
                 grad: GradientRef::new(&self.grad),
                 shape: PhantomData,
                 axes: PhantomData,
-            }
+            },
         }
     }
 }
@@ -65,7 +70,8 @@ where
     S: Clone + Summable<Dims> + HasShape,
     Dims: Axes,
 {
-    type Output = Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::Sh, Dims>>;
+    type Output =
+        Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::Sh, Dims>>;
     fn _sum(self) -> Self::Output {
         Tensor {
             data: self.data._sum(),
@@ -73,7 +79,7 @@ where
                 grad_fn: self.grad_fn,
                 shape: PhantomData,
                 axes: PhantomData,
-            }
+            },
         }
     }
 }
@@ -81,19 +87,24 @@ where
 #[test]
 fn sum() {
     // TODO finish all variations
+    use crate::device::cpu;
     use crate::prelude::*;
     use crate::shape::Ax2;
-    use crate::device::cpu;
 
     let device = cpu::Device::default();
 
-    let x = device.buffer([[[[2, 3, 1], [3, 4, 5]], [[5, 6, 7], [7, 8, 9]]], [[[3, 8, 9], [4, 5, 3]], [[3, 2, 1], [6, 5, 3]]]]);
+    let x = device.buffer([
+        [[[2, 3, 1], [3, 4, 5]], [[5, 6, 7], [7, 8, 9]]],
+        [[[3, 8, 9], [4, 5, 3]], [[3, 2, 1], [6, 5, 3]]],
+    ]);
     let y = x.sum::<Ax2<0, 2>>().reshape();
     assert_eq!(y, [[12, 20, 18], [21, 21, 20]]);
 
     //panic!();
 
-    let x = device.buffer([[[3], [1], [2]], [[4], [1], [0]], [[4], [3], [5]]]).with_grad();
+    let x = device
+        .buffer([[[3], [1], [2]], [[4], [1], [0]], [[4], [3], [5]]])
+        .with_grad();
     let y = (&x).sum::<Ax2<1, 2>>().reshape();
 
     assert_eq!(y.data().clone(), [6, 5, 12]);

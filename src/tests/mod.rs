@@ -8,7 +8,9 @@ fn cmp_vec(x: &[f32], y: &[f32]) {
     for (a, b) in x.iter().zip(y.iter()) {
         let a = (a * 10f32.powi(PRECISION)).round();
         let b = (b * 10f32.powi(PRECISION)).round();
-        if a.is_nan() && b.is_nan() { continue }
+        if a.is_nan() && b.is_nan() {
+            continue;
+        }
         assert_eq!(a, b);
     }
 }
@@ -18,7 +20,9 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
     for (a, b) in x.iter().zip(y.iter()) {
         let a = (a * 10f64.powi(PRECISION)).round();
         let b = (b * 10f64.powi(PRECISION)).round();
-        if a.is_nan() && b.is_nan() { continue }
+        if a.is_nan() && b.is_nan() {
+            continue;
+        }
         assert_eq!(a, b);
     }
 }
@@ -27,8 +31,8 @@ fn cmp_vec_f64(x: &[f64], y: &[f64]) {
 #[test]
 fn ndarray() {
     extern crate alloc;
-    use alloc::vec;
     use crate::prelude::*;
+    use alloc::vec;
     use ndarray::Array;
 
     let _x = Array::<f32, _>::eye(4).with_grad();
@@ -54,13 +58,13 @@ mod tensor {
     use super::Buffer;
 
     mod init {
-        use crate::shape::{Sh3, Sh4, Sh5};
         use super::Buffer;
+        use crate::shape::{Sh3, Sh4, Sh5};
 
         #[test]
         fn cfrom() {
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
 
             let device = Device::default();
             let _ = device.buffer([[2, 3]]);
@@ -70,39 +74,39 @@ mod tensor {
 
             #[cfg(feature = "ndarray")]
             {
-                use ndarray::{ArrayBase, OwnedRepr, Ix2};
+                use ndarray::{ArrayBase, Ix2, OwnedRepr};
                 let _ = ArrayBase::<OwnedRepr<i32>, Ix2>::cfrom([[2, 3]]);
             }
         }
 
         #[test]
         fn ones() {
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
             let device = Device::default();
             let _: Buffer<'_, Sh4<3, 4, 2, 5>> = device.ones();
         }
 
         #[test]
         fn zeros() {
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
             let device = Device::default();
             let _: Buffer<'_, Sh3<2, 3, 4>> = device.zeros();
         }
 
         #[test]
         fn randn() {
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
             let device = Device::default();
             let _: Buffer<'_, Sh3<3, 1, 4>> = device.randn();
         }
 
         #[test]
         fn uniform() {
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
             let device = Device::default();
             let _: Buffer<'_, Sh5<2, 4, 1, 6, 3>> = device.uniform(0., 1.);
         }
@@ -112,30 +116,39 @@ mod tensor {
         //use crate::prelude::*;
         use super::super::{cmp_vec, cmp_vec_f64, Buffer};
         extern crate alloc;
+        use crate::shape::{Ax3, Sh1, Sh2, Sh3};
         use alloc::vec;
         use alloc::vec::Vec;
-        use crate::shape::{Sh1, Sh2, Sh3, Ax3};
 
         #[test]
         fn convert_from() {
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
             let device = Device::default();
             // TODO finish all variations, including type and device conversions
             use crate::ops::ConvertInto;
             let vec = vec![3f32, 1., 2., 4.];
             let x: Buffer<'_, Sh3<1, 4, 1>> = device.slice(&vec);
             let y = Buffer::<'_, _, f64>::cfrom(x.clone());
-            cmp_vec_f64(&vec.clone().into_iter().map(|x| x as f64).collect::<Vec<f64>>(), &y.to_vec());
-            let y: Buffer::<'_, _, f64> = x.cinto();
-            cmp_vec_f64(&vec.into_iter().map(|x| x as f64).collect::<Vec<f64>>(), &y.to_vec());
+            cmp_vec_f64(
+                &vec.clone()
+                    .into_iter()
+                    .map(|x| x as f64)
+                    .collect::<Vec<f64>>(),
+                &y.to_vec(),
+            );
+            let y: Buffer<'_, _, f64> = x.cinto();
+            cmp_vec_f64(
+                &vec.into_iter().map(|x| x as f64).collect::<Vec<f64>>(),
+                &y.to_vec(),
+            );
         }
 
         #[test]
         fn get_shape() {
             // TODO finish all variations
-            use crate::prelude::*;
             use crate::device::cpu::Device;
+            use crate::prelude::*;
             let device = Device::default();
             let vec = vec![3., 1., 2., 4.];
             let x: Buffer<'_, Sh3<1, 4, 1>> = device.slice(&vec);
@@ -147,111 +160,170 @@ mod tensor {
             // TODO: all tests should look like this, test Buffer, Variable and Tensor,
             // with binary operators, also test all 9 variations like Buffer + Variable and Variable + Buffer
             //use crate::prelude::*;
-            use crate::device::BufferFromSlice;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::{IntoVariable, IntoVec};
             let device = Device::default();
             use crate::ops::ReLU;
             let vec = vec![3., 1., 2., 4.];
             // test Buffer
             let x: Buffer<'_, Sh1<4>> = device.slice(&vec);
             let y = x.clone().relu();
-            cmp_vec(&vec.iter().map(|x| if *x > 0. { *x } else { 0. }).collect::<Vec<f32>>(), &y.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .map(|x| if *x > 0. { *x } else { 0. })
+                    .collect::<Vec<f32>>(),
+                &y.to_vec(),
+            );
             // test Variable
             let x = x.with_grad();
             let y = x.relu();
-            cmp_vec(&vec.iter().map(|x| x.max(0.)).collect::<Vec<f32>>(), &y.data().clone().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.max(0.)).collect::<Vec<f32>>(),
+                &y.data().clone().to_vec(),
+            );
             y.backward();
             cmp_vec(&x.grad().clone().to_vec(), &[1., 1., 1., 1.]);
             // test Tensor
             let y = x.relu().relu();
-            cmp_vec(&vec.iter().map(|x| x.max(0.)).collect::<Vec<f32>>(), &y.data().clone().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.max(0.)).collect::<Vec<f32>>(),
+                &y.data().clone().to_vec(),
+            );
             y.backward();
             cmp_vec(&x.grad().clone().to_vec(), &[2., 2., 2., 2.]);
         }
 
         #[test]
         fn exp() {
-            use crate::ops::Exp;
-            use crate::device::BufferFromSlice;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::Exp;
+            use crate::ops::{IntoVariable, IntoVec};
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             // test Buffer
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y = x.clone().exp();
-            cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &y.to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(),
+                &y.to_vec(),
+            );
             // test Variable
             let x = x.with_grad();
             let y = x.exp();
-            cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &y.data().clone().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(),
+                &y.data().clone().to_vec(),
+            );
             y.backward();
-            cmp_vec(&x.grad().clone().to_vec(), &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>());
+            cmp_vec(
+                &x.grad().clone().to_vec(),
+                &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(),
+            );
             // test Tensor
             //let h = x.register_hook(|grad| println!("Reg grad: {}", grad));
             let y = x.exp().exp();
-            cmp_vec(&vec.iter().map(|x| x.exp().exp()).collect::<Vec<f32>>(), &y.data().clone().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.exp().exp()).collect::<Vec<f32>>(),
+                &y.data().clone().to_vec(),
+            );
             y.backward();
-            cmp_vec(&x.grad().clone().to_vec(), &vec.iter().map(|x| x.exp() + (x.exp() + x).exp()).collect::<Vec<f32>>());
+            cmp_vec(
+                &x.grad().clone().to_vec(),
+                &vec.iter()
+                    .map(|x| x.exp() + (x.exp() + x).exp())
+                    .collect::<Vec<f32>>(),
+            );
         }
 
         #[test]
         fn ln() {
-            use crate::ops::Ln;
-            use crate::device::BufferFromSlice;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::Ln;
+            use crate::ops::{IntoVariable, IntoVec};
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             // test Buffer
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y = x.clone().ln();
-            cmp_vec(&vec.iter().map(|x| x.ln()).collect::<Vec<f32>>(), &y.to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.ln()).collect::<Vec<f32>>(),
+                &y.to_vec(),
+            );
             // test Variable
             let x = x.with_grad();
             let y = x.ln();
-            cmp_vec(&vec.iter().map(|x| x.ln()).collect::<Vec<f32>>(), &y.data().clone().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.ln()).collect::<Vec<f32>>(),
+                &y.data().clone().to_vec(),
+            );
             y.backward();
-            cmp_vec(&x.grad().clone().to_vec(), &vec.iter().map(|x| 1./x).collect::<Vec<f32>>());
+            cmp_vec(
+                &x.grad().clone().to_vec(),
+                &vec.iter().map(|x| 1. / x).collect::<Vec<f32>>(),
+            );
             // test Tensor
             let y = x.ln().ln();
-            cmp_vec(&vec.iter().map(|x| x.ln().ln()).collect::<Vec<f32>>(), &y.data().clone().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.ln().ln()).collect::<Vec<f32>>(),
+                &y.data().clone().to_vec(),
+            );
             y.backward();
-            cmp_vec(&x.grad().clone().to_vec(), &vec.iter().map(|x| 1./x + 1./(x*x.ln())).collect::<Vec<f32>>());
+            cmp_vec(
+                &x.grad().clone().to_vec(),
+                &vec.iter()
+                    .map(|x| 1. / x + 1. / (x * x.ln()))
+                    .collect::<Vec<f32>>(),
+            );
         }
 
         #[test]
         fn tanh() {
             // TODO finish all variations
-            use crate::ops::Tanh;
-            use crate::device::BufferFromSlice;
-            use crate::tensor::Variable;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::Tanh;
+            use crate::ops::{IntoVariable, IntoVec};
+            use crate::tensor::Variable;
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y = x.tanh();
-            assert_eq!(vec.iter().map(|x| x.tanh()).collect::<Vec<f32>>(), y.data().clone().to_vec());
+            assert_eq!(
+                vec.iter().map(|x| x.tanh()).collect::<Vec<f32>>(),
+                y.data().clone().to_vec()
+            );
             y.backward();
-            assert_eq!(x.grad().clone().to_vec(), vec.iter().map(|x| 1. - x.tanh().powi(2)).collect::<Vec<f32>>());
+            assert_eq!(
+                x.grad().clone().to_vec(),
+                vec.iter()
+                    .map(|x| 1. - x.tanh().powi(2))
+                    .collect::<Vec<f32>>()
+            );
         }
 
         #[test]
         fn neg() {
             // TODO finish all variations
-            use crate::device::BufferFromSlice;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::{IntoVariable, IntoVec};
             use crate::tensor::Variable;
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y = -&x;
-            assert_eq!(vec.iter().map(|x| -x).collect::<Vec<f32>>(), y.data().to_vec());
+            assert_eq!(
+                vec.iter().map(|x| -x).collect::<Vec<f32>>(),
+                y.data().to_vec()
+            );
             y.backward();
-            assert_eq!(x.grad().to_vec(), vec.iter().map(|_| -1.).collect::<Vec<f32>>());
+            assert_eq!(
+                x.grad().to_vec(),
+                vec.iter().map(|_| -1.).collect::<Vec<f32>>()
+            );
         }
 
         #[test]
@@ -279,8 +351,8 @@ mod tensor {
         #[test]
         fn reshape() {
             // TODO finish all variations
+            use crate::device::cpu::{Buffer, Device};
             use crate::prelude::*;
-            use crate::device::cpu::{Device, Buffer};
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x: Buffer<'_, Sh3<1, 9, 1>> = device.slice(&vec);
@@ -291,9 +363,9 @@ mod tensor {
         #[test]
         fn expand() {
             // TODO finish all variations
+            use crate::device::cpu::Device;
             use crate::prelude::*;
             use crate::shape::Ax1;
-            use crate::device::cpu::Device;
             let device = Device::default();
             let vec = vec![3., 1., 2., 4., 1., 0., 4., 3., 5.];
             let x: Buffer<'_, Sh3<1, 1, 9>> = device.slice(&vec);
@@ -305,11 +377,11 @@ mod tensor {
         #[test]
         fn permute() {
             // TODO finish all variations
-            use crate::ops::Permute;
-            use crate::device::{BufferFromSlice, ShapedBufferInit};
-            use crate::ops::{IntoVec, IntoVariable, HasShape};
-            use crate::tensor::Variable;
             use crate::device::cpu::Device;
+            use crate::device::{BufferFromSlice, ShapedBufferInit};
+            use crate::ops::Permute;
+            use crate::ops::{HasShape, IntoVariable, IntoVec};
+            use crate::tensor::Variable;
             let device = Device::default();
             //let x = Buffer::cfrom([[2, 3, 1], [3, 4, 5]]);
             //let _ = x.permute::<Ax2<-1, -2>>();
@@ -342,15 +414,18 @@ mod tensor {
             let y = x.transpose();
             assert_eq!(vec, y.to_vec());
             y.backward();
-            assert_eq!(x.grad().to_vec(), vec.iter().map(|_| 1.).collect::<Vec<f32>>());
+            assert_eq!(
+                x.grad().to_vec(),
+                vec.iter().map(|_| 1.).collect::<Vec<f32>>()
+            );
         }
 
         #[test]
         fn add() {
-            use crate::ops::Exp;
-            use crate::device::BufferFromSlice;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::Exp;
+            use crate::ops::{IntoVariable, IntoVec};
             use crate::tensor::Variable;
 
             let device = Device::default();
@@ -362,77 +437,167 @@ mod tensor {
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y: Buffer<'_, Sh1<9>> = device.slice(&vec2);
             let z = x + y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| *x + *y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
 
             // test Variable
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = x + &y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| *x + *y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
+            cmp_vec(
+                &vec2.iter().map(|_| 1.).collect::<Vec<f32>>(),
+                &y.grad().to_vec(),
+            );
 
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y: Buffer<'_, Sh1<9>> = device.slice(&vec2);
             let z = &x + y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| *x + *y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec.iter().map(|_| 1.).collect::<Vec<f32>>(), &x.grad().to_vec());
+            cmp_vec(
+                &vec.iter().map(|_| 1.).collect::<Vec<f32>>(),
+                &x.grad().to_vec(),
+            );
 
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = &x + &y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x + *y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| *x + *y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec.iter().map(|_| 1.).collect::<Vec<f32>>(), &x.grad().to_vec());
-            cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
+            cmp_vec(
+                &vec.iter().map(|_| 1.).collect::<Vec<f32>>(),
+                &x.grad().to_vec(),
+            );
+            cmp_vec(
+                &vec2.iter().map(|_| 1.).collect::<Vec<f32>>(),
+                &y.grad().to_vec(),
+            );
 
             // test Tensor
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = y.exp() + x.exp();
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| x.exp() + y.exp())
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().to_vec());
+            cmp_vec(
+                &vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(),
+                &y.grad().to_vec(),
+            );
 
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y: Buffer<'_, Sh1<9>> = device.slice(&vec2);
             let z = x.exp() + y.exp();
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| x.exp() + y.exp())
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &x.grad().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(),
+                &x.grad().to_vec(),
+            );
 
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = &x + y.exp();
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| x + y.exp())
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec.iter().map(|_| 1.).collect::<Vec<f32>>(), &x.grad().to_vec());
-            cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().to_vec());
+            cmp_vec(
+                &vec.iter().map(|_| 1.).collect::<Vec<f32>>(),
+                &x.grad().to_vec(),
+            );
+            cmp_vec(
+                &vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(),
+                &y.grad().to_vec(),
+            );
 
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = x.exp() + &y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| x.exp() + y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &x.grad().to_vec());
-            cmp_vec(&vec2.iter().map(|_| 1.).collect::<Vec<f32>>(), &y.grad().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(),
+                &x.grad().to_vec(),
+            );
+            cmp_vec(
+                &vec2.iter().map(|_| 1.).collect::<Vec<f32>>(),
+                &y.grad().to_vec(),
+            );
 
             let x: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec).with_grad();
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = x.exp() + y.exp();
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| x.exp() + y.exp()).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| x.exp() + y.exp())
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
-            cmp_vec(&vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(), &x.grad().to_vec());
-            cmp_vec(&vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(), &y.grad().to_vec());
+            cmp_vec(
+                &vec.iter().map(|x| x.exp()).collect::<Vec<f32>>(),
+                &x.grad().to_vec(),
+            );
+            cmp_vec(
+                &vec2.iter().map(|y| y.exp()).collect::<Vec<f32>>(),
+                &y.grad().to_vec(),
+            );
         }
 
         #[test]
         fn add_scalar() {
             // TODO
-            use crate::ops::ConvertInto;
-            use crate::device::ShapedBufferInit;
             use crate::device::cpu::Device;
+            use crate::device::ShapedBufferInit;
+            use crate::ops::ConvertInto;
             let device = Device::default();
 
             let x = device.buffer([[2., 3., 1.], [3., 4., 5.]]);
@@ -462,9 +627,9 @@ mod tensor {
 
         #[test]
         fn mul() {
-            use crate::device::BufferFromSlice;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::BufferFromSlice;
+            use crate::ops::{IntoVariable, IntoVec};
             use crate::tensor::Variable;
             let device = Device::default();
 
@@ -475,13 +640,25 @@ mod tensor {
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y: Buffer<'_, Sh1<9>> = device.slice(&vec2);
             let z = x * y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x * *y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| *x * *y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
 
             // test Variable
             let x: Buffer<'_, Sh1<9>> = device.slice(&vec);
             let y: Variable<Buffer<'_, Sh1<9>>> = device.slice(&vec2).with_grad();
             let z = x * &y;
-            cmp_vec(&vec.iter().zip(vec2.iter()).map(|(x, y)| *x * *y).collect::<Vec<f32>>(), &z.to_vec());
+            cmp_vec(
+                &vec.iter()
+                    .zip(vec2.iter())
+                    .map(|(x, y)| *x * *y)
+                    .collect::<Vec<f32>>(),
+                &z.to_vec(),
+            );
             z.backward();
             //println!("{}", y);
             cmp_vec(&vec, &y.grad().to_vec());
@@ -554,8 +731,8 @@ mod tensor {
         #[test]
         fn pow_scalar() {
             // TODO
-            use crate::device::ShapedBufferInit;
             use crate::device::cpu::Device;
+            use crate::device::ShapedBufferInit;
             let device = Device::default();
 
             use crate::ops::Pow;
@@ -570,14 +747,14 @@ mod tensor {
         #[test]
         fn matmul() {
             // TODO finish all variations
-            use crate::device::ShapedBufferInit;
-            use crate::ops::{IntoVec, IntoVariable};
             use crate::device::cpu::Device;
+            use crate::device::ShapedBufferInit;
+            use crate::ops::{IntoVariable, IntoVec};
 
             use crate::ops::MatMul;
 
             let device = Device::default();
-            
+
             let x = device.buffer([[2f32, 3., 4.]]);
             let y = device.buffer([[2., 3.], [3., 4.], [5., 3.]]);
             let z = x.clone().matmul(y.clone());
@@ -623,8 +800,8 @@ mod tensor {
 mod nn {
     #[test]
     fn parameters() {
-        use crate::prelude::*;
         use crate::device::cpu;
+        use crate::prelude::*;
 
         let dev = cpu::Device::default();
 
@@ -638,9 +815,9 @@ mod nn {
 
     #[test]
     fn linear() {
-        use crate::prelude::*;
         use crate::device::cpu::Device;
         use crate::nn;
+        use crate::prelude::*;
 
         let device = Device::default();
 

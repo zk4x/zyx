@@ -1,5 +1,10 @@
-use crate::{tensor::{Tensor, Variable, Backward, GradientRef, GradAcc}, device::cpu, dtype::SType, shape::Shape};
-use core::ops::{Sub, Neg};
+use crate::{
+    device::cpu,
+    dtype::SType,
+    shape::Shape,
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
+use core::ops::{Neg, Sub};
 use duplicate::duplicate_item;
 
 #[derive(Debug, Clone, Copy)]

@@ -1,4 +1,8 @@
-use crate::{ops::{MatMul, Transpose}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType};
+use crate::{
+    dtype::SType,
+    ops::{MatMul, Transpose},
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 
 /// Backward function for calculating gradients of matmultiplying SType and Variable
 #[derive(Debug, Clone, Copy)]
@@ -14,7 +18,8 @@ where
     YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));
+        self.ygrad
+            .accumulate(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -30,7 +35,7 @@ where
             grad_fn: MatMulBackwardSV {
                 xdata: self,
                 ygrad: GradientRef::new(&rhs.grad),
-            }
+            },
         }
     }
 }
@@ -49,7 +54,8 @@ where
     YF: Backward<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad));
+        self.ygrad_fn
+            .backward(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -65,7 +71,7 @@ where
             grad_fn: MatMulBackwardST {
                 xdata: self,
                 ygrad_fn: rhs.grad_fn,
-            }
+            },
         }
     }
 }
@@ -84,7 +90,8 @@ where
     XG: GradAcc<<S as MatMul<<YS as Transpose>::Output>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad.accumulate(res_grad.matmul(self.ydata.transpose()));
+        self.xgrad
+            .accumulate(res_grad.matmul(self.ydata.transpose()));
     }
 }
 
@@ -100,7 +107,7 @@ where
             grad_fn: MatMulBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
                 ydata: rhs,
-            }
+            },
         }
     }
 }
@@ -126,8 +133,10 @@ where
     YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad.clone()));
-        self.xgrad.accumulate(res_grad.matmul(self.ydata.transpose()));
+        self.ygrad
+            .accumulate(self.xdata.transpose().matmul(res_grad.clone()));
+        self.xgrad
+            .accumulate(res_grad.matmul(self.ydata.transpose()));
     }
 }
 
@@ -145,7 +154,7 @@ where
                 xdata: self.data.clone(),
                 ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data.clone(),
-            }
+            },
         }
     }
 }
@@ -170,8 +179,10 @@ where
     YF: Backward<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad.clone()));
-        self.xgrad.accumulate(res_grad.transpose().matmul(self.ydata));
+        self.ygrad_fn
+            .backward(self.xdata.transpose().matmul(res_grad.clone()));
+        self.xgrad
+            .accumulate(res_grad.transpose().matmul(self.ydata));
     }
 }
 
@@ -189,7 +200,7 @@ where
                 xdata: self.data.clone(),
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
-            }
+            },
         }
     }
 }
@@ -208,7 +219,8 @@ where
     XF: Backward<<<YS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad_fn.backward(self.ydata.transpose().matmul(res_grad));
+        self.xgrad_fn
+            .backward(self.ydata.transpose().matmul(res_grad));
     }
 }
 
@@ -224,7 +236,7 @@ where
             grad_fn: MatMulBackwardTS {
                 xgrad_fn: self.grad_fn,
                 ydata: rhs,
-            }
+            },
         }
     }
 }
@@ -249,8 +261,10 @@ where
     YG: GradAcc<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
-        self.ygrad.accumulate(self.xdata.transpose().matmul(res_grad));
+        self.xgrad_fn
+            .backward(res_grad.clone().matmul(self.ydata.transpose()));
+        self.ygrad
+            .accumulate(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -268,7 +282,7 @@ where
                 xdata: self.data,
                 ygrad: GradientRef::new(&rhs.grad),
                 ydata: rhs.data.clone(),
-            }
+            },
         }
     }
 }
@@ -292,8 +306,10 @@ where
     YF: Backward<<<XS as Transpose>::Output as MatMul<S>>::Output>,
 {
     fn backward(self, res_grad: S) {
-        self.xgrad_fn.backward(res_grad.clone().matmul(self.ydata.transpose()));
-        self.ygrad_fn.backward(self.xdata.transpose().matmul(res_grad));
+        self.xgrad_fn
+            .backward(res_grad.clone().matmul(self.ydata.transpose()));
+        self.ygrad_fn
+            .backward(self.xdata.transpose().matmul(res_grad));
     }
 }
 
@@ -311,7 +327,7 @@ where
                 xdata: self.data,
                 ygrad_fn: rhs.grad_fn,
                 ydata: rhs.data,
-            }
+            },
         }
     }
 }

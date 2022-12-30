@@ -1,11 +1,24 @@
 //! Axes module
 
-use core::{fmt::{Debug, Display}, ops::{Index, IndexMut}};
+use core::{
+    fmt::{Debug, Display},
+    ops::{Index, IndexMut},
+};
 
 use super::PermutableBy;
 
 /// Axes trait
-pub trait Axes: Default + Copy + Clone + PartialEq + Eq + Debug + Display + Index<usize, Output = i32> + Index<i32, Output = i32> {
+pub trait Axes:
+    Default
+    + Copy
+    + Clone
+    + PartialEq
+    + Eq
+    + Debug
+    + Display
+    + Index<usize, Output = i32>
+    + Index<i32, Output = i32>
+{
     /// Rank
     const RANK: usize;
     /// Output type when calling array and strides function
@@ -37,14 +50,20 @@ impl Display for Ax0 {
 impl Index<usize> for Ax0 {
     type Output = i32;
     fn index(&self, index: usize) -> &Self::Output {
-        panic!("Index out of range, index is {}, but the length is 0", index)
+        panic!(
+            "Index out of range, index is {}, but the length is 0",
+            index
+        )
     }
 }
 
 impl Index<i32> for Ax0 {
     type Output = i32;
     fn index(&self, index: i32) -> &Self::Output {
-        panic!("Index out of range, index is {}, but the length is 0", index)
+        panic!(
+            "Index out of range, index is {}, but the length is 0",
+            index
+        )
     }
 }
 
@@ -72,7 +91,10 @@ impl<const A0: i32> Index<usize> for Ax1<A0> {
     fn index(&self, index: usize) -> &Self::Output {
         match index {
             0 => &A0,
-            _ => panic!("Index out of range, index is {}, but the length is 1", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 1",
+                index
+            ),
         }
     }
 }
@@ -83,7 +105,10 @@ impl<const A0: i32> Index<i32> for Ax1<A0> {
         match index {
             0 => &A0,
             -1 => &A0,
-            _ => panic!("Index out of range, index is {}, but the length is 1", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 1",
+                index
+            ),
         }
     }
 }
@@ -112,7 +137,10 @@ impl<const A0: i32, const A1: i32> Index<usize> for Ax2<A0, A1> {
         match index {
             0 => &A0,
             1 => &A1,
-            _ => panic!("Index out of range, index is {}, but the length is 2", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 2",
+                index
+            ),
         }
     }
 }
@@ -125,13 +153,20 @@ impl<const A0: i32, const A1: i32> Index<i32> for Ax2<A0, A1> {
             1 => &A1,
             -1 => &A1,
             -2 => &A0,
-            _ => panic!("Index out of range, index is {}, but the length is 2", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 2",
+                index
+            ),
         }
     }
 }
 
-impl<const A0: i32, const A1: i32> PermutableBy<Ax2<-1, -2>> for Ax2<A0, A1> { type Output = Ax2<A1, A0>; }
-impl<const A0: i32, const A1: i32> PermutableBy<Ax2<1, 0>>   for Ax2<A0, A1> { type Output = Ax2<A1, A0>; }
+impl<const A0: i32, const A1: i32> PermutableBy<Ax2<-1, -2>> for Ax2<A0, A1> {
+    type Output = Ax2<A1, A0>;
+}
+impl<const A0: i32, const A1: i32> PermutableBy<Ax2<1, 0>> for Ax2<A0, A1> {
+    type Output = Ax2<A1, A0>;
+}
 
 /// Three axes
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
@@ -160,7 +195,10 @@ impl<const A0: i32, const A1: i32, const A2: i32> Index<usize> for Ax3<A0, A1, A
             0 => &A0,
             1 => &A1,
             2 => &A2,
-            _ => panic!("Index out of range, index is {}, but the length is 3", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 3",
+                index
+            ),
         }
     }
 }
@@ -175,7 +213,10 @@ impl<const A0: i32, const A1: i32, const A2: i32> Index<i32> for Ax3<A0, A1, A2>
             -1 => &A2,
             -2 => &A1,
             -3 => &A0,
-            _ => panic!("Index out of range, index is {}, but the length is 3", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 3",
+                index
+            ),
         }
     }
 }
@@ -198,7 +239,9 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Display for Ax4
     }
 }
 
-impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<usize> for Ax4<A0, A1, A2, A3> {
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<usize>
+    for Ax4<A0, A1, A2, A3>
+{
     type Output = i32;
     fn index(&self, index: usize) -> &Self::Output {
         match index {
@@ -206,12 +249,17 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<usize> fo
             1 => &A1,
             2 => &A2,
             3 => &A3,
-            _ => panic!("Index out of range, index is {}, but the length is 4", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 4",
+                index
+            ),
         }
     }
 }
 
-impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<i32> for Ax4<A0, A1, A2, A3> {
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<i32>
+    for Ax4<A0, A1, A2, A3>
+{
     type Output = i32;
     fn index(&self, index: i32) -> &Self::Output {
         match index {
@@ -223,7 +271,10 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<i32> for 
             -2 => &A2,
             -3 => &A1,
             -4 => &A0,
-            _ => panic!("Index out of range, index is {}, but the length is 4", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 4",
+                index
+            ),
         }
     }
 }
@@ -232,7 +283,9 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<i32> for 
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax5<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> {}
 
-impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Axes for Ax5<A0, A1, A2, A3, A4> {
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Axes
+    for Ax5<A0, A1, A2, A3, A4>
+{
     const RANK: usize = 5;
     type AsArray = [i32; 5];
     fn array() -> Self::AsArray {
@@ -240,13 +293,17 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> 
     }
 }
 
-impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Display for Ax5<A0, A1, A2, A3, A4> {
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Display
+    for Ax5<A0, A1, A2, A3, A4>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("({}, {}, {}, {}, {})", A0, A1, A2, A3, A4))
     }
 }
 
-impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Index<usize> for Ax5<A0, A1, A2, A3, A4> {
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Index<usize>
+    for Ax5<A0, A1, A2, A3, A4>
+{
     type Output = i32;
     fn index(&self, index: usize) -> &Self::Output {
         match index {
@@ -255,12 +312,17 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> 
             2 => &A2,
             3 => &A3,
             4 => &A4,
-            _ => panic!("Index out of range, index is {}, but the length is 5", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 5",
+                index
+            ),
         }
     }
 }
 
-impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Index<i32> for Ax5<A0, A1, A2, A3, A4> {
+impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> Index<i32>
+    for Ax5<A0, A1, A2, A3, A4>
+{
     type Output = i32;
     fn index(&self, index: i32) -> &Self::Output {
         match index {
@@ -274,7 +336,10 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> 
             -3 => &A2,
             -4 => &A1,
             -5 => &A0,
-            _ => panic!("Index out of range, index is {}, but the length is 5", index),
+            _ => panic!(
+                "Index out of range, index is {}, but the length is 5",
+                index
+            ),
         }
     }
 }

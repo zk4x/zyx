@@ -1,6 +1,10 @@
 use core::marker::PhantomData;
 
-use crate::{ops::Permutable, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::{Axes, PermutableBy}};
+use crate::{
+    ops::Permutable,
+    shape::{Axes, PermutableBy},
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 
 #[derive(Debug, Clone)]
 pub struct PermuteBackwardV<'g, G, Dims> {
@@ -32,7 +36,7 @@ where
             grad_fn: PermuteBackwardV {
                 grad: GradientRef::new(&self.grad),
                 dims: PhantomData,
-            }
+            },
         }
     }
 }
@@ -67,7 +71,7 @@ where
             grad_fn: PermuteBackwardT {
                 grad_fn: self.grad_fn,
                 dims: PhantomData,
-            }
+            },
         }
     }
 }

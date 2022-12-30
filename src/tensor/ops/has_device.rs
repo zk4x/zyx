@@ -1,4 +1,7 @@
-use crate::{ops::HasDevice, tensor::{Variable, Tensor}};
+use crate::{
+    ops::HasDevice,
+    tensor::{Tensor, Variable},
+};
 
 impl<S> HasDevice for Variable<S>
 where

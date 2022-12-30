@@ -8,10 +8,18 @@
 mod module;
 pub mod parameters;
 
-pub use module::{Module, ApplyModule};
+pub use module::{ApplyModule, Module};
 
-use crate::{ops::{self, HasShape, Pow, Zero, One, MatMul, HasDType, IntoVariable, ZerosLike}, tensor::Variable, device::{BufferInit, cpu::Buffer}, shape::{Shape, Sh2, Axes}};
-use core::{ops::{Neg, Add, Sub, Div}, marker::PhantomData};
+use crate::{
+    device::{cpu::Buffer, BufferInit},
+    ops::{self, HasDType, HasShape, IntoVariable, MatMul, One, Pow, Zero, ZerosLike},
+    shape::{Axes, Sh2, Shape},
+    tensor::Variable,
+};
+use core::{
+    marker::PhantomData,
+    ops::{Add, Div, Neg, Sub},
+};
 
 /// ReLU operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -22,7 +30,9 @@ where
     Input: ops::ReLU,
 {
     type Output = Input::Output;
-    fn forward(&self, x: Input) -> Self::Output { x.relu() }
+    fn forward(&self, x: Input) -> Self::Output {
+        x.relu()
+    }
 }
 
 impl<'p> HasParameters<'p> for ReLU {
@@ -39,7 +49,9 @@ where
     Input: ops::Exp,
 {
     type Output = Input::Output;
-    fn forward(&self, x: Input) -> Self::Output { x.exp() }
+    fn forward(&self, x: Input) -> Self::Output {
+        x.exp()
+    }
 }
 
 impl<'p> HasParameters<'p> for Exp {
@@ -56,7 +68,9 @@ where
     Input: ops::Ln,
 {
     type Output = Input::Output;
-    fn forward(&self, x: Input) -> Self::Output { x.ln() }
+    fn forward(&self, x: Input) -> Self::Output {
+        x.ln()
+    }
 }
 
 impl<'p> HasParameters<'p> for Ln {
@@ -207,7 +221,9 @@ where
     Dims: Axes,
 {
     type Output = (Input::Values, Input::Indices);
-    fn forward(&self, x: Input) -> Self::Output { x._max() }
+    fn forward(&self, x: Input) -> Self::Output {
+        x._max()
+    }
 }
 
 impl<'p, Dims> HasParameters<'p> for Max<Dims>
@@ -234,7 +250,9 @@ where
     Dims: Axes,
 {
     type Output = (Input::Values, Input::Indices);
-    fn forward(&self, x: Input) -> Self::Output { x._min() }
+    fn forward(&self, x: Input) -> Self::Output {
+        x._min()
+    }
 }
 
 impl<'p, Dims> HasParameters<'p> for Min<Dims>
@@ -252,7 +270,7 @@ where
     Dims: Axes,
 {
     /// [Dimensions](crate::shape::Shape) for mean
-    pub dims: Dims
+    pub dims: Dims,
 }
 
 impl<Input, Dims> Module<'_, Input> for Mean<Dims>
@@ -263,7 +281,7 @@ where
 {
     type Output = <<Input as ops::Summable<Dims>>::Output as Div<i32>>::Output;
     fn forward(&self, x: Input) -> Self::Output {
-        x._sum()/(Input::Sh::NUMEL as i32)
+        x._sum() / (Input::Sh::NUMEL as i32)
     }
 }
 
@@ -312,8 +330,13 @@ use crate::device::BufferFromSlice;
 use self::parameters::HasParameters;
 /// Linear layer
 #[derive(Debug)]
-pub struct Linear<'d, const IN_FEATURES: usize, const OUT_FEATURES: usize, W = Buffer<'d, Sh2<IN_FEATURES, OUT_FEATURES>>, B = Buffer<'d, Sh2<1, OUT_FEATURES>>>
-where
+pub struct Linear<
+    'd,
+    const IN_FEATURES: usize,
+    const OUT_FEATURES: usize,
+    W = Buffer<'d, Sh2<IN_FEATURES, OUT_FEATURES>>,
+    B = Buffer<'d, Sh2<1, OUT_FEATURES>>,
+> where
     W: HasShape + HasDType,
     B: HasShape + HasDType,
 {
@@ -322,7 +345,8 @@ where
     b: Variable<B>,
 }
 
-impl<'d, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Linear<'d, IN_FEATURES, OUT_FEATURES, W, B>
+impl<'d, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize>
+    Linear<'d, IN_FEATURES, OUT_FEATURES, W, B>
 where
     W: HasShape + HasDType,
     W::T: Zero + One,
@@ -347,7 +371,8 @@ where
     }
 }
 
-impl<'p, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input> for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
+impl<'p, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Module<'p, Input>
+    for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
 where
     W: 'p + HasShape + HasDType,
     W::T: Zero + One,
@@ -362,13 +387,16 @@ where
     }
 }
 
-impl<'p, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> HasParameters<'p> for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
+impl<'p, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> HasParameters<'p>
+    for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
 where
     W: 'p + HasShape + HasDType + ZerosLike,
     B: 'p + HasShape + HasDType + ZerosLike,
 {
     type Params = (&'p mut Variable<W>, &'p mut Variable<B>);
-    fn parameters(&'p mut self) -> Self::Params { (&mut self.w, &mut self.b) }
+    fn parameters(&'p mut self) -> Self::Params {
+        (&mut self.w, &mut self.b)
+    }
 }
 
 // RNNCell

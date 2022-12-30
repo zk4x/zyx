@@ -8,17 +8,18 @@
 //
 // Basically all functions, layers and models should have [module.forward(input)](Module::forward()) function and this module also provides [input.apply(module)](Apply::apply()) function.
 // We think it is usefull for the user to have access to both standard [module.forward(input)] type of API and API with monads.
-// 
+//
 
 // TODO: use macros to make this DRY
 
 /// # Module trait
-/// 
+///
 /// Module can be implemented for anything that can have forward function.
 /// Forward simply takes any input, applies some operation and returns output.
 /// Every module also has some or zero [parameters](super::parameters::Parameters) that can be optimized
 /// by [optimizers](crate::optim).
-pub trait Module<'p, Input> { // TODO 'p is probably not needed anymore, because Device has it's lifetime parameter, although is it needed for deviceless datatypes?
+pub trait Module<'p, Input> {
+    // TODO 'p is probably not needed anymore, because Device has it's lifetime parameter, although is it needed for deviceless datatypes?
     /// Output of forward operation on [Module]
     type Output;
     /// Forward operation on [Module]
@@ -35,7 +36,7 @@ pub trait ApplyModule<'p, Operation> {
 
 impl<'p, Input, Operation> ApplyModule<'p, Operation> for Input
 where
-    Operation: Module<'p, Input>
+    Operation: Module<'p, Input>,
 {
     type Output = <Operation as Module<'p, Input>>::Output;
     fn apply(self, x: &'p Operation) -> Self::Output {
@@ -63,7 +64,8 @@ where
     M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
     M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
 {
-    type Output = <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output;
+    type Output =
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output;
     fn forward(&'p self, x: Input) -> Self::Output {
         self.2.forward(self.1.forward(self.0.forward(x)))
     }
@@ -74,11 +76,18 @@ where
     M0: Module<'p, Input>,
     M1: Module<'p, <M0 as Module<'p, Input>>::Output>,
     M2: Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>,
-    M3: Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>,
+    M3: Module<
+        'p,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output,
+    >,
 {
-    type Output = <M3 as Module<'p, <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output>>::Output;
+    type Output = <M3 as Module<
+        'p,
+        <M2 as Module<'p, <M1 as Module<'p, <M0 as Module<'p, Input>>::Output>>::Output>>::Output,
+    >>::Output;
     fn forward(&'p self, x: Input) -> Self::Output {
-        self.3.forward(self.2.forward(self.1.forward(self.0.forward(x))))
+        self.3
+            .forward(self.2.forward(self.1.forward(self.0.forward(x))))
     }
 }
 

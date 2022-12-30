@@ -1,4 +1,4 @@
-use crate::tensor::{Variable, Tensor, Backward, GradientRef, GradAcc};
+use crate::tensor::{Backward, GradAcc, GradientRef, Tensor, Variable};
 use core::ops::Neg;
 
 #[derive(Debug, Clone, Copy)]
@@ -26,7 +26,7 @@ where
             data: self.data.clone().neg(),
             grad_fn: NegBackwardV {
                 grad: GradientRef::new(&self.grad),
-            }
+            },
         }
     }
 }

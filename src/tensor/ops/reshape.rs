@@ -1,6 +1,10 @@
 use core::marker::PhantomData;
 
-use crate::{ops::{Reshapable, HasShape}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, shape::Shape};
+use crate::{
+    ops::{HasShape, Reshapable},
+    shape::Shape,
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 
 #[derive(Debug, Clone)]
 pub struct ReshapeBackwardV<'g, G> {
@@ -28,7 +32,7 @@ where
             data: (*self.data()).clone()._reshape(),
             grad_fn: ReshapeBackwardV {
                 grad: GradientRef::new(&self.grad),
-            }
+            },
         }
     }
 }
@@ -62,7 +66,7 @@ where
             grad_fn: ReshapeBackwardT {
                 grad_fn: self.grad_fn,
                 shape: PhantomData,
-            }
+            },
         }
     }
 }

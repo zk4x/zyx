@@ -1,9 +1,9 @@
 //! # Tensor operations
-//! 
+//!
 //! Traits for different operations you can to with tensors.
 //!
 //! ## Operations are separated into categories
-//! 
+//!
 //! ```txt
 //! Initialization ops:   ConvertFrom, Zeros, Ones
 //! Getters:              IntoVariable, IntoVec, HasShape
@@ -13,22 +13,22 @@
 //! Binary ops:           Pow
 //! Processing ops:       MatMul, Conv
 //! ```
-//! 
+//!
 
 mod convert_from;
-mod zero;
-mod one;
-mod relu;
 mod drelu;
 mod exp;
-mod ln;
-mod tanh;
-mod pow;
-mod has_min;
 mod has_max;
+mod has_min;
+mod ln;
+mod one;
+mod pow;
+mod relu;
+mod tanh;
+mod zero;
 mod zeros_like;
 
-use crate::shape::{Shape, Axes, ReducableBy};
+use crate::shape::{Axes, ReducableBy, Shape};
 
 /// # HasDevice
 pub trait HasDevice {
@@ -45,9 +45,9 @@ pub trait HasDType {
 }
 
 /// # HasShape
-/// 
+///
 /// Stores the shape of the tensor.
-/// 
+///
 /// ## Example
 /// ```
 /// use zyx::prelude::*;
@@ -67,6 +67,8 @@ pub trait HasShape {
 }
 
 /// # HasMax
+/// 
+/// This trait is implemeted for [DType's](crate::dtype::DType) that have global maximum
 pub trait HasMax {
     /// Global maximum of tensor
     fn max() -> Self;
@@ -87,7 +89,7 @@ pub trait ZerosLike {
 }
 
 /// ## Convert between devices and types
-/// 
+///
 /// Create new tensor on given device with given type
 // Needed because we can't use core::convert::From
 // because it's foreign trait and it doesn't work
@@ -98,7 +100,7 @@ pub trait ConvertFrom<T> {
 }
 
 /// ## Convert into given type
-/// 
+///
 /// This trait is automatically implemented for everything that implements ConvertFrom
 pub trait ConvertInto<T> {
     /// Converts input into output type
@@ -115,7 +117,7 @@ where
 }
 
 /// ## Zero operation
-/// 
+///
 /// Create new tensor initialized with zeros.
 /// ### Example
 /// ```
@@ -142,7 +144,7 @@ pub trait Zero {
 }
 
 /// ## One operation
-/// 
+///
 /// Create new tensor initialized with ones.
 /// ### Example
 /// ```
@@ -151,7 +153,7 @@ pub trait Zero {
 /// use zyx::shape::Sh3;
 ///
 /// let mut device = Device::default();
-/// 
+///
 /// let x: Buffer<'_, Sh3<2, 3, 1>, i32> = device.ones();
 /// let y = x.shape();
 /// ```
@@ -171,10 +173,10 @@ pub trait One {
 
 // Unary ops
 /// ## ReLU operation
-/// 
+///
 /// Applies the rectified linear unit function
 /// DReLU(x)=max⁡(0,x)
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::ops::ReLU;
@@ -190,10 +192,10 @@ pub trait ReLU {
 }
 
 /// ## DReLU operation
-/// 
+///
 /// Applies the derivative of the rectified linear unit function
 /// DReLU(x) = if self < 0. { 0. } else { 1. }
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::ops::DReLU;
@@ -209,10 +211,10 @@ pub trait DReLU {
 }
 
 /// ## Exp operation
-/// 
+///
 /// Returns the exponential of the input
 /// Exp(x) = x.exp()
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::ops::Exp;
@@ -227,10 +229,10 @@ pub trait Exp {
 }
 
 /// ## Ln operation
-/// 
+///
 /// Returns the natural logarithm of the input
 /// Ln(x) = x.ln()
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::ops::Ln;
@@ -245,10 +247,10 @@ pub trait Ln {
 }
 
 /// ## Tanh operation
-/// 
+///
 /// Returns the hyperbolic tangent of the input
 /// Tanh(x) = x.tanh()
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::ops::Tanh;
@@ -263,20 +265,20 @@ pub trait Tanh {
 }
 
 /// ## Summation operation
-/// 
+///
 /// This operation reduces input across one or multiple dimensions.
 /// All reduce operations (sum, max) take given dimensions and set them to one, applying operation accordingly.
 /// The result's dimensions are not squeezed.
-/// 
+///
 /// ### Example
-/// 
+///
 /// ```
 /// use zyx::prelude::*;
 /// use zyx::device::cpu;
 /// use zyx::shape::Ax1;
 ///
 /// let mut device = cpu::Device::default();
-/// 
+///
 /// let x = device.buffer([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.sum::<Ax1<0>>();
 /// println!("{}", y);
@@ -315,18 +317,18 @@ where
 }
 
 /// ## Max operation
-/// 
+///
 /// This operation reduces input across one or multiple dimensions.
 /// All reduce operations (sum, max) take given dimensions and set them to one, applying operation accordingly.
 /// The result's dimensions are not squeezed.
-/// 
+///
 /// ### Example
-/// 
+///
 /// ```ignore
 /// use zyx::prelude::*;
 /// use zyx::device::cpu::Buffer;
 /// use zyx::shape::Ax1;
-/// 
+///
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.max::<Ax1<0>>();
 /// println!("{}, {}", y.0, y.1);
@@ -347,7 +349,7 @@ impl<T> Max for T {
     fn max<Dims>(self) -> (T::Values, T::Indices)
     where
         Dims: Axes,
-        T: Maximizable<Dims>
+        T: Maximizable<Dims>,
     {
         self._max()
     }
@@ -367,18 +369,18 @@ where
 }
 
 /// ## Min operation
-/// 
+///
 /// This operation reduces input across one or multiple dimensions.
 /// All reduce operations (sum, max) take given dimensions and set them to one, applying operation accordingly.
 /// The result's dimensions are not squeezed.
-/// 
+///
 /// ### Example
-/// 
+///
 /// ```ignore
 /// use zyx::prelude::*;
 /// use zyx::device::cpu::Buffer;
 /// use zyx::shape::Ax1;
-/// 
+///
 /// let x = Buffer::cfrom([[3, 2, 1], [4, 2, 1]]);
 /// let y = x.min::<Ax1<0>>();
 /// println!("{}", y.0);
@@ -399,7 +401,7 @@ impl<T> Min for T {
     fn min<Dims>(self) -> (T::Values, T::Indices)
     where
         Dims: Axes,
-        T: Minimizable<Dims>
+        T: Minimizable<Dims>,
     {
         self._min()
     }
@@ -426,9 +428,9 @@ where
 
 // Movement ops
 /// ## Reshape tensor
-/// 
+///
 /// Reshaping changes tensor's shape, while leaving data untouched.
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::device::cpu;
@@ -436,12 +438,12 @@ where
 /// use zyx::shape::Sh3;
 ///
 /// let mut device = cpu::Device::default();
-/// 
+///
 /// let x = device.buffer([[[3, 2, 4], [3, 4, 2]], [[1, 4, 2], [5, 1, 6]]]);
 /// let x = x.reshape::<Sh3<2, 1, 6>>();
 /// println!("{}", x);
 /// ```
-/// 
+///
 /// ### Output
 /// ```txt
 /// [[3 2 4 2 4 2]
@@ -459,7 +461,7 @@ impl<T> Reshape for T {
     fn reshape<Sh>(self) -> T::Output
     where
         Sh: Shape,
-        T: Reshapable<Sh>
+        T: Reshapable<Sh>,
     {
         self._reshape()
     }
@@ -479,14 +481,14 @@ where
 }
 
 /// ## Expand tensor
-/// 
+///
 /// Expands tensor to given shape, if some dimensions are 1.
 /// These dimensions must be specified as second generic argument.
 /// It is enforced at compile time that they will be correct.
 /// For example, if you passed Ax1<0> in the following example,
 /// the program would not compile.
 /// Data is cloned to fill the required size.
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::prelude::*;
@@ -494,12 +496,12 @@ where
 /// use zyx::shape::{Sh3, Ax1};
 ///
 /// let mut device = cpu::Device::default();
-/// 
+///
 /// let x = device.buffer([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.expand::<Sh3<2, 3, 3>, Ax1<1>>();
 /// println!("{}", x);
 /// ```
-/// 
+///
 /// ### Output
 /// ```txt
 /// [[3 2 4
@@ -509,7 +511,7 @@ where
 ///   1 4 2
 ///   1 4 2]]
 /// ```
-/// 
+///
 pub trait Expand {
     /// Expand to Sh
     fn expand<Sh, Ax>(self) -> Self::Output
@@ -550,9 +552,9 @@ where
 }
 
 /// ## Permute tensor
-/// 
+///
 /// Shuffles tensors's dimensions in given order.
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::device::cpu;
@@ -560,14 +562,14 @@ where
 /// use zyx::shape::Ax3;
 ///
 /// let mut device = cpu::Device::default();
-/// 
+///
 /// let x = device.buffer([[[3, 2, 4]], [[1, 4, 2]]]);
 /// let x = x.permute::<Ax3<2, 0, 1>>();
 /// println!("{}", x);
 /// # assert_eq!(&x.to_vec(), &[3, 1, 2, 4, 4, 2]);
 /// # assert_eq!(x.shape(), [3, 2, 1]);
 /// ```
-/// 
+///
 /// ### Output
 /// ```txt
 /// [[3
@@ -589,7 +591,7 @@ impl<T> Permute for T {
     fn permute<Dims>(self) -> T::Output
     where
         Dims: Axes,
-        T: Permutable<Dims>
+        T: Permutable<Dims>,
     {
         self._permute()
     }
@@ -662,7 +664,7 @@ where
 // use core::ops to implement them (except for Pow)
 
 /// Pow operation
-/// 
+///
 /// Calculate the power of the input tensor to the given exponent tensor.
 /// As with all binary operations, both left and right hand side can be also scalar.
 ///
@@ -691,9 +693,9 @@ pub trait Pow<Rhs = Self> {
 }
 
 /// ## Mathematical multiplication
-/// 
+///
 /// Calculates matrix product.
-/// 
+///
 /// ### Example
 /// ```
 /// use zyx::device::cpu;
@@ -706,7 +708,7 @@ pub trait Pow<Rhs = Self> {
 /// let z = x.matmul(y);
 /// println!("{}", z);
 /// ```
-/// 
+///
 /// ### Output
 /// ```txt
 /// [33 16
@@ -721,9 +723,9 @@ pub trait MatMul<Rhs = Self> {
 
 // TODO: conv2d
 /// ## 2D Convolution
-/// 
+///
 /// Calculates 2D convodution.
-/// 
+///
 /// NOTE: This API is not yet stable and may be subject to change
 pub trait Conv<const N: usize, const M: usize, Kernel = Self> {
     /// Output of the Conv operation.
@@ -738,7 +740,7 @@ pub trait Conv<const N: usize, const M: usize, Kernel = Self> {
 // Can gpu buffer return slice?
 extern crate alloc;
 /// ## IntoVec operation
-/// 
+///
 /// Returns values from tensor as a Vec.
 /// It must have row major order.
 pub trait IntoVec<T> {

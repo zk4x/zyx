@@ -1,6 +1,6 @@
 //! Various implementations of deviceerators.
 //! The default is [CPU Buffer][cpu::Buffer].
-//! 
+//!
 
 // Every device can implement following traits in order to be fully compatible with tensors:
 // ```txt
@@ -11,14 +11,14 @@
 // - core::ops::Mul<f32> // for SGD optimizer
 // - zyx::ops::*
 // ```
-// 
+//
 // Some functors in [nn module][crate::nn] also require the buffer to implement binary operations with anything that implements [DType](crate::dtype::DType).
-// 
+//
 // The [ops module](crate::ops) documents how these operations should work.
-// 
+//
 // All operations take buffer by value. Cloning can be implemented as shallow copying,
 // but you will need to do the necessary reference counting.
-// 
+//
 
 pub mod cpu;
 //#[cfg(features = "opencl")]
@@ -29,7 +29,10 @@ pub mod opencl;
 /// This trait must be implemented for all devices
 pub trait Device {}
 
-use crate::{ops::{HasDType, HasShape}, shape::{Shape, Sh1, Sh2, Sh3, Sh4, Sh5, HasLastDim}};
+use crate::{
+    ops::{HasDType, HasShape},
+    shape::{HasLastDim, Sh1, Sh2, Sh3, Sh4, Sh5, Shape},
+};
 
 /// Trait that allows us to create new buffer from given slice.
 /// This is the only trait that must be implemented for all devices,
@@ -52,9 +55,14 @@ where
         use rand::Rng;
         extern crate alloc;
         let mut rng = rand::thread_rng();
-        self.slice(&core::iter::repeat(0).take(Buf::Sh::NUMEL).map(|_| rng.gen()).collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(
+            &core::iter::repeat(0)
+                .take(Buf::Sh::NUMEL)
+                .map(|_| rng.gen())
+                .collect::<alloc::vec::Vec<Buf::T>>(),
+        )
     }
-    
+
     /// Create new buffer filled with values from uniform distribution
     fn uniform(&'d self, low: Buf::T, high: Buf::T) -> Buf
     where
@@ -64,9 +72,14 @@ where
         extern crate alloc;
         let mut rng = rand::thread_rng();
         let dist = rand::distributions::Uniform::new(low, high);
-        self.slice(&core::iter::repeat(0).take(Buf::Sh::NUMEL).map(|_| dist.sample(&mut rng)).collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(
+            &core::iter::repeat(0)
+                .take(Buf::Sh::NUMEL)
+                .map(|_| dist.sample(&mut rng))
+                .collect::<alloc::vec::Vec<Buf::T>>(),
+        )
     }
-    
+
     /// Create new buffer filled with zeros
     fn zeros(&'d self) -> Buf
     where
@@ -76,7 +89,7 @@ where
         use crate::ops::Zero;
         self.slice(&alloc::vec![Buf::T::zero(); Buf::Sh::NUMEL])
     }
-    
+
     /// Create new buffer filled with ones
     fn ones(&'d self) -> Buf
     where
@@ -88,7 +101,12 @@ where
     }
 }
 
-impl<'d, Buf, Dev> BufferInit<'d, Buf> for Dev where Dev: BufferFromSlice<'d, Buf>, Buf: 'd + HasDType + HasShape {}
+impl<'d, Buf, Dev> BufferInit<'d, Buf> for Dev
+where
+    Dev: BufferFromSlice<'d, Buf>,
+    Buf: 'd + HasDType + HasShape,
+{
+}
 
 /// Create new buffer with shape automatically inferred
 pub trait ShapedBufferInit<'d, Input, Buf, Sh>: BufferFromSlice<'d, Buf>
@@ -109,7 +127,8 @@ where
     }
 }
 
-impl<'d, Dev, Buf, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[Buf::T; D0]; D1], Buf, Sh2<D1, D0>> for Dev
+impl<'d, Dev, Buf, const D1: usize, const D0: usize>
+    ShapedBufferInit<'d, [[Buf::T; D0]; D1], Buf, Sh2<D1, D0>> for Dev
 where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh2<D1, D0>>,
@@ -120,36 +139,66 @@ where
     }
 }
 
-impl<'d, Dev, Buf, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[[Buf::T; D0]; D1]; D2], Buf, Sh3<D2, D1, D0>> for Dev
+impl<'d, Dev, Buf, const D2: usize, const D1: usize, const D0: usize>
+    ShapedBufferInit<'d, [[[Buf::T; D0]; D1]; D2], Buf, Sh3<D2, D1, D0>> for Dev
 where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh3<D2, D1, D0>>,
 {
     fn buffer(&'d self, x: [[[Buf::T; D0]; D1]; D2]) -> Buf {
         extern crate alloc;
-        self.slice(&x.into_iter().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(
+            &x.into_iter()
+                .flatten()
+                .flatten()
+                .collect::<alloc::vec::Vec<Buf::T>>(),
+        )
     }
 }
 
-impl<'d, Dev, Buf, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[[[Buf::T; D0]; D1]; D2]; D3], Buf, Sh4<D3, D2, D1, D0>> for Dev
+impl<'d, Dev, Buf, const D3: usize, const D2: usize, const D1: usize, const D0: usize>
+    ShapedBufferInit<'d, [[[[Buf::T; D0]; D1]; D2]; D3], Buf, Sh4<D3, D2, D1, D0>> for Dev
 where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh4<D3, D2, D1, D0>>,
 {
     fn buffer(&'d self, x: [[[[Buf::T; D0]; D1]; D2]; D3]) -> Buf {
         extern crate alloc;
-        self.slice(&x.into_iter().flatten().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(
+            &x.into_iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .collect::<alloc::vec::Vec<Buf::T>>(),
+        )
     }
 }
 
-impl<'d, Dev, Buf, const D4: usize, const D3: usize, const D2: usize, const D1: usize, const D0: usize> ShapedBufferInit<'d, [[[[[Buf::T; D0]; D1]; D2]; D3]; D4], Buf, Sh5<D4, D3, D2, D1, D0>> for Dev
+impl<
+        'd,
+        Dev,
+        Buf,
+        const D4: usize,
+        const D3: usize,
+        const D2: usize,
+        const D1: usize,
+        const D0: usize,
+    > ShapedBufferInit<'d, [[[[[Buf::T; D0]; D1]; D2]; D3]; D4], Buf, Sh5<D4, D3, D2, D1, D0>>
+    for Dev
 where
     Dev: BufferFromSlice<'d, Buf>,
     Buf: 'd + HasDType + HasShape<Sh = Sh5<D4, D3, D2, D1, D0>>,
 {
     fn buffer(&'d self, x: [[[[[Buf::T; D0]; D1]; D2]; D3]; D4]) -> Buf {
         extern crate alloc;
-        self.slice(&x.into_iter().flatten().flatten().flatten().flatten().collect::<alloc::vec::Vec<Buf::T>>())
+        self.slice(
+            &x.into_iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .flatten()
+                .collect::<alloc::vec::Vec<Buf::T>>(),
+        )
     }
 }
 
@@ -181,7 +230,9 @@ where
         use alloc::string::String;
         let mut res = String::new();
         let data = self.to_vec();
-        if data.is_empty() { return res + "[]"; }
+        if data.is_empty() {
+            return res + "[]";
+        }
         let n = Self::Sh::NUMEL;
         let ndim = Self::Sh::RANK;
         //const PRECISION: usize = 3;
@@ -189,7 +240,9 @@ where
         let mut w = 0;
         for x in data.iter() {
             let l = alloc::format!("{x:w$}").len();
-            if l > w { w = l; }
+            if l > w {
+                w = l;
+            }
         }
         let d0 = Self::Sh::LAST_DIM;
         for (i, x) in data.iter().enumerate() {
@@ -197,9 +250,9 @@ where
                 let mut var = 1;
                 let mut r = ndim;
                 while r > 0 {
-                    if i % (n/var) == 0 {
-                        res += &(" ".repeat(ndim - r)+&"[".repeat(r - 1));
-                        break
+                    if i % (n / var) == 0 {
+                        res += &(" ".repeat(ndim - r) + &"[".repeat(r - 1));
+                        break;
                     }
                     var *= Self::Sh::at(ndim - r);
                     r -= 1;
@@ -207,20 +260,24 @@ where
             }
             use core::fmt::Write;
             let _ = write!(res, "{0:>1$}", x, w);
-            if (i + 1) % d0 != 0usize { res += " "; }
+            if (i + 1) % d0 != 0usize {
+                res += " ";
+            }
             {
                 let mut var = 1;
                 let mut r = ndim;
                 while r > 0 {
-                    if (i + 1) % (n/var) == 0 {
-                        res += &"]".repeat(r-1);
-                        break
+                    if (i + 1) % (n / var) == 0 {
+                        res += &"]".repeat(r - 1);
+                        break;
                     }
                     var *= Self::Sh::at(ndim - r);
                     r -= 1;
                 }
             }
-            if (i + 1) % d0 == 0usize && i != n - 1 { res += "\n"; }
+            if (i + 1) % d0 == 0usize && i != n - 1 {
+                res += "\n";
+            }
         }
         res
     }
@@ -231,4 +288,5 @@ where
     Buf: HasDType + HasShape + crate::ops::IntoVec<Buf::T>,
     Buf::T: core::fmt::Display,
     Buf::Sh: HasLastDim,
-{}
+{
+}

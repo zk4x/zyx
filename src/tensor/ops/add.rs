@@ -1,4 +1,9 @@
-use crate::{tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}, dtype::SType, device::cpu, shape::Shape};
+use crate::{
+    device::cpu,
+    dtype::SType,
+    shape::Shape,
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 use core::ops::Add;
 use duplicate::duplicate_item;
 
@@ -30,7 +35,7 @@ where
             data: self + rhs.data.clone(),
             grad_fn: AddBackwardSV {
                 ygrad: GradientRef::new(&rhs.grad),
-            }
+            },
         }
     }
 }
@@ -48,7 +53,7 @@ where
             data: self + rhs.data.clone(),
             grad_fn: AddBackwardSV {
                 ygrad: GradientRef::new(&rhs.grad),
-            }
+            },
         }
     }
 }
@@ -111,7 +116,7 @@ where
             data: self.data.clone() + rhs,
             grad_fn: AddBackwardVS {
                 xgrad: GradientRef::new(&self.grad),
-            }
+            },
         }
     }
 }
@@ -147,7 +152,7 @@ where
             grad_fn: AddBackwardVV {
                 xgrad: GradientRef::new(&self.grad),
                 ygrad: GradientRef::new(&rhs.grad),
-            }
+            },
         }
     }
 }
@@ -183,7 +188,7 @@ where
             grad_fn: AddBackwardVT {
                 xgrad: GradientRef::new(&self.grad),
                 ygrad_fn: rhs.grad_fn,
-            }
+            },
         }
     }
 }
@@ -269,7 +274,7 @@ where
             grad_fn: AddBackwardTT {
                 xgrad_fn: self.grad_fn,
                 ygrad_fn: rhs.grad_fn,
-            }
+            },
         }
     }
 }

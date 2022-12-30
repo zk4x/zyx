@@ -1,4 +1,7 @@
-use crate::{ops::{ReLU, DReLU}, tensor::{Variable, Tensor, Backward, GradientRef, GradAcc}};
+use crate::{
+    ops::{DReLU, ReLU},
+    tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
+};
 use core::ops::Mul;
 
 /// Backward function for calculating gradient of ReLU on Variable
