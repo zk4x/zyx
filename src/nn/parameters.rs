@@ -2,9 +2,9 @@
 
 /// # HasParameters
 pub trait HasParameters<'p> {
-    /// [Parameters](crate::nn::parameters::Parameters) of [Module](crate::nn::module::Module)
+    /// [Parameters](crate::nn::parameters::Parameters) of [Module](crate::nn::Module)
     type Params: super::parameters::Parameters;
-    /// Get parameters of [Module](crate::nn::module::Module)
+    /// Get parameters of [Module](crate::nn::Module)
     fn parameters(&'p mut self) -> Self::Params;
 }
 
