@@ -907,9 +907,6 @@ where
     fn matmul(self, rhs: Buffer<'d, YSh, T>) -> Self::Output {
         // TODO: this is about 10x (depends on hardware) slower than it should be, because it is not cache optimized.
         // TODO: implement also expanding for buffers with correct shapes.
-        /*if XSh::RANK < 2 {
-            //panic!("First parameter in matrix multiplication must have at least 2 dimensions.");
-        }*/
         // transpose function
         let transpose = |data: &[T], last_dim, n| {
             let mut res = alloc::vec::Vec::with_capacity(n);
@@ -924,26 +921,28 @@ where
             }
             res
         };
-        let ty_data = transpose(rhs.data.as_ref(), YSh::LAST_DIM, YSh::NUMEL);
         use rayon::prelude::*;
         let x_data = self.data.as_ref();
-        const NUM: usize = 8; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
-        let data: alloc::vec::Vec<T> = ty_data
-            .par_chunks(XSh::LAST_DIM)
-            .map(|y_row| {
-                x_data.par_chunks(XSh::LAST_DIM)
-                    .map(|x| {
-                        x.chunks(NUM)
-                            .zip(y_row.chunks(NUM))
-                            .map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| a.clone() * b.clone()).sum::<T>())
-                            .sum()
+        const NUM: usize = 16; //256/core::mem::size_of::<T>(); // basically SIMD length, though it is not quite that easy due to cache
+        let data: alloc::vec::Vec<T> = rhs.data.as_ref().par_chunks(XSh::LAST_DIM*YSh::LAST_DIM)
+            .zip(x_data.par_chunks(<XSh as MatMulBy<YSh>>::Output::LAST_DIM_2*XSh::LAST_DIM)).map(|(y_chunk, x_chunk)| {
+                    transpose(&transpose(y_chunk, YSh::LAST_DIM, XSh::LAST_DIM*YSh::LAST_DIM)
+                    .par_chunks(XSh::LAST_DIM)
+                    .map(|y_row| {
+                        x_chunk.par_chunks(XSh::LAST_DIM)
+                            .map(|x| {
+                                x.chunks(NUM)
+                                    .zip(y_row.chunks(NUM))
+                                    .map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| a.clone() * b.clone()).sum::<T>())
+                                    .sum()
+                            })
+                            .collect::<alloc::vec::Vec<T>>()
                     })
-                    .collect::<alloc::vec::Vec<T>>()
-            })
-            .flatten()
-            .collect();
+                    .flatten()
+                    .collect::<alloc::vec::Vec<T>>(), <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2, <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2*YSh::LAST_DIM)
+                }
+            ).flatten().collect();
         use crate::shape::HasLast2Dims;
-        let data = transpose(&data, <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2, <XSh as MatMulBy<YSh>>::Output::NUMEL);
         Buffer {
             data: Arc::new(data),
             device: self.device,
@@ -956,12 +955,13 @@ where
 #[cfg(feature = "matrixmultiply")]
 impl<'d, XSh, YSh> ops::MatMul<Buffer<'d, YSh, f32>> for Buffer<'d, XSh, f32>
 where
-    XSh: Shape + MatMulBy<YSh> + crate::shape::HasLast2Dims,
+    XSh: Shape + MatMulBy<YSh>,
     YSh: Shape + HasLastDim,
 {
     type Output = Buffer<'d, <XSh as MatMulBy<YSh>>::Output, f32>;
     fn matmul(self, rhs: Buffer<'d, YSh, f32>) -> Self::Output {
-        let m = XSh::LAST_DIM_2;
+        use crate::shape::HasLast2Dims;
+        let m = <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2;
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
         let mut data = alloc::vec::Vec::<f32>::with_capacity(<XSh as MatMulBy<YSh>>::Output::NUMEL);
@@ -1005,12 +1005,13 @@ fn matmul_cpu() {
 #[cfg(feature = "matrixmultiply")]
 impl<'d, XSh, YSh> ops::MatMul<Buffer<'d, YSh, f64>> for Buffer<'d, XSh, f64>
 where
-    XSh: Shape + shape::MatMulBy<YSh> + crate::shape::HasLast2Dims,
+    XSh: Shape + shape::MatMulBy<YSh>,
     YSh: Shape + HasLastDim,
 {
     type Output = Buffer<'d, <XSh as MatMulBy<YSh>>::Output, f64>;
     fn matmul(self, rhs: Buffer<'d, YSh, f64>) -> Self::Output {
-        let m = XSh::LAST_DIM_2;
+        use crate::shape::HasLast2Dims;
+        let m = <XSh as MatMulBy<YSh>>::Output::LAST_DIM_2;
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
         let mut data = alloc::vec::Vec::<f64>::with_capacity(<XSh as MatMulBy<YSh>>::Output::NUMEL);
