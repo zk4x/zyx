@@ -26,14 +26,14 @@ pub trait Module<'p, Input> { // TODO 'p is probably not needed anymore, because
 }
 
 /// Apply trait allows us to use monads
-pub trait Apply<'p, Operation> {
+pub trait ApplyModule<'p, Operation> {
     /// Output of forward operation on [Module]
     type Output;
     /// Forward operation on [Module]
     fn apply(self, x: &'p Operation) -> Self::Output;
 }
 
-impl<'p, Input, Operation> Apply<'p, Operation> for Input
+impl<'p, Input, Operation> ApplyModule<'p, Operation> for Input
 where
     Operation: Module<'p, Input>
 {

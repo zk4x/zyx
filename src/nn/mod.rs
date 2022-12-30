@@ -1,14 +1,16 @@
-//! Structs that implement trait [Module](crate::nn::module::Module) for anything that it makes sense to implement this trait.
+//! Structs that implement trait [Module](crate::nn::Module) for anything that it makes sense to implement this trait.
 //! These include zyx::ops, as well as layers, such as [Linear].
 //!
 //! This module is expected to get most stuff added.
 //! It will contain functors, layers, models, cells, simply anything that can have .forward(input) function.
 //!
 
-pub mod module;
+mod module;
 pub mod parameters;
 
-use crate::{nn::module::Module, ops::{self, HasShape, Pow, Zero, One, MatMul, HasDType, IntoVariable, ZerosLike}, tensor::Variable, device::{BufferInit, cpu::Buffer}, shape::{Shape, Sh2, Axes}};
+pub use module::{Module, ApplyModule};
+
+use crate::{ops::{self, HasShape, Pow, Zero, One, MatMul, HasDType, IntoVariable, ZerosLike}, tensor::Variable, device::{BufferInit, cpu::Buffer}, shape::{Shape, Sh2, Axes}};
 use core::{ops::{Neg, Add, Sub, Div}, marker::PhantomData};
 
 /// ReLU operation

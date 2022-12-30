@@ -51,6 +51,17 @@
 
 mod ops;
 
+// re export backward ops
+pub use ops::{
+    tanh::{TanhBackwardT, TanhBackwardV},
+    relu::{ReLUBackwardT, ReLUBackwardV},
+    add::{AddBackwardSV, AddBackwardVV, AddBackwardVT, AddBackwardTT, AddBackwardTV, AddBackwardVS},
+    sub::{SubBackwardSV, SubBackwardVV, SubBackwardVT, SubBackwardTT, SubBackwardTV, SubBackwardVS},
+    div::{DivBackwardTS, DivBackwardTT, DivBackwardTV, DivBackwardVS, DivBackwardVT, DivBackwardVV},
+    mul::{MulBackwardTS, MulBackwardTT, MulBackwardTV, MulBackwardVS, MulBackwardVT, MulBackwardVV},
+    matmul::{MatMulBackwardST, MatMulBackwardSV, MatMulBackwardTS, MatMulBackwardTT, MatMulBackwardTV, MatMulBackwardVS, MatMulBackwardVT, MatMulBackwardVV},
+};
+
 // How this works (for contributors)
 //
 // The Buffer and Variable are leaf tensors. Buffer does not have grad, while Variable does (obviously).

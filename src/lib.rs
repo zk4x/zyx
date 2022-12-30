@@ -70,8 +70,9 @@ extern crate std;
 #[cfg(test)]
 mod tests;
 
-// TODO: saving of models and buffers (probably via .to_vec() and .shape(), and ::from_vec())
-// power and convolution ops for tensor
-// opencl buffer
-// lazy Buffer (both opencl and cpu (I know, opencl can run on cpu as well))
-// remove need for alloc crate if user is not using cpu::Buffer, though this also requires breaking changes to the IntoVec and FromVec ops, or simple make them unavailable?
+// TODO:
+// saving of models and buffers (probably via .to_vec() and .shape(), and .from_slice())
+// convolution ops for tensor
+// remove need for alloc crate if user is not using cpu::Buffer,
+// simple dataloading methods
+// #[derive(Model)] and #[derive(HasParameters)] macros

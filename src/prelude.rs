@@ -3,7 +3,7 @@
 pub use crate::{
     ops::*,
     shape::Shape,
-    nn::{module::Module, parameters::{Parameters, HasParameters}},
+    nn::{Module, ApplyModule, parameters::{Parameters, HasParameters}},
     device::{BufferFromSlice, BufferInit, ShapedBufferInit},
     optim::SGDStep,
 };
