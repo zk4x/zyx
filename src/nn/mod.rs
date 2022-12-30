@@ -27,7 +27,7 @@ where
 
 impl<'p> HasParameters<'p> for ReLU {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// Exp operation
@@ -44,7 +44,7 @@ where
 
 impl<'p> HasParameters<'p> for Exp {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// Ln operation
@@ -61,7 +61,7 @@ where
 
 impl<'p> HasParameters<'p> for Ln {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// Tanh operation
@@ -80,7 +80,7 @@ where
 
 impl<'p> HasParameters<'p> for Tanh {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// Sigmoid operation
@@ -104,7 +104,7 @@ where
 
 impl<'p> HasParameters<'p> for Sigmoid {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /*
@@ -188,7 +188,7 @@ where
     Dims: Axes,
 {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// Max operation
@@ -215,7 +215,7 @@ where
     Dims: Axes,
 {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// Minimizable operation
@@ -242,7 +242,7 @@ where
     Dims: Axes,
 {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -272,7 +272,7 @@ where
     Dims: Axes,
 {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 /// MSE loss
@@ -292,7 +292,7 @@ where
 
 impl<'p> HasParameters<'p> for MSELoss {
     type Params = ();
-    fn parameters(&'p mut self) -> Self::Params { () }
+    fn parameters(&'p mut self) -> Self::Params {}
 }
 
 //pub struct STD {}
