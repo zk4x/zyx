@@ -956,25 +956,25 @@ where
 #[cfg(feature = "matrixmultiply")]
 impl<'d, XSh, YSh> ops::MatMul<Buffer<'d, YSh, f32>> for Buffer<'d, XSh, f32>
 where
-    XSh: Shape + shape::HasLast2Dims + shape::MatMulBy<YSh>,
+    XSh: Shape + MatMulBy<YSh> + crate::shape::HasLast2Dims,
     YSh: Shape + HasLastDim,
 {
     type Output = Buffer<'d, <XSh as MatMulBy<YSh>>::Output, f32>;
     fn matmul(self, rhs: Buffer<'d, YSh, f32>) -> Self::Output {
-        // TODO: support for operations on more than 2 dimensions
-        if XSh::RANK != 2 && YSh::RANK != 2 {
-            panic!("Only operations on buffers with 2 dimensions are supported.");
-        }
         let m = XSh::LAST_DIM_2;
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
-        let mut data = alloc::vec::Vec::with_capacity(m*n);
-        unsafe {
-            data.set_len(m*n);
-            matrixmultiply::sgemm(m, k, n, 1.,
-                self.data.as_ptr(), k as isize, 1,
-                rhs.data.as_ptr(), n as isize, 1, 0.,
-                data.as_mut_ptr(), n as isize, 1);
+        let mut data = alloc::vec::Vec::<f32>::with_capacity(<XSh as MatMulBy<YSh>>::Output::NUMEL);
+        unsafe { data.set_len(<XSh as MatMulBy<YSh>>::Output::NUMEL); } // no need to initialize
+        let mut i = 0;
+        while i < XSh::NUMEL/(m*k) {
+            unsafe {
+                matrixmultiply::sgemm(m, k, n, 1.,
+                    self.data.as_ptr().offset((i*m*k) as isize), k as isize, 1,
+                    rhs.data.as_ptr().offset((i*k*n) as isize), n as isize, 1, 0.,
+                    data.as_mut_ptr().offset((i*m*n) as isize), n as isize, 1);
+            }
+            i += 1;
         }
 
         Buffer {
@@ -985,28 +985,45 @@ where
     }
 }
 
+#[test]
+fn matmul_cpu() {
+    use crate::prelude::*;
+    use crate::device::cpu;
+
+    let device = cpu::Device::default();
+
+    let x = device.buffer([[[4f32, 2.], [5., 1.]], [[6., 4.], [6., 4.]]]);
+    let y = device.buffer([[[6., 2.], [3., 1.]], [[6., 4.], [6., 4.]]]);
+
+    let z = x.matmul(y);
+
+    std::println!("{}", z);
+
+    assert_eq!(z, [[[30., 10.], [33., 11.]], [[60., 40.], [60., 40.]]]);
+}
+
 #[cfg(feature = "matrixmultiply")]
 impl<'d, XSh, YSh> ops::MatMul<Buffer<'d, YSh, f64>> for Buffer<'d, XSh, f64>
 where
-    XSh: Shape + shape::HasLast2Dims + shape::MatMulBy<YSh>,
+    XSh: Shape + shape::MatMulBy<YSh> + crate::shape::HasLast2Dims,
     YSh: Shape + HasLastDim,
 {
     type Output = Buffer<'d, <XSh as MatMulBy<YSh>>::Output, f64>;
     fn matmul(self, rhs: Buffer<'d, YSh, f64>) -> Self::Output {
-        // TODO: support for operations on more than 2 dimensions
-        if XSh::RANK != 2 && YSh::RANK != 2 {
-            panic!("Only operations on buffers with 2 dimensions are supported.");
-        }
         let m = XSh::LAST_DIM_2;
         let k = XSh::LAST_DIM;
         let n = YSh::LAST_DIM;
-        let mut data = alloc::vec::Vec::with_capacity(m*n);
-        unsafe {
-            data.set_len(m*n);
-            matrixmultiply::dgemm(m, k, n, 1.,
-                self.data.as_ptr(), k as isize, 1,
-                rhs.data.as_ptr(), n as isize, 1, 0.,
-                data.as_mut_ptr(), n as isize, 1);
+        let mut data = alloc::vec::Vec::<f64>::with_capacity(<XSh as MatMulBy<YSh>>::Output::NUMEL);
+        unsafe { data.set_len(<XSh as MatMulBy<YSh>>::Output::NUMEL); } // no need to initialize
+        let mut i = 0;
+        while i < XSh::NUMEL/(m*k) {
+            unsafe {
+                matrixmultiply::dgemm(m, k, n, 1.,
+                    self.data.as_ptr().offset((i*m*k) as isize), k as isize, 1,
+                    rhs.data.as_ptr().offset((i*k*n) as isize), n as isize, 1, 0.,
+                    data.as_mut_ptr().offset((i*m*n) as isize), n as isize, 1);
+            }
+            i += 1;
         }
 
         Buffer {
