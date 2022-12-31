@@ -1,14 +1,14 @@
 //! [Module] is generic trait that implements only one method: [forward](Module::forward()).
 //! It is meant to be implemented mainly for functors and layers.
 //!
-// This module also contains implementation of [Apply], that is automatically
-// implemented for anything that implements [Module] and allows users to use both
-// module.forward(input) notation as well as
-// input.apply(module) notation
-//
-// Basically all functions, layers and models should have [module.forward(input)](Module::forward()) function and this module also provides [input.apply(module)](Apply::apply()) function.
-// We think it is usefull for the user to have access to both standard [module.forward(input)] type of API and API with monads.
-//
+//! This module also contains implementation of [Apply], that is automatically
+//! implemented for anything that implements [Module] and allows users to use both
+//! module.forward(input) notation as well as
+//! input.apply(module) notation
+//!
+//! Basically all functions, layers and models should have [module.forward(input)](Module::forward()) function and this module also provides [input.apply(module)](Apply::apply()) function.
+//! We think it is usefull to have access to both standard [module.forward(input)] type of API and API with monads.
+//!
 
 // TODO: use macros to make this DRY
 

@@ -1,6 +1,5 @@
 use crate::{
-    device::cpu,
-    dtype::SType,
+    device::{cpu, SType},
     shape::Shape,
     tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
 };
@@ -43,7 +42,7 @@ where
 impl<'g, YS, Sh, T> Add<&'g Variable<YS>> for cpu::Buffer<'_, Sh, T>
 where
     Sh: Shape,
-    T: crate::dtype::DType,
+    T: crate::device::DType,
     Self: Add<YS>,
     YS: Clone,
 {
@@ -76,7 +75,7 @@ where
 impl<S, F, Sh, T> Add<Tensor<S, F>> for cpu::Buffer<'_, Sh, T>
 where
     Sh: Shape,
-    T: crate::dtype::DType,
+    T: crate::device::DType,
     Self: Add<S>,
     S: SType,
 {

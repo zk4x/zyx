@@ -22,11 +22,14 @@
 //! but you will need to do the necessary reference counting or use your [Device] as a storage and buffers can be just references.
 //!
 
+mod dtype;
 pub mod cpu;
 //#[cfg(features = "opencl")]
 pub mod opencl;
 //#[cfg(feature = "ndarray")]
 //pub mod ndarray;
+
+pub use dtype::{DType, SType};
 
 /// All devices have implemented this trait.
 /// Devices store information about the underlaying hardward.

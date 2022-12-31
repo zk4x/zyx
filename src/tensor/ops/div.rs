@@ -1,5 +1,5 @@
 use crate::{
-    dtype::SType,
+    device::SType,
     tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
 };
 use core::ops::{Div, Mul, Neg};

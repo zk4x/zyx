@@ -1,6 +1,5 @@
 use crate::{
-    device::cpu,
-    dtype::SType,
+    device::{cpu, SType},
     shape::Shape,
     tensor::{Backward, GradAcc, GradientRef, Tensor, Variable},
 };
@@ -44,7 +43,7 @@ where
 impl<'g, YS, Sh, T> Mul<&'g Variable<YS>> for cpu::Buffer<'_, Sh, T>
 where
     Sh: Shape,
-    T: crate::dtype::DType,
+    T: crate::device::DType,
     Self: Mul<YS>,
     YS: Clone,
 {
@@ -96,7 +95,7 @@ where
 impl<S, F, Sh, T> Mul<Tensor<S, F>> for cpu::Buffer<'_, Sh, T>
 where
     Sh: Shape,
-    T: crate::dtype::DType,
+    T: crate::device::DType,
     Self: Mul<S>,
 {
     type Output = Tensor<<Self as Mul<S>>::Output, MulBackwardST<Self, F>>;

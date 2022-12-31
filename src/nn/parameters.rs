@@ -1,6 +1,11 @@
 //! Parameters module
 
-/// # HasParameters
+/// HasParameters trait
+/// 
+/// This trait is implemented for all functors and layers in [nn](crate::nn)
+/// that have some parameters.
+/// 
+/// Parameters are just [Variables](crate::tensor::Variable).
 pub trait HasParameters<'p> {
     /// [Parameters](crate::nn::parameters::Parameters) of [Module](crate::nn::Module)
     type Params: super::parameters::Parameters;

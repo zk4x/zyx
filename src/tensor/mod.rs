@@ -30,11 +30,11 @@
 //! [Tensor] stores references to [Variable's](Variable) gradients and some data buffers used during gradient calculation.
 //! ```
 //! # use zyx::prelude::*;
-//! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor}, shape::Sh1};
+//! # use zyx::{device::cpu::{self, Buffer}, tensor::{Variable, Tensor, ReLUBackwardV}, shape::Sh1};
 //! # let mut device = cpu::Device::default();
 //! # let x: Buffer<Sh1<3>, f32> = device.buffer([2., 1., 4.]);
 //! # let y: Variable<Buffer<Sh1<3>, f32>> = x.clone().with_grad();
-//! let z: Tensor<Buffer<Sh1<3>, f32>, _/* ReLUBackwardT<_> */> = y.relu();
+//! let z: Tensor<Buffer<Sh1<3>, f32>, ReLUBackwardV<_, _>> = y.relu();
 //! ```
 //!
 //! Applying function to buffer simply returns buffer.
@@ -46,8 +46,26 @@
 //! let z: Buffer<Sh1<3>, f32> = x.relu();
 //! ```
 //!
-
-// This file contains tensor definitions, getters and setters for tensors.
+//! How this works
+//!
+//! The Buffer and Variable are leaf tensors. Buffer does not have grad, while Variable does (obviously).
+//! Tensor is non leaf tensor.
+//! 
+//! When an operation is performed with Buffer, a new Buffer is returned with result. Nothing magical happens.
+//! 
+//! When an operation is performed with Variable, a new Tensor is returned that holds reference to Variable's gradient.
+//! This Tensor contains a struct with name [Op]Backward[Operands], that hold's this pointer and calculates
+//! the gradient when backward is called on it.
+//! 
+//! We can imagine neural network as a tree, where leafs are Buffers and Variables and root/roots
+//! are Tensors. When an operation is performed with Tensor, it's consumed and it's grad_fn is moved to the resulting
+//! Tensor. So the last [Tensor] is the root of the tree and it holds all the closures with RefGradient<S> references to [Variable's](Variable) gradients.
+//! If you want to have more the one [Tensor] to call .backward() on, you need to clone this Tensor
+//! or any of the intermediate Tensors. In this case, the library performs cloning of the closures.
+//!
+//! Tensors are moved into operations, while Variables are passed by reference!
+//! 
+//! This file contains definitions, getters and setters for [Variable] and [Tensor].
 
 mod ops;
 
@@ -67,26 +85,19 @@ pub use ops::{
     tanh::{TanhBackwardT, TanhBackwardV},
 };
 
-// How this works (for contributors)
-//
-// The Buffer and Variable are leaf tensors. Buffer does not have grad, while Variable does (obviously).
-// Tensor is non leaf tensor.
-// When an operation is performed with Buffer, a new Buffer is returned with result. Nothing magical happens.
-// When an operation is performed with Variable, a new Tensor is returned that holds weak pointer
-// to Variable's gradient. This Tensor contains a closure, that hold's this pointer and calculates
-// the gradient when backward is called on it.
-// We can imagine neural network as a tree, where leafs are Buffers and Variables and root/roots
-// are Tensor. When an operation is performed with Tensor, it's consumed and it's func is moved to the resulting
-// Tensor. So the last Tensor is the root of the tree and is the only Tensor in existence
-// and it holds all the closures with &RefCell<S> pointers to the Variable's gradients.
-// If you want to have more the one Tensor to call .backward() on, you need to clone this Tensor
-// or any of the intermediate Tensors. In this case, the library performs cloning of the closures.
-
-// Tensors are moved into operations, while Variables are passed by reference!
-
 /// # Variable
 ///
 /// Variable holds data and it's gradient.
+/// 
+/// ## Gradient of [Variable]
+///
+/// User has read-only access to gradient.
+/// This is using UnsafeCell to store value inside gradient.
+/// Since UnsafeCell is not Sync, there is just few times that we access gradient,
+/// so it is not difficult to make it safe to use.
+/// The only mutable accesses are zeroing gradients, and accumulate, which use unsafe, since [Variable] can be passed into multiple
+/// functions and all of them need to be able to accumulate gradient.
+/// So we just make sure that backward can not be called on buffer that is borrowed and that is it.
 #[derive(Debug, Clone, Default)]
 pub struct Variable<S> {
     pub(crate) data: S,
@@ -94,19 +105,8 @@ pub struct Variable<S> {
     grad: Gradient<S>,
 }
 
-/// Gradient of [Variable]
-///
-/// User has read-only access to [Gradient] with to_vec and to_string.
-// This is using UnsafeCell to store value inside gradient.
-// Since UnsafeCell is not Sync, there is just few times that we access gradient,
-// so it is not difficult to make it safe to use.
-// The only mutable accesses are [Self::zero], which does not use unsafe
-// and accumulate, which uses unsafe, since [Variable] can be passed into multiple
-// functions and all of them need to be able to accumulate gradient.
-// So we just make sure that backward can not be called on buffer that is borrowed
-// and that is it.
 #[derive(Default, Debug)]
-pub struct Gradient<S>(core::cell::UnsafeCell<S>);
+struct Gradient<S>(core::cell::UnsafeCell<S>);
 
 impl<S> Clone for Gradient<S>
 where
@@ -123,10 +123,10 @@ impl<G> Gradient<G> {
         Self(core::cell::UnsafeCell::new(data))
     }
 
-    /// Get value stored inside of the gradient
-    pub fn buffer(&self) -> &G {
+    // Get value stored inside of the gradient
+    /*fn buffer(&self) -> &G {
         unsafe { &*self.0.get() }
-    }
+    }*/
 
     fn zero(&mut self)
     where
@@ -159,28 +159,6 @@ impl<'g, S> GradientRef<'g, S> {
     }
 }
 
-/*impl<S, Rhs> PartialEq<Rhs> for Gradient<S>
-where
-   S: PartialEq<Rhs>,
-{
-    fn eq(&self, rhs: &Rhs) -> bool {
-        unsafe { &*self.0.get() == rhs }
-    }
-}*/
-
-impl<G> core::fmt::Display for Gradient<G>
-where
-    G: core::fmt::Display,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        extern crate alloc;
-        use alloc::string::ToString;
-        // This is save, beacause it is read only access
-        let grad = unsafe { &*self.0.get() };
-        f.write_str(&grad.to_string())
-    }
-}
-
 /// # Tensor
 ///
 /// Tensor holds data and grad_fn to calculate gradients of [Variables](Variable).
@@ -203,7 +181,7 @@ where
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
         use alloc::format;
-        f.write_str(&format!("{} with grad:\n{}", self.data, &self.grad,))
+        f.write_str(&format!("{} with grad:\n{}", self.data, self.grad(),))
     }
 }
 
@@ -270,6 +248,10 @@ impl<S> Variable<S> {
 /// # Backward trait
 ///
 /// This trait is implemented by all functions that allow us to calculate gradients.
+/// 
+/// These functions are stored inside [Tensor] as it's grad_fn.
+/// But you can't directly access these functions.
+/// They are created by calling operations on [Variables](Variable) and [Tensors](Tensor).
 pub trait Backward<S> {
     /// Calls backward on a grad_fn, passing calculated output's gradient as parameter.
     fn backward(self, res_grad: S);
@@ -352,7 +334,8 @@ impl<S, GradFn> Tensor<S, GradFn> {
 impl<S> Variable<S> {
     /// Access [Tensor's](Tensor) grad buffer
     pub fn grad(&self) -> &S {
-        self.grad.buffer()
+        // unsafe access, but read only, may be a problem in certain cases, we need more testing
+        unsafe { &*self.grad.0.get() }
     }
 }
 

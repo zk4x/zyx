@@ -20,7 +20,7 @@
 
 use super::BufferFromSlice;
 use crate::{
-    dtype::DType,
+    device::DType,
     ops::{self, ConvertFrom},
     shape::{
         self, Axes, HasLastDim, MatMulBy, PermutableBy, ReducableBy, Sh1, Sh2, Sh3, Sh4, Sh5, Shape,

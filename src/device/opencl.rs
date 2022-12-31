@@ -19,7 +19,7 @@
 //! let buffer = device.buffer([[4, 5, 2], [5, 2, 1]]);
 //! ```
 
-use crate::{dtype::DType, ops, shape::Shape};
+use crate::{device::DType, ops, shape::Shape};
 use core::marker::PhantomData;
 
 use ocl::{self, OclPrm};

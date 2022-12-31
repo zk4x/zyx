@@ -329,7 +329,7 @@ use crate::device::BufferFromSlice;
 
 use self::parameters::HasParameters;
 /// Linear layer
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Linear<
     'd,
     const IN_FEATURES: usize,
@@ -337,8 +337,8 @@ pub struct Linear<
     W = Buffer<'d, Sh2<IN_FEATURES, OUT_FEATURES>>,
     B = Buffer<'d, Sh2<1, OUT_FEATURES>>,
 > where
-    W: HasShape + HasDType,
-    B: HasShape + HasDType,
+    W: HasShape,
+    B: HasShape,
 {
     dev: PhantomData<&'d W>,
     w: Variable<W>,
@@ -399,17 +399,90 @@ where
     }
 }
 
-// RNNCell
+/// RNNCell
 // TODO: Should we rewrite this as two linear layers?
-/*#[derive(Debug, Clone)]
-pub struct RNNCell<WI, BI, WH, BH> {
+#[derive(Debug, Clone)]
+pub struct RNNCell<
+    'd,
+    const INPUT_SIZE: usize,
+    const HIDDEN_SIZE: usize,
+    WI = Buffer<'d, Sh2<INPUT_SIZE, HIDDEN_SIZE>>,
+    BI = Buffer<'d, Sh2<1, HIDDEN_SIZE>>,
+    WH = Buffer<'d, Sh2<HIDDEN_SIZE, HIDDEN_SIZE>>,
+    BH = Buffer<'d, Sh2<1, HIDDEN_SIZE>>,
+> where
+    WI: HasShape,
+    BI: HasShape,
+    WH: HasShape,
+    BH: HasShape,
+{
+    dev: PhantomData<&'d WI>,
     wih: Variable<WI>,
     bih: Variable<BI>,
     whh: Variable<WH>,
     bhh: Variable<BH>,
 }
 
-impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
+impl<'d, WI, BI, WH, BH, const INPUT_SIZE: usize, const HIDDEN_SIZE: usize>
+    RNNCell<'d, INPUT_SIZE, HIDDEN_SIZE, WI, BI, WH, BH>
+where
+    WI: HasShape + HasDType,
+    WI::T: Zero + One,
+    BI: HasShape + HasDType,
+    BI::T: Zero + One,
+    WH: HasShape + HasDType,
+    WH::T: Zero + One,
+    BH: HasShape + HasDType,
+    BH::T: Zero + One,
+{
+    /// Create new [RNNCell] with given input_size and output_size dimensions
+    /// with parameters stored on given device.
+    pub fn new<Dev>(device: &'d Dev) -> Self
+    where
+        Dev: BufferFromSlice<'d, WI> + BufferFromSlice<'d, BI> + BufferFromSlice<'d, WH> + BufferFromSlice<'d, BH>,
+        WI: 'd + IntoVariable,
+        WI::T: rand::distributions::uniform::SampleUniform,
+        BI: 'd + IntoVariable,
+        BI::T: rand::distributions::uniform::SampleUniform,
+        WH: 'd + IntoVariable,
+        WH::T: rand::distributions::uniform::SampleUniform,
+        BH: 'd + IntoVariable,
+        BH::T: rand::distributions::uniform::SampleUniform,
+    {
+        Self {
+            dev: PhantomData,
+            wih: <Dev as BufferInit<'d, WI>>::uniform(device, WI::T::zero(), WI::T::one()).with_grad(),
+            bih: <Dev as BufferInit<'d, BI>>::uniform(device, BI::T::zero(), BI::T::one()).with_grad(),
+            whh: <Dev as BufferInit<'d, WH>>::uniform(device, WH::T::zero(), WH::T::one()).with_grad(),
+            bhh: <Dev as BufferInit<'d, BH>>::uniform(device, BH::T::zero(), BH::T::one()).with_grad(),
+        }
+    }
+}
+
+impl<'p, I, H, WI, BI, WH, BH, const INPUT_SIZE: usize, const HIDDEN_SIZE: usize> Module<'p, (I, H)>
+    for RNNCell<'_, INPUT_SIZE, HIDDEN_SIZE, WI, BI, WH, BH>
+where
+    WI: 'p + HasShape + HasDType,
+    WI::T: Zero + One,
+    BI: 'p + HasShape + HasDType,
+    BI::T: Zero + One,
+    WH: 'p + HasShape + HasDType,
+    WH::T: Zero + One,
+    BH: 'p + HasShape + HasDType,
+    BH::T: Zero + One,
+    I: MatMul<&'p Variable<WI>>,
+    <I as MatMul<&'p Variable<WI>>>::Output: Add<&'p Variable<BI>>,
+    H: MatMul<&'p Variable<WH>>,
+    <H as MatMul<&'p Variable<WH>>>::Output: Add<&'p Variable<BH>>,
+    <<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output: Add<<<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output>,
+{
+    type Output = <<<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output as Add<<<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output>>::Output;
+    fn forward(&'p self, x: (I, H)) -> Self::Output {
+        (x.0.matmul(&self.wih) + &self.bih) + (x.1.matmul(&self.whh) + &self.bhh)
+    }
+}
+
+/*impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
     /// Create new [RNNCell] with given input_size and hidden_size dimensions
     pub fn new<T>(input_size: usize, hidden_size: usize) -> Self
     where

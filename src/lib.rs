@@ -44,13 +44,12 @@
 #![deny(trivial_casts)]
 #![deny(trivial_numeric_casts)]
 #![deny(unreachable_pub)]
-//#![deny(unsafe_code)]
+//#![warn(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(unused_crate_dependencies)]
 #![deny(unused_extern_crates)]
 #![deny(unused_import_braces)]
 pub mod device;
-mod dtype;
 pub mod nn;
 pub mod ops;
 pub mod optim;

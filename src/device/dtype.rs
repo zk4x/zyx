@@ -19,6 +19,7 @@ use duplicate::duplicate_item;
 ///
 /// If you want to use sparse tensors with chunky DTypes, please provide your own device for best performance.
 pub trait DType: Clone {
+    /// Get this type as static string
     const STR: &'static str;
 }
 
@@ -84,6 +85,11 @@ where
 
 /// Storage type is implemented for every type that can have added gradient.
 /// That is every type that supports all tensor backward operations.
+/// 
+/// [DType] is every rust primitive - f32, f64, i32, i64 etc.
+/// [SType] is every rust primitive and also [cpu::Buffer](crate::device::cpu::Buffer) and [opencl::Buffer](crate::device::opencl::Buffer).
+/// 
+/// That is [SType] is also implemented for ndimensional types.
 pub trait SType {}
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]

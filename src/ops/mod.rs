@@ -41,7 +41,7 @@ pub trait HasDevice {
 /// # HasDType
 pub trait HasDType {
     /// Type of tensor
-    type T: crate::dtype::DType;
+    type T: crate::device::DType;
 }
 
 /// # HasShape
