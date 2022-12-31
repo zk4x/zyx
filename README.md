@@ -44,8 +44,7 @@ The second generic parameter of [Tensor](crate::tensor::Tensor) represents the g
 
 GPU acceleration uses OpenCL through [ocl](https://github.com/cogciprocate/ocl).
 
-The current architecture makes it easy to add other accelerators should the need arise.
-It is because new accelerators can be added gradually and number of required operations is low.
+The current architecture makes it easy to add other accelerators should the need arise, because new accelerators can be added gradually and number of required operations is low.
 
 You can also turn custom datatypes into tensors by calling .with_grad(). They will run on CPU.
 
