@@ -88,6 +88,15 @@ pub trait ZerosLike {
     fn zeros_like(&self) -> Self;
 }
 
+/// # FillWith
+/// 
+/// Fills tensor with values from given slice. Length of this slice must
+/// be the same as it's shape's NUMEL.
+pub trait FillWithSlice: HasDType {
+    /// Fill the buffer with values from this slice
+    fn fill_with_slice(&mut self, slice: &[Self::T]);
+}
+
 /// ## Convert between devices and types
 ///
 /// Create new tensor on given device with given type

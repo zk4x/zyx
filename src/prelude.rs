@@ -7,6 +7,6 @@ pub use crate::{
         ApplyModule, Module,
     },
     ops::*,
-    optim::SGDStep,
+    optim::{SGDStep, NumpyRW},
     shape::Shape,
 };

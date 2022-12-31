@@ -199,6 +199,16 @@ where
     }
 }
 
+impl<Sh, T> ops::FillWithSlice for Buffer<'_, Sh, T>
+where
+    Sh: Shape,
+    T: DType,
+{
+    fn fill_with_slice(&mut self, slice: &[Self::T]) {
+        self.data = Arc::new(slice.to_vec())
+    }
+}
+
 fn unary_op<T, Sh, F>(x: Buffer<'_, Sh, T>, f: F) -> Buffer<'_, Sh, T>
 where
     T: Clone + Sync + Send + DType,

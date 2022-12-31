@@ -20,53 +20,53 @@ use duplicate::duplicate_item;
 /// If you want to use sparse tensors with chunky DTypes, please provide your own device for best performance.
 pub trait DType: Clone {
     /// Get this type as static string
-    const STR: &'static str;
+    const DTYPE_STR: &'static str;
 }
 
 impl DType for f32 {
-    const STR: &'static str = "f32";
+    const DTYPE_STR: &'static str = "f32";
 }
 impl DType for f64 {
-    const STR: &'static str = "f64";
+    const DTYPE_STR: &'static str = "f64";
 }
 impl DType for i8 {
-    const STR: &'static str = "i8";
+    const DTYPE_STR: &'static str = "i8";
 }
 impl DType for i16 {
-    const STR: &'static str = "i16";
+    const DTYPE_STR: &'static str = "i16";
 }
 impl DType for i32 {
-    const STR: &'static str = "i32";
+    const DTYPE_STR: &'static str = "i32";
 }
 impl DType for i64 {
-    const STR: &'static str = "i64";
+    const DTYPE_STR: &'static str = "i64";
 }
 impl DType for i128 {
-    const STR: &'static str = "i128";
+    const DTYPE_STR: &'static str = "i128";
 }
 impl DType for isize {
-    const STR: &'static str = "isize";
+    const DTYPE_STR: &'static str = "isize";
 }
 impl DType for u8 {
-    const STR: &'static str = "u8";
+    const DTYPE_STR: &'static str = "u8";
 }
 impl DType for u16 {
-    const STR: &'static str = "u16";
+    const DTYPE_STR: &'static str = "u16";
 }
 impl DType for u32 {
-    const STR: &'static str = "u32";
+    const DTYPE_STR: &'static str = "u32";
 }
 impl DType for u64 {
-    const STR: &'static str = "u64";
+    const DTYPE_STR: &'static str = "u64";
 }
 impl DType for u128 {
-    const STR: &'static str = "u128";
+    const DTYPE_STR: &'static str = "u128";
 }
 impl DType for usize {
-    const STR: &'static str = "usize";
+    const DTYPE_STR: &'static str = "usize";
 }
 impl DType for bool {
-    const STR: &'static str = "bool";
+    const DTYPE_STR: &'static str = "bool";
 }
 
 impl<T> HasShape for T
