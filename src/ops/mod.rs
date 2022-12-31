@@ -68,7 +68,7 @@ pub trait HasShape {
 
 /// # HasMax
 /// 
-/// This trait is implemeted for [DType's](crate::dtype::DType) that have global maximum
+/// This trait is implemeted for [DType's](crate::device::DType) that have global maximum
 pub trait HasMax {
     /// Global maximum of tensor
     fn max() -> Self;

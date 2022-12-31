@@ -65,7 +65,7 @@ where
 /// Each buffer has a shape and data stored in vec.
 /// Data is stored in row major order.
 /// 
-/// By default buffers use f32 [DType](crate::dtype::DType).
+/// By default buffers use f32 [DType](crate::device::DType).
 /// 
 /// Create cpu [Buffer]:
 /// ```
@@ -526,17 +526,17 @@ where
 
 /// The idea behind this iterator is that you can provide custom shape and strides
 #[derive(Debug, Clone, PartialEq)]
-pub struct BufferIter<'a, T> {
+struct BufferIter<'a, T> {
     /// Shape can be changed
-    pub shape: alloc::vec::Vec<usize>,
+    shape: alloc::vec::Vec<usize>,
     /// Strides can be changed
-    pub strides: alloc::vec::Vec<usize>,
+    strides: alloc::vec::Vec<usize>,
     i: usize,
     k: usize,
     data: &'a alloc::vec::Vec<T>,
 }
 
-impl<'a, T, Sh> IntoIterator for &'a Buffer<'_, Sh, T>
+/*impl<'a, T, Sh> IntoIterator for &'a Buffer<'_, Sh, T>
 where
     Sh: Shape,
     T: DType,
@@ -553,9 +553,9 @@ where
             data: &self.data,
         }
     }
-}
+}*/
 
-impl<Sh, T> Buffer<'_, Sh, T>
+/*impl<Sh, T> Buffer<'_, Sh, T>
 where
     Sh: Shape,
     T: DType,
@@ -564,7 +564,7 @@ where
     pub fn iter(&self) -> BufferIter<'_, T> {
         self.into_iter()
     }
-}
+}*/
 
 impl<T> Iterator for BufferIter<'_, T>
 where

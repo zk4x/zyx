@@ -1,7 +1,7 @@
 //! CPU Module
 //! 
 //! This module contains implementation of opencl device and buffer
-//! OpenCL [device]super::Device) is a struct that holds information about your GPU.
+//! OpenCL [device](super::Device) is a struct that holds information about your GPU.
 //! Optionally, this can also use your CPU, with appropriate runtime, such as [pocl](http://portablecl.org/).
 //! 
 //! [Buffer] is multidimensional storage type using gpu for the calculations.
@@ -113,7 +113,7 @@ fn opencl_device() {
 /// Each buffer has a shape and data.
 /// Data is stored in row major order.
 /// 
-/// By default buffers use f32 [DType](crate::dtype::DType).
+/// By default buffers use f32 [DType](crate::device::DType).
 /// 
 /// Create opencl [Buffer]:
 /// ```

@@ -12,7 +12,7 @@
 //! - zyx::ops::*
 //! ```
 //!
-//! Some functors in [nn][crate::nn] also require the buffer to implement binary operations with anything that implements [DType](crate::dtype::DType).
+//! Some functors in [nn][crate::nn] also require the buffer to implement binary operations with anything that implements [DType](crate::device::DType).
 //!
 //! The [ops module](crate::ops) documents how these operations should work.
 //!
@@ -51,7 +51,7 @@ pub use dtype::{DType, SType};
 /// # let gpu_device = opencl::Device::default();
 /// let gpu_buffer = gpu_device.buffer([2, 3, 4]);
 /// ```
-/// Buffers implemet [SType](crate::dtype::SType). That means they can have gradients attached:
+/// Buffers implemet [SType](crate::device::SType). That means they can have gradients attached:
 /// ```
 /// # use zyx::prelude::*;
 /// # use zyx::device::opencl;

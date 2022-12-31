@@ -22,6 +22,29 @@ use core::{
 };
 
 /// ReLU operation
+/// 
+/// Applies the rectified linear unit function element-wise:
+/// 
+/// &emsp; y = (x)<sup>+</sup> = max(0, x)
+///
+/// Parameters:
+///
+/// > ()
+/// 
+/// Input:
+/// 
+/// > anything that implements [ReLU](crate::ops::ReLU)
+///
+/// Example:
+/// ```
+/// # use zyx::prelude::*;
+/// # use zyx::device::cpu;
+/// # use zyx::nn::ReLU;
+/// # let device = cpu::Device::default();
+/// let x = device.buffer([-1., 2.]);
+/// let y = x.apply(&ReLU {});
+/// assert_eq!(y, [0., 2.]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReLU;
 
@@ -41,6 +64,29 @@ impl<'p> HasParameters<'p> for ReLU {
 }
 
 /// Exp operation
+/// 
+/// Returns a new tensor with the exponential of the elements of the input tensor.
+/// 
+/// &emsp; y = e<sup>x</sup>
+///
+/// Parameters:
+///
+/// > ()
+/// 
+/// Input:
+/// 
+/// > anything that implements [Exp](crate::ops::Exp)
+///
+/// Example:
+/// ```
+/// # use zyx::prelude::*;
+/// # use zyx::device::cpu;
+/// # use zyx::nn::Exp;
+/// # let device = cpu::Device::default();
+/// let x = device.buffer([0., 2.]);
+/// let y = x.apply(&Exp {});
+/// assert_eq!(y, [1., 7.38905609893065]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Exp;
 
@@ -60,6 +106,29 @@ impl<'p> HasParameters<'p> for Exp {
 }
 
 /// Ln operation
+/// 
+/// Returns a new tensor with the natural logarithm of the elements of input.
+/// 
+/// &emsp; y = log<sub>e</sub>(x)
+///
+/// Parameters:
+///
+/// > ()
+/// 
+/// Input:
+/// 
+/// > anything that implements [Ln](crate::ops::Ln)
+///
+/// Example:
+/// ```
+/// # use zyx::prelude::*;
+/// # use zyx::device::cpu;
+/// # use zyx::nn::Ln;
+/// # let device = cpu::Device::default();
+/// let x = device.buffer([1., 2.]);
+/// let y = x.apply(&Ln {});
+/// assert_eq!(y, [0., 0.693147181]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ln;
 
@@ -79,6 +148,29 @@ impl<'p> HasParameters<'p> for Ln {
 }
 
 /// Tanh operation
+/// 
+/// Applies the Hyperbolic Tangent (Tanh) function element-wise.
+/// 
+/// &emsp; y = tanh(x)
+///
+/// Parameters:
+///
+/// > ()
+/// 
+/// Input:
+/// 
+/// > anything that implements [Tanh](crate::ops::Tanh)
+///
+/// Example:
+/// ```
+/// # use zyx::prelude::*;
+/// # use zyx::device::cpu;
+/// # use zyx::nn::Tanh;
+/// # let device = cpu::Device::default();
+/// let x = device.buffer([0., 2.]);
+/// let y = x.apply(&Tanh {});
+/// assert_eq!(y, [0., 0.96402758]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tanh;
 
@@ -98,6 +190,29 @@ impl<'p> HasParameters<'p> for Tanh {
 }
 
 /// Sigmoid operation
+/// 
+/// Applies the sigmoid function element-wise.
+/// 
+/// &emsp; y = σ(x)
+///
+/// Parameters:
+///
+/// > ()
+/// 
+/// Input:
+/// 
+/// > any [SType](crate::device::SType)
+///
+/// Example:
+/// ```
+/// # use zyx::prelude::*;
+/// # use zyx::device::cpu;
+/// # use zyx::nn::Sigmoid;
+/// # let device = cpu::Device::default();
+/// let x = device.buffer([0., 2.]);
+/// let y = x.apply(&Sigmoid {});
+/// assert_eq!(y, [0., 0.96402758]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sigmoid;
 

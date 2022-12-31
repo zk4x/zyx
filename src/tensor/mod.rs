@@ -54,12 +54,12 @@
 //! When an operation is performed with Buffer, a new Buffer is returned with result. Nothing magical happens.
 //! 
 //! When an operation is performed with Variable, a new Tensor is returned that holds reference to Variable's gradient.
-//! This Tensor contains a struct with name [Op]Backward[Operands], that hold's this pointer and calculates
+//! This Tensor contains a struct with name \[Op\]Backward\[Operands\], that hold's this pointer and calculates
 //! the gradient when backward is called on it.
 //! 
 //! We can imagine neural network as a tree, where leafs are Buffers and Variables and root/roots
 //! are Tensors. When an operation is performed with Tensor, it's consumed and it's grad_fn is moved to the resulting
-//! Tensor. So the last [Tensor] is the root of the tree and it holds all the closures with RefGradient<S> references to [Variable's](Variable) gradients.
+//! Tensor. So the last [Tensor] is the root of the tree and it holds all the closures with RefGradient references to [Variable's](Variable) gradients.
 //! If you want to have more the one [Tensor] to call .backward() on, you need to clone this Tensor
 //! or any of the intermediate Tensors. In this case, the library performs cloning of the closures.
 //!
