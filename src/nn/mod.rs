@@ -127,7 +127,7 @@ impl<'p> HasParameters<'p> for Exp {
 /// # let device = cpu::Device::default();
 /// let x = device.buffer([1., 2.]);
 /// let y = x.apply(&Ln {});
-/// assert_eq!(y, [0., 0.693147181]);
+/// assert_eq!(y, [0., 0.6931471805599453]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ln;
@@ -169,7 +169,7 @@ impl<'p> HasParameters<'p> for Ln {
 /// # let device = cpu::Device::default();
 /// let x = device.buffer([0., 2.]);
 /// let y = x.apply(&Tanh {});
-/// assert_eq!(y, [0., 0.96402758]);
+/// assert_eq!(y, [0., 0.9640275800758169]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tanh;
@@ -211,7 +211,7 @@ impl<'p> HasParameters<'p> for Tanh {
 /// # let device = cpu::Device::default();
 /// let x = device.buffer([0., 2.]);
 /// let y = x.apply(&Sigmoid {});
-/// assert_eq!(y, [0., 0.96402758]);
+/// assert_eq!(y, [0.5, 0.8807970779778823]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sigmoid;
