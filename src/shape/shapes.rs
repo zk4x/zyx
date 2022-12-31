@@ -7,6 +7,7 @@ and then this will be ready.
 */
 
 //! Shape module
+// TODO DOCS
 
 use core::{
     fmt::{Debug, Display},
@@ -18,6 +19,7 @@ use super::{Ax1, Ax2, Ax3, Ax4, Ax5};
 use super::{HasLast2Dims, HasLastDim, MatMulBy, PermutableBy, ReducableBy};
 
 /// Shape trait
+// TODO DOCS
 pub trait Shape:
     Default
     + Copy
@@ -49,6 +51,7 @@ pub trait Shape:
 }
 
 /// Shape with no dimensions. Used for scalars.
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Sh0 {}
 
@@ -94,6 +97,7 @@ impl Index<i32> for Sh0 {
 }
 
 /// Shape with 1 dimension
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Sh1<const D0: usize> {}
 
@@ -157,6 +161,7 @@ impl<const D0: usize> ReducableBy<Ax1<0>> for Sh1<D0> {
 }
 
 /// Shape with 2 dimensions
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Sh2<const D0: usize, const D1: usize> {}
 
@@ -250,6 +255,7 @@ impl<const M: usize, const K: usize, const N: usize> MatMulBy<Sh2<K, N>> for Sh2
 }
 
 /// Shape with 3 dimensions
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Sh3<const D0: usize, const D1: usize, const D2: usize> {}
 
@@ -391,6 +397,7 @@ impl<const D2: usize, const M: usize, const K: usize, const N: usize> MatMulBy<S
 }
 
 /// Shape with 4 dimensions
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Sh4<const D0: usize, const D1: usize, const D2: usize, const D3: usize> {}
 
@@ -690,6 +697,7 @@ impl<const D3: usize, const D2: usize, const M: usize, const K: usize, const N: 
 }
 
 /// Shape with 5 dimensions
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Sh5<const D0: usize, const D1: usize, const D2: usize, const D3: usize, const D4: usize>
 {}

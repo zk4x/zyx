@@ -165,6 +165,7 @@ impl<'g, S> GradientRef<'g, S> {
 /// Tensor is only created as a result of some operations on at least one [Variable].
 /// Tensor does not store it's gradient, but the gradient can be accessed during backward
 /// pass by using [GradHookT].
+// TODO DOCS
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tensor<S, GradFn> {
     data: S,
@@ -347,6 +348,7 @@ impl<S> Variable<S> {
 }*/
 
 /// Gradient hook for [Variable]
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct GradHookV<'g, G, Hook> {
     grad: GradientRef<'g, G>,
@@ -385,6 +387,7 @@ impl<S> Variable<S> {
 }
 
 /// Gradient hook for [Tensor]
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct GradHookT<GradFn, HOOK> {
     grad_fn: GradFn,
@@ -407,6 +410,7 @@ impl<S, GradFn> Tensor<S, GradFn> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
+    // TODO DOCS
     pub fn register_hook<HOOK>(self, hook: HOOK) -> Tensor<S, GradHookT<GradFn, HOOK>>
     where
         HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea

@@ -5,6 +5,7 @@ use crate::{
 use core::ops::Mul;
 
 /// Backward function for calculating gradient of ReLU on Variable
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct ReLUBackwardV<'g, S, G> {
     grad: GradientRef<'g, G>,
@@ -39,6 +40,7 @@ where
 }
 
 /// Backward function for calculating gradient of ReLU on Tensor
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct ReLUBackwardT<S, F> {
     grad_fn: F,

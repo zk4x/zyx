@@ -66,6 +66,7 @@ use core::ops::{Mul, Sub};
 /// ```txt
 /// x.data = x.data - x.grad * learning_rate;
 /// ```
+// TODO DOCS
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct SGD {
     learning_rate: f32,

@@ -6,7 +6,7 @@
 pub mod axes;
 pub mod shapes;
 
-pub use axes::{Ax0, Ax1, Ax2, Ax3, Ax4, Ax5, Axes};
+pub use axes::{Ax1, Ax2, Ax3, Ax4, Ax5, Axes};
 pub use shapes::{Sh0, Sh1, Sh2, Sh3, Sh4, Sh5, Shape};
 
 /// HasLastDim

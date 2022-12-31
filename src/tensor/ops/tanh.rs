@@ -5,6 +5,7 @@ use crate::{
 use core::ops::{Mul, Sub};
 
 /// Backward function for calculating gradient of Tanh on Variable
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct TanhBackwardV<'g, S2, G> {
     grad: GradientRef<'g, G>,
@@ -42,6 +43,7 @@ where
 }
 
 /// Backward function for calculating gradient of Tanh on Tensor
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct TanhBackwardT<S2, F> {
     grad_fn: F,

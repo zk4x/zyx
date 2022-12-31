@@ -238,6 +238,7 @@ impl<'p> HasParameters<'p> for Sigmoid {
 
 /*
 /// Softmax operation
+// TODO DOCS
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SoftMax<Dims>
 where
@@ -293,6 +294,7 @@ fn softmax_test() {
 }
 
 /// Sum operation
+// TODO DOCS
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sum<Dims>
 where
@@ -321,6 +323,7 @@ where
 }
 
 /// Max operation
+// TODO DOCS
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Max<Dims>
 where
@@ -350,6 +353,7 @@ where
 }
 
 /// Minimizable operation
+// TODO DOCS
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Min<Dims>
 where
@@ -380,6 +384,7 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Mean operation
+// TODO DOCS
 pub struct Mean<Dims>
 where
     Dims: Axes,
@@ -409,6 +414,7 @@ where
 }
 
 /// MSE loss
+// TODO DOCS
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MSELoss;
 
@@ -444,6 +450,7 @@ use crate::device::BufferFromSlice;
 
 use self::parameters::HasParameters;
 /// Linear layer
+// TODO DOCS
 #[derive(Debug, Clone)]
 pub struct Linear<
     'd,
@@ -515,6 +522,7 @@ where
 }
 
 /// RNNCell
+// TODO DOCS
 // TODO: Should we rewrite this as two linear layers?
 #[derive(Debug, Clone)]
 pub struct RNNCell<

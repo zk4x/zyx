@@ -8,6 +8,7 @@ use core::{
 use super::PermutableBy;
 
 /// Axes trait
+// TODO DOCS
 pub trait Axes:
     Default
     + Copy
@@ -27,7 +28,7 @@ pub trait Axes:
     fn array() -> Self::AsArray; //fn array() -> [i32; Self::RANK];
 }
 
-/// Zero axes.
+/* /// Zero axes.
 /// Used in some operations with scalars, such as reduce operations.
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax0 {}
@@ -65,9 +66,10 @@ impl Index<i32> for Ax0 {
             index
         )
     }
-}
+}*/
 
 /// Single axis
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax1<const A0: i32> {}
 
@@ -114,6 +116,7 @@ impl<const A0: i32> Index<i32> for Ax1<A0> {
 }
 
 /// Two axes
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax2<const A0: i32, const A1: i32> {}
 
@@ -169,13 +172,12 @@ impl<const A0: i32, const A1: i32> PermutableBy<Ax2<1, 0>> for Ax2<A0, A1> {
 }
 
 /// Three axes
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax3<const A0: i32, const A1: i32, const A2: i32> {}
 
-// TODO Fix this
 impl<const A0: i32, const A1: i32, const A2: i32> Axes for Ax3<A0, A1, A2> {
     const RANK: usize = 3;
-    //type Argsort = Ax3<A0, A1, A2>;
     type AsArray = [i32; 3];
     fn array() -> Self::AsArray {
         [A0, A1, A2]
@@ -222,6 +224,7 @@ impl<const A0: i32, const A1: i32, const A2: i32> Index<i32> for Ax3<A0, A1, A2>
 }
 
 /// Four axes
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax4<const A0: i32, const A1: i32, const A2: i32, const A3: i32> {}
 
@@ -280,6 +283,7 @@ impl<const A0: i32, const A1: i32, const A2: i32, const A3: i32> Index<i32>
 }
 
 /// Five axes
+// TODO DOCS
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ax5<const A0: i32, const A1: i32, const A2: i32, const A3: i32, const A4: i32> {}
 

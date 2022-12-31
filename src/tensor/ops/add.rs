@@ -7,6 +7,7 @@ use core::ops::Add;
 use duplicate::duplicate_item;
 
 /// Backward function for calculating gradients of adding SType and Variable
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardSV<'g, YG> {
     ygrad: GradientRef<'g, YG>,
@@ -89,6 +90,7 @@ where
 }
 
 /// Backward function for calculating gradients of adding Variable and SType
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVS<'g, XG> {
     xgrad: GradientRef<'g, XG>,
@@ -121,6 +123,7 @@ where
 }
 
 /// Backward function for calculating gradients of adding two Variables
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVV<'g, XG, YG> {
     xgrad: GradientRef<'g, XG>,
@@ -157,6 +160,7 @@ where
 }
 
 /// Backward function for calculating gradients of adding Variable and Tensor
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardVT<'g, XG, YF> {
     xgrad: GradientRef<'g, XG>,
@@ -207,6 +211,7 @@ where
 }
 
 /// Backward function for calculating gradients of adding Tensor and Variable
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTV<'g, YG, XF> {
     xgrad_fn: XF,
@@ -243,6 +248,7 @@ where
 }
 
 /// Backward function for calculating gradients of adding two Tensors
+// TODO DOCS
 #[derive(Debug, Clone, Copy)]
 pub struct AddBackwardTT<XF, YF> {
     xgrad_fn: XF,
