@@ -17,7 +17,7 @@ where
     }
 }
 
-impl<S, T> ops::Zeros for ArrayBase<S, Dim<IxDynImpl>>
+impl<S, T> num_traits::Zeros for ArrayBase<S, Dim<IxDynImpl>>
 where
     T: Clone + Zero,
     S: DataOwned<Elem = T>,
@@ -29,7 +29,7 @@ where
     }
 }
 
-impl<S, T> ops::Zeros for ArrayBase<S, Dim<[usize; 1]>>
+impl<S, T> num_traits::Zeros for ArrayBase<S, Dim<[usize; 1]>>
 where
     T: Clone + Zero,
     S: DataOwned<Elem = T>,
@@ -40,7 +40,7 @@ where
     }
 }
 
-impl<S, T> ops::Zeros for ArrayBase<S, Dim<[usize; 2]>>
+impl<S, T> num_traits::Zeros for ArrayBase<S, Dim<[usize; 2]>>
 where
     T: Clone + Zero,
     S: DataOwned<Elem = T>,
@@ -51,7 +51,7 @@ where
     }
 }
 
-impl<S, T> ops::Zeros for ArrayBase<S, Dim<[usize; 3]>>
+impl<S, T> num_traits::Zeros for ArrayBase<S, Dim<[usize; 3]>>
 where
     T: Clone + Zero,
     S: DataOwned<Elem = T>,

@@ -17,6 +17,7 @@ categories = ["computer-vision", "science", "simulation", "text-processing"]
 [dependencies]
 #static_assertions = { version = "1.1" }
 duplicate = { version = "0.4" }
+num-traits = { version = "0.2" }
 rand = { version = "0.8" }
 rayon = { version = "1" }
 ocl = "0.19"

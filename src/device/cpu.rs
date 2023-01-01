@@ -188,7 +188,7 @@ where
 impl<Sh, T> ops::ZerosLike for Buffer<'_, Sh, T>
 where
     Sh: Shape,
-    T: DType + ops::Zero,
+    T: DType + num_traits::Zero,
 {
     fn zeros_like(&self) -> Self {
         Self {
@@ -295,7 +295,7 @@ where
 impl<'d, Sh, T, Dims> ops::Summable<Dims> for Buffer<'d, Sh, T>
 where
     Sh: ReducableBy<Dims>,
-    T: ops::Zero + core::ops::Add<Output = T> + DType,
+    T: num_traits::Zero + core::ops::Add<Output = T> + DType,
     Sh: Shape,
     Dims: Axes,
 {
@@ -450,7 +450,7 @@ where
 
 impl<'d, T, Sh, Dims, const N: usize> ops::Permutable<Dims> for Buffer<'d, Sh, T>
 where
-    T: ops::Zero + DType,
+    T: num_traits::Zero + DType,
     Sh: Shape<AsArray = [usize; N]> + PermutableBy<Dims>,
     <Sh as PermutableBy<Dims>>::Output: Shape,
     Dims: Axes + 'static,
@@ -526,7 +526,7 @@ where
 
 /*impl<T> ops::Slice for &Buffer<Sh, T>
 where
-    T: Clone + ops::Zeros + core::ops::Add<Output = T>,
+    T: Clone + num_traits::Zeros + core::ops::Add<Output = T>,
 {
     type Output = Buffer<Sh, T>;
     fn slice(self, dims: &[u8]) -> Self::Output {
@@ -1193,7 +1193,7 @@ where
 
 /*impl<T, Sh, Pd> ops::Conv<Pd> for Buffer<Sh, T>
 where
-    T: ops::Zeros<Sh = Ax0> + Clone + Add<Output = T> + Mul<Output = T> + DType,
+    T: num_traits::Zeros<Sh = Ax0> + Clone + Add<Output = T> + Mul<Output = T> + DType,
     Sh: Shape,
     Pd: Shape,
 {
@@ -1261,7 +1261,7 @@ where
 
 /// Get Buffer represented as vector.
 /// It is flattened with row major order.
-impl<Sh, T> ops::IntoVec<T> for Buffer<'_, Sh, T>
+impl<Sh, T> ops::IntoVec for Buffer<'_, Sh, T>
 where
     T: DType,
     Sh: Shape,

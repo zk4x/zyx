@@ -140,10 +140,10 @@ where
     /// ```
     fn zeros(&'d self) -> Buf
     where
-        Buf::T: Clone + crate::ops::Zero,
+        Buf::T: Clone + num_traits::Zero,
     {
         extern crate alloc;
-        use crate::ops::Zero;
+        use num_traits::Zero;
         self.slice(&alloc::vec![Buf::T::zero(); Buf::Sh::NUMEL])
     }
 
@@ -157,10 +157,10 @@ where
     /// ```
     fn ones(&'d self) -> Buf
     where
-        Buf::T: Clone + crate::ops::One,
+        Buf::T: Clone + num_traits::One,
     {
         extern crate alloc;
-        use crate::ops::One;
+        use num_traits::One;
         self.slice(&alloc::vec![Buf::T::one(); Buf::Sh::NUMEL])
     }
 }
@@ -279,7 +279,7 @@ where
     fn eye<const N: usize>(&mut self) -> Buf
     where
         Buf::Sh: Sh2<N>,
-        T: Clone + crate::ops::Zero + crate::ops::One,
+        T: Clone + crate::num_traits::Zero + crate::ops::One,
     {
         extern crate alloc;
         let mut data = alloc::vec![T::zero(); N*N];
@@ -294,7 +294,7 @@ where
 
 extern crate alloc;
 // Use this trait in devices to easily implement display
-trait NDBufferToString: HasDType + HasShape + crate::ops::IntoVec<Self::T>
+trait NDBufferToString: HasDType + HasShape + crate::ops::IntoVec
 where
     Self::Sh: HasLastDim,
     Self::T: core::fmt::Display,
@@ -359,7 +359,7 @@ where
 
 impl<Buf> NDBufferToString for Buf
 where
-    Buf: HasDType + HasShape + crate::ops::IntoVec<Buf::T>,
+    Buf: HasDType + HasShape + crate::ops::IntoVec,
     Buf::T: core::fmt::Display,
     Buf::Sh: HasLastDim,
 {

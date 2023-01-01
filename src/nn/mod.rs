@@ -12,7 +12,7 @@ pub use module::{ApplyModule, Module};
 
 use crate::{
     device::{cpu::Buffer, BufferInit},
-    ops::{self, HasDType, HasShape, IntoVariable, MatMul, One, Pow, Zero, ZerosLike},
+    ops::{self, HasDType, HasShape, IntoVariable, MatMul, Pow, ZerosLike},
     shape::{Axes, Sh2, Shape},
     tensor::Variable,
 };
@@ -219,7 +219,7 @@ pub struct Sigmoid;
 impl<Input> Module<'_, Input> for Sigmoid
 where
     Input: Neg + HasDType,
-    Input::T: ops::One,
+    Input::T: num_traits::One,
     <Input as Neg>::Output: ops::Exp,
     <<Input as Neg>::Output as ops::Exp>::Output: Add<Input::T>,
     <<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output: Pow<i32>,
@@ -227,6 +227,7 @@ where
     type Output = <<<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output as Pow<i32>>::Output;
     fn forward(&self, x: Input) -> Self::Output {
         use ops::Exp;
+        use num_traits::One;
         ((-x).exp() + Input::T::one()).pow(-1)
     }
 }
@@ -471,9 +472,9 @@ impl<'d, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize>
     Linear<'d, IN_FEATURES, OUT_FEATURES, W, B>
 where
     W: HasShape + HasDType,
-    W::T: Zero + One,
+    W::T: num_traits::Zero + num_traits::One,
     B: HasShape + HasDType,
-    B::T: Zero + One,
+    B::T: num_traits::Zero + num_traits::One,
 {
     /// Create new [Linear layer](Linear) with given in_features and out_features dimensions
     /// with parameters stored on given device.
@@ -485,6 +486,7 @@ where
         B: 'd + IntoVariable,
         B::T: rand::distributions::uniform::SampleUniform,
     {
+        use num_traits::{Zero, One};
         Self {
             dev: PhantomData,
             w: <Dev as BufferInit<'d, W>>::uniform(device, W::T::zero(), W::T::one()).with_grad(),
@@ -497,9 +499,9 @@ impl<'p, Input, W, B, const IN_FEATURES: usize, const OUT_FEATURES: usize> Modul
     for Linear<'_, IN_FEATURES, OUT_FEATURES, W, B>
 where
     W: 'p + HasShape + HasDType,
-    W::T: Zero + One,
+    W::T: num_traits::Zero + num_traits::One,
     B: 'p + HasShape + HasDType,
-    B::T: Zero + One,
+    B::T: num_traits::Zero + num_traits::One,
     Input: MatMul<&'p Variable<W>>,
     <Input as MatMul<&'p Variable<W>>>::Output: Add<&'p Variable<B>>,
 {
@@ -550,13 +552,13 @@ impl<'d, WI, BI, WH, BH, const INPUT_SIZE: usize, const HIDDEN_SIZE: usize>
     RNNCell<'d, INPUT_SIZE, HIDDEN_SIZE, WI, BI, WH, BH>
 where
     WI: HasShape + HasDType,
-    WI::T: Zero + One,
+    WI::T: num_traits::Zero + num_traits::One,
     BI: HasShape + HasDType,
-    BI::T: Zero + One,
+    BI::T: num_traits::Zero + num_traits::One,
     WH: HasShape + HasDType,
-    WH::T: Zero + One,
+    WH::T: num_traits::Zero + num_traits::One,
     BH: HasShape + HasDType,
-    BH::T: Zero + One,
+    BH::T: num_traits::Zero + num_traits::One,
 {
     /// Create new [RNNCell] with given input_size and output_size dimensions
     /// with parameters stored on given device.
@@ -572,6 +574,7 @@ where
         BH: 'd + IntoVariable,
         BH::T: rand::distributions::uniform::SampleUniform,
     {
+        use num_traits::{Zero, One};
         Self {
             dev: PhantomData,
             wih: <Dev as BufferInit<'d, WI>>::uniform(device, WI::T::zero(), WI::T::one()).with_grad(),
@@ -586,13 +589,13 @@ impl<'p, I, H, WI, BI, WH, BH, const INPUT_SIZE: usize, const HIDDEN_SIZE: usize
     for RNNCell<'_, INPUT_SIZE, HIDDEN_SIZE, WI, BI, WH, BH>
 where
     WI: 'p + HasShape + HasDType,
-    WI::T: Zero + One,
+    WI::T: num_traits::Zero + num_traits::One,
     BI: 'p + HasShape + HasDType,
-    BI::T: Zero + One,
+    BI::T: num_traits::Zero + num_traits::One,
     WH: 'p + HasShape + HasDType,
-    WH::T: Zero + One,
+    WH::T: num_traits::Zero + num_traits::One,
     BH: 'p + HasShape + HasDType,
-    BH::T: Zero + One,
+    BH::T: num_traits::Zero + num_traits::One,
     I: MatMul<&'p Variable<WI>>,
     <I as MatMul<&'p Variable<WI>>>::Output: Add<&'p Variable<BI>>,
     H: MatMul<&'p Variable<WH>>,

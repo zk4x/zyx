@@ -21,11 +21,9 @@ mod exp;
 mod has_max;
 mod has_min;
 mod ln;
-mod one;
 mod pow;
 mod relu;
 mod tanh;
-mod zero;
 mod zeros_like;
 
 use crate::shape::{Axes, ReducableBy, Shape};
@@ -123,61 +121,6 @@ where
     fn cinto(self) -> R {
         R::cfrom(self)
     }
-}
-
-/// ## Zero operation
-///
-/// Create new tensor initialized with zeros.
-/// ### Example
-/// ```
-/// use zyx::prelude::*;
-/// use zyx::device::cpu;
-/// use zyx::shape::Sh3;
-///
-/// let mut device = cpu::Device::default();
-///
-/// let x: cpu::Buffer<'_, Sh3<2, 3, 1>> = device.zeros();
-/// ```
-/// ### Output
-/// ```txt
-/// [0
-///  0
-///  0]
-/// [0
-///  0
-///  0]
-/// ```
-pub trait Zero {
-    /// Create new tensor initialized with zeros.
-    fn zero() -> Self;
-}
-
-/// ## One operation
-///
-/// Create new tensor initialized with ones.
-/// ### Example
-/// ```
-/// use zyx::prelude::*;
-/// use zyx::device::cpu::{Device, Buffer};
-/// use zyx::shape::Sh3;
-///
-/// let mut device = Device::default();
-///
-/// let x: Buffer<'_, Sh3<2, 3, 1>, i32> = device.ones();
-/// let y = x.shape();
-/// ```
-/// ### Output
-/// ```txt
-/// [1
-///  1
-///  1]
-/// [1
-///  1
-///  1]
-/// ```
-pub trait One {
-    /// Create new tensor initialized with ones.
-    fn one() -> Self;
 }
 
 // Unary ops
@@ -304,11 +247,11 @@ pub trait Sum {
         Self: Summable<Dims>;
 }
 
-impl<T> Sum for T {
-    fn sum<Dims>(self) -> T::Output
+impl<S> Sum for S {
+    fn sum<Dims>(self) -> S::Output
     where
         Dims: Axes,
-        T: Summable<Dims>,
+        S: Summable<Dims>,
     {
         self._sum()
     }
@@ -354,11 +297,11 @@ pub trait Max {
         Self: Maximizable<Dims>;
 }
 
-impl<T> Max for T {
-    fn max<Dims>(self) -> (T::Values, T::Indices)
+impl<S> Max for S {
+    fn max<Dims>(self) -> (S::Values, S::Indices)
     where
         Dims: Axes,
-        T: Maximizable<Dims>,
+        S: Maximizable<Dims>,
     {
         self._max()
     }
@@ -406,11 +349,11 @@ pub trait Min {
         Self: Minimizable<Dims>;
 }
 
-impl<T> Min for T {
-    fn min<Dims>(self) -> (T::Values, T::Indices)
+impl<S> Min for S {
+    fn min<Dims>(self) -> (S::Values, S::Indices)
     where
         Dims: Axes,
-        T: Minimizable<Dims>,
+        S: Minimizable<Dims>,
     {
         self._min()
     }
@@ -466,11 +409,11 @@ pub trait Reshape {
         Self: Reshapable<Sh>;
 }
 
-impl<T> Reshape for T {
-    fn reshape<Sh>(self) -> T::Output
+impl<S> Reshape for S {
+    fn reshape<Sh>(self) -> S::Output
     where
         Sh: Shape,
-        T: Reshapable<Sh>,
+        S: Reshapable<Sh>,
     {
         self._reshape()
     }
@@ -533,14 +476,14 @@ pub trait Expand {
 }
 
 // For this, as well as [Permute] and so on we need to differentiate public and private API due to compiler reasons
-impl<T> Expand for T {
-    fn expand<Sh, Ax>(self) -> T::Output
+impl<S> Expand for S {
+    fn expand<Sh, Ax>(self) -> S::Output
     where
         Sh: Shape,
         Ax: Axes,
         Self: HasShape,
         Sh: ReducableBy<Ax, Output = <Self as HasShape>::Sh>,
-        T: Expandable<Sh, Ax>,
+        S: Expandable<Sh, Ax>,
     {
         self._expand()
     }
@@ -596,11 +539,11 @@ pub trait Permute {
         Self: Permutable<Dims>;
 }
 
-impl<T> Permute for T {
-    fn permute<Dims>(self) -> T::Output
+impl<S> Permute for S {
+    fn permute<Dims>(self) -> S::Output
     where
         Dims: Axes,
-        T: Permutable<Dims>,
+        S: Permutable<Dims>,
     {
         self._permute()
     }
@@ -659,11 +602,11 @@ pub trait Transpose {
     fn transpose(self) -> Self::Output;
 }
 
-impl<T> Transpose for T
+impl<S> Transpose for S
 where
-    T: Permutable<crate::shape::Ax2<-1, -2>>,
+    S: Permutable<crate::shape::Ax2<-1, -2>>,
 {
-    type Output = T::Output;
+    type Output = S::Output;
     fn transpose(self) -> Self::Output {
         self.permute()
     }
@@ -752,9 +695,9 @@ extern crate alloc;
 ///
 /// Returns values from tensor as a Vec.
 /// It must have row major order.
-pub trait IntoVec<T> {
+pub trait IntoVec: HasDType {
     /// Returns values from tensor as a Vec with row-major order.
-    fn to_vec(&self) -> alloc::vec::Vec<T>;
+    fn to_vec(&self) -> alloc::vec::Vec<Self::T>;
 }
 
 /// Turn any datatype into [crate::tensor::Variable].

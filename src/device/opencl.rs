@@ -136,7 +136,7 @@ where
 impl<Sh, T> core::fmt::Display for Buffer<'_, Sh, T>
 where
     Sh: Shape + crate::shape::HasLastDim,
-    T: OclPrm + DType + core::fmt::Display + ops::Zero,
+    T: OclPrm + DType + core::fmt::Display + num_traits::Zero,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         use super::NDBufferToString;
@@ -174,7 +174,7 @@ where
 impl<Sh, T> ops::ZerosLike for Buffer<'_, Sh, T>
 where
     for<'a> Sh: Shape + 'a,
-    T: DType + ocl::OclPrm + ops::Zero,
+    T: DType + ocl::OclPrm + num_traits::Zero,
 {
     fn zeros_like(&self) -> Self {
         use super::BufferInit;
@@ -182,9 +182,9 @@ where
     }
 }
 
-impl<Sh, T> ops::IntoVec<T> for Buffer<'_, Sh, T>
+impl<Sh, T> ops::IntoVec for Buffer<'_, Sh, T>
 where
-    T: OclPrm + DType + ops::Zero,
+    T: OclPrm + DType + num_traits::Zero,
     Sh: Shape,
 {
     fn to_vec(&self) -> alloc::vec::Vec<T> {

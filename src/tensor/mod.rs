@@ -239,9 +239,9 @@ impl<S> Variable<S> {
     pub fn backward(&mut self)
     where
         S: crate::ops::HasDType + core::ops::Add<S::T, Output = S> + Clone,
-        S::T: crate::ops::One,
+        S::T: num_traits::One,
     {
-        use crate::ops::One;
+        use num_traits::One;
         GradientRef(&self.grad).accumulate(S::T::one());
     }
 }
@@ -295,12 +295,12 @@ impl<S, F> Tensor<S, F> {
     pub fn backward(self)
     where
         S: crate::ops::HasDType + crate::ops::ZerosLike + core::ops::Add<S::T>,
-        S::T: crate::ops::One,
+        S::T: num_traits::One,
         F: Backward<<S as core::ops::Add<S::T>>::Output>,
     {
         // NOTE: right now backward call is recursive.
         // Shall this pose a problem, we can switch to iterative version.
-        use crate::ops::One;
+        use num_traits::One;
         self.grad_fn.backward(self.data.zeros_like() + S::T::one());
     }
 }

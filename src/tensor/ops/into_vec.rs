@@ -1,5 +1,5 @@
 use crate::{
-    ops::IntoVec,
+    ops::{IntoVec, HasDType},
     tensor::{Tensor, Variable},
 };
 extern crate alloc;
@@ -15,20 +15,20 @@ where
     }
 }*/
 
-impl<S, T> IntoVec<T> for Variable<S>
+impl<S> IntoVec for Variable<S>
 where
-    S: Clone + IntoVec<T>,
+    S: IntoVec + HasDType,
 {
-    fn to_vec(&self) -> Vec<T> {
+    fn to_vec(&self) -> Vec<S::T> {
         self.data.clone().to_vec()
     }
 }
 
-impl<S, F, T> IntoVec<T> for Tensor<S, F>
+impl<S, F> IntoVec for Tensor<S, F>
 where
-    S: IntoVec<T>,
+    S: IntoVec + HasDType,
 {
-    fn to_vec(&self) -> Vec<T> {
+    fn to_vec(&self) -> Vec<S::T> {
         self.data.to_vec()
     }
 }
