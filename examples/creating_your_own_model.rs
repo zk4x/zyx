@@ -192,9 +192,7 @@ fn main() {
     // let's choose a loss function
     let mse_loss = (
         nn::MSELoss,
-        nn::Mean {
-            dims: Ax2::<0, 1> {},
-        },
+        nn::Mean::<Ax2<0, 1>>::new()
     );
 
     // Choose your optimizer

@@ -304,6 +304,19 @@ where
     dims: PhantomData<Dims>,
 }
 
+impl<Dims> Sum<Dims>
+where
+    Dims: Axes,
+{
+    /// Create new Sum functor
+    // TODO DOCS
+    pub fn new() -> Self {
+        Self {
+            dims: PhantomData,
+        }
+    }
+}
+
 impl<Input, Dims> Module<'_, Input> for Sum<Dims>
 where
     Input: ops::Summable<Dims>,
@@ -330,8 +343,21 @@ pub struct Max<Dims>
 where
     Dims: Axes,
 {
-    /// [Dimensions](crate::shape::Shape) to max
-    pub dims: Dims,
+    // [Dimensions](crate::shape::Shape) to max
+    dims: PhantomData<Dims>,
+}
+
+impl<Dims> Max<Dims>
+where
+    Dims: Axes,
+{
+    /// Create new Max functor
+    // TODO DOCS
+    pub fn new() -> Self {
+        Self {
+            dims: PhantomData,
+        }
+    }
 }
 
 impl<Input, Dims> Module<'_, Input> for Max<Dims>
@@ -360,8 +386,21 @@ pub struct Min<Dims>
 where
     Dims: Axes,
 {
-    /// [Dimensions](crate::shape::Shape) to min
-    pub dims: Dims,
+    // [Dimensions](crate::shape::Shape) to min
+    dims: PhantomData<Dims>,
+}
+
+impl<Dims> Min<Dims>
+where
+    Dims: Axes,
+{
+    /// Create new Min functor
+    // TODO DOCS
+    pub fn new() -> Self {
+        Self {
+            dims: PhantomData,
+        }
+    }
 }
 
 impl<Input, Dims> Module<'_, Input> for Min<Dims>
@@ -390,8 +429,21 @@ pub struct Mean<Dims>
 where
     Dims: Axes,
 {
-    /// [Dimensions](crate::shape::Shape) for mean
-    pub dims: Dims,
+    // [Dimensions](crate::shape::Shape) for mean
+    dims: PhantomData<Dims>,
+}
+
+impl<Dims> Mean<Dims>
+where
+    Dims: Axes,
+{
+    /// Create new Mean functor
+    // TODO DOCS
+    pub fn new() -> Self {
+        Self {
+            dims: PhantomData,
+        }
+    }
 }
 
 impl<Input, Dims> Module<'_, Input> for Mean<Dims>
@@ -605,6 +657,20 @@ where
     type Output = <<<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output as Add<<<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output>>::Output;
     fn forward(&'p self, x: (I, H)) -> Self::Output {
         (x.0.matmul(&self.wih) + &self.bih) + (x.1.matmul(&self.whh) + &self.bhh)
+    }
+}
+
+impl<'p, WI, BI, WH, BH, const IN_FEATURES: usize, const OUT_FEATURES: usize> HasParameters<'p>
+    for RNNCell<'_, IN_FEATURES, OUT_FEATURES, WI, BI, WH, BH>
+where
+    WI: 'p + HasShape + HasDType + ZerosLike,
+    BI: 'p + HasShape + HasDType + ZerosLike,
+    WH: 'p + HasShape + HasDType + ZerosLike,
+    BH: 'p + HasShape + HasDType + ZerosLike,
+{
+    type Params = (&'p mut Variable<WI>, &'p mut Variable<BI>, &'p mut Variable<WH>, &'p mut Variable<BH>);
+    fn parameters(&'p mut self) -> Self::Params {
+        (&mut self.wih, &mut self.bih, &mut self.whh, &mut self.bhh)
     }
 }
 
