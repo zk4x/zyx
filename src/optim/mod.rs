@@ -59,7 +59,7 @@
 //!
 
 mod sgd;
-mod npy;
+mod numpy_rw;
 
-pub use npy::NumpyRW;
+pub use numpy_rw::NumpyRW;
 pub use sgd::{SGD, SGDStep};
