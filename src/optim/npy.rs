@@ -15,9 +15,8 @@ fn read_file() {
 
     x.load_npz("file.npy").unwrap();
 
-    std::println!("{}", x);
-
-    panic!()
+    assert_eq!(x.data().clone(), [2., 3., 1.]);
+    //std::println!("{}", x);
 }
 
 static NUMPY_FILE_TYPE: &[u8] = b"\x93NUMPY";
@@ -45,7 +44,7 @@ where
 {
     fn save_npz(self, path: P) -> std::io::Result<()> {
         let vec = self.data.to_vec();
-        save_npy::<P, S::Sh, S::T>(path, vec)?;
+        //save_npy::<P, S::Sh, S::T>(path, vec)?;
         Ok(())
     }
 
@@ -66,18 +65,36 @@ where
     // read the file using buffered reader
     let mut buf_reader = BufReader::new(File::open(path)?);
 
+    fn check_input(buf: &[u8], i: usize, chars: &[u8]) -> Result<usize, NpyError> {
+        for (offset, &c) in chars.iter().enumerate() {
+            if buf[i + offset] != c {
+                let expected = chars.to_vec();
+                let found = buf[i..i + offset + 1].to_vec();
+                let expected_str = String::from_utf8(expected.clone())?;
+                let found_str = String::from_utf8(found.clone())?;
+                return Err(NpyError::Parsing {
+                    expected,
+                    found,
+                    expected_str,
+                    found_str,
+                });
+            }
+        }
+        Ok(i + chars.len())
+    }
+
     // get the type of the file, this is static string
     // marking the file as numpy file
     let mut file_type = [0; 6];
     buf_reader.read_exact(&mut file_type)?;
     if file_type != NUMPY_FILE_TYPE {
-        return Err(NpyError::FileTypeError(file_type));
+        return Err(NpyError::FileType(file_type));
     }
     // check if it is supported version
     let mut version = [0; 2];
     buf_reader.read_exact(&mut version)?;
     if version != NUMPY_VERSION {
-        return Err(NpyError::VersionError(version));
+        return Err(NpyError::Version(version));
     }
     // get length of the header
     let mut header_len_bytes = [0; 2];
@@ -88,76 +105,65 @@ where
     let mut header: Vec<u8> = std::vec![0; header_len as usize];
     buf_reader.read_exact(&mut header)?;
     // i is iterator over the numpy file header
-    let mut i = expect(&header, 0, b"{'descr': '")?;
+    let mut i = check_input(&header, 0, b"{'descr': '")?;
     // get endianness of the file
-    let endian = match header[i] {
-        b'>' => Endianness::Big,
-        b'<' => Endianness::Little,
-        b'=' => Endianness::Native,
-        _ => return Err(NpyError::AlignmentError),
-    };
+    let endian = header[i];
     i += 1;
     // get dtype
-    let i = expect(&header, i, T::NUMPY_DTYPE_STR.as_bytes())?;
-    let i = expect(&header, i, b"', ")?;
+    let i = check_input(&header, i, T::NUMPY_DTYPE_STR.as_bytes())?;
+    let i = check_input(&header, i, b"', ")?;
     // check if fortran order is False (we support only row-major tensors)
-    let i = expect(&header, i, b"'fortran_order': False, ")?;
+    let i = check_input(&header, i, b"'fortran_order': False, ")?;
     // check if shape is correct
-    let i = expect(&header, i, b"'shape': (")?;
+    let i = check_input(&header, i, b"'shape': (")?;
     use std::string::ToString;
     let mut shape_as_string: String = Sh::array().into_iter().map(|d| d.to_string()).collect::<Vec<String>>().join(", ");
     // numpy shapes end with , if they have only one dimension.
     if Sh::RANK == 1 { 
         shape_as_string += ",";
     };
-    let i = expect(&header, i, shape_as_string.as_bytes())?;
+    let i = check_input(&header, i, shape_as_string.as_bytes())?;
     // end of header
-    expect(&header, i, b"), }")?;
+    check_input(&header, i, b"), }")?;
 
     // rest of the file is actual data with given endianness,
     // so load it into a buffer
     let mut buf = Vec::with_capacity(Sh::NUMEL);
-    for _ in 0..Sh::NUMEL {
-        buf.push(T::read_endian(&mut buf_reader, endian)?);
-    }
+    match endian {
+        b'>' => 
+            for _ in 0..Sh::NUMEL {
+                buf.push(T::read_be(&mut buf_reader)?);
+            },
+        b'<' =>
+            for _ in 0..Sh::NUMEL {
+                buf.push(T::read_le(&mut buf_reader)?);
+            },
+        b'=' =>
+            for _ in 0..Sh::NUMEL {
+                buf.push(T::read_ne(&mut buf_reader)?);
+            },
+        _ => return Err(NpyError::Alignment),
+    };
 
     // and return the buffer
     Ok(buf)
 }
 
-fn expect(buf: &[u8], i: usize, chars: &[u8]) -> Result<usize, NpyError> {
-    for (offset, &c) in chars.iter().enumerate() {
-        if buf[i + offset] != c {
-            let expected = chars.to_vec();
-            let found = buf[i..i + offset + 1].to_vec();
-            let expected_str = String::from_utf8(expected.clone())?;
-            let found_str = String::from_utf8(found.clone())?;
-            return Err(NpyError::ParsingError {
-                expected,
-                found,
-                expected_str,
-                found_str,
-            });
-        }
-    }
-    Ok(i + chars.len())
-}
-
 #[derive(Debug)]
 pub enum NpyError {
     /// Unrecognized file type.
-    FileTypeError([u8; 6]),
+    FileType([u8; 6]),
 
     // Unsupported numpy version.
-    VersionError([u8; 2]),
+    Version([u8; 2]),
 
     /// Unable to read file due to io error.
-    StdIoError(std::io::Error),
+    StdIo(std::io::Error),
 
     /// Unable to convert numpy file header to utf-8 encoded [String].
-    Utf8Error(std::string::FromUtf8Error),
+    Utf8(std::string::FromUtf8Error),
 
-    ParsingError {
+    Parsing {
         expected: Vec<u8>,
         found: Vec<u8>,
         expected_str: String,
@@ -165,17 +171,17 @@ pub enum NpyError {
     },
 
     /// Incorrect alignment for reading files with given [Endianness](Endianness)
-    AlignmentError,
+    Alignment,
 }
 
 impl std::fmt::Display for NpyError {
     fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            NpyError::FileTypeError(num) => write!(fmt, "Could not determine the file type: {:?}", num),
-            NpyError::VersionError(ver) => write!(fmt, "Incorrect numpy version: {:?}", ver),
-            NpyError::StdIoError(err) => write!(fmt, "{}", err),
-            NpyError::Utf8Error(err) => write!(fmt, "{}", err),
-            NpyError::ParsingError {
+            NpyError::FileType(num) => write!(fmt, "Could not determine the file type: {:?}", num),
+            NpyError::Version(ver) => write!(fmt, "Incorrect numpy version: {:?}", ver),
+            NpyError::StdIo(err) => write!(fmt, "{}", err),
+            NpyError::Utf8(err) => write!(fmt, "{}", err),
+            NpyError::Parsing {
                 expected: _,
                 found: _,
                 expected_str,
@@ -185,7 +191,7 @@ impl std::fmt::Display for NpyError {
                 "Could not parse the file, expected {} found {}",
                 expected_str, found_str
             ),
-            NpyError::AlignmentError => write!(fmt, "Incorrect endian alignment"),
+            NpyError::Alignment => write!(fmt, "Incorrect endian alignment"),
         }
     }
 }
@@ -193,8 +199,8 @@ impl std::fmt::Display for NpyError {
 impl std::error::Error for NpyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            NpyError::StdIoError(err) => Some(err),
-            NpyError::Utf8Error(err) => Some(err),
+            NpyError::StdIo(err) => Some(err),
+            NpyError::Utf8(err) => Some(err),
             _ => None,
         }
     }
@@ -202,22 +208,14 @@ impl std::error::Error for NpyError {
 
 impl From<std::io::Error> for NpyError {
     fn from(e: std::io::Error) -> Self {
-        Self::StdIoError(e)
+        Self::StdIo(e)
     }
 }
 
 impl From<std::string::FromUtf8Error> for NpyError {
     fn from(e: std::string::FromUtf8Error) -> Self {
-        Self::Utf8Error(e)
+        Self::Utf8(e)
     }
-}
-
-/// Endianness types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endianness {
-    Big,
-    Little,
-    Native,
 }
 
 /// NumpyDType
@@ -228,53 +226,44 @@ pub enum Endianness {
 /// Enables us to read and write them with given endianness.
 pub trait NumpyDType: Sized {
     const NUMPY_DTYPE_STR: &'static str;
-
-    fn read_endian<R: Read>(reader: &mut R, endian: Endianness) -> std::io::Result<Self>;
-
-    fn write_endian<W: Write>(&self, writer: &mut W, endian: Endianness) -> std::io::Result<()>;
+    fn read_be<R: Read>(reader: &mut R) -> std::io::Result<Self>;
+    fn read_le<R: Read>(reader: &mut R) -> std::io::Result<Self>;
+    fn read_ne<R: Read>(reader: &mut R) -> std::io::Result<Self>;
+    fn write_be<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
+    fn write_le<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
+    fn write_ne<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
 }
 
 impl NumpyDType for f32 {
     const NUMPY_DTYPE_STR: &'static str = "f4";
-
-    fn read_endian<R: Read>(reader: &mut R, endian: Endianness) -> std::io::Result<Self> {
+    fn read_be<R: Read>(reader: &mut R) -> std::io::Result<Self> {
         let mut bytes = [0; 4];
         reader.read_exact(&mut bytes)?;
-        Ok(match endian {
-            Endianness::Big => Self::from_be_bytes(bytes),
-            Endianness::Little => Self::from_le_bytes(bytes),
-            Endianness::Native => Self::from_ne_bytes(bytes),
-        })
+        Ok(Self::from_be_bytes(bytes))
     }
 
-    fn write_endian<W: Write>(&self, writer: &mut W, endian: Endianness) -> std::io::Result<()> {
-        match endian {
-            Endianness::Big => writer.write_all(&self.to_be_bytes()),
-            Endianness::Little => writer.write_all(&self.to_le_bytes()),
-            Endianness::Native => writer.write_all(&self.to_ne_bytes()),
-        }
-    }
-}
-
-impl NumpyDType for f64 {
-    const NUMPY_DTYPE_STR: &'static str = "f8";
-
-    fn read_endian<R: Read>(reader: &mut R, endian: Endianness) -> std::io::Result<Self> {
-        let mut bytes = [0; 8];
+    fn read_le<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut bytes = [0; 4];
         reader.read_exact(&mut bytes)?;
-        Ok(match endian {
-            Endianness::Big => Self::from_be_bytes(bytes),
-            Endianness::Little => Self::from_le_bytes(bytes),
-            Endianness::Native => Self::from_ne_bytes(bytes),
-        })
+        Ok(Self::from_le_bytes(bytes))
     }
 
-    fn write_endian<W: Write>(&self, writer: &mut W, endian: Endianness) -> std::io::Result<()> {
-        match endian {
-            Endianness::Big => writer.write_all(&self.to_be_bytes()),
-            Endianness::Little => writer.write_all(&self.to_le_bytes()),
-            Endianness::Native => writer.write_all(&self.to_ne_bytes()),
-        }
+    fn read_ne<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut bytes = [0; 4];
+        reader.read_exact(&mut bytes)?;
+        Ok(Self::from_ne_bytes(bytes))
+    }
+
+    fn write_be<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&self.to_be_bytes())
+    }
+
+    fn write_le<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&self.to_le_bytes())
+    }
+
+    fn write_ne<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&self.to_ne_bytes())
     }
 }
 

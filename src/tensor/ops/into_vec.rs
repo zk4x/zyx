@@ -20,7 +20,7 @@ where
     S: IntoVec + HasDType,
 {
     fn to_vec(&self) -> Vec<S::T> {
-        self.data.clone().to_vec()
+        self.data.to_vec()
     }
 }
 
