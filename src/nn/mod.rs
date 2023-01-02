@@ -11,7 +11,7 @@ pub mod parameters;
 pub use module::{ApplyModule, Module};
 
 use crate::{
-    device::{cpu::Buffer, BufferInit},
+    nn::parameters::HasParameters,
     ops::{self, HasDType, HasShape, IntoVariable, MatMul, Pow, ZerosLike},
     shape::{Axes, Sh2, Shape},
     tensor::Variable,
@@ -22,17 +22,17 @@ use core::{
 };
 
 /// ReLU operation
-/// 
+///
 /// Applies the rectified linear unit function element-wise:
-/// 
+///
 /// &emsp; y = (x)<sup>+</sup> = max(0, x)
 ///
 /// Parameters:
 ///
 /// > ()
-/// 
+///
 /// Input:
-/// 
+///
 /// > anything that implements [ReLU](crate::ops::ReLU)
 ///
 /// Example:
@@ -64,17 +64,17 @@ impl<'p> HasParameters<'p> for ReLU {
 }
 
 /// Exp operation
-/// 
+///
 /// Returns a new tensor with the exponential of the elements of the input tensor.
-/// 
+///
 /// &emsp; y = e<sup>x</sup>
 ///
 /// Parameters:
 ///
 /// > ()
-/// 
+///
 /// Input:
-/// 
+///
 /// > anything that implements [Exp](crate::ops::Exp)
 ///
 /// Example:
@@ -106,17 +106,17 @@ impl<'p> HasParameters<'p> for Exp {
 }
 
 /// Ln operation
-/// 
+///
 /// Returns a new tensor with the natural logarithm of the elements of input.
-/// 
+///
 /// &emsp; y = log<sub>e</sub>(x)
 ///
 /// Parameters:
 ///
 /// > ()
-/// 
+///
 /// Input:
-/// 
+///
 /// > anything that implements [Ln](crate::ops::Ln)
 ///
 /// Example:
@@ -148,17 +148,17 @@ impl<'p> HasParameters<'p> for Ln {
 }
 
 /// Tanh operation
-/// 
+///
 /// Applies the Hyperbolic Tangent (Tanh) function element-wise.
-/// 
+///
 /// &emsp; y = tanh(x)
 ///
 /// Parameters:
 ///
 /// > ()
-/// 
+///
 /// Input:
-/// 
+///
 /// > anything that implements [Tanh](crate::ops::Tanh)
 ///
 /// Example:
@@ -190,17 +190,17 @@ impl<'p> HasParameters<'p> for Tanh {
 }
 
 /// Sigmoid operation
-/// 
+///
 /// Applies the sigmoid function element-wise.
-/// 
+///
 /// &emsp; y = σ(x)
 ///
 /// Parameters:
 ///
 /// > ()
-/// 
+///
 /// Input:
-/// 
+///
 /// > any [SType](crate::device::SType)
 ///
 /// Example:
@@ -226,8 +226,8 @@ where
 {
     type Output = <<<<Input as Neg>::Output as ops::Exp>::Output as Add<Input::T>>::Output as Pow<i32>>::Output;
     fn forward(&self, x: Input) -> Self::Output {
-        use ops::Exp;
         use num_traits::One;
+        use ops::Exp;
         ((-x).exp() + Input::T::one()).pow(-1)
     }
 }
@@ -311,9 +311,7 @@ where
     /// Create new Sum functor
     // TODO DOCS
     pub fn new() -> Self {
-        Self {
-            dims: PhantomData,
-        }
+        Self { dims: PhantomData }
     }
 }
 
@@ -354,9 +352,7 @@ where
     /// Create new Max functor
     // TODO DOCS
     pub fn new() -> Self {
-        Self {
-            dims: PhantomData,
-        }
+        Self { dims: PhantomData }
     }
 }
 
@@ -397,9 +393,7 @@ where
     /// Create new Min functor
     // TODO DOCS
     pub fn new() -> Self {
-        Self {
-            dims: PhantomData,
-        }
+        Self { dims: PhantomData }
     }
 }
 
@@ -440,9 +434,7 @@ where
     /// Create new Mean functor
     // TODO DOCS
     pub fn new() -> Self {
-        Self {
-            dims: PhantomData,
-        }
+        Self { dims: PhantomData }
     }
 }
 
@@ -499,9 +491,7 @@ impl<Input> Module<Input> for NormLayer {
     }
 }*/
 
-use crate::device::BufferFromSlice;
-
-use self::parameters::HasParameters;
+/*use self::parameters::HasParameters;
 /// Linear layer
 // TODO DOCS
 #[derive(Debug, Clone)]
@@ -538,7 +528,7 @@ where
         B: 'd + IntoVariable,
         B::T: rand::distributions::uniform::SampleUniform,
     {
-        use num_traits::{Zero, One};
+        use num_traits::{One, Zero};
         Self {
             dev: PhantomData,
             w: <Dev as BufferInit<'d, W>>::uniform(device, W::T::zero(), W::T::one()).with_grad(),
@@ -616,7 +606,10 @@ where
     /// with parameters stored on given device.
     pub fn new<Dev>(device: &'d Dev) -> Self
     where
-        Dev: BufferFromSlice<'d, WI> + BufferFromSlice<'d, BI> + BufferFromSlice<'d, WH> + BufferFromSlice<'d, BH>,
+        Dev: BufferFromSlice<'d, WI>
+            + BufferFromSlice<'d, BI>
+            + BufferFromSlice<'d, WH>
+            + BufferFromSlice<'d, BH>,
         WI: 'd + IntoVariable,
         WI::T: rand::distributions::uniform::SampleUniform,
         BI: 'd + IntoVariable,
@@ -626,13 +619,17 @@ where
         BH: 'd + IntoVariable,
         BH::T: rand::distributions::uniform::SampleUniform,
     {
-        use num_traits::{Zero, One};
+        use num_traits::{One, Zero};
         Self {
             dev: PhantomData,
-            wih: <Dev as BufferInit<'d, WI>>::uniform(device, WI::T::zero(), WI::T::one()).with_grad(),
-            bih: <Dev as BufferInit<'d, BI>>::uniform(device, BI::T::zero(), BI::T::one()).with_grad(),
-            whh: <Dev as BufferInit<'d, WH>>::uniform(device, WH::T::zero(), WH::T::one()).with_grad(),
-            bhh: <Dev as BufferInit<'d, BH>>::uniform(device, BH::T::zero(), BH::T::one()).with_grad(),
+            wih: <Dev as BufferInit<'d, WI>>::uniform(device, WI::T::zero(), WI::T::one())
+                .with_grad(),
+            bih: <Dev as BufferInit<'d, BI>>::uniform(device, BI::T::zero(), BI::T::one())
+                .with_grad(),
+            whh: <Dev as BufferInit<'d, WH>>::uniform(device, WH::T::zero(), WH::T::one())
+                .with_grad(),
+            bhh: <Dev as BufferInit<'d, BH>>::uniform(device, BH::T::zero(), BH::T::one())
+                .with_grad(),
         }
     }
 }
@@ -652,9 +649,13 @@ where
     <I as MatMul<&'p Variable<WI>>>::Output: Add<&'p Variable<BI>>,
     H: MatMul<&'p Variable<WH>>,
     <H as MatMul<&'p Variable<WH>>>::Output: Add<&'p Variable<BH>>,
-    <<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output: Add<<<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output>,
+    <<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output:
+        Add<<<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output>,
 {
-    type Output = <<<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output as Add<<<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output>>::Output;
+    type Output =
+        <<<I as MatMul<&'p Variable<WI>>>::Output as Add<&'p Variable<BI>>>::Output as Add<
+            <<H as MatMul<&'p Variable<WH>>>::Output as Add<&'p Variable<BH>>>::Output,
+        >>::Output;
     fn forward(&'p self, x: (I, H)) -> Self::Output {
         (x.0.matmul(&self.wih) + &self.bih) + (x.1.matmul(&self.whh) + &self.bhh)
     }
@@ -668,11 +669,16 @@ where
     WH: 'p + HasShape + HasDType + ZerosLike,
     BH: 'p + HasShape + HasDType + ZerosLike,
 {
-    type Params = (&'p mut Variable<WI>, &'p mut Variable<BI>, &'p mut Variable<WH>, &'p mut Variable<BH>);
+    type Params = (
+        &'p mut Variable<WI>,
+        &'p mut Variable<BI>,
+        &'p mut Variable<WH>,
+        &'p mut Variable<BH>,
+    );
     fn parameters(&'p mut self) -> Self::Params {
         (&mut self.wih, &mut self.bih, &mut self.whh, &mut self.bhh)
     }
-}
+}*/
 
 /*impl<WI, BI, WH, BH> RNNCell<WI, BI, WH, BH> {
     /// Create new [RNNCell] with given input_size and hidden_size dimensions

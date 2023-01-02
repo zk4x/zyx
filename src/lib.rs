@@ -66,6 +66,15 @@ extern crate std;
 #[cfg(test)]
 mod tests;
 
+// Names for generics
+//
+// A - Axes
+// S - Shape
+// T - DType
+// D - Device
+// B - Buffer
+// V - Variable
+
 // TODO:
 // saving of models and buffers (probably via .to_vec() and .shape(), and .from_slice())
 // convolution ops for tensor

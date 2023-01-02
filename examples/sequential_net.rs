@@ -2,7 +2,7 @@
 
 fn main() {
     use zyx::device::cpu;
-    use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid, Tanh};
+    use zyx::nn::{Linear, MSELoss, Mean, ReLU, Sigmoid};
     use zyx::optim;
     use zyx::prelude::*;
     use zyx::shape::Ax1;
@@ -10,23 +10,22 @@ fn main() {
     let device = cpu::Device::default();
 
     let mut network = (
-        Linear::<1, 20>::new(&device),
+        Linear::<1, 200>::new(&device),
         ReLU,
-        Linear::<20, 50>::new(&device),
-        Tanh,
-        Linear::<50, 1>::new(&device),
+        Linear::<200, 2000>::new(&device),
+        ReLU,
+        Linear::<2000, 500>::new(&device),
+        ReLU,
+        Linear::<500, 1>::new(&device),
         Sigmoid,
     );
 
     // MSELoss does not reduce it's output (it's just (y-yp)^2), you need to add some reduce function if you want to apply reduce
-    let mse_loss = (
-        MSELoss,
-        Mean::<Ax1<0>>::new(),
-    );
+    let mse_loss = (MSELoss, Mean::<Ax1<0>>::new());
 
     let optimizer = optim::SGD::new().with_learning_rate(0.03);
 
-    for _ in 0..100 {
+    for _ in 0..10 {
         for i in 0..100 {
             network.parameters().zero_grad();
 

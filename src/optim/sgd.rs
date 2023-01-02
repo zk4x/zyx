@@ -45,9 +45,9 @@ pub trait SGDStep {
 }
 
 use crate::tensor::Variable;
-impl<S> SGDStep for &mut Variable<S>
+impl<B> SGDStep for &mut Variable<B>
 where
-    S: Clone + Mul<f32> + Sub<<S as Mul<f32>>::Output, Output = S>,
+    B: Clone + Mul<f32> + Sub<<B as Mul<f32>>::Output, Output = B>,
 {
     fn step(self, optim: &SGD) {
         self.data = self.data.clone() - self.grad().clone() * optim.learning_rate;

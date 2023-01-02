@@ -1,5 +1,5 @@
 use crate::{
-    ops::{IntoVec, HasDType},
+    ops::{HasDType, IntoVec},
     tensor::{Tensor, Variable},
 };
 extern crate alloc;

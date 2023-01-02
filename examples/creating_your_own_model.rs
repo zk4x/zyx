@@ -190,10 +190,7 @@ fn main() {
     ];
 
     // let's choose a loss function
-    let mse_loss = (
-        nn::MSELoss,
-        nn::Mean::<Ax2<0, 1>>::new()
-    );
+    let mse_loss = (nn::MSELoss, nn::Mean::<Ax2<0, 1>>::new());
 
     // Choose your optimizer
     let optimizer = zyx::optim::SGD::new().with_learning_rate(0.01);

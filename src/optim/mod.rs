@@ -58,8 +58,8 @@
 //! Note that in these examples we do not populate gradients, therefore calling .step() has no actual effect.
 //!
 
-mod sgd;
 mod numpy_rw;
+mod sgd;
 
 pub use numpy_rw::NumpyRW;
-pub use sgd::{SGD, SGDStep};
+pub use sgd::{SGDStep, SGD};

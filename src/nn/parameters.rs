@@ -1,10 +1,10 @@
 //! Parameters module
 
 /// HasParameters trait
-/// 
+///
 /// This trait is implemented for all functors and layers in [nn](crate::nn)
 /// that have some parameters.
-/// 
+///
 /// Parameters are just [Variables](crate::tensor::Variable).
 pub trait HasParameters<'p> {
     /// [Parameters](crate::nn::parameters::Parameters) of [Module](crate::nn::Module)
@@ -275,7 +275,7 @@ pub trait Parameters {
 /// Datatypes implementing this trait can update values of [parameters](Parameters)
 /*pub trait ParametersSetter {
     /// Update values of [Parameters]
-    fn update_data<S>(&mut self, data: &mut S);
+    fn update_data<B>(&mut self, data: &mut B);
 }*/
 
 /*struct UniformDistribution<T> {
@@ -284,9 +284,9 @@ pub trait Parameters {
 }
 
 impl<T> ParametersSetter for UniformDistribution<T> {
-    fn update_data<S>(&mut self, data: &mut S)
+    fn update_data<B>(&mut self, data: &mut B)
     where
-        S: UniformInit<T> + crate::ops::HasShape,
+        B: UniformInit<T> + crate::ops::HasShape,
     {
         *data = S::uniform(data.shape(), self.low, self.high);
     }

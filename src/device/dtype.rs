@@ -18,7 +18,7 @@ use duplicate::duplicate_item;
 /// since this type assumes that passing DType by value is faster than passing it by reference.
 ///
 /// If you want to use sparse tensors with chunky DTypes, please provide your own device for best performance.
-pub trait DType: Clone {
+pub trait DType: ocl::OclPrm {
     /// Get this type as static string
     const DTYPE_STR: &'static str;
 }
@@ -41,9 +41,9 @@ impl DType for i32 {
 impl DType for i64 {
     const DTYPE_STR: &'static str = "i64";
 }
-impl DType for i128 {
+/*impl DType for i128 {
     const DTYPE_STR: &'static str = "i128";
-}
+}*/
 impl DType for isize {
     const DTYPE_STR: &'static str = "isize";
 }
@@ -59,17 +59,17 @@ impl DType for u32 {
 impl DType for u64 {
     const DTYPE_STR: &'static str = "u64";
 }
-impl DType for u128 {
+/*impl DType for u128 {
     const DTYPE_STR: &'static str = "u128";
-}
+}*/
 impl DType for usize {
     const DTYPE_STR: &'static str = "usize";
 }
-impl DType for bool {
+/*impl DType for bool {
     const DTYPE_STR: &'static str = "bool";
-}
+}*/
 
-impl<T> HasShape for T
+/*impl<T> HasShape for T
 where
     T: DType,
 {
@@ -81,21 +81,21 @@ where
     T: DType,
 {
     type T = T;
-}
+}*/
 
 /// Storage type is implemented for every type that can have added gradient.
 /// That is every type that supports all tensor backward operations.
-/// 
+///
 /// [DType] is every rust primitive - f32, f64, i32, i64 etc.
 /// [SType] is every rust primitive and also [cpu::Buffer](crate::device::cpu::Buffer) and [opencl::Buffer](crate::device::opencl::Buffer).
-/// 
+///
 /// That is [SType] is also implemented for ndimensional types.
 pub trait SType {}
 
 #[duplicate_item( dtype; [f32]; [f64]; [i8]; [i16]; [i32]; [i64]; [i128]; [isize]; [u8]; [u16]; [u32]; [u64]; [u128]; [usize]; [bool];)]
 impl SType for dtype {}
 
-impl<Sh, T> SType for crate::device::cpu::Buffer<'_, Sh, T>
+/*impl<Sh, T> SType for crate::device::cpu::Buffer<'_, Sh, T>
 where
     Sh: crate::shape::Shape,
     T: DType,
@@ -107,7 +107,7 @@ where
     Sh: crate::shape::Shape,
     T: DType + ocl::OclPrm,
 {
-}
+}*/
 
 /*
 /// # NDType

@@ -3,16 +3,16 @@ use crate::{
     tensor::{Tensor, Variable},
 };
 
-impl<S> HasShape for Variable<S>
+impl<B> HasShape for Variable<B>
 where
-    S: HasShape,
+    B: HasShape,
 {
-    type Sh = <S as HasShape>::Sh;
+    type S = <B as HasShape>::S;
 }
 
-impl<S, F> HasShape for Tensor<S, F>
+impl<B, F> HasShape for Tensor<B, F>
 where
-    S: HasShape,
+    B: HasShape,
 {
-    type Sh = <S as HasShape>::Sh;
+    type S = <B as HasShape>::S;
 }

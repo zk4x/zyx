@@ -11,12 +11,12 @@ pub struct ReshapeBackwardV<'g, G> {
     grad: GradientRef<'g, G>,
 }
 
-impl<S, G> Backward<S> for ReshapeBackwardV<'_, G>
+impl<B, G> Backward<B> for ReshapeBackwardV<'_, G>
 where
-    S: Reshapable<G::Sh>,
-    G: HasShape + GradAcc<<S as Reshapable<G::Sh>>::Output>,
+    B: Reshapable<G::S>,
+    G: HasShape + GradAcc<<B as Reshapable<G::S>>::Output>,
 {
-    fn backward(self, res_grad: S) {
+    fn backward(self, res_grad: B) {
         self.grad.accumulate(res_grad._reshape());
     }
 }
@@ -54,12 +54,12 @@ where
     }
 }
 
-impl<S, F, Sh> Reshapable<Sh> for Tensor<S, F>
+impl<B, F, S> Reshapable<S> for Tensor<B, F>
 where
-    Sh: Shape,
-    S: Reshapable<Sh> + HasShape,
+    S: Shape,
+    B: Reshapable<S> + HasShape,
 {
-    type Output = Tensor<<S as Reshapable<Sh>>::Output, ReshapeBackwardT<F, <S as HasShape>::Sh>>;
+    type Output = Tensor<<B as Reshapable<S>>::Output, ReshapeBackwardT<F, <B as HasShape>::S>>;
     fn _reshape(self) -> Self::Output {
         Tensor {
             data: self.data._reshape(),

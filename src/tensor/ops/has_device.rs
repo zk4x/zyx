@@ -3,22 +3,22 @@ use crate::{
     tensor::{Tensor, Variable},
 };
 
-impl<S> HasDevice for Variable<S>
+impl<B> HasDevice for Variable<B>
 where
-    S: HasDevice,
+    B: HasDevice,
 {
-    type Dev = <S as HasDevice>::Dev;
-    fn device(&self) -> &Self::Dev {
+    type D = <B as HasDevice>::D;
+    fn device(&self) -> &Self::D {
         self.data.device()
     }
 }
 
-impl<S, F> HasDevice for Tensor<S, F>
+impl<B, F> HasDevice for Tensor<B, F>
 where
-    S: HasDevice,
+    B: HasDevice,
 {
-    type Dev = <S as HasDevice>::Dev;
-    fn device(&self) -> &Self::Dev {
+    type D = <B as HasDevice>::D;
+    fn device(&self) -> &Self::D {
         self.data.device()
     }
 }

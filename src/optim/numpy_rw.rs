@@ -4,9 +4,9 @@ extern crate std;
 
 #[test]
 fn numpy_rw() -> Result<(), std::io::Error> {
+    use crate::device::{Buffer, cpu};
     use crate::prelude::*;
     use crate::shape::Sh3;
-    use crate::device::cpu::{self, Buffer};
 
     static TEST_FILE: &'static str = "numpy_rw_test.npy";
 
@@ -26,7 +26,7 @@ fn numpy_rw() -> Result<(), std::io::Error> {
 
     assert_eq!(x.to_vec(), data);
 
-    // delete uneeded file
+    // delete temporary test file
     std::fs::remove_file(TEST_FILE)?;
 
     Ok(())
@@ -46,24 +46,33 @@ where
     fn load_npz(self, path: P) -> Result<(), NpyError>;
 }
 
-use crate::{tensor::Variable, ops::{HasShape, HasDType, FillWithSlice, IntoVec}, shape::Shape};
-use std::{fs::File, io::{BufReader, Read, Write, BufWriter}, vec::Vec, string::String};
+use crate::{
+    ops::{FillWithSlice, HasDType, HasShape, IntoVec},
+    shape::Shape,
+    tensor::Variable,
+};
+use std::{
+    fs::File,
+    io::{BufReader, BufWriter, Read, Write},
+    string::String,
+    vec::Vec,
+};
 
-impl<S, P> NumpyRW<P> for &mut Variable<S>
+impl<B, P> NumpyRW<P> for &mut Variable<B>
 where
     P: AsRef<std::path::Path>,
-    S: HasShape + HasDType + FillWithSlice + IntoVec,
-    S::T: NumpyDType,
+    B: HasShape + HasDType + FillWithSlice + IntoVec,
+    B::T: NumpyDType,
 {
     fn save_npz(self, path: P) -> std::io::Result<()> {
         let vec = self.data.to_vec();
-        save_npy::<P, S::Sh, S::T>(path, vec)?;
+        save_npy::<P, B::S, B::T>(path, vec)?;
         Ok(())
     }
 
     fn load_npz(self, path: P) -> Result<(), NpyError> {
         // TODO we need to make this work with npz files, not only npy
-        let buf = load_npy::<P, S::Sh, S::T>(path)?;
+        let buf = load_npy::<P, B::S, B::T>(path)?;
         self.data.fill_with_slice(&buf);
         Ok(())
     }
@@ -137,7 +146,7 @@ impl From<std::string::FromUtf8Error> for NpyError {
 ///
 /// Implemented for each numpy type.
 /// Gives us each of this types represented as numpy string and number of bytes they take.
-/// 
+///
 /// Enables us to read and write them with given endianness.
 pub trait NumpyDType: Sized {
     const NUMPY_DTYPE_STR: &'static str;
@@ -182,19 +191,23 @@ impl NumpyDType for f32 {
     }
 }
 
-fn save_npy<P, Sh, T>(path: P, vec: Vec<T>) -> Result<(), std::io::Error>
+fn save_npy<P, S, T>(path: P, vec: Vec<T>) -> Result<(), std::io::Error>
 where
     P: AsRef<std::path::Path>,
-    Sh: Shape,
+    S: Shape,
     T: NumpyDType,
 {
     let mut writer = BufWriter::new(File::create(path)?);
 
     // write header
     use std::string::ToString;
-    let mut shape_as_string: String = Sh::array().into_iter().map(|d| d.to_string()).collect::<Vec<String>>().join(", ");
+    let mut shape_as_string: String = S::array()
+        .into_iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<String>>()
+        .join(", ");
     // numpy shapes end with , if they have only one dimension.
-    if Sh::RANK == 1 { 
+    if S::RANK == 1 {
         shape_as_string += ",";
     };
     let mut header: Vec<u8> = Vec::new();
@@ -228,10 +241,10 @@ where
     Ok(())
 }
 
-fn load_npy<P, Sh, T>(path: P) -> Result<Vec<T>, NpyError>
+fn load_npy<P, S, T>(path: P) -> Result<Vec<T>, NpyError>
 where
     P: AsRef<std::path::Path>,
-    Sh: Shape,
+    S: Shape,
     T: NumpyDType,
 {
     // read the file using buffered reader
@@ -290,9 +303,13 @@ where
     let i = check_input(&header, i, b"'shape': (")?;
     // check if shape is correct
     use std::string::ToString;
-    let mut shape_as_string: String = Sh::array().into_iter().map(|d| d.to_string()).collect::<Vec<String>>().join(", ");
+    let mut shape_as_string: String = S::array()
+        .into_iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<String>>()
+        .join(", ");
     // numpy shapes end with , if they have only one dimension.
-    if Sh::RANK == 1 { 
+    if S::RANK == 1 {
         shape_as_string += ",";
     };
     let i = check_input(&header, i, shape_as_string.as_bytes())?;
@@ -301,20 +318,23 @@ where
 
     // rest of the file is actual data with given endianness,
     // so load it into a buffer
-    let mut buf = Vec::with_capacity(Sh::NUMEL);
+    let mut buf = Vec::with_capacity(S::NUMEL);
     match endian {
-        b'>' => 
-            for _ in 0..Sh::NUMEL {
+        b'>' => {
+            for _ in 0..S::NUMEL {
                 buf.push(T::read_be(&mut buf_reader)?);
-            },
-        b'<' =>
-            for _ in 0..Sh::NUMEL {
+            }
+        }
+        b'<' => {
+            for _ in 0..S::NUMEL {
                 buf.push(T::read_le(&mut buf_reader)?);
-            },
-        b'=' =>
-            for _ in 0..Sh::NUMEL {
+            }
+        }
+        b'=' => {
+            for _ in 0..S::NUMEL {
                 buf.push(T::read_ne(&mut buf_reader)?);
-            },
+            }
+        }
         _ => return Err(NpyError::Alignment),
     };
 

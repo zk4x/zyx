@@ -31,9 +31,9 @@ use crate::shape::{Axes, ReducableBy, Shape};
 /// # HasDevice
 pub trait HasDevice {
     /// Type of device that tensor is stored on
-    type Dev: crate::device::Device;
+    type D: crate::device::Device;
     /// Device that tensor is stored on
-    fn device(&self) -> &Self::Dev;
+    fn device(&self) -> &Self::D;
 }
 
 /// # HasDType
@@ -56,16 +56,16 @@ pub trait HasDType {
 /// ```
 pub trait HasShape {
     /// Shape of tensor
-    type Sh: Shape;
+    type S: Shape;
 
     /// Get the shape as array
-    fn shape(&self) -> <Self::Sh as Shape>::AsArray {
-        Self::Sh::array()
+    fn shape(&self) -> <Self::S as Shape>::AsArray {
+        Self::S::array()
     }
 }
 
 /// # HasMax
-/// 
+///
 /// This trait is implemeted for [DType's](crate::device::DType) that have global maximum
 pub trait HasMax {
     /// Global maximum of tensor
@@ -87,7 +87,7 @@ pub trait ZerosLike {
 }
 
 /// # FillWith
-/// 
+///
 /// Fills tensor with values from given slice. Length of this slice must
 /// be the same as it's shape's NUMEL.
 pub trait FillWithSlice: HasDType {
@@ -247,11 +247,11 @@ pub trait Sum {
         Self: Summable<Dims>;
 }
 
-impl<S> Sum for S {
-    fn sum<Dims>(self) -> S::Output
+impl<B> Sum for B {
+    fn sum<Dims>(self) -> B::Output
     where
         Dims: Axes,
-        S: Summable<Dims>,
+        B: Summable<Dims>,
     {
         self._sum()
     }
@@ -297,11 +297,11 @@ pub trait Max {
         Self: Maximizable<Dims>;
 }
 
-impl<S> Max for S {
-    fn max<Dims>(self) -> (S::Values, S::Indices)
+impl<B> Max for B {
+    fn max<Dims>(self) -> (B::Values, B::Indices)
     where
         Dims: Axes,
-        S: Maximizable<Dims>,
+        B: Maximizable<Dims>,
     {
         self._max()
     }
@@ -349,11 +349,11 @@ pub trait Min {
         Self: Minimizable<Dims>;
 }
 
-impl<S> Min for S {
-    fn min<Dims>(self) -> (S::Values, S::Indices)
+impl<B> Min for B {
+    fn min<Dims>(self) -> (B::Values, B::Indices)
     where
         Dims: Axes,
-        S: Minimizable<Dims>,
+        B: Minimizable<Dims>,
     {
         self._min()
     }
@@ -402,18 +402,18 @@ where
 ///  [1 4 2 5 1 6]]
 /// ```
 pub trait Reshape {
-    /// Reshape to Sh
-    fn reshape<Sh>(self) -> Self::Output
+    /// Reshape to S
+    fn reshape<S>(self) -> Self::Output
     where
-        Sh: Shape,
-        Self: Reshapable<Sh>;
+        S: Shape,
+        Self: Reshapable<S>;
 }
 
-impl<S> Reshape for S {
-    fn reshape<Sh>(self) -> S::Output
+impl<B> Reshape for B {
+    fn reshape<S>(self) -> B::Output
     where
-        Sh: Shape,
-        S: Reshapable<Sh>,
+        S: Shape,
+        B: Reshapable<S>,
     {
         self._reshape()
     }
@@ -466,36 +466,35 @@ where
 ///
 pub trait Expand {
     /// Expand to Sh
-    fn expand<Sh, Ax>(self) -> Self::Output
+    fn expand<S, A>(self) -> Self::Output
     where
-        Sh: Shape,
-        Ax: Axes,
+        S: Shape,
+        A: Axes,
         Self: HasShape,
-        Sh: ReducableBy<Ax, Output = Self::Sh>,
-        Self: Expandable<Sh, Ax>;
+        S: ReducableBy<A, Output = Self::S>,
+        Self: Expandable<S, A>;
 }
 
 // For this, as well as [Permute] and so on we need to differentiate public and private API due to compiler reasons
-impl<S> Expand for S {
-    fn expand<Sh, Ax>(self) -> S::Output
+impl<B> Expand for B {
+    fn expand<S, A>(self) -> <B as Expandable<S, A>>::Output
     where
-        Sh: Shape,
-        Ax: Axes,
+        A: Axes,
         Self: HasShape,
-        Sh: ReducableBy<Ax, Output = <Self as HasShape>::Sh>,
-        S: Expandable<Sh, Ax>,
+        B: Expandable<S, A>,
+        S: Shape + ReducableBy<A, Output = <Self as HasShape>::S>,
     {
         self._expand()
     }
 }
 
 /// Expandable
-pub trait Expandable<Sh, Ax>
+pub trait Expandable<S, A>
 where
-    Sh: Shape,
-    Ax: Axes,
+    S: Shape,
+    A: Axes,
     Self: HasShape,
-    Sh: ReducableBy<Ax, Output = Self::Sh>,
+    S: ReducableBy<A, Output = Self::S>,
 {
     /// Output of the Expand operation.
     type Output;
@@ -539,11 +538,11 @@ pub trait Permute {
         Self: Permutable<Dims>;
 }
 
-impl<S> Permute for S {
-    fn permute<Dims>(self) -> S::Output
+impl<B> Permute for B {
+    fn permute<Dims>(self) -> B::Output
     where
         Dims: Axes,
-        S: Permutable<Dims>,
+        B: Permutable<Dims>,
     {
         self._permute()
     }
@@ -602,11 +601,11 @@ pub trait Transpose {
     fn transpose(self) -> Self::Output;
 }
 
-impl<S> Transpose for S
+impl<B> Transpose for B
 where
-    S: Permutable<crate::shape::Ax2<-1, -2>>,
+    B: Permutable<crate::shape::Ax2<-1, -2>>,
 {
-    type Output = S::Output;
+    type Output = B::Output;
     fn transpose(self) -> Self::Output {
         self.permute()
     }

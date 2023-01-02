@@ -18,7 +18,7 @@ where
     Sh: Shape,
     Ax: Axes,
     S: Expandable<Sh, Ax>,
-    Sh: ReducableBy<Ax, Output = <S as HasShape>::Sh>,
+    Sh: ReducableBy<Ax, Output = <S as HasShape>::S>,
     G: GradAcc<<S as Expandable<Sh, Ax>>::Output>,
 {
     fn backward(self, res_grad: S) {
@@ -32,7 +32,7 @@ where
     Dims: Axes,
 {
     type Output =
-        Tensor<<S as Summable<Dims>>::Output, SumBackward<'g, S, <S as HasShape>::Sh, Dims>>;
+        Tensor<<S as Summable<Dims>>::Output, SumBackward<'g, S, <S as HasShape>::S, Dims>>;
     fn _sum(self) -> Self::Output {
         Tensor {
             data: (*self.data()).clone()._sum(),
@@ -57,7 +57,7 @@ where
     Sh: Shape,
     Ax: Axes,
     S: Expandable<Sh, Ax>,
-    Sh: ReducableBy<Ax, Output = <S as HasShape>::Sh>,
+    Sh: ReducableBy<Ax, Output = <S as HasShape>::S>,
     F: Backward<<S as Expandable<Sh, Ax>>::Output>,
 {
     fn backward(self, res_grad: S) {
@@ -71,7 +71,7 @@ where
     Dims: Axes,
 {
     type Output =
-        Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::Sh, Dims>>;
+        Tensor<<S as Summable<Dims>>::Output, SummableBackwardT<F, <S as HasShape>::S, Dims>>;
     fn _sum(self) -> Self::Output {
         Tensor {
             data: self.data._sum(),

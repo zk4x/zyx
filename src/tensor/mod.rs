@@ -50,13 +50,13 @@
 //!
 //! The Buffer and Variable are leaf tensors. Buffer does not have grad, while Variable does (obviously).
 //! Tensor is non leaf tensor.
-//! 
+//!
 //! When an operation is performed with Buffer, a new Buffer is returned with result. Nothing magical happens.
-//! 
+//!
 //! When an operation is performed with Variable, a new Tensor is returned that holds reference to Variable's gradient.
 //! This Tensor contains a struct with name \[Op\]Backward\[Operands\], that hold's this pointer and calculates
 //! the gradient when backward is called on it.
-//! 
+//!
 //! We can imagine neural network as a tree, where leafs are Buffers and Variables and root/roots
 //! are Tensors. When an operation is performed with Tensor, it's consumed and it's grad_fn is moved to the resulting
 //! Tensor. So the last [Tensor] is the root of the tree and it holds all the closures with RefGradient references to [Variable's](Variable) gradients.
@@ -64,7 +64,7 @@
 //! or any of the intermediate Tensors. In this case, the library performs cloning of the closures.
 //!
 //! Tensors are moved into operations, while Variables are passed by reference!
-//! 
+//!
 //! This file contains definitions, getters and setters for [Variable] and [Tensor].
 
 mod ops;
@@ -88,7 +88,7 @@ pub use ops::{
 /// # Variable
 ///
 /// Variable holds data and it's gradient.
-/// 
+///
 /// ## Gradient of [Variable]
 ///
 /// User has read-only access to gradient.
@@ -99,18 +99,18 @@ pub use ops::{
 /// functions and all of them need to be able to accumulate gradient.
 /// So we just make sure that backward can not be called on buffer that is borrowed and that is it.
 #[derive(Debug, Clone, Default)]
-pub struct Variable<S> {
-    pub(crate) data: S,
+pub struct Variable<B> {
+    pub(crate) data: B,
     // Gradient has the same type and shape as data
-    grad: Gradient<S>,
+    grad: Gradient<B>,
 }
 
 #[derive(Default, Debug)]
-struct Gradient<S>(core::cell::UnsafeCell<S>);
+struct Gradient<B>(core::cell::UnsafeCell<B>);
 
-impl<S> Clone for Gradient<S>
+impl<B> Clone for Gradient<B>
 where
-    S: Clone,
+    B: Clone,
 {
     fn clone(&self) -> Self {
         // Safe, read only access
@@ -118,8 +118,8 @@ where
     }
 }
 
-impl<G> Gradient<G> {
-    fn new(data: G) -> Self {
+impl<B> Gradient<B> {
+    fn new(data: B) -> Self {
         Self(core::cell::UnsafeCell::new(data))
     }
 
@@ -130,26 +130,26 @@ impl<G> Gradient<G> {
 
     fn zero(&mut self)
     where
-        G: crate::ops::ZerosLike,
+        B: crate::ops::ZerosLike,
     {
         self.0.get_mut().zeros_like();
     }
 }
 
-trait GradAcc<G>: core::ops::Add<G, Output = Self> + Clone {}
-impl<G, T> GradAcc<G> for T where T: core::ops::Add<G, Output = Self> + Clone {}
+trait GradAcc<B>: core::ops::Add<B, Output = Self> + Clone {}
+impl<G, B> GradAcc<G> for B where B: core::ops::Add<G, Output = Self> + Clone {}
 
 #[derive(Debug, Clone, Copy)]
-struct GradientRef<'g, S>(&'g Gradient<S>);
+struct GradientRef<'g, B>(&'g Gradient<B>);
 
-impl<'g, S> GradientRef<'g, S> {
-    fn new(gradient: &'g Gradient<S>) -> Self {
+impl<'g, B> GradientRef<'g, B> {
+    fn new(gradient: &'g Gradient<B>) -> Self {
         Self(gradient)
     }
 
     fn accumulate<G>(&self, value: G)
     where
-        S: GradAcc<G>,
+        B: GradAcc<G>,
     {
         // Accumulate is called by backward function to accumulate gradients. This is needed in batch processing.
         // Unsafe is needed, because we need multiple functions accessing the same gradient.
@@ -175,9 +175,9 @@ pub struct Tensor<S, GradFn> {
 /// # Display Variable
 ///
 /// Shows [Variable] and it's gradient.
-impl<S> core::fmt::Display for Variable<S>
+impl<B> core::fmt::Display for Variable<B>
 where
-    S: core::fmt::Display,
+    B: core::fmt::Display,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         extern crate alloc;
@@ -207,7 +207,7 @@ where
     }
 }
 
-impl<S> Variable<S> {
+impl<B> Variable<B> {
     /// # Variable backward
     ///
     /// Calls backward function on [Variable].
@@ -238,27 +238,27 @@ impl<S> Variable<S> {
     /// ```
     pub fn backward(&mut self)
     where
-        S: crate::ops::HasDType + core::ops::Add<S::T, Output = S> + Clone,
-        S::T: num_traits::One,
+        B: crate::ops::HasDType + core::ops::Add<B::T, Output = B> + Clone,
+        B::T: num_traits::One,
     {
         use num_traits::One;
-        GradientRef(&self.grad).accumulate(S::T::one());
+        GradientRef(&self.grad).accumulate(B::T::one());
     }
 }
 
 /// # Backward trait
 ///
 /// This trait is implemented by all functions that allow us to calculate gradients.
-/// 
+///
 /// These functions are stored inside [Tensor] as it's grad_fn.
 /// But you can't directly access these functions.
 /// They are created by calling operations on [Variables](Variable) and [Tensors](Tensor).
-pub trait Backward<S> {
+pub trait Backward<B> {
     /// Calls backward on a grad_fn, passing calculated output's gradient as parameter.
-    fn backward(self, res_grad: S);
+    fn backward(self, res_grad: B);
 }
 
-impl<S, F> Tensor<S, F> {
+impl<B, F> Tensor<B, F> {
     /// # Tensor backward
     ///
     /// Calls backward function on [Tensor].
@@ -294,21 +294,21 @@ impl<S, F> Tensor<S, F> {
     /// ```
     pub fn backward(self)
     where
-        S: crate::ops::HasDType + crate::ops::ZerosLike + core::ops::Add<S::T>,
-        S::T: num_traits::One,
-        F: Backward<<S as core::ops::Add<S::T>>::Output>,
+        B: crate::ops::HasDType,
+        B::T: num_traits::One,
+        F: Backward<B::T>,
     {
         // NOTE: right now backward call is recursive.
         // Shall this pose a problem, we can switch to iterative version.
         use num_traits::One;
-        self.grad_fn.backward(self.data.zeros_like() + S::T::one());
+        self.grad_fn.backward(B::T::one());
     }
 }
 
 /// Create new [Variable] that requires gradient
-impl<S> crate::ops::IntoVariable for S
+impl<B> crate::ops::IntoVariable for B
 where
-    S: crate::ops::ZerosLike,
+    B: crate::ops::ZerosLike,
 {
     fn with_grad(self) -> Variable<Self> {
         Variable {
@@ -318,23 +318,23 @@ where
     }
 }
 
-impl<S> Variable<S> {
+impl<B> Variable<B> {
     /// Access [Variable's](Variable) data buffer
-    pub fn data(&self) -> &S {
+    pub fn data(&self) -> &B {
         &self.data
     }
 }
 
-impl<S, GradFn> Tensor<S, GradFn> {
+impl<B, GradFn> Tensor<B, GradFn> {
     /// Access [Tensor's](Tensor) data buffer
-    pub fn data(&self) -> &S {
+    pub fn data(&self) -> &B {
         &self.data
     }
 }
 
-impl<S> Variable<S> {
+impl<B> Variable<B> {
     /// Access [Tensor's](Tensor) grad buffer
-    pub fn grad(&self) -> &S {
+    pub fn grad(&self) -> &B {
         // unsafe access, but read only, may be a problem in certain cases, we need more testing
         unsafe { &*self.grad.0.get() }
     }
@@ -355,26 +355,26 @@ pub struct GradHookV<'g, G, Hook> {
     hook: Hook,
 }
 
-impl<S, G, HOOK> Backward<S> for GradHookV<'_, G, HOOK>
+impl<B, G, HOOK> Backward<B> for GradHookV<'_, G, HOOK>
 where
-    S: Clone + crate::ops::HasShape,
-    G: Clone + GradAcc<S>,
-    HOOK: FnOnce(S),
+    B: Clone + crate::ops::HasShape,
+    G: Clone + GradAcc<B>,
+    HOOK: FnOnce(B),
 {
-    fn backward(self, res_grad: S) {
+    fn backward(self, res_grad: B) {
         (self.hook)(res_grad.clone());
         self.grad.accumulate(res_grad);
     }
 }
 
-impl<S> Variable<S> {
+impl<B> Variable<B> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass.
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
-    pub fn register_hook<HOOK>(&self, hook: HOOK) -> Tensor<S, GradHookV<'_, S, HOOK>>
+    pub fn register_hook<HOOK>(&self, hook: HOOK) -> Tensor<B, GradHookV<'_, B, HOOK>>
     where
-        S: Clone,
-        HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
+        B: Clone,
+        HOOK: FnOnce(B), // not necessary to put this requirement here, but seems like a good idea
     {
         Tensor {
             data: (*self.data()).clone(),
@@ -394,26 +394,26 @@ pub struct GradHookT<GradFn, HOOK> {
     hook: HOOK,
 }
 
-impl<S, GradFn, HOOK> Backward<S> for GradHookT<GradFn, HOOK>
+impl<B, GradFn, HOOK> Backward<B> for GradHookT<GradFn, HOOK>
 where
-    GradFn: Backward<S>,
-    HOOK: FnOnce(S),
-    S: Clone,
+    GradFn: Backward<B>,
+    HOOK: FnOnce(B),
+    B: Clone,
 {
-    fn backward(self, res_grad: S) {
+    fn backward(self, res_grad: B) {
         (self.hook)(res_grad.clone());
         self.grad_fn.backward(res_grad);
     }
 }
 
-impl<S, GradFn> Tensor<S, GradFn> {
+impl<B, GradFn> Tensor<B, GradFn> {
     /// Add custom FnOnce closure that will receive Buffer's gradient during backward pass
     /// The hook is stored in the result, so make sure to do all operations on this result,
     /// otherwise your hook will not be called.
     // TODO DOCS
-    pub fn register_hook<HOOK>(self, hook: HOOK) -> Tensor<S, GradHookT<GradFn, HOOK>>
+    pub fn register_hook<HOOK>(self, hook: HOOK) -> Tensor<B, GradHookT<GradFn, HOOK>>
     where
-        HOOK: FnOnce(S), // not necessary to put this requirement here, but seems like a good idea
+        HOOK: FnOnce(B), // not necessary to put this requirement here, but seems like a good idea
     {
         Tensor {
             data: self.data,
@@ -428,13 +428,13 @@ impl<S, GradFn> Tensor<S, GradFn> {
 /// Conversions between devices and types
 // NOTE: you need to move the Variable into required device and type
 // before using it in optimizer
-impl<S, S2> crate::ops::ConvertFrom<Variable<S2>> for Variable<S>
+impl<B, S2> crate::ops::ConvertFrom<Variable<S2>> for Variable<B>
 where
-    S: crate::ops::ConvertFrom<S2> + crate::ops::ZerosLike,
+    B: crate::ops::ConvertFrom<S2> + crate::ops::ZerosLike,
     S2: Clone,
 {
     fn cfrom(x: Variable<S2>) -> Self {
-        let data = S::cfrom(x.data);
+        let data = B::cfrom(x.data);
         Self {
             grad: Gradient::new(data.zeros_like()),
             data,
@@ -446,21 +446,21 @@ where
 // We usually don't want to move across devices inside the model, but we want want to implement changing dtypes,
 // so here is an implementation of ConvertFrom, but keep in mind the performance implications of calling
 // this function, especially if you are changing devices on the fly.
-impl<S, S2, GradFn> crate::ops::ConvertFrom<Tensor<S2, GradFn>> for Tensor<S, GradFn>
+impl<B, S2, GradFn> crate::ops::ConvertFrom<Tensor<S2, GradFn>> for Tensor<B, GradFn>
 where
-    S: crate::ops::ConvertFrom<S2>,
+    B: crate::ops::ConvertFrom<S2>,
 {
     fn cfrom(x: Tensor<S2, GradFn>) -> Self {
         Self {
-            data: S::cfrom(x.data),
+            data: B::cfrom(x.data),
             grad_fn: x.grad_fn,
         }
     }
 }
 
-impl<S> crate::nn::parameters::Parameters for &mut Variable<S>
+impl<B> crate::nn::parameters::Parameters for &mut Variable<B>
 where
-    S: crate::ops::ZerosLike,
+    B: crate::ops::ZerosLike,
 {
     fn zero_grad(&mut self) {
         self.grad.zero();
