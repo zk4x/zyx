@@ -1,32 +1,38 @@
 [package]
 name = "zyx"
-version = "0.10.2"
+version = "0.11.0"
 authors = ["zk4x"]
 edition = "2021"
-description = "Generic tensor library and extensions"
+description = "Machine learning tensor library"
 documentation = "https://docs.rs/zyx"
 readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
 license = "MIT OR Apache-2.0"
 keywords = ["tensor", "generic", "deep-learning", "neural-network", "autodiff"]
-categories = ["computer-vision", "science", "simulation", "text-processing"]
+categories = ["computer-vision", "science"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[badges]
+maintenance = { status = "experimental" }
 
 [dependencies]
-#static_assertions = { version = "1.1" }
-duplicate = { version = "0.4" }
-num-traits = { version = "0.2" }
-rand = { version = "0.8" }
-rayon = { version = "1" }
-ocl = "0.19"
-
-# optional dependencies
-matrixmultiply = { version = "0.3.*", features = ["threading"], optional = true }
-#ndarray = { version = "0.15.*", features = ["rayon", "matrixmultiply-threading"], optional = true }
-#num-traits = { version = "0.2.*", optional = true }
+matrixmultiply = { version = "*", default-features = false, features = ["threading"], optional = true }
+rayon = { version = "*", default-features = false, optional = true }
+rand = { version = "*", default-features = false, features = ["small_rng"], optional = true }
+cl3 = { version = "*", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
 
 [features]
-matrixmultiply = ["dep:matrixmultiply"]
-#ndarray = ["dep:ndarray", "dep:num-traits"]
+cpu = ["matrixmultiply", "rayon"]
+opencl = ["dep:cl3"]
+rand = ["dep:rand"]
+io = [] # io requires std
+debug1 = [] # debug requires std
+
+[profile.release]
+opt-level = 3 #"z"
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
+overflow-checks = false
+debug = 0

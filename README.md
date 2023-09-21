@@ -1,121 +1,219 @@
 # Zyx
 
-[![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
-[![Documentation](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
+Machine learning library written in rust.
 
-Zyx is open source tensor library designed to be zero cost abstraction and to provide lot of compile-time guarantees.
+Zyx is semi small and all dependencies are optional (i. e. zyx was build from scratch in rust and OpenCL), .rlib is 2.5MB.
 
-From user perspective it works similar to PyTorch. Also names of functions are mostly the same, so that you can quickly pick up zyx if you are familiar with PyTorch.
+## Tensors
 
-## Main Ideas
+[Tensor](crate::tensor::Tensor) is the basic unit of zyx. Tensors are immutable. Context manages all tensors and connects them with [backends](#backends).
 
-We want to provide a way to do automatic differentiation and backpropagation for any datatypes, whether are those scalars, arrays, matrices, or tensors.
-Zyx aims to be zero cost abstraction and use simple Rust syntax for this autodiff and backprop.
+Tensors are just reference counted fat pointers. Feel free to clone them.
+```rust
+# use zyx::context::Context;
+let mut ctx = Context::new();
+let x = ctx.tensor([[2, 4, 3], [4, 2, 3]]);
+let y = x.clone();
+```
 
-### Zero cost abstraction
+## Automatic differentation/Backpropagation
 
-By passing datatype into [.with_grad()](crate::ops::IntoVariable::with_grad()) function you create Variable. Variable stores your datatype and adds gradient
-to the datatype. Gradient is of the same type as your datatype. To manage access to the gradient we use [UnsafeCell](core::cell::UnsafeCell) as gradients must
-be accessed from different places and we saw significant performance improvements over [RefCell](core::cell::RefCell) in certain benchmarks.
+Every operation is traced automatically. Thus you can calculate derivative of any tensor with respect to any other tensor. There is no need for gradient tape and you don't need to set requires_grad. See [automatic differentiation](Automatic differentiation.md) for more details.
+```rust
+# #[cfg(feature = "rand")] {
+# use zyx::context::Context;
+# use zyx::dtype::DType;
+let mut ctx = Context::new();
+let x = ctx.randn((2, 4));
+let w1 = ctx.randn((4, 4));
+let w2 = ctx.randn((4, 3));
+let out = x.dot(w1).tanh().dot(w2);
+let y = ctx.tensor([2, 1, 4]).cast(DType::F32);
+let loss = (out - y).pow(2.);
+# }
+```
+Following function calculates gradients for w1 and w2 (i. e. derivative of loss w.r.t w1 and w.r.t w2).
+```rust
+# #[cfg(feature = "rand")] {
+# use zyx::context::Context;
+# use zyx::dtype::DType;
+# let mut ctx = Context::new();
+# let x = ctx.randn((2, 4));
+# let mut w1 = ctx.randn((4, 4));
+# let mut w2 = ctx.randn((4, 3));
+# let out = x.dot(&w1).tanh().dot(&w2);
+# let y = ctx.tensor([2, 1, 4]).cast(DType::F32);
+# let loss = (out - y).pow(2.);
+loss.backward([&mut w1, &mut w2]);
+# }
+```
 
-[Tensor](crate::tensor::Tensor) is a result of a mathematical or other operation performed on Variable. Tensor creates the graph needed for backpropagation at compile time.
+## Graph realization
 
-Tensors are immutable and all operations are executed eagerly.
+Neural networks are directed acyclic graphs of many tensors. Thus one of the big tradeoffs of modern machine learning libraries is when and how to do calculations. There is no clear winner here, each method has it's pros and cons.
 
-**TL DR:** By zero cost abstraction we mean zero dyn, zero Rc, zero RefCell and minimal number of branches.
+Zyx uses fully dynamic graph. Realization of tensors happens only when you call [realize](crate::tensor::Tensor::realize). This means tensors are evaluated lazily.
+```rust
+# #[cfg(all(feature = "rand", feature = "opencl"))] {
+# use zyx::context::Context;
+let mut ctx = Context::opencl().unwrap();
+let x = ctx.randn((256, 1024));
+let w1 = ctx.randn((1024, 1024));
+let mut z = x.dot(w1);
+z.realize()?;
+# }
+# Ok::<(), zyx::OutOfMemoryError>(())
+```
+This enables certain optimizations, but you need to call realize during training loop.
 
-### Simple Rust syntax
+## Neural networks
 
-The syntax you will be using as a user is very close to PyTorch.
-Also, although the graph is created at compile time, it behaves completely dynamically (i. e. RNNs are easy). You don't need to do any graph.compile or graph.execute calls.
-Buffer, Tensor and Variable are immutable.
+Implementing [module](crate::nn::Module) allows for custom high level constructs.
+```rust
+# #[cfg(all(feature = "rand", feature = "opencl"))] {
+# use zyx::context::Context;
+# use zyx::tensor::Tensor;
+# use zyx::nn::{Module, Linear};
+# use zyx::optim::SGD;
+# use zyx::parameters::Parameters;
+struct TinyNet {
+    l0: Linear,
+    l1: Linear,
+}
+
+impl Module for TinyNet {
+    fn forward(&self, x: &Tensor) -> Tensor {
+        self.l1.forward(&self.l0.forward(x).tanh())
+    }
+
+    fn parameters(&mut self) -> Parameters {
+        self.l0.parameters().join(self.l1.parameters())
+    }
+}
+
+let mut ctx = Context::opencl().unwrap();
+let mut net = TinyNet {
+    l0: ctx.linear(12, 1024),
+    l1: ctx.linear(1024, 53),
+};
+let mut opt = SGD::new().set_lr(0.01);
+let x = ctx.randn((32, 12)).set_label("x").transpose();
+let y = ctx.randn(53);
+for _ in 0..10 {
+    let out = net.forward(&x).transpose();
+    let loss = out.mse(&y).sum(());
+    out.backward(net.parameters());
+    // optimizer.step realizes parameters and zeros gradients
+    opt.step(net.parameters())?;
+}
+# }
+# Ok::<(), zyx::OutOfMemoryError>(())
+```
+
+## Goals
+
+These are general directions for further development of Zyx.
+1. Correctness
+2. Performance
+3. Hardware support
+
+## Visualization
+
+Networks can be visualized using dot language.
+```rust ignore
+let graph = ctx.dot_graph();
+std::fs::File::create("graph.dot").unwrap().write_all(graph.as_bytes()).unwrap();
+```
+tiny_net example forward pass:
+
+![Tiny net forward pass image](image.png)
+
+## Backends
+
+Zyx has two backends, CPU and OpenCL (version 1.2 and above).
+
+Backends are easy to add. Only few ops are needed and automatic differentiation works with all backends. However making them fast is very hard.
+
+## Performance
+
+Here is comparison of Zyx, tinygrad, dfdx and PyTorch running TinyNet example (forward + backward). This is **cherry picked** benchmark. Take it with grain of salt.
+
+Table shows running time in seconds. PyTorch uses compiled model. Tinygrad runs OpenCL backend for GPU and numpy for CPU.
+
+We couldn't get dfdx and PyTorch working with given gpu.
+
+| Device         |   Zyx |  tinygrad |  dfdx |  PyTorch |
+| -------------- | ----- | --------- | ----- | -------- |
+| GPU RX 550     |  4.64 |      5.51 |     - |        - |
+| CPU i5 Haswell | 25.81 |     11.03 |  7.79 |     4.74 |
+
+As you can see, Zyx is ok on the GPU, but needs to be further optimized for the CPU. PyTorch looks really impressive here, given that it can only utilize CPU.
+
+## Load/Save
+
+Zyx works with .safetensors format from huggingface. Enable io feature to have this work.
+```rust ignore
+net.parameters().save("model.safetensors");
+// or shorter
+net.save("model.safetensors");
+```
+Loading is not much more complex.
+```rust ignore
+net.load("model.safetensors");
+```
+
+## No-std
+
+Zyx is no-std library, but alloc is required.
 
 ## Features
 
-1. PyTorch like API.
-2. Zero overhead approach with compile time graph.
-3. Typestate API with const [Shapes](crate::shape::Shape) and minimum runtime errors.
-4. Works on both [CPU](crate::device::cpu::Device) and [GPU](crate::device::opencl::Device).
+- opencl - enables OpenCL backend
+- io - enables file operations and std
+- debug1 - enables printing of debug information during runtime and std
+- rand - enables functions requiring randomnes
 
-Thanks to typestate API there are **ZERO** runtime errors when running on CPU. Well, technically you can run out of RAM...
+## Multiple GPUs
 
-If you have supported IDE, you can look at your whole graph just by hovering over your loss variable and inspecting it's type.
-The second generic parameter of [Tensor](crate::tensor::Tensor) represents the graph.
+Zyx should work with multiple GPUs within single OpenCL platform, but this was not tested.
 
-GPU acceleration uses OpenCL through [ocl](https://github.com/cogciprocate/ocl).
+## Syntax
 
-The current architecture makes it easy to add other accelerators should the need arise, because new accelerators can be added gradually and number of required operations is low.
+Zyx has syntax similar to other ML libraries (i. e. PyTorch).
 
-You can also turn custom datatypes into tensors by calling .with_grad(). They will run on CPU.
+|                 | Zyx                                              | PyTorch                                                     |
+| --------------- | ------------------------------------------------ | ----------------------------------------------------------- |
+| random tensor   | `ctx.randn((5, 3))`                              | `torch.randn((5, 3))`                                       |
+| zeros tensor    | `ctx.zeros((5, 3))`                              | `torch.zeros((5, 3))`                                       |
+| uniform tensor  | `ctx.uniform((4, 6), 0.0..4.0)`                  | `torch.zero((4, 6)).uniform_(0, 4)`                         |
+| matmul          | `let z = x.dot(y);`                              | `z = x @ y`                                                 |
+| tanh            | `let y = x.tanh();`                              | `y = x.tanh()`                                              |
+| binary ops      | `let z = x + 2;`                                 | `z = x + 2`                                                 |
+| dtypes          | `let z = x.cast(DType::I32);`                    | `z = x.type(torch.int32)`                                   |
+| saving          | `net.save("net.safetensors");`                   | `torch.save(net.state_dict(), "net.pt")`                    |
+| loading         | `net.load("net.safetensors");`                   | `net.load_state_dict(torch.load("net.pt"))`                 |
+| backpropagation | `let y = x.exp();`<br>`y.backward(&mut x);`      | `x.requires_grad = True`<br>`y = x.exp()`<br>`y.backward()` |
+| optimizers      | `let opt = SGD::new();`<br>`opt.step(&mut net);` | `opt = SGD(net.parameters())`<br>`opt.step()`               |
 
 ## Missing features
 
-Convolution is not currently possible on stable rust. We need generic constant expressions to calculate the output shape.
+Zyx is very much *experimental* software. Some notable missing features are convolutions, dropout, padding and backpropagation for max.
 
-## Examples
+## Contributing
 
-For examples of linear neural networks, look at [examples directory](https://github.com/zk4x/zyx/tree/main/examples).
-If you want to accelerate matrix multiplication using matrixmultiply crate, use `--features=matrimultiply`.
+Any contributions are welcome. If interested in simple contributions, improving documentation and adding examples is great. For those interested in adding modules, there is folder nn, where you can leverage tensor's existing ops. And if you are interested in low level programming, improving performance of opencl kernels is the most difficult option.
 
-```rust
-use zyx::prelude::*;
-use zyx::device::cpu; // If you want this to run on GPU, just use zyx::device::opencl;
-use zyx::tensor::Variable;
-use zyx::shape::{Sh4, Ax4};
+## Bugs
 
-let device = cpu::Device::default();
+Please report any correctness and performance bugs. Especially please report incorrect/insufficient tests.
 
-let x: Variable<cpu::Buffer<'_, Sh4<2, 3, 2, 3>>> = device.uniform(-1., 1.).with_grad();
-let y: Variable<cpu::Buffer<'_, Sh4<2, 3, 3, 4>>> = device.randn().with_grad();
+## Thanks
 
-let z = x.matmul(&y).sum::<Ax4<0, 1, 2, 3>>();
+Libraries that are used as dependencies for Zyx deserve special thanks, because Zyx would not be possible without them.
 
-z.backward();
+We would also like to thank users of Zyx for providing continuous interest and showing that there is a demand for this library.
 
-println!("{}", x.grad());
-println!("{}", y.grad());
-```
+## License
 
-Want to use scalars? Just give them gradients!
-
-```rust
-use zyx::prelude::*;
-
-let x = 3_f32.with_grad();
-let y = 5.;
-let z = (&x + y).relu();
-z.backward();
-println!("{}", x.grad());
-```
-
-## Installation
-
-Zyx is available on crates.io: <https://crates.io/crates/zyx>
-
-## Important
-
-Many features are not implemented and many tests are missing. We would appreciate help writing more thorough tests and feature requests so that we know where to direct our focus.
-Therefore zyx can not be considered stable yet.
-With that said, we don't have plans to significantly change APIs that have already been written.
-
-## Notes
-
-- Performance depends on your choice of device.
-- We support rust primitives, [CPU](crate::device::cpu::Device) and [GPU](crate::device::opencl::Device). We push EVERYTHING IS A TENSOR approach.
-- [CPU Buffer](crate::device::cpu::Buffer) code is under 1000 lines, so implementing custom devices is simple.
-- Only last [Tensor](crate::tensor::Tensor) in series of operations (tree root) stores references to gradients and data required for backpropagation, thus everything else is freed. You can clone [Tensors](crate::tensor::Tensor) to create multiple graphs, or use [register_hook](crate::tensor::Tensor::register_hook()) to access gradients as they pass through.
-- State is stored in the type system. Functions are only implemented for those types that guarantee correct execution. For example [backward](crate::tensor::Tensor::backward()) is not implemented for types that don't have gradients.
-- FUN NOTE: If you have supported hardware, you can try using zyx with the new opencl mesa driver rusticl that was written in rust!
-
-## How to orient yourself in zyx
-
-We would advice you to first look at module ops. There are defined all basic operations you can work with. Any device which implements these operations automatically implementes operations in tensor::ops, these do automatic gradient calculations.
-Tensors can use optimizers to update their values using calculated gradients.
-Many other functors, such as losses and other higher level functions are in module nn.
-
-## Future options
-
-- **no-std support** - it is not that hard, beacuse only things blocking us are heavy use of rayon in CPU Buffer and some use of random crate.
-- **CUDA device** - possible cuda implementations.
-
-> Any opinions, issue reports, feature requests as well as code contributions are very welcome.
+Zyx is free software licensed under the terms of both the [MIT license](<http://opensource.org/licenses/MIT>) and the [Apache License, Version 2.0](<http://www.apache.org/licenses/LICENSE-2.0>).
+For OpenCL licensing see it's [website](<https://www.khronos.org/opencl/>).

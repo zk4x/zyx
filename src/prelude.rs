@@ -1,12 +1,3 @@
-//! Includes useful traits, mainly for [operations](crate::ops) and [shape](crate::shape).
+//! # Zyx prelude
 
-pub use crate::{
-    //device::{BufferFromSlice, BufferInit, ShapedBufferInit},
-    nn::{
-        parameters::{HasParameters, Parameters},
-        ApplyModule, Module,
-    },
-    ops::*,
-    optim::{NumpyRW, SGDStep},
-    shape::Shape,
-};
+pub use crate::{context::Context, dtype::DType, parameters::IntoParameters, tensor::Tensor};

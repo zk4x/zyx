@@ -1,83 +1,82 @@
 #![no_std]
-//#![feature(adt_const_params)]
-//#![feature(generic_const_exprs)]
+#![doc = include_str!("../README.md")]
+#![warn(clippy::pedantic)]
+//#![cfg_attr(not(feature = "opencl"), forbid(unsafe_code))]
+#![forbid(unsafe_op_in_unsafe_fn)]
+#![warn(missing_docs)]
+#![forbid(rustdoc::broken_intra_doc_links)]
+#![forbid(rustdoc::private_intra_doc_links)]
+#![forbid(rustdoc::missing_crate_level_docs)]
+#![forbid(rustdoc::private_doc_tests)]
+#![forbid(rustdoc::invalid_codeblock_attributes)]
+#![forbid(rustdoc::invalid_html_tags)]
+#![forbid(rustdoc::invalid_rust_codeblocks)]
+#![forbid(rustdoc::bare_urls)]
+#![forbid(non_camel_case_types)]
+#![forbid(absolute_paths_not_starting_with_crate)]
+#![forbid(unused_lifetimes)]
+#![deny(single_use_lifetimes)]
+#![forbid(elided_lifetimes_in_paths)]
+#![forbid(explicit_outlives_requirements)]
+#![forbid(keyword_idents)]
+#![forbid(macro_use_extern_crate)]
+#![forbid(meta_variable_misuse)]
+#![forbid(missing_abi)]
+#![forbid(missing_copy_implementations)]
+#![forbid(missing_debug_implementations)]
+#![forbid(non_ascii_idents)]
+#![forbid(noop_method_call)]
+#![forbid(pointer_structural_match)]
+#![forbid(trivial_casts)]
+#![forbid(trivial_numeric_casts)]
+#![forbid(unreachable_pub)]
+#![forbid(unused_crate_dependencies)]
+#![forbid(unused_extern_crates)]
+#![forbid(unused_import_braces)]
+#![forbid(unused_macro_rules)]
+#![forbid(unused_tuple_struct_fields)]
+#![forbid(rust_2021_incompatible_closure_captures)]
+#![forbid(rust_2021_incompatible_or_patterns)]
+#![forbid(rust_2021_prefixes_incompatible_syntax)]
+#![forbid(rust_2021_prelude_collisions)]
 
 // Nightly lints
+//#![feature(stmt_expr_attributes)]
 //#![feature(strict_provenance)]
-//#![warn(fuzzy_provenance_casts)]
-//#![warn(lossy_provenance_casts)]
-
+//#![forbid(fuzzy_provenance_casts)]
+//#![forbid(lossy_provenance_casts)]
 //#![feature(must_not_suspend)]
-//#![warn(must_not_suspend)]
-
+//#![forbid(must_not_suspend)]
+//#![feature(rustdoc_missing_doc_code_examples)]
 //#![warn(rustdoc::missing_doc_code_examples)]
 
-// Standard lints
-#![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
-#![warn(rustdoc::broken_intra_doc_links)]
-#![warn(rustdoc::private_intra_doc_links)]
-#![warn(rustdoc::missing_crate_level_docs)]
-#![warn(rustdoc::private_doc_tests)]
-#![warn(rustdoc::invalid_codeblock_attributes)]
-#![warn(rustdoc::invalid_html_tags)]
-#![warn(rustdoc::invalid_rust_codeblocks)]
-#![warn(rustdoc::bare_urls)]
-// Clippy lints
-#![deny(absolute_paths_not_starting_with_crate)]
-#![deny(elided_lifetimes_in_paths)]
-#![deny(explicit_outlives_requirements)]
-#![deny(keyword_idents)]
-#![deny(macro_use_extern_crate)]
-#![deny(meta_variable_misuse)]
-#![deny(missing_abi)]
-#![deny(missing_copy_implementations)]
-#![warn(missing_debug_implementations)]
-#![deny(non_ascii_idents)]
-#![warn(noop_method_call)]
-#![deny(pointer_structural_match)]
-#![deny(rust_2021_incompatible_closure_captures)]
-#![deny(rust_2021_incompatible_or_patterns)]
-#![deny(rust_2021_prefixes_incompatible_syntax)]
-#![deny(rust_2021_prelude_collisions)]
-#![deny(single_use_lifetimes)]
-#![deny(trivial_casts)]
-#![deny(trivial_numeric_casts)]
-#![deny(unreachable_pub)]
-//#![warn(unsafe_code)]
-#![deny(unsafe_op_in_unsafe_fn)]
-#![deny(unused_crate_dependencies)]
-#![deny(unused_extern_crates)]
-#![deny(unused_import_braces)]
-pub mod device;
-pub mod nn;
-pub mod ops;
-pub mod optim;
-pub mod prelude;
-pub mod shape;
-#[deny(unused_lifetimes)]
-#[warn(unused_macro_rules)]
-#[warn(unused_tuple_struct_fields)]
-pub mod tensor;
-
-#[cfg(test)]
+#[cfg(any(feature = "debug1", feature = "io"))]
 extern crate std;
 
-#[cfg(test)]
-mod tests;
+pub mod axes;
+pub mod context;
+pub mod dtype;
+mod graph;
+mod node_id;
+mod libm;
+pub mod nn;
+pub mod optim;
+pub mod parameters;
+pub mod prelude;
+pub mod shape;
+pub mod tensor;
+mod device;
 
-// Names for generics
-//
-// A - Axes
-// S - Shape
-// T - DType
-// D - Device
-// B - Buffer
-// V - Variable
-
-// TODO:
-// saving of models and buffers (probably via .to_vec() and .shape(), and .from_slice())
-// convolution ops for tensor
-// remove need for alloc crate if user is not using cpu::Buffer,
-// simple dataloading methods
-// #[derive(Model)] and #[derive(HasParameters)] macros
+/// # `OutOfMemoryError`
+///
+/// Returned from realize function when backend requested allocation of too much memory.
+/// ```
+/// # use zyx::context::Context;
+/// let mut ctx = Context::new();
+/// let x = ctx.tensor([3., 4., 2.]);
+/// let mut y = x.exp();
+/// y.realize()?;
+/// # Ok::<(), zyx::OutOfMemoryError>(())
+/// ```
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OutOfMemoryError;
