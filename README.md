@@ -126,7 +126,7 @@ std::fs::File::create("graph.dot").unwrap().write_all(graph.as_bytes()).unwrap()
 ```
 tiny_net example forward pass:
 
-![Tiny net forward pass image](image.png)
+![Tiny net forward pass image](https://github.com/zk4x/zyx/blob/main/examples/tiny_net_graph.png)
 
 ## Backends
 
