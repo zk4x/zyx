@@ -26,6 +26,8 @@ pub(super) enum Node {
     Neg(NodeId),
     Ln(NodeId),
     Exp(NodeId),
+    ReLU(NodeId),
+    DReLU(NodeId),
     Tanh(NodeId),
     Reshape(NodeId, Shape),
     Expand(NodeId, Shape),
@@ -49,6 +51,8 @@ impl Clone for Node {
             Node::Cast(x, d) => Node::Cast(*x, *d),
             Node::Neg(x) => Node::Neg(*x),
             Node::Ln(x) => Node::Ln(*x),
+            Node::ReLU(x) => Node::ReLU(*x),
+            Node::DReLU(x) => Node::DReLU(*x),
             Node::Exp(x) => Node::Exp(*x),
             Node::Tanh(x) => Node::Tanh(*x),
             Node::Reshape(x, s) => Node::Reshape(*x, s.clone()),
@@ -82,6 +86,8 @@ impl core::fmt::Debug for Node {
                 f.write_fmt(format_args!("\x1b[31mCast\x1b[0m({x}) -> {dtype}"))
             }
             Node::Neg(x) => f.write_fmt(format_args!("\x1b[31mNeg\x1b[0m({x})")),
+            Node::ReLU(x) => f.write_fmt(format_args!("\x1b[31mReLU\x1b[0m({x})")),
+            Node::DReLU(x) => f.write_fmt(format_args!("\x1b[31mDReLU\x1b[0m({x})")),
             Node::Exp(x) => f.write_fmt(format_args!("\x1b[31mExp\x1b[0m({x})")),
             Node::Ln(x) => f.write_fmt(format_args!("\x1b[31mLn\x1b[0m({x})")),
             Node::Tanh(x) => f.write_fmt(format_args!("\x1b[31mTanh\x1b[0m({x})")),
@@ -110,6 +116,8 @@ impl Node {
             | Node::TDot(x, y, _) => Box::new([*x, *y]),
             Node::Cast(x, ..)
             | Node::Neg(x)
+            | Node::ReLU(x)
+            | Node::DReLU(x)
             | Node::Exp(x)
             | Node::Ln(x)
             | Node::Tanh(x)
@@ -131,6 +139,8 @@ impl Node {
             Node::StoreI32(..) |
             Node::Expand(..) | Node::Reshape(..) | Node::Permute(..) => 0,
             Node::Exp(x) |
+            Node::ReLU(x) |
+            Node::DReLU(x) |
             Node::Ln(x) |
             Node::Cast(x, ..) |
             Node::Neg(x) |
@@ -453,8 +463,10 @@ impl Graph {
         }
         //std::println!("Backwara on {:?}", self.nodes[id.id()]);
         match self.nodes[id.i()] {
-            Node::None => panic!("Internal bug running backward on None"),
-            Node::Const(..) => panic!("Internal bug running backward on Const"),
+            Node::None |
+            Node::DReLU(..) |
+            Node::Const(..)
+            => panic!("Internal bug running backward on .."),
             Node::Leaf | Node::StoreF32(..) | Node::StoreI32(..) => {}
             Node::Add(x, y) => {
                 if grad_nodes.contains(&x) {
@@ -568,6 +580,12 @@ impl Graph {
                     self.backward(y, y_grad, sources, grad_nodes, visited);
                     self.release(y_grad);
                 }
+            }
+            Node::ReLU(x) => {
+                let drelu = self.push(Node::DReLU(x));
+                let x_grad = self.push(Node::Mul(drelu, grad));
+                self.backward(x, x_grad, sources, grad_nodes, visited);
+                self.release(x_grad);
             }
             Node::Exp(x) => {
                 let x_grad = self.push(Node::Mul(id, grad));
@@ -744,6 +762,8 @@ impl Graph {
                 Node::TDot(x, y, ..) => add_node(id, &format!("TDot({x}, {y})"), "oval"),
                 Node::Neg(x) => add_node(id, &format!("Neg({x})"), "oval"),
                 Node::Exp(x) => add_node(id, &format!("Exp({x})"), "oval"),
+                Node::ReLU(x) => add_node(id, &format!("ReLU({x})"), "oval"),
+                Node::DReLU(x) => add_node(id, &format!("DReLU({x})"), "oval"),
                 Node::Ln(x) => add_node(id, &format!("Ln({x})"), "oval"),
                 Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
                 Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),

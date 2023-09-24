@@ -430,10 +430,12 @@ impl OpenCLDev {
                         },
                     );
                 }
-                Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, "-"),
-                Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, "exp"),
-                Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, "log"),
-                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, "tanh"),
+                Node::ReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("max(res{}, 0)", x.i())),
+                Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("if (res{} > 0) {{ 1 }} else {{ 0 }}", x.i())),
+                Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, format!("-res{}", x.i())),
+                Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, format!("exp(res{})", x.i())),
+                Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log({})", x.i())),
+                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, format!("tanh({})", x.i())),
                 Node::Add(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "+"),
                 Node::Sub(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "-"),
                 Node::Mul(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "*"),
@@ -1157,7 +1159,7 @@ impl OpenCLDev {
     }
 }
 
-fn unary_op(id: NodeId, x: NodeId, buffers: &mut BTreeMap<NodeId, Op>, op: &str) {
+fn unary_op(id: NodeId, x: NodeId, buffers: &mut BTreeMap<NodeId, Op>, op: String) {
     let dtype = buffers[&x].dtype();
     let mut parameters = buffers[&x].parameters().clone();
     parameters.insert(id);
@@ -1168,11 +1170,10 @@ fn unary_op(id: NodeId, x: NodeId, buffers: &mut BTreeMap<NodeId, Op>, op: &str)
             shape: buffers[&x].shape().clone(),
             parameters,
             kernel: format!(
-                "  {} res{} = {}(res{});\n",
+                "  {} res{} = {};\n",
                 dtype.cl_type(),
                 id.i(),
-                op,
-                x.i()
+                op
             ),
         },
     );

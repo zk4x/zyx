@@ -55,6 +55,8 @@ pub(super) fn realize(
             Node::Pow(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "pow"),
             Node::TDot(x, y, shape) => binary_op(shape.clone(), graph.c(*x), graph.c(*y), "tdot"),
             Node::Neg(x) => unary_op(graph.c(*x), "neg"),
+            Node::ReLU(x) => unary_op(graph.c(*x), "relu"),
+            Node::DReLU(x) => unary_op(graph.c(*x), "drelu"),
             Node::Exp(x) => unary_op(graph.c(*x), "exp"),
             Node::Ln(x) => unary_op(graph.c(*x), "ln"),
             Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
@@ -120,6 +122,8 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
         Storage::CPUF32(data, shape) => match op {
             "" => Storage::CPUF32(data.clone(), shape.clone()),
             "neg" => Storage::CPUF32(unary_op_t(data, |x| -x), shape.clone()),
+            "relu" => Storage::CPUF32(unary_op_t(data, |x| x.max(0.)), shape.clone()),
+            "drelu" => Storage::CPUF32(unary_op_t(data, |x| if *x > 0. { 1. } else { 0. }), shape.clone()),
             "exp" => Storage::CPUF32(unary_op_t(data, |x| expf(*x)), shape.clone()),
             "ln" => Storage::CPUF32(unary_op_t(data, |x| logf(*x)), shape.clone()),
             "tanh" => Storage::CPUF32(unary_op_t(data, |x| tanhf(*x)), shape.clone()),
@@ -128,6 +132,8 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
         Storage::CPUI32(data, shape) => match op {
             "" => Storage::CPUI32(data.clone(), shape.clone()),
             "neg" => Storage::CPUI32(unary_op_t(data, |x| -x), shape.clone()),
+            "relu" => Storage::CPUI32(unary_op_t(data, |x| (*x).max(0)), shape.clone()),
+            "drelu" => Storage::CPUI32(unary_op_t(data, |x| if *x > 0 { 1 } else { 0 }), shape.clone()),
             _ => panic!("Impossible op {op} on i32"),
         },
         _ => panic!(),

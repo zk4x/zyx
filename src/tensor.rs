@@ -404,6 +404,11 @@ impl Tensor {
             Ok(())
         }
     }
+    
+    /// ReLU op
+    pub fn relu(&self) -> Tensor {
+        self.new_op(Node::ReLU(self.data))
+    }
 
     /// Reshape tensor
     /// # Panics
