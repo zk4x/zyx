@@ -229,6 +229,17 @@ impl Tensor {
         self.new_op(Node::TDot(x.data, rhs.data, shape))
     }
 
+    /// Dropout op
+    #[must_use]
+    pub fn dropout(&self, prob: f32) -> Tensor {
+        let seed = if prob == 0. {
+            0
+        } else {
+            self.graph.borrow_mut().rand_u64()
+        };
+        self.new_op(Node::Dropout(self.data, seed, prob))
+    }
+
     /// Matmul operation with xhs transposed
     /// # Panics
     /// Panics if x and y tensors have incompatible shapes.
@@ -312,6 +323,7 @@ impl Tensor {
     }
 
     /// Ln operation
+    /// Natural logarithm
     #[must_use]
     pub fn ln(&self) -> Tensor {
         self.new_op(Node::Ln(self.data))
@@ -462,9 +474,9 @@ impl Tensor {
     /// Scaled dot product attention op
     /// Currently it is not causal
     #[must_use]
-    pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor) -> Tensor {
+    pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor, dropout: f32) -> Tensor {
         let d = crate::libm::powf(self.shape()[-1] as f32, 0.5);
-        (self.dot(key.transpose()) / d).softmax(-1).dot(value)
+        (self.dot(key.transpose()) / d).softmax(-1).dropout(dropout).dot(value)
     }
 
     /// Reduce tensor across axes, returning sum of each axes.

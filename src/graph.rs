@@ -9,6 +9,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{format, string::String};
+use rand::RngCore;
 
 pub(super) enum Node {
     None,
@@ -29,6 +30,7 @@ pub(super) enum Node {
     ReLU(NodeId),
     DReLU(NodeId),
     Tanh(NodeId),
+    Dropout(NodeId, u64, f32), // parameter, random seed, probability
     Reshape(NodeId, Shape),
     Expand(NodeId, Shape),
     Permute(NodeId, Axes, Shape),
@@ -55,6 +57,7 @@ impl Clone for Node {
             Node::DReLU(x) => Node::DReLU(*x),
             Node::Exp(x) => Node::Exp(*x),
             Node::Tanh(x) => Node::Tanh(*x),
+            Node::Dropout(x, seed, prob) => Node::Dropout(*x, *seed, *prob),
             Node::Reshape(x, s) => Node::Reshape(*x, s.clone()),
             Node::Expand(x, s) => Node::Expand(*x, s.clone()),
             Node::Permute(x, a, s) => Node::Permute(*x, a.clone(), s.clone()),
@@ -91,6 +94,7 @@ impl core::fmt::Debug for Node {
             Node::Exp(x) => f.write_fmt(format_args!("\x1b[31mExp\x1b[0m({x})")),
             Node::Ln(x) => f.write_fmt(format_args!("\x1b[31mLn\x1b[0m({x})")),
             Node::Tanh(x) => f.write_fmt(format_args!("\x1b[31mTanh\x1b[0m({x})")),
+            Node::Dropout(x,_, prob) => f.write_fmt(format_args!("\x1b[31mDropout\x1b[0m({x}, prob={prob})")),
             Node::Reshape(x, ..) => f.write_fmt(format_args!("\x1b[31mReshape\x1b[0m({x})")),
             Node::Expand(x, ..) => f.write_fmt(format_args!("\x1b[31mExpand\x1b[0m({x})")),
             Node::Permute(x, axes, _) => {
@@ -121,6 +125,7 @@ impl Node {
             | Node::Exp(x)
             | Node::Ln(x)
             | Node::Tanh(x)
+            | Node::Dropout(x, ..)
             | Node::Reshape(x, ..)
             | Node::Expand(x, ..)
             | Node::Permute(x, ..)
@@ -142,8 +147,9 @@ impl Node {
             Node::ReLU(x) |
             Node::DReLU(x) |
             Node::Ln(x) |
-            Node::Cast(x, ..) |
             Node::Neg(x) |
+            Node::Cast(x, ..) |
+            Node::Dropout(x, ..) |
             Node::Tanh(x) => graph.shape(*x).numel(),
             Node::Add(x, y) |
             Node::Sub(x, y) |
@@ -607,6 +613,11 @@ impl Graph {
                 self.backward(x, x_grad, sources, grad_nodes, visited);
                 self.release(x_grad);
             }
+            Node::Dropout(x, ..) => {
+                let x_grad = self.push(Node::Neg(grad));
+                self.backward(x, x_grad, sources, grad_nodes, visited);
+                self.release(x_grad);
+            }
             Node::Tanh(x) => {
                 // 1 - tanh^2(x)
                 let shape = self.shape(x).clone();
@@ -712,6 +723,10 @@ impl Graph {
         self.labels.get(&id)
     }
 
+    pub(super) fn rand_u64(&mut self) -> u64 {
+        self.rng.next_u64()
+    }
+
     pub(super) fn set_label(&mut self, id: NodeId, label: &str) {
         self.labels.insert(id, label.into());
     }
@@ -764,6 +779,7 @@ impl Graph {
                 Node::Exp(x) => add_node(id, &format!("Exp({x})"), "oval"),
                 Node::ReLU(x) => add_node(id, &format!("ReLU({x})"), "oval"),
                 Node::DReLU(x) => add_node(id, &format!("DReLU({x})"), "oval"),
+                Node::Dropout(x, _, prob) => add_node(id, &format!("Dropout({x}, prob={prob})"), "oval"),
                 Node::Ln(x) => add_node(id, &format!("Ln({x})"), "oval"),
                 Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
                 Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),

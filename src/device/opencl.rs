@@ -436,6 +436,10 @@ impl OpenCLDev {
                 Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, format!("exp(res{})", x.i())),
                 Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log({})", x.i())),
                 Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, format!("tanh({})", x.i())),
+                Node::Dropout(x, seed, prob) => {
+                    let (xr, yr) = (*seed as u32, (*seed >> 32) as u32);
+                    unary_op(*node_id, *x, &mut buffers, format!("  if ({yr} ^ ({yr} >> 19) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) >> 8)) > 4294967295 * {prob}) {{ 0 }} else {{ res{} }}", x.i()))
+                }
                 Node::Add(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "+"),
                 Node::Sub(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "-"),
                 Node::Mul(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "*"),
@@ -1025,7 +1029,7 @@ impl OpenCLDev {
                     parameters: _,
                 } = &buffers[x]
                 {
-                    Some((*x, kernel.clone()))
+                    Some((*x, kernel.replace("IDX", data_idx))) // replace for dropout, otherwise it could be just kernel.clone()
                 } else {
                     None
                 }

@@ -60,6 +60,15 @@ pub(super) fn realize(
             Node::Exp(x) => unary_op(graph.c(*x), "exp"),
             Node::Ln(x) => unary_op(graph.c(*x), "ln"),
             Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
+            Node::Dropout(x, seed, prob) => match graph.c(*x) {
+                Storage::CPUF32(data, xshape) => {
+                    Storage::CPUF32(dropout_op_t(data.as_ref(), *seed, *prob), xshape.clone())
+                }
+                Storage::CPUI32(data, xshape) => {
+                    Storage::CPUI32(dropout_op_t(data.as_ref(), *seed, *prob), xshape.clone())
+                }
+                _ => panic!(),
+            }
             Node::Cast(x, dtype) => match graph.c(*x) {
                 Storage::CPUF32(data, shape) => match dtype {
                     DType::F32 => Storage::CPUF32(data.clone(), shape.clone()),
@@ -469,6 +478,20 @@ fn reduce_op_t<T: Dtype>(
     res
 }
 
+fn dropout_op_t<T: Dtype>(data: &[T], seed: u64, prob: f32) -> Box<[T]> {
+    let (xr, yr) = (seed as u32, (seed >> 32) as u32);
+    data.iter().enumerate().map(|(i, x)| {
+        let seed = xr + i as u32;
+        let t = seed ^ (seed << 11);
+        let r = yr ^ (yr >> 19) ^ (t ^ (t >> 8));
+        if r > (u32::MAX as f32 * prob) as u32 {
+            T::zero()
+        } else {
+            x.clone()
+        }
+    }).collect()
+}
+
 trait Dtype:
     Clone
     + core::fmt::Debug
@@ -481,7 +504,6 @@ trait Dtype:
 {
     fn dtype() -> DType;
     fn zero() -> Self;
-    //fn exp(self) -> Self;
 }
 
 impl Dtype for f32 {
