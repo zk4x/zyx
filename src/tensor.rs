@@ -446,6 +446,21 @@ impl Tensor {
     pub fn shape(&self) -> Shape {
         self.graph.borrow().shape(self.data).clone()
     }
+    
+    /// Softmax op
+    #[must_use]
+    pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
+        let x_e = self.exp();
+        &x_e/x_e.sum(axes)
+    }
+    
+    /// Scaled dot product attention op
+    /// Currently it is not causal
+    #[must_use]
+    pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor) -> Tensor {
+        let d = crate::libm::powf(self.shape()[-1] as f32, 0.5);
+        (self.dot(key.transpose()) / d).softmax(-1).dot(value)
+    }
 
     /// Reduce tensor across axes, returning sum of each axes.
     /// All axes in result are kept and set to one.
