@@ -229,6 +229,7 @@ impl Tensor {
     }
 
     /// Dropout op
+    #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, prob: f32) -> Tensor {
         let seed = if prob == 0. {
@@ -440,6 +441,7 @@ impl Tensor {
 
     /// Scaled dot product attention op
     /// Currently it is not causal
+    #[cfg(feature = "rand")]
     #[must_use]
     pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor, dropout: f32) -> Tensor {
         let d = libm::powf(self.shape()[-1] as f32, 0.5);

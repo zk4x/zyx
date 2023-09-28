@@ -9,7 +9,6 @@ use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{format, string::String};
-use rand::RngCore;
 
 pub(super) enum Node {
     None,
@@ -751,7 +750,9 @@ impl Graph {
         self.labels.get(&id)
     }
 
+    #[cfg(feature = "rand")]
     pub(super) fn rand_u64(&mut self) -> u64 {
+        use rand::RngCore;
         self.rng.next_u64()
     }
 

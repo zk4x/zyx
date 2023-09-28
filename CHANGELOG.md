@@ -1,3 +1,14 @@
+# 0.11.1
+- Added sin, sqrt, relu, softmax, scaled_dot_product
+
+# 0.11.0
+- BREAKING removed almost all generics from user facing API to hide implementation details
+- BREAKING changed compile time shapes back to runtime shapes as compile time shapes were clunky and const generics are incomplete in rust
+- added lazy API that allows for custom optimizations of graph and simple fusion of ops
+
+# 0.10.0
+- BREAKING changed runtime shapes to compile time shapes
+
 # 0.9.0
 - BREAKING Rewritten shape to now be stack only, since until now we used heap allocated shape. On description how shape works now, look at the documentation.
 - BREAKING Rewritten the way optimizers are handled. There are no more general requirements for all optimizers together, now every optimizers defines it's own requirements and is implemented separately. This gets rid of redundant requirements, but requires more code to be written.
