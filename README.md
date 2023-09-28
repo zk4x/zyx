@@ -60,9 +60,8 @@ let mut ctx = Context::opencl().unwrap();
 let x = ctx.randn((256, 1024));
 let w1 = ctx.randn((1024, 1024));
 let mut z = x.dot(w1);
-z.realize()?;
+z.realize().unwrap();
 # }
-# Ok::<(), zyx::OutOfMemoryError>(())
 ```
 This enables certain optimizations, but you need to call realize during training loop.
 
@@ -97,17 +96,16 @@ let mut net = TinyNet {
     l1: ctx.linear(1024, 53),
 };
 let mut opt = SGD::new().set_lr(0.01);
-let x = ctx.randn((32, 12)).set_label("x").transpose();
+let x = ctx.randn((32, 12)).set_label("x");
 let y = ctx.randn(53);
 for _ in 0..10 {
-    let out = net.forward(&x).transpose();
+    let out = net.forward(&x);
     let loss = out.mse(&y).sum(());
     out.backward(net.parameters());
     // optimizer.step realizes parameters and zeros gradients
-    opt.step(net.parameters())?;
+    opt.step(net.parameters()).unwrap();
 }
 # }
-# Ok::<(), zyx::OutOfMemoryError>(())
 ```
 
 ## Goals
@@ -197,7 +195,7 @@ Zyx has syntax similar to other ML libraries (i. e. PyTorch).
 
 ## Missing features
 
-Zyx is very much *experimental* software. Some notable missing features are convolutions, dropout, padding and backpropagation for max.
+Zyx is very much *experimental* software. Some notable missing features are convolutions, padding and backpropagation for max.
 
 ## Contributing
 

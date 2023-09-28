@@ -2,10 +2,12 @@
 pub(crate) struct NodeId(u32);
 
 impl NodeId {
+    #[inline(always)]
     pub(crate) fn new(id: usize) -> Self {
         Self(u32::try_from(id).unwrap())
     }
 
+    #[inline(always)]
     pub(crate) fn i(self) -> usize {
         self.0 as usize
     }

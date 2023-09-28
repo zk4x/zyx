@@ -58,7 +58,6 @@ pub mod context;
 pub mod dtype;
 mod graph;
 mod node_id;
-mod libm;
 pub mod nn;
 pub mod optim;
 pub mod parameters;

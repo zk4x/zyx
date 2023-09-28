@@ -9,8 +9,7 @@ use crate::{
 ///
 /// Linear layer contains weight and bias.
 /// It applies linear transformation on input.
-/// y = weight.dot(x) + bias
-/// It currently accepts and returns transposed tensors
+/// y = x.dot(weight) + bias
 #[derive(Clone, Debug)]
 pub struct Linear {
     /// Weight of linear layer
@@ -23,9 +22,9 @@ impl Module for Linear {
     #[must_use]
     fn forward(&self, x: &Tensor) -> Tensor {
         if let Some(bias) = &self.bias {
-            self.weight.t_dot(x) + bias
+            x.dot(&self.weight) + bias
         } else {
-            self.weight.t_dot(x)
+            x.dot(&self.weight)
         }
     }
 
@@ -50,12 +49,12 @@ impl Context {
     #[cfg(feature = "rand")]
     pub fn linear(&mut self, in_features: usize, out_features: usize) -> Linear {
         // TODO add scaling
-        let k = crate::libm::powf(1. / in_features as f32, 0.5);
+        let k = libm::powf(1. / in_features as f32, 0.5);
         Linear {
             weight: self
                 .uniform((in_features, out_features), -k..k)
                 .set_label("linear w"),
-            bias: Some(self.uniform((out_features, 1), -k..k).set_label("linear b")),
+            bias: Some(self.uniform(out_features, -k..k).set_label("linear b")),
         }
     }
 }
@@ -79,11 +78,11 @@ impl Linear {
             if self.bias.is_none() {
                 let [in_features, out_features]: [usize; 2] =
                     self.weight.shape().try_into().unwrap();
-                let k = crate::libm::powf(1. / in_features as f32, 0.5);
+                let k = libm::powf(1. / in_features as f32, 0.5);
                 self.bias = Some(
                     self.weight
                         .context()
-                        .uniform((out_features, 1), -k..k)
+                        .uniform(out_features, -k..k)
                         .set_label("linear b"),
                 );
             }

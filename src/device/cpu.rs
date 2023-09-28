@@ -9,7 +9,6 @@ use crate::{
     axes::Axes,
     dtype::DType,
     graph::Node,
-    libm::{expf, logf, powf, tanhf},
     shape::{Shape, Strides},
     OutOfMemoryError,
 };
@@ -59,6 +58,8 @@ pub(super) fn realize(
             Node::DReLU(x) => unary_op(graph.c(*x), "drelu"),
             Node::Exp(x) => unary_op(graph.c(*x), "exp"),
             Node::Ln(x) => unary_op(graph.c(*x), "ln"),
+            Node::Sin(x) => unary_op(graph.c(*x), "sin"),
+            Node::Sqrt(x) => unary_op(graph.c(*x), "sqrt"),
             Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
             Node::Dropout(x, seed, prob) => match graph.c(*x) {
                 Storage::CPUF32(data, xshape) => {
@@ -133,9 +134,11 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
             "neg" => Storage::CPUF32(unary_op_t(data, |x| -x), shape.clone()),
             "relu" => Storage::CPUF32(unary_op_t(data, |x| x.max(0.)), shape.clone()),
             "drelu" => Storage::CPUF32(unary_op_t(data, |x| if *x > 0. { 1. } else { 0. }), shape.clone()),
-            "exp" => Storage::CPUF32(unary_op_t(data, |x| expf(*x)), shape.clone()),
-            "ln" => Storage::CPUF32(unary_op_t(data, |x| logf(*x)), shape.clone()),
-            "tanh" => Storage::CPUF32(unary_op_t(data, |x| tanhf(*x)), shape.clone()),
+            "exp" => Storage::CPUF32(unary_op_t(data, |x| libm::expf(*x)), shape.clone()),
+            "ln" => Storage::CPUF32(unary_op_t(data, |x| libm::logf(*x)), shape.clone()),
+            "sin" => Storage::CPUF32(unary_op_t(data, |x| libm::sinf(*x)), shape.clone()),
+            "sqrt" => Storage::CPUF32(unary_op_t(data, |x| libm::sqrtf(*x)), shape.clone()),
+            "tanh" => Storage::CPUF32(unary_op_t(data, |x| libm::tanhf(*x)), shape.clone()),
             _ => panic!(),
         },
         Storage::CPUI32(data, shape) => match op {
@@ -184,7 +187,7 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                         shape_x.clone(),
                     ),
                     "pow" => Storage::CPUF32(
-                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| powf(*x, *y)),
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| libm::powf(*x, *y)),
                         shape_x.clone(),
                     ),
                     "tdot" => {

@@ -12,7 +12,6 @@ use crate::{
     axes::IntoAxes,
     dtype::DType,
     graph::{Graph, Node},
-    libm::fabsf,
     parameters::IntoParameters,
     shape::Shape,
     OutOfMemoryError,
@@ -416,7 +415,7 @@ impl Tensor {
             Ok(())
         }
     }
-    
+
     /// ReLU op
     pub fn relu(&self) -> Tensor {
         self.new_op(Node::ReLU(self.data))
@@ -437,6 +436,14 @@ impl Tensor {
             shape
         );
         self.new_op(Node::Reshape(self.data, shape))
+    }
+
+    /// Scaled dot product attention op
+    /// Currently it is not causal
+    #[must_use]
+    pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor, dropout: f32) -> Tensor {
+        let d = libm::powf(self.shape()[-1] as f32, 0.5);
+        (self.dot(key.transpose()) / d).softmax(-1).dropout(dropout).dot(value)
     }
 
     /// Set label
@@ -463,20 +470,24 @@ impl Tensor {
     pub fn shape(&self) -> Shape {
         self.graph.borrow().shape(self.data).clone()
     }
-    
+
+    /// Sin op
+    #[must_use]
+    pub fn sin(&self) -> Tensor {
+        self.new_op(Node::Sin(self.data))
+    }
+
     /// Softmax op
     #[must_use]
     pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
         let x_e = self.exp();
         &x_e/x_e.sum(axes)
     }
-    
-    /// Scaled dot product attention op
-    /// Currently it is not causal
+
+    /// Sin op
     #[must_use]
-    pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor, dropout: f32) -> Tensor {
-        let d = crate::libm::powf(self.shape()[-1] as f32, 0.5);
-        (self.dot(key.transpose()) / d).softmax(-1).dropout(dropout).dot(value)
+    pub fn sqrt(&self) -> Tensor {
+        self.new_op(Node::Sqrt(self.data))
     }
 
     /// Reduce tensor across axes, returning sum of each axes.
@@ -850,7 +861,7 @@ impl PartialEq<f32> for Tensor {
         match self.dtype() {
             DType::F32 => {
                 if let Some(data) = self.to_vec() {
-                    if fabsf(data[0] - other) > EPSILON {
+                    if libm::fabsf(data[0] - other) > EPSILON {
                         return false;
                     }
                 } else {
@@ -874,7 +885,7 @@ impl<const L: usize> PartialEq<[f32; L]> for Tensor {
             DType::F32 => {
                 if let Some(data) = self.to_vec() {
                     for (x, y) in data.iter().zip(other) {
-                        if fabsf(x - y) > EPSILON {
+                        if libm::fabsf(x - y) > EPSILON {
                             return false;
                         }
                     }
@@ -899,7 +910,7 @@ impl<const L: usize, const M: usize> PartialEq<[[f32; L]; M]> for Tensor {
             DType::F32 => {
                 if let Some(data) = self.to_vec() {
                     for (x, y) in data.iter().zip(other.iter().flatten()) {
-                        if fabsf(x - y) > EPSILON {
+                        if libm::fabsf(x - y) > EPSILON {
                             return false;
                         }
                     }
@@ -924,7 +935,7 @@ impl<const L: usize, const M: usize, const N: usize> PartialEq<[[[f32; L]; M]; N
             DType::F32 => {
                 if let Some(data) = self.to_vec() {
                     for (x, y) in data.iter().zip(other.iter().flatten().flatten()) {
-                        if fabsf(x - y) > EPSILON {
+                        if libm::fabsf(x - y) > EPSILON {
                             return false;
                         }
                     }

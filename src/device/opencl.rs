@@ -434,8 +434,10 @@ impl OpenCLDev {
                 Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("if (res{} > 0) {{ 1 }} else {{ 0 }}", x.i())),
                 Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, format!("-res{}", x.i())),
                 Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, format!("exp(res{})", x.i())),
-                Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log({})", x.i())),
-                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, format!("tanh({})", x.i())),
+                Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log(res{})", x.i())),
+                Node::Sin(x) => unary_op(*node_id, *x, &mut buffers, format!("sin(res{})", x.i())),
+                Node::Sqrt(x) => unary_op(*node_id, *x, &mut buffers, format!("sqrt(res{})", x.i())),
+                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, format!("tanh(res{})", x.i())),
                 Node::Dropout(x, seed, prob) => {
                     let (xr, yr) = (*seed as u32, (*seed >> 32) as u32);
                     unary_op(*node_id, *x, &mut buffers, format!("  if ({yr} ^ ({yr} >> 19) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) >> 8)) > 4294967295 * {prob}) {{ 0 }} else {{ res{} }}", x.i()))
@@ -533,7 +535,8 @@ impl OpenCLDev {
                     let rtsm = tsm/wptm;
                     let rtsn = tsn/wptn;
                     let rts = rtsm*rtsn;
-                    let lpta = (tsk*tsm)/rts;
+                    let lptm = (tsk*tsm)/rts;
+                    let lptn = (tsk*tsn)/rts;
                     let om = m;
                     let ok = k;
                     let on = n;
@@ -548,7 +551,7 @@ impl OpenCLDev {
             tile_x[ki][row] = data{x}[tiki*{om} + grid0 + row];
           }} else tile_x[ki][row] = 0;")
                     };
-                    let load_y = if on%tsm == 0 && ok%tsk == 0 {
+                    let load_y = if on%tsn == 0 && ok%tsk == 0 {
                         format!("tile_y[ki][row] = data{y}[tiki*{n} + grid1 + row];")
                     } else {
                         format!("if ((grid1 + row < {on}) && (tiki < {ok})) {{
@@ -572,14 +575,18 @@ impl OpenCLDev {
   {dtype} x_reg;
   {dtype} y_reg[{wptn}];
   for (int ti = 0; ti < {k}; ti += {tsk}) {{
-    for (int la=0; la<{lpta}; la++) {{
-        int id = la*{rts} + lid1*{rtsm} + lid0;
+    for (int lm=0; lm<{lptm}; lm++) {{
+        int id = lm*{rts} + lid1*{rtsm} + lid0;
         int row = id % {tsm};
         int ki = id / {tsm};
         int tiki = ti + ki;
-        {load_x}
-        {load_y}
-    }}
+        {load_x} }}
+    for (int ln=0; ln<{lptn}; ln++) {{
+        int id = ln*{rts} + lid1*{rtsn} + lid0;
+        int row = id % {tsn};
+        int ki = id / {tsn};
+        int tiki = ti + ki;
+        {load_y} }}
     barrier(CLK_LOCAL_MEM_FENCE);
     for (int ki = 0; ki < {tsk}; ++ki) {{
       for (int jn = 0; jn < {wptn}; ++jn)
@@ -599,7 +606,7 @@ impl OpenCLDev {
                     let gws = [m/wptm, n/wptn].into();
                     let lws = Some([rtsm, rtsn].into());
                     let prefix = format!("        datar[z_row*{on} + z_col] = ");
-                    let suffix = ";  } } }\n".into();
+                    let suffix = "; } } }\n".into();
                     let idx = format!("z_row*{on} + z_col");
 
                     buffers.insert(

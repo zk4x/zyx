@@ -26,6 +26,8 @@ pub(super) enum Node {
     Cast(NodeId, DType),
     Neg(NodeId),
     Ln(NodeId),
+    Sin(NodeId),
+    Sqrt(NodeId),
     Exp(NodeId),
     ReLU(NodeId),
     DReLU(NodeId),
@@ -53,6 +55,8 @@ impl Clone for Node {
             Node::Cast(x, d) => Node::Cast(*x, *d),
             Node::Neg(x) => Node::Neg(*x),
             Node::Ln(x) => Node::Ln(*x),
+            Node::Sin(x) => Node::Sin(*x),
+            Node::Sqrt(x) => Node::Sqrt(*x),
             Node::ReLU(x) => Node::ReLU(*x),
             Node::DReLU(x) => Node::DReLU(*x),
             Node::Exp(x) => Node::Exp(*x),
@@ -93,6 +97,8 @@ impl core::fmt::Debug for Node {
             Node::DReLU(x) => f.write_fmt(format_args!("\x1b[31mDReLU\x1b[0m({x})")),
             Node::Exp(x) => f.write_fmt(format_args!("\x1b[31mExp\x1b[0m({x})")),
             Node::Ln(x) => f.write_fmt(format_args!("\x1b[31mLn\x1b[0m({x})")),
+            Node::Sin(x) => f.write_fmt(format_args!("\x1b[31mSin\x1b[0m({x})")),
+            Node::Sqrt(x) => f.write_fmt(format_args!("\x1b[31mSqrt\x1b[0m({x})")),
             Node::Tanh(x) => f.write_fmt(format_args!("\x1b[31mTanh\x1b[0m({x})")),
             Node::Dropout(x,_, prob) => f.write_fmt(format_args!("\x1b[31mDropout\x1b[0m({x}, prob={prob})")),
             Node::Reshape(x, ..) => f.write_fmt(format_args!("\x1b[31mReshape\x1b[0m({x})")),
@@ -124,6 +130,8 @@ impl Node {
             | Node::DReLU(x)
             | Node::Exp(x)
             | Node::Ln(x)
+            | Node::Sin(x)
+            | Node::Sqrt(x)
             | Node::Tanh(x)
             | Node::Dropout(x, ..)
             | Node::Reshape(x, ..)
@@ -147,6 +155,8 @@ impl Node {
             Node::ReLU(x) |
             Node::DReLU(x) |
             Node::Ln(x) |
+            Node::Sin(x) |
+            Node::Sqrt(x) |
             Node::Neg(x) |
             Node::Cast(x, ..) |
             Node::Dropout(x, ..) |
@@ -220,6 +230,24 @@ impl Graph {
     }
 
     pub(super) fn release(&mut self, id: NodeId) {
+        let mut params = Vec::with_capacity(10);
+        params.push(id);
+        while let Some(p) = params.pop() {
+            self.rc[p.i()] -= 1;
+            if self.rc[p.i()] == 0 {
+                params.extend(self.nodes[p].parameters().into_iter());
+                /*for nid in &*self.nodes[p.i()].parameters() {
+                    params.push(*nid);
+                }*/
+                self.nodes[p.i()] = Node::None;
+                self.buffers.remove(&p);
+                self.labels.remove(&p);
+                self.leafs.remove(&p);
+            }
+        }
+    }
+
+    /*pub(super) fn _release(&mut self, id: NodeId) {
         //std::println!("Releasing {id}, {:?}", self.nodes[id.id()]);
         self.rc[id.i()] -= 1;
         if self.rc[id.i()] == 0 {
@@ -231,7 +259,7 @@ impl Graph {
             self.labels.remove(&id);
             self.leafs.remove(&id);
         }
-    }
+    }*/
 
     pub(super) fn shape(&self, mut id: NodeId) -> &Shape {
         loop {
@@ -239,7 +267,6 @@ impl Graph {
                 return storage.shape();
             }
             match &self.nodes[id.i()] {
-                //Node::Const(..) => return self.buffers[&param].shape(),
                 Node::StoreF32(.., shape)
                 | Node::StoreI32(.., shape)
                 | Node::TDot(.., shape)
@@ -603,6 +630,18 @@ impl Graph {
                 self.backward(x, x_grad, sources, grad_nodes, visited);
                 self.release(x_grad);
             }
+            Node::Sin(x) => {
+                todo!()
+                //let x_grad = self.push(Node::Div(grad, x));
+                //self.backward(x, x_grad, sources, grad_nodes, visited);
+                //self.release(x_grad);
+            }
+            Node::Sqrt(x) => {
+                todo!()
+                //let x_grad = self.push(Node::Div(grad, x));
+                //self.backward(x, x_grad, sources, grad_nodes, visited);
+                //self.release(x_grad);
+            }
             Node::Cast(x, _) => {
                 let x_grad = self.push(Node::Cast(grad, self.dtype(x)));
                 self.backward(x, x_grad, sources, grad_nodes, visited);
@@ -781,6 +820,8 @@ impl Graph {
                 Node::DReLU(x) => add_node(id, &format!("DReLU({x})"), "oval"),
                 Node::Dropout(x, _, prob) => add_node(id, &format!("Dropout({x}, prob={prob})"), "oval"),
                 Node::Ln(x) => add_node(id, &format!("Ln({x})"), "oval"),
+                Node::Sin(x) => add_node(id, &format!("Sin({x})"), "oval"),
+                Node::Sqrt(x) => add_node(id, &format!("Sqrt({x})"), "oval"),
                 Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
                 Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),
                 Node::Cast(x, dtype) => add_node(id, &format!("Cast({x} -> {dtype})"), "oval"),
