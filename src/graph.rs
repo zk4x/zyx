@@ -235,10 +235,7 @@ impl Graph {
         while let Some(p) = params.pop() {
             self.rc[p.i()] -= 1;
             if self.rc[p.i()] == 0 {
-                params.extend(self.nodes[p].parameters().into_iter());
-                /*for nid in &*self.nodes[p.i()].parameters() {
-                    params.push(*nid);
-                }*/
+                params.extend(self.nodes[p.i()].parameters().into_iter());
                 self.nodes[p.i()] = Node::None;
                 self.buffers.remove(&p);
                 self.labels.remove(&p);
@@ -246,20 +243,6 @@ impl Graph {
             }
         }
     }
-
-    /*pub(super) fn _release(&mut self, id: NodeId) {
-        //std::println!("Releasing {id}, {:?}", self.nodes[id.id()]);
-        self.rc[id.i()] -= 1;
-        if self.rc[id.i()] == 0 {
-            for nid in &*self.nodes[id.i()].parameters() {
-                self.release(*nid);
-            }
-            self.nodes[id.i()] = Node::None;
-            self.buffers.remove(&id);
-            self.labels.remove(&id);
-            self.leafs.remove(&id);
-        }
-    }*/
 
     pub(super) fn shape(&self, mut id: NodeId) -> &Shape {
         loop {
