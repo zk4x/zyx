@@ -195,7 +195,7 @@ Zyx has syntax similar to other ML libraries (i. e. PyTorch).
 
 ## Missing features
 
-Zyx is very much *experimental* software. Some notable missing features are convolutions, padding and backpropagation for max.
+Zyx is very much *experimental* software. Some notable missing features are convolutions and padding.
 
 ## Contributing
 

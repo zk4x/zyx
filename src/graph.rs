@@ -27,6 +27,7 @@ pub(super) enum Node {
     Neg(NodeId),
     Ln(NodeId),
     Sin(NodeId),
+    Cos(NodeId),
     Sqrt(NodeId),
     Exp(NodeId),
     ReLU(NodeId),
@@ -57,6 +58,7 @@ impl Clone for Node {
             Node::Neg(x) => Node::Neg(*x),
             Node::Ln(x) => Node::Ln(*x),
             Node::Sin(x) => Node::Sin(*x),
+            Node::Cos(x) => Node::Cos(*x),
             Node::Sqrt(x) => Node::Sqrt(*x),
             Node::ReLU(x) => Node::ReLU(*x),
             Node::DReLU(x) => Node::DReLU(*x),
@@ -100,6 +102,7 @@ impl core::fmt::Debug for Node {
             Node::Exp(x) => f.write_fmt(format_args!("\x1b[31mExp\x1b[0m({x})")),
             Node::Ln(x) => f.write_fmt(format_args!("\x1b[31mLn\x1b[0m({x})")),
             Node::Sin(x) => f.write_fmt(format_args!("\x1b[31mSin\x1b[0m({x})")),
+            Node::Cos(x) => f.write_fmt(format_args!("\x1b[31mCos\x1b[0m({x})")),
             Node::Sqrt(x) => f.write_fmt(format_args!("\x1b[31mSqrt\x1b[0m({x})")),
             Node::Tanh(x) => f.write_fmt(format_args!("\x1b[31mTanh\x1b[0m({x})")),
             Node::Dropout(x,_, prob) => f.write_fmt(format_args!("\x1b[31mDropout\x1b[0m({x}, prob={prob})")),
@@ -134,6 +137,7 @@ impl Node {
             | Node::Exp(x)
             | Node::Ln(x)
             | Node::Sin(x)
+            | Node::Cos(x)
             | Node::Sqrt(x)
             | Node::Tanh(x)
             | Node::Dropout(x, ..)
@@ -159,6 +163,7 @@ impl Node {
             Node::DReLU(x) |
             Node::Ln(x) |
             Node::Sin(x) |
+            Node::Cos(x) |
             Node::Sqrt(x) |
             Node::Neg(x) |
             Node::Cast(x, ..) |
@@ -183,7 +188,6 @@ impl Node {
 // Nodes are kept small
 #[derive(Debug)]
 pub(super) struct Graph {
-    #[cfg(feature = "rand")]
     rng: rand::rngs::SmallRng,
     pub(super) devices: Vec<Device>,
     pub(super) default_device: usize,
@@ -196,10 +200,8 @@ pub(super) struct Graph {
 
 impl Default for Graph {
     fn default() -> Self {
-        #[cfg(feature = "rand")]
         use rand::SeedableRng;
         Self {
-            #[cfg(feature = "rand")]
             rng: rand::rngs::SmallRng::seed_from_u64(420694206942069),
             devices: vec![Device::CPU],
             default_device: 0,
@@ -619,16 +621,33 @@ impl Graph {
                 self.release(x_grad);
             }
             Node::Sin(x) => {
-                todo!()
-                //let x_grad = self.push(Node::Div(grad, x));
-                //self.backward(x, x_grad, sources, grad_nodes, visited);
-                //self.release(x_grad);
+                let x_temp = self.push(Node::Cos(x));
+                let x_grad = self.push(Node::Mul(x_temp, grad));
+                self.release(x_temp);
+                self.backward(x, x_grad, sources, grad_nodes, visited);
+                self.release(x_grad);
+            }
+            Node::Cos(x) => {
+                let x_temp1 = self.push(Node::Sin(x));
+                let x_temp = self.push(Node::Neg(x_temp1));
+                self.release(x_temp1);
+                let x_grad = self.push(Node::Mul(x_temp, grad));
+                self.release(x_temp);
+                self.backward(x, x_grad, sources, grad_nodes, visited);
+                self.release(x_grad);
             }
             Node::Sqrt(x) => {
-                todo!()
-                //let x_grad = self.push(Node::Div(grad, x));
-                //self.backward(x, x_grad, sources, grad_nodes, visited);
-                //self.release(x_grad);
+                // x_grad = grad/(2*sqrt(x))
+                let x_shape = self.shape(x).clone();
+                let two1 = self.tensor_from_iter_f32(1.into(), [2.]);
+                let two2 = self.push(Node::Expand(two1, x_shape));
+                self.release(two1);
+                let x_temp = self.push(Node::Mul(two2, id));
+                self.release(two2);
+                let x_grad = self.push(Node::Div(grad, x_temp));
+                self.release(x_temp);
+                self.backward(x, x_grad, sources, grad_nodes, visited);
+                self.release(x_grad);
             }
             Node::Cast(x, _) => {
                 let x_grad = self.push(Node::Cast(grad, self.dtype(x)));
@@ -706,13 +725,27 @@ impl Graph {
                 self.release(x_grad);
             }
             Node::Sum(x, ..) => {
-                let org_shape = self.shape(x).clone();
-                let x_grad = self.push(Node::Expand(grad, org_shape));
+                let x_shape = self.shape(x).clone();
+                let x_grad = self.push(Node::Expand(grad, x_shape));
                 self.backward(x, x_grad, sources, grad_nodes, visited);
                 self.release(x_grad);
             }
-            Node::Max(..) => {
-                todo!("max backward is not yet implemented");
+            Node::Max(x, ..) => {
+                // x_grad = (1 - (x < z.expand(x.shape()))) * grad
+                let x_shape = self.shape(x).clone();
+                let z_temp = self.push(Node::Expand(id, x_shape.clone()));
+                let cmp_t = self.push(Node::Cmplt(x, z_temp));
+                self.release(z_temp);
+                let one1 = self.tensor_from_iter_i32(1.into(), [1]);
+                let one2 = self.push(Node::Expand(one1, x_shape));
+                self.release(one1);
+                let max_1s = self.push(Node::Sub(one2, cmp_t));
+                self.release(one2);
+                self.release(cmp_t);
+                let x_grad = self.push(Node::Mul(max_1s, grad));
+                self.release(max_1s);
+                self.backward(x, x_grad, sources, grad_nodes, visited);
+                self.release(x_grad);
             }
         }
     }
@@ -750,7 +783,6 @@ impl Graph {
         self.labels.get(&id)
     }
 
-    #[cfg(feature = "rand")]
     pub(super) fn rand_u64(&mut self) -> u64 {
         use rand::RngCore;
         self.rng.next_u64()
@@ -812,6 +844,7 @@ impl Graph {
                 Node::Dropout(x, _, prob) => add_node(id, &format!("Dropout({x}, prob={prob})"), "oval"),
                 Node::Ln(x) => add_node(id, &format!("Ln({x})"), "oval"),
                 Node::Sin(x) => add_node(id, &format!("Sin({x})"), "oval"),
+                Node::Cos(x) => add_node(id, &format!("Cos({x})"), "oval"),
                 Node::Sqrt(x) => add_node(id, &format!("Sqrt({x})"), "oval"),
                 Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
                 Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),
@@ -835,7 +868,6 @@ impl Graph {
 
 // Boring boilerplate methods
 impl Graph {
-    #[cfg(feature = "rand")]
     pub(super) fn randn_f32(&mut self, shape: Shape) -> NodeId {
         use rand::Rng;
         let n = shape.numel();
@@ -848,7 +880,6 @@ impl Graph {
         self.push(node)
     }
 
-    #[cfg(feature = "rand")]
     pub(super) fn randn_i32(&mut self, shape: Shape) -> NodeId {
         use rand::Rng;
         let n = shape.numel();
@@ -861,7 +892,6 @@ impl Graph {
         self.push(node)
     }
 
-    #[cfg(feature = "rand")]
     pub(super) fn uniform_f32(&mut self, shape: Shape, range: core::ops::Range<f32>) -> NodeId {
         use rand::Rng;
         let n = shape.numel();
@@ -870,7 +900,6 @@ impl Graph {
         self.push(node)
     }
 
-    #[cfg(feature = "rand")]
     pub(super) fn uniform_i32(&mut self, shape: Shape, range: core::ops::Range<i32>) -> NodeId {
         use rand::Rng;
         let n = shape.numel();

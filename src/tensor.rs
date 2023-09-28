@@ -59,35 +59,28 @@ pub trait IntoTensor {
 /// ```
 /// or it can have arbitrary number of dimensions.
 /// ```rust
-/// # #[cfg(feature = "rand")] {
 /// # use zyx::context::Context;
 /// # let mut ctx = Context::new();
 /// let mut x = ctx.randn((4, 2, 3, 1, 5));
 /// assert_eq!(x.shape(), (4, 2, 3, 1, 5));
-/// # }
 /// ```
 /// You can call operations on tensors
 /// ```rust
-/// # #[cfg(feature = "rand")] {
 /// # use zyx::context::Context;
 /// # let mut ctx = Context::new();
 /// # let x = ctx.randn((4, 2, 3, 1, 5));
 /// let y = x.exp();
-/// # }
 /// ```
 /// and calculate their gradients.
 /// ```rust
-/// # #[cfg(feature = "rand")] {
 /// # use zyx::context::Context;
 /// # let mut ctx = Context::new();
 /// # let mut x = ctx.randn((4, 2, 3, 1, 5));
 /// # let y = x.exp();
 /// y.backward(&mut x); // calculates gradient for x
-/// # }
 /// ```
 /// Tensors need to be realized before accessing.
 /// ```rust
-/// # #[cfg(feature = "rand")] {
 /// # use zyx::context::Context;
 /// # use zyx::parameters::IntoParameters;
 /// # let mut ctx = Context::new();
@@ -96,7 +89,6 @@ pub trait IntoTensor {
 /// # y.backward(&mut x); // calculates gradient for x
 /// x.realize_grad().unwrap();
 /// println!("{}", x.grad().unwrap());
-/// # }
 /// ```
 #[derive(Debug)]
 pub struct Tensor {
@@ -229,7 +221,6 @@ impl Tensor {
     }
 
     /// Dropout op
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, prob: f32) -> Tensor {
         let seed = if prob == 0. {
@@ -441,7 +432,6 @@ impl Tensor {
 
     /// Scaled dot product attention op
     /// Currently it is not causal
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor, dropout: f32) -> Tensor {
         let d = libm::powf(self.shape()[-1] as f32, 0.5);

@@ -60,6 +60,7 @@ pub(super) fn realize(
             Node::Exp(x) => unary_op(graph.c(*x), "exp"),
             Node::Ln(x) => unary_op(graph.c(*x), "ln"),
             Node::Sin(x) => unary_op(graph.c(*x), "sin"),
+            Node::Cos(x) => unary_op(graph.c(*x), "cos"),
             Node::Sqrt(x) => unary_op(graph.c(*x), "sqrt"),
             Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
             Node::Dropout(x, seed, prob) => match graph.c(*x) {
@@ -138,6 +139,7 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
             "exp" => Storage::CPUF32(unary_op_t(data, |x| libm::expf(*x)), shape.clone()),
             "ln" => Storage::CPUF32(unary_op_t(data, |x| libm::logf(*x)), shape.clone()),
             "sin" => Storage::CPUF32(unary_op_t(data, |x| libm::sinf(*x)), shape.clone()),
+            "cos" => Storage::CPUF32(unary_op_t(data, |x| libm::cosf(*x)), shape.clone()),
             "sqrt" => Storage::CPUF32(unary_op_t(data, |x| libm::sqrtf(*x)), shape.clone()),
             "tanh" => Storage::CPUF32(unary_op_t(data, |x| libm::tanhf(*x)), shape.clone()),
             _ => panic!(),

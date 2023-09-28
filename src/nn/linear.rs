@@ -46,7 +46,6 @@ impl Context {
     /// from range -k..k where k = `sqrt(1/in_features)`
     #[allow(clippy::cast_precision_loss)]
     #[must_use]
-    #[cfg(feature = "rand")]
     pub fn linear(&mut self, in_features: usize, out_features: usize) -> Linear {
         // TODO add scaling
         let k = libm::powf(1. / in_features as f32, 0.5);
@@ -72,7 +71,6 @@ impl Linear {
     #[allow(clippy::return_self_not_must_use)]
     #[allow(clippy::missing_panics_doc)]
     #[allow(clippy::cast_precision_loss)]
-    #[cfg(feature = "rand")]
     pub fn set_bias(&mut self, bias: bool) -> Self {
         if bias {
             if self.bias.is_none() {

@@ -138,7 +138,6 @@ impl Context {
     }
 
     /// Create new tensor filled with values sampled from standard distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(&self, shape: impl Into<Shape>) -> Tensor {
         Tensor {
@@ -149,7 +148,6 @@ impl Context {
     }
 
     /// Create new i32 tensor filled with values sampled from standard distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn_i32(&self, shape: impl Into<Shape>) -> Tensor {
         Tensor {
@@ -208,7 +206,6 @@ impl Context {
     }
 
     /// Create new i32 tensor filled with values sampled from uniform distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn uniform(&self, shape: impl Into<Shape>, range: core::ops::Range<f32>) -> Tensor {
         Tensor {
@@ -219,7 +216,6 @@ impl Context {
     }
 
     /// Create new i32 tensor filled with values sampled from uniform distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn uniform_i32(&self, shape: impl Into<Shape>, range: core::ops::Range<i32>) -> Tensor {
         Tensor {

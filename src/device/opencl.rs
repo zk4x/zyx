@@ -436,6 +436,7 @@ impl OpenCLDev {
                 Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, format!("exp(res{})", x.i())),
                 Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log(res{})", x.i())),
                 Node::Sin(x) => unary_op(*node_id, *x, &mut buffers, format!("sin(res{})", x.i())),
+                Node::Cos(x) => unary_op(*node_id, *x, &mut buffers, format!("cos(res{})", x.i())),
                 Node::Sqrt(x) => unary_op(*node_id, *x, &mut buffers, format!("sqrt(res{})", x.i())),
                 Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, format!("tanh(res{})", x.i())),
                 Node::Dropout(x, seed, prob) => {
@@ -1213,7 +1214,7 @@ fn binary_op(id: NodeId, x: NodeId, y: NodeId, buffers: &mut BTreeMap<NodeId, Op
     );
 }
 
-#[cfg(all(feature = "debug1", feature = "rand"))]
+#[cfg(feature = "debug1")]
 #[test]
 fn test1() {
     use crate::context::Context;
@@ -1265,7 +1266,7 @@ fn test3() -> Result<(), OutOfMemoryError> {
     Ok(())
 }
 
-#[cfg(all(feature = "debug1", feature = "rand"))]
+#[cfg(feature = "debug1")]
 #[test]
 fn test4() -> Result<(), OutOfMemoryError> {
     use crate::context::Context;
@@ -1328,7 +1329,6 @@ fn test4() -> Result<(), OutOfMemoryError> {
     Ok(())
 }
 
-#[cfg(feature = "rand")]
 #[test]
 fn test5() {
     use crate::context::Context;
@@ -1357,7 +1357,6 @@ fn test5() {
     }
 }
 
-#[cfg(feature = "rand")]
 #[test]
 fn test6() {
     use crate::context::Context;
@@ -1371,7 +1370,7 @@ fn test6() {
     }
 }
 
-#[cfg(all(feature = "debug1", feature = "rand"))]
+#[cfg(feature = "debug1")]
 #[test]
 fn test7() {
     use crate::context::Context;
