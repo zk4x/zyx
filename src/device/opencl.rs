@@ -446,6 +446,7 @@ impl OpenCLDev {
                 Node::Sub(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "-"),
                 Node::Mul(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "*"),
                 Node::Div(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "/"),
+                Node::Cmplt(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "<"),
                 Node::Pow(x, y) => {
                     let dtype = buffers[x].dtype();
                     let mut parameters = buffers[x].parameters().clone();

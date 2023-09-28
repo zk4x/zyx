@@ -51,6 +51,7 @@ pub(super) fn realize(
             Node::Sub(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "-"),
             Node::Mul(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "*"),
             Node::Div(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "/"),
+            Node::Cmplt(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "<"),
             Node::Pow(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "pow"),
             Node::TDot(x, y, shape) => binary_op(shape.clone(), graph.c(*x), graph.c(*y), "tdot"),
             Node::Neg(x) => unary_op(graph.c(*x), "neg"),

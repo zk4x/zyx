@@ -21,6 +21,7 @@ pub(super) enum Node {
     Sub(NodeId, NodeId),
     Mul(NodeId, NodeId),
     Div(NodeId, NodeId),
+    Cmplt(NodeId, NodeId),
     Pow(NodeId, NodeId),
     TDot(NodeId, NodeId, Shape), // Matmul A x B with B transposed
     Cast(NodeId, DType),
@@ -50,6 +51,7 @@ impl Clone for Node {
             Node::Sub(x, y) => Node::Sub(*x, *y),
             Node::Mul(x, y) => Node::Mul(*x, *y),
             Node::Div(x, y) => Node::Div(*x, *y),
+            Node::Cmplt(x, y) => Node::Cmplt(*x, *y),
             Node::Pow(x, y) => Node::Pow(*x, *y),
             Node::TDot(x, y, s) => Node::TDot(*x, *y, s.clone()),
             Node::Cast(x, d) => Node::Cast(*x, *d),
@@ -87,6 +89,7 @@ impl core::fmt::Debug for Node {
             Node::Sub(x, y) => f.write_fmt(format_args!("\x1b[31mSub\x1b[0m({x}, {y})")),
             Node::Mul(x, y) => f.write_fmt(format_args!("\x1b[31mMul\x1b[0m({x}, {y})")),
             Node::Div(x, y) => f.write_fmt(format_args!("\x1b[31mDiv\x1b[0m({x}, {y})")),
+            Node::Cmplt(x, y) => f.write_fmt(format_args!("\x1b[31mCmplt\x1b[0m({x}, {y})")),
             Node::Pow(x, y) => f.write_fmt(format_args!("\x1b[31mPow\x1b[0m({x}, {y})")),
             Node::TDot(x, y, _) => f.write_fmt(format_args!("\x1b[31mTDot\x1b[0m({x}, {y})")),
             Node::Cast(x, dtype) => {
@@ -122,6 +125,7 @@ impl Node {
             | Node::Sub(x, y)
             | Node::Mul(x, y)
             | Node::Div(x, y)
+            | Node::Cmplt(x, y)
             | Node::Pow(x, y)
             | Node::TDot(x, y, _) => Box::new([*x, *y]),
             Node::Cast(x, ..)
@@ -481,6 +485,7 @@ impl Graph {
         match self.nodes[id.i()] {
             Node::None |
             Node::DReLU(..) |
+            Node::Cmplt(..) |
             Node::Const(..)
             => panic!("Internal bug running backward on .."),
             Node::Leaf | Node::StoreF32(..) | Node::StoreI32(..) => {}
@@ -795,6 +800,7 @@ impl Graph {
                 Node::Sub(x, y) => add_node(id, &format!("Sub({x}, {y})"), "oval"),
                 Node::Mul(x, y) => add_node(id, &format!("Mul({x}, {y})"), "oval"),
                 Node::Div(x, y) => add_node(id, &format!("Div({x}, {y})"), "oval"),
+                Node::Cmplt(x, y) => add_node(id, &format!("Cmplt({x}, {y})"), "oval"),
                 Node::Pow(x, y) => add_node(id, &format!("Pow({x}, {y})"), "oval"),
                 Node::TDot(x, y, ..) => add_node(id, &format!("TDot({x}, {y})"), "oval"),
                 Node::Neg(x) => add_node(id, &format!("Neg({x})"), "oval"),
