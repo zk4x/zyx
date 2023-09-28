@@ -2,7 +2,7 @@
 
 Machine learning library written in rust.
 
-Zyx is semi small and all dependencies are optional (i. e. zyx was build from scratch in rust and OpenCL), .rlib is 2.5MB.
+Zyx is semi small and has only few dependencies (i. e. zyx was build from scratch in rust and OpenCL).
 
 ## Tensors
 
