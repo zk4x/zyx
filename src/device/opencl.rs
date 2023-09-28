@@ -431,7 +431,7 @@ impl OpenCLDev {
                     );
                 }
                 Node::ReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("max(res{}, 0)", x.i())),
-                Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("if (res{} > 0) {{ 1 }} else {{ 0 }}", x.i())),
+                Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("res{} > 0", x.i())),
                 Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, format!("-res{}", x.i())),
                 Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, format!("exp(res{})", x.i())),
                 Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log(res{})", x.i())),

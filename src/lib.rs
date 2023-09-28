@@ -1,7 +1,11 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
+
 #![warn(clippy::pedantic)]
-//#![cfg_attr(not(feature = "opencl"), forbid(unsafe_code))]
+#![allow(clippy::similar_names)]
+#![allow(clippy::many_single_char_names)]
+
+#![cfg_attr(not(feature = "opencl"), forbid(unsafe_code))]
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 #![forbid(rustdoc::broken_intra_doc_links)]

@@ -202,7 +202,7 @@ impl Default for Graph {
     fn default() -> Self {
         use rand::SeedableRng;
         Self {
-            rng: rand::rngs::SmallRng::seed_from_u64(420694206942069),
+            rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
             devices: vec![Device::CPU],
             default_device: 0,
             rc: Vec::with_capacity(128),
@@ -241,7 +241,7 @@ impl Graph {
         while let Some(p) = params.pop() {
             self.rc[p.i()] -= 1;
             if self.rc[p.i()] == 0 {
-                params.extend(self.nodes[p.i()].parameters().into_iter());
+                params.extend(self.nodes[p.i()].parameters().iter());
                 self.nodes[p.i()] = Node::None;
                 self.buffers.remove(&p);
                 self.labels.remove(&p);
@@ -659,10 +659,8 @@ impl Graph {
                 self.backward(x, x_grad, sources, grad_nodes, visited);
                 self.release(x_grad);
             }
-            Node::Dropout(x, ..) => {
-                let x_grad = self.push(Node::Neg(grad));
-                self.backward(x, x_grad, sources, grad_nodes, visited);
-                self.release(x_grad);
+            Node::Dropout(..) => {
+                todo!("Dropout backward is todo")
             }
             Node::Tanh(x) => {
                 // 1 - tanh^2(x)

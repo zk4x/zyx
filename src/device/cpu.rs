@@ -32,6 +32,8 @@ impl GetConst for BTreeMap<NodeId, (usize, Node)> {
     }
 }
 
+#[allow(clippy::match_wildcard_for_single_variants)]
+#[allow(clippy::unnecessary_wraps)]
 #[allow(clippy::cast_precision_loss)]
 #[allow(clippy::cast_possible_truncation)]
 pub(super) fn realize(
@@ -129,6 +131,7 @@ pub(super) fn realize(
 }
 
 // Simple and very slow cpu kernels
+#[allow(clippy::match_wildcard_for_single_variants)]
 fn unary_op(data: &Storage, op: &str) -> Storage {
     match data {
         Storage::CPUF32(data, shape) => match op {
@@ -148,7 +151,7 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
             "" => Storage::CPUI32(data.clone(), shape.clone()),
             "neg" => Storage::CPUI32(unary_op_t(data, |x| -x), shape.clone()),
             "relu" => Storage::CPUI32(unary_op_t(data, |x| (*x).max(0)), shape.clone()),
-            "drelu" => Storage::CPUI32(unary_op_t(data, |x| if *x > 0 { 1 } else { 0 }), shape.clone()),
+            "drelu" => Storage::CPUI32(unary_op_t(data, |x| i32::from(*x > 0)), shape.clone()),
             _ => panic!("Impossible op {op} on i32"),
         },
         _ => panic!(),
@@ -167,6 +170,7 @@ fn unary_op_t<T: Sync + Send>(data: &[T], op: impl Sync + Send + Fn(&T) -> T) ->
     }
 }
 
+#[allow(clippy::match_wildcard_for_single_variants)]
 #[allow(clippy::cast_sign_loss)]
 fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Storage {
     match data_x {
@@ -376,12 +380,12 @@ fn tdot_op_t<T: Dtype>(data_x: &[T], shape_x: &Shape, data_y: &[T], shape_y: &Sh
     // TODO this is super slow, because it does not use tiling for memory caching,
     // but its simple and works.
     // k, m @ k, n -> m, n
+    const WIDTH: usize = 16;
     let m = shape_x[-1];
     let k = if shape_x.rank() > 1 { shape_x[-2] } else { 1 };
     let n = shape_y[-1];
     #[cfg(feature = "debug1")]
     std::println!("{m}, {k}, {n}");
-    const NUM: usize = 16;
     let transpose = |data: &[T], last_dim, n| {
         let mut res = Vec::with_capacity(n);
         let mut j = 0;
@@ -406,8 +410,8 @@ fn tdot_op_t<T: Dtype>(data_x: &[T], shape_x: &Shape, data_y: &[T], shape_y: &Sh
                     .chunks(k)
                     .flat_map(|y_row| {
                         x_chunk.chunks(k).map(|x| {
-                            x.chunks(NUM)
-                                .zip(y_row.chunks(NUM))
+                            x.chunks(WIDTH)
+                                .zip(y_row.chunks(WIDTH))
                                 .map(|(a, b)| {
                                     a.iter()
                                         .zip(b.iter())
@@ -423,6 +427,7 @@ fn tdot_op_t<T: Dtype>(data_x: &[T], shape_x: &Shape, data_y: &[T], shape_y: &Sh
         .collect()
 }
 
+#[allow(clippy::match_wildcard_for_single_variants)]
 fn axes_op(data: &Storage, op: &str, axes: &Axes) -> Storage {
     match data {
         Storage::CPUF32(data, shape) => match op {
@@ -484,6 +489,9 @@ fn reduce_op_t<T: Dtype>(
     res
 }
 
+#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_possible_truncation)]
 fn dropout_op_t<T: Dtype>(data: &[T], seed: u64, prob: f32) -> Box<[T]> {
     let (xr, yr) = (seed as u32, (seed >> 32) as u32);
     data.iter().enumerate().map(|(i, x)| {

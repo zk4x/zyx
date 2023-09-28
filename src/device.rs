@@ -63,6 +63,7 @@ impl Device {
         Ok(Self::OpenCL(opencl::OpenCLDev::new()?))
     }
 
+    #[allow(clippy::unused_self)]
     pub(crate) fn load_f32(&mut self, storage: &Storage) -> Box<[f32]> {
         match storage {
             Storage::None => panic!(),
@@ -101,6 +102,7 @@ impl Device {
         }
     }
 
+    #[allow(clippy::unused_self)]
     pub(crate) fn load_i32(&mut self, storage: &Storage) -> Box<[i32]> {
         match storage {
             Storage::None => panic!(),

@@ -408,7 +408,8 @@ impl Tensor {
         }
     }
 
-    /// ReLU op
+    /// `ReLU` op
+    #[must_use]
     pub fn relu(&self) -> Tensor {
         self.new_op(Node::ReLU(self.data))
     }
@@ -432,8 +433,9 @@ impl Tensor {
 
     /// Scaled dot product attention op
     /// Currently it is not causal
+    #[allow(clippy::cast_precision_loss)]
     #[must_use]
-    pub fn scaled_dot_product_attention(self, key: Tensor, value: Tensor, dropout: f32) -> Tensor {
+    pub fn scaled_dot_product_attention(self, key: &Tensor, value: &Tensor, dropout: f32) -> Tensor {
         let d = libm::powf(self.shape()[-1] as f32, 0.5);
         (self.dot(key.transpose()) / d).softmax(-1).dropout(dropout).dot(value)
     }
@@ -520,6 +522,8 @@ impl Tensor {
     }
 
     /// Hyperbolic tangent operation
+    /// # Panics
+    /// Panics if apply to integer dtype tensor.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
         let dtype = self.dtype();

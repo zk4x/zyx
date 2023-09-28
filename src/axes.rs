@@ -66,20 +66,22 @@ pub trait IntoAxes: Clone {
 }
 
 impl IntoAxes for &[i32] {
+    #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(
             self.iter()
-                .map(|x| (x + ndim as i32) as usize % ndim)
+                .map(|x| (x + i32::try_from(ndim).unwrap()) as usize % ndim)
                 .collect(),
         )
     }
 }
 
 impl<const N: usize> IntoAxes for [i32; N] {
+    #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(
             self.iter()
-                .map(|x| (x + ndim as i32) as usize % ndim)
+                .map(|x| (x + i32::try_from(ndim).unwrap()) as usize % ndim)
                 .collect(),
         )
     }
@@ -92,42 +94,49 @@ impl IntoAxes for () {
 }
 
 impl IntoAxes for i32 {
+    #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
-        Axes(Box::new([(self + ndim as i32) as usize % ndim]))
+        Axes(Box::new([(self + i32::try_from(ndim).unwrap()) as usize % ndim]))
     }
 }
 
 impl IntoAxes for (i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
-            (self.0 + ndim as i32) as usize % ndim,
-            (self.1 + ndim as i32) as usize % ndim,
+            (self.0 + i32::try_from(ndim).unwrap()) as usize % ndim,
+            (self.1 + i32::try_from(ndim).unwrap()) as usize % ndim,
         ]))
     }
 }
 
 impl IntoAxes for (i32, i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
-            (self.0 + ndim as i32) as usize % ndim,
-            (self.1 + ndim as i32) as usize % ndim,
-            (self.2 + ndim as i32) as usize % ndim,
+            (self.0 + i32::try_from(ndim).unwrap()) as usize % ndim,
+            (self.1 + i32::try_from(ndim).unwrap()) as usize % ndim,
+            (self.2 + i32::try_from(ndim).unwrap()) as usize % ndim,
         ]))
     }
 }
 
 impl IntoAxes for (i32, i32, i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
-            (self.0 + ndim as i32) as usize % ndim,
-            (self.1 + ndim as i32) as usize % ndim,
-            (self.2 + ndim as i32) as usize % ndim,
-            (self.3 + ndim as i32) as usize % ndim,
+            (self.0 + i32::try_from(ndim).unwrap()) as usize % ndim,
+            (self.1 + i32::try_from(ndim).unwrap()) as usize % ndim,
+            (self.2 + i32::try_from(ndim).unwrap()) as usize % ndim,
+            (self.3 + i32::try_from(ndim).unwrap()) as usize % ndim,
         ]))
     }
 }
 
 impl IntoAxes for (i32, i32, i32, i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
             (self.0 + ndim as i32) as usize % ndim,
@@ -140,6 +149,9 @@ impl IntoAxes for (i32, i32, i32, i32, i32) {
 }
 
 impl IntoAxes for (i32, i32, i32, i32, i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
             (self.0 + ndim as i32) as usize % ndim,
@@ -153,6 +165,9 @@ impl IntoAxes for (i32, i32, i32, i32, i32, i32) {
 }
 
 impl IntoAxes for (i32, i32, i32, i32, i32, i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
             (self.0 + ndim as i32) as usize % ndim,
@@ -167,6 +182,9 @@ impl IntoAxes for (i32, i32, i32, i32, i32, i32, i32) {
 }
 
 impl IntoAxes for (i32, i32, i32, i32, i32, i32, i32, i32) {
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
     fn into_axes(self, ndim: usize) -> Axes {
         Axes(Box::new([
             (self.0 + ndim as i32) as usize % ndim,

@@ -1,4 +1,4 @@
-#[cfg(all(feature = "rand", feature = "opencl"))]
+#[cfg(feature = "opencl")]
 use zyx::{
     context::Context,
     nn::{Linear, Module},
@@ -8,13 +8,13 @@ use zyx::{
     OutOfMemoryError,
 };
 
-#[cfg(all(feature = "rand", feature = "opencl"))]
+#[cfg(feature = "opencl")]
 struct TinyNet {
     l0: Linear,
     l1: Linear,
 }
 
-#[cfg(all(feature = "rand", feature = "opencl"))]
+#[cfg(feature = "opencl")]
 impl Module for TinyNet {
     fn forward(&self, x: &Tensor) -> Tensor {
         let x = self.l0.forward(x).tanh();
@@ -26,7 +26,7 @@ impl Module for TinyNet {
     }
 }
 
-#[cfg(all(feature = "rand", feature = "opencl"))]
+#[cfg(feature = "opencl")]
 fn main() -> Result<(), OutOfMemoryError> {
     //let mut ctx = Context::new();
     let mut ctx = Context::opencl().unwrap();
@@ -63,6 +63,6 @@ fn main() -> Result<(), OutOfMemoryError> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "rand", feature = "opencl")))]
+#[cfg(not(feature = "opencl"))]
 fn main() {}
 

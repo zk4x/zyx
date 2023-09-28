@@ -2,11 +2,13 @@
 pub(crate) struct NodeId(u32);
 
 impl NodeId {
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub(crate) fn new(id: usize) -> Self {
         Self(u32::try_from(id).unwrap())
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub(crate) fn i(self) -> usize {
         self.0 as usize
