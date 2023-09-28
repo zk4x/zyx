@@ -169,6 +169,7 @@ impl Node {
             Node::Sub(x, y) |
             Node::Mul(x, y) |
             Node::Div(x, y) |
+            Node::Cmplt(x, y) |
             Node::Pow(x, y) => graph.shape(*x).numel() + graph.shape(*y).numel(),
             Node::TDot(x, _, shape) => 2 * shape.numel() * (graph.shape(*x)[-1] - 1usize),
             Node::Sum(x, axes, shape) | Node::Max(x, axes, shape) => {
