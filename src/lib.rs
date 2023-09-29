@@ -41,14 +41,14 @@
 #![forbid(unused_tuple_struct_fields)]
 
 // Nightly lints
-#![feature(stmt_expr_attributes)]
-#![feature(strict_provenance)]
-#![forbid(fuzzy_provenance_casts)]
-#![forbid(lossy_provenance_casts)]
-#![feature(must_not_suspend)]
-#![forbid(must_not_suspend)]
-#![feature(rustdoc_missing_doc_code_examples)]
-#![warn(rustdoc::missing_doc_code_examples)]
+//#![feature(stmt_expr_attributes)]
+//#![feature(strict_provenance)]
+//#![forbid(fuzzy_provenance_casts)]
+//#![forbid(lossy_provenance_casts)]
+//#![feature(must_not_suspend)]
+//#![forbid(must_not_suspend)]
+//#![feature(rustdoc_missing_doc_code_examples)]
+//#![warn(rustdoc::missing_doc_code_examples)]
 
 #[cfg(any(feature = "debug1", feature = "io"))]
 extern crate std;

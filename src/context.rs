@@ -44,6 +44,11 @@ impl Context {
     }
 
     /// Create new context. This context will use slow rust backend by default.
+    /// # Example
+    /// ```
+    /// use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// ```
     #[must_use]
     pub fn new() -> Context {
         Self {
@@ -83,7 +88,15 @@ impl Context {
         Context { graph }
     }
 
-    /// Create new tensor filled with value.
+    /// Create new f32 tensor filled with value.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.full((2, 4), 2.);
+    /// x.realize().unwrap();
+    /// assert_eq!(x, [[2., 2., 2., 2.], [2., 2., 2., 2.]]);
+    /// ```
     #[must_use]
     pub fn full(&self, shape: impl Into<Shape>, value: f32) -> Tensor {
         let shape = shape.into();
@@ -98,7 +111,15 @@ impl Context {
         }
     }
 
-    /// Create new tensor filled with value.
+    /// Create new i32 tensor filled with value.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.full_i32((2, 4), 2);
+    /// x.realize().unwrap();
+    /// assert_eq!(x, [[2, 2, 2, 2], [2, 2, 2, 2]]);
+    /// ```
     #[must_use]
     pub fn full_i32(&self, shape: impl Into<Shape>, value: i32) -> Tensor {
         let shape = shape.into();
@@ -120,24 +141,54 @@ impl Context {
     }
 
     /// Number of tensors stored in this context
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let x = ctx.randn((2, 3));
+    /// let y = ctx.randn((4, 3));
+    /// assert_eq!(ctx.num_tensors(), 2);
+    /// ```
     #[must_use]
     pub fn num_tensors(&self) -> usize {
         self.graph.borrow().num_nodes()
     }
 
     /// Create new ones tensor.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.ones((2, 4));
+    /// x.realize().unwrap();
+    /// assert_eq!(x, [[1., 1., 1., 1.], [1., 1., 1., 1.]]);
+    /// ```
     #[must_use]
     pub fn ones(&self, shape: impl Into<Shape>) -> Tensor {
         self.full(shape, 1.)
     }
 
     /// Create new ones i32 tensor.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.ones_i32((2, 4));
+    /// x.realize().unwrap();
+    /// assert_eq!(x, [[1, 1, 1, 1], [1, 1, 1, 1]]);
+    /// ```
     #[must_use]
     pub fn ones_i32(&self, shape: impl Into<Shape>) -> Tensor {
         self.full_i32(shape, 1)
     }
 
     /// Create new tensor filled with values sampled from standard distribution.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.randn((2, 4));
+    /// ```
     #[must_use]
     pub fn randn(&self, shape: impl Into<Shape>) -> Tensor {
         Tensor {
@@ -148,6 +199,12 @@ impl Context {
     }
 
     /// Create new i32 tensor filled with values sampled from standard distribution.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.randn_i32((2, 4));
+    /// ```
     #[must_use]
     pub fn randn_i32(&self, shape: impl Into<Shape>) -> Tensor {
         Tensor {
@@ -162,6 +219,12 @@ impl Context {
     }
 
     /// Create new tensor from data.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.tensor([[2, 3, 4], [5, 3, 4]]);
+    /// ```
     #[must_use]
     pub fn tensor(&self, data: impl IntoTensor) -> Tensor {
         data.into_tensor(self)
@@ -206,6 +269,12 @@ impl Context {
     }
 
     /// Create new i32 tensor filled with values sampled from uniform distribution.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.uniform((2, 4), -2.0..5.0);
+    /// ```
     #[must_use]
     pub fn uniform(&self, shape: impl Into<Shape>, range: core::ops::Range<f32>) -> Tensor {
         Tensor {
@@ -216,6 +285,12 @@ impl Context {
     }
 
     /// Create new i32 tensor filled with values sampled from uniform distribution.
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.uniform_i32((2, 4), -2..5);
+    /// ```
     #[must_use]
     pub fn uniform_i32(&self, shape: impl Into<Shape>, range: core::ops::Range<i32>) -> Tensor {
         Tensor {
@@ -226,12 +301,28 @@ impl Context {
     }
 
     /// Create new f32 tensor filled with zeros
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.zeros((2, 4));
+    /// x.realize().unwrap();
+    /// assert_eq!(x, [[0., 0., 0., 0.], [0., 0., 0., 0.]]);
+    /// ```
     #[must_use]
     pub fn zeros(&self, shape: impl Into<Shape>) -> Tensor {
         self.full(shape, 0.)
     }
 
     /// Create new i32 tensor filled with zeros
+    /// # Example
+    /// ```
+    /// # use zyx::context::Context;
+    /// let ctx = Context::new();
+    /// let mut x = ctx.zeros_i32((2, 4));
+    /// x.realize().unwrap();
+    /// assert_eq!(x, [[0, 0, 0, 0], [0, 0, 0, 0]]);
+    /// ```
     #[must_use]
     pub fn zeros_i32(&self, shape: impl Into<Shape>) -> Tensor {
         self.full_i32(shape, 0)

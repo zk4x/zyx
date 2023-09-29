@@ -6,6 +6,7 @@ use alloc::{boxed::Box, vec::Vec};
 use crate::{node_id::NodeId, tensor::Tensor, OutOfMemoryError};
 
 /// # `IntoParameters`
+// TODO make sure that input does not contain duplicates!
 #[allow(clippy::module_name_repetitions)]
 pub trait IntoParameters<'p> {
     /// Convert this value into parameters
