@@ -137,34 +137,7 @@ impl Tensor {
     ///```
     #[allow(single_use_lifetimes)]
     pub fn backward<'p>(&self, sources: impl IntoParameters<'p>) {
-        let shape = self.shape();
-        let dtype = self.dtype();
-        let mut sources = sources.into_vec();
-        let n = shape.numel();
-        let mut graph = self.graph.borrow_mut();
-
-        let grad_nodes = graph.grad_nodes(&sources);
-
-        if grad_nodes.contains(&self.data) {
-            let grad = match dtype {
-                DType::F32 => graph.push(Node::StoreF32(
-                    core::iter::repeat(1.).take(n).collect(),
-                    shape,
-                )),
-                DType::I32 => graph.push(Node::StoreI32(
-                    core::iter::repeat(1).take(n).collect(),
-                    shape,
-                )),
-            };
-            graph.backward(
-                self.data,
-                grad,
-                &mut sources,
-                &grad_nodes,
-                &mut BTreeSet::new(),
-            );
-            graph.release(grad);
-        }
+        self.graph.borrow_mut().backward(self.data, &mut sources.into_vec());
         // TODO Maybe label gradients automatically if sources have labels
     }
 

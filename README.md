@@ -142,7 +142,7 @@ We couldn't get dfdx and PyTorch working with given gpu.
 
 | Device         |   Zyx |  tinygrad |  dfdx |  PyTorch |
 | -------------- | ----- | --------- | ----- | -------- |
-| GPU RX 550     |  4.64 |      5.51 |     - |        - |
+| GPU RX 550     |  4.58 |      5.51 |     - |        - |
 | CPU i5 Haswell | 25.81 |     11.03 |  7.79 |     4.74 |
 
 As you can see, Zyx is ok on the GPU, but needs to be further optimized for the CPU. PyTorch looks really impressive here, given that it can only utilize CPU.
