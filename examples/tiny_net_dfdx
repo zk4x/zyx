@@ -1,0 +1,26 @@
+use dfdx::prelude::*;
+use dfdx::optim::Sgd;
+
+fn main() {
+    let dev: Cpu = Default::default();
+    type Model = (Linear<1024, 1024>, Tanh, Linear<1024, 1024>);
+    let mut model = dev.build_module::<Model, f32>();
+
+    let mut grads = model.alloc_grads();
+
+    let x: Tensor<Rank2<1024, 1024>, f32, _> = dev.sample_normal();
+    let y: Tensor<Rank1<1024>, f32, _> = dev.sample_normal();
+
+    let mut opt = Sgd::new(&model, Default::default());
+
+    let now = std::time::Instant::now();
+    for _ in 0..100 {
+        let out = model.forward(x.clone().traced(grads));
+        let loss = (out - y.clone().broadcast::<_, Axis<0>>()).square();
+        grads = loss.sum().backward();
+        let _ = opt.update(&mut model, &grads);
+    }
+    let elapsed = now.elapsed();
+    std::println!("Elapsed {}ms", elapsed.as_millis());
+}
+
