@@ -14,7 +14,7 @@ type NodeSet = alloc::collections::BTreeSet<NodeId>;
 
 /// Single graph node
 /// Note that due to alignment this is not the most efficient data structure,
-/// using 16 bit NodeId, 2 parameters, enum tag and u8 rc would get us
+/// using 16 bit `NodeId`, 2 parameters, enum tag and u8 rc would get us
 /// down to 6 bytes per node + data for movement, store and dropout ops,
 /// but this seems to be easier to use and realistically there will not be more
 /// than 10000 tensors, which is currently 480kB. So that could theoretically
@@ -191,7 +191,7 @@ impl Node {
             Node::Sum(x, axes, shape) | Node::Max(x, axes, shape) => {
                 let shapex = graph.shape(*x);
                 let stridesx = shapex.strides();
-                shapex.into_iter().zip(&stridesx).enumerate().map(|(a, (d, st))| axes.contains(a) as usize * (d - 1) * st).product::<usize>() * shape.numel()
+                shapex.into_iter().zip(&stridesx).enumerate().map(|(a, (d, st))| usize::from(axes.contains(a)) * (d - 1) * st).product::<usize>() * shape.numel()
             }
         }
     }
@@ -453,6 +453,8 @@ impl Graph {
 
     /// Fully iterative backpropagation (i. e. zero recursion)
     /// Sources must be unique set
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::match_on_vec_items)]
     pub(super) fn backward(&mut self, id: NodeId, sources: &mut [&mut Tensor]) {
         // get tensors that require gradient
         // TODO can this be faster? Use sorting in some way?
@@ -482,7 +484,7 @@ impl Graph {
             while let Some(p) = params.pop_front() {
                 if visited.insert(p) && req_grad.contains(&p) {
                     topo.push(p);
-                    params.extend(self.nodes[p.i()].parameters().into_iter());
+                    params.extend(self.nodes[p.i()].parameters().iter());
                 }
             }
         }
@@ -515,22 +517,16 @@ impl Graph {
                 => panic!("Internal bug running backward on .."),
                 Node::Leaf | Node::StoreF32(..) | Node::StoreI32(..) => {}
                 Node::Add(x, y) => {
-                    if req_grad.contains(&x) {
-                        if grads.insert(x, grad).is_none() {
-                            self.retain(grad);
-                        }
+                    if req_grad.contains(&x) && grads.insert(x, grad).is_none() {
+                        self.retain(grad);
                     }
-                    if req_grad.contains(&y) {
-                        if grads.insert(y, grad).is_none() {
-                            self.retain(grad);
-                        }
+                    if req_grad.contains(&y) && grads.insert(y, grad).is_none() {
+                        self.retain(grad);
                     }
                 }
                 Node::Sub(x, y) => {
-                    if req_grad.contains(&x) {
-                        if grads.insert(x, grad).is_none() {
-                            self.retain(grad);
-                        }
+                    if req_grad.contains(&x) && grads.insert(x, grad).is_none() {
+                        self.retain(grad);
                     }
                     if req_grad.contains(&y) {
                         grads.insert(y, self.push(Node::Neg(grad)));

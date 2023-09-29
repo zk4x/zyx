@@ -171,6 +171,9 @@ impl Op {
 }
 
 impl OpenCLDev {
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_precision_loss)]
     pub(super) fn new() -> Result<Self, cl3::error_codes::ClError> {
         use cl3::ext::CL_DEVICE_TYPE_ALL;
         let platform_ids = cl3::platform::get_platform_ids()?;
@@ -231,7 +234,8 @@ impl OpenCLDev {
             context,
             devices,
             programs: BTreeMap::new(),
-            max_mem: (max_mem as f64 * 0.8) as usize, // uses 80% of available memory by default
+            // uses 80% of available memory by default
+            max_mem: (max_mem as f64 * 0.8) as usize,
         })
     }
 
@@ -244,6 +248,7 @@ impl OpenCLDev {
     
     // Get maximum local work size (work group size) for device
     // that will run next queue
+    #[allow(clippy::unused_self)]
     fn max_lws(&self) -> usize {
         //self.devices[self.devices.keys().nth((self.queue_id + 1) * self.devices.len() / self.queues.len()).unwrap()].max_lws
         256
@@ -251,6 +256,7 @@ impl OpenCLDev {
 
     // TODO this can be cleaned up
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::cast_possible_truncation)]
     pub(super) fn realize(
         &mut self,
         graph: &mut BTreeMap<NodeId, (usize, Node)>, // id, refcount and Node
@@ -430,18 +436,18 @@ impl OpenCLDev {
                         },
                     );
                 }
-                Node::ReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("max(res{}, 0)", x.i())),
-                Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, format!("res{} > 0", x.i())),
-                Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, format!("-res{}", x.i())),
-                Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, format!("exp(res{})", x.i())),
-                Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, format!("log(res{})", x.i())),
-                Node::Sin(x) => unary_op(*node_id, *x, &mut buffers, format!("sin(res{})", x.i())),
-                Node::Cos(x) => unary_op(*node_id, *x, &mut buffers, format!("cos(res{})", x.i())),
-                Node::Sqrt(x) => unary_op(*node_id, *x, &mut buffers, format!("sqrt(res{})", x.i())),
-                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, format!("tanh(res{})", x.i())),
+                Node::ReLU(x) => unary_op(*node_id, *x, &mut buffers, &format!("max(res{}, 0)", x.i())),
+                Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, &format!("res{} > 0", x.i())),
+                Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, &format!("-res{}", x.i())),
+                Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, &format!("exp(res{})", x.i())),
+                Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, &format!("log(res{})", x.i())),
+                Node::Sin(x) => unary_op(*node_id, *x, &mut buffers, &format!("sin(res{})", x.i())),
+                Node::Cos(x) => unary_op(*node_id, *x, &mut buffers, &format!("cos(res{})", x.i())),
+                Node::Sqrt(x) => unary_op(*node_id, *x, &mut buffers, &format!("sqrt(res{})", x.i())),
+                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, &format!("tanh(res{})", x.i())),
                 Node::Dropout(x, seed, prob) => {
                     let (xr, yr) = (*seed as u32, (*seed >> 32) as u32);
-                    unary_op(*node_id, *x, &mut buffers, format!("  if ({yr} ^ ({yr} >> 19) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) >> 8)) > 4294967295 * {prob}) {{ 0 }} else {{ res{} }}", x.i()))
+                    unary_op(*node_id, *x, &mut buffers, &format!("  if ({} ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) >> 8)) > 4294967295 * {prob}) {{ 0 }} else {{ res{} }}", yr ^ (yr >> 19), x.i()));
                 }
                 Node::Add(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "+"),
                 Node::Sub(x, y) => binary_op(*node_id, *x, *y, &mut buffers, "-"),
@@ -1172,7 +1178,7 @@ impl OpenCLDev {
     }
 }
 
-fn unary_op(id: NodeId, x: NodeId, buffers: &mut BTreeMap<NodeId, Op>, op: String) {
+fn unary_op(id: NodeId, x: NodeId, buffers: &mut BTreeMap<NodeId, Op>, op: &str) {
     let dtype = buffers[&x].dtype();
     let mut parameters = buffers[&x].parameters().clone();
     parameters.insert(id);
@@ -1224,7 +1230,7 @@ fn test1() {
     //let y = ctx.randn((2, 3, 1)).expand((2, 3, 4));
     //let mut z = &y + x + &y.exp();
     z.realize().unwrap();
-    std::println!("{}", z);
+    std::println!("{z}");
     //panic!();
 }
 
@@ -1237,7 +1243,7 @@ fn test2() {
     let y = ctx.tensor([[1., 2., 3.], [4., 5., 6.]]);
     let mut z = x.transpose().dot(y);
     z.realize().unwrap();
-    std::println!("{}", z);
+    std::println!("{z}");
     //panic!();
 }
 
@@ -1259,7 +1265,7 @@ fn test3() -> Result<(), OutOfMemoryError> {
     //.cast(DType::I32);
     let mut z = x.dot(y); // * 0.01; //.tanh();
 
-    z.realize().unwrap();
+    z.realize()?;
     std::println!("{z}");
     //panic!();
 
@@ -1342,7 +1348,7 @@ fn test5() {
     let zvec = z.to_vec().unwrap();
     
     let ctx = Context::opencl().unwrap();
-    let x = ctx.tensor_from_iter_f32((2048, 2048), xvec.into_iter());
+    let x = ctx.tensor_from_iter_f32((2048, 2048), xvec);
     let mut z = x.transpose();
     z.realize().unwrap();
     let cl_zvec = z.to_vec().unwrap();
@@ -1379,7 +1385,7 @@ fn test7() {
     let y = ctx.tensor([[2, 2, 4], [1, 2, 1], [3, 4, 2]]);
     let mut z = x.dot(&y);
     z.realize().unwrap();
-    std::println!("{}", z);
+    std::println!("{z}");
     //assert_eq!(z, [[17, 24, 18], [24, 30, 30]]);
     let mut y = y.transpose();
     x.realize().unwrap();
