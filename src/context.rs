@@ -1,7 +1,7 @@
 //! # Context
 
 extern crate alloc;
-use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
+use rclite::Rc;
 use crate::{
     node_id::NodeId,
     graph::Graph,
@@ -39,7 +39,7 @@ impl Context {
     /// When you just want to print all nodes in realized graphs,
     /// consider using feature debug1.
     #[must_use]
-    pub fn debug_nodes(&self) -> Vec<String> {
+    pub fn debug_nodes(&self) -> alloc::vec::Vec<alloc::string::String> {
         self.graph.borrow_mut().debug_nodes()
     }
 
@@ -101,7 +101,7 @@ impl Context {
     pub fn full(&self, shape: impl Into<Shape>, value: f32) -> Tensor {
         let shape = shape.into();
         let mut graph = self.graph.borrow_mut();
-        let temp = graph.push(crate::graph::Node::StoreF32(Box::new([value]), 1.into()));
+        let temp = graph.push(crate::graph::Node::StoreF32(alloc::boxed::Box::new([value]), 1.into()));
         let data = graph.push(crate::graph::Node::Expand(temp, shape));
         graph.release(temp);
         Tensor {
@@ -124,7 +124,7 @@ impl Context {
     pub fn full_i32(&self, shape: impl Into<Shape>, value: i32) -> Tensor {
         let shape = shape.into();
         let mut graph = self.graph.borrow_mut();
-        let temp = graph.push(crate::graph::Node::StoreI32(Box::new([value]), 1.into()));
+        let temp = graph.push(crate::graph::Node::StoreI32(alloc::boxed::Box::new([value]), 1.into()));
         let data = graph.push(crate::graph::Node::Expand(temp, shape));
         graph.release(temp);
         Tensor {
@@ -136,7 +136,7 @@ impl Context {
 
     /// Dot language string of graph
     #[must_use]
-    pub fn dot_graph(&self) -> String {
+    pub fn dot_graph(&self) -> alloc::string::String {
         self.graph.borrow().show_graph()
     }
 

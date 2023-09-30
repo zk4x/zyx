@@ -16,7 +16,7 @@ use crate::{
     shape::Shape,
     OutOfMemoryError,
 };
-use alloc::rc::Rc;
+use rclite::Rc;
 use core::{cell::RefCell, cmp::Ordering};
 
 // Precision when comparing f32 tensors.

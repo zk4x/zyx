@@ -41,12 +41,18 @@ pub(super) fn realize(
     order: &[NodeId],
     _nodes: &BTreeSet<NodeId>,
 ) -> Result<(), OutOfMemoryError> {
-    for node_id in order {
+    'a: for node_id in order {
         let node = &graph.get(node_id).unwrap().1;
+        match node {
+            Node::None |
+            Node::Leaf |
+            Node::Const(..) => continue 'a,
+            _ => {}
+        }
         let res = match node {
             Node::None |
             Node::Leaf |
-            Node::Const(..) => Storage::None,
+            Node::Const(..) => panic!(),
             Node::StoreF32(data, shape) => Storage::CPUF32(data.clone(), shape.clone()),
             Node::StoreI32(data, shape) => Storage::CPUI32(data.clone(), shape.clone()),
             Node::Add(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "+"),
@@ -73,7 +79,7 @@ pub(super) fn realize(
                     Storage::CPUI32(dropout_op_t(data.as_ref(), *seed, *prob), xshape.clone())
                 }
                 _ => panic!(),
-            }
+            },
             Node::Cast(x, dtype) => match graph.c(*x) {
                 Storage::CPUF32(data, shape) => match dtype {
                     DType::F32 => Storage::CPUF32(data.clone(), shape.clone()),
@@ -116,9 +122,7 @@ pub(super) fn realize(
             Node::Sum(x, axes, _) => axes_op(graph.c(*x), "sum", axes),
         };
         let parameters = node.parameters();
-        if !matches!(res, Storage::None) {
-            graph.get_mut(node_id).unwrap().1 = Node::Const(res);
-        }
+        graph.get_mut(node_id).unwrap().1 = Node::Const(res);
         for parameter in &*parameters {
             let val = graph.get_mut(parameter).unwrap();
             val.0 -= 1;

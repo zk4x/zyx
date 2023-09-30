@@ -7,12 +7,13 @@ use alloc::{
 collections::{BTreeMap, BTreeSet}};
 
 pub(super) mod cpu;
+pub(super) mod cpu2;
 #[cfg(feature = "opencl")]
 pub(super) mod opencl;
 
 #[derive(Debug)]
 pub(crate) enum Storage {
-    None,
+    //None,
     CPUF32(Box<[f32]>, Shape),
     CPUI32(Box<[i32]>, Shape),
     #[cfg(feature = "opencl")]
@@ -24,7 +25,7 @@ pub(crate) enum Storage {
 impl Storage {
     pub(super) fn dtype(&self) -> DType {
         match self {
-            Self::None => panic!(),
+            //Self::None => panic!(),
             Self::CPUF32(..) => DType::F32,
             Self::CPUI32(..) => DType::I32,
             #[cfg(feature = "opencl")]
@@ -38,7 +39,6 @@ impl Storage {
 impl Storage {
     pub(super) fn shape(&self) -> &Shape {
         match self {
-            Self::None => panic!(),
             Self::CPUF32(_, shape, ..) => shape,
             Self::CPUI32(_, shape, ..) => shape,
             #[cfg(feature = "opencl")]
@@ -66,7 +66,6 @@ impl Device {
     #[allow(clippy::unused_self)]
     pub(crate) fn load_f32(&mut self, storage: &Storage) -> Box<[f32]> {
         match storage {
-            Storage::None => panic!(),
             Storage::CPUF32(data, ..) => data.clone(),
             Storage::CPUI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
             #[cfg(feature = "opencl")]
@@ -105,7 +104,6 @@ impl Device {
     #[allow(clippy::unused_self)]
     pub(crate) fn load_i32(&mut self, storage: &Storage) -> Box<[i32]> {
         match storage {
-            Storage::None => panic!(),
             Storage::CPUF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
             Storage::CPUI32(data, ..) => data.clone(),
             #[cfg(feature = "opencl")]
