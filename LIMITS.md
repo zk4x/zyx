@@ -38,3 +38,8 @@ devices, therefore you will need to manually move tensors between OpenCL platfor
 
 Zyx will create 8 queues on each OpenCL device. If your device supports fewer queues, this can be manually changed. Please contact the developer or change value queues_per_device in OpenCLDev::new function.
 Runtime setting of this value is only available in OpenCL 2.0.
+
+## Shapes & Axes
+
+Zyx supports maximum of size of single dimension up to usize::MAX. Maximum number of dimensions in a tensor is usize::MAX. This allows for tensors with up to usize::MAX elements.
+If it is insufficient, these limits are easy to change in shape.rs and axes.rs. Please contact developer if you would like to implement more general way of adjusting these limits.
