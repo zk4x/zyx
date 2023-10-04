@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use crate::device::cpu::CpuDev;
 use crate::node_id::NodeId;
 use crate::device::{Device, Storage};
 use crate::{axes::Axes, dtype::DType, shape::Shape, tensor::Tensor, OutOfMemoryError};
@@ -214,7 +215,7 @@ impl Default for Graph {
         use rand::SeedableRng;
         Self {
             rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
-            devices: alloc::vec![Device::CPU],
+            devices: alloc::vec![Device::Cpu(CpuDev::new())],
             default_device: 0,
             rc: Array::with_capacity(128),
             nodes: Array::with_capacity(128),

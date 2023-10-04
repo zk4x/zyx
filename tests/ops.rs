@@ -340,6 +340,7 @@ fn permute() -> Result<(), OutOfMemoryError> {
         let x = ctx.tensor([[2, 4, 3], [5, 2, 4]]);
         let mut z = x.permute((-1, -2));
         z.realize()?;
+        std::println!("{z}");
         assert_eq!(z, [[2, 5], [4, 2], [3, 4]]);
         let mut x = ctx.tensor([[[2, 4, 3]], [[5, 2, 4]]]);
         let mut z = x.permute((2, 1, 0));

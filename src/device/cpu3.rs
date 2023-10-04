@@ -1,0 +1,545 @@
+// This is very unoptimized but simple CPU version
+// Every backend needs to consits of two parts - work manager inside realize function
+// and kenrnels enqueued by this manager.
+
+extern crate alloc;
+use crate::{
+    device::Storage,
+    node_id::NodeId,
+    axes::Axes,
+    dtype::DType,
+    graph::Node,
+    shape::{Shape, Strides},
+    OutOfMemoryError,
+};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
+
+trait GetConst {
+    fn c(&self, i: NodeId) -> &Storage;
+}
+
+impl GetConst for BTreeMap<NodeId, (usize, Node)> {
+    fn c(&self, i: NodeId) -> &Storage {
+        if let Node::Const(storage) = &self.get(&i).unwrap().1 {
+            storage
+        } else {
+            panic!()
+        }
+    }
+}
+
+#[allow(clippy::match_wildcard_for_single_variants)]
+#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_possible_truncation)]
+pub(super) fn realize(
+    graph: &mut BTreeMap<NodeId, (usize, Node)>, // id, refcount and Node
+    order: &[NodeId],
+    _nodes: &BTreeSet<NodeId>,
+) -> Result<(), OutOfMemoryError> {
+    'a: for node_id in order {
+        let node = &graph.get(node_id).unwrap().1;
+        match node {
+            Node::None |
+            Node::Leaf |
+            Node::Const(..) => continue 'a,
+            _ => {}
+        }
+        let res = match node {
+            Node::None |
+            Node::Leaf |
+            Node::Const(..) => panic!(),
+            Node::StoreF32(data, shape) => Storage::CPUF32(data.clone(), shape.clone()),
+            Node::StoreI32(data, shape) => Storage::CPUI32(data.clone(), shape.clone()),
+            Node::Add(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "+"),
+            Node::Sub(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "-"),
+            Node::Mul(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "*"),
+            Node::Div(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "/"),
+            Node::Cmplt(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "<"),
+            Node::Pow(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "pow"),
+            Node::TDot(x, y, shape) => binary_op(shape.clone(), graph.c(*x), graph.c(*y), "tdot"),
+            Node::Neg(x) => unary_op(graph.c(*x), "neg"),
+            Node::ReLU(x) => unary_op(graph.c(*x), "relu"),
+            Node::DReLU(x) => unary_op(graph.c(*x), "drelu"),
+            Node::Exp(x) => unary_op(graph.c(*x), "exp"),
+            Node::Ln(x) => unary_op(graph.c(*x), "ln"),
+            Node::Sin(x) => unary_op(graph.c(*x), "sin"),
+            Node::Cos(x) => unary_op(graph.c(*x), "cos"),
+            Node::Sqrt(x) => unary_op(graph.c(*x), "sqrt"),
+            Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
+            Node::Dropout(x, seed, prob) => match graph.c(*x) {
+                Storage::CPUF32(data, xshape) => {
+                    Storage::CPUF32(dropout_op_t(data.as_ref(), *seed, *prob), xshape.clone())
+                }
+                Storage::CPUI32(data, xshape) => {
+                    Storage::CPUI32(dropout_op_t(data.as_ref(), *seed, *prob), xshape.clone())
+                }
+                _ => panic!(),
+            },
+            Node::Cast(x, dtype) => match graph.c(*x) {
+                Storage::CPUF32(data, shape) => match dtype {
+                    DType::F32 => Storage::CPUF32(data.clone(), shape.clone()),
+                    DType::I32 => {
+                        Storage::CPUI32(data.iter().map(|x| *x as i32).collect(), shape.clone())
+                    }
+                },
+                Storage::CPUI32(data, shape) => match dtype {
+                    DType::F32 => {
+                        Storage::CPUF32(data.iter().map(|x| *x as f32).collect(), shape.clone())
+                    }
+                    DType::I32 => Storage::CPUI32(data.clone(), shape.clone()),
+                },
+                _ => todo!(),
+            },
+            Node::Expand(x, eshape) => match graph.c(*x) {
+                Storage::CPUF32(data, shape) => {
+                    Storage::CPUF32(expand_op_t(data, shape, eshape), eshape.clone())
+                }
+                Storage::CPUI32(data, shape) => {
+                    Storage::CPUI32(expand_op_t(data, shape, eshape), eshape.clone())
+                }
+                _ => panic!(),
+            },
+            Node::Reshape(x, shape) => match graph.c(*x) {
+                Storage::CPUF32(data, _) => Storage::CPUF32(data.clone(), shape.clone()),
+                Storage::CPUI32(data, _) => Storage::CPUI32(data.clone(), shape.clone()),
+                _ => panic!(),
+            },
+            Node::Permute(x, axes, shape) => match graph.c(*x) {
+                Storage::CPUF32(data, xshape) => {
+                    Storage::CPUF32(permute_op_t(xshape, data, axes), shape.clone())
+                }
+                Storage::CPUI32(data, xshape) => {
+                    Storage::CPUI32(permute_op_t(xshape, data, axes), shape.clone())
+                }
+                _ => panic!(),
+            },
+            Node::Max(x, axes, _) => axes_op(graph.c(*x), "max", axes),
+            Node::Sum(x, axes, _) => axes_op(graph.c(*x), "sum", axes),
+        };
+        let parameters = node.parameters();
+        graph.get_mut(node_id).unwrap().1 = Node::Const(res);
+        for parameter in &*parameters {
+            let val = graph.get_mut(parameter).unwrap();
+            val.0 -= 1;
+            if val.0 == 0 {
+                val.1 = Node::None;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Simple and very slow cpu kernels
+#[allow(clippy::match_wildcard_for_single_variants)]
+fn unary_op(data: &Storage, op: &str) -> Storage {
+    match data {
+        Storage::CPUF32(data, shape) => match op {
+            "" => Storage::CPUF32(data.clone(), shape.clone()),
+            "neg" => Storage::CPUF32(unary_op_t(data, |x| -x), shape.clone()),
+            "relu" => Storage::CPUF32(unary_op_t(data, |x| x.max(0.)), shape.clone()),
+            "drelu" => Storage::CPUF32(unary_op_t(data, |x| if *x > 0. { 1. } else { 0. }), shape.clone()),
+            "exp" => Storage::CPUF32(unary_op_t(data, |x| libm::expf(*x)), shape.clone()),
+            "ln" => Storage::CPUF32(unary_op_t(data, |x| libm::logf(*x)), shape.clone()),
+            "sin" => Storage::CPUF32(unary_op_t(data, |x| libm::sinf(*x)), shape.clone()),
+            "cos" => Storage::CPUF32(unary_op_t(data, |x| libm::cosf(*x)), shape.clone()),
+            "sqrt" => Storage::CPUF32(unary_op_t(data, |x| libm::sqrtf(*x)), shape.clone()),
+            "tanh" => Storage::CPUF32(unary_op_t(data, |x| libm::tanhf(*x)), shape.clone()),
+            _ => panic!(),
+        },
+        Storage::CPUI32(data, shape) => match op {
+            "" => Storage::CPUI32(data.clone(), shape.clone()),
+            "neg" => Storage::CPUI32(unary_op_t(data, |x| -x), shape.clone()),
+            "relu" => Storage::CPUI32(unary_op_t(data, |x| (*x).max(0)), shape.clone()),
+            "drelu" => Storage::CPUI32(unary_op_t(data, |x| i32::from(*x > 0)), shape.clone()),
+            _ => panic!("Impossible op {op} on i32"),
+        },
+        _ => panic!(),
+    }
+}
+
+fn unary_op_t<T: Sync + Send>(data: &[T], op: impl Sync + Send + Fn(&T) -> T) -> Box<[T]> {
+    #[cfg(not(feature = "cpu"))]
+    {
+        data.iter().map(op).collect()
+    }
+    #[cfg(feature = "cpu")]
+    {
+        use rayon::prelude::*;
+        data.par_iter().map(op).collect::<Vec<T>>().into()
+    }
+}
+
+#[allow(clippy::match_wildcard_for_single_variants)]
+#[allow(clippy::cast_sign_loss)]
+fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Storage {
+    match data_x {
+        Storage::CPUF32(data_x, shape_x) => {
+            if let Storage::CPUF32(data_y, shape_y) = data_y {
+                match op {
+                    "+" => Storage::CPUF32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x + y),
+                        shape_x.clone(),
+                    ),
+                    "-" => Storage::CPUF32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x - y),
+                        shape_x.clone(),
+                    ),
+                    "*" => Storage::CPUF32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x * y),
+                        shape_x.clone(),
+                    ),
+                    "/" => Storage::CPUF32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x / y),
+                        shape_x.clone(),
+                    ),
+                    "pow" => Storage::CPUF32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| libm::powf(*x, *y)),
+                        shape_x.clone(),
+                    ),
+                    "tdot" => {
+                        #[cfg(not(feature = "cpu"))]
+                        {
+                            Storage::CPUF32(tdot_op_t(data_x, shape_x, data_y, shape_y), shape)
+                        }
+                        #[cfg(feature = "cpu")]
+                        {
+                            // TODO fix strides
+                            let m: usize = shape_x[-1];
+                            let k = if shape_x.rank() > 1 { shape_x[-2] } else { 1 };
+                            let n: usize = shape_y[-1];
+                            let mut data: Box<[f32]> = (0..shape.numel()).map(|_| 0.).collect();
+                            let mut i = 0;
+                            while i < shape.numel() / (m * k) {
+                                unsafe {
+                                    matrixmultiply::sgemm(
+                                        m,
+                                        k,
+                                        n,
+                                        1.,
+                                        data_x.as_ptr().add(i * k * m),
+                                        1,
+                                        m.try_into().unwrap(),
+                                        data_y.as_ptr().add(i * k * n),
+                                        n.try_into().unwrap(),
+                                        1,
+                                        0.,
+                                        data.as_mut_ptr().add(i * m * n),
+                                        n.try_into().unwrap(),
+                                        1,
+                                    );
+                                }
+                                i += 1;
+                            }
+                            Storage::CPUF32(data, shape)
+                        }
+                    }
+                    _ => panic!(),
+                }
+            } else {
+                panic!()
+            }
+        }
+        Storage::CPUI32(data_x, shape_x) => {
+            if let Storage::CPUI32(data_y, shape_y) = data_y {
+                match op {
+                    "+" => Storage::CPUI32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x + y),
+                        shape_x.clone(),
+                    ),
+                    "-" => Storage::CPUI32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x - y),
+                        shape_x.clone(),
+                    ),
+                    "*" => Storage::CPUI32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x * y),
+                        shape_x.clone(),
+                    ),
+                    "/" => Storage::CPUI32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x / y),
+                        shape_x.clone(),
+                    ),
+                    "pow" => Storage::CPUI32(
+                        binary_op_t(data_x, shape_x, data_y, shape_y, |(x, y)| x.pow(*y as u32)),
+                        shape_x.clone(),
+                    ),
+                    "tdot" => Storage::CPUI32(tdot_op_t(data_x, shape_x, data_y, shape_y), shape),
+                    _ => panic!(),
+                }
+            } else {
+                panic!()
+            }
+        }
+        _ => panic!(),
+    }
+}
+
+fn binary_op_t<T: Sync + Send>(
+    data_x: &[T],
+    shape_x: &Shape,
+    data_y: &[T],
+    shape_y: &Shape,
+    op: impl Fn((&T, &T)) -> T + Sync + Send,
+) -> Box<[T]> {
+    _ = shape_x;
+    _ = shape_y;
+    #[cfg(not(feature = "cpu"))]
+    {
+        data_x.iter().zip(data_y.iter()).map(op).collect()
+    }
+    #[cfg(feature = "cpu")]
+    {
+        use rayon::prelude::*;
+        data_x.par_iter().zip(data_y.par_iter()).map(op).collect::<Vec<T>>().into()
+    }
+}
+
+fn permute_op_t<T: Clone>(shape: &Shape, data: &[T], axes: &Axes) -> Box<[T]> {
+    let rank = shape.rank();
+    let strides = shape.strides();
+    let pstrides = strides.permute(axes);
+    //println!("{strides:?}, {pstrides:?}");
+    let mut a = 1;
+    let acc = Strides(
+        shape
+            .into_iter()
+            .rev()
+            .map(|d| {
+                a *= d;
+                a
+            })
+            .collect::<Box<[usize]>>()
+            .iter()
+            .copied()
+            .rev()
+            .collect(),
+    )
+    .permute(axes);
+    let mut temp: Box<[(usize, usize)]> = (0..rank).map(|_| (0, 0)).collect();
+    let mut clock: Box<[usize]> = (0..rank).map(|_| 0).collect();
+    for k in 0..rank {
+        temp[rank - k - 1] = (pstrides[k], acc[k]);
+    }
+    // clock is array of indices over each of dimensions. They are slowly increased by strides until it reaches dimension size stored in acc
+    // then we increase index in higher dimension and we go over lower dimension again (clockwork)
+    let mut i = 0;
+    (0..shape.numel())
+        .map(|_| {
+            let res = data[i].clone();
+            for (j, (st, acc)) in temp.iter().enumerate() {
+                clock[j] += st;
+                i += st;
+                if clock[j] < *acc {
+                    break;
+                }
+                i -= clock[j];
+                clock[j] = 0;
+            }
+            res
+        })
+        .collect()
+}
+
+fn expand_op_t<T: Clone>(data: &[T], shape: &Shape, eshape: &Shape) -> Box<[T]> {
+    let erank = eshape.rank();
+    // Add ones before shape if it is shorter
+    let shape: Shape = (0..erank - shape.rank())
+        .map(|_| 1)
+        .chain(shape.into_iter().copied())
+        .collect::<Box<[usize]>>()
+        .into();
+    let eaxes: Box<[usize]> = eshape
+        .into_iter()
+        .zip(&shape)
+        .enumerate()
+        .filter_map(|(a, (x, y))| if x == y { None } else { Some(a) })
+        .collect();
+    let mut strides = shape.strides();
+    let estrides = eshape.strides();
+    for a in 0..erank {
+        if eaxes.contains(&a) {
+            strides.0[a] = 0;
+        }
+    }
+    //println!("{shape:?}, {eaxes:?}, {strides:?}, {estrides:?}");
+    (0..eshape.numel())
+        .map(|i| {
+            let mut rem = i;
+            let mut idx = 0;
+            for a in 0..erank {
+                idx += rem / estrides[a] * strides[a];
+                rem %= estrides[a];
+            }
+            //println!("{i} -> {idx}");
+            data[idx].clone()
+        })
+        .collect()
+}
+
+fn tdot_op_t<T: Dtype>(data_x: &[T], shape_x: &Shape, data_y: &[T], shape_y: &Shape) -> Box<[T]> {
+    // TODO this is super slow, because it does not use tiling for memory caching,
+    // but its simple and works.
+    // k, m @ k, n -> m, n
+    const WIDTH: usize = 16;
+    let m = shape_x[-1];
+    let k = if shape_x.rank() > 1 { shape_x[-2] } else { 1 };
+    let n = shape_y[-1];
+    #[cfg(feature = "debug1")]
+    std::println!("{m}, {k}, {n}");
+    let transpose = |data: &[T], last_dim, n| {
+        let mut res = Vec::with_capacity(n);
+        let mut j = 0;
+        while j < last_dim {
+            let mut i = j;
+            while i < n {
+                res.push(data[i].clone());
+                i += last_dim;
+            }
+            j += 1;
+        }
+        res
+    };
+    data_y
+        .chunks(k * n)
+        .zip(data_x.chunks(k * m))
+        .flat_map(|(y_chunk, x_chunk)| {
+            transpose(
+                &{
+                    let x_chunk = transpose(x_chunk, m, k*m);
+                transpose(y_chunk, n, k*n)
+                    .chunks(k)
+                    .flat_map(|y_row| {
+                        x_chunk.chunks(k).map(|x| {
+                            x.chunks(WIDTH)
+                                .zip(y_row.chunks(WIDTH))
+                                .map(|(a, b)| {
+                                    a.iter()
+                                        .zip(b.iter())
+                                        .map(|(a, b)| a.clone() * b.clone())
+                                        .sum::<T>()
+                                })
+                                .sum()
+                        })
+                    })
+                    .collect::<Vec<T>>()
+                    }, m, n*m)
+        })
+        .collect()
+}
+
+#[allow(clippy::match_wildcard_for_single_variants)]
+fn axes_op(data: &Storage, op: &str, axes: &Axes) -> Storage {
+    match data {
+        Storage::CPUF32(data, shape) => match op {
+            "sum" => Storage::CPUF32(
+                reduce_op_t(shape, data, axes, |x, y| x + y),
+                shape.clone().reduce(axes),
+            ),
+            "max" => Storage::CPUF32(
+                reduce_op_t(shape, data, axes, f32::max),
+                shape.clone().reduce(axes),
+            ),
+            _ => panic!(),
+        },
+        Storage::CPUI32(data, shape) => match op {
+            "sum" => Storage::CPUI32(
+                reduce_op_t(shape, data, axes, |x, y| x + y),
+                shape.clone().reduce(axes),
+            ),
+            "max" => Storage::CPUI32(
+                reduce_op_t(shape, data, axes, core::cmp::Ord::max),
+                shape.clone().reduce(axes),
+            ),
+            _ => panic!(),
+        },
+        _ => panic!(),
+    }
+}
+
+fn reduce_op_t<T: Dtype>(
+    shape: &Shape,
+    data: &[T],
+    axes: &Axes,
+    op: impl Fn(T, T) -> T,
+) -> Box<[T]> {
+    // Strides of the input
+    let strides = shape.strides();
+    // indices of dimensions that are not reduced
+    let included_dims: Box<[usize]> = (0..shape.rank()).filter(|x| !axes.contains(*x)).collect();
+    // final resulting buffer
+    let res_shape = shape.clone().reduce(axes);
+    // Strides of the result
+    let res_strides = res_shape.strides();
+    let mut res: Box<[T]> = core::iter::repeat(T::zero())
+        .take(res_shape.numel())
+        .collect();
+
+    // Go over all data and apply sum function to correct values
+    // then indices can be added just by making another vector and constantly
+    // updating it (adding in case of sum) with new indices as new max/min are found
+    for (i, x) in data.iter().enumerate() {
+        // calculate index in result
+        let mut j = 0;
+        for dim in &*included_dims {
+            j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
+        }
+        // apply reduce function, in this case sum
+        res[j] = op(res[j].clone(), x.clone());
+    }
+    res
+}
+
+#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_possible_truncation)]
+fn dropout_op_t<T: Dtype>(data: &[T], seed: u64, prob: f32) -> Box<[T]> {
+    let (xr, yr) = (seed as u32, (seed >> 32) as u32);
+    data.iter().enumerate().map(|(i, x)| {
+        let seed = xr + i as u32;
+        let t = seed ^ (seed << 11);
+        let r = yr ^ (yr >> 19) ^ (t ^ (t >> 8));
+        if r > (u32::MAX as f32 * prob) as u32 {
+            T::zero()
+        } else {
+            x.clone()
+        }
+    }).collect()
+}
+
+trait Dtype:
+    Clone
+    + core::fmt::Debug
+    + core::fmt::Display
+    + core::ops::Add<Output = Self>
+    + core::ops::Mul<Output = Self>
+    + Sync
+    + Send
+    + core::iter::Sum
+{
+    fn dtype() -> DType;
+    fn zero() -> Self;
+}
+
+impl Dtype for f32 {
+    fn dtype() -> DType {
+        DType::F32
+    }
+
+    fn zero() -> Self {
+        0.
+    }
+}
+
+impl Dtype for i32 {
+    fn dtype() -> DType {
+        DType::I32
+    }
+
+    fn zero() -> Self {
+        0
+    }
+}

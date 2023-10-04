@@ -6,16 +6,17 @@ use alloc::{
     boxed::Box,
 collections::{BTreeMap, BTreeSet}};
 
+use self::cpu::CpuStorage;
+
 pub(super) mod cpu;
-pub(super) mod cpu2;
 #[cfg(feature = "opencl")]
 pub(super) mod opencl;
 
 #[derive(Debug)]
 pub(crate) enum Storage {
     //None,
-    CPUF32(Box<[f32]>, Shape),
-    CPUI32(Box<[i32]>, Shape),
+    CPUF32(CpuStorage<f32>),
+    CPUI32(CpuStorage<i32>),
     #[cfg(feature = "opencl")]
     OpenCLF32(Shape, opencl::ClStorage), // shape, buffer, event
     #[cfg(feature = "opencl")]
@@ -39,8 +40,8 @@ impl Storage {
 impl Storage {
     pub(super) fn shape(&self) -> &Shape {
         match self {
-            Self::CPUF32(_, shape, ..) => shape,
-            Self::CPUI32(_, shape, ..) => shape,
+            Self::CPUF32(data) => data.shape(),
+            Self::CPUI32(data) => data.shape(),
             #[cfg(feature = "opencl")]
             Self::OpenCLF32(shape, ..) => shape,
             #[cfg(feature = "opencl")]
@@ -49,10 +50,9 @@ impl Storage {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub(crate) enum Device {
-    CPU,
+    Cpu(cpu::CpuDev),
     #[cfg(feature = "opencl")]
     OpenCL(opencl::OpenCLDev),
 }
@@ -66,7 +66,7 @@ impl Device {
     #[allow(clippy::unused_self)]
     pub(crate) fn load_f32(&mut self, storage: &Storage) -> Box<[f32]> {
         match storage {
-            Storage::CPUF32(data, ..) => data.clone(),
+            Storage::CPUF32(data) => data.iter().collect(),
             Storage::CPUI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
             #[cfg(feature = "opencl")]
             Storage::OpenCLF32(shape, storage) => {
@@ -105,7 +105,7 @@ impl Device {
     pub(crate) fn load_i32(&mut self, storage: &Storage) -> Box<[i32]> {
         match storage {
             Storage::CPUF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
-            Storage::CPUI32(data, ..) => data.clone(),
+            Storage::CPUI32(data) => data.iter().collect(),
             #[cfg(feature = "opencl")]
             Storage::OpenCLF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
             #[cfg(feature = "opencl")]
@@ -146,7 +146,7 @@ impl Device {
         nodes: &BTreeSet<NodeId>,
     ) -> Result<(), OutOfMemoryError> {
         match self {
-            Device::CPU => cpu::realize(graph, order, nodes)?,
+            Device::Cpu(dev) => dev.realize(graph, order, nodes)?,
             #[cfg(feature = "opencl")]
             Device::OpenCL(dev) => dev.realize(graph, order, nodes)?,
         }
