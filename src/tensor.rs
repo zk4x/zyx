@@ -285,6 +285,14 @@ impl Tensor {
     pub fn label(&self) -> Option<String> {
         self.graph.borrow().label(self.data).cloned()
     }
+    
+    /// Layer norm
+    #[must_use]
+    pub fn layer_norm(&self, axes: impl IntoAxes) -> Tensor {
+        let eps = 0.00001;
+        let x = self - self.mean(axes.clone());
+        &x * ((&x*&x).mean(axes) + eps).rsqrt()
+    }
 
     /// Ln operation
     /// Natural logarithm
@@ -320,14 +328,21 @@ impl Tensor {
         let shape = self.shape().reduce(&axes);
         self.new_op(Node::Max(self.data, axes, shape))
     }
+    
+    /// Mean op
+    #[must_use]
+    pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
+        match self.dtype() {
+            DType::F32 => self.sum(axes)/self.shape().numel() as f32,
+            DType::I32 => self.sum(axes)/self.shape().numel() as i32,
+        }
+    }
 
     /// Mean square error between tensor and target.
     #[must_use]
     pub fn mse(&self, target: impl IntoTensor) -> Tensor {
-        match self.dtype() {
-            DType::F32 => (self - target).pow(2f32),
-            DType::I32 => (self - target).pow(2i32),
-        }
+        let x = self - target;
+        &x*&x
     }
 
     /// Permute tensor's dimensions using axes.
@@ -403,6 +418,12 @@ impl Tensor {
         );
         self.new_op(Node::Reshape(self.data, shape))
     }
+    
+    /// Sqrt of inverse of a tensor
+    #[must_use]
+    pub fn rsqrt(&self) -> Tensor {
+        (1.into_tensor(&self.context()).cast(self.dtype())/self).sqrt()
+    }
 
     /// Scaled dot product attention op
     /// Currently it is not causal
@@ -455,6 +476,12 @@ impl Tensor {
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         self.new_op(Node::Sqrt(self.data))
+    }
+    
+    /// Standard deviation
+    #[must_use]
+    pub fn std(&self, axes: impl IntoAxes) -> Tensor {
+        self.var(axes).sqrt()
     }
 
     /// Reduce tensor across axes, returning sum of each axes.
@@ -538,6 +565,13 @@ impl Tensor {
         let axes = shape.transpose_axes();
         let res_shape = shape.permute(&axes);
         self.new_op(Node::Permute(self.data, axes, res_shape))
+    }
+    
+    /// Population variance
+    #[must_use]
+    pub fn var(&self, axes: impl IntoAxes) -> Tensor {
+        let x = self - self.mean(());
+        (&x*&x).mean(axes)
     }
 
     /// Set tensor's gradient to None

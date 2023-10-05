@@ -54,6 +54,8 @@ impl<'a> IntoIterator for &'a Axes {
 }
 
 /// # `IntoAxes`
+/// Convert value into axes
+/// () is all axes 
 #[allow(clippy::module_name_repetitions)]
 pub trait IntoAxes: Clone {
     /// Convert value into axes

@@ -418,6 +418,29 @@ impl Graph {
             }
         }
 
+        // Optimize graph
+        /*let mut to_remove = alloc::vec::Vec::new();
+        let mut replace = NodeMap::new();
+        for id in graph.keys() {
+            match graph[id].1 {
+                Node::Permute(x, _, _) => {
+                    if let Node::Permute(c, ..) = graph[&x].1 {
+                        //to_remove.push(x);
+                        to_remove.push(*id);
+                        replace.insert(*id, c);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for node in to_remove {
+            graph.remove(&node);
+        }
+
+        for id in graph {
+
+        }*/
+
         #[cfg(feature = "debug1")]
         let begin = std::time::Instant::now();
 
