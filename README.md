@@ -167,9 +167,9 @@ Zyx is no-std library, but alloc is required.
 ## Features
 
 - opencl - enables OpenCL backend
+- cpu - enables multithreading, faster cpu operations and std
 - io - enables file operations and std
 - debug1 - enables printing of debug information during runtime and std
-- rand - enables functions requiring randomnes
 
 ## Multiple GPUs
 
