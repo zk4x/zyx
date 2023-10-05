@@ -5,7 +5,7 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::many_single_char_names)]
 
-#![cfg_attr(not(feature = "opencl"), forbid(unsafe_code))]
+#![cfg_attr(not(any(feature = "opencl", feature = "cpu")), forbid(unsafe_code))]
 #![warn(unsafe_op_in_unsafe_fn)]
 #![forbid(missing_docs)]
 #![forbid(rustdoc::broken_intra_doc_links)]

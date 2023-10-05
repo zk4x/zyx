@@ -66,7 +66,7 @@ impl Device {
     #[allow(clippy::unused_self)]
     pub(crate) fn load_f32(&mut self, storage: &Storage) -> Box<[f32]> {
         match storage {
-            Storage::CPUF32(data) => data.iter().collect(),
+            Storage::CPUF32(data) => (0..data.shape().numel()).map(|i| data.at(i)).collect(),
             Storage::CPUI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
             #[cfg(feature = "opencl")]
             Storage::OpenCLF32(shape, storage) => {
@@ -85,7 +85,7 @@ impl Device {
     pub(crate) fn load_i32(&mut self, storage: &Storage) -> Box<[i32]> {
         match storage {
             Storage::CPUF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
-            Storage::CPUI32(data) => data.iter().collect(),
+            Storage::CPUI32(data) => (0..data.shape().numel()).map(|i| data.at(i)).collect(),
             #[cfg(feature = "opencl")]
             Storage::OpenCLF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
             #[cfg(feature = "opencl")]

@@ -122,6 +122,7 @@ impl Shape {
         )
     }
 
+    #[cfg(feature = "opencl")]
     pub(crate) fn opencl_expand_strides(&self, shape: &Shape) -> Strides {
         let mut vec = self.0.to_vec();
         while vec.len() < shape.rank() {
