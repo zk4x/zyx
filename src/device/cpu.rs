@@ -79,8 +79,8 @@ impl<T> CpuStorage<T> {
     }
 }
 
-impl<T: Copy + Send + Sync> CpuStorage<T> {
-    fn unary_op(&self, op: impl Sync + Send + Fn(&T) -> T) -> CpuStorage<T> {
+impl<T: Copy + Sync> CpuStorage<T> {
+    fn unary_op<T2: Send>(&self, op: impl Sync + Send + Fn(&T) -> T2) -> CpuStorage<T2> {
         #[cfg(not(feature = "cpu"))]
         {
             self.iter().map(op).collect()
@@ -89,7 +89,7 @@ impl<T: Copy + Send + Sync> CpuStorage<T> {
         {
             use rayon::prelude::*;
             CpuStorage {
-                data: self.data.par_iter().map(op).collect::<Arc<[T]>>(),
+                data: self.data.par_iter().map(op).collect::<Arc<[T2]>>(),
                 view: self.view.clone(),
             }
         }
@@ -232,16 +232,16 @@ impl CpuDev {
             },
             Node::Cast(x, dtype) => match graph.c(*x) {
                 Storage::CPUF32(data) => match dtype {
-                    DType::F32 => Storage::CPUF32(CpuStorage::new(data.iter().collect(), data.shape().clone())),
+                    DType::F32 => Storage::CPUF32(data.unary_op(|x| *x)),
                     DType::I32 => {
-                        Storage::CPUI32(CpuStorage::new(data.iter().map(|x| x as i32).collect(), data.shape().clone()))
+                        Storage::CPUI32(data.unary_op(|x| *x as i32))
                     }
                 },
                 Storage::CPUI32(data) => match dtype {
                     DType::F32 => {
-                        Storage::CPUF32(CpuStorage::new(data.iter().map(|x| x as f32).collect(), data.shape().clone()))
+                        Storage::CPUF32(data.unary_op(|x| *x as f32))
                     }
-                    DType::I32 => Storage::CPUI32(CpuStorage::new(data.iter().collect(), data.shape().clone())),
+                    DType::I32 => Storage::CPUI32(data.unary_op(|x| *x)),
                 },
                 _ => todo!(),
             },
@@ -344,36 +344,33 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                         }
                         #[cfg(feature = "cpu")]
                         {
-                            // TODO fix strides
-                            let data_x = data_x.unary_op(|x| *x);
-                            let data_y = data_y.unary_op(|x| *x);
+                            // TODO Realize inputs that are not contiguous and have .view.shapes.len() more than 1
                             let m: usize = data_x.shape()[-1];
                             let k = if data_x.shape().rank() > 1 { data_x.shape()[-2] } else { 1 };
                             let n: usize = data_y.shape()[-1];
+                            //let data: Arc<[f32]> = (0..shape.numel()).map(|_| 0.).collect();
                             let data: Arc<[f32]> = (0..shape.numel()).map(|_| 0.).collect();
                             let mut i = 0;
                             while i < shape.numel() / (m * k) {
                                 unsafe {
-                                    matrixmultiply::sgemm(
-                                        m,
-                                        k,
-                                        n,
-                                        1.,
+                                    gemm::gemm(
+                                        m, n, k,
+                                        data.as_ptr().add(i * m * n) as *mut f32,
+                                        n.try_into().unwrap(),
+                                        1,
+                                        false,
                                         data_x.data.as_ptr().add(i * k * m),
-                                        1,
-                                        m.try_into().unwrap(),
+                                        data_x.view.shapes[0].1[0] as isize, //m.try_into().unwrap(),
+                                        if data_x.shape().rank() > 1 { data_x.view.shapes[0].1[1] as isize } else { 1 }, //1,
                                         data_y.data.as_ptr().add(i * k * n),
-                                        n.try_into().unwrap(),
-                                        1,
-                                        0.,
-                                        data.as_ptr().add(i * m * n) as *mut f32, // Hopefully this is OK
-                                        n.try_into().unwrap(),
-                                        1,
+                                        data_y.view.shapes[0].1[0] as isize, //n.try_into().unwrap(),
+                                        if data_y.shape().rank() > 1 { data_y.view.shapes[0].1[1] as isize } else { 1 }, //1
+                                        1., 1., false, false, false, gemm::Parallelism::Rayon(rayon::current_num_threads())
                                     );
                                 }
                                 i += 1;
                             }
-                            Storage::CPUF32(CpuStorage::new(data, shape))
+                            Storage::CPUF32(CpuStorage::new(data.into(), shape))
                         }
                     }
                     _ => panic!(),
@@ -438,8 +435,8 @@ fn tdot_op_t<T: Dtype + Copy>(shape: &Shape, data_x: &CpuStorage<T>, data_y: &Cp
     let k = if data_x.shape().rank() > 1 { data_x.shape()[-2] } else { 1 };
     let n = data_y.shape()[-1];
     // TODO parallel iter
-    let data_x: Vec<T> = data_x.iter().collect();
-    let data_y: Vec<T> = data_y.iter().collect();
+    let data_x = data_x.unary_op(|x| *x).data;
+    let data_y = data_y.unary_op(|x| *x).data;
     let transpose = |data: &[T], last_dim, n| {
         (0..last_dim).map(|j| (j..n).step_by(last_dim).map(|i| data[i].clone())).flatten().collect::<Vec<T>>()
     };
@@ -525,8 +522,8 @@ fn reduce_op_t<T: Dtype>(
 #[test]
 fn ras() {
     use crate::context::Context;
-    //let ctx = Context::new();
-    let ctx = Context::opencl().unwrap();
+    let ctx = Context::new();
+    //let ctx = Context::opencl().unwrap();
     let m = 2048;
     let x = ctx.randn((m, m));
     let y = ctx.randn((m, m));
