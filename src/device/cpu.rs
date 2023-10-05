@@ -521,3 +521,17 @@ fn reduce_op_t<T: Dtype>(
     }
     CpuStorage::new(res.into(), res_shape.clone())
 }
+
+#[test]
+fn ras() {
+    use crate::context::Context;
+    //let ctx = Context::new();
+    let ctx = Context::opencl().unwrap();
+    let m = 2048;
+    let x = ctx.randn((m, m));
+    let y = ctx.randn((m, m));
+    for _ in 0..10 {
+        let mut z = x.t_dot(&y);
+        z.realize().unwrap();
+    }
+}

@@ -177,7 +177,7 @@ impl OpenCLDev {
     pub(super) fn new() -> Result<Self, cl3::error_codes::ClError> {
         use cl3::ext::CL_DEVICE_TYPE_ALL;
         let platform_ids = cl3::platform::get_platform_ids()?;
-        let Some(platform) = platform_ids.get(0) else {
+        let Some(platform) = platform_ids.get(1) else {
             panic!("There are no available OpenCL platforms.");
         };
         let platform = *platform;
