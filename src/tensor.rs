@@ -159,7 +159,7 @@ impl Tensor {
     /// Get tensor's context
     #[must_use]
     pub fn context(&self) -> crate::context::Context {
-        crate::context::Context::from_graph(self.graph.clone())
+        self.graph.clone().into()
     }
 
     /// Access tensor's data. This is equivalent to cloning the tensor and zeroing it's gradient.
@@ -187,7 +187,7 @@ impl Tensor {
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor) -> Tensor {
         // always returns 2d or higher tensor, even if both inputs are 1d
-        let rhs = rhs.into_tensor(&self.graph.clone().into());
+        let rhs = rhs.into_tensor(&self.context());
         let shape = self.shape().dot(&rhs.shape());
         let x = self.transpose();
         self.new_op(Node::TDot(x.data, rhs.data, shape))
@@ -209,7 +209,7 @@ impl Tensor {
     /// Panics if x and y tensors have incompatible shapes.
     #[must_use]
     pub fn t_dot(&self, rhs: impl IntoTensor) -> Tensor {
-        let rhs = rhs.into_tensor(&self.graph.clone().into());
+        let rhs = rhs.into_tensor(&self.context());
         let shape = self.shape().transpose().dot(&rhs.shape());
         self.new_op(Node::TDot(self.data, rhs.data, shape))
     }
@@ -359,7 +359,7 @@ impl Tensor {
     pub fn pow(&self, rhs: impl IntoTensor) -> Tensor {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "pow",
         )
     }
@@ -773,7 +773,7 @@ impl<IT: IntoTensor> core::ops::Add<IT> for Tensor {
     fn add(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "add",
         )
     }
@@ -784,7 +784,7 @@ impl<IT: IntoTensor> core::ops::Add<IT> for &Tensor {
     fn add(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "add",
         )
     }
@@ -795,7 +795,7 @@ impl<IT: IntoTensor> core::ops::Sub<IT> for Tensor {
     fn sub(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "sub",
         )
     }
@@ -806,7 +806,7 @@ impl<IT: IntoTensor> core::ops::Sub<IT> for &Tensor {
     fn sub(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "sub",
         )
     }
@@ -817,7 +817,7 @@ impl<IT: IntoTensor> core::ops::Mul<IT> for Tensor {
     fn mul(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "mul",
         )
     }
@@ -828,7 +828,7 @@ impl<IT: IntoTensor> core::ops::Mul<IT> for &Tensor {
     fn mul(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "mul",
         )
     }
@@ -839,7 +839,7 @@ impl<IT: IntoTensor> core::ops::Div<IT> for Tensor {
     fn div(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "div",
         )
     }
@@ -850,7 +850,7 @@ impl<IT: IntoTensor> core::ops::Div<IT> for &Tensor {
     fn div(self, rhs: IT) -> Self::Output {
         self.new_binary_op(
             self.data,
-            rhs.into_tensor(&self.graph.clone().into()).data,
+            rhs.into_tensor(&self.context()).data,
             "div",
         )
     }
