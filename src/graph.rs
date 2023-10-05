@@ -97,7 +97,7 @@ impl core::fmt::Debug for Node {
                 f.write_fmt(format_args!("\x1b[31mStoreF32\x1b[0m() -> {shape}"))
             }
             Node::StoreI32(_, shape) => {
-                f.write_fmt(format_args!("\x1b[31mStoreI32\x1b[0m() -> {shape})"))
+                f.write_fmt(format_args!("\x1b[31mStoreI32\x1b[0m() -> {shape}"))
             }
             Node::Add(x, y) => f.write_fmt(format_args!("\x1b[31mAdd\x1b[0m({x}, {y})")),
             Node::Sub(x, y) => f.write_fmt(format_args!("\x1b[31mSub\x1b[0m({x}, {y})")),

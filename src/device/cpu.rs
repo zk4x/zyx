@@ -4,10 +4,7 @@ use alloc::vec;
 
 use crate::{shape::{Strides, Shape}, OutOfMemoryError, node_id::NodeId, graph::Node, prelude::DType, axes::Axes};
 
-use matrixmultiply as _;
-use rayon as _;
-
-use super::Storage;
+use super::{Storage, Dtype};
 
 trait GetConst {
     fn c(&self, i: NodeId) -> &Storage;
@@ -47,7 +44,7 @@ impl<T> CpuStorage<T> {
     pub(super) fn shape(&self) -> &Shape {
         self.view.shape()
     }
-    
+
     pub(super) fn numel(&self) -> usize {
         self.shape().numel()
     }
@@ -102,7 +99,7 @@ impl<T: Copy + Send + Sync> CpuStorage<T> {
 impl<T: Clone> Iterator for CpuStorageIter<'_, T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx == self.data.len() {
+        if self.idx == self.view.shape().numel() {
             None
         } else {
             let res = self.data[self.view.get_idx(self.idx)].clone();
@@ -130,20 +127,20 @@ impl View {
     }
 
     fn get_idx(&self, mut idx: usize) -> usize {
-        std::println!("Idx {idx}, view: {:?}", self.shapes);
+        //std::println!("Idx {idx}, view: {:?}", self.shapes);
         if self.contiguous {
             return idx
         }
-        let mut res = 0;
         for (shape, strides) in &self.shapes {
+            let mut res = 0;
             for (d, st) in shape.into_iter().zip(strides).rev() {
                 res += (idx%d)*st;
                 idx /= d;
             }
             idx = res;
+            //std::println!("{idx}");
         }
-        std::println!("{res}");
-        res
+        idx
     }
 
     fn shape(&self) -> &Shape  {
@@ -152,10 +149,10 @@ impl View {
 
     fn expand(&self, shape: &Shape) -> Self {
         let mut shapes = self.shapes.clone();
-        std::println!("Expanding {shapes:?}");
+        //std::println!("Expanding {shapes:?}");
+        shapes[0].1 = shapes[0].0.expand_strides(shape, shapes[0].1.clone());
         shapes[0].0 = shape.clone();
-        shapes[0].1 = shapes[0].0.expand_strides(shape);
-        std::println!("To {shapes:?}");
+        //std::println!("To {shapes:?}");
         // TODO
         Self {
             shapes,
@@ -258,14 +255,25 @@ impl CpuDev {
                 Storage::CPUI32(data) => Storage::CPUI32(data.reshape(shape)),
                 _ => panic!(),
             },
-            Node::Permute(x, axes, shape) => match graph.c(*x) {
+            Node::Permute(x, axes, _) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.permute(axes)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.permute(axes)),
                 _ => panic!(),
             },
-            _ => todo!("Reduces on CPU are todo"),
-            //Node::Max(x, axes, _) => axes_op(graph.c(*x), "max", axes),
-            //Node::Sum(x, axes, _) => axes_op(graph.c(*x), "sum", axes),
+            Node::Sum(x, axes, shape) => {
+                match graph.c(*x) {
+                    Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, |x, y| x + y)),
+                    Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, |x, y| x + y)),
+                    _ => panic!(),
+                }
+            }
+            Node::Max(x, axes, shape) => {
+                match graph.c(*x) {
+                    Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, |x, y| x.max(y))),
+                    Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, |x, y| x.max(y))),
+                    _ => panic!(),
+                }
+            }
         };
         let parameters = node.parameters();
         graph.get_mut(node_id).unwrap().1 = Node::Const(res);
@@ -332,7 +340,7 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                     "tdot" => {
                         #[cfg(not(feature = "cpu"))]
                         {
-                            Storage::CPUF32(tdot_op_t(data_x, data_y), shape)
+                            Storage::CPUF32(tdot_op_t(data_x, data_y, shape))
                         }
                         #[cfg(feature = "cpu")]
                         {
@@ -393,8 +401,7 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                         binary_op_t(data_x, data_y, |(x, y)| x.pow(y as u32)),
                     ),
                     "tdot" => {
-                        todo!();
-                        //Storage::CPUF32(tdot_op_t(data_x, data_y), shape)
+                        Storage::CPUI32(tdot_op_t(&shape, data_x, data_y))
                     }
                     _ => panic!(),
                 }
@@ -422,6 +429,48 @@ fn binary_op_t<T: Copy + Sync + Send>(
     }
 }
 
+fn tdot_op_t<T: Dtype + Copy>(shape: &Shape, data_x: &CpuStorage<T>, data_y: &CpuStorage<T>) -> CpuStorage<T> {
+    // TODO this is super slow, because it does not use tiling for memory caching,
+    // but its simple and works.
+    // k, m @ k, n -> m, n
+    const WIDTH: usize = 16;
+    let m = data_x.shape()[-1];
+    let k = if data_x.shape().rank() > 1 { data_x.shape()[-2] } else { 1 };
+    let n = data_y.shape()[-1];
+    // TODO parallel iter
+    let data_x: Vec<T> = data_x.iter().collect();
+    let data_y: Vec<T> = data_y.iter().collect();
+    let transpose = |data: &[T], last_dim, n| {
+        (0..last_dim).map(|j| (j..n).step_by(last_dim).map(|i| data[i].clone())).flatten().collect::<Vec<T>>()
+    };
+    CpuStorage::new(data_y
+        .chunks(k * n)
+        .zip(data_x.chunks(k * m))
+        .flat_map(|(y_chunk, x_chunk)| {
+            transpose(
+                &{
+                let x_chunk = transpose(x_chunk, m, k*m);
+                transpose(y_chunk, n, k*n)
+                    .chunks(k)
+                    .flat_map(|y_row| {
+                        x_chunk.chunks(k).map(|x| {
+                            x.chunks(WIDTH)
+                                .zip(y_row.chunks(WIDTH))
+                                .map(|(a, b)| {
+                                    a.iter()
+                                        .zip(b.iter())
+                                        .map(|(a, b)| a.clone() * b.clone())
+                                        .sum::<T>()
+                                })
+                                .sum()
+                        })
+                    })
+                    .collect::<Vec<T>>()
+                    }, m, n*m)
+        })
+        .collect(), shape.clone())
+}
+
 #[allow(clippy::cast_sign_loss)]
 #[allow(clippy::cast_precision_loss)]
 #[allow(clippy::cast_possible_truncation)]
@@ -440,36 +489,35 @@ fn dropout_op_t<T: Dtype>(data: &CpuStorage<T>, seed: u64, prob: f32) -> CpuStor
     }).collect(), data.shape().clone())
 }
 
-trait Dtype:
-    Clone
-    + core::fmt::Debug
-    + core::fmt::Display
-    + core::ops::Add<Output = Self>
-    + core::ops::Mul<Output = Self>
-    + Sync
-    + Send
-    + core::iter::Sum
-{
-    fn dtype() -> DType;
-    fn zero() -> Self;
-}
+fn reduce_op_t<T: Dtype>(
+    data: &CpuStorage<T>,
+    axes: &Axes,
+    res_shape: &Shape,
+    op: impl Fn(T, T) -> T,
+) -> CpuStorage<T> {
+    use alloc::boxed::Box;
+    // Strides of the input
+    let shape = data.shape();
+    let strides = shape.strides();
+    // indices of dimensions that are not reduced
+    let included_dims: Box<[usize]> = (0..shape.rank()).filter(|x| !axes.contains(*x)).collect();
+    // Strides of the result
+    let res_strides = res_shape.strides();
+    let mut res: Vec<T> = core::iter::repeat(T::zero())
+        .take(res_shape.numel())
+        .collect();
 
-impl Dtype for f32 {
-    fn dtype() -> DType {
-        DType::F32
+    // Go over all data and apply sum function to correct values
+    // then indices can be added just by making another vector and constantly
+    // updating it (adding in case of sum) with new indices as new max/min are found
+    for (i, x) in data.iter().enumerate() {
+        // calculate index in result
+        let mut j = 0;
+        for dim in &*included_dims {
+            j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
+        }
+        // apply reduce function, in this case sum
+        res[j] = op(res[j].clone(), x.clone());
     }
-
-    fn zero() -> Self {
-        0.
-    }
-}
-
-impl Dtype for i32 {
-    fn dtype() -> DType {
-        DType::I32
-    }
-
-    fn zero() -> Self {
-        0
-    }
+    CpuStorage::new(res.into(), res_shape.clone())
 }

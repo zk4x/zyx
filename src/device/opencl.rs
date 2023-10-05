@@ -1,5 +1,5 @@
 extern crate alloc;
-use super::Storage;
+use super::{Storage, Dtype};
 use crate::{
     node_id::NodeId,
     dtype::DType,
@@ -237,6 +237,30 @@ impl OpenCLDev {
             // uses 80% of available memory by default
             max_mem: (max_mem as f64 * 0.8) as usize,
         })
+    }
+
+    pub(super) fn load<T: Dtype>(&mut self, storage: &ClStorage, shape: &Shape) -> Box<[T]> {
+        let mut data: Box<[T]> = core::iter::repeat(T::zero()).take(shape.numel()).collect();
+        let queue = self.queue();
+        let event = storage.event();
+        // TODO this should be in the event wait list
+        cl3::event::wait_for_events(&[event]).unwrap();
+        let event = unsafe {
+            cl3::command_queue::enqueue_read_buffer(
+                queue,
+                storage.buffer(),
+                cl3::types::CL_NON_BLOCKING,
+                0,
+                shape.numel() * core::mem::size_of::<i32>(),
+                data.as_mut_ptr().cast(),
+                0,
+                core::ptr::null_mut(),
+            )
+        }
+        .unwrap();
+        //cl3::command_queue::finish(queue).unwrap();
+        cl3::event::wait_for_events(&[event]).unwrap();
+        data
     }
 
     // Get access to next empty/least pressured queue
@@ -488,7 +512,7 @@ impl OpenCLDev {
                 Node::Expand(x, shape) => {
                     let dtype = buffers[x].dtype();
                     let mut parameters = buffers[x].parameters().clone();
-                    let estrides = &buffers[x].shape().expand_strides(shape);
+                    let estrides = &buffers[x].shape().opencl_expand_strides(shape);
                     for param in &parameters {
                         if let Op::Load { idx, .. } = buffers.get_mut(param).unwrap() {
                             *idx = shape

@@ -69,7 +69,7 @@ This enables certain optimizations, but you need to call realize during training
 
 Implementing [module](crate::nn::Module) allows for custom high level constructs.
 ```rust
-# #[cfg(all(feature = "rand", feature = "opencl"))] {
+# #[cfg(feature = "opencl")] {
 # use zyx::context::Context;
 # use zyx::tensor::Tensor;
 # use zyx::nn::{Module, Linear};

@@ -122,9 +122,7 @@ impl Shape {
         )
     }
 
-    // Get strides for expanded shape
-    #[cfg(feature = "opencl")]
-    pub(crate) fn expand_strides(&self, shape: &Shape) -> Strides {
+    pub(crate) fn opencl_expand_strides(&self, shape: &Shape) -> Strides {
         let mut vec = self.0.to_vec();
         while vec.len() < shape.rank() {
             vec.insert(0, 1);
@@ -134,8 +132,25 @@ impl Shape {
             old_shape
                 .into_iter()
                 .zip(shape)
-                .zip(&old_shape.strides())
-                .map(|((os, ns), st)| if os == ns { *st } else { 0 })
+                .zip(&shape.strides())
+                .map(|((od, nd), st)| if od == nd { *st } else { 0 })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn expand_strides(&self, shape: &Shape, mut old_strides: Strides) -> Strides {
+        let mut vec = self.0.to_vec();
+        while vec.len() < shape.rank() {
+            vec.insert(0, 1);
+            old_strides.0 = [0].into_iter().chain(old_strides.0.iter().copied()).collect();
+        }
+        let old_shape: Shape = vec.into();
+        Strides(
+            old_shape
+                .into_iter()
+                .zip(shape)
+                .zip(&old_strides)
+                .map(|((od, nd), st)| if od == nd { *st } else { 0 })
                 .collect(),
         )
     }

@@ -268,10 +268,12 @@ fn sum() -> Result<(), OutOfMemoryError> {
         let mut z = x.sum(1);
         assert_eq!(z.shape(), (2, 1));
         z.realize()?;
+        std::println!("{z}");
         assert_eq!(z, [[9], [11]]);
         let mut z = x.sum(0);
         assert_eq!(z.shape(), (1, 3));
         z.realize()?;
+        std::println!("{z}");
         assert_eq!(z, [[7, 6, 7]]);
         z.backward(&mut x);
         x.realize_grad()?;

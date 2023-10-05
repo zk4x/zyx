@@ -2,16 +2,16 @@ strict digraph {
   ordering=in
   rank=source
   0[label="0 x 3
-StoreI32
+Leaf
 (2, 3)", shape=box, fillcolor="lightblue", style=filled]
-  1[label="1 x 2
+  1[label="1 x 4
 Add(0, 0)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   2[label="2 x 1
 ReLU(1)
 (2, 3)", shape=oval, fillcolor="lightblue", style=filled]
   3[label="3 x 1
-StoreI32
+Leaf
 (1)", shape=box, fillcolor="grey", style=filled]
   4[label="4 x 1
 Expand(3)
@@ -21,6 +21,36 @@ DReLU(1)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   6[label="6 x 1
 Mul(5, 4)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  7[label="7 x 1
+Leaf
+(1)", shape=box, fillcolor="grey", style=filled]
+  8[label="8 x 1
+Expand(7)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  9[label="9 x 1
+DReLU(1)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  10[label="10 x 1
+Mul(9, 8)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  11[label="11 x 1
+Add(6, 10)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  12[label="12 x 1
+StoreI32
+(1)", shape=box, fillcolor="grey", style=filled]
+  13[label="13 x 1
+Expand(12)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  14[label="14 x 1
+DReLU(1)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  15[label="15 x 1
+Mul(14, 13)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  16[label="16 x 1
+Add(11, 15)
 (2, 3)", shape=oval, fillcolor="lightblue", style=filled]
   0 -> 1
   0 -> 1
@@ -29,4 +59,16 @@ Mul(5, 4)
   1 -> 5
   5 -> 6
   4 -> 6
+  7 -> 8
+  1 -> 9
+  9 -> 10
+  8 -> 10
+  6 -> 11
+  10 -> 11
+  12 -> 13
+  1 -> 14
+  14 -> 15
+  13 -> 15
+  11 -> 16
+  15 -> 16
 }

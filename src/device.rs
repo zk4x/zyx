@@ -14,7 +14,6 @@ pub(super) mod opencl;
 
 #[derive(Debug)]
 pub(crate) enum Storage {
-    //None,
     CPUF32(CpuStorage<f32>),
     CPUI32(CpuStorage<i32>),
     #[cfg(feature = "opencl")]
@@ -63,6 +62,7 @@ impl Device {
         Ok(Self::OpenCL(opencl::OpenCLDev::new()?))
     }
 
+    // TODO join these two together
     #[allow(clippy::unused_self)]
     pub(crate) fn load_f32(&mut self, storage: &Storage) -> Box<[f32]> {
         match storage {
@@ -70,28 +70,8 @@ impl Device {
             Storage::CPUI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
             #[cfg(feature = "opencl")]
             Storage::OpenCLF32(shape, storage) => {
-                let mut data: Box<[f32]> = core::iter::repeat(0f32).take(shape.numel()).collect();
                 if let Device::OpenCL(dev) = self {
-                    let queue = dev.queue();
-                    let event = storage.event();
-                    // TODO this should be in the event wait list
-                    cl3::event::wait_for_events(&[event]).unwrap();
-                    let event = unsafe {
-                        cl3::command_queue::enqueue_read_buffer(
-                            queue,
-                            storage.buffer(),
-                            cl3::types::CL_NON_BLOCKING,
-                            0,
-                            shape.numel() * core::mem::size_of::<f32>(),
-                            data.as_mut_ptr().cast(),
-                            0,
-                            core::ptr::null_mut(),
-                        )
-                    }
-                    .unwrap();
-                    //cl3::command_queue::finish(queue).unwrap();
-                    cl3::event::wait_for_events(&[event]).unwrap();
-                    data
+                    dev.load(storage, shape)
                 } else {
                     panic!("Trying to access OpenCL tensor using {:?} device", self);
                 }
@@ -110,28 +90,8 @@ impl Device {
             Storage::OpenCLF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
             #[cfg(feature = "opencl")]
             Storage::OpenCLI32(shape, storage) => {
-                let mut data: Box<[i32]> = core::iter::repeat(0i32).take(shape.numel()).collect();
                 if let Device::OpenCL(dev) = self {
-                    let queue = dev.queue();
-                    let event = storage.event();
-                    // TODO this should be in the event wait list
-                    cl3::event::wait_for_events(&[event]).unwrap();
-                    let event = unsafe {
-                        cl3::command_queue::enqueue_read_buffer(
-                            queue,
-                            storage.buffer(),
-                            cl3::types::CL_NON_BLOCKING,
-                            0,
-                            shape.numel() * core::mem::size_of::<i32>(),
-                            data.as_mut_ptr().cast(),
-                            0,
-                            core::ptr::null_mut(),
-                        )
-                    }
-                    .unwrap();
-                    //cl3::command_queue::finish(queue).unwrap();
-                    cl3::event::wait_for_events(&[event]).unwrap();
-                    data
+                    dev.load(storage, shape)
                 } else {
                     panic!("Trying to access OpenCL tensor using {:?} device", self);
                 }
@@ -151,5 +111,39 @@ impl Device {
             Device::OpenCL(dev) => dev.realize(graph, order, nodes)?,
         }
         Ok(())
+    }
+}
+
+trait Dtype:
+    Clone
+    + core::fmt::Debug
+    + core::fmt::Display
+    + core::ops::Add<Output = Self>
+    + core::ops::Mul<Output = Self>
+    + Sync
+    + Send
+    + core::iter::Sum
+{
+    fn dtype() -> DType;
+    fn zero() -> Self;
+}
+
+impl Dtype for f32 {
+    fn dtype() -> DType {
+        DType::F32
+    }
+
+    fn zero() -> Self {
+        0.
+    }
+}
+
+impl Dtype for i32 {
+    fn dtype() -> DType {
+        DType::I32
+    }
+
+    fn zero() -> Self {
+        0
     }
 }
