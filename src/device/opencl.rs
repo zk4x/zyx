@@ -19,6 +19,8 @@ use alloc::{
 use cl3::{memory::CL_MEM_READ_ONLY, program::CL_PROGRAM_BUILD_LOG, types::CL_NON_BLOCKING, ext::{CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_LOCAL_MEM_SIZE}, error_codes::ClError};
 use core::{ffi::c_void, mem::size_of};
 
+const OPENCL_CPU: bool = false;
+
 // TODO deduplicate everything
 
 #[derive(Debug)]
@@ -55,9 +57,9 @@ impl DeviceInfo {
 impl Drop for OpenCLDev {
     fn drop(&mut self) {
         unsafe { cl3::context::release_context(self.context) }.unwrap();
-        for device in self.devices.keys() {
+        /*for device in self.devices.keys() {
             unsafe { cl3::device::release_device(*device) }.unwrap();
-        }
+        }*/ // version 1.2 and above, essentially useless
         for queue in &*self.queues {
             unsafe { cl3::command_queue::release_command_queue(*queue) }.unwrap();
         }
@@ -559,11 +561,11 @@ impl OpenCLDev {
 
                     // TODO runtime optimization
                     //let ts = (self.max_lws() as f32).sqrt() as usize;
-                    let tsm = 128; // 128
-                    let wptm = 8; // 16
-                    let tsn = 128; // 256
-                    let wptn = 8; // 8
-                    let tsk = 16; // 16
+                    let tsm = 128;
+                    let wptm = if OPENCL_CPU { 64 } else { 8 };
+                    let tsn = 128;
+                    let wptn = if OPENCL_CPU { 64 } else { 8 };
+                    let tsk = 16;
                     let rtsm = tsm/wptm;
                     let rtsn = tsn/wptn;
                     let rts = rtsm*rtsn;

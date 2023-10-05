@@ -542,7 +542,7 @@ fn ras() {
     let m = 2048;
     let x = ctx.randn((m, m));
     let y = ctx.randn((m, m));
-    for _ in 0..10 {
+    for _ in 0..100 {
         let mut z = x.t_dot(&y);
         z.realize().unwrap();
     }

@@ -28,8 +28,8 @@ impl Module for TinyNet {
 
 #[cfg(feature = "opencl")]
 fn main() -> Result<(), OutOfMemoryError> {
-    let mut ctx = Context::new();
-    //let mut ctx = Context::opencl().unwrap();
+    //let mut ctx = Context::new();
+    let mut ctx = Context::opencl().unwrap();
     let mut tiny_net = TinyNet {
         l0: ctx.linear(1024, 1024),
         l1: ctx.linear(1024, 1024),

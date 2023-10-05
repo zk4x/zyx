@@ -128,7 +128,7 @@ tiny_net example forward pass:
 
 ## Backends
 
-Zyx has two backends, CPU and OpenCL (version 1.2 and above).
+Zyx has two backends, CPU and OpenCL (all OpenCL versions).
 
 Backends are easy to add. Only few ops are needed and automatic differentiation works with all backends. However making them fast is very hard.
 
