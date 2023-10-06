@@ -20,12 +20,12 @@ pub(crate) enum Storage {
     OpenCLF32(Shape, opencl::ClStorage), // shape, buffer, event
     #[cfg(feature = "opencl")]
     OpenCLI32(Shape, opencl::ClStorage),
+    //TorchF32(TorchStorage<i32>),
 }
 
 impl Storage {
     pub(super) fn dtype(&self) -> DType {
         match self {
-            //Self::None => panic!(),
             Self::CPUF32(..) => DType::F32,
             Self::CPUI32(..) => DType::I32,
             #[cfg(feature = "opencl")]
