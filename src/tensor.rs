@@ -285,13 +285,13 @@ impl Tensor {
     pub fn label(&self) -> Option<String> {
         self.graph.borrow().label(self.data).cloned()
     }
-    
+
     /// Layer norm
     #[must_use]
     pub fn layer_norm(&self, axes: impl IntoAxes) -> Tensor {
         let eps = 0.00001;
         let x = self - self.mean(axes.clone());
-        &x * ((&x*&x).mean(axes) + eps).rsqrt()
+        &x/((&x*&x).mean(axes) + eps).sqrt()
     }
 
     /// Ln operation
