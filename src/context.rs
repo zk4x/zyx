@@ -238,7 +238,7 @@ impl Context {
             data: self
                 .graph
                 .borrow_mut()
-                .tensor_from_iter_f32(shape, iter.into_iter().take(n)),
+                .iter_f32(shape, iter.into_iter().take(n)),
             grad: None,
             graph: self.graph.clone(),
         }
@@ -257,7 +257,7 @@ impl Context {
             data: self
                 .graph
                 .borrow_mut()
-                .tensor_from_iter_i32(shape, iter.into_iter().take(n)),
+                .iter_i32(shape, iter.into_iter().take(n)),
             grad: None,
             graph: self.graph.clone(),
         }

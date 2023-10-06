@@ -1,4 +1,4 @@
-use zyx::{OutOfMemoryError, context::Context, parameters::IntoParameters};
+use zyx::prelude::*;
 
 #[test]
 fn exp() -> Result<(), OutOfMemoryError> {
