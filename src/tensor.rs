@@ -36,7 +36,7 @@ pub trait IntoTensor {
 /// It can be single value,
 /// ```rust
 /// # use zyx::context::Context;
-/// let mut ctx = Context::new();
+/// let ctx = Context::new();
 /// let mut x = ctx.tensor(42);
 /// x.realize();
 /// assert_eq!(x, 42);
@@ -44,7 +44,7 @@ pub trait IntoTensor {
 /// vector,
 /// ```rust
 /// # use zyx::context::Context;
-/// # let mut ctx = Context::new();
+/// # let ctx = Context::new();
 /// let mut x = ctx.tensor([42, 69, 10]);
 /// x.realize();
 /// assert_eq!(x, [42, 69, 10]);
@@ -52,7 +52,7 @@ pub trait IntoTensor {
 /// matrix,
 /// ```rust
 /// # use zyx::context::Context;
-/// # let mut ctx = Context::new();
+/// # let ctx = Context::new();
 /// let mut x = ctx.tensor([[42, 69, 10], [24, 96, 1]]);
 /// x.realize();
 /// assert_eq!(x, [[42, 69, 10], [24, 96, 1]]);
@@ -60,21 +60,21 @@ pub trait IntoTensor {
 /// or it can have arbitrary number of dimensions.
 /// ```rust
 /// # use zyx::context::Context;
-/// # let mut ctx = Context::new();
-/// let mut x = ctx.randn((4, 2, 3, 1, 5));
+/// # let ctx = Context::new();
+/// let x = ctx.randn((4, 2, 3, 1, 5));
 /// assert_eq!(x.shape(), (4, 2, 3, 1, 5));
 /// ```
 /// You can call operations on tensors
 /// ```rust
 /// # use zyx::context::Context;
-/// # let mut ctx = Context::new();
+/// # let ctx = Context::new();
 /// # let x = ctx.randn((4, 2, 3, 1, 5));
 /// let y = x.exp();
 /// ```
 /// and calculate their gradients.
 /// ```rust
 /// # use zyx::context::Context;
-/// # let mut ctx = Context::new();
+/// # let ctx = Context::new();
 /// # let mut x = ctx.randn((4, 2, 3, 1, 5));
 /// # let y = x.exp();
 /// y.backward(&mut x); // calculates gradient for x
@@ -83,7 +83,7 @@ pub trait IntoTensor {
 /// ```rust
 /// # use zyx::context::Context;
 /// # use zyx::parameters::IntoParameters;
-/// # let mut ctx = Context::new();
+/// # let ctx = Context::new();
 /// # let mut x = ctx.randn((4, 2, 3, 1, 5));
 /// # let y = x.exp();
 /// # y.backward(&mut x); // calculates gradient for x
@@ -128,7 +128,7 @@ impl Tensor {
     ///```
     /// # use zyx::context::Context;
     /// # use zyx::parameters::IntoParameters;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let mut x = ctx.tensor([2, 3, 4]);
     /// let y = -&x;
     /// y.backward(&mut x);
@@ -145,7 +145,7 @@ impl Tensor {
     /// ```
     /// # use zyx::context::Context;
     /// # use zyx::dtype::DType;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([2, 3, 4]);
     /// assert_eq!(x.dtype(), DType::I32);
     /// let y = x.cast(DType::F32);
@@ -160,7 +160,7 @@ impl Tensor {
     /// ```
     /// # use zyx::context::Context;
     /// # use zyx::dtype::DType;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([2, 3, 4]);
     /// let ctx = x.context();
     /// ```
@@ -172,7 +172,7 @@ impl Tensor {
     /// Access tensor's data. This is equivalent to cloning the tensor and zeroing it's gradient.
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let mut x = ctx.tensor([2., 3., 4.]);
     /// x.exp().backward(&mut x); // creates gradient for x
     /// let y = x.data();
@@ -191,7 +191,7 @@ impl Tensor {
     /// Matmul operation
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([2, 3, 4]);
     /// let y = ctx.tensor([[2, 3], [4, 1], [2, 3]]);
     /// let mut z = x.dot(y);
@@ -212,11 +212,10 @@ impl Tensor {
     /// Dropout op
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([2, 3, 4]);
     /// let mut z = x.dropout(0.5);
     /// z.realize().unwrap();
-    /// std::println!("{z}");
     /// ```
     #[must_use]
     pub fn dropout(&self, prob: f32) -> Tensor {
@@ -242,7 +241,7 @@ impl Tensor {
     /// ```
     /// # use zyx::context::Context;
     /// # use zyx::dtype::DType;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([2, 3, 4]);
     /// assert_eq!(x.dtype(), DType::I32);
     /// ```
@@ -269,8 +268,8 @@ impl Tensor {
     /// i. e. if gradient wasn't set or if it was zeroed using [`zero_grad`](Tensor::zero_grad).
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
-    /// let mut x = ctx.tensor([2, 3, 4]);
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([2, 3, 4]);
     /// assert!(x.grad().is_none());
     /// ```
     #[must_use]
@@ -289,8 +288,8 @@ impl Tensor {
     /// Get tensor's id.
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
-    /// let mut x = ctx.tensor([2, 3, 4]);
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([2, 3, 4]);
     /// assert_eq!(x.id(), 0);
     /// ```
     #[must_use]
@@ -301,8 +300,8 @@ impl Tensor {
     /// Get tensor's label
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
-    /// let mut x = ctx.tensor([2, 3, 4]);
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([2, 3, 4]);
     /// assert_eq!(x.label(), None);
     /// ```
     #[must_use]
@@ -390,8 +389,8 @@ impl Tensor {
     /// Get tensor's rank
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
-    /// let mut x = ctx.tensor([[2, 3, 4], [5, 1, 2]]);
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([[2, 3, 4], [5, 1, 2]]);
     /// assert_eq!(x.rank(), 2);
     /// ```
     #[must_use]
@@ -460,8 +459,8 @@ impl Tensor {
     /// Set label
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
-    /// let mut x = ctx.tensor([[2, 3, 4], [5, 1, 2]]).set_label("tensor x");
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([[2, 3, 4], [5, 1, 2]]).set_label("tensor x");
     /// assert_eq!(x.label().unwrap(), "tensor x");
     /// ```
     #[allow(clippy::return_self_not_must_use)]
@@ -473,7 +472,7 @@ impl Tensor {
     /// Get tensor's shape
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([[2, 3, 4], [5, 1, 2]]);
     /// assert_eq!(x.shape(), (2, 3));
     /// ```
@@ -511,7 +510,7 @@ impl Tensor {
     /// All axes in result are kept and set to one.
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([[2, 3, 4], [5, 1, 2]]);
     /// let mut y = x.sum(1);
     /// assert_eq!(y.shape(), (2, 1));
@@ -557,7 +556,7 @@ impl Tensor {
     /// Convert tensor to `Vec<f32>`. Returns None if this tensor isn't realized.
     /// ```
     /// # use zyx::context::Context;
-    /// # let mut ctx = Context::new();
+    /// # let ctx = Context::new();
     /// let x = ctx.tensor([[2, 3, 4], [5, 1, 2]]);
     /// let mut y = x.sum(1);
     /// assert_eq!(y.shape(), (2, 1));
@@ -605,7 +604,7 @@ impl Tensor {
     /// Set tensor's gradient to None
     /// ```
     /// # use zyx::context::Context;
-    /// let mut ctx = Context::new();
+    /// let ctx = Context::new();
     /// let mut x = ctx.tensor([2., 3., 4.]);
     /// x.zero_grad();
     /// assert!(x.grad().is_none());
