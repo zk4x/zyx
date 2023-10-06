@@ -157,6 +157,13 @@ impl Tensor {
     }
 
     /// Get tensor's context
+    /// ```
+    /// # use zyx::context::Context;
+    /// # use zyx::dtype::DType;
+    /// # let mut ctx = Context::new();
+    /// let x = ctx.tensor([2, 3, 4]);
+    /// let ctx = x.context();
+    /// ```
     #[must_use]
     pub fn context(&self) -> crate::context::Context {
         self.graph.clone().into()
@@ -182,6 +189,15 @@ impl Tensor {
     }
 
     /// Matmul operation
+    /// ```
+    /// # use zyx::context::Context;
+    /// # let mut ctx = Context::new();
+    /// let x = ctx.tensor([2, 3, 4]);
+    /// let y = ctx.tensor([[2, 3], [4, 1], [2, 3]]);
+    /// let mut z = x.dot(y);
+    /// z.realize().unwrap();
+    /// assert_eq!(z, [[24, 21]]);
+    /// ```
     /// # Panics
     /// Panics if x and y tensors have incompatible shapes.
     #[must_use]
@@ -194,6 +210,14 @@ impl Tensor {
     }
 
     /// Dropout op
+    /// ```
+    /// # use zyx::context::Context;
+    /// # let mut ctx = Context::new();
+    /// let x = ctx.tensor([2, 3, 4]);
+    /// let mut z = x.dropout(0.5);
+    /// z.realize().unwrap();
+    /// std::println!("{z}");
+    /// ```
     #[must_use]
     pub fn dropout(&self, prob: f32) -> Tensor {
         let seed = if prob == 0. {
@@ -286,7 +310,7 @@ impl Tensor {
         self.graph.borrow().label(self.data).cloned()
     }
 
-    /// Layer norm
+    /// Non-parametric layer norm.
     #[must_use]
     pub fn layer_norm(&self, axes: impl IntoAxes) -> Tensor {
         let eps = 0.00001;
@@ -294,8 +318,7 @@ impl Tensor {
         &x/((&x*&x).mean(axes) + eps).sqrt()
     }
 
-    /// Ln operation
-    /// Natural logarithm
+    /// Ln operation, natural logarithm
     #[must_use]
     pub fn ln(&self) -> Tensor {
         self.new_op(Node::Ln(self.data))
@@ -561,10 +584,15 @@ impl Tensor {
     /// Transpose op
     #[must_use]
     pub fn transpose(&self) -> Tensor {
-        let shape = self.shape();
+        let x = if self.rank() == 1 {
+            self.reshape((1, self.shape()[0]))
+        } else {
+            self.clone()
+        };
+        let shape = x.shape();
         let axes = shape.transpose_axes();
         let res_shape = shape.permute(&axes);
-        self.new_op(Node::Permute(self.data, axes, res_shape))
+        self.new_op(Node::Permute(x.data, axes, res_shape))
     }
     
     /// Population variance

@@ -21,8 +21,7 @@ let y = x.clone();
 Every operation is traced automatically. Thus you can calculate derivative of any tensor with respect to any other tensor. There is no need for gradient tape and you don't need to set requires_grad. See [automatic differentiation](Automatic differentiation.md) for more details.
 ```rust
 # #[cfg(feature = "rand")] {
-# use zyx::context::Context;
-# use zyx::dtype::DType;
+# use zyx::{context::Context, dtype::DType};
 let mut ctx = Context::new();
 let x = ctx.randn((2, 4));
 let w1 = ctx.randn((4, 4));
@@ -35,8 +34,7 @@ let loss = (out - y).pow(2.);
 Following function calculates gradients for w1 and w2 (i. e. derivative of loss w.r.t w1 and w.r.t w2).
 ```rust
 # #[cfg(feature = "rand")] {
-# use zyx::context::Context;
-# use zyx::dtype::DType;
+# use zyx::{context::Context, dtype::DType};
 # let mut ctx = Context::new();
 # let x = ctx.randn((2, 4));
 # let mut w1 = ctx.randn((4, 4));
@@ -70,11 +68,7 @@ This enables certain optimizations, but you need to call realize during training
 Implementing [module](crate::nn::Module) allows for custom high level constructs.
 ```rust
 # #[cfg(feature = "opencl")] {
-# use zyx::context::Context;
-# use zyx::tensor::Tensor;
-# use zyx::nn::{Module, Linear};
-# use zyx::optim::SGD;
-# use zyx::parameters::Parameters;
+# use zyx::prelude::*;
 struct TinyNet {
     l0: Linear,
     l1: Linear,
@@ -151,8 +145,6 @@ As you can see, Zyx is ok on the GPU, but needs to be further optimized for the 
 
 Zyx works with .safetensors format from huggingface. Enable io feature to have this work.
 ```rust ignore
-net.parameters().save("model.safetensors");
-// or shorter
 net.save("model.safetensors");
 ```
 Loading is not much more complex.
