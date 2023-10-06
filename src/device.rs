@@ -6,11 +6,12 @@ use alloc::{
     boxed::Box,
 collections::{BTreeMap, BTreeSet}};
 
-use self::cpu::CpuStorage;
+use self::{cpu::CpuStorage, torch::TorchStorage};
 
 pub(super) mod cpu;
 #[cfg(feature = "opencl")]
 pub(super) mod opencl;
+pub(super) mod torch;
 
 #[derive(Debug)]
 pub(crate) enum Storage {
@@ -20,7 +21,7 @@ pub(crate) enum Storage {
     OpenCLF32(Shape, opencl::ClStorage), // shape, buffer, event
     #[cfg(feature = "opencl")]
     OpenCLI32(Shape, opencl::ClStorage),
-    //TorchF32(TorchStorage<i32>),
+    TorchF32(TorchStorage<i32>),
 }
 
 impl Storage {
@@ -32,6 +33,7 @@ impl Storage {
             Self::OpenCLF32(..) => DType::F32,
             #[cfg(feature = "opencl")]
             Self::OpenCLI32(..) => DType::I32,
+            Self::TorchF32(..) => DType::F32,
         }
     }
 }
@@ -45,6 +47,7 @@ impl Storage {
             Self::OpenCLF32(shape, ..) => shape,
             #[cfg(feature = "opencl")]
             Self::OpenCLI32(shape, ..) => shape,
+            Self::TorchF32(data) => data.shape(),
         }
     }
 }
@@ -54,6 +57,7 @@ pub(crate) enum Device {
     Cpu(cpu::CpuDev),
     #[cfg(feature = "opencl")]
     OpenCL(opencl::OpenCLDev),
+    Torch(torch::TorchDev),
 }
 
 impl Device {
@@ -78,6 +82,7 @@ impl Device {
             }
             #[cfg(feature = "opencl")]
             Storage::OpenCLI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
+            Storage::TorchF32(data) => todo!(),
         }
     }
 
@@ -96,6 +101,7 @@ impl Device {
                     panic!("Trying to access OpenCL tensor using {:?} device", self);
                 }
             }
+            Storage::TorchF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
         }
     }
 
@@ -109,6 +115,7 @@ impl Device {
             Device::Cpu(dev) => dev.realize(graph, order, nodes)?,
             #[cfg(feature = "opencl")]
             Device::OpenCL(dev) => dev.realize(graph, order, nodes)?,
+            Device::Torch(dev) => dev.realize(graph, order, nodes)?,
         }
         Ok(())
     }

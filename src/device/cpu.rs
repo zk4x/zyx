@@ -225,7 +225,7 @@ impl CpuDev {
                 Storage::CPUI32(data) => {
                     Storage::CPUI32(dropout_op_t(data, *seed, *prob))
                 }
-                #[cfg(feature = "opencl")]
+                //#[cfg(feature = "opencl")]
                 _ => panic!(),
             },
             Node::Cast(x, dtype) => match graph.c(*x) {
@@ -241,32 +241,32 @@ impl CpuDev {
                     }
                     DType::I32 => Storage::CPUI32(data.unary_op(|x| x, false)),
                 },
-                #[cfg(feature = "opencl")]
+                //#[cfg(feature = "opencl")]
                 _ => todo!(),
             },
             Node::Expand(x, eshape) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.expand(eshape)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.expand(eshape)),
-                #[cfg(feature = "opencl")]
+                //#[cfg(feature = "opencl")]
                 _ => panic!(),
             },
             Node::Reshape(x, shape) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.reshape(shape)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.reshape(shape)),
-                #[cfg(feature = "opencl")]
+                //#[cfg(feature = "opencl")]
                 _ => panic!(),
             },
             Node::Permute(x, axes, _) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.permute(axes)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.permute(axes)),
-                #[cfg(feature = "opencl")]
+                //#[cfg(feature = "opencl")]
                 _ => panic!(),
             },
             Node::Sum(x, axes, shape) => {
                 match graph.c(*x) {
                     Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, |x, y| x + y)),
                     Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, |x, y| x + y)),
-                    #[cfg(feature = "opencl")]
+                    //#[cfg(feature = "opencl")]
                     _ => panic!(),
                 }
             }
@@ -274,7 +274,7 @@ impl CpuDev {
                 match graph.c(*x) {
                     Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, f32::max)),
                     Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, core::cmp::Ord::max)),
-                    #[cfg(feature = "opencl")]
+                    //#[cfg(feature = "opencl")]
                     _ => panic!(),
                 }
             }
@@ -315,7 +315,7 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
             "drelu" => Storage::CPUI32(data.unary_op(|x| i32::from(x > 0), false)),
             _ => panic!("Impossible op {op} on i32"),
         },
-        #[cfg(feature = "opencl")]
+        //#[cfg(feature = "opencl")]
         _ => panic!(),
     }
 }
@@ -421,7 +421,7 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                 panic!()
             }
         }
-        #[cfg(feature = "opencl")]
+        //#[cfg(feature = "opencl")]
         _ => panic!(),
     }
 }
