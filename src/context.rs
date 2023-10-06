@@ -83,11 +83,6 @@ impl Context {
         }
     }*/
 
-    #[must_use]
-    pub(crate) fn from_graph(graph: Rc<RefCell<Graph>>) -> Context {
-        Context { graph }
-    }
-
     /// Create new f32 tensor filled with value.
     /// # Example
     /// ```
