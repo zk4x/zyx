@@ -6,11 +6,12 @@ use alloc::{
     boxed::Box,
 collections::{BTreeMap, BTreeSet}};
 
-use self::{cpu::CpuStorage, torch::TorchStorage};
+use self::cpu::CpuStorage;
 
 pub(super) mod cpu;
 #[cfg(feature = "opencl")]
 pub(super) mod opencl;
+#[cfg(feature = "torch")]
 pub(super) mod torch;
 
 #[derive(Debug)]
@@ -21,7 +22,8 @@ pub(crate) enum Storage {
     OpenCLF32(Shape, opencl::ClStorage), // shape, buffer, event
     #[cfg(feature = "opencl")]
     OpenCLI32(Shape, opencl::ClStorage),
-    TorchF32(TorchStorage<i32>),
+#[cfg(feature = "torch")]
+    TorchF32(torch::TorchStorage),
 }
 
 impl Storage {
@@ -33,20 +35,22 @@ impl Storage {
             Self::OpenCLF32(..) => DType::F32,
             #[cfg(feature = "opencl")]
             Self::OpenCLI32(..) => DType::I32,
+            #[cfg(feature = "torch")]
             Self::TorchF32(..) => DType::F32,
         }
     }
 }
 
 impl Storage {
-    pub(super) fn shape(&self) -> &Shape {
+    pub(super) fn shape(&self) -> Shape {
         match self {
-            Self::CPUF32(data) => data.shape(),
-            Self::CPUI32(data) => data.shape(),
+            Self::CPUF32(data) => data.shape().clone(),
+            Self::CPUI32(data) => data.shape().clone(),
             #[cfg(feature = "opencl")]
-            Self::OpenCLF32(shape, ..) => shape,
+            Self::OpenCLF32(shape, ..) => shape.clone(),
             #[cfg(feature = "opencl")]
-            Self::OpenCLI32(shape, ..) => shape,
+            Self::OpenCLI32(shape, ..) => shape.clone(),
+            #[cfg(feature = "torch")]
             Self::TorchF32(data) => data.shape(),
         }
     }
@@ -57,6 +61,7 @@ pub(crate) enum Device {
     Cpu(cpu::CpuDev),
     #[cfg(feature = "opencl")]
     OpenCL(opencl::OpenCLDev),
+    #[cfg(feature = "torch")]
     Torch(torch::TorchDev),
 }
 
@@ -64,6 +69,11 @@ impl Device {
     #[cfg(feature = "opencl")]
     pub(crate) fn opencl() -> Result<Self, cl3::error_codes::ClError> {
         Ok(Self::OpenCL(opencl::OpenCLDev::new()?))
+    }
+
+    #[cfg(feature = "torch")]
+    pub(crate) fn torch() {
+        Self::Torch(torch::TorchDev::new())
     }
 
     // TODO join these two together
@@ -82,6 +92,7 @@ impl Device {
             }
             #[cfg(feature = "opencl")]
             Storage::OpenCLI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
+            #[cfg(feature = "torch")]
             Storage::TorchF32(data) => todo!(),
         }
     }
@@ -101,6 +112,7 @@ impl Device {
                     panic!("Trying to access OpenCL tensor using {:?} device", self);
                 }
             }
+            #[cfg(feature = "torch")]
             Storage::TorchF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
         }
     }
@@ -115,6 +127,7 @@ impl Device {
             Device::Cpu(dev) => dev.realize(graph, order, nodes)?,
             #[cfg(feature = "opencl")]
             Device::OpenCL(dev) => dev.realize(graph, order, nodes)?,
+            #[cfg(feature = "torch")]
             Device::Torch(dev) => dev.realize(graph, order, nodes)?,
         }
         Ok(())

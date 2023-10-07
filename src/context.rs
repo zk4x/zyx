@@ -68,6 +68,16 @@ impl Context {
         Ok(Self { graph })
     }
 
+    /// Create new context that uses `Torch` backend.
+    #[cfg(feature = "torch")]
+    pub fn torch() -> Self {
+        let graph = Rc::new(RefCell::new(Graph::default()));
+        let device = crate::device::Device::torch();
+        graph.borrow_mut().devices.push(device);
+        graph.borrow_mut().default_device = 1;
+        Self { graph }
+    }
+
     // TODO this can be perhaps interesting for multi platform execution,
     // but there needs to be way to convert tensors between devices and that is slow.
     /* /// Adds new device to context and makes it default.

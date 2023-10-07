@@ -227,7 +227,16 @@ impl Tensor {
         self.new_op(Node::Dropout(self.data, seed, prob))
     }
 
-    /// Matmul operation with xhs transposed
+    /// Matmul operation with first operand transposed.
+    /// ```
+    /// # use zyx::context::Context;
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([[2], [3], [4]]);
+    /// let y = ctx.tensor([[2, 3], [4, 1], [2, 3]]);
+    /// let mut z = x.t_dot(y);
+    /// z.realize().unwrap();
+    /// assert_eq!(z, [[24, 21]]);
+    /// ```
     /// # Panics
     /// Panics if x and y tensors have incompatible shapes.
     #[must_use]
@@ -251,12 +260,30 @@ impl Tensor {
     }
 
     /// Exp operation
+    /// ```
+    /// # use zyx::context::Context;
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([[2.], [3.], [4.]]);
+    /// let mut z = x.exp();
+    /// z.realize().unwrap();
+    /// assert_eq!(z, [[7.389056], [20.085537], [54.598150]]);
+    /// ```
+    /// # Panics
+    /// Panics if applied on integral dtype.
     #[must_use]
     pub fn exp(&self) -> Tensor {
         self.new_op(Node::Exp(self.data))
     }
 
     /// Expand tensor into larger shape
+    /// ```
+    /// # use zyx::context::Context;
+    /// # let ctx = Context::new();
+    /// let x = ctx.tensor([2]);
+    /// let mut z = x.expand((2, 3));
+    /// z.realize().unwrap();
+    /// assert_eq!(z, [[2, 2, 2], [2, 2, 2]]);
+    /// ```
     #[must_use]
     pub fn expand(&self, shape: impl Into<Shape>) -> Tensor {
         // TODO checks
@@ -350,7 +377,7 @@ impl Tensor {
         let shape = self.shape().reduce(&axes);
         self.new_op(Node::Max(self.data, axes, shape))
     }
-    
+
     /// Mean op
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
@@ -440,7 +467,7 @@ impl Tensor {
         );
         self.new_op(Node::Reshape(self.data, shape))
     }
-    
+
     /// Sqrt of inverse of a tensor
     #[must_use]
     pub fn rsqrt(&self) -> Tensor {
@@ -499,7 +526,7 @@ impl Tensor {
     pub fn sqrt(&self) -> Tensor {
         self.new_op(Node::Sqrt(self.data))
     }
-    
+
     /// Standard deviation
     #[must_use]
     pub fn std(&self, axes: impl IntoAxes) -> Tensor {

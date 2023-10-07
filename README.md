@@ -19,31 +19,18 @@ let y = x.clone();
 ## Automatic differentation/Backpropagation
 
 Every operation is traced automatically. Thus you can calculate derivative of any tensor with respect to any other tensor. There is no need for gradient tape and you don't need to set requires_grad. See [automatic differentiation](Automatic differentiation.md) for more details.
+
+Following function calculates gradients for w1 and w2 (i. e. derivative of loss w.r.t w1 and w.r.t w2).
 ```rust
-# #[cfg(feature = "rand")] {
 # use zyx::{context::Context, dtype::DType};
 let mut ctx = Context::new();
 let x = ctx.randn((2, 4));
-let w1 = ctx.randn((4, 4));
-let w2 = ctx.randn((4, 3));
-let out = x.dot(w1).tanh().dot(w2);
+let mut w1 = ctx.randn((4, 4));
+let mut w2 = ctx.randn((4, 3));
+let out = x.dot(&w1).tanh().dot(&w2);
 let y = ctx.tensor([2, 1, 4]).cast(DType::F32);
 let loss = (out - y).pow(2.);
-# }
-```
-Following function calculates gradients for w1 and w2 (i. e. derivative of loss w.r.t w1 and w.r.t w2).
-```rust
-# #[cfg(feature = "rand")] {
-# use zyx::{context::Context, dtype::DType};
-# let mut ctx = Context::new();
-# let x = ctx.randn((2, 4));
-# let mut w1 = ctx.randn((4, 4));
-# let mut w2 = ctx.randn((4, 3));
-# let out = x.dot(&w1).tanh().dot(&w2);
-# let y = ctx.tensor([2, 1, 4]).cast(DType::F32);
-# let loss = (out - y).pow(2.);
 loss.backward([&mut w1, &mut w2]);
-# }
 ```
 
 ## Graph realization
@@ -52,7 +39,7 @@ Neural networks are directed acyclic graphs of many tensors. Thus one of the big
 
 Zyx uses fully dynamic graph. Realization of tensors happens only when you call [realize](crate::tensor::Tensor::realize). This means tensors are evaluated lazily.
 ```rust
-# #[cfg(all(feature = "rand", feature = "opencl"))] {
+# #[cfg(feature = "opencl")] {
 # use zyx::context::Context;
 let mut ctx = Context::opencl().unwrap();
 let x = ctx.randn((256, 1024));
@@ -122,7 +109,7 @@ tiny_net example forward pass:
 
 ## Backends
 
-Zyx has two backends, CPU and OpenCL (all OpenCL versions).
+Zyx has three backends, CPU, OpenCL (all OpenCL versions) and Torch.
 
 Backends are easy to add. Only few ops are needed and automatic differentiation works with all backends. However making them fast is very hard.
 
@@ -162,6 +149,9 @@ Zyx is no-std library, but alloc is required.
 - cpu - enables multithreading, faster cpu operations and std
 - io - enables file operations and std
 - debug1 - enables printing of debug information during runtime and std
+- torch - enables support for torch using tch crate, please specify:
+export LIBTORCH=/path/to/libtorch
+export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
 
 ## Multiple GPUs
 

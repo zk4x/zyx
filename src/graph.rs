@@ -262,7 +262,7 @@ impl Graph {
         }
     }
 
-    pub(super) fn shape(&self, mut id: NodeId) -> &Shape {
+    pub(super) fn shape(&self, mut id: NodeId) -> Shape {
         loop {
             if let Some(storage) = self.buffers.get(&id) {
                 return storage.shape();
@@ -275,7 +275,7 @@ impl Graph {
                 | Node::Expand(_, shape)
                 | Node::Permute(.., shape)
                 | Node::Sum(.., shape)
-                | Node::Max(.., shape) => return shape,
+                | Node::Max(.., shape) => return shape.clone(),
                 _ => {}
             }
             //std::println!("{:?}", self.buffers.keys());
@@ -481,7 +481,8 @@ impl Graph {
     #[allow(clippy::match_on_vec_items)]
     pub(super) fn backward(&mut self, id: NodeId, sources: &mut [&mut Tensor]) {
         // get tensors that require gradient
-        // TODO can this be faster? Use sorting in some way?
+        // TODO can this be faster? Use sorting in some way and do it in single pass?
+        // (i. e. without the while loop)
         let srcs: NodeSet = sources.iter().map(|t| NodeId::new(t.id())).collect();
         let mut req_grad: NodeSet = srcs.clone();
         {

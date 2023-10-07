@@ -106,7 +106,7 @@ impl<T: Copy + Send + Sync> CpuStorage<T> {
 }
 
 #[derive(Debug)]
-pub(crate) struct CpuDev {}
+pub(crate) struct CpuDev;
 
 #[derive(Debug, Clone)]
 pub(super) struct View {
@@ -179,7 +179,7 @@ impl View {
 
 impl CpuDev {
     pub(crate) fn new() -> Self {
-        Self {}
+        Self
     }
 
     #[allow(clippy::unused_self)]
@@ -225,7 +225,7 @@ impl CpuDev {
                 Storage::CPUI32(data) => {
                     Storage::CPUI32(dropout_op_t(data, *seed, *prob))
                 }
-                //#[cfg(feature = "opencl")]
+                #[cfg(any(feature = "opencl", feature = "torch"))]
                 _ => panic!(),
             },
             Node::Cast(x, dtype) => match graph.c(*x) {
@@ -241,32 +241,32 @@ impl CpuDev {
                     }
                     DType::I32 => Storage::CPUI32(data.unary_op(|x| x, false)),
                 },
-                //#[cfg(feature = "opencl")]
+                #[cfg(any(feature = "opencl", feature = "torch"))]
                 _ => todo!(),
             },
             Node::Expand(x, eshape) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.expand(eshape)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.expand(eshape)),
-                //#[cfg(feature = "opencl")]
+                #[cfg(any(feature = "opencl", feature = "torch"))]
                 _ => panic!(),
             },
             Node::Reshape(x, shape) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.reshape(shape)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.reshape(shape)),
-                //#[cfg(feature = "opencl")]
+                #[cfg(any(feature = "opencl", feature = "torch"))]
                 _ => panic!(),
             },
             Node::Permute(x, axes, _) => match graph.c(*x) {
                 Storage::CPUF32(data) => Storage::CPUF32(data.permute(axes)),
                 Storage::CPUI32(data) => Storage::CPUI32(data.permute(axes)),
-                //#[cfg(feature = "opencl")]
+                #[cfg(any(feature = "opencl", feature = "torch"))]
                 _ => panic!(),
             },
             Node::Sum(x, axes, shape) => {
                 match graph.c(*x) {
                     Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, |x, y| x + y)),
                     Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, |x, y| x + y)),
-                    //#[cfg(feature = "opencl")]
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
                     _ => panic!(),
                 }
             }
@@ -274,7 +274,7 @@ impl CpuDev {
                 match graph.c(*x) {
                     Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, f32::max)),
                     Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, core::cmp::Ord::max)),
-                    //#[cfg(feature = "opencl")]
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
                     _ => panic!(),
                 }
             }
@@ -315,7 +315,7 @@ fn unary_op(data: &Storage, op: &str) -> Storage {
             "drelu" => Storage::CPUI32(data.unary_op(|x| i32::from(x > 0), false)),
             _ => panic!("Impossible op {op} on i32"),
         },
-        //#[cfg(feature = "opencl")]
+        #[cfg(any(feature = "opencl", feature = "torch"))]
         _ => panic!(),
     }
 }
@@ -339,6 +339,9 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                     ),
                     "/" => Storage::CPUF32(
                         binary_op_t(data_x, data_y, |(x, y)| x / y),
+                    ),
+                    "<" => Storage::CPUF32(
+                        binary_op_t(data_x, data_y, |(x, y)| i8::from(x < y).into()),
                     ),
                     "pow" => Storage::CPUF32(
                         binary_op_t(data_x, data_y, |(x, y)| libm::powf(x, y)),
@@ -409,6 +412,9 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                     "/" => Storage::CPUI32(
                         binary_op_t(data_x, data_y, |(x, y)| x / y),
                     ),
+                    "<" => Storage::CPUI32(
+                        binary_op_t(data_x, data_y, |(x, y)| i32::from(x < y)),
+                    ),
                     "pow" => Storage::CPUI32(
                         binary_op_t(data_x, data_y, |(x, y)| x.pow(y as u32)),
                     ),
@@ -421,7 +427,7 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                 panic!()
             }
         }
-        //#[cfg(feature = "opencl")]
+        #[cfg(any(feature = "opencl", feature = "torch"))]
         _ => panic!(),
     }
 }

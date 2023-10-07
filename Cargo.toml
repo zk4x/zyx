@@ -22,14 +22,16 @@ rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 gemm = { version = "0.15.4", default-features = false, optional = true }
 rayon = { version = "1.8.0", default-features = false, optional = true }
 cl3 = { version = "0.9.2", default-features = false, optional = true }
+tch = { version = "*", optional = true }
 
 [features]
 #default = ["cpu", "opencl", "io", "debug1"]
 #default = ["cpu", "opencl"]
-cpu = ["gemm", "rayon"]
-opencl = ["dep:cl3"]
 io = [] # io requires std
 debug1 = [] # debug requires std
+cpu = ["gemm", "rayon"] # cpu requires std
+opencl = ["dep:cl3"]
+torch = ["dep:tch"]
 
 [profile.release]
 opt-level = 3 #"z"
