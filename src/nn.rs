@@ -7,10 +7,7 @@
 mod linear;
 pub use linear::Linear;
 
-use crate::{
-    parameters::Parameters,
-    tensor::Tensor,
-};
+use crate::{parameters::Parameters, tensor::Tensor};
 
 /// Module
 pub trait Module {

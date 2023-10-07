@@ -90,7 +90,10 @@ fn add2() -> Result<(), OutOfMemoryError> {
         z.backward(&mut x);
         x.realize_grad()?;
         std::println!("{}", x.grad().unwrap());
-        assert_eq!(x.grad().unwrap(), [[2*i, 2*i, 2*i], [2*i, 2*i, 2*i]]);
+        assert_eq!(
+            x.grad().unwrap(),
+            [[2 * i, 2 * i, 2 * i], [2 * i, 2 * i, 2 * i]]
+        );
     }
 
     Ok(())

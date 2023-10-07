@@ -40,8 +40,7 @@ impl DType {
     #[cfg(any(feature = "opencl", feature = "io", feature = "debug1"))]
     pub(crate) fn byte_size(self) -> usize {
         match self {
-            DType::F32 |
-            DType::I32 => 4,
+            DType::F32 | DType::I32 => 4,
         }
     }
 }

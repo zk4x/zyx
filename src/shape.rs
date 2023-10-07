@@ -93,7 +93,7 @@ impl Shape {
     pub fn transpose(&self) -> Shape {
         let mut x = self.clone();
         let n = x.0.len();
-        x.0.swap(n-1, n-2);
+        x.0.swap(n - 1, n - 2);
         x
     }
 
@@ -143,7 +143,10 @@ impl Shape {
         let mut vec = self.0.to_vec();
         while vec.len() < shape.rank() {
             vec.insert(0, 1);
-            old_strides.0 = [0].into_iter().chain(old_strides.0.iter().copied()).collect();
+            old_strides.0 = [0]
+                .into_iter()
+                .chain(old_strides.0.iter().copied())
+                .collect();
         }
         let old_shape: Shape = vec.into();
         Strides(

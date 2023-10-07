@@ -1,12 +1,6 @@
 extern crate alloc;
-use super::{Storage, Dtype};
-use crate::{
-    node_id::NodeId,
-    dtype::DType,
-    graph::Node,
-    shape::Shape,
-    OutOfMemoryError,
-};
+use super::{Dtype, Storage};
+use crate::{dtype::DType, graph::Node, node_id::NodeId, shape::Shape, OutOfMemoryError};
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
@@ -16,7 +10,13 @@ use alloc::{
     string::String,
     vec::Vec,
 };
-use cl3::{memory::CL_MEM_READ_ONLY, program::CL_PROGRAM_BUILD_LOG, types::CL_NON_BLOCKING, ext::{CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_LOCAL_MEM_SIZE}, error_codes::ClError};
+use cl3::{
+    error_codes::ClError,
+    ext::{CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE},
+    memory::CL_MEM_READ_ONLY,
+    program::CL_PROGRAM_BUILD_LOG,
+    types::CL_NON_BLOCKING,
+};
 use core::{ffi::c_void, mem::size_of};
 
 const OPENCL_CPU: bool = false;
@@ -44,8 +44,10 @@ struct DeviceInfo {
 
 impl DeviceInfo {
     fn new(dev: *mut c_void) -> Result<Self, ClError> {
-        let max_lws: usize = cl3::device::get_device_info(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE)?.into();
-        let local_mem_size: u64 = cl3::device::get_device_info(dev, CL_DEVICE_LOCAL_MEM_SIZE)?.into();
+        let max_lws: usize =
+            cl3::device::get_device_info(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE)?.into();
+        let local_mem_size: u64 =
+            cl3::device::get_device_info(dev, CL_DEVICE_LOCAL_MEM_SIZE)?.into();
         Ok(Self {
             max_lws,
             local_mem_size: usize::try_from(local_mem_size).unwrap(),
@@ -59,7 +61,8 @@ impl Drop for OpenCLDev {
         unsafe { cl3::context::release_context(self.context) }.unwrap();
         /*for device in self.devices.keys() {
             unsafe { cl3::device::release_device(*device) }.unwrap();
-        }*/ // version 1.2 and above, essentially useless
+        }*/
+ // version 1.2 and above, essentially useless
         for queue in &*self.queues {
             unsafe { cl3::command_queue::release_command_queue(*queue) }.unwrap();
         }
@@ -225,7 +228,8 @@ impl OpenCLDev {
                 })
             })
             .collect();
-        let max_mem: u64 = cl3::device::get_device_info(device_ids[0], CL_DEVICE_GLOBAL_MEM_SIZE)?.into();
+        let max_mem: u64 =
+            cl3::device::get_device_info(device_ids[0], CL_DEVICE_GLOBAL_MEM_SIZE)?.into();
         let mut devices = BTreeMap::new();
         for dev in device_ids {
             devices.insert(dev, DeviceInfo::new(dev)?);
@@ -271,7 +275,7 @@ impl OpenCLDev {
         self.queue_id = (self.queue_id + 1) % self.queues.len();
         res
     }
-    
+
     // Get maximum local work size (work group size) for device
     // that will run next queue
     #[allow(clippy::unused_self)]
@@ -462,15 +466,23 @@ impl OpenCLDev {
                         },
                     );
                 }
-                Node::ReLU(x) => unary_op(*node_id, *x, &mut buffers, &format!("max(res{}, 0)", x.i())),
-                Node::DReLU(x) => unary_op(*node_id, *x, &mut buffers, &format!("res{} > 0", x.i())),
+                Node::ReLU(x) => {
+                    unary_op(*node_id, *x, &mut buffers, &format!("max(res{}, 0)", x.i()))
+                }
+                Node::DReLU(x) => {
+                    unary_op(*node_id, *x, &mut buffers, &format!("res{} > 0", x.i()))
+                }
                 Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, &format!("-res{}", x.i())),
                 Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, &format!("exp(res{})", x.i())),
                 Node::Ln(x) => unary_op(*node_id, *x, &mut buffers, &format!("log(res{})", x.i())),
                 Node::Sin(x) => unary_op(*node_id, *x, &mut buffers, &format!("sin(res{})", x.i())),
                 Node::Cos(x) => unary_op(*node_id, *x, &mut buffers, &format!("cos(res{})", x.i())),
-                Node::Sqrt(x) => unary_op(*node_id, *x, &mut buffers, &format!("sqrt(res{})", x.i())),
-                Node::Tanh(x) => unary_op(*node_id, *x, &mut buffers, &format!("tanh(res{})", x.i())),
+                Node::Sqrt(x) => {
+                    unary_op(*node_id, *x, &mut buffers, &format!("sqrt(res{})", x.i()))
+                }
+                Node::Tanh(x) => {
+                    unary_op(*node_id, *x, &mut buffers, &format!("tanh(res{})", x.i()))
+                }
                 Node::Dropout(x, seed, prob) => {
                     let (xr, yr) = (*seed as u32, (*seed >> 32) as u32);
                     unary_op(*node_id, *x, &mut buffers, &format!("  if ({} ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) ^ ((({xr} + globalID) ^ (({xr} + IDX) << 11)) >> 8)) > 4294967295 * {prob}) {{ 0 }} else {{ res{} }}", yr ^ (yr >> 19), x.i()));
@@ -566,36 +578,43 @@ impl OpenCLDev {
                     let tsn = 128;
                     let wptn = if OPENCL_CPU { 64 } else { 8 };
                     let tsk = 16;
-                    let rtsm = tsm/wptm;
-                    let rtsn = tsn/wptn;
-                    let rts = rtsm*rtsn;
-                    let lptm = (tsk*tsm)/rts;
-                    let lptn = (tsk*tsn)/rts;
+                    let rtsm = tsm / wptm;
+                    let rtsn = tsn / wptn;
+                    let rts = rtsm * rtsn;
+                    let lptm = (tsk * tsm) / rts;
+                    let lptn = (tsk * tsn) / rts;
                     let om = m;
                     let ok = k;
                     let on = n;
-                    let m = m + if m%tsm == 0 { 0 } else { tsm - m%tsm };
-                    let k = k + if k%tsk == 0 { 0 } else { tsk - k%tsk };
-                    let n = n + if n%tsn == 0 { 0 } else { tsn - n%tsn };
+                    let m = m + if m % tsm == 0 { 0 } else { tsm - m % tsm };
+                    let k = k + if k % tsk == 0 { 0 } else { tsk - k % tsk };
+                    let n = n + if n % tsn == 0 { 0 } else { tsn - n % tsn };
                     //std::println!("{m}, {k}, {n}");
-                    let load_x = if om%tsm == 0 && ok%tsk == 0 {
+                    let load_x = if om % tsm == 0 && ok % tsk == 0 {
                         format!("tile_x[ki][row] = data{x}[tiki*{m} + grid0 + row];")
                     } else {
-                        format!("if ((grid0 + row < {om}) && (tiki < {ok})) {{
+                        format!(
+                            "if ((grid0 + row < {om}) && (tiki < {ok})) {{
             tile_x[ki][row] = data{x}[tiki*{om} + grid0 + row];
-          }} else tile_x[ki][row] = 0;")
+          }} else tile_x[ki][row] = 0;"
+                        )
                     };
-                    let load_y = if on%tsn == 0 && ok%tsk == 0 {
+                    let load_y = if on % tsn == 0 && ok % tsk == 0 {
                         format!("tile_y[ki][row] = data{y}[tiki*{n} + grid1 + row];")
                     } else {
-                        format!("if ((grid1 + row < {on}) && (tiki < {ok})) {{
+                        format!(
+                            "if ((grid1 + row < {on}) && (tiki < {ok})) {{
             tile_y[ki][row] = data{y}[tiki*{on} + grid1 + row];
-          }} else tile_y[ki][row] = 0;")
+          }} else tile_y[ki][row] = 0;"
+                        )
                     };
-                    let load_z = if om%tsm == 0 && on%tsn == 0 { String::new() } else {
+                    let load_z = if om % tsm == 0 && on % tsn == 0 {
+                        String::new()
+                    } else {
                         format!("if((z_row < {om}) && (z_col < {on})) ")
                     };
-                    let kernel = format!("
+                    let kernel = format!(
+                        "
   const int lid0 = get_local_id(0);
   const int lid1 = get_local_id(1);
   const int grid0 = get_group_id(0)*{tsm};
@@ -636,8 +655,10 @@ impl OpenCLDev {
       int z_row = grid0 + jm*{rtsm} + lid0;
         {load_z}{{
         {dtype} res{z} = acc[jm][jn];
-", dtype=dtype.cl_type());
-                    let gws = [m/wptm, n/wptn].into();
+",
+                        dtype = dtype.cl_type()
+                    );
+                    let gws = [m / wptm, n / wptn].into();
                     let lws = Some([rtsm, rtsn].into());
                     let prefix = format!("        datar[z_row*{on} + z_col] = ");
                     let suffix = "; } } }\n".into();
@@ -656,7 +677,7 @@ impl OpenCLDev {
                             lws,
                             skip_params,
                             idx,
-                        }
+                        },
                     );
                 }
                 Node::Permute(x, axes, shape) => {
@@ -667,15 +688,20 @@ impl OpenCLDev {
                     let z = node_id.i();
                     // TODO runtime optimization of this parameter
                     let ts = 64;
-                    let (kernel, prefix, suffix, idx, gws, lws) = if shape.rank() == 2 && shape[-1]%ts == 0usize && shape[-2]%ts == 0usize && shape[-1] == shape[2] {
+                    let (kernel, prefix, suffix, idx, gws, lws) = if shape.rank() == 2
+                        && shape[-1] % ts == 0usize
+                        && shape[-2] % ts == 0usize
+                        && shape[-1] == shape[2]
+                    {
                         let dtype = dtype.cl_type();
                         let z = node_id.i();
                         let [m, n]: [usize; 2] = shape.clone().try_into().unwrap();
                         let x = x.i();
-                        let wpt = ts*ts/self.max_lws();
-  //for (size_t w = 0; w < {wpt}; ++w)
-      //tile[lid0][lid1+w] = data{x}[x + w];
-                        let kernel = format!("
+                        let wpt = ts * ts / self.max_lws();
+                        //for (size_t w = 0; w < {wpt}; ++w)
+                        //tile[lid0][lid1+w] = data{x}[x + w];
+                        let kernel = format!(
+                            "
   const int lid0 = get_local_id(0);
   const int lid1 = get_local_id(1)*{wpt};
   const int grid0 = get_group_id(0);
@@ -702,14 +728,15 @@ impl OpenCLDev {
   barrier(CLK_LOCAL_MEM_FENCE);
   x = (grid1*{ts} + lid0)*{n} + grid0*{ts} + lid1;
   for (size_t w = 0; w < {wpt}; ++w) {{
-    {dtype} res{z} = tile[lid1 + w][lid0];\n");
+    {dtype} res{z} = tile[lid1 + w][lid0];\n"
+                        );
                         let prefix = "    datar[x + w] = ".into();
                         let suffix = ";\n  }\n".into();
-                        let m = m + if m%ts == 0 { 0 } else { ts - m % ts };
-                        let n = n + if n%ts == 0 { 0 } else { ts - n % ts };
+                        let m = m + if m % ts == 0 { 0 } else { ts - m % ts };
+                        let n = n + if n % ts == 0 { 0 } else { ts - n % ts };
                         let idx = "(x + w)".into();
-                        let gws = [m, n/wpt].into();
-                        let lws = Some([ts, ts/wpt].into());
+                        let gws = [m, n / wpt].into();
+                        let lws = Some([ts, ts / wpt].into());
                         (kernel, prefix, suffix, idx, gws, lws)
                     } else {
                         // Non coalesced load, so that operation fused with permute
@@ -732,11 +759,17 @@ impl OpenCLDev {
                             .join("+");
                         let gws = shape.into_iter().copied().collect();
                         let x = x.i();
-                        let kernel = format!("  {0} res{z} = data{x}[{data_idx}];\n", dtype.cl_type());
+                        let kernel =
+                            format!("  {0} res{z} = data{x}[{data_idx}];\n", dtype.cl_type());
                         let prefix = format!("  datar[{idx}] = ");
                         let suffix = ";\n".into();
                         let d: usize = shape[-1];
-                        let lws = Some(core::iter::repeat(1).take(shape.rank() - 1).chain([d.min(256)]).collect());
+                        let lws = Some(
+                            core::iter::repeat(1)
+                                .take(shape.rank() - 1)
+                                .chain([d.min(256)])
+                                .collect(),
+                        );
                         (kernel, prefix, suffix, idx, gws, lws)
                     };
                     buffers.insert(
@@ -776,7 +809,7 @@ impl OpenCLDev {
                                 writeln!(
                                     kernel,
                                     "  for (size_t a{i} = 0; a{i} < {}; a{i} += {st}) {{",
-                                    d*st,
+                                    d * st,
                                 )
                                 .unwrap();
                                 format!("a{i}")
@@ -833,7 +866,7 @@ impl OpenCLDev {
                                 writeln!(
                                     kernel,
                                     "  for (size_t a{i} = 0; a{i} < {}; a{i} += {st}) {{",
-                                    d*st,
+                                    d * st,
                                 )
                                 .unwrap();
                                 format!("a{i}")
@@ -1089,11 +1122,14 @@ impl OpenCLDev {
             .join("_");
         if let Some(local_work_size) = &local_work_size {
             kernel_name.push_str("__");
-            kernel_name.push_str(local_work_size
-                .iter()
-                .map(alloc::string::ToString::to_string)
-                .collect::<Box<[String]>>()
-                .join("_").as_str());
+            kernel_name.push_str(
+                local_work_size
+                    .iter()
+                    .map(alloc::string::ToString::to_string)
+                    .collect::<Box<[String]>>()
+                    .join("_")
+                    .as_str(),
+            );
         }
         kernel_name.insert_str(0, "kernel_");
         let source = format!(
@@ -1116,12 +1152,9 @@ impl OpenCLDev {
                 None,
                 core::ptr::null_mut(),
             ) {
-                let log = cl3::program::get_program_build_info(
-                    program,
-                    devices[0],
-                    CL_PROGRAM_BUILD_LOG,
-                )
-                .unwrap();
+                let log =
+                    cl3::program::get_program_build_info(program, devices[0], CL_PROGRAM_BUILD_LOG)
+                        .unwrap();
                 panic!("Compilation failed with error {er}:\n{log}");
             };
             self.programs.insert(source, program);
@@ -1178,7 +1211,9 @@ impl OpenCLDev {
                 core::ptr::null(),
                 global_work_size.as_ptr(),
                 // Following line is funny. Removing as_ref causes local_work_size to be moved, thus as_ptr would be use after free
-                local_work_size.as_ref().map_or(core::ptr::null(), |x| x.as_ptr()),
+                local_work_size
+                    .as_ref()
+                    .map_or(core::ptr::null(), |x| x.as_ptr()),
                 u32::try_from(events.len()).unwrap(),
                 if events.is_empty() {
                     core::ptr::null()
@@ -1194,8 +1229,7 @@ impl OpenCLDev {
         cl3::event::wait_for_events(&[event]).unwrap();
         // mutate self so that we can reuse calculated buffer
         let storage = ClStorage::new(buffer, event);
-        *buffers.get_mut(&id).unwrap() =
-            Op::from_const(id, dtype, shape.clone(), storage.clone());
+        *buffers.get_mut(&id).unwrap() = Op::from_const(id, dtype, shape.clone(), storage.clone());
         //std::println!("Return.");
         Ok(match dtype {
             DType::F32 => Storage::OpenCLF32(shape, storage),
@@ -1214,12 +1248,7 @@ fn unary_op(id: NodeId, x: NodeId, buffers: &mut BTreeMap<NodeId, Op>, op: &str)
             dtype,
             shape: buffers[&x].shape().clone(),
             parameters,
-            kernel: format!(
-                "  {} res{} = {};\n",
-                dtype.cl_type(),
-                id.i(),
-                op
-            ),
+            kernel: format!("  {} res{} = {};\n", dtype.cl_type(), id.i(), op),
         },
     );
 }
@@ -1317,7 +1346,7 @@ fn test4() -> Result<(), OutOfMemoryError> {
     x.realize()?;
     y.realize()?;
     z.realize()?;
-    
+
     std::println!("{x}\n{y}\n{z}");
 
     let vecx = x.to_vec_i32().unwrap();
@@ -1332,7 +1361,7 @@ fn test4() -> Result<(), OutOfMemoryError> {
 
     let mut z = x.t_dot(&y);
     z.realize()?;
-    
+
     std::println!("{z}");
 
     let cl_vecz = z.to_vec_i32().unwrap();
@@ -1356,7 +1385,10 @@ fn test4() -> Result<(), OutOfMemoryError> {
     }
     let elapsed = begin.elapsed();
 
-    std::println!("Elapsed {} GFLOPS", iters*2048*2048*2*2047/elapsed.as_nanos());
+    std::println!(
+        "Elapsed {} GFLOPS",
+        iters * 2048 * 2048 * 2 * 2047 / elapsed.as_nanos()
+    );
     //panic!()
     Ok(())
 }
@@ -1372,7 +1404,7 @@ fn test5() {
     (&mut x, &mut z).realize().unwrap();
     let xvec = x.to_vec().unwrap();
     let zvec = z.to_vec().unwrap();
-    
+
     let ctx = Context::opencl().unwrap();
     let x = ctx.tensor_from_iter_f32((2048, 2048), xvec);
     let mut z = x.transpose();

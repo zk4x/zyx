@@ -1,6 +1,9 @@
 extern crate alloc;
-use alloc::{boxed::Box, collections::{BTreeMap, BTreeSet}};
-use crate::{shape::Shape, node_id::NodeId, graph::Node, OutOfMemoryError};
+use crate::{graph::Node, node_id::NodeId, shape::Shape, OutOfMemoryError};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+};
 use tch::Tensor;
 
 #[derive(Debug)]
@@ -10,7 +13,12 @@ pub(crate) struct TorchStorage {
 
 impl TorchStorage {
     pub(super) fn shape(&self) -> Shape {
-        self.storage.size().into_iter().map(|x| x as usize).collect::<Box<[usize]>>().into()
+        self.storage
+            .size()
+            .into_iter()
+            .map(|x| x as usize)
+            .collect::<Box<[usize]>>()
+            .into()
     }
 }
 

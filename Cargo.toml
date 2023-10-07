@@ -27,6 +27,7 @@ tch = { version = "*", optional = true }
 [features]
 #default = ["cpu", "opencl", "io", "debug1"]
 #default = ["cpu", "opencl"]
+default = ["torch"]
 io = [] # io requires std
 debug1 = [] # debug requires std
 cpu = ["gemm", "rayon"] # cpu requires std

@@ -1,10 +1,13 @@
 use crate::{
-    node_id::NodeId, graph::Node,
-{dtype::DType, shape::Shape, OutOfMemoryError}};
+    graph::Node,
+    node_id::NodeId,
+    {dtype::DType, shape::Shape, OutOfMemoryError},
+};
 extern crate alloc;
 use alloc::{
     boxed::Box,
-collections::{BTreeMap, BTreeSet}};
+    collections::{BTreeMap, BTreeSet},
+};
 
 use self::cpu::CpuStorage;
 
@@ -22,7 +25,7 @@ pub(crate) enum Storage {
     OpenCLF32(Shape, opencl::ClStorage), // shape, buffer, event
     #[cfg(feature = "opencl")]
     OpenCLI32(Shape, opencl::ClStorage),
-#[cfg(feature = "torch")]
+    #[cfg(feature = "torch")]
     TorchF32(torch::TorchStorage),
 }
 

@@ -1,8 +1,8 @@
 extern crate alloc;
 
 use crate::device::cpu::CpuDev;
-use crate::node_id::NodeId;
 use crate::device::{Device, Storage};
+use crate::node_id::NodeId;
 use crate::{axes::Axes, dtype::DType, shape::Shape, tensor::Tensor, OutOfMemoryError};
 use alloc::boxed::Box;
 use alloc::{format, string::String};
@@ -118,7 +118,9 @@ impl core::fmt::Debug for Node {
             Node::Cos(x) => f.write_fmt(format_args!("\x1b[31mCos\x1b[0m({x})")),
             Node::Sqrt(x) => f.write_fmt(format_args!("\x1b[31mSqrt\x1b[0m({x})")),
             Node::Tanh(x) => f.write_fmt(format_args!("\x1b[31mTanh\x1b[0m({x})")),
-            Node::Dropout(x,_, prob) => f.write_fmt(format_args!("\x1b[31mDropout\x1b[0m({x}, prob={prob})")),
+            Node::Dropout(x, _, prob) => {
+                f.write_fmt(format_args!("\x1b[31mDropout\x1b[0m({x}, prob={prob})"))
+            }
             Node::Reshape(x, ..) => f.write_fmt(format_args!("\x1b[31mReshape\x1b[0m({x})")),
             Node::Expand(x, ..) => f.write_fmt(format_args!("\x1b[31mExpand\x1b[0m({x})")),
             Node::Permute(x, axes, _) => {
@@ -165,34 +167,42 @@ impl Node {
     #[cfg(feature = "debug1")]
     fn flop(&self, graph: &Graph) -> usize {
         match self {
-            Node::None |
-            Node::Leaf |
-            Node::Const(..) |
-            Node::StoreF32(..) |
-            Node::StoreI32(..) |
-            Node::Expand(..) | Node::Reshape(..) | Node::Permute(..) => 0,
-            Node::Exp(x) |
-            Node::ReLU(x) |
-            Node::DReLU(x) |
-            Node::Ln(x) |
-            Node::Sin(x) |
-            Node::Cos(x) |
-            Node::Sqrt(x) |
-            Node::Neg(x) |
-            Node::Cast(x, ..) |
-            Node::Dropout(x, ..) |
-            Node::Tanh(x) => graph.shape(*x).numel(),
-            Node::Add(x, y) |
-            Node::Sub(x, y) |
-            Node::Mul(x, y) |
-            Node::Div(x, y) |
-            Node::Cmplt(x, y) |
-            Node::Pow(x, y) => graph.shape(*x).numel() + graph.shape(*y).numel(),
+            Node::None
+            | Node::Leaf
+            | Node::Const(..)
+            | Node::StoreF32(..)
+            | Node::StoreI32(..)
+            | Node::Expand(..)
+            | Node::Reshape(..)
+            | Node::Permute(..) => 0,
+            Node::Exp(x)
+            | Node::ReLU(x)
+            | Node::DReLU(x)
+            | Node::Ln(x)
+            | Node::Sin(x)
+            | Node::Cos(x)
+            | Node::Sqrt(x)
+            | Node::Neg(x)
+            | Node::Cast(x, ..)
+            | Node::Dropout(x, ..)
+            | Node::Tanh(x) => graph.shape(*x).numel(),
+            Node::Add(x, y)
+            | Node::Sub(x, y)
+            | Node::Mul(x, y)
+            | Node::Div(x, y)
+            | Node::Cmplt(x, y)
+            | Node::Pow(x, y) => graph.shape(*x).numel() + graph.shape(*y).numel(),
             Node::TDot(x, _, shape) => 2 * shape.numel() * (graph.shape(*x)[-1] - 1usize),
             Node::Sum(x, axes, shape) | Node::Max(x, axes, shape) => {
                 let shapex = graph.shape(*x);
                 let stridesx = shapex.strides();
-                shapex.into_iter().zip(&stridesx).enumerate().map(|(a, (d, st))| usize::from(axes.contains(a)) * (d - 1) * st).product::<usize>() * shape.numel()
+                shapex
+                    .into_iter()
+                    .zip(&stridesx)
+                    .enumerate()
+                    .map(|(a, (d, st))| usize::from(axes.contains(a)) * (d - 1) * st)
+                    .product::<usize>()
+                    * shape.numel()
             }
         }
     }
@@ -327,7 +337,7 @@ impl Graph {
         // Also remove duplicates, i. e. in softmax there are two exp ops with same input, so rewrite it.
         // Also add caching, i. e. if there are parts of graph that are repeated multiple times (constant folding),
         // add those to nodes, so that they don't need to be recalculated every time.
-        
+
         // TODO don't log as much when using debug1. The same graph should be printed only once.
 
         /*
@@ -388,7 +398,10 @@ impl Graph {
         let mut mem: u128 = 0;
         #[cfg(feature = "debug1")]
         for id in &order {
-            if matches!(self.nodes[id.i()], Node::Leaf | Node::StoreF32(..) | Node::StoreI32(..)) {
+            if matches!(
+                self.nodes[id.i()],
+                Node::Leaf | Node::StoreF32(..) | Node::StoreI32(..)
+            ) {
                 mem += (self.shape(*id).numel() * self.dtype(*id).byte_size()) as u128;
             }
         }
@@ -499,7 +512,9 @@ impl Graph {
             }
         }
         // If partial derivative of id via sources is zero (i. e. no backward graph)
-        if !req_grad.contains(&id) { return }
+        if !req_grad.contains(&id) {
+            return;
+        }
         // build topo
         let mut topo = Array::new();
         {
@@ -537,11 +552,9 @@ impl Graph {
                 }
             }
             match self.nodes[id.i()] {
-                Node::None |
-                Node::DReLU(..) |
-                Node::Cmplt(..) |
-                Node::Const(..)
-                => panic!("Internal bug running backward on .."),
+                Node::None | Node::DReLU(..) | Node::Cmplt(..) | Node::Const(..) => {
+                    panic!("Internal bug running backward on ..")
+                }
                 Node::Leaf | Node::StoreF32(..) | Node::StoreI32(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) && grads.insert(x, grad).is_none() {
@@ -627,17 +640,30 @@ impl Graph {
                     // grad y  m, k @ m, n -> k, n
                     if req_grad.contains(&x) && !grads.contains_key(&x) {
                         let grad_shape = self.shape(grad).clone();
-                        let grad_temp = self.push(Node::Permute(grad, grad_shape.transpose_axes(), grad_shape.transpose()));
+                        let grad_temp = self.push(Node::Permute(
+                            grad,
+                            grad_shape.transpose_axes(),
+                            grad_shape.transpose(),
+                        ));
                         let y_shape = self.shape(y).clone();
-                        let y_temp = self.push(Node::Permute(y, y_shape.transpose_axes(), y_shape.transpose()));
-                        let x_grad = self.push(Node::TDot(y_temp, grad_temp, self.shape(x).clone()));
+                        let y_temp = self.push(Node::Permute(
+                            y,
+                            y_shape.transpose_axes(),
+                            y_shape.transpose(),
+                        ));
+                        let x_grad =
+                            self.push(Node::TDot(y_temp, grad_temp, self.shape(x).clone()));
                         self.release(grad_temp);
                         self.release(y_temp);
                         grads.insert(x, x_grad);
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
                         let x_shape = self.shape(x).clone();
-                        let x_temp = self.push(Node::Permute(x, x_shape.transpose_axes(), x_shape.transpose()));
+                        let x_temp = self.push(Node::Permute(
+                            x,
+                            x_shape.transpose_axes(),
+                            x_shape.transpose(),
+                        ));
                         let y_grad = self.push(Node::TDot(x_temp, grad, self.shape(y).clone()));
                         self.release(x_temp);
                         grads.insert(y, y_grad);
@@ -645,7 +671,7 @@ impl Graph {
                 }
                 Node::ReLU(x) => {
                     // TODO is grads.contains_key useless for unary ops?
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let drelu = self.push(Node::DReLU(x));
                         let x_grad = self.push(Node::Mul(drelu, grad));
                         self.release(drelu);
@@ -653,19 +679,19 @@ impl Graph {
                     }
                 }
                 Node::Exp(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_grad = self.push(Node::Mul(id, grad));
                         grads.insert(x, x_grad);
                     }
                 }
                 Node::Ln(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_grad = self.push(Node::Div(grad, x));
                         grads.insert(x, x_grad);
                     }
                 }
                 Node::Sin(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_temp = self.push(Node::Cos(x));
                         let x_grad = self.push(Node::Mul(x_temp, grad));
                         self.release(x_temp);
@@ -673,7 +699,7 @@ impl Graph {
                     }
                 }
                 Node::Cos(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_temp1 = self.push(Node::Sin(x));
                         let x_temp = self.push(Node::Neg(x_temp1));
                         self.release(x_temp1);
@@ -683,7 +709,7 @@ impl Graph {
                     }
                 }
                 Node::Sqrt(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         // x_grad = grad/(2*sqrt(x))
                         let x_shape = self.shape(x).clone();
                         let two1 = self.iter_f32(1.into(), [2.]);
@@ -697,13 +723,13 @@ impl Graph {
                     }
                 }
                 Node::Cast(x, _) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_grad = self.push(Node::Cast(grad, self.dtype(x)));
                         grads.insert(x, x_grad);
                     }
                 }
                 Node::Neg(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_grad = self.push(Node::Neg(grad));
                         grads.insert(x, x_grad);
                     }
@@ -712,12 +738,16 @@ impl Graph {
                     todo!("Dropout backward is todo")
                 }
                 Node::Tanh(x) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         // 1 - tanh^2(x)
                         let shape = self.shape(x).clone();
                         let (two1, one1) = match self.dtype(x) {
-                            DType::F32 => (self.iter_f32(1.into(), [2.]), self.iter_f32(1.into(), [1.])),
-                            DType::I32 => (self.iter_i32(1.into(), [2]), self.iter_i32(1.into(), [1])),
+                            DType::F32 => {
+                                (self.iter_f32(1.into(), [2.]), self.iter_f32(1.into(), [1.]))
+                            }
+                            DType::I32 => {
+                                (self.iter_i32(1.into(), [2]), self.iter_i32(1.into(), [1]))
+                            }
                         };
                         let two2 = self.push(Node::Expand(two1, shape.clone()));
                         self.release(two1);
@@ -734,13 +764,13 @@ impl Graph {
                     }
                 }
                 Node::Reshape(x, ..) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_grad = self.push(Node::Reshape(grad, self.shape(x).clone()));
                         grads.insert(x, x_grad);
                     }
                 }
                 Node::Expand(x, ref shape) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let org_shape = self.shape(x).clone();
                         let axes = org_shape.expand_axes(shape);
                         let shape = shape.clone().reduce(&axes);
@@ -751,18 +781,25 @@ impl Graph {
                     }
                 }
                 Node::Permute(x, ref axes, _) => {
-                    if!grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Permute(grads[&id], axes.argsort(), self.shape(x).clone())));
+                    if !grads.contains_key(&x) {
+                        grads.insert(
+                            x,
+                            self.push(Node::Permute(
+                                grads[&id],
+                                axes.argsort(),
+                                self.shape(x).clone(),
+                            )),
+                        );
                     }
                 }
                 Node::Sum(x, ..) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         let x_grad = self.push(Node::Expand(grad, self.shape(x).clone()));
                         grads.insert(x, x_grad);
                     }
                 }
                 Node::Max(x, ..) => {
-                    if!grads.contains_key(&x) {
+                    if !grads.contains_key(&x) {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
                         let x_shape = self.shape(x).clone();
                         let z_temp = self.push(Node::Expand(id, x_shape.clone()));
@@ -878,7 +915,9 @@ impl Graph {
                 Node::Exp(x) => add_node(id, &format!("Exp({x})"), "oval"),
                 Node::ReLU(x) => add_node(id, &format!("ReLU({x})"), "oval"),
                 Node::DReLU(x) => add_node(id, &format!("DReLU({x})"), "oval"),
-                Node::Dropout(x, _, prob) => add_node(id, &format!("Dropout({x}, prob={prob})"), "oval"),
+                Node::Dropout(x, _, prob) => {
+                    add_node(id, &format!("Dropout({x}, prob={prob})"), "oval")
+                }
                 Node::Ln(x) => add_node(id, &format!("Ln({x})"), "oval"),
                 Node::Sin(x) => add_node(id, &format!("Sin({x})"), "oval"),
                 Node::Cos(x) => add_node(id, &format!("Cos({x})"), "oval"),
@@ -945,21 +984,13 @@ impl Graph {
         self.push(node)
     }
 
-    pub(super) fn iter_f32(
-        &mut self,
-        shape: Shape,
-        iter: impl IntoIterator<Item = f32>,
-    ) -> NodeId {
+    pub(super) fn iter_f32(&mut self, shape: Shape, iter: impl IntoIterator<Item = f32>) -> NodeId {
         let n = shape.numel();
         let node = Node::StoreF32(iter.into_iter().take(n).collect(), shape);
         self.push(node)
     }
 
-    pub(super) fn iter_i32(
-        &mut self,
-        shape: Shape,
-        iter: impl IntoIterator<Item = i32>,
-    ) -> NodeId {
+    pub(super) fn iter_i32(&mut self, shape: Shape, iter: impl IntoIterator<Item = i32>) -> NodeId {
         let n = shape.numel();
         let node = Node::StoreI32(iter.into_iter().take(n).collect(), shape);
         self.push(node)

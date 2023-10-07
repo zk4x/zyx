@@ -1,10 +1,21 @@
 extern crate alloc;
-use alloc::{collections::{BTreeMap, BTreeSet}, sync::Arc, vec::Vec};
 use alloc::vec;
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec::Vec,
+};
 
-use crate::{shape::{Strides, Shape}, OutOfMemoryError, node_id::NodeId, graph::Node, prelude::DType, axes::Axes};
+use crate::{
+    axes::Axes,
+    graph::Node,
+    node_id::NodeId,
+    prelude::DType,
+    shape::{Shape, Strides},
+    OutOfMemoryError,
+};
 
-use super::{Storage, Dtype};
+use super::{Dtype, Storage};
 
 trait GetConst {
     fn c(&self, i: NodeId) -> &Storage;
@@ -52,33 +63,39 @@ impl<T> CpuStorage<T> {
     fn expand(&self, shape: &Shape) -> CpuStorage<T> {
         CpuStorage {
             data: self.data.clone(),
-            view: self.view.expand(shape)
+            view: self.view.expand(shape),
         }
     }
 
     fn reshape(&self, shape: &Shape) -> CpuStorage<T> {
         CpuStorage {
             data: self.data.clone(),
-            view: self.view.reshape(shape)
+            view: self.view.reshape(shape),
         }
     }
 
     fn permute(&self, axes: &Axes) -> CpuStorage<T> {
         CpuStorage {
             data: self.data.clone(),
-            view: self.view.permute(axes)
+            view: self.view.permute(axes),
         }
     }
 }
 
 impl<T: Copy + Send + Sync> CpuStorage<T> {
-    fn unary_op<T2: Send>(&self, op: impl Sync + Send + Fn(T) -> T2, make_contiguous: bool) -> CpuStorage<T2> {
+    fn unary_op<T2: Send>(
+        &self,
+        op: impl Sync + Send + Fn(T) -> T2,
+        make_contiguous: bool,
+    ) -> CpuStorage<T2> {
         #[cfg(not(feature = "cpu"))]
         {
             if make_contiguous {
                 CpuStorage::new(
-                    (0..self.shape().numel()).map(|i| op(self.at(i))).collect::<Arc<[T2]>>(),
-                    self.shape().clone()
+                    (0..self.shape().numel())
+                        .map(|i| op(self.at(i)))
+                        .collect::<Arc<[T2]>>(),
+                    self.shape().clone(),
                 )
             } else {
                 CpuStorage {
@@ -92,8 +109,10 @@ impl<T: Copy + Send + Sync> CpuStorage<T> {
             use rayon::prelude::*;
             if make_contiguous {
                 CpuStorage::new(
-                    (0..self.shape().numel()).map(|i| op(self.at(i))).collect::<Arc<[T2]>>(),
-                    self.shape().clone()
+                    (0..self.shape().numel())
+                        .map(|i| op(self.at(i)))
+                        .collect::<Arc<[T2]>>(),
+                    self.shape().clone(),
                 )
             } else {
                 CpuStorage {
@@ -126,12 +145,12 @@ impl View {
     fn get_idx(&self, mut idx: usize) -> usize {
         //std::println!("Idx {idx}, view: {:?}", self.shapes);
         if self.contiguous {
-            return idx
+            return idx;
         }
         for (shape, strides) in &self.shapes {
             let mut res = 0;
             for (d, st) in shape.into_iter().zip(strides).rev() {
-                res += (idx%d)*st;
+                res += (idx % d) * st;
                 idx /= d;
             }
             idx = res;
@@ -140,7 +159,7 @@ impl View {
         idx
     }
 
-    fn shape(&self) -> &Shape  {
+    fn shape(&self) -> &Shape {
         &self.shapes[0].0
     }
 
@@ -190,105 +209,107 @@ impl CpuDev {
         &mut self,
         graph: &mut BTreeMap<NodeId, (usize, Node)>, // id, refcount and Node
         order: &[NodeId],                            // recommended realization order
-        _nodes: &BTreeSet<NodeId>,                    // which nodes need to be realized
-        ) -> Result<(), OutOfMemoryError> {
-    'a: for node_id in order {
-        let node = &graph.get(node_id).unwrap().1;
-        match node {
-            Node::None | Node::Leaf | Node::Const(..) => continue 'a,
-            _ => {}
-        }
-        let res = match node {
-            Node::None | Node::Leaf | Node::Const(..) => panic!(),
-            Node::StoreF32(data, shape) => Storage::CPUF32(CpuStorage::new(data.clone().into(), shape.clone())),
-            Node::StoreI32(data, shape) => Storage::CPUI32(CpuStorage::new(data.clone().into(), shape.clone())),
-            Node::Add(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "+"),
-            Node::Sub(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "-"),
-            Node::Mul(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "*"),
-            Node::Div(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "/"),
-            Node::Cmplt(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "<"),
-            Node::Pow(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "pow"),
-            Node::TDot(x, y, shape) => binary_op(shape.clone(), graph.c(*x), graph.c(*y), "tdot"),
-            Node::Neg(x) => unary_op(graph.c(*x), "neg"),
-            Node::ReLU(x) => unary_op(graph.c(*x), "relu"),
-            Node::DReLU(x) => unary_op(graph.c(*x), "drelu"),
-            Node::Exp(x) => unary_op(graph.c(*x), "exp"),
-            Node::Ln(x) => unary_op(graph.c(*x), "ln"),
-            Node::Sin(x) => unary_op(graph.c(*x), "sin"),
-            Node::Cos(x) => unary_op(graph.c(*x), "cos"),
-            Node::Sqrt(x) => unary_op(graph.c(*x), "sqrt"),
-            Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
-            Node::Dropout(x, seed, prob) => match graph.c(*x) {
-                Storage::CPUF32(data) => {
-                    Storage::CPUF32(dropout_op_t(data, *seed, *prob))
+        _nodes: &BTreeSet<NodeId>,                   // which nodes need to be realized
+    ) -> Result<(), OutOfMemoryError> {
+        'a: for node_id in order {
+            let node = &graph.get(node_id).unwrap().1;
+            match node {
+                Node::None | Node::Leaf | Node::Const(..) => continue 'a,
+                _ => {}
+            }
+            let res = match node {
+                Node::None | Node::Leaf | Node::Const(..) => panic!(),
+                Node::StoreF32(data, shape) => {
+                    Storage::CPUF32(CpuStorage::new(data.clone().into(), shape.clone()))
                 }
-                Storage::CPUI32(data) => {
-                    Storage::CPUI32(dropout_op_t(data, *seed, *prob))
+                Node::StoreI32(data, shape) => {
+                    Storage::CPUI32(CpuStorage::new(data.clone().into(), shape.clone()))
                 }
-                #[cfg(any(feature = "opencl", feature = "torch"))]
-                _ => panic!(),
-            },
-            Node::Cast(x, dtype) => match graph.c(*x) {
-                Storage::CPUF32(data) => match dtype {
-                    DType::F32 => Storage::CPUF32(data.unary_op(|x| x, false)),
-                    DType::I32 => {
-                        Storage::CPUI32(data.unary_op(|x| x as i32, false))
-                    }
-                },
-                Storage::CPUI32(data) => match dtype {
-                    DType::F32 => {
-                        Storage::CPUF32(data.unary_op(|x| x as f32, false))
-                    }
-                    DType::I32 => Storage::CPUI32(data.unary_op(|x| x, false)),
-                },
-                #[cfg(any(feature = "opencl", feature = "torch"))]
-                _ => todo!(),
-            },
-            Node::Expand(x, eshape) => match graph.c(*x) {
-                Storage::CPUF32(data) => Storage::CPUF32(data.expand(eshape)),
-                Storage::CPUI32(data) => Storage::CPUI32(data.expand(eshape)),
-                #[cfg(any(feature = "opencl", feature = "torch"))]
-                _ => panic!(),
-            },
-            Node::Reshape(x, shape) => match graph.c(*x) {
-                Storage::CPUF32(data) => Storage::CPUF32(data.reshape(shape)),
-                Storage::CPUI32(data) => Storage::CPUI32(data.reshape(shape)),
-                #[cfg(any(feature = "opencl", feature = "torch"))]
-                _ => panic!(),
-            },
-            Node::Permute(x, axes, _) => match graph.c(*x) {
-                Storage::CPUF32(data) => Storage::CPUF32(data.permute(axes)),
-                Storage::CPUI32(data) => Storage::CPUI32(data.permute(axes)),
-                #[cfg(any(feature = "opencl", feature = "torch"))]
-                _ => panic!(),
-            },
-            Node::Sum(x, axes, shape) => {
-                match graph.c(*x) {
-                    Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, |x, y| x + y)),
-                    Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, |x, y| x + y)),
+                Node::Add(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "+"),
+                Node::Sub(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "-"),
+                Node::Mul(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "*"),
+                Node::Div(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "/"),
+                Node::Cmplt(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "<"),
+                Node::Pow(x, y) => binary_op(Shape::default(), graph.c(*x), graph.c(*y), "pow"),
+                Node::TDot(x, y, shape) => {
+                    binary_op(shape.clone(), graph.c(*x), graph.c(*y), "tdot")
+                }
+                Node::Neg(x) => unary_op(graph.c(*x), "neg"),
+                Node::ReLU(x) => unary_op(graph.c(*x), "relu"),
+                Node::DReLU(x) => unary_op(graph.c(*x), "drelu"),
+                Node::Exp(x) => unary_op(graph.c(*x), "exp"),
+                Node::Ln(x) => unary_op(graph.c(*x), "ln"),
+                Node::Sin(x) => unary_op(graph.c(*x), "sin"),
+                Node::Cos(x) => unary_op(graph.c(*x), "cos"),
+                Node::Sqrt(x) => unary_op(graph.c(*x), "sqrt"),
+                Node::Tanh(x) => unary_op(graph.c(*x), "tanh"),
+                Node::Dropout(x, seed, prob) => match graph.c(*x) {
+                    Storage::CPUF32(data) => Storage::CPUF32(dropout_op_t(data, *seed, *prob)),
+                    Storage::CPUI32(data) => Storage::CPUI32(dropout_op_t(data, *seed, *prob)),
                     #[cfg(any(feature = "opencl", feature = "torch"))]
                     _ => panic!(),
-                }
-            }
-            Node::Max(x, axes, shape) => {
-                match graph.c(*x) {
-                    Storage::CPUF32(data) => Storage::CPUF32(reduce_op_t(data, axes, shape, f32::max)),
-                    Storage::CPUI32(data) => Storage::CPUI32(reduce_op_t(data, axes, shape, core::cmp::Ord::max)),
+                },
+                Node::Cast(x, dtype) => match graph.c(*x) {
+                    Storage::CPUF32(data) => match dtype {
+                        DType::F32 => Storage::CPUF32(data.unary_op(|x| x, false)),
+                        DType::I32 => Storage::CPUI32(data.unary_op(|x| x as i32, false)),
+                    },
+                    Storage::CPUI32(data) => match dtype {
+                        DType::F32 => Storage::CPUF32(data.unary_op(|x| x as f32, false)),
+                        DType::I32 => Storage::CPUI32(data.unary_op(|x| x, false)),
+                    },
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
+                    _ => todo!(),
+                },
+                Node::Expand(x, eshape) => match graph.c(*x) {
+                    Storage::CPUF32(data) => Storage::CPUF32(data.expand(eshape)),
+                    Storage::CPUI32(data) => Storage::CPUI32(data.expand(eshape)),
                     #[cfg(any(feature = "opencl", feature = "torch"))]
                     _ => panic!(),
+                },
+                Node::Reshape(x, shape) => match graph.c(*x) {
+                    Storage::CPUF32(data) => Storage::CPUF32(data.reshape(shape)),
+                    Storage::CPUI32(data) => Storage::CPUI32(data.reshape(shape)),
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
+                    _ => panic!(),
+                },
+                Node::Permute(x, axes, _) => match graph.c(*x) {
+                    Storage::CPUF32(data) => Storage::CPUF32(data.permute(axes)),
+                    Storage::CPUI32(data) => Storage::CPUI32(data.permute(axes)),
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
+                    _ => panic!(),
+                },
+                Node::Sum(x, axes, shape) => match graph.c(*x) {
+                    Storage::CPUF32(data) => {
+                        Storage::CPUF32(reduce_op_t(data, axes, shape, |x, y| x + y))
+                    }
+                    Storage::CPUI32(data) => {
+                        Storage::CPUI32(reduce_op_t(data, axes, shape, |x, y| x + y))
+                    }
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
+                    _ => panic!(),
+                },
+                Node::Max(x, axes, shape) => match graph.c(*x) {
+                    Storage::CPUF32(data) => {
+                        Storage::CPUF32(reduce_op_t(data, axes, shape, f32::max))
+                    }
+                    Storage::CPUI32(data) => {
+                        Storage::CPUI32(reduce_op_t(data, axes, shape, core::cmp::Ord::max))
+                    }
+                    #[cfg(any(feature = "opencl", feature = "torch"))]
+                    _ => panic!(),
+                },
+            };
+            let parameters = node.parameters();
+            graph.get_mut(node_id).unwrap().1 = Node::Const(res);
+            for parameter in &*parameters {
+                let val = graph.get_mut(parameter).unwrap();
+                val.0 -= 1;
+                if val.0 == 0 {
+                    val.1 = Node::None;
                 }
             }
-        };
-        let parameters = node.parameters();
-        graph.get_mut(node_id).unwrap().1 = Node::Const(res);
-        for parameter in &*parameters {
-            let val = graph.get_mut(parameter).unwrap();
-            val.0 -= 1;
-            if val.0 == 0 {
-                val.1 = Node::None;
-            }
         }
-    }
         Ok(())
     }
 }
@@ -328,24 +349,16 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
         Storage::CPUF32(data_x) => {
             if let Storage::CPUF32(data_y) = data_y {
                 match op {
-                    "+" => Storage::CPUF32(
-                        binary_op_t(data_x, data_y, |(x, y)| x + y),
-                    ),
-                    "-" => Storage::CPUF32(
-                        binary_op_t(data_x, data_y, |(x, y)| x - y),
-                    ),
-                    "*" => Storage::CPUF32(
-                        binary_op_t(data_x, data_y, |(x, y)| x * y),
-                    ),
-                    "/" => Storage::CPUF32(
-                        binary_op_t(data_x, data_y, |(x, y)| x / y),
-                    ),
-                    "<" => Storage::CPUF32(
-                        binary_op_t(data_x, data_y, |(x, y)| i8::from(x < y).into()),
-                    ),
-                    "pow" => Storage::CPUF32(
-                        binary_op_t(data_x, data_y, |(x, y)| libm::powf(x, y)),
-                    ),
+                    "+" => Storage::CPUF32(binary_op_t(data_x, data_y, |(x, y)| x + y)),
+                    "-" => Storage::CPUF32(binary_op_t(data_x, data_y, |(x, y)| x - y)),
+                    "*" => Storage::CPUF32(binary_op_t(data_x, data_y, |(x, y)| x * y)),
+                    "/" => Storage::CPUF32(binary_op_t(data_x, data_y, |(x, y)| x / y)),
+                    "<" => Storage::CPUF32(binary_op_t(data_x, data_y, |(x, y)| {
+                        i8::from(x < y).into()
+                    })),
+                    "pow" => {
+                        Storage::CPUF32(binary_op_t(data_x, data_y, |(x, y)| libm::powf(x, y)))
+                    }
                     "tdot" => {
                         // k, m @ k, n -> m, n
                         #[cfg(not(feature = "cpu"))]
@@ -359,7 +372,11 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                             //let data_x = data_x.unary_op(|x| x, true);
                             //let data_y = data_y.unary_op(|x| x, true);
                             let m: usize = data_x.shape()[-1];
-                            let k = if data_x.shape().rank() > 1 { data_x.shape()[-2] } else { 1 };
+                            let k = if data_x.shape().rank() > 1 {
+                                data_x.shape()[-2]
+                            } else {
+                                1
+                            };
                             let n: usize = data_y.shape()[-1];
                             let xr = data_x.shape().rank();
                             let yr = data_y.shape().rank();
@@ -371,19 +388,26 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                             while i < shape.numel() / (m * k) {
                                 unsafe {
                                     gemm::gemm(
-                                        m, n, k,
+                                        m,
+                                        n,
+                                        k,
                                         //data.as_mut_ptr().add(i * m * n),
                                         data.as_ptr().add(i * m * n) as *mut f32,
                                         1,
                                         n.try_into().unwrap(),
                                         false,
                                         data_x.data.as_ptr().add(i * k * m),
-                                        data_x.view.shapes[0].1[xr-1] as isize,
-                                        data_x.view.shapes[0].1[xr-2] as isize,
+                                        data_x.view.shapes[0].1[xr - 1] as isize,
+                                        data_x.view.shapes[0].1[xr - 2] as isize,
                                         data_y.data.as_ptr().add(i * k * n),
-                                        data_y.view.shapes[0].1[yr-1] as isize,
-                                        data_y.view.shapes[0].1[yr-2] as isize,
-                                        1., 1., false, false, false, gemm::Parallelism::Rayon(rayon::current_num_threads())
+                                        data_y.view.shapes[0].1[yr - 1] as isize,
+                                        data_y.view.shapes[0].1[yr - 2] as isize,
+                                        1.,
+                                        1.,
+                                        false,
+                                        false,
+                                        false,
+                                        gemm::Parallelism::Rayon(rayon::current_num_threads()),
                                     );
                                 }
                                 i += 1;
@@ -400,27 +424,13 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
         Storage::CPUI32(data_x) => {
             if let Storage::CPUI32(data_y) = data_y {
                 match op {
-                    "+" => Storage::CPUI32(
-                        binary_op_t(data_x, data_y, |(x, y)| x + y),
-                    ),
-                    "-" => Storage::CPUI32(
-                        binary_op_t(data_x, data_y, |(x, y)| x - y),
-                    ),
-                    "*" => Storage::CPUI32(
-                        binary_op_t(data_x, data_y, |(x, y)| x * y),
-                    ),
-                    "/" => Storage::CPUI32(
-                        binary_op_t(data_x, data_y, |(x, y)| x / y),
-                    ),
-                    "<" => Storage::CPUI32(
-                        binary_op_t(data_x, data_y, |(x, y)| i32::from(x < y)),
-                    ),
-                    "pow" => Storage::CPUI32(
-                        binary_op_t(data_x, data_y, |(x, y)| x.pow(y as u32)),
-                    ),
-                    "tdot" => {
-                        Storage::CPUI32(tdot_op_t(&shape, data_x, data_y))
-                    }
+                    "+" => Storage::CPUI32(binary_op_t(data_x, data_y, |(x, y)| x + y)),
+                    "-" => Storage::CPUI32(binary_op_t(data_x, data_y, |(x, y)| x - y)),
+                    "*" => Storage::CPUI32(binary_op_t(data_x, data_y, |(x, y)| x * y)),
+                    "/" => Storage::CPUI32(binary_op_t(data_x, data_y, |(x, y)| x / y)),
+                    "<" => Storage::CPUI32(binary_op_t(data_x, data_y, |(x, y)| i32::from(x < y))),
+                    "pow" => Storage::CPUI32(binary_op_t(data_x, data_y, |(x, y)| x.pow(y as u32))),
+                    "tdot" => Storage::CPUI32(tdot_op_t(&shape, data_x, data_y)),
                     _ => panic!(),
                 }
             } else {
@@ -439,54 +449,90 @@ fn binary_op_t<T: Copy + Sync + Send>(
 ) -> CpuStorage<T> {
     #[cfg(not(feature = "cpu"))]
     {
-        CpuStorage::new((0..data_x.numel()).map(|idx| (data_x.data[data_x.view.get_idx(idx)], data_y.data[data_y.view.get_idx(idx)])).map(op).collect::<Arc<[T]>>(), data_x.shape().clone())
+        CpuStorage::new(
+            (0..data_x.numel())
+                .map(|idx| {
+                    (
+                        data_x.data[data_x.view.get_idx(idx)],
+                        data_y.data[data_y.view.get_idx(idx)],
+                    )
+                })
+                .map(op)
+                .collect::<Arc<[T]>>(),
+            data_x.shape().clone(),
+        )
     }
     #[cfg(feature = "cpu")]
     {
         use rayon::prelude::*;
-        CpuStorage::new((0..data_x.numel()).into_par_iter().map(|idx| (data_x.data[data_x.view.get_idx(idx)], data_y.data[data_y.view.get_idx(idx)])).map(op).collect::<Arc<[T]>>(), data_x.shape().clone())
+        CpuStorage::new(
+            (0..data_x.numel())
+                .into_par_iter()
+                .map(|idx| {
+                    (
+                        data_x.data[data_x.view.get_idx(idx)],
+                        data_y.data[data_y.view.get_idx(idx)],
+                    )
+                })
+                .map(op)
+                .collect::<Arc<[T]>>(),
+            data_x.shape().clone(),
+        )
     }
 }
 
-fn tdot_op_t<T: Dtype + Copy>(shape: &Shape, data_x: &CpuStorage<T>, data_y: &CpuStorage<T>) -> CpuStorage<T> {
+fn tdot_op_t<T: Dtype + Copy>(
+    shape: &Shape,
+    data_x: &CpuStorage<T>,
+    data_y: &CpuStorage<T>,
+) -> CpuStorage<T> {
     // TODO this is super slow, because it does not use tiling for memory caching,
     // but its simple and works.
     // k, m @ k, n -> m, n
     const WIDTH: usize = 16;
     let m = data_x.shape()[-1];
-    let k = if data_x.shape().rank() > 1 { data_x.shape()[-2] } else { 1 };
+    let k = if data_x.shape().rank() > 1 {
+        data_x.shape()[-2]
+    } else {
+        1
+    };
     let n = data_y.shape()[-1];
     let data_x = data_x.unary_op(|x| x, true).data;
     let data_y = data_y.unary_op(|x| x, true).data;
     let transpose = |data: &[T], last_dim, n| {
-        (0..last_dim).flat_map(|j| (j..n).step_by(last_dim).map(|i| data[i])).collect::<Vec<T>>()
+        (0..last_dim)
+            .flat_map(|j| (j..n).step_by(last_dim).map(|i| data[i]))
+            .collect::<Vec<T>>()
     };
-    CpuStorage::new(data_y
-        .chunks(k * n)
-        .zip(data_x.chunks(k * m))
-        .flat_map(|(y_chunk, x_chunk)| {
-            transpose(
-                &{
-                let x_chunk = transpose(x_chunk, m, k*m);
-                transpose(y_chunk, n, k*n)
-                    .chunks(k)
-                    .flat_map(|y_row| {
-                        x_chunk.chunks(k).map(|x| {
-                            x.chunks(WIDTH)
-                                .zip(y_row.chunks(WIDTH))
-                                .map(|(a, b)| {
-                                    a.iter()
-                                        .zip(b.iter())
-                                        .map(|(a, b)| *a * *b)
-                                        .sum::<T>()
+    CpuStorage::new(
+        data_y
+            .chunks(k * n)
+            .zip(data_x.chunks(k * m))
+            .flat_map(|(y_chunk, x_chunk)| {
+                transpose(
+                    &{
+                        let x_chunk = transpose(x_chunk, m, k * m);
+                        transpose(y_chunk, n, k * n)
+                            .chunks(k)
+                            .flat_map(|y_row| {
+                                x_chunk.chunks(k).map(|x| {
+                                    x.chunks(WIDTH)
+                                        .zip(y_row.chunks(WIDTH))
+                                        .map(|(a, b)| {
+                                            a.iter().zip(b.iter()).map(|(a, b)| *a * *b).sum::<T>()
+                                        })
+                                        .sum()
                                 })
-                                .sum()
-                        })
-                    })
-                    .collect::<Vec<T>>()
-                    }, m, n*m)
-        })
-        .collect(), shape.clone())
+                            })
+                            .collect::<Vec<T>>()
+                    },
+                    m,
+                    n * m,
+                )
+            })
+            .collect(),
+        shape.clone(),
+    )
 }
 
 #[allow(clippy::cast_sign_loss)]
@@ -495,16 +541,21 @@ fn tdot_op_t<T: Dtype + Copy>(shape: &Shape, data_x: &CpuStorage<T>, data_y: &Cp
 fn dropout_op_t<T: Dtype>(data: &CpuStorage<T>, seed: u64, prob: f32) -> CpuStorage<T> {
     // TODO parallelize
     let (xr, yr) = (seed as u32, (seed >> 32) as u32);
-    CpuStorage::new((0..data.shape().numel()).map(|i| {
-        let seed = xr + i as u32;
-        let t = seed ^ (seed << 11);
-        let r = yr ^ (yr >> 19) ^ (t ^ (t >> 8));
-        if r > (u32::MAX as f32 * prob) as u32 {
-            T::zero()
-        } else {
-            data.data[data.view.get_idx(i)].clone()
-        }
-    }).collect(), data.shape().clone())
+    CpuStorage::new(
+        (0..data.shape().numel())
+            .map(|i| {
+                let seed = xr + i as u32;
+                let t = seed ^ (seed << 11);
+                let r = yr ^ (yr >> 19) ^ (t ^ (t >> 8));
+                if r > (u32::MAX as f32 * prob) as u32 {
+                    T::zero()
+                } else {
+                    data.data[data.view.get_idx(i)].clone()
+                }
+            })
+            .collect(),
+        data.shape().clone(),
+    )
 }
 
 fn reduce_op_t<T: Dtype>(

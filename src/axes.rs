@@ -55,7 +55,7 @@ impl<'a> IntoIterator for &'a Axes {
 
 /// # `IntoAxes`
 /// Convert value into axes
-/// () is all axes 
+/// () is all axes
 #[allow(clippy::module_name_repetitions)]
 pub trait IntoAxes: Clone {
     /// Convert value into axes
@@ -98,7 +98,9 @@ impl IntoAxes for () {
 impl IntoAxes for i32 {
     #[allow(clippy::cast_sign_loss)]
     fn into_axes(self, ndim: usize) -> Axes {
-        Axes(Box::new([(self + i32::try_from(ndim).unwrap()) as usize % ndim]))
+        Axes(Box::new([
+            (self + i32::try_from(ndim).unwrap()) as usize % ndim
+        ]))
     }
 }
 

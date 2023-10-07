@@ -1,15 +1,15 @@
 //! # Context
 
 extern crate alloc;
-use rclite::Rc;
 use crate::{
-    node_id::NodeId,
     graph::Graph,
+    node_id::NodeId,
     shape::Shape,
     tensor::{IntoTensor, Tensor},
     OutOfMemoryError,
 };
 use core::cell::RefCell;
+use rclite::Rc;
 
 /// # Context
 ///
@@ -106,7 +106,10 @@ impl Context {
     pub fn full(&self, shape: impl Into<Shape>, value: f32) -> Tensor {
         let shape = shape.into();
         let mut graph = self.graph.borrow_mut();
-        let temp = graph.push(crate::graph::Node::StoreF32(alloc::boxed::Box::new([value]), 1.into()));
+        let temp = graph.push(crate::graph::Node::StoreF32(
+            alloc::boxed::Box::new([value]),
+            1.into(),
+        ));
         let data = graph.push(crate::graph::Node::Expand(temp, shape));
         graph.release(temp);
         Tensor {
@@ -129,7 +132,10 @@ impl Context {
     pub fn full_i32(&self, shape: impl Into<Shape>, value: i32) -> Tensor {
         let shape = shape.into();
         let mut graph = self.graph.borrow_mut();
-        let temp = graph.push(crate::graph::Node::StoreI32(alloc::boxed::Box::new([value]), 1.into()));
+        let temp = graph.push(crate::graph::Node::StoreI32(
+            alloc::boxed::Box::new([value]),
+            1.into(),
+        ));
         let data = graph.push(crate::graph::Node::Expand(temp, shape));
         graph.release(temp);
         Tensor {

@@ -8,16 +8,16 @@ extern crate alloc;
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
 
 use crate::{
-    node_id::NodeId,
     axes::IntoAxes,
     dtype::DType,
     graph::{Graph, Node},
+    node_id::NodeId,
     parameters::IntoParameters,
     shape::Shape,
     OutOfMemoryError,
 };
-use rclite::Rc;
 use core::{cell::RefCell, cmp::Ordering};
+use rclite::Rc;
 
 // Precision when comparing f32 tensors.
 const EPSILON: f32 = 0.00001;
@@ -137,7 +137,9 @@ impl Tensor {
     ///```
     #[allow(single_use_lifetimes)]
     pub fn backward<'p>(&self, sources: impl IntoParameters<'p>) {
-        self.graph.borrow_mut().backward(self.data, &mut sources.into_vec());
+        self.graph
+            .borrow_mut()
+            .backward(self.data, &mut sources.into_vec());
         // TODO Maybe label gradients automatically if sources have labels
     }
 
@@ -341,7 +343,7 @@ impl Tensor {
     pub fn layer_norm(&self, axes: impl IntoAxes) -> Tensor {
         let eps = 0.00001;
         let x = self - self.mean(axes.clone());
-        &x/((&x*&x).mean(axes) + eps).sqrt()
+        &x / ((&x * &x).mean(axes) + eps).sqrt()
     }
 
     /// Ln operation, natural logarithm
@@ -382,8 +384,8 @@ impl Tensor {
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
         match self.dtype() {
-            DType::F32 => self.sum(axes)/self.shape().numel() as f32,
-            DType::I32 => self.sum(axes)/self.shape().numel() as i32,
+            DType::F32 => self.sum(axes) / self.shape().numel() as f32,
+            DType::I32 => self.sum(axes) / self.shape().numel() as i32,
         }
     }
 
@@ -391,7 +393,7 @@ impl Tensor {
     #[must_use]
     pub fn mse(&self, target: impl IntoTensor) -> Tensor {
         let x = self - target;
-        &x*&x
+        &x * &x
     }
 
     /// Permute tensor's dimensions using axes.
@@ -406,11 +408,7 @@ impl Tensor {
     /// Pow operation
     #[must_use]
     pub fn pow(&self, rhs: impl IntoTensor) -> Tensor {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "pow",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "pow")
     }
 
     /// Get tensor's rank
@@ -471,16 +469,24 @@ impl Tensor {
     /// Sqrt of inverse of a tensor
     #[must_use]
     pub fn rsqrt(&self) -> Tensor {
-        (1.into_tensor(&self.context()).cast(self.dtype())/self).sqrt()
+        (1.into_tensor(&self.context()).cast(self.dtype()) / self).sqrt()
     }
 
     /// Scaled dot product attention op
     /// Currently it is not causal
     #[allow(clippy::cast_precision_loss)]
     #[must_use]
-    pub fn scaled_dot_product_attention(self, key: &Tensor, value: &Tensor, dropout: f32) -> Tensor {
+    pub fn scaled_dot_product_attention(
+        self,
+        key: &Tensor,
+        value: &Tensor,
+        dropout: f32,
+    ) -> Tensor {
         let d = libm::powf(self.shape()[-1] as f32, 0.5);
-        (self.dot(key.transpose()) / d).softmax(-1).dropout(dropout).dot(value)
+        (self.dot(key.transpose()) / d)
+            .softmax(-1)
+            .dropout(dropout)
+            .dot(value)
     }
 
     /// Set label
@@ -518,7 +524,7 @@ impl Tensor {
     #[must_use]
     pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
         let x_e = self.exp();
-        &x_e/x_e.sum(axes)
+        &x_e / x_e.sum(axes)
     }
 
     /// Sin op
@@ -576,7 +582,11 @@ impl Tensor {
     #[must_use]
     pub fn tanh(&self) -> Tensor {
         let dtype = self.dtype();
-        assert_eq!(dtype, DType::F32, "Unable to execute tanh on {dtype} input.");
+        assert_eq!(
+            dtype,
+            DType::F32,
+            "Unable to execute tanh on {dtype} input."
+        );
         self.new_op(Node::Tanh(self.data))
     }
 
@@ -620,12 +630,12 @@ impl Tensor {
         let res_shape = shape.permute(&axes);
         self.new_op(Node::Permute(x.data, axes, res_shape))
     }
-    
+
     /// Population variance
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor {
         let x = self - self.mean(());
-        (&x*&x).mean(axes)
+        (&x * &x).mean(axes)
     }
 
     /// Set tensor's gradient to None
@@ -825,88 +835,56 @@ impl core::ops::Neg for &Tensor {
 impl<IT: IntoTensor> core::ops::Add<IT> for Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "add",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "add")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Add<IT> for &Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "add",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "add")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Sub<IT> for Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "sub",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "sub")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Sub<IT> for &Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "sub",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "sub")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Mul<IT> for Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "mul",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "mul")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "mul",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "mul")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "div",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "div")
     }
 }
 
 impl<IT: IntoTensor> core::ops::Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        self.new_binary_op(
-            self.data,
-            rhs.into_tensor(&self.context()).data,
-            "div",
-        )
+        self.new_binary_op(self.data, rhs.into_tensor(&self.context()).data, "div")
     }
 }
 

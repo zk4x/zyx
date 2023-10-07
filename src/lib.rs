@@ -1,10 +1,8 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
-
 #![warn(clippy::pedantic)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::many_single_char_names)]
-
 #![cfg_attr(not(any(feature = "opencl", feature = "cpu")), forbid(unsafe_code))]
 #![warn(unsafe_op_in_unsafe_fn)]
 #![forbid(missing_docs)]
@@ -55,16 +53,16 @@ extern crate std;
 
 pub mod axes;
 pub mod context;
+mod device;
 pub mod dtype;
 mod graph;
-mod node_id;
 pub mod nn;
+mod node_id;
 pub mod optim;
 pub mod parameters;
 pub mod prelude;
 pub mod shape;
 pub mod tensor;
-mod device;
 
 /// # `OutOfMemoryError`
 ///

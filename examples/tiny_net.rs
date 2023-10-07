@@ -3,7 +3,7 @@ use zyx::{
     context::Context,
     nn::{Linear, Module},
     optim::SGD,
-    parameters::{Parameters, IntoParameters},
+    parameters::{IntoParameters, Parameters},
     tensor::Tensor,
     OutOfMemoryError,
 };
@@ -65,4 +65,3 @@ fn main() -> Result<(), OutOfMemoryError> {
 
 #[cfg(not(feature = "opencl"))]
 fn main() {}
-
