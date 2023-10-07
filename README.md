@@ -56,6 +56,8 @@ Implementing [module](crate::nn::Module) allows for custom high level constructs
 ```rust
 # #[cfg(feature = "opencl")] {
 # use zyx::prelude::*;
+# use zyx::nn::*;
+# use zyx::optim::*;
 struct TinyNet {
     l0: Linear,
     l1: Linear,

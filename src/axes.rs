@@ -24,6 +24,12 @@ impl Axes {
         self.0.len()
     }
 
+    #[allow(clippy::cast_possible_wrap)]
+    #[cfg(feature = "torch")]
+    pub(crate) fn vi64(&self) -> alloc::vec::Vec<i64> {
+        self.0.iter().map(|x| *x as i64).collect()
+    }
+
     /// Check if axes contains axis.
     pub(crate) fn contains(&self, axis: usize) -> bool {
         self.0.contains(&axis)

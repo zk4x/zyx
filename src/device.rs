@@ -26,7 +26,9 @@ pub(crate) enum Storage {
     #[cfg(feature = "opencl")]
     OpenCLI32(Shape, opencl::ClStorage),
     #[cfg(feature = "torch")]
-    TorchF32(torch::TorchStorage),
+    TorchF32(tch::Tensor),
+    #[cfg(feature = "torch")]
+    TorchI32(tch::Tensor),
 }
 
 impl Storage {
@@ -40,6 +42,8 @@ impl Storage {
             Self::OpenCLI32(..) => DType::I32,
             #[cfg(feature = "torch")]
             Self::TorchF32(..) => DType::F32,
+            #[cfg(feature = "torch")]
+            Self::TorchI32(..) => DType::I32,
         }
     }
 }
@@ -50,11 +54,9 @@ impl Storage {
             Self::CPUF32(data) => data.shape().clone(),
             Self::CPUI32(data) => data.shape().clone(),
             #[cfg(feature = "opencl")]
-            Self::OpenCLF32(shape, ..) => shape.clone(),
-            #[cfg(feature = "opencl")]
-            Self::OpenCLI32(shape, ..) => shape.clone(),
+            Self::OpenCLF32(shape, ..) | Self::OpenCLI32(shape, ..) => shape.clone(),
             #[cfg(feature = "torch")]
-            Self::TorchF32(data) => data.shape(),
+            Self::TorchF32(data) | Self::TorchI32(data) => data.size().into_iter().map(|x| x as usize).collect::<Box<[usize]>>().into(),
         }
     }
 }
@@ -75,7 +77,7 @@ impl Device {
     }
 
     #[cfg(feature = "torch")]
-    pub(crate) fn torch() {
+    pub(crate) fn torch() -> Self {
         Self::Torch(torch::TorchDev::new())
     }
 
@@ -96,7 +98,14 @@ impl Device {
             #[cfg(feature = "opencl")]
             Storage::OpenCLI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
             #[cfg(feature = "torch")]
-            Storage::TorchF32(data) => todo!(),
+            Storage::TorchF32(data) =>
+                if let Device::Torch(dev) = self {
+                    dev.load_f32(data)
+                } else {
+                    panic!("Trying to access Torch tensor using {:?} device", self);
+                }
+            #[cfg(feature = "torch")]
+            Storage::TorchI32(..) => panic!("Trying to load i32 tensor as if it was f32 tensor"),
         }
     }
 
@@ -117,6 +126,13 @@ impl Device {
             }
             #[cfg(feature = "torch")]
             Storage::TorchF32(..) => panic!("Trying to load f32 tensor as if it was i32 tensor"),
+            #[cfg(feature = "torch")]
+            Storage::TorchI32(data) =>
+                if let Device::Torch(dev) = self {
+                    dev.load_i32(data)
+                } else {
+                    panic!("Trying to access Torch tensor using {:?} device", self);
+                }
         }
     }
 

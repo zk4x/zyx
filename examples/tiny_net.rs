@@ -1,20 +1,12 @@
-#[cfg(feature = "opencl")]
-use zyx::{
-    context::Context,
-    nn::{Linear, Module},
-    optim::SGD,
-    parameters::{IntoParameters, Parameters},
-    tensor::Tensor,
-    OutOfMemoryError,
-};
+use zyx::prelude::*;
+use zyx::nn::*;
+use zyx::optim::*;
 
-#[cfg(feature = "opencl")]
 struct TinyNet {
     l0: Linear,
     l1: Linear,
 }
 
-#[cfg(feature = "opencl")]
 impl Module for TinyNet {
     fn forward(&self, x: &Tensor) -> Tensor {
         let x = self.l0.forward(x).tanh();
@@ -26,10 +18,10 @@ impl Module for TinyNet {
     }
 }
 
-#[cfg(feature = "opencl")]
 fn main() -> Result<(), OutOfMemoryError> {
     //let mut ctx = Context::new();
     let mut ctx = Context::opencl().unwrap();
+    //let mut ctx = Context::torch();
     let mut tiny_net = TinyNet {
         l0: ctx.linear(1024, 1024),
         l1: ctx.linear(1024, 1024),
@@ -62,6 +54,3 @@ fn main() -> Result<(), OutOfMemoryError> {
     std::println!("Elapsed {}ms", elapsed.as_millis());
     Ok(())
 }
-
-#[cfg(not(feature = "opencl"))]
-fn main() {}

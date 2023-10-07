@@ -17,73 +17,97 @@ Leaf
 Expand(3)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   5[label="5 x 1
-DReLU(1)
-(2, 3)", shape=oval, fillcolor="grey", style=filled]
-  6[label="6 x 2
-Mul(5, 4)
-(2, 3)", shape=oval, fillcolor="grey", style=filled]
-  7[label="7 x 1
-Add(6, 6)
-(2, 3)", shape=oval, fillcolor="grey", style=filled]
-  8[label="8 x 1
 Leaf
 (1)", shape=box, fillcolor="grey", style=filled]
+  6[label="6 x 1
+Expand(5)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  7[label="7 x 1
+Cmplt(6, 1)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  8[label="8 x 2
+Mul(7, 4)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
   9[label="9 x 1
-Expand(8)
+Add(8, 8)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   10[label="10 x 1
-DReLU(1)
-(2, 3)", shape=oval, fillcolor="grey", style=filled]
-  11[label="11 x 2
-Mul(10, 9)
+Leaf
+(1)", shape=box, fillcolor="grey", style=filled]
+  11[label="11 x 1
+Expand(10)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   12[label="12 x 1
-Add(7, 11)
-(2, 3)", shape=oval, fillcolor="grey", style=filled]
+Leaf
+(1)", shape=box, fillcolor="grey", style=filled]
   13[label="13 x 1
-Add(12, 11)
+Expand(12)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   14[label="14 x 1
-StoreI32
-(1)", shape=box, fillcolor="grey", style=filled]
-  15[label="15 x 1
-Expand(14)
+Cmplt(13, 1)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  15[label="15 x 2
+Mul(14, 11)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   16[label="16 x 1
-DReLU(1)
+Add(9, 15)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
-  17[label="17 x 2
-Mul(16, 15)
+  17[label="17 x 1
+Add(16, 15)
 (2, 3)", shape=oval, fillcolor="grey", style=filled]
   18[label="18 x 1
-Add(13, 17)
-(2, 3)", shape=oval, fillcolor="grey", style=filled]
+StoreI32
+(1)", shape=box, fillcolor="grey", style=filled]
   19[label="19 x 1
-Add(18, 17)
+Expand(18)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  20[label="20 x 1
+StoreI32
+(1)", shape=box, fillcolor="grey", style=filled]
+  21[label="21 x 1
+Expand(20)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  22[label="22 x 1
+Cmplt(21, 1)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  23[label="23 x 2
+Mul(22, 19)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  24[label="24 x 1
+Add(17, 23)
+(2, 3)", shape=oval, fillcolor="grey", style=filled]
+  25[label="25 x 1
+Add(24, 23)
 (2, 3)", shape=oval, fillcolor="lightblue", style=filled]
   0 -> 1
   0 -> 1
   1 -> 2
   3 -> 4
-  1 -> 5
   5 -> 6
-  4 -> 6
   6 -> 7
-  6 -> 7
+  1 -> 7
+  7 -> 8
+  4 -> 8
   8 -> 9
-  1 -> 10
+  8 -> 9
   10 -> 11
-  9 -> 11
-  7 -> 12
-  11 -> 12
   12 -> 13
-  11 -> 13
+  13 -> 14
+  1 -> 14
   14 -> 15
-  1 -> 16
+  11 -> 15
+  9 -> 16
+  15 -> 16
   16 -> 17
   15 -> 17
-  13 -> 18
-  17 -> 18
   18 -> 19
-  17 -> 19
+  20 -> 21
+  21 -> 22
+  1 -> 22
+  22 -> 23
+  19 -> 23
+  17 -> 24
+  23 -> 24
+  24 -> 25
+  23 -> 25
 }

@@ -70,6 +70,7 @@ impl Context {
 
     /// Create new context that uses `Torch` backend.
     #[cfg(feature = "torch")]
+    #[must_use]
     pub fn torch() -> Self {
         let graph = Rc::new(RefCell::new(Graph::default()));
         let device = crate::device::Device::torch();

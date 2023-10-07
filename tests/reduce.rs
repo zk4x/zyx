@@ -5,10 +5,14 @@ fn reduce() -> Result<(), OutOfMemoryError> {
     sum(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     sum(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    sum(&mut Context::torch())?;
 
     max(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     max(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    max(&mut Context::torch())?;
 
     Ok(())
 }

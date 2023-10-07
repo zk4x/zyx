@@ -381,6 +381,9 @@ impl Tensor {
     }
 
     /// Mean op
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
         match self.dtype() {

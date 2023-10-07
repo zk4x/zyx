@@ -5,22 +5,38 @@ fn unary() -> Result<(), OutOfMemoryError> {
     exp(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     exp(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    exp(&mut Context::torch())?;
 
     ln(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     ln(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    ln(&mut Context::torch())?;
+
+    relu(&mut Context::new())?;
+    #[cfg(feature = "opencl")]
+    relu(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    relu(&mut Context::torch())?;
 
     neg(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     neg(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    neg(&mut Context::torch())?;
 
     tanh(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     tanh(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    tanh(&mut Context::torch())?;
 
     cast(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     cast(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    cast(&mut Context::torch())?;
 
     Ok(())
 }
@@ -64,6 +80,17 @@ fn ln(ctx: &mut Context) -> Result<(), OutOfMemoryError> {
     x.realize_grads()?;
     std::println!("{:.5}", x.grad().unwrap());
     assert_eq!(x.grad().unwrap(), [[0.5, 0.25, 0.333333], [0.2, 0.5, 0.25]]);
+    Ok(())
+}
+
+fn relu(ctx: &mut Context) -> Result<(), OutOfMemoryError> {
+    let mut x = ctx.tensor([[-2., 4., -3.], [-5., 2., 4.]]);
+    let mut z = x.relu();
+    z.realize()?;
+    assert_eq!(z, [[0., 4., 0.], [0., 2., 4.]]);
+    z.backward(&mut x);
+    x.realize_grads()?;
+    assert_eq!(x.grad().unwrap(), [[0., 1., 0.], [0., 1., 1.]]);
     Ok(())
 }
 

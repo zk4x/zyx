@@ -38,6 +38,8 @@ pub(crate) struct CpuStorage<T> {
 }
 
 impl<T: Copy> CpuStorage<T> {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     pub(super) fn at(&self, idx: usize) -> T {
         self.data[self.view.get_idx(idx)]
     }
@@ -90,10 +92,10 @@ impl<T: Copy + Send + Sync> CpuStorage<T> {
     ) -> CpuStorage<T2> {
         #[cfg(not(feature = "cpu"))]
         {
-            if make_contiguous {
+            if make_contiguous && !self.view.contiguous {
                 CpuStorage::new(
                     (0..self.shape().numel())
-                        .map(|i| op(self.at(i)))
+                        .map(|idx| op(self.at(idx)))
                         .collect::<Arc<[T2]>>(),
                     self.shape().clone(),
                 )
@@ -107,10 +109,10 @@ impl<T: Copy + Send + Sync> CpuStorage<T> {
         #[cfg(feature = "cpu")]
         {
             use rayon::prelude::*;
-            if make_contiguous {
+            if make_contiguous && !self.view.contiguous {
                 CpuStorage::new(
                     (0..self.shape().numel())
-                        .map(|i| op(self.at(i)))
+                        .map(|idx| op(self.at(idx)))
                         .collect::<Arc<[T2]>>(),
                     self.shape().clone(),
                 )
@@ -143,14 +145,12 @@ impl View {
     }
 
     fn get_idx(&self, mut idx: usize) -> usize {
+        // TODO can this be faster???
         //std::println!("Idx {idx}, view: {:?}", self.shapes);
-        if self.contiguous {
-            return idx;
-        }
         for (shape, strides) in &self.shapes {
             let mut res = 0;
             for (d, st) in shape.into_iter().zip(strides).rev() {
-                res += (idx % d) * st;
+                res += idx % d * st;
                 idx /= d;
             }
             idx = res;
@@ -236,7 +236,6 @@ impl CpuDev {
                 }
                 Node::Neg(x) => unary_op(graph.c(*x), "neg"),
                 Node::ReLU(x) => unary_op(graph.c(*x), "relu"),
-                Node::DReLU(x) => unary_op(graph.c(*x), "drelu"),
                 Node::Exp(x) => unary_op(graph.c(*x), "exp"),
                 Node::Ln(x) => unary_op(graph.c(*x), "ln"),
                 Node::Sin(x) => unary_op(graph.c(*x), "sin"),
@@ -315,7 +314,6 @@ impl CpuDev {
 }
 
 // Simple and very slow cpu kernels
-#[allow(clippy::match_wildcard_for_single_variants)]
 fn unary_op(data: &Storage, op: &str) -> Storage {
     match data {
         Storage::CPUF32(data) => match op {
@@ -392,7 +390,7 @@ fn binary_op(shape: Shape, data_x: &Storage, data_y: &Storage, op: &str) -> Stor
                                         n,
                                         k,
                                         //data.as_mut_ptr().add(i * m * n),
-                                        data.as_ptr().add(i * m * n) as *mut f32,
+                                        data.as_ptr().add(i * m * n).cast_mut(),
                                         1,
                                         n.try_into().unwrap(),
                                         false,
@@ -448,37 +446,28 @@ fn binary_op_t<T: Copy + Sync + Send>(
     op: impl Fn((T, T)) -> T + Sync + Send,
 ) -> CpuStorage<T> {
     #[cfg(not(feature = "cpu"))]
-    {
-        CpuStorage::new(
-            (0..data_x.numel())
-                .map(|idx| {
-                    (
-                        data_x.data[data_x.view.get_idx(idx)],
-                        data_y.data[data_y.view.get_idx(idx)],
-                    )
-                })
-                .map(op)
-                .collect::<Arc<[T]>>(),
-            data_x.shape().clone(),
-        )
-    }
+    let data = {
+        match (data_x.view.contiguous, data_y.view.contiguous) {
+            (true, true) => (0..data_x.numel()).map(|idx| ( data_x.data[idx], data_y.data[idx])).map(op).collect(),
+            (true, false) => (0..data_x.numel()).map(|idx| ( data_x.data[idx], data_y.at(idx))).map(op).collect(),
+            (false, true) => (0..data_x.numel()).map(|idx| ( data_x.at(idx), data_y.data[idx])).map(op).collect(),
+            (false, false) => (0..data_x.numel()).map(|idx| ( data_x.at(idx), data_y.at(idx))).map(op).collect(),
+        }
+    };
     #[cfg(feature = "cpu")]
-    {
+    let data = {
         use rayon::prelude::*;
-        CpuStorage::new(
-            (0..data_x.numel())
-                .into_par_iter()
-                .map(|idx| {
-                    (
-                        data_x.data[data_x.view.get_idx(idx)],
-                        data_y.data[data_y.view.get_idx(idx)],
-                    )
-                })
-                .map(op)
-                .collect::<Arc<[T]>>(),
-            data_x.shape().clone(),
-        )
-    }
+        match (data_x.view.contiguous, data_y.view.contiguous) {
+            (true, true) => (0..data_x.numel()).into_par_iter().map(|idx| ( data_x.data[idx], data_y.data[idx])).map(op).collect(),
+            (true, false) => (0..data_x.numel()).into_par_iter().map(|idx| ( data_x.data[idx], data_y.at(idx))).map(op).collect(),
+            (false, true) => (0..data_x.numel()).into_par_iter().map(|idx| ( data_x.at(idx), data_y.data[idx])).map(op).collect(),
+            (false, false) => (0..data_x.numel()).into_par_iter().map(|idx| ( data_x.at(idx), data_y.at(idx))).map(op).collect(),
+        }
+    };
+    CpuStorage::new(
+        data,
+        data_x.shape().clone(),
+    )
 }
 
 fn tdot_op_t<T: Dtype + Copy>(
@@ -538,7 +527,7 @@ fn tdot_op_t<T: Dtype + Copy>(
 #[allow(clippy::cast_sign_loss)]
 #[allow(clippy::cast_precision_loss)]
 #[allow(clippy::cast_possible_truncation)]
-fn dropout_op_t<T: Dtype>(data: &CpuStorage<T>, seed: u64, prob: f32) -> CpuStorage<T> {
+fn dropout_op_t<T: Dtype + Copy>(data: &CpuStorage<T>, seed: u64, prob: f32) -> CpuStorage<T> {
     // TODO parallelize
     let (xr, yr) = (seed as u32, (seed >> 32) as u32);
     CpuStorage::new(
@@ -550,7 +539,7 @@ fn dropout_op_t<T: Dtype>(data: &CpuStorage<T>, seed: u64, prob: f32) -> CpuStor
                 if r > (u32::MAX as f32 * prob) as u32 {
                     T::zero()
                 } else {
-                    data.data[data.view.get_idx(i)].clone()
+                    data.at(i)
                 }
             })
             .collect(),
@@ -558,7 +547,7 @@ fn dropout_op_t<T: Dtype>(data: &CpuStorage<T>, seed: u64, prob: f32) -> CpuStor
     )
 }
 
-fn reduce_op_t<T: Dtype>(
+fn reduce_op_t<T: Dtype + Copy>(
     data: &CpuStorage<T>,
     axes: &Axes,
     res_shape: &Shape,
@@ -579,14 +568,26 @@ fn reduce_op_t<T: Dtype>(
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly
     // updating it (adding in case of sum) with new indices as new max/min are found
-    for i in 0..data.shape().numel() {
-        // calculate index in result
-        let mut j = 0;
-        for dim in &*included_dims {
-            j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
+    if data.view.contiguous {
+        for i in 0..data.shape().numel() {
+            // calculate index in result
+            let mut j = 0;
+            for dim in &*included_dims {
+                j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
+            }
+            // apply reduce function, in this case sum
+            res[j] = op(res[j], data.data[i]);
         }
-        // apply reduce function, in this case sum
-        res[j] = op(res[j].clone(), data.data[data.view.get_idx(i)].clone());
+    } else {
+        for i in 0..data.shape().numel() {
+            // calculate index in result
+            let mut j = 0;
+            for dim in &*included_dims {
+                j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
+            }
+            // apply reduce function, in this case sum
+            res[j] = op(res[j], data.at(i));
+        }
     }
     CpuStorage::new(res.into(), res_shape.clone())
 }

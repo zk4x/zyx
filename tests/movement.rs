@@ -5,18 +5,26 @@ fn movement() -> Result<(), OutOfMemoryError> {
     expand(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     expand(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    expand(&mut Context::torch())?;
 
     permute(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     permute(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    permute(&mut Context::torch())?;
 
     permute_add(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     permute_add(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    permute_add(&mut Context::torch())?;
 
     reshape(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     reshape(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    reshape(&mut Context::torch())?;
 
     Ok(())
 }

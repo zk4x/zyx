@@ -5,26 +5,38 @@ fn binary() -> Result<(), OutOfMemoryError> {
     add(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     add(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    add(&mut Context::torch())?;
 
     sub(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     sub(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    sub(&mut Context::torch())?;
 
     mul(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     mul(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    mul(&mut Context::torch())?;
 
     div(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     div(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    div(&mut Context::torch())?;
 
     pow(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     pow(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    pow(&mut Context::torch())?;
 
     dot(&mut Context::new())?;
     #[cfg(feature = "opencl")]
     dot(&mut Context::opencl().unwrap())?;
+    #[cfg(feature = "torch")]
+    dot(&mut Context::torch())?;
 
     Ok(())
 }
@@ -35,9 +47,11 @@ fn add(ctx: &mut Context) -> Result<(), OutOfMemoryError> {
     let mut y = ctx.tensor([[2, 1, 3], [2, 2, 4]]);
     let mut z = &x + &y;
     z.realize()?;
+    std::println!("Z tensor {z}");
     assert_eq!(z, [[4, 5, 6], [7, 4, 8]]);
     z.backward((&mut x, &mut y));
     (&mut x, &mut y).realize_grads()?;
+    std::println!("{}\n{}", x.grad().unwrap(), y.grad().unwrap());
     assert_eq!(x.grad().unwrap(), [[1, 1, 1], [1, 1, 1]]);
     assert_eq!(y.grad().unwrap(), [[1, 1, 1], [1, 1, 1]]);
 
