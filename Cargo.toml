@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.11.2"
+version = "0.11.3"
 authors = ["zk4x"]
 edition = "2021"
 description = "Machine learning tensor library"
@@ -25,9 +25,6 @@ cl3 = { version = "0.9.2", default-features = false, optional = true }
 tch = { version = "*", optional = true }
 
 [features]
-#default = ["cpu", "opencl", "io", "debug1"]
-#default = ["cpu", "opencl"]
-#default = ["torch", "debug1"]
 io = [] # io requires std
 debug1 = [] # debug requires std
 cpu = ["gemm", "rayon"] # cpu requires std

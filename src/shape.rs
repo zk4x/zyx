@@ -223,9 +223,10 @@ impl<const N: usize> TryInto<[usize; N]> for Shape {
     }
 }
 
-impl Into<Vec<i64>> for Shape {
-    fn into(self) -> Vec<i64> {
-        self.0.into_iter().map(|x| *x as i64).collect()
+#[allow(clippy::cast_possible_wrap)]
+impl From<Shape> for Vec<i64> {
+    fn from(val: Shape) -> Vec<i64> {
+        val.0.iter().map(|x| *x as i64).collect()
     }
 }
 
