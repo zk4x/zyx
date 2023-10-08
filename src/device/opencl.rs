@@ -352,80 +352,108 @@ impl OpenCLDev {
                     _ => panic!("Opencl device can not access memory stored in other device."),
                 },
                 Node::StoreF32(data, shape) => {
-                    let n = data.len() * size_of::<f32>();
-                    let buffer = unsafe {
-                        cl3::memory::create_buffer(
-                            self.context,
-                            CL_MEM_READ_ONLY,
-                            n,
-                            core::ptr::null_mut(),
-                        )
-                    }
-                    .map_err(|_| OutOfMemoryError)?;
-                    let queue = self.queue();
-                    let event = unsafe {
-                        cl3::command_queue::enqueue_write_buffer(
-                            queue,
-                            buffer,
-                            CL_NON_BLOCKING,
-                            0,
-                            n,
-                            data.as_ptr().cast(),
-                            0,
-                            core::ptr::null(),
-                        )
-                    }
-                    .unwrap();
-                    //cl3::command_queue::finish(queue).unwrap();
-                    cl3::event::wait_for_events(&[event]).unwrap();
-                    let dtype = DType::F32;
-                    buffers.insert(
-                        *node_id,
-                        Op::from_const(
+                    if shape.numel() == 1 {
+                        let mut parameters = BTreeSet::new();
+                        parameters.insert(*node_id);
+                        buffers.insert(
                             *node_id,
-                            dtype,
-                            shape.clone(),
-                            ClStorage::new(buffer, event),
-                        ),
-                    );
+                            Op::Basic {
+                                dtype: DType::F32,
+                                shape: shape.clone(),
+                                kernel: format!("  {} res{} = {};\n", DType::F32.cl_type(), node_id.i(), data[0]),
+                                parameters,
+                            }
+                        );
+                    } else {
+                        let n = data.len() * size_of::<f32>();
+                        let buffer = unsafe {
+                            cl3::memory::create_buffer(
+                                self.context,
+                                CL_MEM_READ_ONLY,
+                                n,
+                                core::ptr::null_mut(),
+                            )
+                        }
+                        .map_err(|_| OutOfMemoryError)?;
+                        let queue = self.queue();
+                        let event = unsafe {
+                            cl3::command_queue::enqueue_write_buffer(
+                                queue,
+                                buffer,
+                                CL_NON_BLOCKING,
+                                0,
+                                n,
+                                data.as_ptr().cast(),
+                                0,
+                                core::ptr::null(),
+                            )
+                        }
+                        .unwrap();
+                        //cl3::command_queue::finish(queue).unwrap();
+                        cl3::event::wait_for_events(&[event]).unwrap();
+                        let dtype = DType::F32;
+                        buffers.insert(
+                            *node_id,
+                            Op::from_const(
+                                *node_id,
+                                dtype,
+                                shape.clone(),
+                                ClStorage::new(buffer, event),
+                            ),
+                        );
+                    }
                 }
                 Node::StoreI32(data, shape) => {
-                    let n = data.len() * size_of::<i32>();
-                    let buffer = unsafe {
-                        cl3::memory::create_buffer(
-                            self.context,
-                            CL_MEM_READ_ONLY,
-                            n,
-                            core::ptr::null_mut(),
-                        )
-                    }
-                    .map_err(|_| OutOfMemoryError)?;
-                    let queue = self.queue();
-                    let event = unsafe {
-                        cl3::command_queue::enqueue_write_buffer(
-                            queue,
-                            buffer,
-                            CL_NON_BLOCKING,
-                            0,
-                            n,
-                            data.as_ptr().cast(),
-                            0,
-                            core::ptr::null(),
-                        )
-                    }
-                    .unwrap();
-                    //cl3::command_queue::finish(queue).unwrap();
-                    cl3::event::wait_for_events(&[event]).unwrap();
-                    let dtype = DType::I32;
-                    buffers.insert(
-                        *node_id,
-                        Op::from_const(
+                    if shape.numel() == 1 {
+                        let mut parameters = BTreeSet::new();
+                        parameters.insert(*node_id);
+                        buffers.insert(
                             *node_id,
-                            dtype,
-                            shape.clone(),
-                            ClStorage::new(buffer, event),
-                        ),
-                    );
+                            Op::Basic {
+                                dtype: DType::I32,
+                                shape: shape.clone(),
+                                kernel: format!("  {} res{} = {};\n", DType::I32.cl_type(), node_id.i(), data[0]),
+                                parameters,
+                            }
+                        );
+                    } else {
+                        let n = data.len() * size_of::<i32>();
+                        let buffer = unsafe {
+                            cl3::memory::create_buffer(
+                                self.context,
+                                CL_MEM_READ_ONLY,
+                                n,
+                                core::ptr::null_mut(),
+                            )
+                        }
+                        .map_err(|_| OutOfMemoryError)?;
+                        let queue = self.queue();
+                        let event = unsafe {
+                            cl3::command_queue::enqueue_write_buffer(
+                                queue,
+                                buffer,
+                                CL_NON_BLOCKING,
+                                0,
+                                n,
+                                data.as_ptr().cast(),
+                                0,
+                                core::ptr::null(),
+                            )
+                        }
+                        .unwrap();
+                        //cl3::command_queue::finish(queue).unwrap();
+                        cl3::event::wait_for_events(&[event]).unwrap();
+                        let dtype = DType::I32;
+                        buffers.insert(
+                            *node_id,
+                            Op::from_const(
+                                *node_id,
+                                dtype,
+                                shape.clone(),
+                                ClStorage::new(buffer, event),
+                            ),
+                        );
+                    }
                 }
                 Node::Cast(x, dtype) => {
                     let dtype = *dtype;
@@ -468,7 +496,8 @@ impl OpenCLDev {
                     );
                 }
                 Node::ReLU(x) => {
-                    unary_op(*node_id, *x, &mut buffers, &format!("max(res{}, 0)", x.i()))
+                    let dtype = buffers[x].dtype().cl_type();
+                    unary_op(*node_id, *x, &mut buffers, &format!("max(res{}, ({dtype})0)", x.i()))
                 }
                 Node::Neg(x) => unary_op(*node_id, *x, &mut buffers, &format!("-res{}", x.i())),
                 Node::Exp(x) => unary_op(*node_id, *x, &mut buffers, &format!("exp(res{})", x.i())),
@@ -1066,17 +1095,26 @@ impl OpenCLDev {
                     None
                 } else if let Op::Load {
                     dtype,
-                    shape: _,
+                    shape,
                     idx,
                     storage: _,
                     parameters,
                 } = &buffers[x]
                 {
-                    Some((
-                        dtype,
-                        *parameters.first().unwrap(),
-                        idx.replace("IDX", data_idx),
-                    ))
+                    if shape.numel() == 1 {
+                        Some((
+                            dtype,
+                            *parameters.first().unwrap(),
+                            "0".into(),
+                        ))
+
+                    } else {
+                        Some((
+                            dtype,
+                            *parameters.first().unwrap(),
+                            idx.replace("IDX", data_idx),
+                        ))
+                    }
                 } else {
                     None
                 }
