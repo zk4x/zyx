@@ -1,20 +1,30 @@
 extern crate alloc;
-use crate::{axes::Axes, Node, shape::Shape, tensor::Id, Vec};
+use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id};
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
 use core::iter::Iterator;
-use crate::dtype::DType;
 
-pub enum BufferView<'a> {
-    F32(&'a dyn Iterator<Item = f32>),
-    I32(&'a dyn Iterator<Item = i32>),
+pub enum BufferView {
+    F32(Box<dyn Iterator<Item = f32>>),
+    I32(Box<dyn Iterator<Item = i32>>),
 }
 
-pub trait Backend: Clone {
-    fn release(self, x: Id);
-    fn retain(self, x: Id);
+pub trait Backend: Copy {
+    /// Get shape if tensor x
     fn shape(self, x: Id) -> Shape;
+    /// Get dtype of tensor x
     fn dtype(self, x: Id) -> DType;
-    fn backward(self, x: Id, sources: &[Id]) -> Vec<Option<Id>>;
-    fn store(self, buffer: BufferView<'_>);
-    fn load(&self, id: Id) -> BufferView<'_>;
-    fn op(self, node: Node) -> Id;
+    /// Calculate derivatives of x w.r.t. sources.
+    /// Returns map source id -> gradient id
+    fn backward(self, x: Id, sources: &BTreeSet<Id>) -> BTreeMap<Id, Id>;
+    /// Returns iterator over data stored in backend
+    fn load(self, id: Id) -> BufferView;
+    /// Create new tensor from given operation
+    fn push(self, node: Node) -> Id;
+    /// Set some tensor as leaf, i. e. it no longer "requires grad"
+    fn set_leaf(self, x: Id);
+    /// Decrease reference count of tensor
+    fn release(self, x: Id);
+    /// Increase reference count of tensor
+    fn retain(self, x: Id);
 }

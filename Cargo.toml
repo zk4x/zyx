@@ -2,5 +2,5 @@
 resolver = "2"
 
 members = [
-  "zyx-core", "zyx-cpu", "zyx-opencl",
+  "zyx-core", "zyx-opencl",
 ]
