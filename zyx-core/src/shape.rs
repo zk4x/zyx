@@ -42,6 +42,22 @@ impl Shape {
     pub fn permute(&self, axes: &Axes) -> Self {
         Self(axes.into_iter().map(|axis| self.0[*axis]).collect())
     }
+
+    // Get axes along which self was expanded to shape
+    #[must_use]
+    pub fn expand_axes(&self, shape: &Shape) -> Axes {
+        let mut vec = self.0.to_vec();
+        while vec.len() < shape.rank() {
+            vec.insert(0, 1);
+        }
+        Axes(
+            vec.into_iter()
+                .zip(shape)
+                .enumerate()
+                .filter_map(|(a, (d, e))| if d == *e { None } else { Some(a) })
+                .collect(),
+        )
+    }
 }
 
 impl core::ops::Index<i64> for Shape {
@@ -74,3 +90,10 @@ impl<const N: usize> From<[usize; N]> for Shape {
     }
 }
 
+impl<'a> IntoIterator for &'a Shape {
+    type IntoIter = <&'a [usize] as IntoIterator>::IntoIter;
+    type Item = &'a usize;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}

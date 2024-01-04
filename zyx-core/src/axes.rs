@@ -1,11 +1,18 @@
 extern crate alloc;
 use alloc::boxed::Box;
 
-pub struct Axes(Box<[usize]>);
+pub struct Axes(pub(crate) Box<[usize]>);
 
 impl Axes {
-    fn iter(&self) -> impl Iterator + '_ {
+    /// Iterate over axes
+    pub fn iter(&self) -> impl Iterator + '_ {
         self.into_iter()
+    }
+
+    pub fn argsort(&self) -> Axes {
+        let mut axes: Box<[(usize, usize)]> = self.0.iter().copied().enumerate().collect();
+        axes.sort_by_key(|(_, v)| *v);
+        Axes(axes.iter().map(|(k, _)| *k).collect())
     }
 }
 
