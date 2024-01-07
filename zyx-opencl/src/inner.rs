@@ -374,8 +374,8 @@ impl Inner {
                         grads.insert(y, y_grad);
                     }
                 }
-                Node::Cmplt(_x, _y) => {
-                    todo!()
+                Node::Cmplt(..) => {
+                    panic!("Compare less than (operator <) is not differentiable operation.");
                 }
                 Node::ReLU(x) => {
                     // TODO is grads.contains_key useless for unary ops?
@@ -662,3 +662,12 @@ impl Inner {
         }
     }
 }
+
+/*#[test]
+fn test_layer_norm() -> Result<(), ClError> {
+    let dev = crate::default()?;
+    let x = dev.randn([2, 3], DType::F32);
+    let n = x.shape()[-1];
+    let z = (x - (x.sum(-1)/n).expand())/(((x - (x.sum(-1)/n).expand()).sum(-1)/n + 0.00001.expand()).sqrt()).expand();
+    Ok(())
+}*/
