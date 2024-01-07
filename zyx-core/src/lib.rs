@@ -8,4 +8,4 @@ pub mod dtype;
 pub mod node;
 pub mod shape;
 pub mod tensor;
-
+pub mod scalar;

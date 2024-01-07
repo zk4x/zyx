@@ -12,6 +12,7 @@ use cl3::error_codes::ClError;
 use zyx_core::backend::BufferView;
 use zyx_core::dtype::DType;
 use zyx_core::node::Node;
+use zyx_core::scalar::Scalar;
 use zyx_core::shape::Shape;
 use zyx_core::tensor::{Id, id};
 
@@ -113,14 +114,16 @@ impl Inner {
         })
     }
 
-    pub(super) fn randn(&mut self, shape: Shape) -> Id {
+    pub(super) fn randn(&mut self, shape: Shape, dtype: DType) -> Id {
         let shape: Shape = shape.into();
         use rand::Rng;
         let n = shape.numel();
         let mut rng = self.rng.clone();
-        let data = (0..n)
-            .map(move |_| rng.sample(rand::distributions::Standard));
-        let data = self.push(Node::IterF32(Box::new(data), shape));
+        use rand::distributions::Standard;
+        let data = match dtype {
+            DType::F32 => self.push(Node::IterF32(Box::new((0..n).map(move |_| rng.sample(Standard))), shape)),
+            DType::I32 => self.push(Node::IterI32(Box::new((0..n).map(move |_| rng.sample(Standard))), shape)),
+        };
         // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(rand::distributions::Standard);
@@ -128,15 +131,28 @@ impl Inner {
         data
     }
 
-    pub(super) fn ones(&mut self, shape: Shape) -> Id {
-        self.full(1., shape)
+    pub(super) fn uniform<T: Scalar>(&mut self, shape: Shape, low: T, high: T) -> Id {
+        match T::dtype() {
+            DType::F32 => self.push(Node::UniformF32(shape)),
+            DType::I32 => self.push(Node::UniformI32(shape))
+        }
     }
 
-    pub(super) fn full(&mut self, value: f32, shape: Shape) -> Id {
-        self.push(Node::IterF32(Box::new(core::iter::repeat(value).take(shape.numel())), shape))
+    pub(super) fn full<T: Scalar>(&mut self, shape: Shape, value: T) -> Id {
+        match T::dtype() {
+            DType::F32 => self.push(Node::IterF32(Box::new(core::iter::repeat(value.into_f32()).take(shape.numel())), shape)),
+            DType::I32 => self.push(Node::IterI32(Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())), shape)),
+        }
     }
 
-    pub(super) fn shape(&self, mut x: Id) -> Shape {
+    pub(super) fn eye(&mut self, n: usize, dtype: DType) -> Id {
+        match dtype {
+            DType::F32 => self.push(Node::IterF32(Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. }))), [n, n].into())),
+            DType::I32 => self.push(Node::IterI32(Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 }))), [n, n].into())),
+        }
+    }
+
+    pub(super) fn shape(&self, mut x: Id) -> &Shape {
         loop {
             let node = self.nodes.get(x.i()).unwrap();
             match node {
@@ -150,7 +166,7 @@ impl Inner {
                 | Node::Expand(_, shape)
                 | Node::Permute(.., shape)
                 | Node::Sum(.., shape)
-                | Node::Max(.., shape) => return shape.clone(),
+                | Node::Max(.., shape) => return shape,
                 _ => x = node.parameters().next().unwrap(),
             }
         }
@@ -266,10 +282,10 @@ impl Inner {
         let mut grads: BTreeMap<Id, Id> = BTreeMap::new();
         // Initial gradient of ones
         let grad1 = match self.dtype(x) {
-            DType::F32 => self.push(Node::IterF32(Box::new([1.].into_iter()), self.shape(x))),
-            DType::I32 => self.push(Node::IterF32(Box::new([1.].into_iter()), self.shape(x))),
+            DType::F32 => self.push(Node::IterF32(Box::new([1.].into_iter()), self.shape(x).clone())),
+            DType::I32 => self.push(Node::IterF32(Box::new([1.].into_iter()), self.shape(x).clone())),
         };
-        grads.insert(x, self.push(Node::Expand(grad1, self.shape(x))));
+        grads.insert(x, self.push(Node::Expand(grad1, self.shape(x).clone())));
         self.release(grad1);
         // backpropagate
         // TODO this is not very clean code. Can we make it cleaner?
@@ -368,7 +384,7 @@ impl Inner {
                             DType::F32 => self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into())),
                             DType::I32 => self.push(Node::IterI32(Box::new([0].into_iter()), 1.into())),
                         };
-                        let zeros = self.push(Node::Expand(zero, self.shape(x)));
+                        let zeros = self.push(Node::Expand(zero, self.shape(x).clone()));
                         self.release(zero);
                         let zl = self.push(Node::Cmplt(zeros, x));
                         self.release(zeros);
@@ -469,7 +485,7 @@ impl Inner {
                 Node::Reshape(x, ..) => {
                     grads
                         .entry(x)
-                        .or_insert_with(|| self.push(Node::Reshape(grad, self.shape(x))));
+                        .or_insert_with(|| self.push(Node::Reshape(grad, self.shape(x).clone())));
                 }
                 Node::Expand(x, ref shape) => {
                     if !grads.contains_key(&x) {
@@ -484,13 +500,13 @@ impl Inner {
                 Node::Permute(x, ref axes, _) => {
                     if !grads.contains_key(&x) {
                         let shape = self.shape(x);
-                        grads.insert(x, self.push(Node::Permute(grads[&nid], axes.argsort(), shape)));
+                        grads.insert(x, self.push(Node::Permute(grads[&nid], axes.argsort(), shape.clone())));
                     }
                 }
                 Node::Sum(x, ..) => {
                     grads
                         .entry(x)
-                        .or_insert_with(|| self.push(Node::Expand(grad, self.shape(x))));
+                        .or_insert_with(|| self.push(Node::Expand(grad, self.shape(x).clone())));
                 }
                 Node::Max(x, ..) => {
                     grads.entry(x).or_insert_with(|| {
@@ -571,12 +587,6 @@ impl Inner {
         let mut order: Vec<Id> = rcs.keys().copied().collect();
         order.sort_by_cached_key(|nid| self.order[nid.i()]);
 
-        /// This function evaluates concrete buffer that we know can be directly evaluated,
-        /// that is it all of it's leafs are already evaluated.
-        fn evaluate_buffer(nodes: &[Node], x: Id) {
-            // create list of nodes that need to be evaluated
-        }
-
         for nid in order {
             match &mut self.nodes[nid.i()] {
                 Node::LeafF32(..)
@@ -644,5 +654,11 @@ impl Inner {
                 //self.release(*nid);
             //}
         //}
+
+        /// This function evaluates concrete buffer that we know can be directly evaluated,
+        /// that is it all of it's leafs are already evaluated.
+        fn evaluate_buffer(nodes: &[Node], x: Id) {
+            // create list of nodes that need to be evaluated
+        }
     }
 }

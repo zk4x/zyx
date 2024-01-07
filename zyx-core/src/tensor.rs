@@ -100,6 +100,22 @@ impl<B: Backend> Tensor<B> {
     }
 }
 
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for &Tensor<B> {
+    type Output = Tensor<B>;
+    fn add(self, rhs: IT) -> Self::Output {
+        let rhs = rhs.into_tensor(self.backend);
+        tensor(self.backend.push(Node::Add(self.id, rhs.id)), self.backend)
+    }
+}
+
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for Tensor<B> {
+    type Output = Tensor<B>;
+    fn add(self, rhs: IT) -> Self::Output {
+        let rhs = rhs.into_tensor(self.backend);
+        tensor(self.backend.push(Node::Add(self.id, rhs.id)), self.backend)
+    }
+}
+
 pub trait IntoTensor<B: Backend> {
     fn into_tensor(self, backend: B) -> Tensor<B>;
 }
@@ -118,24 +134,56 @@ impl<B: Backend> IntoTensor<B> for &Tensor<B> {
     }
 }
 
+// This gives us Vec, 1d array and such, but we can not have it, cause it creates too many conflicts,
+// with like 2d arrays, which it should not, but you know how it goes.
+// Exact size is currently necessary, because we need to know the shape before collecting.
+/*impl<IT: IntoIterator<Item = f32>, B: Backend> IntoTensor<B> for IT
+where
+    IT::IntoIter: ExactSizeIterator + 'static,
+{
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        let iter = self.into_iter();
+        let n = iter.len();
+        tensor(backend.push(Node::IterF32(Box::new(iter), n.into())), backend)
+    }
+}*/
+
+impl<B: Backend> IntoTensor<B> for Vec<f32> {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        let n = self.len();
+        tensor(backend.push(Node::IterF32(Box::new(self.into_iter()), n.into())), backend)
+    }
+}
+
+// If we did not require 'static, we would need to copy this and store it on the heap,
+// so we may as well just leave it to the user to pass in Vec<f32> or Box<[f32]>
+impl<B: Backend> IntoTensor<B> for &'static [f32] {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        let n = self.len();
+        tensor(backend.push(Node::IterF32(Box::new(self.into_iter().copied()), n.into())), backend)
+    }
+}
+
+impl<B: Backend> IntoTensor<B> for f32 {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(backend.push(Node::IterF32(Box::new([self].into_iter()), 1.into())), backend)
+    }
+}
+
 impl<B: Backend, const D0: usize> IntoTensor<B> for [f32; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(backend.push(Node::IterF32(Box::new(self.into_iter()), D0.into())), backend)
     }
 }
 
-impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for &Tensor<B> {
-    type Output = Tensor<B>;
-    fn add(self, rhs: IT) -> Self::Output {
-        let rhs = rhs.into_tensor(self.backend);
-        tensor(self.backend.push(Node::Add(self.id, rhs.id)), self.backend)
+impl<B: Backend, const D0: usize, const D1: usize> IntoTensor<B> for [[f32; D1]; D0] {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(backend.push(Node::IterF32(Box::new(self.into_iter().flatten()), [D0, D1].into())), backend)
     }
 }
 
-impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for Tensor<B> {
-    type Output = Tensor<B>;
-    fn add(self, rhs: IT) -> Self::Output {
-        let rhs = rhs.into_tensor(self.backend);
-        tensor(self.backend.push(Node::Add(self.id, rhs.id)), self.backend)
+impl<B: Backend, const D0: usize, const D1: usize, const D2: usize> IntoTensor<B> for [[[f32; D2]; D1]; D0] {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(backend.push(Node::IterF32(Box::new(self.into_iter().flatten().flatten()), [D0, D1, D2].into())), backend)
     }
 }
