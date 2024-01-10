@@ -104,10 +104,7 @@ pub trait Autograd {
                 self.shape(x).clone(),
             )),
         };
-        grads.insert(
-            x,
-            self.push(Node::Expand(grad1, self.shape(x).clone())),
-        );
+        grads.insert(x, self.push(Node::Expand(grad1, self.shape(x).clone())));
         self.release(grad1);
         // backpropagate
         // TODO this is not very clean code. Can we make it cleaner?
@@ -282,9 +279,7 @@ pub trait Autograd {
                     });
                 }
                 Node::Neg(x) => {
-                    grads
-                        .entry(x)
-                        .or_insert_with(|| self.push(Node::Neg(grad)));
+                    grads.entry(x).or_insert_with(|| self.push(Node::Neg(grad)));
                 }
                 Node::Tanh(x) => {
                     grads.entry(x).or_insert_with(|| {

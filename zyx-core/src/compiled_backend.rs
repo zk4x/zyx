@@ -138,7 +138,9 @@ impl<R: Runtime> CompiledBackend<R> {
         todo!()
     }
 
-    pub fn set_leaf(&mut self, x: Id) { self.leafs.insert(x); }
+    pub fn set_leaf(&mut self, x: Id) {
+        self.leafs.insert(x);
+    }
 
     fn evaluate(&mut self, nodes: BTreeSet<Id>) {
         // TODO we are probably going too many times back and forth in the graph.
@@ -256,8 +258,8 @@ impl<R: Runtime> CompiledBackend<R> {
                 program_args.push(x);
                 Op::Leaf(args.len() - 1)
             } else {
-                match self.nodes[nid] {
-                    Node::Exp(x) => Op::Exp(mapping[x]),
+                match self.nodes[nid.i()] {
+                    Node::Exp(x) => Op::Exp(mapping[&x]),
                     _ => todo!(),
                 }
             });
@@ -274,14 +276,19 @@ impl<R: Runtime> CompiledBackend<R> {
             self.programs.entry(kernel).or_insert(program)
         };
         // Run the program
-        self.buffers.insert(x, self.runtime.launch(program, &program_args));
+        self.buffers
+            .insert(x, self.runtime.launch(program, &program_args));
     }
 }
 
 impl<C: Runtime> Autograd for CompiledBackend<C> {
-    fn nodes(&self) -> &[Node] { &self.nodes }
+    fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
 
-    fn order(&self) -> &[Id] { &self.order }
+    fn order(&self) -> &[Id] {
+        &self.order
+    }
 
     fn push(&mut self, node: Node) -> Id {
         for nid in node.parameters() {
@@ -326,5 +333,7 @@ impl<C: Runtime> Autograd for CompiledBackend<C> {
         }
     }
 
-    fn retain(&mut self, x: Id) { self.rcs[x.i()] += 1; }
+    fn retain(&mut self, x: Id) {
+        self.rcs[x.i()] += 1;
+    }
 }

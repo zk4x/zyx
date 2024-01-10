@@ -88,6 +88,9 @@ let z = x[[.., 2.., 1..-2, ..-1]];
 let v: f32 = x[[1, 2, 1, -1]].item();
 ```
 IO operations.
+```shell
+cargo add zyx-io
+```
 ```rust
 model.save("model.safetensors");
 model.load("model.safetensors");

@@ -1,10 +1,4 @@
-use alloc::{
-    boxed::Box,
-    collections::BTreeSet,
-    ffi::CString,
-    format as f,
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeSet, ffi::CString, format as f, vec::Vec};
 use cl3::{
     error_codes::ClError,
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
@@ -209,12 +203,12 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
                 core::ptr::null_mut(),
             )
         }
-            .unwrap();
+        .unwrap();
         let ptr: *const _ = &mem;
         unsafe {
             cl3::kernel::set_kernel_arg(kernel, 0, core::mem::size_of::<*mut c_void>(), ptr.cast())
         }
-            .unwrap();
+        .unwrap();
         let mut events = Vec::new();
         let mut i = 1;
         for arg in args {
@@ -230,7 +224,7 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
                     ptr.cast(),
                 )
             }
-                .unwrap();
+            .unwrap();
             i += 1;
         }
 
@@ -254,7 +248,7 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
                 },
             )
         }
-            .expect("could not execute opencl kernel.");
+        .expect("could not execute opencl kernel.");
         //#[cfg(feature = "debug1")]
         cl3::event::wait_for_events(&[event]).unwrap();
         //#[cfg(feature = "debug1")]
