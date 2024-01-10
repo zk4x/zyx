@@ -23,3 +23,34 @@ impl<'a> IntoIterator for &'a Axes {
         self.0.iter()
     }
 }
+
+/// # `IntoAxes`
+/// Convert value into axes
+/// () is all axes
+#[allow(clippy::module_name_repetitions)]
+pub trait IntoAxes: Clone {
+    /// Convert value into axes
+    /// ```
+    /// use zyx_core::axes::IntoAxes;
+    /// let ax = (2, 3, 1);
+    /// let axes = ax.into_axes(3);
+    /// ```
+    fn into_axes(self, rank: usize) -> Axes;
+}
+
+impl IntoAxes for &[i64] {
+    fn into_axes(self, ndim: usize) -> Axes {
+        Axes(
+            self.iter()
+                .map(|x| (x + i64::try_from(ndim).unwrap()) as usize % ndim)
+                .collect(),
+        )
+    }
+}
+
+impl<const N: usize> IntoAxes for [i64; N] {
+    fn into_axes(self, ndim: usize) -> Axes {
+        let axes: &[i64] = &self;
+        axes.into_axes(ndim)
+    }
+}

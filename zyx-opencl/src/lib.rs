@@ -1,18 +1,20 @@
 #![no_std]
 
 mod inner;
+mod eval;
 
 extern crate alloc;
 use core::cell::RefCell;
 use alloc::collections::{BTreeMap, BTreeSet};
 use cl3::error_codes::ClError;
-use zyx_core::{backend::{Backend}, node::Node, shape::Shape, tensor::Id};
+use zyx_core::{backend::Backend, node::Node, shape::Shape, tensor::Id};
 use zyx_core::backend::BufferView;
-use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::{IntoTensor, tensor};
 
 pub use zyx_core::tensor::Tensor;
+pub use zyx_core::dtype::DType;
+use zyx_core::common::Autograd;
 
 pub struct OpenCL(RefCell<inner::Inner>);
 
@@ -77,10 +79,11 @@ impl Backend for &OpenCL {
 }
 
 #[test]
-fn t0() {
-    let dev = OpenCL::new().unwrap();
-    let x = dev.randn([2, 3]);
-    let y = dev.randn([2, 3]);
+fn t0() ->Result<(), ClError> {
+    let dev = crate::default()?;
+    let x = dev.randn([2, 3], DType::F32);
+    let y = dev.randn([2, 3], DType::F32);
     let z = (&x + &y).exp() + &x;
     let _grads = z.backward([&y]);
+    Ok(())
 }

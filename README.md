@@ -1,17 +1,18 @@
 # Zyx
 
 Zyx is machine learning library written in Rust.
-Most ML algorithms can be created with tensors and operations on them.
+Most ML models can be created with just tensors and operations on them.
 Tensors must be stored somewhere. Zyx can use both RAM and VRAM (on the gpu) to store tensors.
-This is how you create gpu backend. First add opencl backend as dependency.
+
+This is how you create gpu backend. First add OpenCL, CUDA or WGPU backend as dependency.
 ```shell
 cargo add zyx-opencl
 ```
-And then create the device in your code.
+And then initialize the device in your code.
 ```rust
 let dev = zyx_opencl::default()?;
 ```
-Now you can create Tensors.
+Now you can create tensors.
 ```rust
 let x = dev.randn([2, 2], DType::F32);
 let y = dev.tensor([[2., -3.], [4., 1.]]);
@@ -46,7 +47,7 @@ Optimizer updates model's parameters with gradients.
 ## Performance 🚀
 
 Thanks to its execution model, Zyx always uses minimum amount of RAM.
-As for the backends, OpenCL and WGPU backend automatically fuse operations and create custom kernels.
+As for the backends, OpenCL, CUDA and WGPU backends automatically fuse operations and create custom kernels.
 In case of hardware where these backends seem slow you can always use libtorch backend.
 Cpu backend is slow and should not be used. It currently serves only as reference backend.
 

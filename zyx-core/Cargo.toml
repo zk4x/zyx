@@ -2,3 +2,6 @@
 name = "zyx-core"
 version = "0.1.0"
 edition = "2021"
+
+[dev-dependencies]
+zyx-opencl = { version = "*", path = "../zyx-opencl" }
