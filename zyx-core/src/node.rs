@@ -1,14 +1,14 @@
 extern crate alloc;
+use crate::{axes::Axes, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::{tensor::Id, axes::Axes, shape::Shape};
 
 /// Node representing different possible tensors
 pub enum Node {
     LeafF32(Shape),
     LeafI32(Shape),
-    UniformF32(Shape),
-    UniformI32(Shape),
+    UniformF32(Shape, f32, f32),
+    UniformI32(Shape, i32, i32),
     IterF32(Box<dyn Iterator<Item = f32>>, Shape),
     IterI32(Box<dyn Iterator<Item = i32>>, Shape),
     CastF32(Id),

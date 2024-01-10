@@ -1,12 +1,12 @@
 extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::ops::{Range, SubAssign};
-use crate::{backend::Backend, node::Node};
 use crate::axes::IntoAxes;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::Shape;
+use crate::{backend::Backend, node::Node};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::ops::{Range, SubAssign};
 
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
 pub struct Id(usize);
@@ -46,47 +46,68 @@ impl<B: Backend> Drop for Tensor<B> {
 }
 
 pub fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
-    Tensor {
-        id,
-        backend,
-    }
+    Tensor { id, backend }
 }
 
 impl<B: Backend> Tensor<B> {
     #[must_use]
-    pub fn shape(&self) -> Shape { self.backend.shape(self.id) }
+    pub fn shape(&self) -> Shape {
+        self.backend.shape(self.id)
+    }
 
     #[must_use]
-    pub fn dtype(&self) -> DType { self.backend.dtype(self.id) }
+    pub fn dtype(&self) -> DType {
+        self.backend.dtype(self.id)
+    }
 
     #[must_use]
-    pub fn rank(&self) -> usize { self.shape().rank() }
+    pub fn rank(&self) -> usize {
+        self.shape().rank()
+    }
 
     #[must_use]
-    pub fn backend(&self) -> B { self.backend }
+    pub fn backend(&self) -> B {
+        self.backend
+    }
 
     #[must_use]
-    pub fn backward<'a>(&'a self, sources: impl IntoIterator<Item = &'a Tensor<B>>) -> impl Iterator<Item = Option<Tensor<B>>> + 'a
+    pub fn backward<'a>(
+        &'a self,
+        sources: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> impl Iterator<Item = Option<Tensor<B>>> + 'a
     where
-        B: 'a
+        B: 'a,
     {
         let sources: Vec<&Tensor<B>> = sources.into_iter().collect();
-        let grads = self.backend.backward(self.id, &sources.iter().map(|t| t.id).collect());
-        sources.into_iter().map(move |x: &Tensor<B>| grads.get(&x.id).cloned()).map(move |x| x.map(|x| tensor(x, self.backend)))
+        let grads = self
+            .backend
+            .backward(self.id, &sources.iter().map(|t| t.id).collect());
+        sources
+            .into_iter()
+            .map(move |x: &Tensor<B>| grads.get(&x.id).cloned())
+            .map(move |x| x.map(|x| tensor(x, self.backend)))
     }
 
     // Unary ops
     #[must_use]
-    pub fn exp(&self) -> Tensor<B> { self.unary_op(UOp::Exp) }
+    pub fn exp(&self) -> Tensor<B> {
+        self.unary_op(UOp::Exp)
+    }
 
     #[must_use]
-    pub fn tanh(&self) -> Tensor<B> { self.unary_op(UOp::Tanh) }
+    pub fn tanh(&self) -> Tensor<B> {
+        self.unary_op(UOp::Tanh)
+    }
 
     #[must_use]
-    pub fn sin(&self) -> Tensor<B> { self.unary_op(UOp::Sin) }
+    pub fn sin(&self) -> Tensor<B> {
+        self.unary_op(UOp::Sin)
+    }
 
     #[must_use]
-    pub fn cos(&self) -> Tensor<B> { self.unary_op(UOp::Cos) }
+    pub fn cos(&self) -> Tensor<B> {
+        self.unary_op(UOp::Cos)
+    }
 
     #[must_use]
     pub fn dropout(&self, probability: f64) -> Tensor<B> {
@@ -169,7 +190,11 @@ impl<B: Backend> Tensor<B> {
     /// # Panics
     /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
     #[must_use]
-    pub fn pad<T: Scalar>(&self, padding: impl IntoIterator<Item = (i64, i64)>, value: T) -> Tensor<B> {
+    pub fn pad<T: Scalar>(
+        &self,
+        padding: impl IntoIterator<Item = (i64, i64)>,
+        value: T,
+    ) -> Tensor<B> {
         assert_eq!(T::dtype(), self.dtype());
         todo!()
     }
@@ -215,18 +240,21 @@ enum BOp {
 impl<B: Backend> Tensor<B> {
     #[must_use]
     fn unary_op(&self, op: UOp) -> Tensor<B> {
-        tensor(self.backend.push(match op {
-            UOp::CastF32 => Node::CastF32(self.id),
-            UOp::CastI32 => Node::CastI32(self.id),
-            UOp::Neg => Node::Neg(self.id),
-            UOp::ReLU => Node::ReLU(self.id),
-            UOp::Sin => Node::Sin(self.id),
-            UOp::Cos => Node::Cos(self.id),
-            UOp::Ln => Node::Ln(self.id),
-            UOp::Exp => Node::Exp(self.id),
-            UOp::Tanh => Node::Tanh(self.id),
-            UOp::Sqrt => Node::Sqrt(self.id),
-        }), self.backend)
+        tensor(
+            self.backend.push(match op {
+                UOp::CastF32 => Node::CastF32(self.id),
+                UOp::CastI32 => Node::CastI32(self.id),
+                UOp::Neg => Node::Neg(self.id),
+                UOp::ReLU => Node::ReLU(self.id),
+                UOp::Sin => Node::Sin(self.id),
+                UOp::Cos => Node::Cos(self.id),
+                UOp::Ln => Node::Ln(self.id),
+                UOp::Exp => Node::Exp(self.id),
+                UOp::Tanh => Node::Tanh(self.id),
+                UOp::Sqrt => Node::Sqrt(self.id),
+            }),
+            self.backend,
+        )
     }
 
     #[must_use]
@@ -245,7 +273,7 @@ impl<B: Backend> core::ops::Index<&[Range<i64>]> for Tensor<B> {
 impl<B: Backend> core::ops::Index<&[i64]> for Tensor<B> {
     type Output = ();
     fn index(&self, index: &[i64]) -> &Self::Output {
-        let index: Vec<Range<i64>> = index.iter().copied().map(|idx| idx..idx+1).collect();
+        let index: Vec<Range<i64>> = index.iter().copied().map(|idx| idx..idx + 1).collect();
         let index: &[Range<i64>] = &index;
         self.index(index)
     }
@@ -318,7 +346,10 @@ where
 impl<B: Backend> IntoTensor<B> for Vec<f32> {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         let n = self.len();
-        tensor(backend.push(Node::IterF32(Box::new(self.into_iter()), n.into())), backend)
+        tensor(
+            backend.push(Node::IterF32(Box::new(self.into_iter()), n.into())),
+            backend,
+        )
     }
 }
 
@@ -327,30 +358,53 @@ impl<B: Backend> IntoTensor<B> for Vec<f32> {
 impl<B: Backend> IntoTensor<B> for &'static [f32] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         let n = self.len();
-        tensor(backend.push(Node::IterF32(Box::new(self.into_iter().copied()), n.into())), backend)
+        tensor(
+            backend.push(Node::IterF32(Box::new(self.into_iter().copied()), n.into())),
+            backend,
+        )
     }
 }
 
 impl<B: Backend> IntoTensor<B> for f32 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.push(Node::IterF32(Box::new([self].into_iter()), 1.into())), backend)
+        tensor(
+            backend.push(Node::IterF32(Box::new([self].into_iter()), 1.into())),
+            backend,
+        )
     }
 }
 
 impl<B: Backend, const D0: usize> IntoTensor<B> for [f32; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.push(Node::IterF32(Box::new(self.into_iter()), D0.into())), backend)
+        tensor(
+            backend.push(Node::IterF32(Box::new(self.into_iter()), D0.into())),
+            backend,
+        )
     }
 }
 
 impl<B: Backend, const D0: usize, const D1: usize> IntoTensor<B> for [[f32; D1]; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.push(Node::IterF32(Box::new(self.into_iter().flatten()), [D0, D1].into())), backend)
+        tensor(
+            backend.push(Node::IterF32(
+                Box::new(self.into_iter().flatten()),
+                [D0, D1].into(),
+            )),
+            backend,
+        )
     }
 }
 
-impl<B: Backend, const D0: usize, const D1: usize, const D2: usize> IntoTensor<B> for [[[f32; D2]; D1]; D0] {
+impl<B: Backend, const D0: usize, const D1: usize, const D2: usize> IntoTensor<B>
+    for [[[f32; D2]; D1]; D0]
+{
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.push(Node::IterF32(Box::new(self.into_iter().flatten().flatten()), [D0, D1, D2].into())), backend)
+        tensor(
+            backend.push(Node::IterF32(
+                Box::new(self.into_iter().flatten().flatten()),
+                [D0, D1, D2].into(),
+            )),
+            backend,
+        )
     }
 }

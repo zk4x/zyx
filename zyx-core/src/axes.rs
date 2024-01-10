@@ -1,6 +1,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Axes(pub(crate) Box<[usize]>);
 
 impl Axes {

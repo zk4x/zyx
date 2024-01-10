@@ -1,5 +1,5 @@
 /// DType
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
     F32,
     I32,

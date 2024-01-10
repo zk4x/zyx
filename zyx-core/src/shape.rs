@@ -1,8 +1,8 @@
 extern crate alloc;
-use alloc::boxed::Box;
 use crate::axes::Axes;
+use alloc::boxed::Box;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Shape(Box<[usize]>);
 
 impl Shape {
