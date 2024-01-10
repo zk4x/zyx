@@ -1,21 +1,25 @@
-use crate::autograd::Autograd;
-use crate::axes::Axes;
-use crate::backend::BufferView;
-use crate::dtype::DType;
-use crate::node::Node;
-use crate::scalar::Scalar;
-use crate::shape::Shape;
-use crate::tensor::{id, Id};
-use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
+use crate::{
+    autograd::Autograd,
+    axes::Axes,
+    backend::BufferView,
+    dtype::DType,
+    node::Node,
+    scalar::Scalar,
+    shape::Shape,
+    tensor::{id, Id},
+};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 pub trait Runtime {
     type Buffer;
     type Program;
     fn store<T>(&mut self, iter: Box<dyn Iterator<Item = T>>) -> Self::Buffer;
     fn load<T>(&mut self, buffer: &Self::Buffer) -> BufferView;
-    fn compile(&mut self, kernel: OpKernel) -> Self::Program;
+    fn compile(&mut self, kernel: &Kernel) -> Self::Program;
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer;
 }
 
@@ -27,7 +31,7 @@ pub struct CompiledBackend<R: Runtime> {
     leafs: BTreeSet<Id>, // these do not need backward graph
     runtime: R,
     buffers: BTreeMap<Id, R::Buffer>,
-    programs: BTreeMap<OpKernel, R::Program>,
+    programs: BTreeMap<Kernel, R::Program>,
 }
 
 // These are all IDs into ops, leafs have IDs into args
@@ -46,7 +50,7 @@ enum Op {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub struct OpKernel {
+pub struct Kernel {
     args: Box<[(Shape, DType)]>,
     ops: Box<[Op]>,
 }
@@ -134,9 +138,7 @@ impl<R: Runtime> CompiledBackend<R> {
         todo!()
     }
 
-    pub fn set_leaf(&mut self, x: Id) {
-        self.leafs.insert(x);
-    }
+    pub fn set_leaf(&mut self, x: Id) { self.leafs.insert(x); }
 
     fn evaluate(&mut self, nodes: BTreeSet<Id>) {
         // TODO we are probably going too many times back and forth in the graph.
@@ -215,22 +217,24 @@ impl<R: Runtime> CompiledBackend<R> {
         }
 
         // Release parts of graph that are not needed for backpropagation
-        //while let Some(leaf) = self.leafs.pop_last() {
-        //std::println!("Releasing leaf {leaf}");
-        //let mut node = Node::Leaf(self.dtype(leaf));
-        //let shape = self.shape(leaf);
-        //self.shapes.insert(leaf, shape);
-        //core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
-        //for nid in &*node.parameters() {
-        //self.release(*nid);
-        //}
-        //}
+        while let Some(leaf) = self.leafs.pop_last() {
+            //std::println!("Releasing leaf {leaf}");
+            let shape = self.shape(leaf).clone();
+            let mut node = match self.dtype(leaf) {
+                DType::F32 => Node::LeafF32(shape),
+                DType::I32 => Node::LeafI32(shape),
+            };
+            core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
+            for nid in node.parameters() {
+                self.release(nid);
+            }
+        }
     }
 
     /// This function evaluates concrete buffer that we know can be directly evaluated,
-    /// that is it all of it's leafs are already evaluated.
+    /// that is we know that all of it's leafs are already evaluated and stored in device.
     fn evaluate_buffer(&mut self, x: Id) {
-        // create ordered list of nodes that need to be evaluated
+        // Create ordered list of nodes that need to be evaluated
         let mut temp = alloc::vec![x];
         let mut porder = Vec::new();
         while let Some(nid) = temp.pop() {
@@ -240,67 +244,44 @@ impl<R: Runtime> CompiledBackend<R> {
             porder.extend(self.nodes[nid.i()].parameters())
         }
         porder.sort_by_cached_key(|nid| self.order[nid.i()]);
-
-        // Convert these to Kernel
+        // Convert this list to kernel
+        let mut program_args = Vec::new();
         let mut args = Vec::new();
-        //let mut kernel_args = Vec::new();
+        let mut ops = Vec::new();
+        let mut mapping = BTreeMap::new();
         for nid in porder {
-            if let Some(x) = self.buffers.get(&nid) {
-                args.push((self.shape(nid), self.dtype(nid)));
-                //kernel_args.push(x.mem);
+            mapping.insert(nid, ops.len());
+            ops.push(if let Some(x) = self.buffers.get(&nid) {
+                args.push((self.shape(nid).clone(), self.dtype(nid)));
+                program_args.push(x);
+                Op::Leaf(args.len() - 1)
             } else {
-                todo!()
-            }
+                match self.nodes[nid] {
+                    Node::Exp(x) => Op::Exp(mapping[x]),
+                    _ => todo!(),
+                }
+            });
         }
-        todo!()
+        let kernel = Kernel {
+            args: args.into_boxed_slice(),
+            ops: ops.into_boxed_slice(),
+        };
+        // Used cached program or compile new program
+        let program = if let Some(program) = self.programs.get(&kernel) {
+            program
+        } else {
+            let program = self.runtime.compile(&kernel);
+            self.programs.entry(kernel).or_insert(program)
+        };
+        // Run the program
+        self.buffers.insert(x, self.runtime.launch(program, &program_args));
     }
 }
 
 impl<C: Runtime> Autograd for CompiledBackend<C> {
-    fn nodes(&self) -> &[Node] {
-        &self.nodes
-    }
+    fn nodes(&self) -> &[Node] { &self.nodes }
 
-    fn order(&self) -> &[Id] {
-        &self.order
-    }
-
-    fn shape(&self, mut x: Id) -> &Shape {
-        loop {
-            let node = self.nodes.get(x.i()).unwrap();
-            match node {
-                Node::LeafF32(shape)
-                | Node::IterF32(_, shape)
-                | Node::UniformF32(shape, ..)
-                | Node::LeafI32(shape)
-                | Node::IterI32(_, shape)
-                | Node::UniformI32(shape, ..)
-                | Node::Reshape(_, shape)
-                | Node::Expand(_, shape)
-                | Node::Permute(.., shape)
-                | Node::Sum(.., shape)
-                | Node::Max(.., shape) => return shape,
-                _ => x = node.parameters().next().unwrap(),
-            }
-        }
-    }
-
-    fn dtype(&self, mut x: Id) -> DType {
-        loop {
-            let node = self.nodes.get(x.i()).unwrap();
-            match node {
-                Node::LeafF32(..)
-                | Node::IterF32(..)
-                | Node::UniformF32(..)
-                | Node::CastF32(..) => return DType::F32,
-                Node::LeafI32(..)
-                | Node::IterI32(..)
-                | Node::UniformI32(..)
-                | Node::CastI32(..) => return DType::I32,
-                _ => x = node.parameters().next().unwrap(),
-            }
-        }
-    }
+    fn order(&self) -> &[Id] { &self.order }
 
     fn push(&mut self, node: Node) -> Id {
         for nid in node.parameters() {
@@ -319,6 +300,8 @@ impl<C: Runtime> Autograd for CompiledBackend<C> {
             self.rcs[i.i()] = 1;
             self.nodes[i.i()] = node;
             // Keep the ordering, this is probably as fast as it gets
+            // (i. e. better track the ordering here then reconstruct
+            // the whole tree during evaluation)
             let prev = self.order[i.i()];
             for x in self.order.iter_mut() {
                 if *x > prev {
@@ -343,7 +326,5 @@ impl<C: Runtime> Autograd for CompiledBackend<C> {
         }
     }
 
-    fn retain(&mut self, x: Id) {
-        self.rcs[x.i()] += 1;
-    }
+    fn retain(&mut self, x: Id) { self.rcs[x.i()] += 1; }
 }

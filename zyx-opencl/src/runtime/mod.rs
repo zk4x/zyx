@@ -11,6 +11,7 @@ use cl3::{
 };
 use core::ffi::c_void;
 use zyx_core::backend::BufferView;
+use zyx_core::compiled_backend::Kernel;
 
 pub struct Buffer {
     mem: *mut c_void,
@@ -192,7 +193,7 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
         todo!()
     }
 
-    fn compile(&mut self, kernel: zyx_core::compiled_backend::OpKernel) -> Self::Program {
+    fn compile(&mut self, kernel: &Kernel) -> Self::Program {
         todo!()
     }
 
