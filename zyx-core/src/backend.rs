@@ -1,13 +1,8 @@
 extern crate alloc;
 use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id};
-use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
-use core::iter::Iterator;
-
-pub enum BufferView {
-    F32(Box<dyn Iterator<Item = f32>>),
-    I32(Box<dyn Iterator<Item = i32>>),
-}
+use alloc::vec::Vec;
+use crate::scalar::Scalar;
 
 pub trait Backend: Copy {
     /// Get shape if tensor x
@@ -18,7 +13,7 @@ pub trait Backend: Copy {
     /// Returns map source id -> gradient id
     fn backward(self, x: Id, sources: &BTreeSet<Id>) -> BTreeMap<Id, Id>;
     /// Returns iterator over data stored in backend
-    fn load(self, id: Id) -> BufferView;
+    fn load<T: Scalar>(self, id: Id) -> Vec<T>;
     /// Create new tensor from given operation
     fn push(self, node: Node) -> Id;
     /// Set some tensor as leaf, i. e. it no longer "requires grad"

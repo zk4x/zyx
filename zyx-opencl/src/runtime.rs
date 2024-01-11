@@ -4,8 +4,10 @@ use cl3::{
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
 };
 use core::ffi::c_void;
-use zyx_core::backend::BufferView;
+use core::mem::MaybeUninit;
 use zyx_core::compiled_backend::Kernel;
+use zyx_core::dtype::DType;
+use zyx_core::scalar::Scalar;
 
 pub struct Buffer {
     mem: *mut c_void,
@@ -36,7 +38,7 @@ impl Program {
     pub fn compile(
         source: &str,
         context: *mut c_void,
-        devices: &[*mut c_void],
+        devices: &BTreeSet<*mut c_void>,
         global_work_size: &[usize],
         local_work_size: &[usize],
         res_byte_size: usize,
@@ -58,9 +60,10 @@ impl Program {
         //#[cfg(feature = "debug1")]
         //std::println!("Compiling source:\n{source}");
         let program = cl3::program::create_program_with_source(context, &[&source]).unwrap();
+        let devices = devices.iter().copied().collect::<Vec<*mut c_void>>();
         if let Err(er) = cl3::program::build_program(
             program,
-            devices.as_ref(),
+            &devices,
             core::ffi::CStr::from_bytes_with_nul(b"-cl-fast-relaxed-math\0").unwrap(),
             None,
             core::ptr::null_mut(),
@@ -183,12 +186,44 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
         Self::Buffer { mem, event }
     }
 
-    fn load<T>(&mut self, buffer: &Self::Buffer) -> BufferView {
-        todo!()
+    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Vec<T> {
+        let mut data: Vec<T> = Vec::with_capacity(numel);
+        cl3::event::wait_for_events(&[buffer.event]).unwrap();
+        let event = unsafe {
+            cl3::command_queue::enqueue_read_buffer(
+                self.queue(),
+                buffer.mem,
+                CL_NON_BLOCKING,
+                0,
+                numel * T::byte_size(),
+                data.as_mut_ptr().cast(),
+                0,
+                core::ptr::null(),
+                // TODO why does this not work?
+                //&[mem.event] as *const *mut c_void,
+            )
+        }
+        .unwrap();
+        cl3::event::wait_for_events(&[event]).unwrap();
+        // We are now done reading, so the vec is initialized
+        unsafe { data.set_len(numel) }
+        data
     }
 
     fn compile(&mut self, kernel: &Kernel) -> Self::Program {
-        todo!()
+        let global_work_size = [];
+        let local_work_size = [];
+        let res_byte_size = 0;
+        let mut source = f!("");
+        let mut endl = ",\n  ";
+
+        for (i, arg) in kernel.args().iter().enumerate() {
+            source = f!("{source}data{i}{endl}");
+        }
+
+        source = f!("{source}) {{{endl}");
+
+        Program::compile(&source, self.context, &self.devices, &global_work_size, &local_work_size, res_byte_size)
     }
 
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer {
@@ -259,4 +294,13 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
         //);
         Buffer { mem, event }
     }
+}
+
+#[test]
+fn exp_test() -> Result<(), ClError> {
+    let dev = crate::default()?;
+    let x = dev.randn([2, 3], crate::DType::F32);
+    let y = x.exp();
+    let x_vec: Vec<f32> = x.to_vec();
+    Ok(())
 }

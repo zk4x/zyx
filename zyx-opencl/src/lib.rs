@@ -5,9 +5,9 @@ mod runtime;
 extern crate alloc;
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 use cl3::error_codes::ClError;
 use core::cell::RefCell;
-use zyx_core::backend::BufferView;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::{tensor, IntoTensor};
 use zyx_core::{backend::Backend, node::Node, shape::Shape, tensor::Id};
@@ -74,7 +74,7 @@ impl Backend for &OpenCL {
         self.0.borrow_mut().backward(x, sources)
     }
 
-    fn load(self, x: Id) -> BufferView {
+    fn load<T: Scalar>(self, x: Id) -> Vec<T> {
         self.0.borrow_mut().load(x)
     }
 

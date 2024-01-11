@@ -50,6 +50,7 @@ pub fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
 }
 
 impl<B: Backend> Tensor<B> {
+    // Metadata
     #[must_use]
     pub fn shape(&self) -> Shape {
         self.backend.shape(self.id)
@@ -70,6 +71,14 @@ impl<B: Backend> Tensor<B> {
         self.backend
     }
 
+    // Access methods
+    pub fn to_vec<T: Scalar>(&self) -> Vec<T> {
+        // TODO perhaps this function can return Result?
+        assert_eq!(T::dtype(), self.dtype());
+        self.backend.load(self.id)
+    }
+
+    // Backpropagation
     #[must_use]
     pub fn backward<'a>(
         &'a self,

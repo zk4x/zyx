@@ -1,7 +1,6 @@
 use crate::{
     autograd::Autograd,
     axes::Axes,
-    backend::BufferView,
     dtype::DType,
     node::Node,
     scalar::Scalar,
@@ -17,8 +16,8 @@ use alloc::{
 pub trait Runtime {
     type Buffer;
     type Program;
-    fn store<T>(&mut self, iter: Box<dyn Iterator<Item = T>>) -> Self::Buffer;
-    fn load<T>(&mut self, buffer: &Self::Buffer) -> BufferView;
+    fn store<T: Scalar>(&mut self, iter: Box<dyn Iterator<Item = T>>) -> Self::Buffer;
+    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Vec<T>;
     fn compile(&mut self, kernel: &Kernel) -> Self::Program;
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer;
 }
@@ -53,6 +52,16 @@ enum Op {
 pub struct Kernel {
     args: Box<[(Shape, DType)]>,
     ops: Box<[Op]>,
+}
+
+impl Kernel {
+    pub fn args(&self) -> &[(Shape, DType)] {
+        &self.args
+    }
+
+    pub fn ops(&self) -> &[Op] {
+        &self.ops
+    }
 }
 
 impl<R: Runtime> CompiledBackend<R> {
@@ -128,14 +137,14 @@ impl<R: Runtime> CompiledBackend<R> {
         }
     }
 
-    pub fn load(&mut self, x: Id) -> BufferView {
+    pub fn load<T: Scalar>(&mut self, x: Id) -> Vec<T> {
         // This may need to evaluate, therefore we need to take mutable reference to self
         if !self.buffers.contains_key(&x) {
             // TODO also check if these are only movements ops,
             // in which case we can directly return iterator with view
             self.evaluate(BTreeSet::from([x]));
         }
-        todo!()
+        self.runtime.load(&self.buffers[&x], self.shape(x).numel())
     }
 
     pub fn set_leaf(&mut self, x: Id) {
