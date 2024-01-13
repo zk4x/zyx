@@ -4,10 +4,22 @@ use cl3::{
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
 };
 use core::ffi::c_void;
-use core::mem::MaybeUninit;
-use zyx_core::compiled_backend::Kernel;
+use zyx_core::compiled_backend::AST;
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
+
+trait OpenCLDType {
+    fn ocl_str(self) -> &'static str;
+}
+
+impl OpenCLDType for DType {
+    fn ocl_str(self) -> &'static str {
+        match self {
+            DType::F32 => "float",
+            DType::I32 => "int",
+        }
+    }
+}
 
 pub struct Buffer {
     mem: *mut c_void,
@@ -57,8 +69,8 @@ impl Program {
                 .join("_"),
         );
         let source = f!("__kernel void {name}{source}");
-        //#[cfg(feature = "debug1")]
-        //std::println!("Compiling source:\n{source}");
+        #[cfg(feature = "debug1")]
+        std::println!("Compiling source:\n{source}");
         let program = cl3::program::create_program_with_source(context, &[&source]).unwrap();
         let devices = devices.iter().copied().collect::<Vec<*mut c_void>>();
         if let Err(er) = cl3::program::build_program(
@@ -101,7 +113,7 @@ impl Runtime {
         #[cfg(feature = "debug1")]
         std::println!(
             "Using OpenCL platform: {}",
-            String::from_utf8(cl3::platform::get_platform_data(
+            alloc::string::String::from_utf8(cl3::platform::get_platform_data(
                 platform,
                 cl3::ext::CL_PLATFORM_NAME
             )?)
@@ -114,7 +126,7 @@ impl Runtime {
         for dev in &device_ids {
             std::println!(
                 "{}",
-                String::from_utf8(cl3::device::get_device_data(
+                alloc::string::String::from_utf8(cl3::device::get_device_data(
                     *dev,
                     cl3::ext::CL_DEVICE_NAME
                 )?)
@@ -210,18 +222,21 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
         data
     }
 
-    fn compile(&mut self, kernel: &Kernel) -> Self::Program {
+    fn compile(&mut self, ast: &AST) -> Self::Program {
         let global_work_size = [];
         let local_work_size = [];
         let res_byte_size = 0;
-        let mut source = f!("");
-        let mut endl = ",\n  ";
+        let mut source = f!("(\n  ");
+        let mut endl = f!(",\n  ");
 
-        for (i, arg) in kernel.args().iter().enumerate() {
-            source = f!("{source}data{i}{endl}");
+        for (i, arg) in ast.args().iter().enumerate() {
+            source = f!("{source}__global {}* data{i}{endl}", arg.1.ocl_str());
         }
 
-        source = f!("{source}) {{{endl}");
+        endl = f!(";\n  ");
+        source.pop();
+        source.pop();
+        source = f!("{source}) {{\n}}");
 
         Program::compile(&source, self.context, &self.devices, &global_work_size, &local_work_size, res_byte_size)
     }
@@ -298,9 +313,10 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
 
 #[test]
 fn exp_test() -> Result<(), ClError> {
-    let dev = crate::default()?;
+    let dev = crate::default_device()?;
     let x = dev.randn([2, 3], crate::DType::F32);
     let y = x.exp();
-    let x_vec: Vec<f32> = x.to_vec();
+    let y_vec: Vec<f32> = y.to_vec();
+    panic!("{y_vec:?}");
     Ok(())
 }

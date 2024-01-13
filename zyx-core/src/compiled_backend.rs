@@ -18,7 +18,7 @@ pub trait Runtime {
     type Program;
     fn store<T: Scalar>(&mut self, iter: Box<dyn Iterator<Item = T>>) -> Self::Buffer;
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Vec<T>;
-    fn compile(&mut self, kernel: &Kernel) -> Self::Program;
+    fn compile(&mut self, ast: &AST) -> Self::Program;
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer;
 }
 
@@ -30,12 +30,12 @@ pub struct CompiledBackend<R: Runtime> {
     leafs: BTreeSet<Id>, // these do not need backward graph
     runtime: R,
     buffers: BTreeMap<Id, R::Buffer>,
-    programs: BTreeMap<Kernel, R::Program>,
+    programs: BTreeMap<AST, R::Program>,
 }
 
 // These are all IDs into ops, leafs have IDs into args
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum Op {
+pub enum Op {
     Leaf(usize),
     CastF32(usize),
     Exp(usize),
@@ -49,12 +49,12 @@ enum Op {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub struct Kernel {
+pub struct AST {
     args: Box<[(Shape, DType)]>,
     ops: Box<[Op]>,
 }
 
-impl Kernel {
+impl AST {
     pub fn args(&self) -> &[(Shape, DType)] {
         &self.args
     }
@@ -200,14 +200,14 @@ impl<R: Runtime> CompiledBackend<R> {
                     let mut new_node = Node::LeafF32(shape.clone());
                     core::mem::swap(&mut self.nodes[nid.i()], &mut new_node);
                     if let Node::IterF32(iter, _) = new_node {
-                        self.runtime.store(iter);
+                        self.buffers.insert(nid, self.runtime.store(iter));
                     }
                 }
                 Node::IterI32(_, shape) => {
                     let mut new_node = Node::LeafI32(shape.clone());
                     core::mem::swap(&mut self.nodes[nid.i()], &mut new_node);
                     if let Node::IterI32(iter, _) = new_node {
-                        self.runtime.store(iter);
+                        self.buffers.insert(nid, self.runtime.store(iter));
                     }
                 }
                 Node::Expand(x, _) => {
@@ -222,6 +222,9 @@ impl<R: Runtime> CompiledBackend<R> {
                         params.extend(self.nodes[p.i()].parameters());
                     }
                 }
+            }
+            if nodes.contains(&nid) && !self.buffers.contains_key(&nid) {
+                self.evaluate_buffer(nid);
             }
             // TODO release nodes that are no longer needed.
             // And release intermediate buffers.
@@ -273,16 +276,16 @@ impl<R: Runtime> CompiledBackend<R> {
                 }
             });
         }
-        let kernel = Kernel {
+        let ast = AST {
             args: args.into_boxed_slice(),
             ops: ops.into_boxed_slice(),
         };
         // Used cached program or compile new program
-        let program = if let Some(program) = self.programs.get(&kernel) {
+        let program = if let Some(program) = self.programs.get(&ast) {
             program
         } else {
-            let program = self.runtime.compile(&kernel);
-            self.programs.entry(kernel).or_insert(program)
+            let program = self.runtime.compile(&ast);
+            self.programs.entry(ast).or_insert(program)
         };
         // Run the program
         self.buffers

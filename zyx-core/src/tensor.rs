@@ -176,7 +176,7 @@ impl<B: Backend> Tensor<B> {
     /// Pad last dimension by (1, 2)
     /// ```rust
     /// #use zyx_opencl;
-    /// #let dev = zyx_opencl::default().unwrap();
+    /// #let dev = zyx_opencl::default_device().unwrap();
     /// let x = dev.tensor([[2, 3],
     ///                     [4, 1]]);
     /// let z = x.pad([(1, 2)], 0);
@@ -186,7 +186,7 @@ impl<B: Backend> Tensor<B> {
     /// Pad second to last dimension by (2, -1) and last dimension by (1, 1)
     /// ```rust
     /// #use zyx_opencl;
-    /// #let dev = zyx_opencl::default().unwrap();
+    /// #let dev = zyx_opencl::default_device().unwrap();
     /// #let x = dev.tensor([[2, 3],
     /// #                    [4, 1]]);
     /// let z = x.pad([(2, -1), (1, 1)], 7);

@@ -8,3 +8,7 @@ edition = "2021"
 [dependencies]
 zyx-core = { version = "*", path = "../zyx-core" }
 cl3 = { version = "0.9.5", default-features = false }
+
+[features]
+default = ["debug1"]
+debug1 = []

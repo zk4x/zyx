@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(feature = "debug1")]
+extern crate std;
+
 mod runtime;
 
 extern crate alloc;
@@ -11,7 +14,6 @@ use core::cell::RefCell;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::{tensor, IntoTensor};
 use zyx_core::{backend::Backend, node::Node, shape::Shape, tensor::Id};
-
 use zyx_core::autograd::Autograd;
 use zyx_core::compiled_backend::CompiledBackend;
 pub use zyx_core::dtype::DType;
@@ -19,7 +21,7 @@ pub use zyx_core::tensor::Tensor;
 
 pub struct OpenCL(RefCell<CompiledBackend<runtime::Runtime>>);
 
-pub fn default() -> Result<OpenCL, ClError> {
+pub fn default_device() -> Result<OpenCL, ClError> {
     Ok(OpenCL(RefCell::new(CompiledBackend::new(
         runtime::Runtime::new()?,
     ))))
@@ -97,7 +99,7 @@ impl Backend for &OpenCL {
 
 #[test]
 fn t0() -> Result<(), ClError> {
-    let dev = default()?;
+    let dev = default_device()?;
     let x = dev.randn([2, 3], DType::F32);
     let y = dev.randn([2, 3], DType::F32);
     let z = (&x + &y).exp() + &x;
@@ -107,7 +109,7 @@ fn t0() -> Result<(), ClError> {
 
 #[test]
 fn test_layer_norm() -> Result<(), ClError> {
-    let dev = default()?;
+    let dev = default_device()?;
     let x = dev.randn([2, 3], DType::F32);
     let _n = x.shape()[-1];
 
