@@ -4,9 +4,11 @@ use cl3::{
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
 };
 use core::ffi::c_void;
-use zyx_core::compiled_backend::{AST, Op};
-use zyx_core::dtype::DType;
-use zyx_core::scalar::Scalar;
+use zyx_core::{
+    compiler::{AST, Op},
+    dtype::DType,
+    scalar::Scalar,
+}
 
 trait OpenCLDType {
     fn ocl_str(self) -> &'static str;
@@ -95,14 +97,14 @@ impl Program {
     }
 }
 
-pub(crate) struct Runtime {
+pub(crate) struct Compiler {
     context: *mut c_void,
     devices: BTreeSet<*mut c_void>,
     queues: Box<[*mut c_void]>,
     queue_id: usize,
 }
 
-impl Runtime {
+impl Compiler {
     pub(crate) fn new() -> Result<Self, ClError> {
         use cl3::ext::CL_DEVICE_TYPE_ALL;
         let platform_ids = cl3::platform::get_platform_ids()?;
@@ -171,7 +173,7 @@ impl Runtime {
     }
 }
 
-impl zyx_core::compiled_backend::Runtime for Runtime {
+impl zyx_core::compiler::Compiler for Compiler {
     type Buffer = Buffer;
     type Program = Program;
     fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Self::Buffer {
@@ -220,36 +222,6 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(numel) }
         data
-    }
-
-    fn compile(&mut self, ast: &AST) -> Self::Program {
-        let global_work_size = [];
-        let local_work_size = [];
-        let res_byte_size = 0;
-        let mut source = f!("(\n  ");
-        let mut endl = f!(",\n  ");
-
-        for (i, arg) in ast.args().iter().enumerate() {
-            source = f!("{source}__global {}* data{i}{endl}", arg.1.ocl_str());
-        }
-
-        endl = f!(";\n  ");
-        for (nid, op) in ast.ops().iter().enumerate() {
-            let res = match op {
-                // TODO check if this should be tile or data
-                // TODO add correct index
-                Op::Exp(x) => f!("data{nid}[] = exp(data{x}[])"),
-                _ => todo!(),
-            };
-            source = f!("{source}{res}{endl}");
-        }
-
-        endl = f!(";\n  ");
-        source.pop();
-        source.pop();
-        source = f!("{source}) {{\n}}");
-
-        Program::compile(&source, self.context, &self.devices, &global_work_size, &local_work_size, res_byte_size)
     }
 
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer {
@@ -319,6 +291,36 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
         //(1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64 / 1000000 as f64
         //);
         Buffer { mem, event }
+    }
+
+    fn compile(&mut self, ast: &AST) -> Self::Program {
+        let global_work_size = [];
+        let local_work_size = [];
+        let res_byte_size = 0;
+        let mut source = f!("(\n  ");
+        let mut endl = f!(",\n  ");
+
+        for (i, arg) in ast.args().iter().enumerate() {
+            source = f!("{source}__global {}* data{i}{endl}", arg.1.ocl_str());
+        }
+
+        endl = f!(";\n  ");
+        for (nid, op) in ast.ops().iter().enumerate() {
+            let res = match op {
+                // TODO check if this should be tile or data
+                // TODO add correct index
+                Op::Exp(x) => f!("data{nid}[] = exp(data{x}[])"),
+                _ => todo!(),
+            };
+            source = f!("{source}{res}{endl}");
+        }
+
+        endl = f!(";\n  ");
+        source.pop();
+        source.pop();
+        source = f!("{source}) {{\n}}");
+
+        Program::compile(&source, self.context, &self.devices, &global_work_size, &local_work_size, res_byte_size)
     }
 }
 

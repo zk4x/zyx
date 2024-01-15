@@ -1,59 +1,213 @@
-extern crate alloc;
+use crate::{
+    axes::Axes,
+    dtype::DType,
+    node::Node,
+    scalar::Scalar,
+    shape::Shape,
+    tensor::{id, Id},
+};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
+use crate::utils::{dtype, shape};
 
-use crate::dtype::DType;
-use crate::node::Node;
-use crate::shape::Shape;
-use crate::tensor::Id;
-use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
+pub(crate) trait RuntimeBackend {
+    fn is_evaluated(&self, x: Id) -> bool;
+    fn remove(&mut self, x: Id);
+    /// Load evaluated x
+    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Vec<T>;
+    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]);
+}
 
-pub trait Autograd {
-    fn nodes(&self) -> &[Node];
-    fn order(&self) -> &[Id];
-    fn push(&mut self, node: Node) -> Id;
-    fn release(&mut self, x: Id);
-    fn retain(&mut self, x: Id);
+pub struct Runtime<R: RuntimeBackend> {
+    rng: rand::rngs::SmallRng,
+    rcs: Vec<u8>,
+    order: Vec<Id>,
+    nodes: Vec<Node>,
+    leafs: BTreeSet<Id>, // these do not need backward graph
+    runtime_backend: R,
+}
 
-    fn shape(&self, mut x: Id) -> &Shape {
-        loop {
-            let node = &self.nodes()[x.i()];
-            match node {
-                Node::LeafF32(shape)
-                | Node::IterF32(_, shape)
-                | Node::UniformF32(shape, ..)
-                | Node::LeafI32(shape)
-                | Node::IterI32(_, shape)
-                | Node::UniformI32(shape, ..)
-                | Node::Reshape(_, shape)
-                | Node::Expand(_, shape)
-                | Node::Permute(.., shape)
-                | Node::Sum(.., shape)
-                | Node::Max(.., shape) => return shape,
-                _ => x = node.parameters().next().unwrap(),
+impl<R: RuntimeBackend> Runtime<R> {
+    pub fn new(runtime_backend: R) -> Self {
+        use rand::SeedableRng;
+        Self {
+            rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
+            rcs: Vec::new(),
+            order: Vec::new(),
+            nodes: Vec::new(),
+            leafs: BTreeSet::new(),
+            runtime_backend,
+        }
+    }
+
+    pub fn randn(&mut self, shape: Shape, dtype: DType) -> Id {
+        let shape: Shape = shape.into();
+        use rand::Rng;
+        let n = shape.numel();
+        let mut rng = self.rng.clone();
+        use rand::distributions::Standard;
+        let data = match dtype {
+            DType::F32 => self.push(Node::IterF32(
+                Box::new((0..n).map(move |_| rng.sample(Standard))),
+                shape,
+            )),
+            DType::I32 => self.push(Node::IterI32(
+                Box::new((0..n).map(move |_| rng.sample(Standard))),
+                shape,
+            )),
+        };
+        // change the state of the random seed in rng
+        for _ in 0..n {
+            self.rng.sample::<f32, _>(Standard);
+        }
+        data
+    }
+
+    pub fn uniform<T: Scalar>(&mut self, shape: Shape, low: T, high: T) -> Id {
+        match T::dtype() {
+            DType::F32 => self.push(Node::UniformF32(shape, low.into_f32(), high.into_f32())),
+            DType::I32 => self.push(Node::UniformI32(shape, low.into_i32(), high.into_i32())),
+        }
+    }
+
+    pub fn full<T: Scalar>(&mut self, shape: Shape, value: T) -> Id {
+        match T::dtype() {
+            DType::F32 => self.push(Node::IterF32(
+                Box::new(core::iter::repeat(value.into_f32()).take(shape.numel())),
+                shape,
+            )),
+            DType::I32 => self.push(Node::IterI32(
+                Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
+                shape,
+            )),
+        }
+    }
+
+    pub fn eye(&mut self, n: usize, dtype: DType) -> Id {
+        match dtype {
+            DType::F32 => self.push(Node::IterF32(
+                Box::new(
+                    (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. })),
+                ),
+                [n, n].into(),
+            )),
+            DType::I32 => self.push(Node::IterI32(
+                Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 }))),
+                [n, n].into(),
+            )),
+        }
+    }
+
+    pub fn shape(&self, x: Id) -> &Shape {
+        shape(&self.nodes, x)
+    }
+
+    pub fn dtype(&self, x: Id) -> DType {
+        dtype(&self.nodes, x)
+    }
+
+    pub fn load<T: Scalar>(&mut self, x: Id) -> Vec<T> {
+        // This may need to evaluate, therefore we need to take mutable reference to self
+        if !self.runtime_backend.is_evaluated(x) {
+            // TODO also check if these are only movements ops,
+            // in which case we can directly return iterator with view
+            self.evaluate(BTreeSet::from([x]));
+        }
+        self.runtime_backend.load(x, shape(&self.nodes, x).numel())
+    }
+
+    pub fn set_leaf(&mut self, x: Id) {
+        self.leafs.insert(x);
+    }
+
+    pub fn push(&mut self, node: Node) -> Id {
+        for nid in node.parameters() {
+            self.rcs[nid.i()] += 1;
+        }
+        let (i, new_node) = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
+            (id(i), false)
+        } else {
+            (id(self.rcs.len()), true)
+        };
+        if new_node {
+            self.rcs.push(1);
+            self.nodes.push(node);
+            self.order.push(i);
+        } else {
+            self.rcs[i.i()] = 1;
+            self.nodes[i.i()] = node;
+            // Keep the ordering, this is probably as fast as it gets
+            // (i. e. better track the ordering here then reconstruct
+            // the whole tree during evaluation)
+            let prev = self.order[i.i()];
+            for x in self.order.iter_mut() {
+                if *x > prev {
+                    *x -= 1;
+                }
+            }
+            self.order[i.i()] = id(self.order.len() - 1);
+        }
+        i
+    }
+
+    pub fn release(&mut self, x: Id) {
+        let mut params = Vec::with_capacity(10);
+        params.push(x);
+        while let Some(p) = params.pop() {
+            self.rcs[p.i()] -= 1;
+            if self.rcs[p.i()] == 0 {
+                params.extend(self.nodes[p.i()].parameters());
+                self.leafs.remove(&p);
+                self.runtime_backend.remove(p);
             }
         }
     }
 
-    fn dtype(&self, mut x: Id) -> DType {
-        loop {
-            let node = &self.nodes()[x.i()];
-            match node {
-                Node::LeafF32(..)
-                | Node::IterF32(..)
-                | Node::UniformF32(..)
-                | Node::CastF32(..) => return DType::F32,
-                Node::LeafI32(..)
-                | Node::IterI32(..)
-                | Node::UniformI32(..)
-                | Node::CastI32(..) => return DType::I32,
-                _ => x = node.parameters().next().unwrap(),
+    pub fn retain(&mut self, x: Id) {
+        self.rcs[x.i()] += 1;
+    }
+
+    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) {
+        // TODO we are probably going too many times back and forth in the graph.
+        // First we go back to create graph of all nodes that need to be evaluated.
+        // Then we go forward to find which nodes are kernel subgraphs.
+        // Then we go back again to create subgraphs for individual kernels.
+        // Then we go forward again to create the kernel itself.
+
+        // Find all needed parameters for calculation of nodes
+        let mut params: Vec<Id> = nodes.iter().copied().collect();
+        let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                params.extend(self.nodes[nid.i()].parameters());
+                1
+            });
+        }
+        let mut order: Vec<Id> = rcs.keys().copied().collect();
+        order.sort_by_cached_key(|nid| self.order[nid.i()]);
+
+        self.runtime_backend.evaluate(nodes, &order, &mut self.nodes);
+
+        // Release parts of graph that are not needed for backpropagation
+        while let Some(leaf) = self.leafs.pop_last() {
+            //std::println!("Releasing leaf {leaf}");
+            let shape = shape(&self.nodes, leaf).clone();
+            let mut node = match dtype(&self.nodes, leaf) {
+                DType::F32 => Node::LeafF32(shape),
+                DType::I32 => Node::LeafI32(shape),
+            };
+            core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
+            for nid in node.parameters() {
+                self.release(nid);
             }
         }
     }
 
     /// Common autograd engine, currently used by all backends
-    fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> BTreeMap<Id, Id> {
+    pub fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> BTreeMap<Id, Id> {
         fn build_topo(x: Id, sources: &BTreeSet<Id>, nodes: &[Node], order: &[Id]) -> Vec<Id> {
             // First we need to know which nodes require gradient
             let mut req_grad = BTreeSet::new();
@@ -83,7 +237,7 @@ pub trait Autograd {
             topo
         }
 
-        let topo = build_topo(x, sources, self.nodes(), self.order());
+        let topo = build_topo(x, sources, &self.nodes, &self.order);
         let req_grad: BTreeSet<Id> = topo
             .iter()
             .copied()
@@ -94,23 +248,23 @@ pub trait Autograd {
         // Node -> Grad
         let mut grads: BTreeMap<Id, Id> = BTreeMap::new();
         // Initial gradient of ones
-        let grad1 = match self.dtype(x) {
+        let grad1 = match dtype(&self.nodes, x) {
             DType::F32 => self.push(Node::IterF32(
                 Box::new([1.].into_iter()),
-                self.shape(x).clone(),
+                shape(&self.nodes, x).clone(),
             )),
             DType::I32 => self.push(Node::IterF32(
                 Box::new([1.].into_iter()),
-                self.shape(x).clone(),
+                shape(&self.nodes, x).clone(),
             )),
         };
-        grads.insert(x, self.push(Node::Expand(grad1, self.shape(x).clone())));
+        grads.insert(x, self.push(Node::Expand(grad1, shape(&self.nodes, x).clone())));
         self.release(grad1);
         // backpropagate
         // TODO this is not very clean code. Can we make it cleaner?
         for nid in topo {
             let grad = grads[&nid];
-            match self.nodes()[nid.i()] {
+            match self.nodes[nid.i()] {
                 Node::LeafF32(..)
                 | Node::LeafI32(..)
                 | Node::UniformF32(..)
@@ -147,7 +301,7 @@ pub trait Autograd {
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
                         // -grad*x/(y^2)
-                        let two = match self.dtype(y) {
+                        let two = match dtype(&self.nodes, y) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))
                             }
@@ -155,7 +309,7 @@ pub trait Autograd {
                                 self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))
                             }
                         };
-                        let two_e = self.push(Node::Expand(two, self.shape(y).clone()));
+                        let two_e = self.push(Node::Expand(two, shape(&self.nodes, y).clone()));
                         self.release(two);
                         let two_2 = self.push(Node::Pow(y, two_e));
                         self.release(two_e);
@@ -171,7 +325,7 @@ pub trait Autograd {
                 Node::Pow(x, y) => {
                     if req_grad.contains(&x) && !grads.contains_key(&x) {
                         // grad * y * x.pow(y-1)
-                        let one = match self.dtype(y) {
+                        let one = match dtype(&self.nodes, y) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))
                             }
@@ -179,7 +333,7 @@ pub trait Autograd {
                                 self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))
                             }
                         };
-                        let one1 = self.push(Node::Expand(one, self.shape(y).clone()));
+                        let one1 = self.push(Node::Expand(one, shape(&self.nodes, y).clone()));
                         self.release(one);
                         let y_1 = self.push(Node::Sub(y, one1));
                         self.release(one1);
@@ -207,7 +361,7 @@ pub trait Autograd {
                 Node::ReLU(x) => {
                     // TODO is grads.contains_key useless for unary ops?
                     grads.entry(x).or_insert_with(|| {
-                        let zero = match self.dtype(x) {
+                        let zero = match dtype(&self.nodes, x) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
                             }
@@ -215,7 +369,7 @@ pub trait Autograd {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
                             }
                         };
-                        let zeros = self.push(Node::Expand(zero, self.shape(x).clone()));
+                        let zeros = self.push(Node::Expand(zero, shape(&self.nodes, x).clone()));
                         self.release(zero);
                         let zl = self.push(Node::Cmplt(zeros, x));
                         self.release(zeros);
@@ -255,7 +409,7 @@ pub trait Autograd {
                 Node::Sqrt(x) => {
                     grads.entry(x).or_insert_with(|| {
                         // x_grad = grad/(2*sqrt(x))
-                        let x_shape = self.shape(x).clone();
+                        let x_shape = shape(&self.nodes, x).clone();
                         let two1 = self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()));
                         let two2 = self.push(Node::Expand(two1, x_shape));
                         self.release(two1);
@@ -267,13 +421,13 @@ pub trait Autograd {
                     });
                 }
                 Node::CastF32(x) => {
-                    grads.entry(x).or_insert_with(|| match self.dtype(x) {
+                    grads.entry(x).or_insert_with(|| match dtype(&self.nodes, x) {
                         DType::F32 => self.push(Node::CastF32(grad)),
                         DType::I32 => self.push(Node::CastI32(grad)),
                     });
                 }
                 Node::CastI32(x) => {
-                    grads.entry(x).or_insert_with(|| match self.dtype(x) {
+                    grads.entry(x).or_insert_with(|| match dtype(&self.nodes, x) {
                         DType::F32 => self.push(Node::CastF32(grad)),
                         DType::I32 => self.push(Node::CastI32(grad)),
                     });
@@ -284,8 +438,8 @@ pub trait Autograd {
                 Node::Tanh(x) => {
                     grads.entry(x).or_insert_with(|| {
                         // 1 - tanh^2(x)
-                        let shape = self.shape(x).clone();
-                        let (two1, one1) = match self.dtype(x) {
+                        let shape = shape(&self.nodes, x).clone();
+                        let (two1, one1) = match dtype(&self.nodes, x) {
                             DType::F32 => (
                                 self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into())),
                                 self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into())),
@@ -312,12 +466,12 @@ pub trait Autograd {
                 Node::Reshape(x, ..) => {
                     grads
                         .entry(x)
-                        .or_insert_with(|| self.push(Node::Reshape(grad, self.shape(x).clone())));
+                        .or_insert_with(|| self.push(Node::Reshape(grad, shape(&self.nodes, x).clone())));
                 }
-                Node::Expand(x, ref shape) => {
+                Node::Expand(x, ref sh) => {
                     if !grads.contains_key(&x) {
-                        let org_shape = self.shape(x).clone();
-                        let axes = org_shape.expand_axes(shape);
+                        let org_shape = shape(&self.nodes, x).clone();
+                        let axes = org_shape.expand_axes(sh);
                         let temp = self.push(Node::Sum(grad, axes, org_shape.clone()));
                         let x_grad = self.push(Node::Reshape(temp, org_shape));
                         self.release(temp);
@@ -326,7 +480,7 @@ pub trait Autograd {
                 }
                 Node::Permute(x, ref axes, _) => {
                     if !grads.contains_key(&x) {
-                        let shape = self.shape(x);
+                        let shape = shape(&self.nodes, x);
                         grads.insert(
                             x,
                             self.push(Node::Permute(grads[&nid], axes.argsort(), shape.clone())),
@@ -336,12 +490,12 @@ pub trait Autograd {
                 Node::Sum(x, ..) => {
                     grads
                         .entry(x)
-                        .or_insert_with(|| self.push(Node::Expand(grad, self.shape(x).clone())));
+                        .or_insert_with(|| self.push(Node::Expand(grad, shape(&self.nodes, x).clone())));
                 }
                 Node::Max(x, ..) => {
                     grads.entry(x).or_insert_with(|| {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
-                        let x_shape = self.shape(x).clone();
+                        let x_shape = shape(&self.nodes, x).clone();
                         let z_temp = self.push(Node::Expand(nid, x_shape.clone()));
                         let cmp_t = self.push(Node::Cmplt(x, z_temp));
                         self.release(z_temp);

@@ -3,20 +3,21 @@
 #[cfg(feature = "debug1")]
 extern crate std;
 
-mod runtime;
+mod compiler;
 
 extern crate alloc;
 
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
+use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 use cl3::error_codes::ClError;
-use zyx_core::scalar::Scalar;
-use zyx_core::tensor::{tensor, IntoTensor};
-use zyx_core::{backend::Backend, node::Node, shape::Shape, tensor::Id};
-use zyx_core::autograd::Autograd;
-use zyx_core::compiled_backend::CompiledBackend;
-pub use zyx_core::dtype::DType;
-pub use zyx_core::tensor::Tensor;
+use zyx_core::{
+    scalar::Scalar,
+    tensor::{tensor, IntoTensor},
+    backend::Backend, node::Node, shape::Shape, tensor::Id,
+    runtime::Runtime,
+};
+pub use zyx_core::{dtype::DType, tensor::Tensor};
+use zyx_core::compiler::CompiledBackend;
+use crate::compiler::Compiler;
 
 // This works OK, it gets rid of the RefCell overhead,
 // but it's only safe if used in single threaded environment.
@@ -44,11 +45,11 @@ impl<T> MCell<T> {
     }
 }
 
-pub struct OpenCL(MCell<CompiledBackend<runtime::Runtime>>);
+pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
 
 pub fn device() -> Result<OpenCL, ClError> {
-    Ok(OpenCL(MCell::new(CompiledBackend::new(
-        runtime::Runtime::new()?,
+    Ok(OpenCL(MCell::new(Runtime::new(
+        CompiledBackend::new(Compiler::new()?),
     ))))
 }
 
