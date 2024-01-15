@@ -4,7 +4,7 @@ use cl3::{
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
 };
 use core::ffi::c_void;
-use zyx_core::compiled_backend::AST;
+use zyx_core::compiled_backend::{AST, Op};
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 
@@ -174,7 +174,7 @@ impl Runtime {
 impl zyx_core::compiled_backend::Runtime for Runtime {
     type Buffer = Buffer;
     type Program = Program;
-    fn store<T>(&mut self, iter: Box<dyn Iterator<Item = T>>) -> Self::Buffer {
+    fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Self::Buffer {
         let data: Vec<T> = iter.collect();
         let size = data.len() * core::mem::size_of::<T>();
         let mem = unsafe {
@@ -231,6 +231,17 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
 
         for (i, arg) in ast.args().iter().enumerate() {
             source = f!("{source}__global {}* data{i}{endl}", arg.1.ocl_str());
+        }
+
+        endl = f!(";\n  ");
+        for (nid, op) in ast.ops().iter().enumerate() {
+            let res = match op {
+                // TODO check if this should be tile or data
+                // TODO add correct index
+                Op::Exp(x) => f!("data{nid}[] = exp(data{x}[])"),
+                _ => todo!(),
+            };
+            source = f!("{source}{res}{endl}");
         }
 
         endl = f!(";\n  ");
@@ -313,7 +324,7 @@ impl zyx_core::compiled_backend::Runtime for Runtime {
 
 #[test]
 fn exp_test() -> Result<(), ClError> {
-    let dev = crate::default_device()?;
+    let dev = crate::device()?;
     let x = dev.randn([2, 3], crate::DType::F32);
     let y = x.exp();
     let y_vec: Vec<f32> = y.to_vec();

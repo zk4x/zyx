@@ -6,7 +6,7 @@ pub struct Axes(pub(crate) Box<[usize]>);
 
 impl Axes {
     /// Iterate over axes
-    pub fn iter(&self) -> impl Iterator + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = &usize> + '_ {
         self.into_iter()
     }
 
@@ -37,6 +37,12 @@ pub trait IntoAxes: Clone {
     /// let axes = ax.into_axes(3);
     /// ```
     fn into_axes(self, rank: usize) -> Axes;
+}
+
+impl IntoAxes for Axes {
+    fn into_axes(self, rank: usize) -> Axes {
+        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+    }
 }
 
 impl IntoAxes for &[i64] {

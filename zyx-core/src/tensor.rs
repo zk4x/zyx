@@ -99,13 +99,21 @@ impl<B: Backend> Tensor<B> {
 
     // Unary ops
     #[must_use]
-    pub fn exp(&self) -> Tensor<B> {
-        self.unary_op(UOp::Exp)
+    pub fn cast(&self, dtype: DType) -> Tensor<B> {
+        match dtype {
+            DType::F32 => self.unary_op(UOp::CastF32),
+            DType::I32 => self.unary_op(UOp::CastI32),
+        }
     }
 
     #[must_use]
-    pub fn tanh(&self) -> Tensor<B> {
-        self.unary_op(UOp::Tanh)
+    pub fn neg(&self) -> Tensor<B> {
+        self.unary_op(UOp::Neg)
+    }
+
+    #[must_use]
+    pub fn relu(&self) -> Tensor<B> {
+        self.unary_op(UOp::ReLU)
     }
 
     #[must_use]
@@ -119,6 +127,26 @@ impl<B: Backend> Tensor<B> {
     }
 
     #[must_use]
+    pub fn ln(&self) -> Tensor<B> {
+        self.unary_op(UOp::Ln)
+    }
+
+    #[must_use]
+    pub fn exp(&self) -> Tensor<B> {
+        self.unary_op(UOp::Exp)
+    }
+
+    #[must_use]
+    pub fn tanh(&self) -> Tensor<B> {
+        self.unary_op(UOp::Tanh)
+    }
+
+    #[must_use]
+    pub fn sqrt(&self) -> Tensor<B> {
+        self.unary_op(UOp::Tanh)
+    }
+
+    #[must_use]
     pub fn dropout(&self, probability: f64) -> Tensor<B> {
         // This just uses Node::Uniform
         todo!()
@@ -126,8 +154,33 @@ impl<B: Backend> Tensor<B> {
 
     // Binary ops
     #[must_use]
+    pub fn add(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
+        self.binary_op(rhs, BOp::Add)
+    }
+
+    #[must_use]
+    pub fn sub(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
+        self.binary_op(rhs, BOp::Sub)
+    }
+
+    #[must_use]
+    pub fn mul(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
+        self.binary_op(rhs, BOp::Mul)
+    }
+
+    #[must_use]
+    pub fn div(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
+        self.binary_op(rhs, BOp::Div)
+    }
+
+    #[must_use]
+    pub fn pow(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
+        self.binary_op(rhs, BOp::Pow)
+    }
+
+    #[must_use]
     pub fn cmplt(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        todo!()
+        self.binary_op(rhs, BOp::Cmplt)
     }
 
     #[must_use]
@@ -136,36 +189,54 @@ impl<B: Backend> Tensor<B> {
         todo!()
     }
 
-    // Reduce ops
-    #[must_use]
-    pub fn sum(axes: impl IntoAxes) -> Tensor<B> {
-        todo!()
-    }
-
-    #[must_use]
-    pub fn max(axes: impl IntoAxes) -> Tensor<B> {
-        todo!()
-    }
-
-    #[must_use]
-    pub fn mean(axes: impl IntoAxes) -> Tensor<B> {
-        todo!()
-    }
-
     // Movement ops
     #[must_use]
     pub fn reshape(&self, shape: impl Into<Shape>) -> Tensor<B> {
-        todo!()
+        tensor(self.backend.push(Node::Reshape(self.id, shape.into())), self.backend)
     }
 
     #[must_use]
     pub fn expand(&self, shape: impl Into<Shape>) -> Tensor<B> {
-        todo!()
+        tensor(self.backend.push(Node::Expand(self.id, shape.into())), self.backend)
     }
 
     #[must_use]
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor<B> {
-        todo!()
+        let axes = axes.into_axes(self.rank());
+        let shape = self.shape().permute(&axes);
+        tensor(self.backend.push(Node::Permute(self.id, axes, shape)), self.backend)
+    }
+
+    // Reduce ops
+    #[must_use]
+    pub fn sum(&self, axes: impl IntoAxes) -> Tensor<B> {
+        let axes = axes.into_axes(self.rank());
+        let shape = self.shape().reduce(&axes);
+        tensor(self.backend.push(Node::Sum(self.id, axes, shape)), self.backend) }
+
+    #[must_use]
+    pub fn max(&self, axes: impl IntoAxes) -> Tensor<B> {
+        let axes = axes.into_axes(self.rank());
+        let shape = self.shape().reduce(&axes);
+        tensor(self.backend.push(Node::Max(self.id, axes, shape)), self.backend)
+    }
+
+    #[must_use]
+    pub fn mean(&self, axes: impl IntoAxes) -> Tensor<B> {
+        let shape = self.shape();
+        let axes = axes.into_axes(shape.rank());
+        self.sum(axes.clone())/axes.iter().copied().map(|a| shape[a]).product::<usize>() as i32
+    }
+
+    #[must_use]
+    pub fn var(&self, axes: impl IntoAxes) -> Tensor<B> {
+        let axes = axes.into_axes(self.rank());
+        (self - self.mean(axes.clone())).pow(2).sum(axes)
+    }
+
+    #[must_use]
+    pub fn std(&self, axes: impl IntoAxes) -> Tensor<B> {
+        self.var(axes).sqrt()
     }
 
     /// Constant padding
@@ -176,7 +247,7 @@ impl<B: Backend> Tensor<B> {
     /// Pad last dimension by (1, 2)
     /// ```rust
     /// #use zyx_opencl;
-    /// #let dev = zyx_opencl::default_device().unwrap();
+    /// #let dev = zyx_opencl::device().unwrap();
     /// let x = dev.tensor([[2, 3],
     ///                     [4, 1]]);
     /// let z = x.pad([(1, 2)], 0);
@@ -186,7 +257,7 @@ impl<B: Backend> Tensor<B> {
     /// Pad second to last dimension by (2, -1) and last dimension by (1, 1)
     /// ```rust
     /// #use zyx_opencl;
-    /// #let dev = zyx_opencl::default_device().unwrap();
+    /// #let dev = zyx_opencl::device().unwrap();
     /// #let x = dev.tensor([[2, 3],
     /// #                    [4, 1]]);
     /// let z = x.pad([(2, -1), (1, 1)], 7);
@@ -267,7 +338,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     #[must_use]
-    fn binary_op(&self, rhs: &Tensor<B>, op: BOp) -> Tensor<B> {
+    fn binary_op(&self, rhs: impl IntoTensor<B>, op: BOp) -> Tensor<B> {
+        // This does both automatic expand AND automatic casting between dtypes.
+        // Both of these can be disable by changing a setting in the backend.
         todo!()
     }
 }
@@ -307,19 +380,59 @@ impl<B: Backend, const N: usize> core::ops::Index<[i64; N]> for Tensor<B> {
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for &Tensor<B> {
     type Output = Tensor<B>;
     fn add(self, rhs: IT) -> Self::Output {
-        let rhs = rhs.into_tensor(self.backend);
-        tensor(self.backend.push(Node::Add(self.id, rhs.id)), self.backend)
+        self.binary_op(rhs, BOp::Add)
     }
 }
 
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for Tensor<B> {
     type Output = Tensor<B>;
     fn add(self, rhs: IT) -> Self::Output {
-        let rhs = rhs.into_tensor(self.backend);
-        tensor(self.backend.push(Node::Add(self.id, rhs.id)), self.backend)
+        self.binary_op(rhs, BOp::Add)
     }
 }
 
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Sub<IT> for &Tensor<B> {
+    type Output = Tensor<B>;
+    fn sub(self, rhs: IT) -> Self::Output {
+        self.binary_op(rhs, BOp::Sub)
+    }
+}
+
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Sub<IT> for Tensor<B> {
+    type Output = Tensor<B>;
+    fn sub(self, rhs: IT) -> Self::Output {
+        self.binary_op(rhs, BOp::Sub)
+    }
+}
+
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Mul<IT> for &Tensor<B> {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: IT) -> Self::Output {
+        self.binary_op(rhs, BOp::Mul)
+    }
+}
+
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Mul<IT> for Tensor<B> {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: IT) -> Self::Output {
+        self.binary_op(rhs, BOp::Mul)
+    }
+}
+
+
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Div<IT> for &Tensor<B> {
+    type Output = Tensor<B>;
+    fn div(self, rhs: IT) -> Self::Output {
+        self.binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend, IT: IntoTensor<B>> core::ops::Div<IT> for Tensor<B> {
+    type Output = Tensor<B>;
+    fn div(self, rhs: IT) -> Self::Output {
+        self.binary_op(rhs, BOp::Div)
+    }
+}
 pub trait IntoTensor<B: Backend> {
     fn into_tensor(self, backend: B) -> Tensor<B>;
 }
@@ -338,20 +451,6 @@ impl<B: Backend> IntoTensor<B> for &Tensor<B> {
     }
 }
 
-// This gives us Vec, 1d array and such, but we can not have it, cause it creates too many conflicts,
-// with like 2d arrays, which it should not, but you know how it goes.
-// Exact size is currently necessary, because we need to know the shape before collecting.
-/*impl<IT: IntoIterator<Item = f32>, B: Backend> IntoTensor<B> for IT
-where
-    IT::IntoIter: ExactSizeIterator + 'static,
-{
-    fn into_tensor(self, backend: B) -> Tensor<B> {
-        let iter = self.into_iter();
-        let n = iter.len();
-        tensor(backend.push(Node::IterF32(Box::new(iter), n.into())), backend)
-    }
-}*/
-
 impl<B: Backend> IntoTensor<B> for Vec<f32> {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         let n = self.len();
@@ -362,8 +461,6 @@ impl<B: Backend> IntoTensor<B> for Vec<f32> {
     }
 }
 
-// If we did not require 'static, we would need to copy this and store it on the heap,
-// so we may as well just leave it to the user to pass in Vec<f32> or Box<[f32]>
 impl<B: Backend> IntoTensor<B> for &'static [f32] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         let n = self.len();
@@ -410,6 +507,70 @@ impl<B: Backend, const D0: usize, const D1: usize, const D2: usize> IntoTensor<B
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
             backend.push(Node::IterF32(
+                Box::new(self.into_iter().flatten().flatten()),
+                [D0, D1, D2].into(),
+            )),
+            backend,
+        )
+    }
+}
+
+impl<B: Backend> IntoTensor<B> for Vec<i32> {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        let n = self.len();
+        tensor(
+            backend.push(Node::IterI32(Box::new(self.into_iter()), n.into())),
+            backend,
+        )
+    }
+}
+
+impl<B: Backend> IntoTensor<B> for &'static [i32] {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        let n = self.len();
+        tensor(
+            backend.push(Node::IterI32(Box::new(self.into_iter().copied()), n.into())),
+            backend,
+        )
+    }
+}
+
+impl<B: Backend> IntoTensor<B> for i32 {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(
+            backend.push(Node::IterI32(Box::new([self].into_iter()), 1.into())),
+            backend,
+        )
+    }
+}
+
+impl<B: Backend, const D0: usize> IntoTensor<B> for [i32; D0] {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(
+            backend.push(Node::IterI32(Box::new(self.into_iter()), D0.into())),
+            backend,
+        )
+    }
+}
+
+impl<B: Backend, const D0: usize, const D1: usize> IntoTensor<B> for [[i32; D1]; D0] {
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(
+            backend.push(Node::IterI32(
+                Box::new(self.into_iter().flatten()),
+                [D0, D1].into(),
+            )),
+            backend,
+        )
+    }
+}
+
+impl<B: Backend, const D0: usize, const D1: usize, const D2: usize> IntoTensor<B>
+for [[[i32; D2]; D1]; D0]
+{
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        tensor(
+            backend.push(Node::IterI32(
                 Box::new(self.into_iter().flatten().flatten()),
                 [D0, D1, D2].into(),
             )),

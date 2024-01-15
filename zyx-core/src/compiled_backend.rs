@@ -16,7 +16,7 @@ use alloc::{
 pub trait Runtime {
     type Buffer;
     type Program;
-    fn store<T: Scalar>(&mut self, iter: Box<dyn Iterator<Item = T>>) -> Self::Buffer;
+    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>) -> Self::Buffer;
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Vec<T>;
     fn compile(&mut self, ast: &AST) -> Self::Program;
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer;

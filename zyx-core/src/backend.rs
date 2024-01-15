@@ -1,8 +1,6 @@
 extern crate alloc;
-use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id};
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
-use crate::scalar::Scalar;
+use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id, scalar::Scalar};
+use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 
 pub trait Backend: Copy {
     /// Get shape if tensor x

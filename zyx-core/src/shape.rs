@@ -12,8 +12,14 @@ impl Shape {
         self.0.len()
     }
 
+    #[must_use]
     pub fn numel(&self) -> usize {
         self.0.iter().product()
+    }
+
+    #[must_use]
+    pub fn iter(&self) -> impl Iterator<Item = &usize> {
+        self.into_iter()
     }
 
     /// Get shape's strides
@@ -58,16 +64,40 @@ impl Shape {
                 .collect(),
         )
     }
+
+    #[must_use]
+    pub fn reduce(self, axes: &Axes) -> Shape {
+        let mut shape = self;
+        for a in axes.iter() {
+            shape.0[*a] = 1;
+        }
+        shape
+    }
+}
+
+impl core::ops::Index<i32> for Shape {
+    type Output = usize;
+    fn index(&self, index: i32) -> &Self::Output {
+        self.0
+            .get((index + self.rank() as i32) as usize % self.rank())
+            .unwrap()
+    }
 }
 
 impl core::ops::Index<i64> for Shape {
     type Output = usize;
-    #[allow(clippy::cast_possible_truncation)]
-    #[allow(clippy::cast_possible_wrap)]
-    #[allow(clippy::cast_sign_loss)]
     fn index(&self, index: i64) -> &Self::Output {
         self.0
             .get((index + self.rank() as i64) as usize % self.rank())
+            .unwrap()
+    }
+}
+
+impl core::ops::Index<usize> for Shape {
+    type Output = usize;
+    fn index(&self, index: usize) -> &Self::Output {
+        self.0
+            .get(index)
             .unwrap()
     }
 }
