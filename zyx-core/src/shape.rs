@@ -1,6 +1,12 @@
 extern crate alloc;
 use crate::axes::Axes;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::ops::Range;
+
+fn to_usize_idx(index: i64, rank: usize) -> usize {
+    (index + rank as i64) as usize % rank
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Shape(Box<[usize]>);
@@ -65,6 +71,26 @@ impl Shape {
         )
     }
 
+    pub(crate) fn expand_strides(&self, shape: &Shape, mut old_strides: Shape) -> Shape {
+        let mut vec = self.0.to_vec();
+        while vec.len() < shape.rank() {
+            vec.insert(0, 1);
+            old_strides.0 = [0]
+                .into_iter()
+                .chain(old_strides.0.iter().copied())
+                .collect();
+        }
+        let old_shape: Shape = vec.into();
+        Shape(
+            old_shape
+                .into_iter()
+                .zip(shape)
+                .zip(&old_strides)
+                .map(|((od, nd), st)| if od == nd { *st } else { 0 })
+                .collect(),
+        )
+    }
+
     #[must_use]
     pub fn reduce(self, axes: &Axes) -> Shape {
         let mut shape = self;
@@ -79,7 +105,7 @@ impl core::ops::Index<i32> for Shape {
     type Output = usize;
     fn index(&self, index: i32) -> &Self::Output {
         self.0
-            .get((index + self.rank() as i32) as usize % self.rank())
+            .get(to_usize_idx(index as i64, self.rank()))
             .unwrap()
     }
 }
@@ -88,7 +114,7 @@ impl core::ops::Index<i64> for Shape {
     type Output = usize;
     fn index(&self, index: i64) -> &Self::Output {
         self.0
-            .get((index + self.rank() as i64) as usize % self.rank())
+            .get(to_usize_idx(index, self.rank()))
             .unwrap()
     }
 }
@@ -99,6 +125,20 @@ impl core::ops::Index<usize> for Shape {
         self.0
             .get(index)
             .unwrap()
+    }
+}
+
+impl core::ops::Index<Range<i64>> for Shape {
+    type Output = [usize];
+    fn index(&self, index: Range<i64>) -> &Self::Output {
+        let rank = self.rank();
+        self.0.get(to_usize_idx(index.start, rank)..to_usize_idx(index.end, rank)).unwrap()
+    }
+}
+
+impl From<Vec<usize>> for Shape {
+    fn from(value: Vec<usize>) -> Self {
+        Shape(value.iter().copied().collect())
     }
 }
 

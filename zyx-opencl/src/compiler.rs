@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::BTreeSet, ffi::CString, format as f, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeSet, ffi::CString, format as f, vec::Vec, string::String};
 use cl3::{
     error_codes::ClError,
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
@@ -8,10 +8,12 @@ use zyx_core::{
     compiler::{AST, Op},
     dtype::DType,
     scalar::Scalar,
-}
+};
+use zyx_core::compiler::ROp;
 
 trait OpenCLDType {
     fn ocl_str(self) -> &'static str;
+    fn from_ocl_str(str: &str) -> DType;
 }
 
 impl OpenCLDType for DType {
@@ -19,6 +21,14 @@ impl OpenCLDType for DType {
         match self {
             DType::F32 => "float",
             DType::I32 => "int",
+        }
+    }
+
+    fn from_ocl_str(str: &str) -> DType {
+        match str {
+            "float" => DType::F32,
+            "int" => DType::I32,
+            _ => panic!(),
         }
     }
 }
@@ -36,6 +46,7 @@ impl Drop for Buffer {
 }
 
 pub struct Program {
+    name: String,
     program: *mut c_void,
     global_work_size: Box<[usize]>,
     local_work_size: Box<[usize]>,
@@ -56,9 +67,11 @@ impl Program {
         global_work_size: &[usize],
         local_work_size: &[usize],
         res_byte_size: usize,
+        reduce: bool,
     ) -> Self {
         let name = f!(
-            "e__{}__{}",
+            "{}__{}__{}",
+            if reduce { "r" } else { "e" },
             global_work_size
                 .iter()
                 .map(|x| f!("{x}"))
@@ -89,6 +102,7 @@ impl Program {
             );
         };
         Self {
+            name,
             program,
             global_work_size: global_work_size.iter().copied().collect(),
             local_work_size: local_work_size.iter().copied().collect(),
@@ -225,9 +239,8 @@ impl zyx_core::compiler::Compiler for Compiler {
     }
 
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer {
-        let name = "kernel0";
         let kernel =
-            cl3::kernel::create_kernel(program.program, &CString::new(name).unwrap()).unwrap();
+            cl3::kernel::create_kernel(program.program, &CString::new(program.name.clone()).unwrap()).unwrap();
         let mem = unsafe {
             cl3::memory::create_buffer(
                 self.context,
@@ -260,9 +273,8 @@ impl zyx_core::compiler::Compiler for Compiler {
             .unwrap();
             i += 1;
         }
-
-        //#[cfg(feature = "debug1")]
-        //let begin = std::time::Instant::now();
+        #[cfg(feature = "debug1")]
+        let begin = std::time::Instant::now();
         let event = unsafe {
             cl3::command_queue::enqueue_nd_range_kernel(
                 self.queue(),
@@ -270,8 +282,6 @@ impl zyx_core::compiler::Compiler for Compiler {
                 u32::try_from(program.global_work_size.len()).unwrap(),
                 core::ptr::null(),
                 program.global_work_size.as_ptr(),
-                // Following line is funny. Removing as_ref causes local_work_size to be moved,
-                // thus as_ptr would be use after free
                 program.local_work_size.as_ptr(),
                 u32::try_from(events.len()).unwrap(),
                 if events.is_empty() {
@@ -282,46 +292,82 @@ impl zyx_core::compiler::Compiler for Compiler {
             )
         }
         .expect("could not execute opencl kernel.");
-        //#[cfg(feature = "debug1")]
+        #[cfg(feature = "debug1")]
         cl3::event::wait_for_events(&[event]).unwrap();
-        //#[cfg(feature = "debug1")]
-        //let elapsed = begin.elapsed().as_millis();
-        //std::println!(
-        //"Kernel execution took {elapsed}ms, that is {} GFLOPS",
-        //(1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64 / 1000000 as f64
-        //);
+        #[cfg(feature = "debug1")]
+        let elapsed = begin.elapsed().as_millis();
+        std::println!(
+            "Kernel execution took {elapsed}ms, that is {} GFLOPS",
+            (1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64 / 1000000 as f64
+        );
         Buffer { mem, event }
     }
 
     fn compile(&mut self, ast: &AST) -> Self::Program {
-        let global_work_size = [];
-        let local_work_size = [];
-        let res_byte_size = 0;
-        let mut source = f!("(\n  ");
-        let mut endl = f!(",\n  ");
-
-        for (i, arg) in ast.args().iter().enumerate() {
-            source = f!("{source}__global {}* data{i}{endl}", arg.1.ocl_str());
+        if matches!(ast.reduce(), ROp::None) {
+            let (source, gws, lws, rbs) = compile_e_kernel(ast);
+            Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, false)
+        } else {
+            let (source, gws, lws, rbs) = compile_r_kernel(ast);
+            Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, true)
         }
-
-        endl = f!(";\n  ");
-        for (nid, op) in ast.ops().iter().enumerate() {
-            let res = match op {
-                // TODO check if this should be tile or data
-                // TODO add correct index
-                Op::Exp(x) => f!("data{nid}[] = exp(data{x}[])"),
-                _ => todo!(),
-            };
-            source = f!("{source}{res}{endl}");
-        }
-
-        endl = f!(";\n  ");
-        source.pop();
-        source.pop();
-        source = f!("{source}) {{\n}}");
-
-        Program::compile(&source, self.context, &self.devices, &global_work_size, &local_work_size, res_byte_size)
     }
+}
+
+fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
+    let tile_width = 16;
+    let tile_height = 16;
+    let global_work_size = alloc::vec![256, 256];
+    let local_work_size = alloc::vec![tile_height, tile_width];
+    let res_byte_size: usize = global_work_size.iter().product();
+    let mut source = f!("(\n  ");
+    let mut endl = f!(",\n  ");
+
+    let mut res_id = 0;
+    for arg in ast.args() {
+        source = f!("{source}__global const {}* data{res_id}{endl}", arg.1.ocl_str());
+        res_id += 1;
+    }
+    source = f!("{source}__global RES_DTYPE* data{res_id}{endl}");
+    source.pop();
+    source.pop();
+    source.pop();
+    source.pop();
+    source = f!("{source}\n) {{\n  ");
+
+    endl = f!(";\n  ");
+    source = f!("{source}int gidx0 = get_group_id(0){endl}");
+    source = f!("{source}int gidx1 = get_group_id(1){endl}");
+    source = f!("{source}int lidx0 = get_local_id(0){endl}");
+    source = f!("{source}int lidx1 = get_local_id(1){endl}");
+    source = f!("{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}", global_work_size[1]);
+    let mut dtype = DType::F32.ocl_str();
+    let mut nid = 0;
+    for op in ast.ops().iter() {
+        let res = match op {
+            // TODO check if this should be tile or data
+            // TODO add correct index
+            Op::Leaf(x) => {
+                let (view, t) = &ast.args()[*x];
+                dtype = t.ocl_str();
+                f!("{dtype} var{nid} = data{x}[{}]", view.cidx())
+            }
+            Op::Exp(x) => f!("{dtype} var{nid}[] = exp(var{x}[])"),
+            _ => todo!(),
+        };
+        source = f!("{source}{res}{endl}");
+        nid += 1;
+    }
+    source = source.replace("RES_DTYPE", &f!("{dtype}"));
+    source = f!("{source}data{res_id}[idx0] = var{}{endl}", nid-1);
+    source.pop();
+    source.pop();
+    source = f!("{source}}}");
+    (source, global_work_size, local_work_size, res_byte_size * DType::from_ocl_str(dtype).byte_size())
+}
+
+fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
+    todo!()
 }
 
 #[test]

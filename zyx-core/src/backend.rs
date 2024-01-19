@@ -3,6 +3,8 @@ use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id, scalar::Scalar};
 use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 
 pub trait Backend: Copy {
+    /// Create uniform tensor, 0..1 if real, MIN..MAX if integer
+    fn _uniform(self, shape: Shape, dtype: DType) -> Id;
     /// Get shape if tensor x
     fn shape(self, x: Id) -> Shape;
     /// Get dtype of tensor x

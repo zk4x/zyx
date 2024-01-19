@@ -1,5 +1,4 @@
 use crate::{
-    axes::Axes,
     dtype::DType,
     node::Node,
     scalar::Scalar,
@@ -13,7 +12,7 @@ use alloc::{
 };
 use crate::utils::{dtype, shape};
 
-pub(crate) trait RuntimeBackend {
+pub trait RuntimeBackend {
     fn is_evaluated(&self, x: Id) -> bool;
     fn remove(&mut self, x: Id);
     /// Load evaluated x
@@ -64,6 +63,13 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.rng.sample::<f32, _>(Standard);
         }
         data
+    }
+
+    pub fn _uniform(&mut self, shape: Shape, dtype: DType) -> Id {
+        match dtype {
+            DType::F32 => self.push(Node::UniformF32(shape, 0., 1.)),
+            DType::I32 => self.push(Node::UniformI32(shape, i32::MIN, i32::MAX)),
+        }
     }
 
     pub fn uniform<T: Scalar>(&mut self, shape: Shape, low: T, high: T) -> Id {
@@ -420,13 +426,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                         x_grad
                     });
                 }
-                Node::CastF32(x) => {
-                    grads.entry(x).or_insert_with(|| match dtype(&self.nodes, x) {
-                        DType::F32 => self.push(Node::CastF32(grad)),
-                        DType::I32 => self.push(Node::CastI32(grad)),
-                    });
-                }
-                Node::CastI32(x) => {
+                Node::CastF32(x) | Node::CastI32(x) => {
                     grads.entry(x).or_insert_with(|| match dtype(&self.nodes, x) {
                         DType::F32 => self.push(Node::CastF32(grad)),
                         DType::I32 => self.push(Node::CastI32(grad)),

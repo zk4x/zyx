@@ -12,3 +12,4 @@ pub mod shape;
 pub mod tensor;
 pub mod compiler;
 pub mod utils;
+pub mod view;

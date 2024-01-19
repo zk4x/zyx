@@ -1,14 +1,17 @@
-use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
-use crate::axes::Axes;
-use crate::dtype::DType;
-use crate::node::Node;
-use crate::runtime::RuntimeBackend;
-use crate::scalar::Scalar;
-use crate::shape::Shape;
-use crate::tensor::Id;
-use crate::utils::{dtype, shape};
+use crate::{
+    dtype::DType,
+    node::Node,
+    runtime::RuntimeBackend,
+    scalar::Scalar,
+    tensor::Id,
+    utils::{dtype, shape},
+    view::View,
+};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 pub trait Compiler {
     type Buffer;
@@ -26,27 +29,39 @@ pub enum Op {
     CastF32(usize),
     Exp(usize),
     Add(usize, usize),
-    Reshape(Shape),
-    Expand(Shape),
-    Permute(Axes),
-    //Pad(Box<[(i64, i64)]>),
-    Sum(Axes),
-    Max(Axes),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub enum ROp {
+    None,
+    Sum,
+    Max,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub struct AST {
-    args: Box<[(Shape, DType)]>,
+    args: Box<[(View, DType)]>,
     ops: Box<[Op]>,
+    reduce: ROp,
+    ar_ops: Box<[Op]>,
 }
 
 impl AST {
-    pub fn args(&self) -> &[(Shape, DType)] {
+    pub fn args(&self) -> &[(View, DType)] {
         &self.args
     }
 
     pub fn ops(&self) -> &[Op] {
         &self.ops
+    }
+
+    pub fn reduce(&self) -> &ROp {
+        &self.reduce
+    }
+
+    // Ops applied after reduce
+    pub fn ar_ops(&self) -> &[Op] {
+        &self.ar_ops
     }
 }
 
@@ -158,23 +173,53 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut program_args = Vec::new();
         let mut args = Vec::new();
         let mut ops = Vec::new();
+        let mut ar_ops = Vec::new();
+        let mut after_reduce = false;
+        let mut reduce = ROp::None;
         let mut mapping = BTreeMap::new();
         for nid in porder {
             mapping.insert(nid, ops.len());
-            ops.push(if let Some(x) = self.buffers.get(&nid) {
-                args.push((shape(&nodes, nid).clone(), dtype(&nodes, nid)));
+            if let Some(x) = self.buffers.get(&nid) {
+                args.push((View::new(shape(&nodes, nid).clone()), dtype(&nodes, nid)));
                 program_args.push(x);
-                Op::Leaf(args.len() - 1)
-            } else {
-                match nodes[nid.i()] {
-                    Node::Exp(x) => Op::Exp(mapping[&x]),
-                    _ => todo!(),
+                if after_reduce {
+                    ar_ops.push(Op::Leaf(args.len() - 1));
+                } else {
+                    ops.push(Op::Leaf(args.len() - 1));
                 }
-            });
+            } else {
+                match &nodes[nid.i()] {
+                    Node::IterF32(..) | Node::IterI32(..) => {},
+                    Node::Exp(x) => {
+                        if after_reduce {
+                            ar_ops.push(Op::Exp(mapping[x]));
+                        } else {
+                            ops.push(Op::Exp(mapping[x]));
+                        }
+                    }
+                    Node::Expand(x, sh) => {
+                        let mut params = alloc::vec![*x];
+                        while let Some(p) = params.pop() {
+                            if let Op::Leaf(a) = ops[p.i()] {
+                                args[a].0.expand(sh);
+                            }
+                            params.extend(nodes[x.i()].parameters());
+                        }
+                    }
+                    _ => todo!("Op is not implemented yet."),
+                }
+            };
+        }
+        if matches!(reduce, ROp::None) {
+            for (view, _) in &mut args {
+                *view = view.reshape(&view.numel().into());
+            }
         }
         let ast = AST {
             args: args.into_boxed_slice(),
             ops: ops.into_boxed_slice(),
+            reduce,
+            ar_ops: Box::new([]),
         };
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {
