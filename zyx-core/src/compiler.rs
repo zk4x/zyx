@@ -109,6 +109,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 | Node::Cmplt(..)
                 | Node::Reshape(..)
                 | Node::Permute(..)
+                | Node::Pad(..)
                 | Node::Sum(..)
                 | Node::Max(..) => {}
                 Node::IterF32(_, shape) => {
@@ -174,8 +175,8 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut args = Vec::new();
         let mut ops = Vec::new();
         let mut ar_ops = Vec::new();
-        let mut after_reduce = false;
-        let mut reduce = ROp::None;
+        let after_reduce = false;
+        let reduce = ROp::None;
         let mut mapping = BTreeMap::new();
         for nid in porder {
             mapping.insert(nid, ops.len());

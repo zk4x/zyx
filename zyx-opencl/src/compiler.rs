@@ -314,6 +314,7 @@ impl zyx_core::compiler::Compiler for Compiler {
     }
 }
 
+/// Elementwise kernel
 fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     let tile_width = 16;
     let tile_height = 16;
@@ -366,7 +367,8 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     (source, global_work_size, local_work_size, res_byte_size * DType::from_ocl_str(dtype).byte_size())
 }
 
-fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
+/// Reduce kernel
+fn compile_r_kernel(_ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     todo!()
 }
 
@@ -375,7 +377,7 @@ fn exp_test() -> Result<(), ClError> {
     let dev = crate::device()?;
     let x = dev.randn([2, 3], crate::DType::F32);
     let y = x.exp();
-    let y_vec: Vec<f32> = y.to_vec();
-    panic!("{y_vec:?}");
+    let _y_vec: Vec<f32> = y.to_vec();
+    //panic!("{y_vec:?}");
     Ok(())
 }

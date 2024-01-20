@@ -6,8 +6,8 @@ extern crate std;
 mod compiler;
 
 extern crate alloc;
-
 use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
+use core::ops::Range;
 use cl3::error_codes::ClError;
 use zyx_core::{
     scalar::Scalar,
@@ -30,7 +30,7 @@ struct MCell<T> {
 }
 
 impl<T> MCell<T> {
-    fn new(inner: T) -> MCell<T> {
+    const fn new(inner: T) -> MCell<T> {
         MCell {
             inner: core::cell::UnsafeCell::new(inner),
         }
@@ -62,11 +62,11 @@ impl OpenCL {
         tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
     }
 
-    pub fn uniform<T: Scalar>(&self, shape: impl Into<Shape>, low: T, high: T) -> Tensor<&Self> {
-        tensor(self.0.update(|b| b.uniform(shape.into(), low, high)), self)
+    pub fn uniform(&self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<&Self> {
+        tensor(self.0.update(|b| b.uniform(shape.into(), range.start, range.end)), self)
     }
 
-    pub fn full<T: Scalar>(&self, shape: impl Into<Shape>, value: T) -> Tensor<&Self> {
+    pub fn full(&self, shape: impl Into<Shape>, value: impl Scalar) -> Tensor<&Self> {
         tensor(self.0.update(|b| b.full(shape.into(), value)), self)
     }
 

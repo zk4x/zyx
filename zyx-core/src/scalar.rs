@@ -1,10 +1,16 @@
 use crate::dtype::DType;
 
+/// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Clone + 'static {
+    /// Get dtype of Self
     fn dtype() -> DType;
+    /// Get zero of Self
     fn zero() -> Self;
+    /// Bute size of Self
     fn byte_size() -> usize;
+    /// Convert self into f32
     fn into_f32(self) -> f32;
+    /// Convert self into i32
     fn into_i32(self) -> i32;
     /// Square root of this scalar.
     /// Note that this function may be imprecise.

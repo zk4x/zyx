@@ -2,6 +2,8 @@ extern crate alloc;
 use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id, scalar::Scalar};
 use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 
+/// Backend for [tensors](Tensor).
+/// Tensor requires that all backends implement this trait and only this trait.
 pub trait Backend: Copy {
     /// Create uniform tensor, 0..1 if real, MIN..MAX if integer
     fn _uniform(self, shape: Shape, dtype: DType) -> Id;

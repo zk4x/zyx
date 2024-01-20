@@ -3,6 +3,7 @@ use crate::node::Node;
 use crate::shape::Shape;
 use crate::tensor::Id;
 
+/// Recursive search to get shape of x in nodes
 pub fn shape(nodes: &[Node], mut x: Id) -> &Shape {
     loop {
         let node = &nodes[x.i()];
@@ -23,6 +24,7 @@ pub fn shape(nodes: &[Node], mut x: Id) -> &Shape {
     }
 }
 
+/// Recursive search to get dtype of x in nodes
 pub fn dtype(nodes: &[Node], mut x: Id) -> DType {
     loop {
         let node = &nodes[x.i()];

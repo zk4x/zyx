@@ -1,6 +1,8 @@
 extern crate alloc;
 use alloc::boxed::Box;
 
+/// Axes used in reduce and permute operations.
+/// Just Box<[usize]>.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Axes(pub(crate) Box<[usize]>);
 
@@ -10,6 +12,7 @@ impl Axes {
         self.into_iter()
     }
 
+    /// Returns the indices that sort axes in ascending order by value.
     pub fn argsort(&self) -> Axes {
         let mut axes: Box<[(usize, usize)]> = self.0.iter().copied().enumerate().collect();
         axes.sort_by_key(|(_, v)| *v);

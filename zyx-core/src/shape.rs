@@ -8,21 +8,25 @@ fn to_usize_idx(index: i64, rank: usize) -> usize {
     (index + rank as i64) as usize % rank
 }
 
+/// Shape of tensor
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Shape(Box<[usize]>);
 
 impl Shape {
     /// Get shape's rank
     #[must_use]
-    pub fn rank(&self) -> usize {
+    pub const fn rank(&self) -> usize {
         self.0.len()
     }
 
+    /// Get number of elements in tensor with this shape
+    /// (a product of it's dimensions).
     #[must_use]
     pub fn numel(&self) -> usize {
         self.0.iter().product()
     }
 
+    /// Iter
     #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &usize> {
         self.into_iter()
@@ -55,7 +59,7 @@ impl Shape {
         Self(axes.into_iter().map(|axis| self.0[*axis]).collect())
     }
 
-    // Get axes along which self was expanded to shape
+    /// Get axes along which self was expanded to shape
     #[must_use]
     pub fn expand_axes(&self, shape: &Shape) -> Axes {
         let mut vec = self.0.to_vec();
@@ -91,6 +95,7 @@ impl Shape {
         )
     }
 
+    /// Reduce self along axes
     #[must_use]
     pub fn reduce(self, axes: &Axes) -> Shape {
         let mut shape = self;

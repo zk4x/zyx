@@ -12,14 +12,24 @@ use alloc::{
 };
 use crate::utils::{dtype, shape};
 
+/// RuntimeBackend is a good plug in point for backend developers.
+/// Use Runtime::new(YourOwnStructThatImplementsRuntimeBackend::new()) to write your
+/// own backend which needs to implement only evaluation of graph.
+/// Used by torch and native backends.
 pub trait RuntimeBackend {
+    /// Is tensor x evaluated?
     fn is_evaluated(&self, x: Id) -> bool;
+    /// Delete all memory used by tensor x.
     fn remove(&mut self, x: Id);
-    /// Load evaluated x
+    /// Load evaluated tensor x.
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Vec<T>;
+    /// Evaluate tensors to_eval with given graph of nodes and recommended
+    /// order of evaluation.
     fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]);
 }
 
+/// Runtime with autograd engine.
+/// This runtime uses [Node] enum as representation of tensors.
 pub struct Runtime<R: RuntimeBackend> {
     rng: rand::rngs::SmallRng,
     rcs: Vec<u8>,
@@ -30,6 +40,7 @@ pub struct Runtime<R: RuntimeBackend> {
 }
 
 impl<R: RuntimeBackend> Runtime<R> {
+    /// Initialize new runtime.
     pub fn new(runtime_backend: R) -> Self {
         use rand::SeedableRng;
         Self {
@@ -42,6 +53,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
     }
 
+    /// Create tensor initialized from normal distribution.
     pub fn randn(&mut self, shape: Shape, dtype: DType) -> Id {
         let shape: Shape = shape.into();
         use rand::Rng;
@@ -65,6 +77,9 @@ impl<R: RuntimeBackend> Runtime<R> {
         data
     }
 
+    /// Create tensor initialized from uniform distribution.
+    /// If this tensor is floating point, values will be generated from range 0.0..1.0
+    /// otherwise values will be generated from range integer::MIN..integer::MAX
     pub fn _uniform(&mut self, shape: Shape, dtype: DType) -> Id {
         match dtype {
             DType::F32 => self.push(Node::UniformF32(shape, 0., 1.)),
@@ -72,6 +87,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
     }
 
+    /// Create uniform tensor from range low..high
     pub fn uniform<T: Scalar>(&mut self, shape: Shape, low: T, high: T) -> Id {
         match T::dtype() {
             DType::F32 => self.push(Node::UniformF32(shape, low.into_f32(), high.into_f32())),
@@ -79,6 +95,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
     }
 
+    /// Create tensor filled with repeating value
     pub fn full<T: Scalar>(&mut self, shape: Shape, value: T) -> Id {
         match T::dtype() {
             DType::F32 => self.push(Node::IterF32(
@@ -92,6 +109,8 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
     }
 
+    /// Create square eye matrix, i.e. matrix where all elements are zeros, except for elements
+    /// on the main diagonal, which are ones.
     pub fn eye(&mut self, n: usize, dtype: DType) -> Id {
         match dtype {
             DType::F32 => self.push(Node::IterF32(
@@ -107,14 +126,17 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
     }
 
+    /// Get shape of tensor x
     pub fn shape(&self, x: Id) -> &Shape {
         shape(&self.nodes, x)
     }
 
+    /// Get dtype of tensor x
     pub fn dtype(&self, x: Id) -> DType {
         dtype(&self.nodes, x)
     }
 
+    /// Load tensor x
     pub fn load<T: Scalar>(&mut self, x: Id) -> Vec<T> {
         // This may need to evaluate, therefore we need to take mutable reference to self
         if !self.runtime_backend.is_evaluated(x) {
@@ -125,10 +147,13 @@ impl<R: RuntimeBackend> Runtime<R> {
         self.runtime_backend.load(x, shape(&self.nodes, x).numel())
     }
 
+    /// Set tensor x as leaf. Leaf tensors do not need to store graph of operations,
+    /// because user does not hold references to any of it's predecessors.
     pub fn set_leaf(&mut self, x: Id) {
         self.leafs.insert(x);
     }
 
+    /// Push new Node into the graph creating new tensor.
     pub fn push(&mut self, node: Node) -> Id {
         for nid in node.parameters() {
             self.rcs[nid.i()] += 1;
@@ -159,6 +184,8 @@ impl<R: RuntimeBackend> Runtime<R> {
         i
     }
 
+    /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
+    /// x and release all of it's predecessors in the graph.
     pub fn release(&mut self, x: Id) {
         let mut params = Vec::with_capacity(10);
         params.push(x);
@@ -172,10 +199,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
     }
 
+    /// Increase reference count of tensor x.
     pub fn retain(&mut self, x: Id) {
         self.rcs[x.i()] += 1;
     }
 
+    /// Evaluate specified nodes.
     pub fn evaluate(&mut self, nodes: BTreeSet<Id>) {
         // TODO we are probably going too many times back and forth in the graph.
         // First we go back to create graph of all nodes that need to be evaluated.
@@ -486,6 +515,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                             self.push(Node::Permute(grads[&nid], axes.argsort(), shape.clone())),
                         );
                     }
+                }
+                Node::Pad(x, ref padding, value) => {
+                    let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
+                    grads.entry(x).or_insert_with(|| self.push(Node::Pad(grad, inv_padding, value)));
                 }
                 Node::Sum(x, ..) => {
                     grads

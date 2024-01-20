@@ -1,7 +1,9 @@
-/// DType
+/// DType of tensor
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
+    /// 32 bit floating point type
     F32,
+    /// 32 bit integer type
     I32,
 }
 

@@ -11,15 +11,18 @@ use core::cmp::Ordering;
 use core::iter::repeat;
 use core::ops::{Range, SubAssign};
 
+/// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
 pub struct Id(usize);
 
-pub fn id(id: usize) -> Id {
+/// Create new id.
+pub const fn id(id: usize) -> Id {
     Id(id)
 }
 
 impl Id {
-    pub fn i(self) -> usize {
+    /// Convert id to usize
+    pub const fn i(self) -> usize {
         self.0
     }
 }
@@ -30,6 +33,41 @@ impl SubAssign<usize> for Id {
     }
 }
 
+/// Implemented for objects that can be used to index tensors.
+pub trait IntoIndex {
+    /// Convert self to tensor index.
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>>;
+}
+
+impl IntoIndex for &[Range<i64>] {
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        self.into_iter().cloned()
+    }
+}
+
+impl<const N: usize> IntoIndex for [Range<i64>; N] {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        self.into_iter()
+    }
+}
+
+impl IntoIndex for &[i64] {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        // TODO this is incorrect, what about index -1?
+        self.into_iter().copied().map(|i| i..i+1)
+    }
+}
+
+impl<const N: usize> IntoIndex for [i64; N] {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        // TODO this is incorrect, what about index -1?
+        self.into_iter().map(|i| i..i+1)
+    }
+}
+
+/// Tensor is the atom of zyx.
+/// Tensor is multidimensional array.
+/// Tensor is immutable (with one [exception](Tensor::set)
 pub struct Tensor<B: Backend> {
     id: Id,
     backend: B,
@@ -48,33 +86,60 @@ impl<B: Backend> Drop for Tensor<B> {
     }
 }
 
-pub fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
+/// Create new tensor from id and backend.
+/// Used mostly internally in tensor and in backends.
+pub const fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
     Tensor { id, backend }
 }
 
 impl<B: Backend> Tensor<B> {
     // Metadata
+    /// Returns the [shape](Shape) of the self tensor.
+    /// ```
+    /// let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// assert_eq!(x.shape(), [2, 3]);
+    /// ```
     #[must_use]
     pub fn shape(&self) -> Shape {
         self.backend.shape(self.id)
     }
 
+    /// Returns the [dtype](DType) of the self tensor.
+    /// ```
+    /// let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// assert_eq!(x.dtype(), zyx_opencl::DType::I32);
+    /// ```
     #[must_use]
     pub fn dtype(&self) -> DType {
         self.backend.dtype(self.id)
     }
 
+    /// Returns the rank of the self tensor. This is the number of tensor's dimensions.
+    /// ```
+    /// let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// assert_eq!(x.rank(), 2);
+    /// ```
     #[must_use]
     pub fn rank(&self) -> usize {
         self.shape().rank()
     }
 
+    /// Returns the [backend](Backend) of the self tensor.
+    /// ```
+    /// let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// let y = x.backend().randn([2, 4, 3], zyx_opencl::DType::F32);
+    /// ```
     #[must_use]
     pub fn backend(&self) -> B {
         self.backend
     }
 
     // Access methods
+    /// Load tensor from backend into vector
     pub fn to_vec<T: Scalar>(&self) -> Vec<T> {
         // TODO perhaps this function can return Result?
         assert_eq!(T::dtype(), self.dtype());
@@ -83,13 +148,13 @@ impl<B: Backend> Tensor<B> {
 
     /// Returns first element stored in this tensor.
     /// Usually used for tensors with exactly one element.
-    /// # Panics
-    /// Panics if tensor has zero elements.
-    pub fn item<T: Scalar>(&self) -> T {
-        self.backend.load::<T>(self.id).first().unwrap().clone()
+    /// None is returned if self tensor contains zero elements.
+    pub fn item<T: Scalar>(&self) -> Option<T> {
+        self.backend.load::<T>(self.id).first().cloned()
     }
 
     // Backpropagation
+    /// Returns gradients of self w.r.t. sources.
     #[must_use]
     pub fn backward<'a>(
         &'a self,
@@ -109,6 +174,7 @@ impl<B: Backend> Tensor<B> {
     }
 
     // Unary ops
+    /// Cast self into dtype.
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor<B> {
         match dtype {
@@ -117,76 +183,90 @@ impl<B: Backend> Tensor<B> {
         }
     }
 
+    /// Returns a new tensor with the rectified linear unit function applied to the elements of self.
     #[must_use]
     pub fn relu(&self) -> Tensor<B> {
         self.unary_op(UOp::ReLU)
     }
 
+    /// Returns a new tensor with the sine of the elements of self.
     #[must_use]
     pub fn sin(&self) -> Tensor<B> {
         self.unary_op(UOp::Sin)
     }
 
+    /// Returns a new tensor with the cosine of the elements of self.
     #[must_use]
     pub fn cos(&self) -> Tensor<B> {
         self.unary_op(UOp::Cos)
     }
 
+    /// Returns a new tensor with the natural logarithm of the elements of self.
     #[must_use]
     pub fn ln(&self) -> Tensor<B> {
         self.unary_op(UOp::Ln)
     }
 
+    /// Returns a new tensor with the exponential of the elements of self.
     #[must_use]
     pub fn exp(&self) -> Tensor<B> {
         self.unary_op(UOp::Exp)
     }
 
+    /// Returns a new tensor with the hyperbolic tangent of the elements of self.
     #[must_use]
     pub fn tanh(&self) -> Tensor<B> {
         self.unary_op(UOp::Tanh)
     }
 
+    /// Returns a new tensor with the square root of the elements of self.
     #[must_use]
     pub fn sqrt(&self) -> Tensor<B> {
         self.unary_op(UOp::Sqrt)
     }
 
+    /// Returns a new tensor with each element of self randomly zeroed with given probability.
     #[must_use]
-    pub fn dropout<T: Scalar>(&self, probability: T) -> Tensor<B> {
+    pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
         self * probability.into_tensor(self.backend).cmplt(tensor(
             self.backend._uniform(self.shape(), self.dtype()),
             self.backend,
         ))
     }
 
+    /// Returns a new tensor with the sigmoid (logistic function) of the elements of self.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor<B> {
         let one = 1.into_tensor(self.backend);
         &one / (&one + (-self).exp())
     }
 
+    /// Returns a new tensor with the swish of the elements of self.
     #[must_use]
     pub fn swish(&self) -> Tensor<B> {
         self * self.sigmoid()
     }
 
+    /// Returns a new tensor with the leaky relu of the elements of self.
     #[must_use]
-    pub fn leaky_relu<T: Scalar>(&self, neg_slope: T) -> Tensor<B> {
+    pub fn leaky_relu(&self, neg_slope: impl Scalar) -> Tensor<B> {
         let neg_slope = neg_slope.into_tensor(self.backend);
         self.relu() - (self * (-neg_slope)).relu()
     }
 
+    /// Returns a new tensor with the elu of the elements of self.
     #[must_use]
-    pub fn elu<T: Scalar>(&self, alpha: T) -> Tensor<B> {
+    pub fn elu(&self, alpha: impl Scalar) -> Tensor<B> {
         self.relu() - (1f32.into_tensor(self.backend) - self.exp()).relu() * alpha
     }
 
+    /// Returns a new tensor with the tangent of the elements of self.
     #[must_use]
     pub fn tan(&self) -> Tensor<B> {
         self.sin() / self.cos()
     }
 
+    /// Returns a new tensor with the gelu of the elements of self.
     #[must_use]
     pub fn gelu(&self) -> Tensor<B> {
         self * 0.5f32
@@ -195,47 +275,36 @@ impl<B: Backend> Tensor<B> {
                 + 1f32)
     }
 
+    /// Returns a new tensor with the quick gelu of the elements of self.
+    /// ```
+    ///
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.randn([2, 3, 1]);
+    /// # Ok::<(), *mut core::ffi::c_void>(())
+    /// ```
     #[must_use]
     pub fn quick_gelu(&self) -> Tensor<B> {
         self * (self * 1.702).sigmoid()
     }
 
     // Binary ops
+    /// Exponentiation on self
     #[must_use]
-    pub fn add(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        self.binary_op(rhs, BOp::Add)
+    pub fn pow(&self, exponent: impl IntoTensor<B>) -> Tensor<B> {
+        self.binary_op(exponent, BOp::Pow)
     }
 
-    #[must_use]
-    pub fn sub(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        self.binary_op(rhs, BOp::Sub)
-    }
-
-    #[must_use]
-    pub fn mul(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        self.binary_op(rhs, BOp::Mul)
-    }
-
-    #[must_use]
-    pub fn div(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        self.binary_op(rhs, BOp::Div)
-    }
-
-    #[must_use]
-    pub fn pow(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        self.binary_op(rhs, BOp::Pow)
-    }
-
+    /// Elementwise compare less than between self and rhs
     #[must_use]
     pub fn cmplt(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
         self.binary_op(rhs, BOp::Cmplt)
     }
 
+    /// Dot product (mathematical multiplication) of self and rhs
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
         let y = rhs.into_tensor(self.backend);
         let xshape = self.shape();
-        let xrank = xshape.rank();
         let yshape = y.shape();
         let yrank = yshape.rank();
         assert_eq!(xshape[-1], yshape[-(yrank.min(2) as i64)]);
@@ -260,14 +329,21 @@ impl<B: Backend> Tensor<B> {
     }
 
     // Movement ops
+    /// Reshape self to shape.
+    /// # Panics
+    /// Following must hold:
+    /// self.numel() == shape.numel()
     #[must_use]
     pub fn reshape(&self, shape: impl Into<Shape>) -> Tensor<B> {
+        let shape = shape.into();
+        assert_eq!(self.shape().numel(), shape.numel());
         tensor(
-            self.backend.push(Node::Reshape(self.id, shape.into())),
+            self.backend.push(Node::Reshape(self.id, shape)),
             self.backend,
         )
     }
 
+    /// Expand self into bigger shape
     #[must_use]
     pub fn expand(&self, shape: impl Into<Shape>) -> Tensor<B> {
         tensor(
@@ -276,6 +352,52 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
+    /// Constant padding
+    ///
+    /// This can both add and remove values from tensor. Negative padding removes values, positive padding
+    /// adds values.
+    ///
+    /// Pad last dimension by (1, 2)
+    /// ```rust
+    /// #use zyx_opencl;
+    /// #let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3],
+    ///                     [4, 1]]);
+    /// let z = x.pad([(1, 2)], 0);
+    /// assert_eq!(z, [[0, 2, 3, 0, 0],
+    ///                [0, 4, 1, 0, 0]]);
+    /// ```
+    /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
+    /// ```rust
+    /// #use zyx_opencl;
+    /// #let dev = zyx_opencl::device().unwrap();
+    /// #let x = dev.tensor([[2, 3],
+    /// #                    [4, 1]]);
+    /// let z = x.pad([(2, -1), (1, 1)], 7);
+    /// assert_eq!(z, [[7, 7, 7],
+    ///                [7, 7, 2],
+    ///                [7, 7, 4],
+    ///                [7, 7, 7]]);
+    /// ```
+    ///
+    /// # Panics
+    /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
+    #[must_use]
+    pub fn pad(
+        &self,
+        padding: impl IntoIterator<Item = (i64, i64)>,
+        value: impl Scalar,
+    ) -> Tensor<B> {
+        // Cool trick :)
+        fn get_dtype<T: Scalar>(_: T) -> DType {
+            T::dtype()
+        }
+        assert_eq!(get_dtype(value.clone()), self.dtype());
+        // TODO asserts
+        tensor(self.backend.push(Node::Pad(self.id, padding.into_iter().collect(), value.into_f32())), self.backend)
+    }
+
+    /// Reorder axes of self
     #[must_use]
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
@@ -286,6 +408,7 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
+    /// Swap last two axes of self
     #[must_use]
     pub fn transpose(&self) -> Tensor<B> {
         let rank = self.rank();
@@ -306,6 +429,7 @@ impl<B: Backend> Tensor<B> {
     }
 
     // Reduce ops
+    /// Reduce self by summing along axes
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
@@ -331,6 +455,7 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
+    /// Reduce self by maximizing along axes
     #[must_use]
     pub fn max(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
@@ -356,6 +481,7 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
+    /// Reduce self by calculating mean along axes
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor<B> {
         let shape = self.shape();
@@ -363,55 +489,24 @@ impl<B: Backend> Tensor<B> {
         self.sum(axes.clone()) / axes.iter().copied().map(|a| shape[a]).product::<usize>() as i32
     }
 
+    /// Reduce self by calculating variance along axes
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
         (self - self.mean(axes.clone())).pow(2).sum(axes)
     }
 
+    /// Reduce self by calculating standard deviation along axes
     #[must_use]
     pub fn std(&self, axes: impl IntoAxes) -> Tensor<B> {
         self.var(axes).sqrt()
     }
 
-    /// Constant padding
-    ///
-    /// This can both add and remove values from tensor. Negative padding removes values, positive padding
-    /// adds values.
-    ///
-    /// Pad last dimension by (1, 2)
-    /// ```rust
-    /// #use zyx_opencl;
-    /// #let dev = zyx_opencl::device().unwrap();
-    /// let x = dev.tensor([[2, 3],
-    ///                     [4, 1]]);
-    /// let z = x.pad([(1, 2)], 0);
-    /// assert_eq!(z, [[0, 2, 3, 0, 0],
-    ///                [0, 4, 1, 0, 0]]);
-    /// ```
-    /// Pad second to last dimension by (2, -1) and last dimension by (1, 1)
-    /// ```rust
-    /// #use zyx_opencl;
-    /// #let dev = zyx_opencl::device().unwrap();
-    /// #let x = dev.tensor([[2, 3],
-    /// #                    [4, 1]]);
-    /// let z = x.pad([(2, -1), (1, 1)], 7);
-    /// assert_eq!(z, [[7, 7, 7],
-    ///                [7, 7, 2],
-    ///                [7, 7, 4],
-    ///                [7, 7, 7]]);
-    /// ```
-    ///
-    /// # Panics
-    /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
-    #[must_use]
-    pub fn pad<T: Scalar>(
-        &self,
-        padding: impl IntoIterator<Item = (i64, i64)>,
-        value: T,
-    ) -> Tensor<B> {
-        assert_eq!(T::dtype(), self.dtype());
-        todo!()
+    /// Tensor indexing
+    pub fn get(&self, index: impl IntoIndex) -> Tensor<B> {
+        let shape = self.shape();
+        // TODO asserts
+        self.pad(index.into_index().into_iter().enumerate().map(|(a, r)| (-r.start, shape[-(a as i64)] as i64 - r.end)), 0)
     }
 
     /// Tensors should be treated as immutable data structures.
@@ -540,22 +635,6 @@ impl<B: Backend> Tensor<B> {
     }
 }
 
-impl<B: Backend> core::ops::Index<&[Range<i64>]> for Tensor<B> {
-    type Output = ();
-    fn index(&self, index: &[Range<i64>]) -> &Self::Output {
-        todo!()
-    }
-}
-
-impl<B: Backend> core::ops::Index<&[i64]> for Tensor<B> {
-    type Output = ();
-    fn index(&self, index: &[i64]) -> &Self::Output {
-        let index: Vec<Range<i64>> = index.iter().copied().map(|idx| idx..idx + 1).collect();
-        let index: &[Range<i64>] = &index;
-        self.index(index)
-    }
-}
-
 impl<B: Backend> core::ops::Neg for Tensor<B> {
     type Output = Tensor<B>;
     fn neg(self) -> Self::Output {
@@ -567,22 +646,6 @@ impl<B: Backend> core::ops::Neg for &Tensor<B> {
     type Output = Tensor<B>;
     fn neg(self) -> Self::Output {
         self.unary_op(UOp::Neg)
-    }
-}
-
-impl<B: Backend, const N: usize> core::ops::Index<[Range<i64>; N]> for Tensor<B> {
-    type Output = ();
-    fn index(&self, index: [Range<i64>; N]) -> &Self::Output {
-        let index: &[Range<i64>] = &index;
-        self.index(index)
-    }
-}
-
-impl<B: Backend, const N: usize> core::ops::Index<[i64; N]> for Tensor<B> {
-    type Output = ();
-    fn index(&self, index: [i64; N]) -> &Self::Output {
-        let index: &[i64] = &index;
-        self.index(index)
     }
 }
 
@@ -641,7 +704,10 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Div<IT> for Tensor<B> {
         self.binary_op(rhs, BOp::Div)
     }
 }
+
+/// Objects must implement this to be convertible into tensor
 pub trait IntoTensor<B: Backend> {
+    /// Convert self into tensor
     fn into_tensor(self, backend: B) -> Tensor<B>;
 }
 

@@ -75,17 +75,17 @@ Initialize tensors.
 ```rust
 let x = dev.tensor([[2, 3, 1], [5, 2, 8]]);
 let x = dev.randn([3, 2, 1], DType::F32);
-let x = dev.uniform([3, 2, 1], -1., 27.);
+let x = dev.uniform([3, 2, 1], -1..27);
 let x = dev.zeros([3, 2, 1], DType::F32);
 let x = dev.ones([3, 2, 1], DType::I32);
 let x = dev.full([3, 2, 1], 4.);
 let x = dev.eye(3, DType::F16);
 ```
-Index tensors.
+Index tensors (Rust does not support proper overloading of operator[], so you need to use get function).
 ```rust
 let x = dev.randn([2, 3, 4, 5], DType::F32);
-let z = x[[.., 2.., 1..-2, ..-1]];
-let v: f32 = x[[1, 2, 1, -1]].item();
+let z = x.get([.., 2.., 1..-2, ..-1]).unwrap();
+let v: f32 = x.get([1, 2, 1, -1]).unwrap().item().unwrap();
 ```
 IO operations.
 ```shell

@@ -6,6 +6,9 @@ use crate::{
 use alloc::{vec, vec::Vec};
 use alloc::boxed::Box;
 
+/// View holds shape of the tensor and allows for arbitrary number of movement ops
+/// (reshape, expand, pad, permute) to be executed as noops (without accessing the
+/// actual data).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct View {
     // TODO only 2 shape and stride pairs are needed
@@ -21,8 +24,7 @@ struct InnerView {
 }
 
 impl View {
-    #[allow(clippy::needless_pass_by_value)]
-    pub(crate) fn new(shape: Shape) -> Self {
+    pub fn new(shape: Shape) -> Self {
         Self {
             views: vec![InnerView {
                 strides: shape.strides(),
@@ -33,7 +35,7 @@ impl View {
         }
     }
 
-    pub(crate) fn contiguous(&self) -> bool {
+    pub fn contiguous(&self) -> bool {
         self.views.iter().all(
             |InnerView {
                  shape,
@@ -43,13 +45,15 @@ impl View {
         )
     }
 
-    pub(crate) fn get_idx(&self, mut idx: usize) -> usize {
+    pub fn get_idx(&self, mut idx: usize) -> usize {
+        // TODO padding
         // TODO can this be faster???
+        // Preferably like MUCH faster???
         for InnerView {
             shape,
             strides,
-            padding,
-            padding_value,
+            padding: _,
+            padding_value: _,
         } in &self.views
         {
             let mut res = 0;
@@ -63,6 +67,11 @@ impl View {
     }
 
     pub fn cidx(&self) -> alloc::string::String {
+        // In order to apply padding, we need to have multiple
+        // conditions. Then it is like this:
+        // conditions ? data[calculated_idx] : padding_value;
+        // So we should probably just return the whole expression,
+        // not just calculated index.
         use alloc::format;
         let mut idx = alloc::string::String::new();
         for (i, st) in self.views.first().unwrap().strides.into_iter().enumerate() {
@@ -86,8 +95,8 @@ impl View {
         for InnerView {
             shape,
             strides,
-            padding,
-            padding_value,
+            padding: _,
+            padding_value: _,
         } in &self.views[1..]
         {
             idx.insert(0, '(');
@@ -124,22 +133,15 @@ impl View {
         idx
     }
 
-    pub(crate) fn numel(&self) -> usize {
+    pub fn numel(&self) -> usize {
         self.shape().numel()
     }
 
-    pub(crate) fn shape(&self) -> &Shape {
+    pub fn shape(&self) -> &Shape {
         &self.views[0].shape
     }
 
-    pub(crate) fn _resize(&self, shape: &Shape) -> Self {
-        let mut shapes = self.views.clone();
-        shapes[0].padding = Box::new([(0, 0)]);
-        shapes[0].shape = shape.clone();
-        Self { views: shapes }
-    }
-
-    pub(crate) fn expand(&self, shape: &Shape) -> Self {
+    pub fn expand(&self, shape: &Shape) -> Self {
         let mut shapes = self.views.clone();
         //std::println!("Expanding {shapes:?}");
         shapes[0].strides = shapes[0]
@@ -150,7 +152,7 @@ impl View {
         Self { views: shapes }
     }
 
-    pub(crate) fn reshape(&self, shape: &Shape) -> Self {
+    pub fn reshape(&self, shape: &Shape) -> Self {
         let mut shapes = self.views.clone();
         shapes.insert(
             0,
@@ -164,7 +166,7 @@ impl View {
         Self { views: shapes }
     }
 
-    pub(crate) fn permute(&self, axes: &Axes) -> Self {
+    pub fn permute(&self, axes: &Axes) -> Self {
         let mut shapes = self.views.clone();
         shapes[0].shape = shapes[0].shape.permute(axes);
         shapes[0].strides = shapes[0].strides.permute(axes);
