@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::iter::repeat;
 use core::ops::{Range, SubAssign};
+use crate::error::ZyxError;
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
@@ -82,7 +83,7 @@ impl<B: Backend> Clone for Tensor<B> {
 
 impl<B: Backend> Drop for Tensor<B> {
     fn drop(&mut self) {
-        self.backend.release(self.id);
+        self.backend.release(self.id).unwrap();
     }
 }
 
@@ -140,17 +141,33 @@ impl<B: Backend> Tensor<B> {
 
     // Access methods
     /// Load tensor from backend into vector
-    pub fn to_vec<T: Scalar>(&self) -> Vec<T> {
-        // TODO perhaps this function can return Result?
-        assert_eq!(T::dtype(), self.dtype());
-        self.backend.load(self.id)
+    /// ```
+    /// let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// let xvec: Vec<i32> = x.to_vec().unwrap();
+    /// assert_eq!(xvec, vec![2, 3, 1, 4, 1, 3]);
+    /// ```
+    pub fn to_vec<T: Scalar>(&self) -> Result<Vec<T>, ZyxError<B::Error>> {
+        if T::dtype() != self.dtype() {
+            return Err(ZyxError::InvalidDType {
+                expected: T::dtype(),
+                found: self.dtype(),
+            })
+        }
+        self.backend.load(self.id).map_err(|err| ZyxError::BackendError(err))
     }
 
     /// Returns first element stored in this tensor.
     /// Usually used for tensors with exactly one element.
     /// None is returned if self tensor contains zero elements.
-    pub fn item<T: Scalar>(&self) -> Option<T> {
-        self.backend.load::<T>(self.id).first().cloned()
+    /// ```
+    /// let dev = zyx_opencl::device().unwrap();
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// let xitem: i32 = x.item();
+    /// assert_eq!(xvec, vec![2, 3, 1, 4, 1, 3]);
+    /// ```
+    pub fn item<T: Scalar>(&self) -> Result<T, ZyxError<B::Error>> {
+        self.backend.load::<T>(self.id).map_err(|err| ZyxError::BackendError(err))?.first().ok_or_else(|| ZyxError::IndexOutOfBounds { index: 0, len: 0 }).cloned()
     }
 
     // Backpropagation
@@ -166,7 +183,7 @@ impl<B: Backend> Tensor<B> {
         let sources: Vec<&Tensor<B>> = sources.into_iter().collect();
         let grads = self
             .backend
-            .backward(self.id, &sources.iter().map(|t| t.id).collect());
+            .backward(self.id, &sources.iter().map(|t| t.id).collect()).unwrap();
         sources
             .into_iter()
             .map(move |x: &Tensor<B>| grads.get(&x.id).cloned())
@@ -338,7 +355,7 @@ impl<B: Backend> Tensor<B> {
         let shape = shape.into();
         assert_eq!(self.shape().numel(), shape.numel());
         tensor(
-            self.backend.push(Node::Reshape(self.id, shape)),
+            self.backend.push(Node::Reshape(self.id, shape)).unwrap(),
             self.backend,
         )
     }
@@ -347,7 +364,7 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn expand(&self, shape: impl Into<Shape>) -> Tensor<B> {
         tensor(
-            self.backend.push(Node::Expand(self.id, shape.into())),
+            self.backend.push(Node::Expand(self.id, shape.into())).unwrap(),
             self.backend,
         )
     }
@@ -394,7 +411,7 @@ impl<B: Backend> Tensor<B> {
         }
         assert_eq!(get_dtype(value.clone()), self.dtype());
         // TODO asserts
-        tensor(self.backend.push(Node::Pad(self.id, padding.into_iter().collect(), value.into_f32())), self.backend)
+        tensor(self.backend.push(Node::Pad(self.id, padding.into_iter().collect(), value.into_f32())).unwrap(), self.backend)
     }
 
     /// Reorder axes of self
@@ -403,7 +420,7 @@ impl<B: Backend> Tensor<B> {
         let axes = axes.into_axes(self.rank());
         let shape = self.shape().permute(&axes);
         tensor(
-            self.backend.push(Node::Permute(self.id, axes, shape)),
+            self.backend.push(Node::Permute(self.id, axes, shape)).unwrap(),
             self.backend,
         )
     }
@@ -423,7 +440,7 @@ impl<B: Backend> Tensor<B> {
         let axes = axes.into_axes(rank);
         let res_shape = shape.permute(&axes);
         tensor(
-            self.backend.push(Node::Permute(x.id, axes, res_shape)),
+            self.backend.push(Node::Permute(x.id, axes, res_shape)).unwrap(),
             self.backend,
         )
     }
@@ -450,7 +467,7 @@ impl<B: Backend> Tensor<B> {
             );
         }
         tensor(
-            self.backend.push(Node::Sum(self.id, axes, shape)),
+            self.backend.push(Node::Sum(self.id, axes, shape)).unwrap(),
             self.backend,
         )
     }
@@ -476,7 +493,7 @@ impl<B: Backend> Tensor<B> {
             );
         }
         tensor(
-            self.backend.push(Node::Max(self.id, axes, shape)),
+            self.backend.push(Node::Max(self.id, axes, shape)).unwrap(),
             self.backend,
         )
     }
@@ -513,7 +530,7 @@ impl<B: Backend> Tensor<B> {
     /// However optimizers need to update model's parameters with new values.
     /// This is the only function that mutates tensor.
     pub fn set(&mut self, x: impl IntoTensor<B>) {
-        self.backend.release(self.id);
+        self.backend.release(self.id).unwrap();
         let x = x.into_tensor(self.backend);
         // TODO assert equality of backends
         assert_eq!(self.shape(), x.shape());
@@ -562,7 +579,7 @@ impl<B: Backend> Tensor<B> {
                 UOp::Exp => Node::Exp(self.id),
                 UOp::Tanh => Node::Tanh(self.id),
                 UOp::Sqrt => Node::Sqrt(self.id),
-            }),
+            }).unwrap(),
             self.backend,
         )
     }
@@ -622,14 +639,14 @@ impl<B: Backend> Tensor<B> {
             }
         }
         tensor(
-            match op {
-                BOp::Add => x.backend.push(Node::Add(x.id, y.id)),
-                BOp::Sub => x.backend.push(Node::Sub(x.id, y.id)),
-                BOp::Mul => x.backend.push(Node::Mul(x.id, y.id)),
-                BOp::Div => x.backend.push(Node::Div(x.id, y.id)),
-                BOp::Pow => x.backend.push(Node::Pow(x.id, y.id)),
-                BOp::Cmplt => x.backend.push(Node::Cmplt(x.id, y.id)),
-            },
+            x.backend.push(match op {
+                BOp::Add => Node::Add(x.id, y.id),
+                BOp::Sub => Node::Sub(x.id, y.id),
+                BOp::Mul => Node::Mul(x.id, y.id),
+                BOp::Div => Node::Div(x.id, y.id),
+                BOp::Pow => Node::Pow(x.id, y.id),
+                BOp::Cmplt => Node::Cmplt(x.id, y.id),
+            }).unwrap(),
             x.backend,
         )
     }
@@ -732,7 +749,7 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
             backend.push(match T::dtype() {
                 DType::F32 => Node::IterF32(Box::new(self.into_iter().map(T::into_f32)), n.into()),
                 DType::I32 => Node::IterI32(Box::new(self.into_iter().map(T::into_i32)), n.into()),
-            }),
+            }).unwrap(),
             backend,
         )
     }
@@ -751,7 +768,7 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
                     Box::new(self.into_iter().cloned().map(T::into_i32)),
                     n.into(),
                 ),
-            }),
+            }).unwrap(),
             backend,
         )
     }
@@ -767,7 +784,7 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for T {
                 DType::I32 => {
                     Node::IterI32(Box::new([self].into_iter().map(T::into_i32)), 1.into())
                 }
-            }),
+            }).unwrap(),
             backend,
         )
     }
@@ -779,7 +796,7 @@ impl<B: Backend, T: Scalar, const D0: usize> IntoTensor<B> for [T; D0] {
             backend.push(match T::dtype() {
                 DType::F32 => Node::IterF32(Box::new(self.into_iter().map(T::into_f32)), D0.into()),
                 DType::I32 => Node::IterI32(Box::new(self.into_iter().map(T::into_i32)), D0.into()),
-            }),
+            }).unwrap(),
             backend,
         )
     }
@@ -797,7 +814,7 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize> IntoTensor<B> for 
                     Box::new(self.into_iter().flatten().map(T::into_i32)),
                     [D0, D1].into(),
                 ),
-            }),
+            }).unwrap(),
             backend,
         )
     }
@@ -817,7 +834,7 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
                     Box::new(self.into_iter().flatten().flatten().map(T::into_i32)),
                     [D0, D1, D2].into(),
                 ),
-            }),
+            }).unwrap(),
             backend,
         )
     }

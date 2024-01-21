@@ -120,7 +120,7 @@ impl<B> MyModel<B> {
 Unlike other libraries, Zyx does not require identifying which tensors will be differentiated beforehand,
 that means there is no traced() or requires_grad. Everything is automatically handled with performance in mind.
 Behind the scenes Zyx actually waits with execution of the graph until it knows if it needs to store intermediate
-tensors for backpropagation or not, and so it can immediately release unused memory.
+tensors for backpropagation or not, and so it does not unnecessarily allocate memory.
 
 ## Contributing
 

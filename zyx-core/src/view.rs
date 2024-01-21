@@ -24,6 +24,8 @@ struct InnerView {
 }
 
 impl View {
+    /// Create new view from shape
+    #[must_use]
     pub fn new(shape: Shape) -> Self {
         Self {
             views: vec![InnerView {
@@ -35,6 +37,8 @@ impl View {
         }
     }
 
+    /// Is this view contiguous?
+    #[must_use]
     pub fn contiguous(&self) -> bool {
         self.views.iter().all(
             |InnerView {
@@ -45,6 +49,8 @@ impl View {
         )
     }
 
+    /// Convert contiguous idx into idx indexing data with self view
+    #[must_use]
     pub fn get_idx(&self, mut idx: usize) -> usize {
         // TODO padding
         // TODO can this be faster???
@@ -66,22 +72,25 @@ impl View {
         idx
     }
 
-    pub fn cidx(&self) -> alloc::string::String {
+    /// Access data called name with idx0-idx{rank} converted into proper self view.
+    /// This is used by compiled backends.
+    #[must_use]
+    pub fn cidx(&self, name: &str) -> alloc::string::String {
         // In order to apply padding, we need to have multiple
         // conditions. Then it is like this:
         // conditions ? data[calculated_idx] : padding_value;
         // So we should probably just return the whole expression,
         // not just calculated index.
-        use alloc::format;
+        use alloc::format as f;
         let mut idx = alloc::string::String::new();
         for (i, st) in self.views.first().unwrap().strides.into_iter().enumerate() {
             match *st {
                 0 => {}
                 1 => {
-                    idx += &format!("idx{i}+");
+                    idx += &f!("idx{i}+");
                 }
                 _ => {
-                    idx += &format!("idx{i}*{st}+");
+                    idx += &f!("idx{i}*{st}+");
                 }
             }
         }
@@ -104,43 +113,49 @@ impl View {
             let mut res = alloc::string::String::new();
             let mut ost = 1;
             for (d, st) in shape.into_iter().zip(strides).rev() {
-                res += &format!("{idx}/{ost}%{d}*{st}+");
+                res += &f!("{idx}/{ost}%{d}*{st}+");
                 ost *= d;
-                /*let mut temp = format!("{idx}");
+                /*let mut temp = f!("{idx}");
                 match ost {
                     0 => { ost *= d; continue }
                     1 => {}
-                    _ => { temp += &format!("/{ost}"); }
+                    _ => { temp += &f!("/{ost}"); }
                 }
                 ost *= d;
                 match *d {
                     0 => { continue }
-                    1 => { temp = format!("1") }
-                    _ => { temp += &format!("%{d}"); }
+                    1 => { temp = f!("1") }
+                    _ => { temp += &f!("%{d}"); }
                 }
                 match *st {
                     0 => { continue }
                     1 => {}
-                    _ => { temp += &format!("*{st}"); }
+                    _ => { temp += &f!("*{st}"); }
                 }
-                res += &format!("{temp}+");*/
+                res += &f!("{temp}+");*/
             }
             idx = res;
             if !idx.is_empty() {
                 idx.remove(idx.len() - 1);
             }
         }
-        idx
+        f!("{name}[{idx}]")
     }
 
+    /// Number of elements in view with self.shape()
+    #[must_use]
     pub fn numel(&self) -> usize {
         self.shape().numel()
     }
 
+    /// Last shape of self.
+    #[must_use]
     pub fn shape(&self) -> &Shape {
         &self.views[0].shape
     }
 
+    /// Expand self into shape
+    #[must_use]
     pub fn expand(&self, shape: &Shape) -> Self {
         let mut shapes = self.views.clone();
         //std::println!("Expanding {shapes:?}");
@@ -152,6 +167,8 @@ impl View {
         Self { views: shapes }
     }
 
+    /// Reshape self into shape
+    #[must_use]
     pub fn reshape(&self, shape: &Shape) -> Self {
         let mut shapes = self.views.clone();
         shapes.insert(
@@ -166,6 +183,8 @@ impl View {
         Self { views: shapes }
     }
 
+    /// Permute self by axes
+    #[must_use]
     pub fn permute(&self, axes: &Axes) -> Self {
         let mut shapes = self.views.clone();
         shapes[0].shape = shapes[0].shape.permute(axes);

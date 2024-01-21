@@ -43,3 +43,5 @@ pub mod compiler;
 pub mod utils;
 /// See [View](view::View)
 pub mod view;
+/// See [ZyxError](error::ZyxError)
+pub mod error;

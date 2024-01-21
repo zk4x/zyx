@@ -38,25 +38,12 @@ pub struct Buffer {
     event: *mut c_void,
 }
 
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        unsafe { cl3::memory::release_mem_object(self.mem) }.unwrap();
-        unsafe { cl3::event::release_event(self.event) }.unwrap();
-    }
-}
-
 pub struct Program {
     name: String,
     program: *mut c_void,
     global_work_size: Box<[usize]>,
     local_work_size: Box<[usize]>,
     res_byte_size: usize,
-}
-
-impl Drop for Program {
-    fn drop(&mut self) {
-        unsafe { cl3::program::release_program(self.program) }.unwrap();
-    }
 }
 
 impl Program {
@@ -68,7 +55,7 @@ impl Program {
         local_work_size: &[usize],
         res_byte_size: usize,
         reduce: bool,
-    ) -> Self {
+    ) -> Result<Self, ClError> {
         let name = f!(
             "{}__{}__{}",
             if reduce { "r" } else { "e" },
@@ -86,7 +73,7 @@ impl Program {
         let source = f!("__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
         std::println!("Compiling source:\n{source}");
-        let program = cl3::program::create_program_with_source(context, &[&source]).unwrap();
+        let program = cl3::program::create_program_with_source(context, &[&source])?;
         let devices = devices.iter().copied().collect::<Vec<*mut c_void>>();
         if let Err(er) = cl3::program::build_program(
             program,
@@ -97,17 +84,16 @@ impl Program {
         ) {
             panic!(
                 "Compilation failed with error {er}:\n{}",
-                cl3::program::get_program_build_info(program, devices[0], CL_PROGRAM_BUILD_LOG)
-                    .unwrap()
+                cl3::program::get_program_build_info(program, devices[0], CL_PROGRAM_BUILD_LOG)?
             );
         };
-        Self {
+        Ok(Self {
             name,
             program,
             global_work_size: global_work_size.iter().copied().collect(),
             local_work_size: local_work_size.iter().copied().collect(),
             res_byte_size,
-        }
+        })
     }
 }
 
@@ -129,11 +115,10 @@ impl Compiler {
         #[cfg(feature = "debug1")]
         std::println!(
             "Using OpenCL platform: {}",
-            alloc::string::String::from_utf8(cl3::platform::get_platform_data(
+            String::from_utf8(cl3::platform::get_platform_data(
                 platform,
                 cl3::ext::CL_PLATFORM_NAME
-            )?)
-            .unwrap()
+            )?).unwrap()
         );
         let device_ids = cl3::device::get_device_ids(platform, CL_DEVICE_TYPE_ALL)?;
         #[cfg(feature = "debug1")]
@@ -145,8 +130,7 @@ impl Compiler {
                 alloc::string::String::from_utf8(cl3::device::get_device_data(
                     *dev,
                     cl3::ext::CL_DEVICE_NAME
-                )?)
-                .unwrap()
+                )?).unwrap()
             );
         }
         let context = cl3::context::create_context(
@@ -158,16 +142,16 @@ impl Compiler {
         // This makes our code asynchronous. Creating graph would actually make us 2 times slower (can be optimized),
         // if we couldn't execute kernels asynchronously. We don't need this to be huge. 2 seems to
         // be plenty. And lower values also lower memory usage.
-        let queues_per_device: u32 = 8; //device_ids.iter().map(|dev| cl3::device::get_device_info(*dev, CL_DEVICE_MAX_ON_DEVICE_QUEUES).unwrap().into()).min().unwrap();
+        let queues_per_device: u32 = 8; //device_ids.iter().map(|dev| cl3::device::get_device_info(*dev, CL_DEVICE_MAX_ON_DEVICE_QUEUES)?.into()).min()?;
         #[cfg(feature = "debug1")]
         std::println!("Working with {queues_per_device} queues on each device.");
         let queues = (0..queues_per_device)
             .flat_map(|_| {
                 device_ids.iter().map(|dev| {
-                    unsafe { cl3::command_queue::create_command_queue(context, *dev, 0) }.unwrap()
+                    unsafe { cl3::command_queue::create_command_queue(context, *dev, 0) }
                 })
             })
-            .collect();
+            .collect::<Result<Box<[*mut c_void]>, i32>>()?;
         let mut devices = BTreeSet::new();
         for dev in device_ids {
             devices.insert(dev);
@@ -190,13 +174,18 @@ impl Compiler {
 impl zyx_core::compiler::Compiler for Compiler {
     type Buffer = Buffer;
     type Program = Program;
-    fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Self::Buffer {
+    type Error = ClError;
+    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), Self::Error> {
+        unsafe { cl3::program::release_program(program.program) }?;
+        Ok(())
+    }
+    fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, Self::Error> {
+        // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.collect();
         let size = data.len() * core::mem::size_of::<T>();
         let mem = unsafe {
             cl3::memory::create_buffer(self.context, CL_MEM_READ_ONLY, size, core::ptr::null_mut())
-        }
-        .unwrap();
+        }?;
         let event = unsafe {
             cl3::command_queue::enqueue_write_buffer(
                 self.queue(),
@@ -208,15 +197,14 @@ impl zyx_core::compiler::Compiler for Compiler {
                 0,
                 core::ptr::null(),
             )
-        }
-        .unwrap();
-        cl3::event::wait_for_events(&[event]).unwrap();
-        Self::Buffer { mem, event }
+        }?;
+        cl3::event::wait_for_events(&[event])?;
+        Ok(Self::Buffer { mem, event })
     }
 
-    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Vec<T> {
+    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, Self::Error> {
         let mut data: Vec<T> = Vec::with_capacity(numel);
-        cl3::event::wait_for_events(&[buffer.event]).unwrap();
+        cl3::event::wait_for_events(&[buffer.event])?;
         let event = unsafe {
             cl3::command_queue::enqueue_read_buffer(
                 self.queue(),
@@ -230,17 +218,22 @@ impl zyx_core::compiler::Compiler for Compiler {
                 // TODO why does this not work?
                 //&[mem.event] as *const *mut c_void,
             )
-        }
-        .unwrap();
-        cl3::event::wait_for_events(&[event]).unwrap();
+        }?;
+        cl3::event::wait_for_events(&[event])?;
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(numel) }
-        data
+        Ok(data)
     }
 
-    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer {
+    fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), Self::Error> {
+        unsafe { cl3::memory::release_mem_object(buffer.mem) }?;
+        unsafe { cl3::event::release_event(buffer.event) }?;
+        Ok(())
+    }
+
+    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Result<Self::Buffer, Self::Error> {
         let kernel =
-            cl3::kernel::create_kernel(program.program, &CString::new(program.name.clone()).unwrap()).unwrap();
+            cl3::kernel::create_kernel(program.program, &CString::new(program.name.clone()).unwrap())?;
         let mem = unsafe {
             cl3::memory::create_buffer(
                 self.context,
@@ -248,13 +241,11 @@ impl zyx_core::compiler::Compiler for Compiler {
                 program.res_byte_size,
                 core::ptr::null_mut(),
             )
-        }
-        .unwrap();
+        }?;
         let ptr: *const _ = &mem;
         unsafe {
             cl3::kernel::set_kernel_arg(kernel, 0, core::mem::size_of::<*mut c_void>(), ptr.cast())
-        }
-        .unwrap();
+        }?;
         let mut events = Vec::new();
         let mut i = 1;
         for arg in args {
@@ -269,8 +260,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                     core::mem::size_of::<*mut c_void>(),
                     ptr.cast(),
                 )
-            }
-            .unwrap();
+            }?;
             i += 1;
         }
         #[cfg(feature = "debug1")]
@@ -293,17 +283,17 @@ impl zyx_core::compiler::Compiler for Compiler {
         }
         .expect("could not execute opencl kernel.");
         #[cfg(feature = "debug1")]
-        cl3::event::wait_for_events(&[event]).unwrap();
+        cl3::event::wait_for_events(&[event])?;
         #[cfg(feature = "debug1")]
         let elapsed = begin.elapsed().as_millis();
         std::println!(
             "Kernel execution took {elapsed}ms, that is {} GFLOPS",
             (1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64 / 1000000 as f64
         );
-        Buffer { mem, event }
+        Ok(Buffer { mem, event })
     }
 
-    fn compile(&mut self, ast: &AST) -> Self::Program {
+    fn compile(&mut self, ast: &AST) -> Result<Self::Program, Self::Error> {
         if matches!(ast.reduce(), ROp::None) {
             let (source, gws, lws, rbs) = compile_e_kernel(ast);
             Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, false)
@@ -351,7 +341,7 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
             Op::Leaf(x) => {
                 let (view, t) = &ast.args()[*x];
                 dtype = t.ocl_str();
-                f!("{dtype} var{nid} = data{x}[{}]", view.cidx())
+                f!("{dtype} var{nid} = {}", view.cidx(&f!("data{x}")))
             }
             Op::Exp(x) => f!("{dtype} var{nid}[] = exp(var{x}[])"),
             _ => todo!(),
@@ -373,11 +363,11 @@ fn compile_r_kernel(_ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
 }
 
 #[test]
-fn exp_test() -> Result<(), ClError> {
+fn exp_test() -> Result<(), crate::ZyxError<ClError>> {
     let dev = crate::device()?;
     let x = dev.randn([2, 3], crate::DType::F32);
     let y = x.exp();
-    let _y_vec: Vec<f32> = y.to_vec();
+    let _y_vec: Vec<f32> = y.to_vec()?;
     //panic!("{y_vec:?}");
     Ok(())
 }

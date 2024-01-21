@@ -12,32 +12,58 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
+use core::fmt::Debug;
 
+/// Implement this trait for compiled backends
 pub trait Compiler {
+    /// Buffer holds actual values in memory
     type Buffer;
+    /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
-    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>) -> Self::Buffer;
-    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Vec<T>;
-    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Self::Buffer;
-    fn compile(&mut self, ast: &AST) -> Self::Program;
+    /// Compiler error
+    type Error: Debug;
+    /// Store iter into buffer
+    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, Self::Error>;
+    /// Load buffer into vec
+    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, Self::Error>;
+    /// Drop Buffer
+    fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), Self::Error>;
+    /// Drop Program
+    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), Self::Error>;
+    /// Launch program with args
+    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Result<Self::Buffer, Self::Error>;
+    /// Compile ast into program
+    fn compile(&mut self, ast: &AST) -> Result<Self::Program, Self::Error>;
 }
 
-// These are all IDs into ops, leafs have IDs into args
+/// Op executable on device with compiled backend
+/// usize are all IDs into ops, leafs have IDs into args
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
+    /// Leaf (holds data, id to kernel arg)
     Leaf(usize),
+    /// Cast into F32 unary op
     CastF32(usize),
+    /// Exp unary op
     Exp(usize),
+    /// Addition binary op
     Add(usize, usize),
 }
 
+/// Possible reduce ops
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub enum ROp {
+    /// No reduce
     None,
+    /// Sum reduce op
     Sum,
+    /// Max reduce op
     Max,
 }
 
+/// Abstract syntax tree that can be compiled into program.
+/// Consists of kernel arguments, elementwise ops, optional reduce op
+/// and elementwise ops after reduce.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub struct AST {
     args: Box<[(View, DType)]>,
@@ -47,24 +73,28 @@ pub struct AST {
 }
 
 impl AST {
+    /// Get AST arguments metadata
     pub fn args(&self) -> &[(View, DType)] {
         &self.args
     }
 
+    /// Get AST ops
     pub fn ops(&self) -> &[Op] {
         &self.ops
     }
 
+    /// Get AST reduce op
     pub fn reduce(&self) -> &ROp {
         &self.reduce
     }
 
-    // Ops applied after reduce
+    /// Ops applied after reduce
     pub fn ar_ops(&self) -> &[Op] {
         &self.ar_ops
     }
 }
 
+/// Compiled backend that holds compiler, buffers and programs
 pub struct CompiledBackend<C: Compiler> {
     compiler: C,
     buffers: BTreeMap<Id, C::Buffer>,
@@ -72,19 +102,23 @@ pub struct CompiledBackend<C: Compiler> {
 }
 
 impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
+    type Error = C::Error;
     fn is_evaluated(&self, x: Id) -> bool {
         self.buffers.contains_key(&x)
     }
 
-    fn remove(&mut self, x: Id) {
-        self.buffers.remove(&x);
+    fn remove(&mut self, x: Id) -> Result<(), Self::Error> {
+        if let Some(mut buf) = self.buffers.remove(&x) {
+            self.compiler.drop_buffer(&mut buf)?;
+        }
+        Ok(())
     }
 
-    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Vec<T> {
+    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, Self::Error> {
         self.compiler.load(&self.buffers[&x], numel)
     }
 
-    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) {
+    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), Self::Error> {
         for nid in order.iter().copied() {
             match &mut nodes[nid.i()] {
                 Node::LeafF32(..)
@@ -116,14 +150,14 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     let mut new_node = Node::LeafF32(shape.clone());
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterF32(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter));
+                        self.buffers.insert(nid, self.compiler.store(iter)?);
                     }
                 }
                 Node::IterI32(_, shape) => {
                     let mut new_node = Node::LeafI32(shape.clone());
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterI32(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter));
+                        self.buffers.insert(nid, self.compiler.store(iter)?);
                     }
                 }
                 Node::Expand(x, _) => {
@@ -132,7 +166,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     while let Some(p) = params.pop() {
                         // TODO check that there is no more than one reduce
                         if matches!(nodes[p.i()], Node::Sum(..) | Node::Max(..)) {
-                            self.evaluate_buffer(p, order, nodes);
+                            self.evaluate_buffer(p, order, nodes)?;
                             break;
                         }
                         params.extend(nodes[p.i()].parameters());
@@ -140,15 +174,17 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 }
             }
             if to_eval.contains(&nid) && !self.buffers.contains_key(&nid) {
-                self.evaluate_buffer(nid, order, nodes);
+                self.evaluate_buffer(nid, order, nodes)?;
             }
             // TODO release nodes that are no longer needed.
             // And release intermediate buffers.
         }
+        Ok(())
     }
 }
 
 impl<C: Compiler> CompiledBackend<C> {
+    /// Initialize new compiled backend using provided compiler
     pub fn new(compiler: C) -> Self {
         Self {
             compiler,
@@ -159,7 +195,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
     /// This function evaluates concrete buffer that we know can be directly evaluated,
     /// that is we know that all of it's leafs are already evaluated and stored in device.
-    fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) {
+    fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), C::Error> {
         // Create ordered list of nodes that need to be evaluated
         let mut temp = alloc::vec![x];
         let mut porder = Vec::new();
@@ -202,7 +238,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![*x];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p.i()] {
-                                args[a].0.expand(sh);
+                                args[a].0 = args[a].0.expand(sh);
                             }
                             params.extend(nodes[x.i()].parameters());
                         }
@@ -226,11 +262,12 @@ impl<C: Compiler> CompiledBackend<C> {
         let program = if let Some(program) = self.programs.get(&ast) {
             program
         } else {
-            let program = self.compiler.compile(&ast);
+            let program = self.compiler.compile(&ast)?;
             self.programs.entry(ast).or_insert(program)
         };
         // Run the program
         self.buffers
-            .insert(x, self.compiler.launch(program, &program_args));
+            .insert(x, self.compiler.launch(program, &program_args)?);
+        Ok(())
     }
 }

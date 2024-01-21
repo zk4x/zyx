@@ -10,6 +10,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
+use core::fmt::Debug;
 use crate::utils::{dtype, shape};
 
 /// RuntimeBackend is a good plug in point for backend developers.
@@ -17,15 +18,17 @@ use crate::utils::{dtype, shape};
 /// own backend which needs to implement only evaluation of graph.
 /// Used by torch and native backends.
 pub trait RuntimeBackend {
+    /// Runtime error
+    type Error: Debug;
     /// Is tensor x evaluated?
     fn is_evaluated(&self, x: Id) -> bool;
     /// Delete all memory used by tensor x.
-    fn remove(&mut self, x: Id);
+    fn remove(&mut self, x: Id) -> Result<(), Self::Error>;
     /// Load evaluated tensor x.
-    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Vec<T>;
+    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, Self::Error>;
     /// Evaluate tensors to_eval with given graph of nodes and recommended
     /// order of evaluation.
-    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]);
+    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), Self::Error>;
 }
 
 /// Runtime with autograd engine.
@@ -69,7 +72,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new((0..n).map(move |_| rng.sample(Standard))),
                 shape,
             )),
-        };
+        }.unwrap(); // Can't fail, as this does not call backend
         // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
@@ -84,7 +87,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         match dtype {
             DType::F32 => self.push(Node::UniformF32(shape, 0., 1.)),
             DType::I32 => self.push(Node::UniformI32(shape, i32::MIN, i32::MAX)),
-        }
+        }.unwrap()
     }
 
     /// Create uniform tensor from range low..high
@@ -92,7 +95,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         match T::dtype() {
             DType::F32 => self.push(Node::UniformF32(shape, low.into_f32(), high.into_f32())),
             DType::I32 => self.push(Node::UniformI32(shape, low.into_i32(), high.into_i32())),
-        }
+        }.unwrap()
     }
 
     /// Create tensor filled with repeating value
@@ -106,7 +109,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
                 shape,
             )),
-        }
+        }.unwrap()
     }
 
     /// Create square eye matrix, i.e. matrix where all elements are zeros, except for elements
@@ -123,7 +126,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 }))),
                 [n, n].into(),
             )),
-        }
+        }.unwrap()
     }
 
     /// Get shape of tensor x
@@ -137,12 +140,12 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Load tensor x
-    pub fn load<T: Scalar>(&mut self, x: Id) -> Vec<T> {
+    pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, R::Error> {
         // This may need to evaluate, therefore we need to take mutable reference to self
         if !self.runtime_backend.is_evaluated(x) {
             // TODO also check if these are only movements ops,
             // in which case we can directly return iterator with view
-            self.evaluate(BTreeSet::from([x]));
+            self.evaluate(BTreeSet::from([x]))?;
         }
         self.runtime_backend.load(x, shape(&self.nodes, x).numel())
     }
@@ -154,7 +157,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Push new Node into the graph creating new tensor.
-    pub fn push(&mut self, node: Node) -> Id {
+    pub fn push(&mut self, node: Node) -> Result<Id, R::Error> {
         for nid in node.parameters() {
             self.rcs[nid.i()] += 1;
         }
@@ -181,12 +184,12 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
             self.order[i.i()] = id(self.order.len() - 1);
         }
-        i
+        Ok(i)
     }
 
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
     /// x and release all of it's predecessors in the graph.
-    pub fn release(&mut self, x: Id) {
+    pub fn release(&mut self, x: Id) -> Result<(), R::Error> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(p) = params.pop() {
@@ -194,9 +197,10 @@ impl<R: RuntimeBackend> Runtime<R> {
             if self.rcs[p.i()] == 0 {
                 params.extend(self.nodes[p.i()].parameters());
                 self.leafs.remove(&p);
-                self.runtime_backend.remove(p);
+                self.runtime_backend.remove(p)?;
             }
         }
+        Ok(())
     }
 
     /// Increase reference count of tensor x.
@@ -205,7 +209,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Evaluate specified nodes.
-    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) {
+    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), R::Error> {
         // TODO we are probably going too many times back and forth in the graph.
         // First we go back to create graph of all nodes that need to be evaluated.
         // Then we go forward to find which nodes are kernel subgraphs.
@@ -224,7 +228,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut order: Vec<Id> = rcs.keys().copied().collect();
         order.sort_by_cached_key(|nid| self.order[nid.i()]);
 
-        self.runtime_backend.evaluate(nodes, &order, &mut self.nodes);
+        self.runtime_backend.evaluate(nodes, &order, &mut self.nodes)?;
 
         // Release parts of graph that are not needed for backpropagation
         while let Some(leaf) = self.leafs.pop_last() {
@@ -236,13 +240,15 @@ impl<R: RuntimeBackend> Runtime<R> {
             };
             core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
             for nid in node.parameters() {
-                self.release(nid);
+                self.release(nid)?;
             }
         }
+        Ok(())
     }
 
-    /// Common autograd engine, currently used by all backends
-    pub fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> BTreeMap<Id, Id> {
+    /// Common autograd engine, currently used by all backends.
+    /// Backpropagation by itself probably should not evaluate.
+    pub fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, R::Error> {
         fn build_topo(x: Id, sources: &BTreeSet<Id>, nodes: &[Node], order: &[Id]) -> Vec<Id> {
             // First we need to know which nodes require gradient
             let mut req_grad = BTreeSet::new();
@@ -292,9 +298,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new([1.].into_iter()),
                 shape(&self.nodes, x).clone(),
             )),
-        };
-        grads.insert(x, self.push(Node::Expand(grad1, shape(&self.nodes, x).clone())));
-        self.release(grad1);
+        }?;
+        grads.insert(x, self.push(Node::Expand(grad1, shape(&self.nodes, x).clone()))?);
+        self.release(grad1)?;
         // backpropagate
         // TODO this is not very clean code. Can we make it cleaner?
         for nid in topo {
@@ -319,20 +325,20 @@ impl<R: RuntimeBackend> Runtime<R> {
                         self.retain(grad);
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
-                        grads.insert(y, self.push(Node::Neg(grad)));
+                        grads.insert(y, self.push(Node::Neg(grad))?);
                     }
                 }
                 Node::Mul(x, y) => {
                     if req_grad.contains(&x) && !grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Mul(y, grad)));
+                        grads.insert(x, self.push(Node::Mul(y, grad))?);
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
-                        grads.insert(y, self.push(Node::Mul(x, grad)));
+                        grads.insert(y, self.push(Node::Mul(x, grad))?);
                     }
                 }
                 Node::Div(x, y) => {
                     if req_grad.contains(&x) && !grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Div(grad, y)));
+                        grads.insert(x, self.push(Node::Div(grad, y))?);
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
                         // -grad*x/(y^2)
@@ -343,17 +349,17 @@ impl<R: RuntimeBackend> Runtime<R> {
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))
                             }
-                        };
-                        let two_e = self.push(Node::Expand(two, shape(&self.nodes, y).clone()));
-                        self.release(two);
-                        let two_2 = self.push(Node::Pow(y, two_e));
-                        self.release(two_e);
-                        let temp = self.push(Node::Mul(x, grad));
-                        let temp_neg = self.push(Node::Neg(temp));
-                        self.release(temp);
-                        let y_grad = self.push(Node::Div(temp_neg, two_2));
-                        self.release(temp_neg);
-                        self.release(two_2);
+                        }?;
+                        let two_e = self.push(Node::Expand(two, shape(&self.nodes, y).clone()))?;
+                        self.release(two)?;
+                        let two_2 = self.push(Node::Pow(y, two_e))?;
+                        self.release(two_e)?;
+                        let temp = self.push(Node::Mul(x, grad))?;
+                        let temp_neg = self.push(Node::Neg(temp))?;
+                        self.release(temp)?;
+                        let y_grad = self.push(Node::Div(temp_neg, two_2))?;
+                        self.release(temp_neg)?;
+                        self.release(two_2)?;
                         grads.insert(y, y_grad);
                     }
                 }
@@ -367,26 +373,26 @@ impl<R: RuntimeBackend> Runtime<R> {
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))
                             }
-                        };
-                        let one1 = self.push(Node::Expand(one, shape(&self.nodes, y).clone()));
-                        self.release(one);
-                        let y_1 = self.push(Node::Sub(y, one1));
-                        self.release(one1);
-                        let pow_y_1 = self.push(Node::Pow(x, y_1));
-                        self.release(y_1);
-                        let y_mul = self.push(Node::Mul(y, pow_y_1));
-                        self.release(pow_y_1);
-                        let x_grad = self.push(Node::Mul(grad, y_mul));
-                        self.release(y_mul);
+                        }?;
+                        let one1 = self.push(Node::Expand(one, shape(&self.nodes, y).clone()))?;
+                        self.release(one)?;
+                        let y_1 = self.push(Node::Sub(y, one1))?;
+                        self.release(one1)?;
+                        let pow_y_1 = self.push(Node::Pow(x, y_1))?;
+                        self.release(y_1)?;
+                        let y_mul = self.push(Node::Mul(y, pow_y_1))?;
+                        self.release(pow_y_1)?;
+                        let x_grad = self.push(Node::Mul(grad, y_mul))?;
+                        self.release(y_mul)?;
                         grads.insert(x, x_grad);
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
                         // grad * x.pow(y) * ln(x)
-                        let temp1 = self.push(Node::Ln(x));
-                        let temp2 = self.push(Node::Mul(nid, temp1));
-                        self.release(temp1);
-                        let y_grad = self.push(Node::Mul(grad, temp2));
-                        self.release(temp2);
+                        let temp1 = self.push(Node::Ln(x))?;
+                        let temp2 = self.push(Node::Mul(nid, temp1))?;
+                        self.release(temp1)?;
+                        let y_grad = self.push(Node::Mul(grad, temp2))?;
+                        self.release(temp2)?;
                         grads.insert(y, y_grad);
                     }
                 }
@@ -395,7 +401,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::ReLU(x) => {
                     // TODO is grads.contains_key useless for unary ops?
-                    grads.entry(x).or_insert_with(|| {
+                    if !grads.contains_key(&x) {
                         let zero = match dtype(&self.nodes, x) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
@@ -403,107 +409,111 @@ impl<R: RuntimeBackend> Runtime<R> {
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
                             }
-                        };
-                        let zeros = self.push(Node::Expand(zero, shape(&self.nodes, x).clone()));
-                        self.release(zero);
-                        let zl = self.push(Node::Cmplt(zeros, x));
-                        self.release(zeros);
-                        let x_grad = self.push(Node::Mul(zl, grad));
-                        self.release(zl);
-                        x_grad
-                    });
+                        }?;
+                        let zeros = self.push(Node::Expand(zero, shape(&self.nodes, x).clone()))?;
+                        self.release(zero)?;
+                        let zl = self.push(Node::Cmplt(zeros, x))?;
+                        self.release(zeros)?;
+                        let x_grad = self.push(Node::Mul(zl, grad))?;
+                        self.release(zl)?;
+                        grads.insert(x, x_grad);
+                    };
                 }
                 Node::Exp(x) => {
-                    grads
-                        .entry(x)
-                        .or_insert_with(|| self.push(Node::Mul(nid, grad)));
+                    if !grads.contains_key(&x) {
+                        grads.insert(x, self.push(Node::Mul(nid, grad))?);
+                    }
                 }
                 Node::Ln(x) => {
-                    grads
-                        .entry(x)
-                        .or_insert_with(|| self.push(Node::Div(grad, x)));
+                    if !grads.contains_key(&x) {
+                        grads.insert(x, self.push(Node::Div(grad, x))?);
+                    }
                 }
                 Node::Sin(x) => {
-                    grads.entry(x).or_insert_with(|| {
-                        let x_temp = self.push(Node::Cos(x));
-                        let x_grad = self.push(Node::Mul(x_temp, grad));
-                        self.release(x_temp);
-                        x_grad
-                    });
+                    if !grads.contains_key(&x) {
+                        let x_temp = self.push(Node::Cos(x))?;
+                        let x_grad = self.push(Node::Mul(x_temp, grad))?;
+                        self.release(x_temp)?;
+                        grads.insert(x, x_grad);
+                    };
                 }
                 Node::Cos(x) => {
-                    grads.entry(x).or_insert_with(|| {
-                        let x_temp1 = self.push(Node::Sin(x));
-                        let x_temp = self.push(Node::Neg(x_temp1));
-                        self.release(x_temp1);
-                        let x_grad = self.push(Node::Mul(x_temp, grad));
-                        self.release(x_temp);
-                        x_grad
-                    });
+                    if !grads.contains_key(&x) {
+                        let x_temp1 = self.push(Node::Sin(x))?;
+                        let x_temp = self.push(Node::Neg(x_temp1))?;
+                        self.release(x_temp1)?;
+                        let x_grad = self.push(Node::Mul(x_temp, grad))?;
+                        self.release(x_temp)?;
+                        grads.insert(x, x_grad);
+                    };
                 }
                 Node::Sqrt(x) => {
-                    grads.entry(x).or_insert_with(|| {
+                    if !grads.contains_key(&x) {
                         // x_grad = grad/(2*sqrt(x))
                         let x_shape = shape(&self.nodes, x).clone();
-                        let two1 = self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()));
-                        let two2 = self.push(Node::Expand(two1, x_shape));
-                        self.release(two1);
-                        let x_temp = self.push(Node::Mul(two2, nid));
-                        self.release(two2);
-                        let x_grad = self.push(Node::Div(grad, x_temp));
-                        self.release(x_temp);
-                        x_grad
-                    });
+                        let two1 = self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
+                        let two2 = self.push(Node::Expand(two1, x_shape))?;
+                        self.release(two1)?;
+                        let x_temp = self.push(Node::Mul(two2, nid))?;
+                        self.release(two2)?;
+                        let x_grad = self.push(Node::Div(grad, x_temp))?;
+                        self.release(x_temp)?;
+                        grads.insert(x, x_grad);
+                    };
                 }
                 Node::CastF32(x) | Node::CastI32(x) => {
-                    grads.entry(x).or_insert_with(|| match dtype(&self.nodes, x) {
-                        DType::F32 => self.push(Node::CastF32(grad)),
-                        DType::I32 => self.push(Node::CastI32(grad)),
-                    });
+                    if !grads.contains_key(&x) {
+                        grads.insert(x, match dtype(&self.nodes, x) {
+                            DType::F32 => self.push(Node::CastF32(grad))?,
+                            DType::I32 => self.push(Node::CastI32(grad))?,
+                        });
+                    };
                 }
                 Node::Neg(x) => {
-                    grads.entry(x).or_insert_with(|| self.push(Node::Neg(grad)));
+                    if !grads.contains_key(&x) {
+                        grads.insert(x, self.push(Node::Neg(grad))?);
+                    }
                 }
                 Node::Tanh(x) => {
-                    grads.entry(x).or_insert_with(|| {
+                    if !grads.contains_key(&x) {
                         // 1 - tanh^2(x)
                         let shape = shape(&self.nodes, x).clone();
                         let (two1, one1) = match dtype(&self.nodes, x) {
                             DType::F32 => (
-                                self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into())),
-                                self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into())),
+                                self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?,
+                                self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?,
                             ),
                             DType::I32 => (
-                                self.push(Node::IterI32(Box::new([2].into_iter()), 1.into())),
-                                self.push(Node::IterI32(Box::new([1].into_iter()), 1.into())),
+                                self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))?,
+                                self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))?,
                             ),
                         };
-                        let two2 = self.push(Node::Expand(two1, shape.clone()));
-                        self.release(two1);
-                        let two = self.push(Node::Pow(nid, two2));
-                        self.release(two2);
-                        let one2 = self.push(Node::Expand(one1, shape));
-                        self.release(one1);
-                        let one = self.push(Node::Sub(one2, two));
-                        self.release(one2);
-                        self.release(two);
-                        let x_grad = self.push(Node::Mul(one, grad));
-                        self.release(one);
-                        x_grad
-                    });
+                        let two2 = self.push(Node::Expand(two1, shape.clone()))?;
+                        self.release(two1)?;
+                        let two = self.push(Node::Pow(nid, two2))?;
+                        self.release(two2)?;
+                        let one2 = self.push(Node::Expand(one1, shape))?;
+                        self.release(one1)?;
+                        let one = self.push(Node::Sub(one2, two))?;
+                        self.release(one2)?;
+                        self.release(two)?;
+                        let x_grad = self.push(Node::Mul(one, grad))?;
+                        self.release(one)?;
+                        grads.insert(x, x_grad);
+                    };
                 }
                 Node::Reshape(x, ..) => {
-                    grads
-                        .entry(x)
-                        .or_insert_with(|| self.push(Node::Reshape(grad, shape(&self.nodes, x).clone())));
+                    if !grads.contains_key(&x) {
+                        self.push(Node::Reshape(grad, shape(&self.nodes, x).clone()))?;
+                    }
                 }
                 Node::Expand(x, ref sh) => {
                     if !grads.contains_key(&x) {
                         let org_shape = shape(&self.nodes, x).clone();
                         let axes = org_shape.expand_axes(sh);
-                        let temp = self.push(Node::Sum(grad, axes, org_shape.clone()));
-                        let x_grad = self.push(Node::Reshape(temp, org_shape));
-                        self.release(temp);
+                        let temp = self.push(Node::Sum(grad, axes, org_shape.clone()))?;
+                        let x_grad = self.push(Node::Reshape(temp, org_shape))?;
+                        self.release(temp)?;
                         grads.insert(x, x_grad);
                     }
                 }
@@ -512,49 +522,49 @@ impl<R: RuntimeBackend> Runtime<R> {
                         let shape = shape(&self.nodes, x);
                         grads.insert(
                             x,
-                            self.push(Node::Permute(grads[&nid], axes.argsort(), shape.clone())),
+                            self.push(Node::Permute(grads[&nid], axes.argsort(), shape.clone()))?,
                         );
                     }
                 }
                 Node::Pad(x, ref padding, value) => {
-                    let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
-                    grads.entry(x).or_insert_with(|| self.push(Node::Pad(grad, inv_padding, value)));
+                    if !grads.contains_key(&x) {
+                        let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
+                        grads.insert(x, self.push(Node::Pad(grad, inv_padding, value))?);
+                    }
                 }
                 Node::Sum(x, ..) => {
-                    grads
-                        .entry(x)
-                        .or_insert_with(|| self.push(Node::Expand(grad, shape(&self.nodes, x).clone())));
+                    if !grads.contains_key(&x) {
+                        grads.insert(x, self.push(Node::Expand(grad, shape(&self.nodes, x).clone()))?);
+                    }
                 }
                 Node::Max(x, ..) => {
-                    grads.entry(x).or_insert_with(|| {
+                    if !grads.contains_key(&x) {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
                         let x_shape = shape(&self.nodes, x).clone();
-                        let z_temp = self.push(Node::Expand(nid, x_shape.clone()));
-                        let cmp_t = self.push(Node::Cmplt(x, z_temp));
-                        self.release(z_temp);
-                        let one1 = self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()));
-                        let one2 = self.push(Node::Expand(one1, x_shape));
-                        self.release(one1);
-                        let max_1s = self.push(Node::Sub(one2, cmp_t));
-                        self.release(one2);
-                        self.release(cmp_t);
-                        let x_grad = self.push(Node::Mul(max_1s, grad));
-                        self.release(max_1s);
-                        x_grad
-                    });
+                        let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
+                        let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
+                        self.release(z_temp)?;
+                        let one1 = self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?;
+                        let one2 = self.push(Node::Expand(one1, x_shape))?;
+                        self.release(one1)?;
+                        let max_1s = self.push(Node::Sub(one2, cmp_t))?;
+                        self.release(one2)?;
+                        self.release(cmp_t)?;
+                        let x_grad = self.push(Node::Mul(max_1s, grad))?;
+                        self.release(max_1s)?;
+                        grads.insert(x, x_grad);
+                    };
                 }
             }
         }
-        grads
-            .into_iter()
-            .flat_map(|x| {
-                if sources.contains(&x.0) {
-                    Some(x)
-                } else {
-                    self.release(x.1);
-                    None
-                }
-            })
-            .collect()
+        let mut res = BTreeMap::new();
+        for (k, v) in grads.into_iter() {
+            if sources.contains(&k) {
+                res.insert(k, v);
+            } else {
+                self.release(v)?;
+            }
+        }
+        Ok(res)
     }
 }
