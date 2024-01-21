@@ -10,7 +10,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::fmt::Debug;
+use crate::error::ZyxError;
 use crate::utils::{dtype, shape};
 
 /// RuntimeBackend is a good plug in point for backend developers.
@@ -18,17 +18,15 @@ use crate::utils::{dtype, shape};
 /// own backend which needs to implement only evaluation of graph.
 /// Used by torch and native backends.
 pub trait RuntimeBackend {
-    /// Runtime error
-    type Error: Debug;
     /// Is tensor x evaluated?
     fn is_evaluated(&self, x: Id) -> bool;
     /// Delete all memory used by tensor x.
-    fn remove(&mut self, x: Id) -> Result<(), Self::Error>;
+    fn remove(&mut self, x: Id) -> Result<(), ZyxError>;
     /// Load evaluated tensor x.
-    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, Self::Error>;
+    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Evaluate tensors to_eval with given graph of nodes and recommended
     /// order of evaluation.
-    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), Self::Error>;
+    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), ZyxError>;
 }
 
 /// Runtime with autograd engine.
@@ -140,7 +138,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Load tensor x
-    pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, R::Error> {
+    pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
         // This may need to evaluate, therefore we need to take mutable reference to self
         if !self.runtime_backend.is_evaluated(x) {
             // TODO also check if these are only movements ops,
@@ -157,7 +155,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Push new Node into the graph creating new tensor.
-    pub fn push(&mut self, node: Node) -> Result<Id, R::Error> {
+    pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
         for nid in node.parameters() {
             self.rcs[nid.i()] += 1;
         }
@@ -184,12 +182,13 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
             self.order[i.i()] = id(self.order.len() - 1);
         }
+        // TODO if there are too many nodes, then evaluate last leafs
         Ok(i)
     }
 
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
     /// x and release all of it's predecessors in the graph.
-    pub fn release(&mut self, x: Id) -> Result<(), R::Error> {
+    pub fn release(&mut self, x: Id) -> Result<(), ZyxError> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(p) = params.pop() {
@@ -209,7 +208,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Evaluate specified nodes.
-    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), R::Error> {
+    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
         // TODO we are probably going too many times back and forth in the graph.
         // First we go back to create graph of all nodes that need to be evaluated.
         // Then we go forward to find which nodes are kernel subgraphs.
@@ -248,7 +247,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Common autograd engine, currently used by all backends.
     /// Backpropagation by itself probably should not evaluate.
-    pub fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, R::Error> {
+    pub fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
         fn build_topo(x: Id, sources: &BTreeSet<Id>, nodes: &[Node], order: &[Id]) -> Vec<Id> {
             // First we need to know which nodes require gradient
             let mut req_grad = BTreeSet::new();
@@ -293,12 +292,12 @@ impl<R: RuntimeBackend> Runtime<R> {
             DType::F32 => self.push(Node::IterF32(
                 Box::new([1.].into_iter()),
                 shape(&self.nodes, x).clone(),
-            )),
+            ))?,
             DType::I32 => self.push(Node::IterF32(
                 Box::new([1.].into_iter()),
                 shape(&self.nodes, x).clone(),
-            )),
-        }?;
+            ))?,
+        };
         grads.insert(x, self.push(Node::Expand(grad1, shape(&self.nodes, x).clone()))?);
         self.release(grad1)?;
         // backpropagate

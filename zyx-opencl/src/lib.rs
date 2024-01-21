@@ -8,7 +8,6 @@ mod compiler;
 extern crate alloc;
 use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 use core::ops::Range;
-use cl3::error_codes::ClError;
 use zyx_core::{
     scalar::Scalar,
     tensor::{tensor, IntoTensor},
@@ -47,9 +46,9 @@ impl<T> MCell<T> {
 
 pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
 
-pub fn device() -> Result<OpenCL, ZyxError<ClError>> {
+pub fn device() -> Result<OpenCL, ZyxError> {
     Ok(OpenCL(MCell::new(Runtime::new(
-        CompiledBackend::new(Compiler::new().map_err(|err| ZyxError::BackendError(err))?),
+        CompiledBackend::new(Compiler::new()?),
     ))))
 }
 
@@ -97,8 +96,6 @@ impl OpenCL {
 }
 
 impl Backend for &OpenCL {
-    type Error = ClError;
-    
     fn _uniform(self, shape: Shape, dtype: DType) -> Id {
         self.0.update(|b| b._uniform(shape.into(), dtype))
     }
@@ -111,15 +108,15 @@ impl Backend for &OpenCL {
         self.0.read(|b| b.dtype(x))
     }
 
-    fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, Self::Error> {
+    fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
         self.0.update(|b| b.backward(x, sources))
     }
 
-    fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, Self::Error> {
+    fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, ZyxError> {
         self.0.update(|b| b.load(x))
     }
 
-    fn push(self, node: Node) -> Result<Id, Self::Error> {
+    fn push(self, node: Node) -> Result<Id, ZyxError> {
         self.0.update(|b| b.push(node))
     }
 
@@ -127,7 +124,7 @@ impl Backend for &OpenCL {
         self.0.update(|b| b.set_leaf(x));
     }
 
-    fn release(self, x: Id) -> Result<(), Self::Error> {
+    fn release(self, x: Id) -> Result<(), ZyxError> {
         self.0.update(|b| { b.release(x) })
     }
 
@@ -137,7 +134,7 @@ impl Backend for &OpenCL {
 }
 
 #[test]
-fn t0() -> Result<(), ZyxError<ClError>> {
+fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.randn([2, 3], DType::F32);
     let y = dev.randn([2, 3], DType::F32);
@@ -147,7 +144,7 @@ fn t0() -> Result<(), ZyxError<ClError>> {
 }
 
 #[test]
-fn test_layer_norm() -> Result<(), ZyxError<ClError>> {
+fn test_layer_norm() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.randn([2, 3], DType::F32);
     let _n = x.shape()[-1];

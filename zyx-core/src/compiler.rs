@@ -12,7 +12,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::fmt::Debug;
+use crate::error::ZyxError;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -20,20 +20,18 @@ pub trait Compiler {
     type Buffer;
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
-    /// Compiler error
-    type Error: Debug;
     /// Store iter into buffer
-    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, Self::Error>;
+    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, ZyxError>;
     /// Load buffer into vec
-    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, Self::Error>;
+    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Drop Buffer
-    fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), Self::Error>;
+    fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError>;
     /// Drop Program
-    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), Self::Error>;
+    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError>;
     /// Launch program with args
-    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Result<Self::Buffer, Self::Error>;
+    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
-    fn compile(&mut self, ast: &AST) -> Result<Self::Program, Self::Error>;
+    fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError>;
 }
 
 /// Op executable on device with compiled backend
@@ -102,23 +100,22 @@ pub struct CompiledBackend<C: Compiler> {
 }
 
 impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
-    type Error = C::Error;
     fn is_evaluated(&self, x: Id) -> bool {
         self.buffers.contains_key(&x)
     }
 
-    fn remove(&mut self, x: Id) -> Result<(), Self::Error> {
+    fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
         if let Some(mut buf) = self.buffers.remove(&x) {
             self.compiler.drop_buffer(&mut buf)?;
         }
         Ok(())
     }
 
-    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, Self::Error> {
+    fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
         self.compiler.load(&self.buffers[&x], numel)
     }
 
-    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), Self::Error> {
+    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             match &mut nodes[nid.i()] {
                 Node::LeafF32(..)
@@ -195,7 +192,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
     /// This function evaluates concrete buffer that we know can be directly evaluated,
     /// that is we know that all of it's leafs are already evaluated and stored in device.
-    fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), C::Error> {
+    fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
         // Create ordered list of nodes that need to be evaluated
         let mut temp = alloc::vec![x];
         let mut porder = Vec::new();

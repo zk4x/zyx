@@ -147,14 +147,14 @@ impl<B: Backend> Tensor<B> {
     /// let xvec: Vec<i32> = x.to_vec().unwrap();
     /// assert_eq!(xvec, vec![2, 3, 1, 4, 1, 3]);
     /// ```
-    pub fn to_vec<T: Scalar>(&self) -> Result<Vec<T>, ZyxError<B::Error>> {
+    pub fn to_vec<T: Scalar>(&self) -> Result<Vec<T>, ZyxError> {
         if T::dtype() != self.dtype() {
             return Err(ZyxError::InvalidDType {
                 expected: T::dtype(),
                 found: self.dtype(),
             })
         }
-        self.backend.load(self.id).map_err(|err| ZyxError::BackendError(err))
+        self.backend.load(self.id)
     }
 
     /// Returns first element stored in this tensor.
@@ -166,8 +166,8 @@ impl<B: Backend> Tensor<B> {
     /// let xitem: i32 = x.item();
     /// assert_eq!(xvec, vec![2, 3, 1, 4, 1, 3]);
     /// ```
-    pub fn item<T: Scalar>(&self) -> Result<T, ZyxError<B::Error>> {
-        self.backend.load::<T>(self.id).map_err(|err| ZyxError::BackendError(err))?.first().ok_or_else(|| ZyxError::IndexOutOfBounds { index: 0, len: 0 }).cloned()
+    pub fn item<T: Scalar>(&self) -> Result<T, ZyxError> {
+        self.backend.load::<T>(self.id)?.first().ok_or_else(|| ZyxError::IndexOutOfBounds { index: 0, len: 0 }).cloned()
     }
 
     // Backpropagation
