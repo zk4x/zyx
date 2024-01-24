@@ -1,4 +1,26 @@
+//! OpenCL backend for zyx
+//!
+//! zyx-opencl is used as any other Zyx backend.
+//!
+//! Initialize backend.
+//!
+//! Create tensors.
+//!
+
 #![no_std]
+
+#![forbid(rustdoc::broken_intra_doc_links)]
+#![forbid(rustdoc::private_intra_doc_links)]
+#![forbid(missing_docs)]
+#![forbid(rustdoc::missing_crate_level_docs)]
+//#![forbid(rustdoc::missing_doc_code_examples)]
+#![forbid(rustdoc::private_doc_tests)]
+#![forbid(rustdoc::invalid_codeblock_attributes)]
+#![forbid(rustdoc::invalid_html_tags)]
+#![forbid(rustdoc::invalid_rust_codeblocks)]
+#![forbid(rustdoc::bare_urls)]
+#![forbid(rustdoc::unescaped_backticks)]
+#![forbid(rustdoc::redundant_explicit_links)]
 
 #[cfg(feature = "debug1")]
 extern crate std;
@@ -44,8 +66,11 @@ impl<T> MCell<T> {
     }
 }
 
+/// OpenCL backend
 pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
 
+/// Create new OpenCL backend using first OpenCL platform
+/// and all hardware devices in that platform.
 pub fn device() -> Result<OpenCL, ZyxError> {
     Ok(OpenCL(MCell::new(Runtime::new(
         CompiledBackend::new(Compiler::new()?),
@@ -53,26 +78,31 @@ pub fn device() -> Result<OpenCL, ZyxError> {
 }
 
 impl OpenCL {
+    /// Create new tensor
     #[must_use]
     pub fn tensor<'a>(&'a self, data: impl IntoTensor<&'a Self>) -> Tensor<&'a Self> {
         data.into_tensor(self)
     }
 
+    /// Create new tensor using values from standard normal distribution
     #[must_use]
     pub fn randn(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
         tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
     }
 
+    /// Create new tensor using values from uniform distribution
     #[must_use]
     pub fn uniform(&self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<&Self> {
         tensor(self.0.update(|b| b.uniform(shape.into(), range.start, range.end)), self)
     }
 
+    /// Create new tensor by repeating single value
     #[must_use]
     pub fn full(&self, shape: impl Into<Shape>, value: impl Scalar) -> Tensor<&Self> {
         tensor(self.0.update(|b| b.full(shape.into(), value)), self)
     }
 
+    /// Create new tensor by repeating zeroes
     #[must_use]
     pub fn zeros(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
         match dtype {
@@ -81,6 +111,7 @@ impl OpenCL {
         }
     }
 
+    /// Create new tensor by repeating ones
     #[must_use]
     pub fn ones(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
         match dtype {
@@ -89,6 +120,7 @@ impl OpenCL {
         }
     }
 
+    /// Create eye tensor
     #[must_use]
     pub fn eye(&self, n: usize, dtype: DType) -> Tensor<&Self> {
         tensor(self.0.update(|b| b.eye(n, dtype)), self)

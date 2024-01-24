@@ -36,7 +36,7 @@ pub trait Compiler {
 
 /// Op executable on device with compiled backend
 /// usize are all IDs into ops, leafs have IDs into args
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
     /// Leaf (holds data, id to kernel arg)
     Leaf(usize),
@@ -49,7 +49,7 @@ pub enum Op {
 }
 
 /// Possible reduce ops
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ROp {
     /// No reduce
     None,
@@ -62,7 +62,7 @@ pub enum ROp {
 /// Abstract syntax tree that can be compiled into program.
 /// Consists of kernel arguments, elementwise ops, optional reduce op
 /// and elementwise ops after reduce.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AST {
     args: Box<[(View, DType)]>,
     ops: Box<[Op]>,
@@ -197,10 +197,11 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut temp = alloc::vec![x];
         let mut porder = Vec::new();
         while let Some(nid) = temp.pop() {
+            porder.push(nid);
             if self.buffers.contains_key(&nid) {
                 continue;
             }
-            porder.extend(nodes[nid.i()].parameters())
+            temp.extend(nodes[nid.i()].parameters());
         }
         porder.sort_by_cached_key(|nid| order[nid.i()]);
         // Convert this list to kernel
@@ -208,7 +209,7 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut args = Vec::new();
         let mut ops = Vec::new();
         let mut ar_ops = Vec::new();
-        let after_reduce = false;
+        let ar = false;
         let reduce = ROp::None;
         let mut mapping = BTreeMap::new();
         for nid in porder {
@@ -216,7 +217,7 @@ impl<C: Compiler> CompiledBackend<C> {
             if let Some(x) = self.buffers.get(&nid) {
                 args.push((View::new(shape(&nodes, nid).clone()), dtype(&nodes, nid)));
                 program_args.push(x);
-                if after_reduce {
+                if ar {
                     ar_ops.push(Op::Leaf(args.len() - 1));
                 } else {
                     ops.push(Op::Leaf(args.len() - 1));
@@ -225,11 +226,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 match &nodes[nid.i()] {
                     Node::IterF32(..) | Node::IterI32(..) => {},
                     Node::Exp(x) => {
-                        if after_reduce {
-                            ar_ops.push(Op::Exp(mapping[x]));
-                        } else {
-                            ops.push(Op::Exp(mapping[x]));
-                        }
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Exp(mapping[x]));
                     }
                     Node::Expand(x, sh) => {
                         let mut params = alloc::vec![*x];
@@ -240,13 +237,17 @@ impl<C: Compiler> CompiledBackend<C> {
                             params.extend(nodes[x.i()].parameters());
                         }
                     }
+                    Node::Add(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Add(mapping[x], mapping[y]));
+                    }
                     _ => todo!("Op is not implemented yet."),
                 }
             };
         }
         if matches!(reduce, ROp::None) {
             for (view, _) in &mut args {
-                *view = view.reshape(&view.numel().into());
+                let n = view.numel();
+                *view = view.reshape(&n.into()).pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
             }
         }
         let ast = AST {
@@ -262,6 +263,7 @@ impl<C: Compiler> CompiledBackend<C> {
             let program = self.compiler.compile(&ast)?;
             self.programs.entry(ast).or_insert(program)
         };
+        //panic!("Number of args: {}", program_args.len());
         // Run the program
         self.buffers
             .insert(x, self.compiler.launch(program, &program_args)?);

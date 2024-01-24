@@ -3,7 +3,7 @@ use cl3::{
     ext::{CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG},
 };
 use core::ffi::c_void;
-use cl3::ext::CL_MEM_HOST_READ_ONLY;
+use cl3::ext::{CL_MEM_HOST_READ_ONLY, CL_MEM_READ_WRITE};
 use zyx_core::{
     compiler::{AST, Op},
     dtype::DType,
@@ -73,7 +73,7 @@ impl Program {
         );
         let source = f!("__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
-        std::println!("Compiling source:\n{source}");
+        std::println!("{source}");
         let program = cl3::program::create_program_with_source(context, &[&source]).map_err(|err| ZyxError::BackendError(match err {
             -34 => "Unable to compile program. ERR -34: CL_INVALID_CONTEXT",
             -30 => "Unable to compile program. ERR -30: CL_INVALID_VALUE",
@@ -225,15 +225,9 @@ impl Compiler {
 
 impl zyx_core::compiler::Compiler for Compiler {
     type Buffer = Buffer;
+
     type Program = Program;
-    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError> {
-        unsafe { cl3::program::release_program(program.program) }.map_err(|err| ZyxError::BackendError(match err {
-            -5 => "Unable to release program. ERR -5: CL_OUT_OF_RESOURCES",
-            -6 => "Unable to release program. ERR -6: CL_OUT_OF_HOST_MEMORY",
-            -44 => "Unable to release program. ERR -44: CL_INVALID_PROGRAM",
-            _ => "Unable to release program. UNKNOWN ERROR",
-        }))
-    }
+
     fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, ZyxError> {
         // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.collect();
@@ -289,15 +283,6 @@ impl zyx_core::compiler::Compiler for Compiler {
 
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError> {
         let mut data: Vec<T> = Vec::with_capacity(numel);
-        cl3::event::wait_for_events(&[buffer.event]).map_err(|err| ZyxError::BackendError(match err {
-            -30 => "Unable to finish buffer event. ERR -30: CL_INVALID_VALUE",
-            -34 => "Unable to finish buffer event. ERR -34: CL_INVALID_CONTEXT",
-            -58 => "Unable to finish buffer event. ERR -58: CL_INVALID_EVENT",
-            -14 => "Unable to finish buffer event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-            -5 => "Unable to finish buffer event. ERR -5: CL_OUT_OF_RESOURCES",
-            -6 => "Unable to finish buffer event. ERR -6: CL_OUT_OF_MEMORY",
-            _ => "Unable to finish buffer event. UNKNOWN ERROR",
-        }))?;
         let event = unsafe {
             cl3::command_queue::enqueue_read_buffer(
                 self.queue(),
@@ -306,10 +291,8 @@ impl zyx_core::compiler::Compiler for Compiler {
                 0,
                 numel * T::byte_size(),
                 data.as_mut_ptr().cast(),
-                0,
-                core::ptr::null(),
-                // TODO why does this not work?
-                //&[mem.event] as *const *mut c_void,
+                1,
+                &[buffer.event] as *const *mut c_void,
             )
         }.map_err(|err| ZyxError::BackendError(match err {
             -36 => "Unable to read buffer. ERR -36: CL_INVALID_COMMAND_QUEUE",
@@ -355,6 +338,15 @@ impl zyx_core::compiler::Compiler for Compiler {
         Ok(())
     }
 
+    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError> {
+        unsafe { cl3::program::release_program(program.program) }.map_err(|err| ZyxError::BackendError(match err {
+            -5 => "Unable to release program. ERR -5: CL_OUT_OF_RESOURCES",
+            -6 => "Unable to release program. ERR -6: CL_OUT_OF_HOST_MEMORY",
+            -44 => "Unable to release program. ERR -44: CL_INVALID_PROGRAM",
+            _ => "Unable to release program. UNKNOWN ERROR",
+        }))
+    }
+
     fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Result<Self::Buffer, ZyxError> {
         let kernel =
             cl3::kernel::create_kernel(program.program, &CString::new(program.name.clone()).unwrap()).map_err(|err| ZyxError::BackendError(match err {
@@ -367,23 +359,6 @@ impl zyx_core::compiler::Compiler for Compiler {
                 -6 => "Unable to create kernel. ERR -: CL_OUT_OF_HOST_MEMORY",
                 _ => "Unable to create kernel. UNKNOWN ERROR",
             }))?;
-        let mem = unsafe {
-            cl3::memory::create_buffer(
-                self.context,
-                CL_MEM_READ_ONLY | CL_MEM_HOST_READ_ONLY,
-                program.res_byte_size,
-                core::ptr::null_mut(),
-            )}.map_err(|err| ZyxError::BackendError(match err {
-                -34 => "Unable to create kernel output buffer. ERR -34: CL_INVALID_CONTEXT",
-                -64 => "Unable to create kernel output buffer. ERR -64: CL_INVALID_PROPERTY",
-                -30 => "Unable to create kernel output buffer. ERR -30: CL_INVALID_VALUE",
-                -61 => "Unable to create kernel output buffer. ERR -61: CL_INVALID_BUFFER_SIZE",
-                -4 => "Unable to create kernel output buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
-                -5 => "Unable to create kernel output buffer. ERR -5: CL_OUT_OF_RESOURCES",
-                -6 => "Unable to create kernel output buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                _ => "Unable to create kernel output buffer. UNKNOWN ERROR",
-            }))?;
-        let ptr: *const _ = &mem;
         let kernel_arg_err_handler = |err| ZyxError::BackendError(match err {
             -48 => "Unable to set kernel arg. ERR -48: CL_INVALID_KERNEL",
             -49 => "Unable to set kernel arg. ERR -49: CL_INVALID_ARG_INDEX",
@@ -397,14 +372,12 @@ impl zyx_core::compiler::Compiler for Compiler {
             -6 => "Unable to set kernel arg. ERR -6: CL_OUT_OF_HOST_MEMORY",
             _ => "Unable to set kernel arg. UNKNOWN ERROR",
         });
-        unsafe {
-            cl3::kernel::set_kernel_arg(kernel, 0, core::mem::size_of::<*mut c_void>(), ptr.cast())
-        }.map_err(kernel_arg_err_handler)?;
         let mut events = Vec::new();
-        let mut i = 1;
+        let mut i = 0;
         for arg in args {
             let (buffer, event) = (arg.mem, arg.event);
             events.push(event);
+            //std::println!("Arg: {:?}", self.load::<f32>(arg, 6));
             // This is POINTER MAGIC. Be careful.
             let ptr: *const _ = &buffer;
             unsafe {
@@ -417,6 +390,26 @@ impl zyx_core::compiler::Compiler for Compiler {
             }.map_err(kernel_arg_err_handler)?;
             i += 1;
         }
+        let mem = unsafe {
+            cl3::memory::create_buffer(
+                self.context,
+                CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY,
+                program.res_byte_size,
+                core::ptr::null_mut(),
+            )}.map_err(|err| ZyxError::BackendError(match err {
+            -34 => "Unable to create kernel output buffer. ERR -34: CL_INVALID_CONTEXT",
+            -64 => "Unable to create kernel output buffer. ERR -64: CL_INVALID_PROPERTY",
+            -30 => "Unable to create kernel output buffer. ERR -30: CL_INVALID_VALUE",
+            -61 => "Unable to create kernel output buffer. ERR -61: CL_INVALID_BUFFER_SIZE",
+            -4 => "Unable to create kernel output buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
+            -5 => "Unable to create kernel output buffer. ERR -5: CL_OUT_OF_RESOURCES",
+            -6 => "Unable to create kernel output buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
+            _ => "Unable to create kernel output buffer. UNKNOWN ERROR",
+        }))?;
+        let ptr: *const _ = &mem;
+        unsafe {
+            cl3::kernel::set_kernel_arg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
+        }.map_err(kernel_arg_err_handler)?;
         #[cfg(feature = "debug1")]
         let begin = std::time::Instant::now();
         let event = unsafe {
@@ -434,8 +427,27 @@ impl zyx_core::compiler::Compiler for Compiler {
                     events.as_ptr()
                 },
             )
-        }
-        .expect("could not execute opencl kernel.");
+        }.map_err(|err| ZyxError::BackendError(match err {
+            -45 => "Unable to enqueue kernel. ERR -45: CL_INVALID_PROGRAM_EXECUTABLE",
+            -36 => "Unable to enqueue kernel. ERR -36: CL_INVALID_COMMAND_QUEUE",
+            -48 => "Unable to enqueue kernel. ERR -48: CL_INVALID_KERNEL",
+            -34 => "Unable to enqueue kernel. ERR -34: CL_INVALID_CONTEXT",
+            -52 => "Unable to enqueue kernel. ERR -52: CL_INVALID_KERNEL_ARGS",
+            -53 => "Unable to enqueue kernel. ERR -53: CL_INVALID_WORK_DIMENSION",
+            -63 => "Unable to enqueue kernel. ERR -63: CL_INVALID_GLOBAL_WORK_SIZE",
+            -56 => "Unable to enqueue kernel. ERR -56: CL_INVALID_GLOBAL_OFFSET",
+            -54 => "Unable to enqueue kernel. ERR -54: CL_INVALID_WORK_GROUP_SIZE",
+            -55 => "Unable to enqueue kernel. ERR -55: CL_INVALID_WORK_ITEM_SIZE",
+            -13 => "Unable to enqueue kernel. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
+            -40 => "Unable to enqueue kernel. ERR -40: CL_INVALID_IMAGE_SIZE",
+            -10 => "Unable to enqueue kernel. ERR -10: CL_IMAGE_FORMAT_NOT_SUPPORTED",
+            -5 => "Unable to enqueue kernel. ERR -5: CL_OUT_OF_RESOURCES",
+            -4 => "Unable to enqueue kernel. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
+            -57 => "Unable to enqueue kernel. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
+            -59 => "Unable to enqueue kernel. ERR -59: CL_INVALID_OPERATION",
+            -6 => "Unable to enqueue kernel. ERR -6: CL_OUT_OF_HOST_MEMORY",
+            _ => "Unable to enqueue kernel. UNKNOWN ERROR",
+        }))?;
         #[cfg(feature = "debug1")]
         {
             cl3::event::wait_for_events(&[event]).map_err(|err| ZyxError::BackendError(match err {
@@ -447,11 +459,13 @@ impl zyx_core::compiler::Compiler for Compiler {
                 -6 => "Unable to finish kernel execution event. ERR -6: CL_OUT_OF_MEMORY",
                 _ => "Unable to finish kernel execution event. UNKNOWN ERROR",
             }))?;
-            let elapsed = begin.elapsed().as_millis();
+            let elapsed = begin.elapsed().as_nanos();
+            let elapsed_millis = elapsed as f64 / 1000000.;
             std::println!(
-                "Kernel execution took {elapsed}ms, that is {} GFLOPS",
-                (1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64 / 1000000 as f64
+                "Kernel execution took {elapsed_millis:.3}ms, that is {} GFLOPS",
+                (1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64
             );
+            //std::println!("Output: {:?}", self.load::<f32>(&Buffer { mem, event }, 6));
         }
         Ok(Buffer { mem, event })
     }
@@ -469,10 +483,12 @@ impl zyx_core::compiler::Compiler for Compiler {
 
 /// Elementwise kernel
 fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
-    let tile_width = 16;
-    let tile_height = 16;
-    let global_work_size = alloc::vec![256, 256];
-    let local_work_size = alloc::vec![tile_height, tile_width];
+    //std::println!("\nCompiling ast: {ast:#?}");
+    let n = ast.args()[0].0.numel();
+    let tile_height = 1;
+    let tile_width = 8;
+    let global_work_size = alloc::vec![1, n];
+    let local_work_size = alloc::vec![1, tile_width];
     let res_byte_size: usize = global_work_size.iter().product();
     let mut source = f!("(\n  ");
     let mut endl = f!(",\n  ");
@@ -490,11 +506,13 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     source = f!("{source}\n) {{\n  ");
 
     endl = f!(";\n  ");
+    //source = f!("{source}int idx0 = get_global_id(0){endl}");
     source = f!("{source}int gidx0 = get_group_id(0){endl}");
     source = f!("{source}int gidx1 = get_group_id(1){endl}");
     source = f!("{source}int lidx0 = get_local_id(0){endl}");
     source = f!("{source}int lidx1 = get_local_id(1){endl}");
     source = f!("{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}", global_work_size[1]);
+    //source = f!("{source}int idx0 = gidx0*{tile_width} + lidx0{endl}");
     let mut dtype = DType::F32.ocl_str();
     let mut nid = 0;
     for op in ast.ops().iter() {
@@ -506,8 +524,14 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
                 dtype = t.ocl_str();
                 f!("{dtype} var{nid} = {}", view.cidx(&f!("data{x}")))
             }
-            Op::Exp(x) => f!("{dtype} var{nid}[] = exp(var{x}[])"),
-            _ => todo!(),
+            Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
+            Op::CastF32(x) => {
+                dtype = DType::F32.ocl_str();
+                f!("{dtype} var{nid} = dtype(var{x})")
+            }
+            Op::Add(x, y) => {
+                f!("{dtype} var{nid} = var{x} + var{y}")
+            }
         };
         source = f!("{source}{res}{endl}");
         nid += 1;
@@ -528,9 +552,10 @@ fn compile_r_kernel(_ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
 #[test]
 fn exp_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
-    let x = dev.randn([2, 3], crate::DType::F32);
-    let y = x.exp();
-    let _y_vec: Vec<f32> = y.to_vec()?;
-    //panic!("{y_vec:?}");
-    Ok(())
+    let x = dev.randn([2, 3], DType::F32);
+    let y = x.exp() + &x;
+    let x_vec: Vec<f32> = x.to_vec()?;
+    let y_vec: Vec<f32> = y.to_vec()?;
+    panic!("{x_vec:?}\n{y_vec:?}");
+    //Ok(())
 }

@@ -97,7 +97,7 @@ impl<B: Backend> Tensor<B> {
     // Metadata
     /// Returns the [shape](Shape) of the self tensor.
     /// ```
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.shape(), [2, 3]);
     /// ```
@@ -108,7 +108,7 @@ impl<B: Backend> Tensor<B> {
 
     /// Returns the [dtype](DType) of the self tensor.
     /// ```
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.dtype(), zyx_opencl::DType::I32);
     /// ```
@@ -159,12 +159,13 @@ impl<B: Backend> Tensor<B> {
 
     /// Returns first element stored in this tensor.
     /// Usually used for tensors with exactly one element.
-    /// None is returned if self tensor contains zero elements.
+    /// Error is returned if self tensor contains zero elements
+    /// or if backend returns error.
     /// ```
     /// let dev = zyx_opencl::device().unwrap();
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
-    /// let xitem: i32 = x.item();
-    /// assert_eq!(xvec, vec![2, 3, 1, 4, 1, 3]);
+    /// let xitem: i32 = x.item()?;
+    /// assert_eq!(xitem, 2);
     /// ```
     pub fn item<T: Scalar>(&self) -> Result<T, ZyxError> {
         self.backend.load::<T>(self.id)?.first().ok_or_else(|| ZyxError::IndexOutOfBounds { index: 0, len: 0 }).cloned()
@@ -411,7 +412,8 @@ impl<B: Backend> Tensor<B> {
         }
         assert_eq!(get_dtype(value.clone()), self.dtype());
         // TODO asserts
-        tensor(self.backend.push(Node::Pad(self.id, padding.into_iter().collect(), value.into_f32())).unwrap(), self.backend)
+        // TODO add support for value
+        tensor(self.backend.push(Node::Pad(self.id, padding.into_iter().collect())).unwrap(), self.backend)
     }
 
     /// Reorder axes of self

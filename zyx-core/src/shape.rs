@@ -28,7 +28,14 @@ impl Shape {
 
     /// Iter
     #[must_use]
-    pub fn iter(&self) -> impl Iterator<Item = &usize> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &usize> {
+        self.into_iter()
+    }
+
+
+    /// Iter mut
+    #[must_use]
+    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut usize> {
         self.into_iter()
     }
 
@@ -166,9 +173,17 @@ impl<const N: usize> From<[usize; N]> for Shape {
 }
 
 impl<'a> IntoIterator for &'a Shape {
-    type IntoIter = <&'a [usize] as IntoIterator>::IntoIter;
     type Item = &'a usize;
+    type IntoIter = <&'a [usize] as IntoIterator>::IntoIter;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Shape {
+    type Item = &'a mut usize;
+    type IntoIter = <&'a mut [usize] as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
     }
 }

@@ -85,7 +85,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         match dtype {
             DType::F32 => self.push(Node::UniformF32(shape, 0., 1.)),
             DType::I32 => self.push(Node::UniformI32(shape, i32::MIN, i32::MAX)),
-        }.unwrap()
+        }.unwrap() // Can't fail, as this does not call backend
     }
 
     /// Create uniform tensor from range low..high
@@ -93,7 +93,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         match T::dtype() {
             DType::F32 => self.push(Node::UniformF32(shape, low.into_f32(), high.into_f32())),
             DType::I32 => self.push(Node::UniformI32(shape, low.into_i32(), high.into_i32())),
-        }.unwrap()
+        }.unwrap() // Can't fail, as this does not call backend
     }
 
     /// Create tensor filled with repeating value
@@ -107,7 +107,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
                 shape,
             )),
-        }.unwrap()
+        }.unwrap() // Can't fail, as this does not call backend
     }
 
     /// Create square eye matrix, i.e. matrix where all elements are zeros, except for elements
@@ -124,7 +124,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 }))),
                 [n, n].into(),
             )),
-        }.unwrap()
+        }.unwrap() // Can't fail, as this does not call backend
     }
 
     /// Get shape of tensor x
@@ -525,10 +525,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                         );
                     }
                 }
-                Node::Pad(x, ref padding, value) => {
+                Node::Pad(x, ref padding) => {
                     if !grads.contains_key(&x) {
                         let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
-                        grads.insert(x, self.push(Node::Pad(grad, inv_padding, value))?);
+                        grads.insert(x, self.push(Node::Pad(grad, inv_padding))?);
                     }
                 }
                 Node::Sum(x, ..) => {

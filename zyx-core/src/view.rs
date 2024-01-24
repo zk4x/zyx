@@ -20,7 +20,6 @@ struct InnerView {
     shape: Shape,
     strides: Shape,
     padding: Box<[(i64, i64)]>,
-    padding_value: i32, // TODO make this with other dtypes as well
 }
 
 impl View {
@@ -32,7 +31,6 @@ impl View {
                 strides: shape.strides(),
                 padding: Box::new([(0, 0)]),
                 shape,
-                padding_value: 0,
             }],
         }
     }
@@ -59,7 +57,6 @@ impl View {
             shape,
             strides,
             padding: _,
-            padding_value: _,
         } in &self.views
         {
             let mut res = 0;
@@ -72,10 +69,13 @@ impl View {
         idx
     }
 
-    /// Access data called name with idx0-idx{rank} converted into proper self view.
+    /// Access data called name with idx0-idx{rank} converted into self view.
     /// This is used by compiled backends.
     #[must_use]
     pub fn cidx(&self, name: &str) -> alloc::string::String {
+        //extern crate std;
+        //use std::println;
+        //println!("View: {self:?}");
         // In order to apply padding, we need to have multiple
         // conditions. Then it is like this:
         // conditions ? data[calculated_idx] : padding_value;
@@ -101,45 +101,59 @@ impl View {
         if self.views.len() == 1 {
             return idx;
         }
+        let mut padding_condition = f!("");
         for InnerView {
             shape,
             strides,
-            padding: _,
-            padding_value: _,
-        } in &self.views[1..]
+            padding,
+        } in &self.views[..self.views.len()-1]
         {
             idx.insert(0, '(');
             idx.push(')');
             let mut res = alloc::string::String::new();
             let mut ost = 1;
-            for (d, st) in shape.into_iter().zip(strides).rev() {
-                res += &f!("{idx}/{ost}%{d}*{st}+");
-                ost *= d;
-                /*let mut temp = f!("{idx}");
+            for ((d, st), (left_p, right_p)) in shape.into_iter().zip(strides).zip(padding.iter()).rev() {
+                //println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                //res += &f!("{idx}/{ost}%{d}*{st}+");
+                //ost *= d;
+                let mut temp = f!("{idx}");
                 match ost {
-                    0 => { ost *= d; continue }
+                    0 => panic!(),
                     1 => {}
                     _ => { temp += &f!("/{ost}"); }
                 }
                 ost *= d;
                 match *d {
-                    0 => { continue }
-                    1 => { temp = f!("1") }
+                    0 => panic!(),
+                    1 => { temp = f!("0") }
                     _ => { temp += &f!("%{d}"); }
                 }
                 match *st {
-                    0 => { continue }
+                    0 => { temp = f!("0") }
                     1 => {}
                     _ => { temp += &f!("*{st}"); }
                 }
-                res += &f!("{temp}+");*/
+                if *left_p < 0 {
+                    temp = f!("{temp}-{left_p}");
+                } else if *left_p > 0 {
+                    padding_condition = f!(" || ({idx}>{left_p})");
+                }
+                if *right_p > 0 {
+                    padding_condition = f!(" || ({idx}<{})", d - *right_p as usize);
+                }
+                res += &f!("{temp}+");
             }
             idx = res;
             if !idx.is_empty() {
                 idx.remove(idx.len() - 1);
             }
         }
-        f!("{name}[{idx}]")
+        if padding_condition.is_empty() {
+            f!("{name}[{idx}]")
+        } else {
+            //f!("{} ? {name}[{idx}] : 0", &padding_condition[4..])
+            f!("{} * {name}[{idx}]", &padding_condition[4..])
+        }
     }
 
     /// Number of elements in view with self.shape()
@@ -167,6 +181,27 @@ impl View {
         Self { views: shapes }
     }
 
+    /// Pad self by padding
+    #[must_use]
+    pub fn pad(&self, new_padding: &[(i64, i64)]) -> Self {
+        let mut views = self.views.clone();
+        if let Some(InnerView { shape, strides: _, padding }) = views.first_mut() {
+            // Invert padding order
+            for (i, d) in shape.iter_mut().rev().enumerate() {
+                if let Some((left, right)) = new_padding.get(i) {
+                    *d = (*d as i64 + left + right) as usize;
+                } else {
+                    break;
+                }
+            }
+            let n = padding.len() - new_padding.len();
+            *padding = core::iter::repeat(&(0, 0)).take(n).chain(new_padding.iter().rev()).zip(padding.iter()).map(|(x, y)| (x.0 + y.0, x.1 + y.1)).collect();
+        }
+        Self {
+            views,
+        }
+    }
+
     /// Reshape self into shape
     #[must_use]
     pub fn reshape(&self, shape: &Shape) -> Self {
@@ -177,7 +212,6 @@ impl View {
                 shape: shape.clone(),
                 strides: shape.strides(),
                 padding: Box::new([(0, 0)]),
-                padding_value: 0,
             },
         );
         Self { views: shapes }
