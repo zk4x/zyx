@@ -9,10 +9,8 @@ pub enum Node {
     LeafF32(Shape),
     /// I32 leaf that is guaranteed to be evaluated
     LeafI32(Shape),
-    /// UniformF32 initializer
-    UniformF32(Shape, f32, f32),
-    /// UniformI32 initializer
-    UniformI32(Shape, i32, i32),
+    /// UniformF32 initializer for range 0..1
+    UniformF32(Shape),
     /// IterF32 initializer
     IterF32(Box<dyn Iterator<Item = f32>>, Shape),
     /// IterI32 initializer
@@ -70,7 +68,6 @@ impl Node {
             Node::LeafF32(..)
             | Node::LeafI32(..)
             | Node::UniformF32(..)
-            | Node::UniformI32(..)
             | Node::IterF32(..)
             | Node::IterI32(..) => Vec::new().into_iter(),
             Node::Add(x, y)

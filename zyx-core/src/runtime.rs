@@ -1,3 +1,5 @@
+use crate::error::ZyxError;
+use crate::utils::{dtype, shape};
 use crate::{
     dtype::DType,
     node::Node,
@@ -10,8 +12,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use crate::error::ZyxError;
-use crate::utils::{dtype, shape};
+use rand::distributions::Uniform;
 
 /// RuntimeBackend is a good plug in point for backend developers.
 /// Use Runtime::new(YourOwnStructThatImplementsRuntimeBackend::new()) to write your
@@ -26,7 +27,12 @@ pub trait RuntimeBackend {
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Evaluate tensors to_eval with given graph of nodes and recommended
     /// order of evaluation.
-    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), ZyxError>;
+    fn evaluate(
+        &mut self,
+        to_eval: BTreeSet<Id>,
+        order: &[Id],
+        nodes: &mut [Node],
+    ) -> Result<(), ZyxError>;
 }
 
 /// Runtime with autograd engine.
@@ -70,30 +76,44 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new((0..n).map(move |_| rng.sample(Standard))),
                 shape,
             )),
-        }.unwrap(); // Can't fail, as this does not call backend
-        // change the state of the random seed in rng
+        }
+        .unwrap(); // Can't fail, as this does not call backend
+                   // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
         }
         data
     }
 
-    /// Create tensor initialized from uniform distribution.
-    /// If this tensor is floating point, values will be generated from range 0.0..1.0
-    /// otherwise values will be generated from range integer::MIN..integer::MAX
-    pub fn _uniform(&mut self, shape: Shape, dtype: DType) -> Id {
-        match dtype {
-            DType::F32 => self.push(Node::UniformF32(shape, 0., 1.)),
-            DType::I32 => self.push(Node::UniformI32(shape, i32::MIN, i32::MAX)),
-        }.unwrap() // Can't fail, as this does not call backend
+    /// Create tensor initialized from uniform distribution
+    /// and f32 values in range 0..1
+    pub fn _uniform(&mut self, shape: Shape) -> Id {
+        self.push(Node::UniformF32(shape)).unwrap()
     }
 
     /// Create uniform tensor from range low..high
     pub fn uniform<T: Scalar>(&mut self, shape: Shape, low: T, high: T) -> Id {
-        match T::dtype() {
-            DType::F32 => self.push(Node::UniformF32(shape, low.into_f32(), high.into_f32())),
-            DType::I32 => self.push(Node::UniformI32(shape, low.into_i32(), high.into_i32())),
-        }.unwrap() // Can't fail, as this does not call backend
+        let shape: Shape = shape.into();
+        use rand::Rng;
+        let n = shape.numel();
+        let mut rng = self.rng.clone();
+        use rand::distributions::Standard;
+        let data = match T::dtype() {
+            DType::F32 => self.push(Node::IterF32(
+                Box::new((0..n).map(move |_| rng.sample(Uniform::new(low.clone().into_f32(), high.clone().into_f32())))),
+                shape,
+            )),
+            DType::I32 => self.push(Node::IterI32(
+                Box::new((0..n).map(move |_| rng.sample(Uniform::new(low.clone().into_i32(), high.clone().into_i32())))),
+                shape,
+            )),
+        }
+            .unwrap(); // Can't fail, as this does not call backend
+        // change the state of the random seed in rng
+        for _ in 0..n {
+            self.rng.sample::<f32, _>(Standard);
+        }
+        data
     }
 
     /// Create tensor filled with repeating value
@@ -107,7 +127,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
                 shape,
             )),
-        }.unwrap() // Can't fail, as this does not call backend
+        }
+        .unwrap() // Can't fail, as this does not call backend
     }
 
     /// Create square eye matrix, i.e. matrix where all elements are zeros, except for elements
@@ -124,7 +145,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 }))),
                 [n, n].into(),
             )),
-        }.unwrap() // Can't fail, as this does not call backend
+        }
+        .unwrap() // Can't fail, as this does not call backend
     }
 
     /// Get shape of tensor x
@@ -227,7 +249,8 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut order: Vec<Id> = rcs.keys().copied().collect();
         order.sort_by_cached_key(|nid| self.order[nid.i()]);
 
-        self.runtime_backend.evaluate(nodes, &order, &mut self.nodes)?;
+        self.runtime_backend
+            .evaluate(nodes, &order, &mut self.nodes)?;
 
         // Release parts of graph that are not needed for backpropagation
         while let Some(leaf) = self.leafs.pop_last() {
@@ -247,7 +270,11 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Common autograd engine, currently used by all backends.
     /// Backpropagation by itself probably should not evaluate.
-    pub fn backward(&mut self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
+    pub fn backward(
+        &mut self,
+        x: Id,
+        sources: &BTreeSet<Id>,
+    ) -> Result<BTreeMap<Id, Id>, ZyxError> {
         fn build_topo(x: Id, sources: &BTreeSet<Id>, nodes: &[Node], order: &[Id]) -> Vec<Id> {
             // First we need to know which nodes require gradient
             let mut req_grad = BTreeSet::new();
@@ -298,7 +325,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                 shape(&self.nodes, x).clone(),
             ))?,
         };
-        grads.insert(x, self.push(Node::Expand(grad1, shape(&self.nodes, x).clone()))?);
+        grads.insert(
+            x,
+            self.push(Node::Expand(grad1, shape(&self.nodes, x).clone()))?,
+        );
         self.release(grad1)?;
         // backpropagate
         // TODO this is not very clean code. Can we make it cleaner?
@@ -308,7 +338,6 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::LeafF32(..)
                 | Node::LeafI32(..)
                 | Node::UniformF32(..)
-                | Node::UniformI32(..)
                 | Node::IterF32(..)
                 | Node::IterI32(..) => {}
                 Node::Add(x, y) => {
@@ -450,7 +479,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                     if !grads.contains_key(&x) {
                         // x_grad = grad/(2*sqrt(x))
                         let x_shape = shape(&self.nodes, x).clone();
-                        let two1 = self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
+                        let two1 =
+                            self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
                         let two2 = self.push(Node::Expand(two1, x_shape))?;
                         self.release(two1)?;
                         let x_temp = self.push(Node::Mul(two2, nid))?;
@@ -462,10 +492,13 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::CastF32(x) | Node::CastI32(x) => {
                     if !grads.contains_key(&x) {
-                        grads.insert(x, match dtype(&self.nodes, x) {
-                            DType::F32 => self.push(Node::CastF32(grad))?,
-                            DType::I32 => self.push(Node::CastI32(grad))?,
-                        });
+                        grads.insert(
+                            x,
+                            match dtype(&self.nodes, x) {
+                                DType::F32 => self.push(Node::CastF32(grad))?,
+                                DType::I32 => self.push(Node::CastI32(grad))?,
+                            },
+                        );
                     };
                 }
                 Node::Neg(x) => {
@@ -533,7 +566,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::Sum(x, ..) => {
                     if !grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Expand(grad, shape(&self.nodes, x).clone()))?);
+                        grads.insert(
+                            x,
+                            self.push(Node::Expand(grad, shape(&self.nodes, x).clone()))?,
+                        );
                     }
                 }
                 Node::Max(x, ..) => {
@@ -543,7 +579,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                         let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
                         let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
                         self.release(z_temp)?;
-                        let one1 = self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?;
+                        let one1 =
+                            self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?;
                         let one2 = self.push(Node::Expand(one1, x_shape))?;
                         self.release(one1)?;
                         let max_1s = self.push(Node::Sub(one2, cmp_t))?;

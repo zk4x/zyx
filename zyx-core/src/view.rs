@@ -1,10 +1,7 @@
 extern crate alloc;
-use crate::{
-    axes::Axes,
-    shape::Shape,
-};
-use alloc::{vec, vec::Vec};
+use crate::{axes::Axes, shape::Shape};
 use alloc::boxed::Box;
+use alloc::{vec, vec::Vec};
 
 /// View holds shape of the tensor and allows for arbitrary number of movement ops
 /// (reshape, expand, pad, permute) to be executed as noops (without accessing the
@@ -38,13 +35,9 @@ impl View {
     /// Is this view contiguous?
     #[must_use]
     pub fn contiguous(&self) -> bool {
-        self.views.iter().all(
-            |InnerView {
-                 shape,
-                 strides,
-                 ..
-             }| shape.strides() == strides.clone(),
-        )
+        self.views
+            .iter()
+            .all(|InnerView { shape, strides, .. }| shape.strides() == strides.clone())
     }
 
     /// Convert contiguous idx into idx indexing data with self view
@@ -106,13 +99,15 @@ impl View {
             shape,
             strides,
             padding,
-        } in &self.views[..self.views.len()-1]
+        } in &self.views[..self.views.len() - 1]
         {
             idx.insert(0, '(');
             idx.push(')');
             let mut res = alloc::string::String::new();
             let mut ost = 1;
-            for ((d, st), (left_p, right_p)) in shape.into_iter().zip(strides).zip(padding.iter()).rev() {
+            for ((d, st), (left_p, right_p)) in
+                shape.into_iter().zip(strides).zip(padding.iter()).rev()
+            {
                 //println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 //res += &f!("{idx}/{ost}%{d}*{st}+");
                 //ost *= d;
@@ -120,18 +115,24 @@ impl View {
                 match ost {
                     0 => panic!(),
                     1 => {}
-                    _ => { temp += &f!("/{ost}"); }
+                    _ => {
+                        temp += &f!("/{ost}");
+                    }
                 }
                 ost *= d;
                 match *d {
                     0 => panic!(),
-                    1 => { temp = f!("0") }
-                    _ => { temp += &f!("%{d}"); }
+                    1 => temp = f!("0"),
+                    _ => {
+                        temp += &f!("%{d}");
+                    }
                 }
                 match *st {
-                    0 => { temp = f!("0") }
+                    0 => temp = f!("0"),
                     1 => {}
-                    _ => { temp += &f!("*{st}"); }
+                    _ => {
+                        temp += &f!("*{st}");
+                    }
                 }
                 if *left_p < 0 {
                     temp = f!("{temp}-{left_p}");
@@ -185,7 +186,12 @@ impl View {
     #[must_use]
     pub fn pad(&self, new_padding: &[(i64, i64)]) -> Self {
         let mut views = self.views.clone();
-        if let Some(InnerView { shape, strides: _, padding }) = views.first_mut() {
+        if let Some(InnerView {
+            shape,
+            strides: _,
+            padding,
+        }) = views.first_mut()
+        {
             // Invert padding order
             for (i, d) in shape.iter_mut().rev().enumerate() {
                 if let Some((left, right)) = new_padding.get(i) {
@@ -195,11 +201,14 @@ impl View {
                 }
             }
             let n = padding.len() - new_padding.len();
-            *padding = core::iter::repeat(&(0, 0)).take(n).chain(new_padding.iter().rev()).zip(padding.iter()).map(|(x, y)| (x.0 + y.0, x.1 + y.1)).collect();
+            *padding = core::iter::repeat(&(0, 0))
+                .take(n)
+                .chain(new_padding.iter().rev())
+                .zip(padding.iter())
+                .map(|(x, y)| (x.0 + y.0, x.1 + y.1))
+                .collect();
         }
-        Self {
-            views,
-        }
+        Self { views }
     }
 
     /// Reshape self into shape

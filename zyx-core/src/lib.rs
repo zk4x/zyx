@@ -6,6 +6,7 @@
 //! runtime with autograd implementation, dtype, shape, scalar, axes, view
 //! and generic compiler for backends like opencl, cuda and wgpu.
 //!
+#![forbid(unsafe_code)]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
 #![forbid(missing_docs)]
@@ -25,23 +26,23 @@ extern crate alloc;
 pub mod axes;
 /// See [Backend](backend::Backend)
 pub mod backend;
-/// See [Runtime](runtime::Runtime)
-pub mod runtime;
+/// See [Compiler](compiler::Compiler)
+pub mod compiler;
 /// See [DType](dtype::DType)
 pub mod dtype;
+/// See [ZyxError](error::ZyxError)
+pub mod error;
 /// See [Node](node::Node)
 pub mod node;
+/// See [Runtime](runtime::Runtime)
+pub mod runtime;
 /// See [Scalar](scalar::Scalar)
 pub mod scalar;
 /// See [Shape](shape::Shape)
 pub mod shape;
 /// See [Tensor](tensor::Tensor)
 pub mod tensor;
-/// See [Compiler](compiler::Compiler)
-pub mod compiler;
 /// Some common utilities.
 pub mod utils;
 /// See [View](view::View)
 pub mod view;
-/// See [ZyxError](error::ZyxError)
-pub mod error;

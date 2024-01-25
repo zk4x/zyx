@@ -1,13 +1,16 @@
 extern crate alloc;
-use crate::{dtype::DType, node::Node, shape::Shape, tensor::Id, scalar::Scalar};
-use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 use crate::error::ZyxError;
+use crate::{dtype::DType, node::Node, scalar::Scalar, shape::Shape, tensor::Id};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 /// Backend for [tensors](Tensor).
 /// Tensor requires that all backends implement this trait and only this trait.
 pub trait Backend: Copy {
-    /// Create uniform tensor, 0..1 if real, MIN..MAX if integer
-    fn _uniform(self, shape: Shape, dtype: DType) -> Id;
+    /// Create uniform f32 tensor in range 0..1
+    fn _uniform(self, shape: Shape) -> Id;
     /// Get shape if tensor x
     fn shape(self, x: Id) -> Shape;
     /// Get dtype of tensor x

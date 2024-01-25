@@ -1,3 +1,4 @@
+use crate::error::ZyxError;
 use crate::{
     dtype::DType,
     node::Node,
@@ -12,7 +13,6 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use crate::error::ZyxError;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -21,7 +21,8 @@ pub trait Compiler {
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
     /// Store iter into buffer
-    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, ZyxError>;
+    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>)
+        -> Result<Self::Buffer, ZyxError>;
     /// Load buffer into vec
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Drop Buffer
@@ -29,7 +30,11 @@ pub trait Compiler {
     /// Drop Program
     fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError>;
     /// Launch program with args
-    fn launch(&mut self, program: &Self::Program, args: &[&Self::Buffer]) -> Result<Self::Buffer, ZyxError>;
+    fn launch(
+        &mut self,
+        program: &Self::Program,
+        args: &[&Self::Buffer],
+    ) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError>;
 }
@@ -40,12 +45,42 @@ pub trait Compiler {
 pub enum Op {
     /// Leaf (holds data, id to kernel arg)
     Leaf(usize),
+    // TODO uniform generators should also take shape into consideration
+    // and repeat the same random number if this shape is expanded.
+    /// Shaped uniform F32 generator of numbers from 0. to 1.
+    UniformF32(View),
     /// Cast into F32 unary op
     CastF32(usize),
+    /// Cast into I32 unary op
+    CastI32(usize),
+    /// Neg unary op
+    Neg(usize),
+    /// ReLU unary op
+    ReLU(usize),
+    /// Sin unary op
+    Sin(usize),
+    /// Cos unary op
+    Cos(usize),
+    /// Ln unary op
+    Ln(usize),
     /// Exp unary op
     Exp(usize),
+    /// Tanh unary op
+    Tanh(usize),
+    /// Sqrt unary op
+    Sqrt(usize),
     /// Addition binary op
     Add(usize, usize),
+    /// Substitution binary op
+    Sub(usize, usize),
+    /// Multiplication binary op
+    Mul(usize, usize),
+    /// Division binary op
+    Div(usize, usize),
+    /// Exponentiation binary op
+    Pow(usize, usize),
+    /// Compare less than binary op
+    Cmplt(usize, usize),
 }
 
 /// Possible reduce ops
@@ -115,13 +150,17 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         self.compiler.load(&self.buffers[&x], numel)
     }
 
-    fn evaluate(&mut self, to_eval: BTreeSet<Id>, order: &[Id], nodes: &mut [Node]) -> Result<(), ZyxError> {
+    fn evaluate(
+        &mut self,
+        to_eval: BTreeSet<Id>,
+        order: &[Id],
+        nodes: &mut [Node],
+    ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             match &mut nodes[nid.i()] {
                 Node::LeafF32(..)
                 | Node::LeafI32(..)
                 | Node::UniformF32(..)
-                | Node::UniformI32(..)
                 | Node::CastF32(..)
                 | Node::CastI32(..)
                 | Node::Neg(..)
@@ -224,10 +263,41 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
             } else {
                 match &nodes[nid.i()] {
-                    Node::IterF32(..) | Node::IterI32(..) => {},
+                    Node::LeafF32(..) | Node::LeafI32(..) | Node::IterF32(..) | Node::IterI32(..) => {}
+                    Node::UniformF32(sh) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::UniformF32(View::new(sh.clone())));
+                    }
+                    Node::CastF32(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::CastF32(mapping[x]));
+                    }
+                    Node::CastI32(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::CastI32(mapping[x]));
+                    }
+                    Node::Neg(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Neg(mapping[x]));
+                    }
+                    Node::ReLU(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::ReLU(mapping[x]));
+                    }
+                    Node::Sin(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Sin(mapping[x]));
+                    }
+                    Node::Cos(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Cos(mapping[x]));
+                    }
+                    Node::Ln(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Ln(mapping[x]));
+                    }
                     Node::Exp(x) => {
                         if ar { &mut ar_ops } else { &mut ops }.push(Op::Exp(mapping[x]));
                     }
+                    Node::Tanh(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Tanh(mapping[x]));
+                    }
+                    Node::Sqrt(x) => {
+                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Sqrt(mapping[x]));
+                    }
+                    // TODO also apply movement ops to UniformF32
                     Node::Expand(x, sh) => {
                         let mut params = alloc::vec![*x];
                         while let Some(p) = params.pop() {
@@ -237,17 +307,72 @@ impl<C: Compiler> CompiledBackend<C> {
                             params.extend(nodes[x.i()].parameters());
                         }
                     }
-                    Node::Add(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Add(mapping[x], mapping[y]));
+                    Node::Reshape(x, sh) => {
+                        let mut params = alloc::vec![*x];
+                        while let Some(p) = params.pop() {
+                            if let Op::Leaf(a) = ops[p.i()] {
+                                args[a].0 = args[a].0.reshape(sh);
+                            }
+                            params.extend(nodes[x.i()].parameters());
+                        }
                     }
-                    _ => todo!("Op is not implemented yet."),
+                    Node::Pad(x, padding) => {
+                        let mut params = alloc::vec![*x];
+                        while let Some(p) = params.pop() {
+                            if let Op::Leaf(a) = ops[p.i()] {
+                                args[a].0 = args[a].0.pad(padding);
+                            }
+                            params.extend(nodes[x.i()].parameters());
+                        }
+                    }
+                    Node::Permute(x, axes, _) => {
+                        let mut params = alloc::vec![*x];
+                        while let Some(p) = params.pop() {
+                            if let Op::Leaf(a) = ops[p.i()] {
+                                args[a].0 = args[a].0.permute(axes);
+                            }
+                            params.extend(nodes[x.i()].parameters());
+                        }
+                    }
+                    Node::Add(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }
+                            .push(Op::Add(mapping[x], mapping[y]));
+                    }
+                    Node::Sub(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }
+                            .push(Op::Sub(mapping[x], mapping[y]));
+                    }
+                    Node::Mul(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }
+                            .push(Op::Mul(mapping[x], mapping[y]));
+                    }
+                    Node::Div(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }
+                            .push(Op::Div(mapping[x], mapping[y]));
+                    }
+                    Node::Pow(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }
+                            .push(Op::Pow(mapping[x], mapping[y]));
+                    }
+                    Node::Cmplt(x, y) => {
+                        if ar { &mut ar_ops } else { &mut ops }
+                            .push(Op::Cmplt(mapping[x], mapping[y]));
+                    }
+                    Node::Sum(x, axes, rshape) => {
+                        todo!()
+                    }
+                    Node::Max(x, axes, rshape) => {
+                        todo!()
+                    }
                 }
             };
         }
         if matches!(reduce, ROp::None) {
             for (view, _) in &mut args {
                 let n = view.numel();
-                *view = view.reshape(&n.into()).pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+                *view = view
+                    .reshape(&n.into())
+                    .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
             }
         }
         let ast = AST {

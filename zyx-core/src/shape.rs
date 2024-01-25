@@ -32,7 +32,6 @@ impl Shape {
         self.into_iter()
     }
 
-
     /// Iter mut
     #[must_use]
     pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut usize> {
@@ -116,27 +115,21 @@ impl Shape {
 impl core::ops::Index<i32> for Shape {
     type Output = usize;
     fn index(&self, index: i32) -> &Self::Output {
-        self.0
-            .get(to_usize_idx(index as i64, self.rank()))
-            .unwrap()
+        self.0.get(to_usize_idx(index as i64, self.rank())).unwrap()
     }
 }
 
 impl core::ops::Index<i64> for Shape {
     type Output = usize;
     fn index(&self, index: i64) -> &Self::Output {
-        self.0
-            .get(to_usize_idx(index, self.rank()))
-            .unwrap()
+        self.0.get(to_usize_idx(index, self.rank())).unwrap()
     }
 }
 
 impl core::ops::Index<usize> for Shape {
     type Output = usize;
     fn index(&self, index: usize) -> &Self::Output {
-        self.0
-            .get(index)
-            .unwrap()
+        self.0.get(index).unwrap()
     }
 }
 
@@ -144,7 +137,9 @@ impl core::ops::Index<Range<i64>> for Shape {
     type Output = [usize];
     fn index(&self, index: Range<i64>) -> &Self::Output {
         let rank = self.rank();
-        self.0.get(to_usize_idx(index.start, rank)..to_usize_idx(index.end, rank)).unwrap()
+        self.0
+            .get(to_usize_idx(index.start, rank)..to_usize_idx(index.end, rank))
+            .unwrap()
     }
 }
 

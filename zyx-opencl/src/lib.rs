@@ -8,7 +8,6 @@
 //!
 
 #![no_std]
-
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
 #![forbid(missing_docs)]
@@ -28,17 +27,23 @@ extern crate std;
 mod compiler;
 
 extern crate alloc;
-use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
-use core::ops::Range;
-use zyx_core::{
-    scalar::Scalar,
-    tensor::{tensor, IntoTensor},
-    backend::Backend, node::Node, shape::Shape, tensor::Id,
-    runtime::Runtime,
-};
-pub use zyx_core::{dtype::DType, tensor::Tensor, error::ZyxError};
-use zyx_core::compiler::CompiledBackend;
 use crate::compiler::Compiler;
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
+use core::ops::Range;
+use zyx_core::compiler::CompiledBackend;
+use zyx_core::{
+    backend::Backend,
+    node::Node,
+    runtime::Runtime,
+    scalar::Scalar,
+    shape::Shape,
+    tensor::Id,
+    tensor::{tensor, IntoTensor},
+};
+pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 
 // This works OK, it gets rid of the RefCell overhead,
 // but it's only safe if used in single threaded environment.
@@ -72,9 +77,9 @@ pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
 /// Create new OpenCL backend using first OpenCL platform
 /// and all hardware devices in that platform.
 pub fn device() -> Result<OpenCL, ZyxError> {
-    Ok(OpenCL(MCell::new(Runtime::new(
-        CompiledBackend::new(Compiler::new()?),
-    ))))
+    Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
+        Compiler::new()?,
+    )))))
 }
 
 impl OpenCL {
@@ -93,7 +98,11 @@ impl OpenCL {
     /// Create new tensor using values from uniform distribution
     #[must_use]
     pub fn uniform(&self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<&Self> {
-        tensor(self.0.update(|b| b.uniform(shape.into(), range.start, range.end)), self)
+        tensor(
+            self.0
+                .update(|b| b.uniform(shape.into(), range.start, range.end)),
+            self,
+        )
     }
 
     /// Create new tensor by repeating single value
@@ -128,8 +137,8 @@ impl OpenCL {
 }
 
 impl Backend for &OpenCL {
-    fn _uniform(self, shape: Shape, dtype: DType) -> Id {
-        self.0.update(|b| b._uniform(shape.into(), dtype))
+    fn _uniform(self, shape: Shape) -> Id {
+        self.0.update(|b| b._uniform(shape.into()))
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -157,7 +166,7 @@ impl Backend for &OpenCL {
     }
 
     fn release(self, x: Id) -> Result<(), ZyxError> {
-        self.0.update(|b| { b.release(x) })
+        self.0.update(|b| b.release(x))
     }
 
     fn retain(self, x: Id) {
