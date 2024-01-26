@@ -2,6 +2,7 @@ extern crate alloc;
 use crate::{axes::Axes, shape::Shape};
 use alloc::boxed::Box;
 use alloc::{vec, vec::Vec};
+use alloc::string::String;
 
 /// View holds shape of the tensor and allows for arbitrary number of movement ops
 /// (reshape, expand, pad, permute) to be executed as noops (without accessing the
@@ -26,7 +27,7 @@ impl View {
         Self {
             views: vec![InnerView {
                 strides: shape.strides(),
-                padding: Box::new([(0, 0)]),
+                padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
                 shape,
             }],
         }
@@ -64,42 +65,55 @@ impl View {
 
     /// Access data called name with idx0-idx{rank} converted into self view.
     /// This is used by compiled backends.
+    /// Returns padding condition and index.
+    /// If padding condition == 0, padding value is applied, if padding condition
+    /// is one, value is drawn from data.
     #[must_use]
-    pub fn cidx(&self, name: &str) -> alloc::string::String {
-        //extern crate std;
-        //use std::println;
-        //println!("View: {self:?}");
+    pub fn cidx(&self) -> (String, String) {
+        // TODO is padding correctly applied?
+        extern crate std;
+        use std::println;
+        println!("View: {self:?}");
         // In order to apply padding, we need to have multiple
         // conditions. Then it is like this:
         // conditions ? data[calculated_idx] : padding_value;
         // So we should probably just return the whole expression,
         // not just calculated index.
         use alloc::format as f;
-        let mut idx = alloc::string::String::new();
-        for (i, st) in self.views.first().unwrap().strides.into_iter().enumerate() {
-            match *st {
-                0 => {}
-                1 => {
-                    idx += &f!("idx{i}+");
+        let mut idx = String::new();
+        let mut padding_condition = f!("");
+        if let Some(InnerView { shape, strides, padding }) = self.views.first() {
+            for (i, ((d, st), (left_p, right_p))) in shape.iter().zip(strides.iter()).zip(padding.iter()).enumerate() {
+                match *st {
+                    0 => {}
+                    1 => {
+                        idx += &f!("idx{i}+");
+                    }
+                    _ => {
+                        idx += &f!("idx{i}*{st}+");
+                    }
                 }
-                _ => {
-                    idx += &f!("idx{i}*{st}+");
+                if *left_p < 0 {
+                    idx += &f!("-{left_p}");
+                } else if *left_p > 0 {
+                    padding_condition = f!("({idx}>{left_p})");
+                }
+                if *right_p > 0 {
+                    padding_condition = f!("({}<{})", &idx[..idx.len()-1], d - *right_p as usize);
                 }
             }
-        }
-        if idx.is_empty() {
-            return "0".into();
+        } else {
+            return (padding_condition, "0".into())
         }
         idx.remove(idx.len() - 1);
         if self.views.len() == 1 {
-            return idx;
+            return (padding_condition, idx)
         }
-        let mut padding_condition = f!("");
         for InnerView {
             shape,
             strides,
             padding,
-        } in &self.views[..self.views.len() - 1]
+        } in &self.views[1..]
         {
             idx.insert(0, '(');
             idx.push(')');
@@ -149,12 +163,7 @@ impl View {
                 idx.remove(idx.len() - 1);
             }
         }
-        if padding_condition.is_empty() {
-            f!("{name}[{idx}]")
-        } else {
-            //f!("{} ? {name}[{idx}] : 0", &padding_condition[4..])
-            f!("{} * {name}[{idx}]", &padding_condition[4..])
-        }
+        (padding_condition, idx)
     }
 
     /// Number of elements in view with self.shape()

@@ -322,23 +322,34 @@ impl Program {
             )
         };
         if err != CL_SUCCESS {
+            panic!("{}", String::from_utf8_lossy(&get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG).map_err(
+                |err| {
+                    ZyxError::BackendError(match err {
+                        -33 => "Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE",
+                        -30 => "Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE",
+                        -44 => "Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM",
+                        -5 => "Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES",
+                        -6 => "Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                        _ => "Unable to get info about failed compilation. UNKNOWN ERROR",
+                    })
+                }
+            )?));
             return Err(ZyxError::CompileError(Box::new(f!(
                 "{err}\n{}",
-                core::str::from_utf8(
+                String::from_utf8_lossy(
                     &get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG).map_err(
                         |err| {
                             ZyxError::BackendError(match err {
-                -33 => "Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE",
-                -30 => "Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE",
-                -44 => "Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM",
-                -5 => "Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES",
-                -6 => "Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                _ => "Unable to get info about failed compilation. UNKNOWN ERROR",
-            })
+                                -33 => "Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE",
+                                -30 => "Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE",
+                                -44 => "Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM",
+                                -5 => "Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES",
+                                -6 => "Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                                _ => "Unable to get info about failed compilation. UNKNOWN ERROR",
+                            })
                         }
                     )?
-                )
-                .unwrap()
+                ).into_owned()
             ))));
         }
         Ok(Self {
@@ -820,7 +831,7 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
         16..=31 => (8, 16),
         _ => (16, 16),
     };
-    let global_work_size = alloc::vec![n / tile_height, tile_height];
+    let global_work_size = alloc::vec![n / tile_width, tile_width];
     let local_work_size = alloc::vec![tile_height, tile_width];
     let res_byte_size: usize = global_work_size.iter().product();
     let mut source = f!("(\n  ");
@@ -861,7 +872,12 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
             Op::Leaf(x) => {
                 let (view, t) = &ast.args()[*x];
                 dtype = t.ocl_str();
-                f!("{dtype} var{nid} = {}", view.cidx(&f!("data{x}")))
+                let (p, i) = view.cidx();
+                if p.is_empty() {
+                    f!("{dtype} var{nid} = data{x}[{i}]")
+                } else {
+                    f!("{dtype} var{nid} = {p}*data{x}[{i}]")
+                }
             }
             Op::UniformF32(..) => {
                 todo!()
@@ -893,7 +909,12 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
         nid += 1;
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
-    source = f!("{source}data{res_id}[idx0] = var{}{endl}", nid - 1);
+    let (p, i) = ast.view().cidx();
+    source = if p.is_empty() {
+        f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
+    } else {
+        f!("{source}if ({p} != 0) {{ data{res_id}[{i}] = var{}; }}{endl}", nid - 1)
+    };
     source.pop();
     source.pop();
     source = f!("{source}}}");
@@ -913,15 +934,15 @@ fn compile_r_kernel(_ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
 #[test]
 fn exp_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
-    let x = dev.randn([8, 8], DType::I32).cast(DType::F32);
+    let x = dev.randn([4, 5], DType::F32);
     let y = x.exp() + &x;
     //let x_vec: Vec<f32> = x.to_vec()?;
-    let _y_vec: Vec<f32> = y.to_vec()?;
-    //panic!("{y_vec:?}");
-    Ok(())
+    let y_vec: Vec<f32> = y.to_vec()?;
+    panic!("{y_vec:?}");
+    //Ok(())
 }
 
-#[test]
+/*#[test]
 fn sum_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -929,4 +950,4 @@ fn sum_test() -> Result<(), ZyxError> {
     let y_vec: Vec<f32> = y.to_vec()?;
     panic!("{y_vec:?}");
     //Ok(())
-}
+}*/

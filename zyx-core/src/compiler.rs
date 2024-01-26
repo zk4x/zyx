@@ -13,6 +13,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
+use crate::axes::Axes;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -89,9 +90,9 @@ pub enum ROp {
     /// No reduce
     None,
     /// Sum reduce op
-    Sum,
+    Sum(usize),
     /// Max reduce op
-    Max,
+    Max(usize),
 }
 
 /// Abstract syntax tree that can be compiled into program.
@@ -103,6 +104,7 @@ pub struct AST {
     ops: Box<[Op]>,
     reduce: ROp,
     ar_ops: Box<[Op]>,
+    view: View,
 }
 
 impl AST {
@@ -124,6 +126,11 @@ impl AST {
     /// Ops applied after reduce
     pub fn ar_ops(&self) -> &[Op] {
         &self.ar_ops
+    }
+
+    /// View of the result
+    pub fn view(&self) -> &View {
+        &self.view
     }
 }
 
@@ -248,8 +255,9 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut args = Vec::new();
         let mut ops = Vec::new();
         let mut ar_ops = Vec::new();
-        let ar = false;
-        let reduce = ROp::None;
+        let mut ar = false;
+        let mut reduce = ROp::None;
+        let mut raxes = Axes(Box::new([]));
         let mut mapping = BTreeMap::new();
         for nid in porder {
             mapping.insert(nid, ops.len());
@@ -358,28 +366,45 @@ impl<C: Compiler> CompiledBackend<C> {
                         if ar { &mut ar_ops } else { &mut ops }
                             .push(Op::Cmplt(mapping[x], mapping[y]));
                     }
-                    Node::Sum(x, axes, rshape) => {
-                        todo!()
+                    Node::Sum(x, axes, _) => {
+                        reduce = ROp::Sum(mapping[x]);
+                        raxes = axes.clone();
+                        ar = true;
                     }
-                    Node::Max(x, axes, rshape) => {
-                        todo!()
+                    Node::Max(x, axes, _) => {
+                        reduce = ROp::Max(mapping[x]);
+                        raxes = axes.clone();
+                        ar = true;
                     }
                 }
             };
         }
+        let view;
         if matches!(reduce, ROp::None) {
-            for (view, _) in &mut args {
-                let n = view.numel();
-                *view = view
+            let rshape = shape(nodes, x);
+            let n = rshape.numel();
+            view = View::new(rshape.clone())
+                .reshape(&n.into())
+                .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+            for (aview, _) in &mut args {
+                let n = aview.numel();
+                *aview = aview
                     .reshape(&n.into())
                     .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
             }
+        } else {
+            let rshape = shape(nodes, x);
+            view = View::new(rshape.clone());
+            // Join raxes together to be second last dimension
+            // permute first
+            // then reshape
         }
         let ast = AST {
             args: args.into_boxed_slice(),
             ops: ops.into_boxed_slice(),
             reduce,
             ar_ops: Box::new([]),
+            view,
         };
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {

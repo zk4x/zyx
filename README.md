@@ -81,7 +81,7 @@ let x = dev.ones([3, 2, 1], DType::I32);
 let x = dev.full([3, 2, 1], 4.);
 let x = dev.eye(3, DType::F16);
 ```
-Index tensors (Rust does not support proper overloading of operator[], so you need to use get function).
+Index tensors.
 ```rust
 let x = dev.randn([2, 3, 4, 5], DType::F32);
 let z = x.get([.., 2.., 1..-2, ..-1]).unwrap();

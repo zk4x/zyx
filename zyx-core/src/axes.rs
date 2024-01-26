@@ -21,8 +21,8 @@ impl Axes {
 }
 
 impl<'a> IntoIterator for &'a Axes {
-    type IntoIter = <&'a [usize] as IntoIterator>::IntoIter;
     type Item = &'a usize;
+    type IntoIter = <&'a [usize] as IntoIterator>::IntoIter;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
