@@ -86,59 +86,53 @@ impl OpenCL {
     /// Create new tensor
     #[must_use]
     pub fn tensor<'a>(&'a self, data: impl IntoTensor<&'a Self>) -> Tensor<&'a Self> {
-        data.into_tensor(self)
+        <&Self as Backend>::tensor(self, data)
     }
 
     /// Create new tensor using values from standard normal distribution
     #[must_use]
     pub fn randn(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
+        <&Self as Backend>::randn(self, shape, dtype)
     }
 
     /// Create new tensor using values from uniform distribution
     #[must_use]
     pub fn uniform(&self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<&Self> {
-        tensor(
-            self.0
-                .update(|b| b.uniform(shape.into(), range.start, range.end)),
-            self,
-        )
+        <&Self as Backend>::uniform(self, shape, range)
     }
 
     /// Create new tensor by repeating single value
     #[must_use]
     pub fn full(&self, shape: impl Into<Shape>, value: impl Scalar) -> Tensor<&Self> {
-        tensor(self.0.update(|b| b.full(shape.into(), value)), self)
+        <&Self as Backend>::full(self, shape, value)
     }
 
     /// Create new tensor by repeating zeroes
     #[must_use]
     pub fn zeros(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        match dtype {
-            DType::F32 => tensor(self.0.update(|b| b.full(shape.into(), 0.)), self),
-            DType::I32 => tensor(self.0.update(|b| b.full(shape.into(), 0)), self),
-        }
+        <&Self as Backend>::zeros(self, shape, dtype)
     }
 
     /// Create new tensor by repeating ones
     #[must_use]
     pub fn ones(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        match dtype {
-            DType::F32 => tensor(self.0.update(|b| b.full(shape.into(), 1.)), self),
-            DType::I32 => tensor(self.0.update(|b| b.full(shape.into(), 1)), self),
-        }
+        <&Self as Backend>::ones(self, shape, dtype)
     }
 
     /// Create eye tensor
     #[must_use]
     pub fn eye(&self, n: usize, dtype: DType) -> Tensor<&Self> {
-        tensor(self.0.update(|b| b.eye(n, dtype)), self)
+        <&Self as Backend>::eye(self, n, dtype)
     }
 }
 
 impl Backend for &OpenCL {
-    fn _uniform(self, shape: Shape) -> Id {
-        self.0.update(|b| b._uniform(shape.into()))
+    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
+        tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
+    }
+
+    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<Self> {
+        tensor(self.0.update(|b| b.uniform(shape.into(), range)), self)
     }
 
     fn shape(self, x: Id) -> Shape {

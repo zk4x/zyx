@@ -4,7 +4,7 @@ Zyx is machine learning library written in Rust.
 Most ML models can be created with just tensors and operations on them.
 Tensors must be stored somewhere. Zyx can use both RAM and VRAM (on the gpu) to store tensors.
 
-This is how you create gpu backend. First add OpenCL, CUDA or WGPU backend as dependency.
+This is how you create gpu backend. First add some backend as dependency.
 ```shell
 cargo add zyx-opencl
 ```
@@ -47,28 +47,26 @@ Optimizer updates model's parameters with gradients.
 ## Performance 🚀
 
 Thanks to its execution model, Zyx always uses minimum amount of RAM.
-As for the backends, OpenCL, CUDA and WGPU backends automatically fuse operations and create custom kernels.
+As for the backends, OpenCL backend automatically fuses operations and create custom kernels.
 In case of hardware where these backends seem slow you can always use libtorch backend.
-Cpu backend is slow and should not be used. It currently serves only as reference backend.
+Native (Rust) backend is slow and should not be used. It currently serves only as reference backend.
 
 Benchmarks always have some bias, because everybody uses libraries differently.
 Still, I will throw a few in here, you can find them all in examples folder.
 Numbers show time taken in seconds for 100 iterations.
 
-| Library   | Zyx  |        |      |       | PyTorch |      | Burn |      |
-|-----------|------|--------|------|-------|---------|------|------|------|
-| Backend   | CUDA | OpenCL | WGPU | Torch | CPU     | CUDA | CPU  | WGPU |
-| linear    | 0.0  | 1.0    | 4.5  | 6.5   |
-| attention | 1.2  | 3.4    |
+| Library   | Zyx    |      |       |        | PyTorch |      | Burn |      |
+|-----------|--------|------|-------|--------|---------|------|------|------|
+| Backend   | OpenCL | WGPU | Torch | Native | CUDA    | CPU  | WGPU |      |
+| linear    | 1.0    | 4.5  | 6.5   |
+| attention | 3.4    |
 
 ## Syntax
 
 Initialize devices (you need to add appropriate crate to you project).
 ```rust
 let opencl = zyx_opencl::default();
-let wgpu = zyx_wgpu::default();
-let cpu = zyx_cpu::default();
-let cuda = zyx_cuda::default();
+let cpu = zyx_native::default();
 let torch = zyx_torch::default();
 ```
 Initialize tensors.
@@ -114,6 +112,12 @@ impl<B> MyModel<B> {
     }
 }
 ```
+
+## Goals
+
+1. Correctness
+2. Hardware support
+3. Performance
 
 ## Notes 🤔
 

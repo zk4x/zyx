@@ -1,3 +1,4 @@
+use crate::axes::Axes;
 use crate::error::ZyxError;
 use crate::{
     dtype::DType,
@@ -13,7 +14,6 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use crate::axes::Axes;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -82,13 +82,6 @@ pub enum Op {
     Pow(usize, usize),
     /// Compare less than binary op
     Cmplt(usize, usize),
-}
-
-/// Possible reduce ops
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ROp {
-    /// No reduce
-    None,
     /// Sum reduce op
     Sum(usize),
     /// Max reduce op
@@ -102,8 +95,6 @@ pub enum ROp {
 pub struct AST {
     args: Box<[(View, DType)]>,
     ops: Box<[Op]>,
-    reduce: ROp,
-    ar_ops: Box<[Op]>,
     view: View,
 }
 
@@ -116,16 +107,6 @@ impl AST {
     /// Get AST ops
     pub fn ops(&self) -> &[Op] {
         &self.ops
-    }
-
-    /// Get AST reduce op
-    pub fn reduce(&self) -> &ROp {
-        &self.reduce
-    }
-
-    /// Ops applied after reduce
-    pub fn ar_ops(&self) -> &[Op] {
-        &self.ar_ops
     }
 
     /// View of the result
@@ -254,57 +235,31 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut program_args = Vec::new();
         let mut args = Vec::new();
         let mut ops = Vec::new();
-        let mut ar_ops = Vec::new();
-        let mut ar = false;
-        let mut reduce = ROp::None;
-        let mut raxes = Axes(Box::new([]));
+        let mut raxes = None;
         let mut mapping = BTreeMap::new();
         for nid in porder {
             mapping.insert(nid, ops.len());
             if let Some(x) = self.buffers.get(&nid) {
-                args.push((View::new(shape(&nodes, nid).clone()), dtype(&nodes, nid)));
+                args.push((View::new(shape(nodes, nid).clone()), dtype(nodes, nid)));
                 program_args.push(x);
-                if ar {
-                    ar_ops.push(Op::Leaf(args.len() - 1));
-                } else {
-                    ops.push(Op::Leaf(args.len() - 1));
-                }
+                ops.push(Op::Leaf(args.len() - 1));
             } else {
                 match &nodes[nid.i()] {
-                    Node::LeafF32(..) | Node::LeafI32(..) | Node::IterF32(..) | Node::IterI32(..) => {}
-                    Node::UniformF32(sh) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::UniformF32(View::new(sh.clone())));
-                    }
-                    Node::CastF32(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::CastF32(mapping[x]));
-                    }
-                    Node::CastI32(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::CastI32(mapping[x]));
-                    }
-                    Node::Neg(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Neg(mapping[x]));
-                    }
-                    Node::ReLU(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::ReLU(mapping[x]));
-                    }
-                    Node::Sin(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Sin(mapping[x]));
-                    }
-                    Node::Cos(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Cos(mapping[x]));
-                    }
-                    Node::Ln(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Ln(mapping[x]));
-                    }
-                    Node::Exp(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Exp(mapping[x]));
-                    }
-                    Node::Tanh(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Tanh(mapping[x]));
-                    }
-                    Node::Sqrt(x) => {
-                        if ar { &mut ar_ops } else { &mut ops }.push(Op::Sqrt(mapping[x]));
-                    }
+                    Node::LeafF32(..)
+                    | Node::LeafI32(..)
+                    | Node::IterF32(..)
+                    | Node::IterI32(..) => {}
+                    Node::UniformF32(sh) => ops.push(Op::UniformF32(View::new(sh.clone()))),
+                    Node::CastF32(x) => ops.push(Op::CastF32(mapping[x])),
+                    Node::CastI32(x) => ops.push(Op::CastI32(mapping[x])),
+                    Node::Neg(x) => ops.push(Op::Neg(mapping[x])),
+                    Node::ReLU(x) => ops.push(Op::ReLU(mapping[x])),
+                    Node::Sin(x) => ops.push(Op::Sin(mapping[x])),
+                    Node::Cos(x) => ops.push(Op::Cos(mapping[x])),
+                    Node::Ln(x) => ops.push(Op::Ln(mapping[x])),
+                    Node::Exp(x) => ops.push(Op::Exp(mapping[x])),
+                    Node::Tanh(x) => ops.push(Op::Tanh(mapping[x])),
+                    Node::Sqrt(x) => ops.push(Op::Sqrt(mapping[x])),
                     // TODO also apply movement ops to UniformF32
                     Node::Expand(x, sh) => {
                         let mut params = alloc::vec![*x];
@@ -342,45 +297,49 @@ impl<C: Compiler> CompiledBackend<C> {
                             params.extend(nodes[x.i()].parameters());
                         }
                     }
-                    Node::Add(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }
-                            .push(Op::Add(mapping[x], mapping[y]));
-                    }
-                    Node::Sub(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }
-                            .push(Op::Sub(mapping[x], mapping[y]));
-                    }
-                    Node::Mul(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }
-                            .push(Op::Mul(mapping[x], mapping[y]));
-                    }
-                    Node::Div(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }
-                            .push(Op::Div(mapping[x], mapping[y]));
-                    }
-                    Node::Pow(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }
-                            .push(Op::Pow(mapping[x], mapping[y]));
-                    }
-                    Node::Cmplt(x, y) => {
-                        if ar { &mut ar_ops } else { &mut ops }
-                            .push(Op::Cmplt(mapping[x], mapping[y]));
-                    }
+                    Node::Add(x, y) => ops.push(Op::Add(mapping[x], mapping[y])),
+                    Node::Sub(x, y) => ops.push(Op::Sub(mapping[x], mapping[y])),
+                    Node::Mul(x, y) => ops.push(Op::Mul(mapping[x], mapping[y])),
+                    Node::Div(x, y) => ops.push(Op::Div(mapping[x], mapping[y])),
+                    Node::Pow(x, y) => ops.push(Op::Pow(mapping[x], mapping[y])),
+                    Node::Cmplt(x, y) => ops.push(Op::Cmplt(mapping[x], mapping[y])),
                     Node::Sum(x, axes, _) => {
-                        reduce = ROp::Sum(mapping[x]);
-                        raxes = axes.clone();
-                        ar = true;
+                        ops.push(Op::Sum(mapping[x]));
+                        raxes = Some(axes.clone());
                     }
                     Node::Max(x, axes, _) => {
-                        reduce = ROp::Max(mapping[x]);
-                        raxes = axes.clone();
-                        ar = true;
+                        ops.push(Op::Max(mapping[x]));
+                        raxes = Some(axes.clone());
                     }
                 }
             };
         }
         let view;
-        if matches!(reduce, ROp::None) {
+        if let Some(raxes) = raxes {
+            let rshape = shape(nodes, x);
+            let axes: (Vec<usize>, Vec<usize>) = (0..rshape.rank()).partition(|a| !raxes.0.contains(a));
+            let s0: usize = axes.0.iter().product();
+            let s1: usize = axes.1.iter().product();
+            let n = axes.0.len();
+            let mut axes: Vec<usize> = axes.0.into_iter().chain(axes.1).collect();
+            let temp = axes.remove(n-1);
+            axes.push(temp);
+            let axes = Axes(axes.into_iter().collect());
+            let new_shape = [s0/temp, s1, temp].into();
+            // Join raxes together to be second last dimension
+            // permute first and then reshape
+            view = View::new(rshape.clone())
+                .permute(&axes)
+                .reshape(&new_shape)
+                .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+            for (aview, _) in &mut args {
+                let n = aview.numel();
+                *aview = aview
+                    .permute(&axes)
+                    .reshape(&new_shape)
+                    .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+            }
+        } else {
             let rshape = shape(nodes, x);
             let n = rshape.numel();
             view = View::new(rshape.clone())
@@ -392,18 +351,10 @@ impl<C: Compiler> CompiledBackend<C> {
                     .reshape(&n.into())
                     .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
             }
-        } else {
-            let rshape = shape(nodes, x);
-            view = View::new(rshape.clone());
-            // Join raxes together to be second last dimension
-            // permute first
-            // then reshape
         }
         let ast = AST {
             args: args.into_boxed_slice(),
             ops: ops.into_boxed_slice(),
-            reduce,
-            ar_ops: Box::new([]),
             view,
         };
         // Used cached program or compile new program

@@ -7,6 +7,16 @@ use alloc::boxed::Box;
 pub struct Axes(pub(crate) Box<[usize]>);
 
 impl Axes {
+    /// Number of axes
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Is there no axes?
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Iterate over axes
     pub fn iter(&self) -> impl Iterator<Item = &usize> + '_ {
         self.into_iter()
@@ -66,7 +76,7 @@ impl IntoAxes for &[i64] {
 
 impl IntoAxes for i64 {
     fn into_axes(self, rank: usize) -> Axes {
-        (&[self]).into_axes(rank)
+        [self].into_axes(rank)
     }
 }
 
@@ -74,5 +84,13 @@ impl<const N: usize> IntoAxes for [i64; N] {
     fn into_axes(self, rank: usize) -> Axes {
         let axes: &[i64] = &self;
         axes.into_axes(rank)
+    }
+}
+
+impl core::ops::Index<i64> for Axes {
+    type Output = usize;
+    fn index(&self, index: i64) -> &Self::Output {
+        let rank = self.len();
+        self.0.get((index + rank as i64) as usize % rank).unwrap()
     }
 }

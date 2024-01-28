@@ -31,9 +31,7 @@ pub fn dtype(nodes: &[Node], mut x: Id) -> DType {
             Node::LeafF32(..) | Node::IterF32(..) | Node::UniformF32(..) | Node::CastF32(..) => {
                 return DType::F32
             }
-            Node::LeafI32(..) | Node::IterI32(..) | Node::CastI32(..) => {
-                return DType::I32
-            }
+            Node::LeafI32(..) | Node::IterI32(..) | Node::CastI32(..) => return DType::I32,
             _ => x = node.parameters().next().unwrap(),
         }
     }

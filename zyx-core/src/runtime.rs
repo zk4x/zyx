@@ -12,6 +12,8 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
+use alloc::collections::btree_map::Entry;
+use core::ops::Range;
 use rand::distributions::Uniform;
 
 /// RuntimeBackend is a good plug in point for backend developers.
@@ -62,7 +64,6 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Create tensor initialized from normal distribution.
     pub fn randn(&mut self, shape: Shape, dtype: DType) -> Id {
-        let shape: Shape = shape.into();
         use rand::Rng;
         let n = shape.numel();
         let mut rng = self.rng.clone();
@@ -85,68 +86,39 @@ impl<R: RuntimeBackend> Runtime<R> {
         data
     }
 
-    /// Create tensor initialized from uniform distribution
-    /// and f32 values in range 0..1
-    pub fn _uniform(&mut self, shape: Shape) -> Id {
-        self.push(Node::UniformF32(shape)).unwrap()
-    }
-
     /// Create uniform tensor from range low..high
-    pub fn uniform<T: Scalar>(&mut self, shape: Shape, low: T, high: T) -> Id {
-        let shape: Shape = shape.into();
+    pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Id {
+        // TODO for f32 in range 0.0..1.0 switch to Node::UniformF32 for better performance
         use rand::Rng;
         let n = shape.numel();
         let mut rng = self.rng.clone();
         use rand::distributions::Standard;
         let data = match T::dtype() {
             DType::F32 => self.push(Node::IterF32(
-                Box::new((0..n).map(move |_| rng.sample(Uniform::new(low.clone().into_f32(), high.clone().into_f32())))),
+                Box::new((0..n).map(move |_| {
+                    rng.sample(Uniform::new(
+                        range.start.clone().into_f32(),
+                        range.end.clone().into_f32(),
+                    ))
+                })),
                 shape,
             )),
             DType::I32 => self.push(Node::IterI32(
-                Box::new((0..n).map(move |_| rng.sample(Uniform::new(low.clone().into_i32(), high.clone().into_i32())))),
+                Box::new((0..n).map(move |_| {
+                    rng.sample(Uniform::new(
+                        range.start.clone().into_i32(),
+                        range.end.clone().into_i32(),
+                    ))
+                })),
                 shape,
             )),
         }
-            .unwrap(); // Can't fail, as this does not call backend
-        // change the state of the random seed in rng
+        .unwrap(); // Can't fail, as this does not call backend
+                   // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
         }
         data
-    }
-
-    /// Create tensor filled with repeating value
-    pub fn full<T: Scalar>(&mut self, shape: Shape, value: T) -> Id {
-        match T::dtype() {
-            DType::F32 => self.push(Node::IterF32(
-                Box::new(core::iter::repeat(value.into_f32()).take(shape.numel())),
-                shape,
-            )),
-            DType::I32 => self.push(Node::IterI32(
-                Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
-                shape,
-            )),
-        }
-        .unwrap() // Can't fail, as this does not call backend
-    }
-
-    /// Create square eye matrix, i.e. matrix where all elements are zeros, except for elements
-    /// on the main diagonal, which are ones.
-    pub fn eye(&mut self, n: usize, dtype: DType) -> Id {
-        match dtype {
-            DType::F32 => self.push(Node::IterF32(
-                Box::new(
-                    (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. })),
-                ),
-                [n, n].into(),
-            )),
-            DType::I32 => self.push(Node::IterI32(
-                Box::new((0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 }))),
-                [n, n].into(),
-            )),
-        }
-        .unwrap() // Can't fail, as this does not call backend
     }
 
     /// Get shape of tensor x
@@ -428,8 +400,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     panic!("Compare less than (operator <) is not differentiable operation.");
                 }
                 Node::ReLU(x) => {
-                    // TODO is grads.contains_key useless for unary ops?
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         let zero = match dtype(&self.nodes, x) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
@@ -444,39 +415,39 @@ impl<R: RuntimeBackend> Runtime<R> {
                         self.release(zeros)?;
                         let x_grad = self.push(Node::Mul(zl, grad))?;
                         self.release(zl)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     };
                 }
                 Node::Exp(x) => {
-                    if !grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Mul(nid, grad))?);
+                    if let Entry::Vacant(e) = grads.entry(x) {
+                        e.insert(self.push(Node::Mul(nid, grad))?);
                     }
                 }
                 Node::Ln(x) => {
-                    if !grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Div(grad, x))?);
+                    if let Entry::Vacant(e) = grads.entry(x) {
+                        e.insert(self.push(Node::Div(grad, x))?);
                     }
                 }
                 Node::Sin(x) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         let x_temp = self.push(Node::Cos(x))?;
                         let x_grad = self.push(Node::Mul(x_temp, grad))?;
                         self.release(x_temp)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     };
                 }
                 Node::Cos(x) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         let x_temp1 = self.push(Node::Sin(x))?;
                         let x_temp = self.push(Node::Neg(x_temp1))?;
                         self.release(x_temp1)?;
                         let x_grad = self.push(Node::Mul(x_temp, grad))?;
                         self.release(x_temp)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     };
                 }
                 Node::Sqrt(x) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         // x_grad = grad/(2*sqrt(x))
                         let x_shape = shape(&self.nodes, x).clone();
                         let two1 =
@@ -487,13 +458,12 @@ impl<R: RuntimeBackend> Runtime<R> {
                         self.release(two2)?;
                         let x_grad = self.push(Node::Div(grad, x_temp))?;
                         self.release(x_temp)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     };
                 }
                 Node::CastF32(x) | Node::CastI32(x) => {
-                    if !grads.contains_key(&x) {
-                        grads.insert(
-                            x,
+                    if let Entry::Vacant(e) = grads.entry(x) {
+                        e.insert(
                             match dtype(&self.nodes, x) {
                                 DType::F32 => self.push(Node::CastF32(grad))?,
                                 DType::I32 => self.push(Node::CastI32(grad))?,
@@ -502,12 +472,12 @@ impl<R: RuntimeBackend> Runtime<R> {
                     };
                 }
                 Node::Neg(x) => {
-                    if !grads.contains_key(&x) {
-                        grads.insert(x, self.push(Node::Neg(grad))?);
+                    if let Entry::Vacant(e) = grads.entry(x) {
+                        e.insert(self.push(Node::Neg(grad))?);
                     }
                 }
                 Node::Tanh(x) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         // 1 - tanh^2(x)
                         let shape = shape(&self.nodes, x).clone();
                         let (two1, one1) = match dtype(&self.nodes, x) {
@@ -531,49 +501,47 @@ impl<R: RuntimeBackend> Runtime<R> {
                         self.release(two)?;
                         let x_grad = self.push(Node::Mul(one, grad))?;
                         self.release(one)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     };
                 }
                 Node::Reshape(x, ..) => {
-                    if !grads.contains_key(&x) {
-                        self.push(Node::Reshape(grad, shape(&self.nodes, x).clone()))?;
+                    if let Entry::Vacant(e) = grads.entry(x) {
+                        e.insert(self.push(Node::Reshape(grad, shape(&self.nodes, x).clone()))?);
                     }
                 }
                 Node::Expand(x, ref sh) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         let org_shape = shape(&self.nodes, x).clone();
                         let axes = org_shape.expand_axes(sh);
                         let temp = self.push(Node::Sum(grad, axes, org_shape.clone()))?;
                         let x_grad = self.push(Node::Reshape(temp, org_shape))?;
                         self.release(temp)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     }
                 }
                 Node::Permute(x, ref axes, _) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         let shape = shape(&self.nodes, x);
-                        grads.insert(
-                            x,
-                            self.push(Node::Permute(grads[&nid], axes.argsort(), shape.clone()))?,
+                        e.insert(
+                            self.push(Node::Permute(grad, axes.argsort(), shape.clone()))?,
                         );
                     }
                 }
                 Node::Pad(x, ref padding) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
-                        grads.insert(x, self.push(Node::Pad(grad, inv_padding))?);
+                        e.insert(self.push(Node::Pad(grad, inv_padding))?);
                     }
                 }
                 Node::Sum(x, ..) => {
-                    if !grads.contains_key(&x) {
-                        grads.insert(
-                            x,
+                    if let Entry::Vacant(e) = grads.entry(x) {
+                        e.insert(
                             self.push(Node::Expand(grad, shape(&self.nodes, x).clone()))?,
                         );
                     }
                 }
                 Node::Max(x, ..) => {
-                    if !grads.contains_key(&x) {
+                    if let Entry::Vacant(e) = grads.entry(x) {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
                         let x_shape = shape(&self.nodes, x).clone();
                         let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
@@ -588,7 +556,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                         self.release(cmp_t)?;
                         let x_grad = self.push(Node::Mul(max_1s, grad))?;
                         self.release(max_1s)?;
-                        grads.insert(x, x_grad);
+                        e.insert(x_grad);
                     };
                 }
             }

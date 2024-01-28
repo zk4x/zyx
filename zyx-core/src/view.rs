@@ -1,8 +1,8 @@
 extern crate alloc;
 use crate::{axes::Axes, shape::Shape};
 use alloc::boxed::Box;
-use alloc::{vec, vec::Vec};
 use alloc::string::String;
+use alloc::{vec, vec::Vec};
 
 /// View holds shape of the tensor and allows for arbitrary number of movement ops
 /// (reshape, expand, pad, permute) to be executed as noops (without accessing the
@@ -81,9 +81,19 @@ impl View {
         // not just calculated index.
         use alloc::format as f;
         let mut idx = String::new();
-        let mut padding_condition = f!("");
-        if let Some(InnerView { shape, strides, padding }) = self.views.first() {
-            for (i, ((d, st), (left_p, right_p))) in shape.iter().zip(strides.iter()).zip(padding.iter()).enumerate() {
+        let mut padding_condition = String::new();
+        if let Some(InnerView {
+            shape,
+            strides,
+            padding,
+        }) = self.views.first()
+        {
+            for (i, ((d, st), (left_p, right_p))) in shape
+                .iter()
+                .zip(strides.iter())
+                .zip(padding.iter())
+                .enumerate()
+            {
                 match *st {
                     0 => {}
                     1 => {
@@ -99,15 +109,15 @@ impl View {
                     padding_condition = f!("({idx}>{left_p})");
                 }
                 if *right_p > 0 {
-                    padding_condition = f!("({}<{})", &idx[..idx.len()-1], d - *right_p as usize);
+                    padding_condition = f!("({}<{})", &idx[..idx.len() - 1], d - *right_p as usize);
                 }
             }
         } else {
-            return (padding_condition, "0".into())
+            return (padding_condition, "0".into());
         }
         idx.remove(idx.len() - 1);
         if self.views.len() == 1 {
-            return (padding_condition, idx)
+            return (padding_condition, idx);
         }
         for InnerView {
             shape,
@@ -181,6 +191,7 @@ impl View {
     /// Expand self into shape
     #[must_use]
     pub fn expand(&self, shape: &Shape) -> Self {
+        // TODO fix padding
         let mut shapes = self.views.clone();
         //std::println!("Expanding {shapes:?}");
         shapes[0].strides = shapes[0]
@@ -229,7 +240,7 @@ impl View {
             InnerView {
                 shape: shape.clone(),
                 strides: shape.strides(),
-                padding: Box::new([(0, 0)]),
+                padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
             },
         );
         Self { views: shapes }
@@ -238,6 +249,7 @@ impl View {
     /// Permute self by axes
     #[must_use]
     pub fn permute(&self, axes: &Axes) -> Self {
+        // TODO permute padding
         let mut shapes = self.views.clone();
         shapes[0].shape = shapes[0].shape.permute(axes);
         shapes[0].strides = shapes[0].strides.permute(axes);

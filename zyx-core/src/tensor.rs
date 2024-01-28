@@ -42,7 +42,7 @@ pub trait IntoIndex {
 
 impl IntoIndex for &[Range<i64>] {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
-        self.into_iter().cloned()
+        self.iter().cloned()
     }
 }
 
@@ -55,7 +55,7 @@ impl<const N: usize> IntoIndex for [Range<i64>; N] {
 impl IntoIndex for &[i64] {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         // TODO this is incorrect, what about index -1?
-        self.into_iter().copied().map(|i| i..i + 1)
+        self.iter().copied().map(|i| i..i + 1)
     }
 }
 
@@ -174,13 +174,15 @@ impl<B: Backend> Tensor<B> {
         self.backend
             .load::<T>(self.id)?
             .first()
-            .ok_or_else(|| ZyxError::IndexOutOfBounds { index: 0, len: 0 })
+            .ok_or(ZyxError::IndexOutOfBounds { index: 0, len: 0 })
             .cloned()
     }
 
     // Backpropagation
     /// Returns gradients of self w.r.t. sources.
-    #[must_use]
+    /// ```rust
+    /// let dev = zyx_opencl::device().unwrap();
+    /// ```
     pub fn backward<'a>(
         &'a self,
         sources: impl IntoIterator<Item = &'a Tensor<B>>,
@@ -254,10 +256,9 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with each element of self randomly zeroed with given probability.
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
-        self * probability.into_tensor(self.backend).cmplt(tensor(
-            self.backend._uniform(self.shape()),
-            self.backend,
-        ))
+        self * probability
+            .into_tensor(self.backend)
+            .cmplt(self.backend.uniform(self.shape(), 0.0..1.0))
     }
 
     /// Returns a new tensor with the sigmoid (logistic function) of the elements of self.
@@ -336,7 +337,7 @@ impl<B: Backend> Tensor<B> {
         assert_eq!(xshape[-1], yshape[-(yrank.min(2) as i64)]);
         (self.reshape(
             xshape[0..-1]
-                .into_iter()
+                .iter()
                 .copied()
                 .chain([1])
                 .chain([xshape[-1]])
@@ -344,7 +345,7 @@ impl<B: Backend> Tensor<B> {
         ) * y
             .reshape(
                 yshape[0..-2]
-                    .into_iter()
+                    .iter()
                     .copied()
                     .chain([1])
                     .chain([yshape[-(yrank.min(2) as i64)]])
@@ -800,11 +801,11 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
             backend
                 .push(match T::dtype() {
                     DType::F32 => Node::IterF32(
-                        Box::new(self.into_iter().cloned().map(T::into_f32)),
+                        Box::new(self.iter().cloned().map(T::into_f32)),
                         n.into(),
                     ),
                     DType::I32 => Node::IterI32(
-                        Box::new(self.into_iter().cloned().map(T::into_i32)),
+                        Box::new(self.iter().cloned().map(T::into_i32)),
                         n.into(),
                     ),
                 })
