@@ -96,6 +96,7 @@ pub struct AST {
     args: Box<[(View, DType)]>,
     ops: Box<[Op]>,
     view: View,
+    is_reduce: bool,
 }
 
 impl AST {
@@ -109,9 +110,14 @@ impl AST {
         &self.ops
     }
 
-    /// View of the result
+    /// View of the result, for reduce kernel, this is before the reduce op
     pub fn view(&self) -> &View {
         &self.view
+    }
+
+    /// Is this reduce AST?
+    pub fn is_reduce(&self) -> bool {
+        self.is_reduce
     }
 }
 
@@ -221,6 +227,8 @@ impl<C: Compiler> CompiledBackend<C> {
     /// that is we know that all of it's leafs are already evaluated and stored in device.
     fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
         // Create ordered list of nodes that need to be evaluated
+        extern crate std;
+        use std::println;
         let mut temp = alloc::vec![x];
         let mut porder = Vec::new();
         while let Some(nid) = temp.pop() {
@@ -234,13 +242,20 @@ impl<C: Compiler> CompiledBackend<C> {
         // Convert this list to kernel
         let mut program_args = Vec::new();
         let mut args = Vec::new();
+        let mut ar_args = Vec::new();
+        let mut ar = false;
         let mut ops = Vec::new();
         let mut raxes = None;
         let mut mapping = BTreeMap::new();
+        let mut rshape = [].into();
         for nid in porder {
             mapping.insert(nid, ops.len());
             if let Some(x) = self.buffers.get(&nid) {
-                args.push((View::new(shape(nodes, nid).clone()), dtype(nodes, nid)));
+                if ar {
+                    &mut ar_args
+                } else {
+                    &mut args
+                }.push((View::new(shape(nodes, nid).clone()), dtype(nodes, nid)));
                 program_args.push(x);
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
@@ -303,41 +318,54 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::Div(x, y) => ops.push(Op::Div(mapping[x], mapping[y])),
                     Node::Pow(x, y) => ops.push(Op::Pow(mapping[x], mapping[y])),
                     Node::Cmplt(x, y) => ops.push(Op::Cmplt(mapping[x], mapping[y])),
-                    Node::Sum(x, axes, _) => {
+                    Node::Sum(x, axes, sh) => {
                         ops.push(Op::Sum(mapping[x]));
                         raxes = Some(axes.clone());
+                        rshape = shape(nodes, *x).clone();
+                        ar = true;
                     }
-                    Node::Max(x, axes, _) => {
+                    Node::Max(x, axes, sh) => {
                         ops.push(Op::Max(mapping[x]));
                         raxes = Some(axes.clone());
+                        rshape = shape(nodes, *x).clone();
+                        ar = true;
                     }
                 }
             };
         }
         let view;
         if let Some(raxes) = raxes {
-            let rshape = shape(nodes, x);
-            let axes: (Vec<usize>, Vec<usize>) = (0..rshape.rank()).partition(|a| !raxes.0.contains(a));
-            let s0: usize = axes.0.iter().product();
-            let s1: usize = axes.1.iter().product();
-            let n = axes.0.len();
-            let mut axes: Vec<usize> = axes.0.into_iter().chain(axes.1).collect();
-            let temp = axes.remove(n-1);
-            axes.push(temp);
-            let axes = Axes(axes.into_iter().collect());
-            let new_shape = [s0/temp, s1, temp].into();
+            println!("rshape: {rshape:?}");
+            println!("raxes: {raxes:?}");
+            let s0: usize = rshape.iter().enumerate().filter(|(a, d)| raxes.0.contains(a)).map(|(_, d)| *d).product();
+            let s1: usize = rshape.iter().enumerate().filter(|(a, d)| !raxes.0.contains(a)).map(|(_, d)| *d).product();
+            let axes: (Vec<usize>, Vec<usize>) = (0..rshape.rank()).partition(|a| raxes.0.contains(a));
+            let axes = Axes(axes.0.into_iter().chain(axes.1).collect());
+            let new_shape = [s0, s1].into();
+            let ar_new_shape = [s0, s1].into();
             // Join raxes together to be second last dimension
             // permute first and then reshape
-            view = View::new(rshape.clone())
-                .permute(&axes)
-                .reshape(&new_shape)
-                .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+            println!("Permute axes {axes:?}");
+            println!("New shape before reduce: {new_shape:?}");
+            println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
                 let n = aview.numel();
                 *aview = aview
                     .permute(&axes)
                     .reshape(&new_shape)
-                    .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+                    .pad(&new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
+            }
+            // view before the reduce op
+            view = View::new(rshape.clone())
+                .permute(&axes)
+                .reshape(&ar_new_shape)
+                .pad(&ar_new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
+            for (aview, _) in &mut ar_args {
+                let n = aview.numel();
+                *aview = aview
+                    .permute(&axes)
+                    .reshape(&ar_new_shape)
+                    .pad(&ar_new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
             }
         } else {
             let rshape = shape(nodes, x);
@@ -356,6 +384,7 @@ impl<C: Compiler> CompiledBackend<C> {
             args: args.into_boxed_slice(),
             ops: ops.into_boxed_slice(),
             view,
+            is_reduce: ar,
         };
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {

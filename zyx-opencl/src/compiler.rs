@@ -811,131 +811,45 @@ impl zyx_core::compiler::Compiler for Compiler {
 
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
         let (source, gws, lws, rbs) = compile_r_kernel(ast);
-        Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, false)
+        Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, ast.is_reduce())
     }
 }
-
-/// Elementwise kernel
-/*fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
-    //std::println!("\nCompiling ast: {ast:#?}");
-    // TODO get this to work with different max local work sizes
-    let n = ast.args()[0].0.numel();
-    let (tile_height, tile_width) = match n / 8 {
-        1..=7 => (1, 8),
-        8..=15 => (8, 8),
-        16..=31 => (8, 16),
-        _ => (16, 16),
-    };
-    let global_work_size = alloc::vec![n / tile_width, tile_width];
-    let local_work_size = alloc::vec![tile_height, tile_width];
-    let res_byte_size: usize = global_work_size.iter().product();
-    let mut source = f!("(\n  ");
-    let mut endl = f!(",\n  ");
-
-    let mut res_id = 0;
-    for arg in ast.args() {
-        source = f!(
-            "{source}__global const {}* data{res_id}{endl}",
-            arg.1.ocl_str()
-        );
-        res_id += 1;
-    }
-    source = f!("{source}__global RES_DTYPE* data{res_id}{endl}");
-    source.pop();
-    source.pop();
-    source.pop();
-    source.pop();
-    source = f!("{source}\n) {{\n  ");
-
-    endl = f!(";\n  ");
-    //source = f!("{source}int idx0 = get_global_id(0){endl}");
-    source = f!("{source}int gidx0 = get_group_id(0){endl}");
-    source = f!("{source}int gidx1 = get_group_id(1){endl}");
-    source = f!("{source}int lidx0 = get_local_id(0){endl}");
-    source = f!("{source}int lidx1 = get_local_id(1){endl}");
-    source = f!(
-        "{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
-        global_work_size[1]
-    );
-    //source = f!("{source}int idx0 = gidx0*{tile_width} + lidx0{endl}");
-    let mut dtype = DType::F32.ocl_str();
-    let mut nid = 0;
-    for op in ast.ops().iter() {
-        let res = match op {
-            // TODO check if this should be tile or data
-            Op::Leaf(x) => {
-                let (view, t) = &ast.args()[*x];
-                dtype = t.ocl_str();
-                let (p, i) = view.cidx();
-                if p.is_empty() {
-                    f!("{dtype} var{nid} = data{x}[{i}]")
-                } else {
-                    f!("{dtype} var{nid} = {p}*data{x}[{i}]")
-                }
-            }
-            Op::UniformF32(..) => {
-                todo!()
-            }
-            Op::CastF32(x) => {
-                dtype = DType::F32.ocl_str();
-                f!("{dtype} var{nid} = ({dtype})var{x}")
-            }
-            Op::CastI32(x) => {
-                dtype = DType::I32.ocl_str();
-                f!("{dtype} var{nid} = ({dtype})var{x}")
-            }
-            Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
-            Op::ReLU(x) => f!("{dtype} var{nid} = (var{x} > 0)*var{x}"),
-            Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
-            Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
-            Op::Ln(x) => f!("{dtype} var{nid} = ln(var{x})"),
-            Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
-            Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
-            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
-            Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
-            Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
-            Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
-            Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
-            Op::Pow(x, y) => f!("{dtype} var{nid} = ({dtype})pow((float)var{x}, (float)var{y})"),
-            Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
-        };
-        source = f!("{source}{res}{endl}");
-        nid += 1;
-    }
-    source = source.replace("RES_DTYPE", &f!("{dtype}"));
-    let (p, i) = ast.view().cidx();
-    source = if p.is_empty() {
-        f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
-    } else {
-        f!(
-            "{source}if ({p} != 0) {{ data{res_id}[{i}] = var{}; }}{endl}",
-            nid - 1
-        )
-    };
-    source.pop();
-    source.pop();
-    source = f!("{source}}}");
-    (
-        source,
-        global_work_size,
-        local_work_size,
-        res_byte_size * DType::from_ocl_str(dtype).byte_size(),
-    )
-}*/
 
 /// Reduce kernel
 fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     // TODO get this to work with different max local work sizes
-    let n = ast.args()[0].0.numel();
-    let (tile_height, tile_width) = match n / 8 {
-        1..=7 => (1, 8),
-        8..=15 => (8, 8),
-        16..=31 => (8, 16),
-        _ => (16, 16),
-    };
-    let global_work_size = alloc::vec![n / tile_width, tile_width];
-    let local_work_size = alloc::vec![tile_height, tile_width];
+    use std::println;
+    let tile_height;
+    let tile_width;
+    let global_work_size;
+    let local_work_size;
+    let rdim;
+    if ast.is_reduce() {
+        let rshape = ast.view().shape();
+        rdim = Some(rshape[-2]);
+        println!("{rshape:?}");
+        (tile_height, tile_width) = match rshape[-1] as usize / 8 {
+            1..=7 => (1, 8),
+            8..=15 => (8, 8),
+            16..=31 => (8, 16),
+            _ => (16, 16),
+        };
+        global_work_size = alloc::vec![rshape.numel()/rdim.unwrap()/tile_width, tile_width];
+        local_work_size = alloc::vec![tile_height, tile_width];
+    } else {
+        let n = ast.args()[0].0.numel();
+        rdim = None;
+        (tile_height, tile_width) = match n / 8 {
+            1..=7 => (1, 8),
+            8..=15 => (8, 8),
+            16..=31 => (8, 16),
+            _ => (16, 16),
+        };
+        global_work_size = alloc::vec![n / tile_width, tile_width];
+        local_work_size = alloc::vec![tile_height, tile_width];
+    }
+
     let res_byte_size: usize = global_work_size.iter().product();
     let mut source = f!("(\n  ");
     let mut endl = f!(",\n  ");
@@ -956,16 +870,28 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     source = f!("{source}\n) {{\n  ");
 
     endl = f!(";\n  ");
-    //source = f!("{source}int idx0 = get_global_id(0){endl}");
+
     source = f!("{source}int gidx0 = get_group_id(0){endl}");
     source = f!("{source}int gidx1 = get_group_id(1){endl}");
     source = f!("{source}int lidx0 = get_local_id(0){endl}");
     source = f!("{source}int lidx1 = get_local_id(1){endl}");
+
+    let rid = if let Some(rdim) = rdim {
+        // Create register acc
+        let rid = ast.ops().iter().position(|op| matches!(op, Op::Sum(_) | Op::Max(_))).unwrap();
+        source = f!("{source}RES_DTYPE var{rid} = 0{endl}");
+        source = f!("{source}for (int ridx0 = 0; ridx0 < {rdim}; ridx0++) {{\n    ");
+        endl = f!(";\n    ");
+        Some(rid)
+    } else {
+        None
+    };
     source = f!(
         "{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
         global_work_size[1]
     );
-    //source = f!("{source}int idx0 = gidx0*{tile_width} + lidx0{endl}");
+    source = f!("{source}int idx1 = ridx0{endl}");
+
     let mut dtype = DType::F32.ocl_str();
     let mut nid = 0;
     for op in ast.ops().iter() {
@@ -1006,19 +932,25 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
             Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
             Op::Pow(x, y) => f!("{dtype} var{nid} = ({dtype})pow((float)var{x}, (float)var{y})"),
             Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
-            Op::Sum(x) => f!(""),
-            Op::Max(x) => f!(""),
+            Op::Sum(x) => f!("var{nid} += var{x}"),
+            Op::Max(x) => f!("var{nid} = max(var{nid}, var{x})"),
         };
         source = f!("{source}{res}{endl}");
         nid += 1;
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
+    if let Some(rdim) = rdim {
+        source.pop();
+        source.pop();
+        source = f!("{source}}}\n  ");
+        endl = f!(";\n  ");
+    }
     let (p, i) = ast.view().cidx();
     source = if p.is_empty() {
         f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
     } else {
         f!(
-            "{source}if ({p} != 0) {{ data{res_id}[{i}] = var{}; }}{endl}",
+            "{source}if ({p} != 0) {{\n    data{res_id}[{i}] = var{};\n  }}\n  ",
             nid - 1
         )
     };
@@ -1047,7 +979,7 @@ fn exp_test() -> Result<(), ZyxError> {
 #[test]
 fn sum_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
-    let x = dev.randn([1024, 1024], DType::F32);
+    let x = dev.randn([10, 12], DType::F32);
     let y = x.sum(-1);
     let y_vec: Vec<f32> = y.to_vec()?;
     panic!("{y_vec:?}");
