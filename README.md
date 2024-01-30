@@ -51,16 +51,6 @@ As for the backends, OpenCL backend automatically fuses operations and create cu
 In case of hardware where these backends seem slow you can always use libtorch backend.
 Native (Rust) backend is slow and should not be used. It currently serves only as reference backend.
 
-Benchmarks always have some bias, because everybody uses libraries differently.
-Still, I will throw a few in here, you can find them all in examples folder.
-Numbers show time taken in seconds for 100 iterations.
-
-| Library   | Zyx    |      |       |        | PyTorch |      | Burn |      |
-|-----------|--------|------|-------|--------|---------|------|------|------|
-| Backend   | OpenCL | WGPU | Torch | Native | CUDA    | CPU  | WGPU |      |
-| linear    | 1.0    | 4.5  | 6.5   |
-| attention | 3.4    |
-
 ## Syntax
 
 Initialize devices (you need to add appropriate crate to you project).

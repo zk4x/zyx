@@ -283,7 +283,8 @@ impl Program {
                 .collect::<Vec<_>>()
                 .join("_"),
         );
-        let source = f!("__kernel void {name}{source}");
+        let pragma = f!("");
+        let source = f!("{pragma}__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
         std::println!("{source}");
         let sources: &[&str] = &[&source];
@@ -377,7 +378,7 @@ impl Compiler {
                 _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
             })
         })?;
-        let Some(platform) = platform_ids.get(0) else {
+        let Some(platform) = platform_ids.get(1) else {
             return Err(ZyxError::BackendError(
                 "There are no available OpenCL platforms.",
             ));
@@ -811,7 +812,7 @@ impl zyx_core::compiler::Compiler for Compiler {
 
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
         let (source, gws, lws, rbs) = compile_r_kernel(ast);
-        Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, ast.is_reduce())
+        Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, ast.rdim().is_some())
     }
 }
 
@@ -819,27 +820,25 @@ impl zyx_core::compiler::Compiler for Compiler {
 fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     // TODO get this to work with different max local work sizes
-    use std::println;
+    //use std::println;
     let tile_height;
     let tile_width;
     let global_work_size;
     let local_work_size;
-    let rdim;
-    if ast.is_reduce() {
+    let rdim = ast.rdim();
+    if let Some(rdim) = rdim {
         let rshape = ast.view().shape();
-        rdim = Some(rshape[-2]);
-        println!("{rshape:?}");
+        let numel = rdim * rshape[-1];
         (tile_height, tile_width) = match rshape[-1] as usize / 8 {
             1..=7 => (1, 8),
             8..=15 => (8, 8),
             16..=31 => (8, 16),
             _ => (16, 16),
         };
-        global_work_size = alloc::vec![rshape.numel()/rdim.unwrap()/tile_width, tile_width];
+        global_work_size = alloc::vec![numel/rdim/tile_width, tile_width];
         local_work_size = alloc::vec![tile_height, tile_width];
     } else {
         let n = ast.args()[0].0.numel();
-        rdim = None;
         (tile_height, tile_width) = match n / 8 {
             1..=7 => (1, 8),
             8..=15 => (8, 8),
@@ -876,21 +875,28 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     source = f!("{source}int lidx0 = get_local_id(0){endl}");
     source = f!("{source}int lidx1 = get_local_id(1){endl}");
 
-    let rid = if let Some(rdim) = rdim {
+    let _rid = if let Some(rdim) = rdim {
+        source = f!(
+            "{source}int idx1 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
+            global_work_size[1]
+        );
         // Create register acc
         let rid = ast.ops().iter().position(|op| matches!(op, Op::Sum(_) | Op::Max(_))).unwrap();
         source = f!("{source}RES_DTYPE var{rid} = 0{endl}");
         source = f!("{source}for (int ridx0 = 0; ridx0 < {rdim}; ridx0++) {{\n    ");
         endl = f!(";\n    ");
+        source = f!("{source}int idx0 = ridx0{endl}");
+
+        //source = f!("{source}printf(\"idx0: %d  \", idx0){endl}");
+
         Some(rid)
     } else {
+        source = f!(
+            "{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
+            global_work_size[1]
+        );
         None
     };
-    source = f!(
-        "{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
-        global_work_size[1]
-    );
-    source = f!("{source}int idx1 = ridx0{endl}");
 
     let mut dtype = DType::F32.ocl_str();
     let mut nid = 0;
@@ -939,18 +945,19 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
         nid += 1;
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
-    if let Some(rdim) = rdim {
+    if let Some(_) = rdim {
         source.pop();
         source.pop();
         source = f!("{source}}}\n  ");
         endl = f!(";\n  ");
     }
     let (p, i) = ast.view().cidx();
+    source = f!("{source}int idx0 = 0{endl}");
     source = if p.is_empty() {
         f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
     } else {
         f!(
-            "{source}if ({p} != 0) {{\n    data{res_id}[{i}] = var{};\n  }}\n  ",
+            "{source}if ({p}) {{\n    data{res_id}[{i}] = var{};\n  }}\n  ",
             nid - 1
         )
     };
@@ -979,9 +986,12 @@ fn exp_test() -> Result<(), ZyxError> {
 #[test]
 fn sum_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
-    let x = dev.randn([10, 12], DType::F32);
+    let x = dev.tensor([[8, 4, 3], [5, 4, 2]]).transpose();
+    //let x = dev.randn([10, 12], DType::F32);
     let y = x.sum(-1);
-    let y_vec: Vec<f32> = y.to_vec()?;
+    std::println!("y shape: {:?}", y.shape());
+    let y_vec: Vec<i32> = y.to_vec()?;
     panic!("{y_vec:?}");
+    // res [[9], [7]]
     //Ok(())
 }

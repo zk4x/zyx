@@ -94,6 +94,7 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
+                println!("{i}, {d}, {st}, {left_p}, {right_p}");
                 match *st {
                     0 => {}
                     1 => {
@@ -106,10 +107,10 @@ impl View {
                 if *left_p < 0 {
                     idx += &f!("-{left_p}");
                 } else if *left_p > 0 {
-                    padding_condition = f!("({idx}>{left_p})");
+                    padding_condition = f!("{padding_condition} && (idx{i}>{left_p})");
                 }
                 if *right_p > 0 {
-                    padding_condition = f!("({}<{})", &idx[..idx.len() - 1], d - *right_p as usize);
+                    padding_condition = f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
                 }
             }
         } else {
@@ -117,6 +118,7 @@ impl View {
         }
         idx.remove(idx.len() - 1);
         if self.views.len() == 1 {
+            padding_condition = f!("({})", &padding_condition[4..]);
             return (padding_condition, idx);
         }
         for InnerView {
@@ -161,10 +163,10 @@ impl View {
                 if *left_p < 0 {
                     temp = f!("{temp}-{left_p}");
                 } else if *left_p > 0 {
-                    padding_condition = f!(" || ({idx}>{left_p})");
+                    padding_condition = f!(" && ({idx}>{left_p})");
                 }
                 if *right_p > 0 {
-                    padding_condition = f!(" || ({idx}<{})", d - *right_p as usize);
+                    padding_condition = f!(" && ({idx}<{})", d - *right_p as usize);
                 }
                 res += &f!("{temp}+");
             }
@@ -173,6 +175,7 @@ impl View {
                 idx.remove(idx.len() - 1);
             }
         }
+        padding_condition = f!("({})", &padding_condition[4..]);
         (padding_condition, idx)
     }
 
@@ -192,14 +195,14 @@ impl View {
     #[must_use]
     pub fn expand(&self, shape: &Shape) -> Self {
         // TODO fix padding
-        let mut shapes = self.views.clone();
-        //std::println!("Expanding {shapes:?}");
-        shapes[0].strides = shapes[0]
+        let mut views = self.views.clone();
+        //std::println!("Expanding {views:?}");
+        views[0].strides = views[0]
             .shape
-            .expand_strides(shape, shapes[0].strides.clone());
-        shapes[0].shape = shape.clone();
-        //std::println!("To {shapes:?}");
-        Self { views: shapes }
+            .expand_strides(shape, views[0].strides.clone());
+        views[0].shape = shape.clone();
+        //std::println!("To {views:?}");
+        Self { views }
     }
 
     /// Pad self by padding
@@ -234,8 +237,11 @@ impl View {
     /// Reshape self into shape
     #[must_use]
     pub fn reshape(&self, shape: &Shape) -> Self {
-        let mut shapes = self.views.clone();
-        shapes.insert(
+        if shape == self.shape() {
+            return self.clone()
+        }
+        let mut views = self.views.clone();
+        views.insert(
             0,
             InnerView {
                 shape: shape.clone(),
@@ -243,17 +249,19 @@ impl View {
                 padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
             },
         );
-        Self { views: shapes }
+        Self { views }
     }
 
     /// Permute self by axes
     #[must_use]
     pub fn permute(&self, axes: &Axes) -> Self {
-        // TODO permute padding
-        let mut shapes = self.views.clone();
-        shapes[0].shape = shapes[0].shape.permute(axes);
-        shapes[0].strides = shapes[0].strides.permute(axes);
-        Self { views: shapes }
+        let mut views = self.views.clone();
+        views[0].shape = views[0].shape.permute(axes);
+        views[0].strides = views[0].strides.permute(axes);
+        let padding = &views[0].padding;
+        let padding = axes.iter().map(|axis| padding[*axis]).collect();
+        views[0].padding = padding;
+        Self { views }
     }
 }
 
@@ -267,7 +275,7 @@ fn view() {
     let s3 = s2.expand(&[4, 3, 5, 2, 2].into());
     let s4 = s3.permute(&[3, 0, 4, 2, 1].into_axes(5));
     let s5 = s4.reshape(&[12, 20].into());
-    for (shape, strides) in s5.shapes {
+    for (shape, strides) in s5.views {
         std::println!("{shape:?}, {strides:?}");
     }
     //panic!();

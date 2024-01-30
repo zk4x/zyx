@@ -91,12 +91,13 @@ pub enum Op {
 /// Abstract syntax tree that can be compiled into program.
 /// Consists of kernel arguments, elementwise ops, optional reduce op
 /// and elementwise ops after reduce.
+/// This struct is immutable.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AST {
     args: Box<[(View, DType)]>,
     ops: Box<[Op]>,
     view: View,
-    is_reduce: bool,
+    rdim: Option<usize>,
 }
 
 impl AST {
@@ -110,14 +111,14 @@ impl AST {
         &self.ops
     }
 
-    /// View of the result, for reduce kernel, this is before the reduce op
+    /// View of the result, for reduce kernel, this is after the reduce op
     pub fn view(&self) -> &View {
         &self.view
     }
 
-    /// Is this reduce AST?
-    pub fn is_reduce(&self) -> bool {
-        self.is_reduce
+    /// Reduce dimension size, if any
+    pub fn rdim(&self) -> Option<usize> {
+        self.rdim
     }
 }
 
@@ -318,13 +319,13 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::Div(x, y) => ops.push(Op::Div(mapping[x], mapping[y])),
                     Node::Pow(x, y) => ops.push(Op::Pow(mapping[x], mapping[y])),
                     Node::Cmplt(x, y) => ops.push(Op::Cmplt(mapping[x], mapping[y])),
-                    Node::Sum(x, axes, sh) => {
+                    Node::Sum(x, axes, _) => {
                         ops.push(Op::Sum(mapping[x]));
                         raxes = Some(axes.clone());
                         rshape = shape(nodes, *x).clone();
                         ar = true;
                     }
-                    Node::Max(x, axes, sh) => {
+                    Node::Max(x, axes, _) => {
                         ops.push(Op::Max(mapping[x]));
                         raxes = Some(axes.clone());
                         rshape = shape(nodes, *x).clone();
@@ -334,39 +335,38 @@ impl<C: Compiler> CompiledBackend<C> {
             };
         }
         let view;
-        if let Some(raxes) = raxes {
+        let rdim = if let Some(raxes) = raxes {
             println!("rshape: {rshape:?}");
             println!("raxes: {raxes:?}");
-            let s0: usize = rshape.iter().enumerate().filter(|(a, d)| raxes.0.contains(a)).map(|(_, d)| *d).product();
-            let s1: usize = rshape.iter().enumerate().filter(|(a, d)| !raxes.0.contains(a)).map(|(_, d)| *d).product();
+            let s0: usize = rshape.iter().enumerate().filter(|(a, _)| raxes.0.contains(a)).map(|(_, d)| *d).product();
+            let s1: usize = rshape.iter().enumerate().filter(|(a, _)| !raxes.0.contains(a)).map(|(_, d)| *d).product();
             let axes: (Vec<usize>, Vec<usize>) = (0..rshape.rank()).partition(|a| raxes.0.contains(a));
             let axes = Axes(axes.0.into_iter().chain(axes.1).collect());
             let new_shape = [s0, s1].into();
-            let ar_new_shape = [s0, s1].into();
+            let ar_new_shape = [1, s1].into();
             // Join raxes together to be second last dimension
             // permute first and then reshape
             println!("Permute axes {axes:?}");
             println!("New shape before reduce: {new_shape:?}");
             println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
-                let n = aview.numel();
                 *aview = aview
                     .permute(&axes)
                     .reshape(&new_shape)
-                    .pad(&new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
+                    .pad(&new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8 - d % 8) as i64) } else { (0, 0) }).collect::<Vec<(i64, i64)>>());
             }
-            // view before the reduce op
-            view = View::new(rshape.clone())
+            // view after the reduce op
+            view = View::new(shape(nodes, x).clone())
                 .permute(&axes)
                 .reshape(&ar_new_shape)
                 .pad(&ar_new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
             for (aview, _) in &mut ar_args {
-                let n = aview.numel();
                 *aview = aview
                     .permute(&axes)
                     .reshape(&ar_new_shape)
                     .pad(&ar_new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
             }
+            Some(if s0 != 1 && s0 % 8 != 0 {(s0/8 + 1)*8} else { s0 })
         } else {
             let rshape = shape(nodes, x);
             let n = rshape.numel();
@@ -379,12 +379,13 @@ impl<C: Compiler> CompiledBackend<C> {
                     .reshape(&n.into())
                     .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
             }
-        }
+            None
+        };
         let ast = AST {
             args: args.into_boxed_slice(),
             ops: ops.into_boxed_slice(),
             view,
-            is_reduce: ar,
+            rdim,
         };
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {

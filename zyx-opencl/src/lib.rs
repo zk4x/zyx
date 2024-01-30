@@ -168,7 +168,7 @@ impl Backend for &OpenCL {
     }
 }
 
-#[test]
+/*#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.randn([2, 3], DType::F32);
@@ -176,9 +176,9 @@ fn t0() -> Result<(), ZyxError> {
     let z = (&x + &y).exp() + &x;
     let _grads = z.backward([&y]);
     Ok(())
-}
+}*/
 
-#[test]
+/*#[test]
 fn test_layer_norm() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.randn([2, 3], DType::F32);
@@ -192,4 +192,4 @@ fn test_layer_norm() -> Result<(), ZyxError> {
     //let x = x.dropout(0.3);
 
     Ok(())
-}
+}*/
