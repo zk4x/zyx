@@ -2,6 +2,7 @@ extern crate alloc;
 use crate::{axes::Axes, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use crate::utils::shape;
 
 /// Node representing different possible tensors
 pub enum Node {
@@ -54,7 +55,7 @@ pub enum Node {
     /// Permute movement op
     Permute(Id, Axes, Shape),
     /// Pad movement op
-    Pad(Id, Box<[(i64, i64)]>),
+    Pad(Id, Box<[(i64, i64)]>, Shape),
     /// Sum reduce op
     Sum(Id, Axes, Shape),
     /// Max reduce op
@@ -92,6 +93,43 @@ impl Node {
             | Node::Pad(x, ..)
             | Node::Sum(x, ..)
             | Node::Max(x, ..) => Vec::from([*x]).into_iter(),
+        }
+    }
+
+    /// Get number of operations necessary to calculate this node
+    pub fn flop(&self, nodes: &[Node]) -> usize {
+        match self {
+            Node::LeafF32(..)
+            | Node::LeafI32(..)
+            | Node::UniformF32(..)
+            | Node::IterF32(..)
+            | Node::IterI32(..)
+            | Node::Reshape(..)
+            | Node::Expand(..)
+            | Node::Permute(..)
+            | Node::Pad(..) => 0,
+            Node::Add(x, _)
+            | Node::Sub(x, _)
+            | Node::Mul(x, _)
+            | Node::Div(x, _)
+            | Node::Cmplt(x, _)
+            | Node::Pow(x, _) => shape(nodes, *x).numel() * 2, // x and y are guaranteed to be same shape
+            Node::CastF32(x)
+            | Node::CastI32(x)
+            | Node::Neg(x)
+            | Node::ReLU(x)
+            | Node::Exp(x)
+            | Node::Ln(x)
+            | Node::Sin(x)
+            | Node::Cos(x)
+            | Node::Sqrt(x)
+            | Node::Tanh(x) => shape(nodes, *x).numel(),
+            Node::Sum(x, _, sh)
+            | Node::Max(x, _, sh) => {
+                let n = sh.numel();
+                let rdim = shape(nodes, *x).numel() / n;
+                (rdim - 1) * n
+            }
         }
     }
 }

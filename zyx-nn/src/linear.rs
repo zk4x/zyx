@@ -7,9 +7,6 @@ pub struct Linear<B: Backend> {
     pub bias: Option<Tensor<B>>,
 }
 
-// Init
-// let l0 = dev.linear(1024, 8);
-
 pub trait LinearInit: Backend {
     fn linear(self, in_features: usize, out_features: usize) -> Linear<Self> {
         Linear {
@@ -21,14 +18,26 @@ pub trait LinearInit: Backend {
 
 impl<B: Backend> LinearInit for B {}
 
-impl<B: Backend> IntoIterator for Linear<B> {
-    type Item = Tensor<B>;
-    type IntoIter = alloc::vec::IntoIter<Tensor<B>>;
+impl<'a, B: Backend> IntoIterator for &'a Linear<B> {
+    type Item = &'a Tensor<B>;
+    type IntoIter = alloc::vec::IntoIter<&'a Tensor<B>>;
     fn into_iter(self) -> Self::IntoIter {
-        if let Some(bias) = self.bias {
-            alloc::vec![self.weight, bias].into_iter()
+        if let Some(bias) = &self.bias {
+            alloc::vec![&self.weight, bias].into_iter()
         } else {
-            alloc::vec![self.weight].into_iter()
+            alloc::vec![&self.weight].into_iter()
+        }
+    }
+}
+
+impl<'a, B: Backend> IntoIterator for &'a mut Linear<B> {
+    type Item = &'a mut Tensor<B>;
+    type IntoIter = alloc::vec::IntoIter<&'a mut Tensor<B>>;
+    fn into_iter(self) -> Self::IntoIter {
+        if let Some(bias) = &mut self.bias {
+            alloc::vec![&mut self.weight, bias].into_iter()
+        } else {
+            alloc::vec![&mut self.weight].into_iter()
         }
     }
 }

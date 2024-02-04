@@ -5,12 +5,14 @@ use crate::error::ZyxError;
 use crate::scalar::Scalar;
 use crate::shape::Shape;
 use crate::{backend::Backend, node::Node};
-use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
-use core::cmp::Ordering;
-use core::iter::repeat;
-use core::ops::{Range, SubAssign};
+use alloc::{
+    boxed::Box,
+collections::BTreeSet,
+vec::Vec};
+use core::{
+    cmp::Ordering,
+iter::repeat,
+ops::{Range, SubAssign}};
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
@@ -87,6 +89,94 @@ impl<B: Backend> Drop for Tensor<B> {
     }
 }
 
+impl<B: Backend> core::fmt::Debug for Tensor<B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("Tensor {{ id = {:?} }}", self.id))
+    }
+}
+
+impl<B: Backend> core::fmt::Display for Tensor<B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // TODO don't print the whole tensor if it is too big
+        let precision = if let Some(precision) = f.precision() {
+            precision
+        } else {
+            3
+        };
+        let res = match self.dtype() {
+            DType::F32 => {
+                if let Ok(data) = &self.to_vec::<f32>() {
+                    tensor_to_string(data, &self.shape(), precision)
+                } else {
+                    "f32 tensor failed to realize".into()
+                }
+            }
+            DType::I32 => {
+                if let Ok(data) = &self.to_vec::<i32>() {
+                    tensor_to_string(data, &self.shape(), precision)
+                } else {
+                    "i32 tensor failed to realize".into()
+                }
+            }
+        };
+        f.write_str(&res)
+    }
+}
+
+fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &Shape, precision: usize) -> alloc::string::String {
+    use core::fmt::Write;
+    // TODO don't print whole tensor if it is big
+    let n = shape.numel();
+    let ndim = shape.rank();
+    let mut res = alloc::string::String::new();
+    if data.is_empty() {
+        return "[]".into();
+    }
+    // get maximal width of single value
+    let mut w = 0;
+    for x in data {
+        let l = alloc::format!("{x:>w$.precision$}").len();
+        if l > w {
+            w = l;
+        }
+    }
+    let d0 = shape[-1];
+    for (i, x) in data.iter().enumerate() {
+        {
+            let mut var = 1;
+            let mut r = ndim;
+            while r > 0 {
+                if i % (n / var) == 0 {
+                    res += &(" ".repeat(ndim - r) + "[".repeat(r - 1).as_str());
+                    break;
+                }
+                var *= shape[ndim - r];
+                r -= 1;
+            }
+        }
+        let _ = write!(res, "{x:>w$.precision$}");
+        if (i + 1) % d0 != 0usize {
+            res += "  ";
+        }
+        {
+            let mut var = 1;
+            let mut r = ndim;
+            while r > 0 {
+                if (i + 1) % (n / var) == 0 {
+                    res += &"]".repeat(r - 1);
+                    break;
+                }
+                var *= shape[ndim - r];
+                r -= 1;
+            }
+        }
+        if (i + 1) % d0 == 0usize && i != n - 1 {
+            res += "\n";
+        }
+    }
+    res
+}
+
 /// Create new tensor from id and backend.
 /// Used mostly internally in tensor and in backends.
 pub const fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
@@ -97,9 +187,11 @@ impl<B: Backend> Tensor<B> {
     // Metadata
     /// Returns the [shape](Shape) of the self tensor.
     /// ```
+    /// # use zyx_core::error::ZyxError;
     /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.shape(), [2, 3]);
+    /// # Ok::<(), ZyxError>(())
     /// ```
     #[must_use]
     pub fn shape(&self) -> Shape {
@@ -108,7 +200,7 @@ impl<B: Backend> Tensor<B> {
 
     /// Returns the [dtype](DType) of the self tensor.
     /// ```
-    /// use zyx_core::error::ZyxError;
+    /// # use zyx_core::error::ZyxError;
     /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.dtype(), zyx_opencl::DType::I32);
@@ -388,16 +480,22 @@ impl<B: Backend> Tensor<B> {
     ///
     /// Pad last dimension by (1, 2)
     /// ```rust
-    /// use zyx_opencl;
-    /// let dev = zyx_opencl::device().unwrap();
+    /// # use zyx_opencl;
+    /// // let dev = zyx_opencl::device()?;
+    /// let dev = zyx_opencl::device_builder()
+    ///     .platform_id(1)
+    ///     .build()?;
     /// let x = dev.tensor([[2, 3],
     ///                     [4, 1]]);
     /// let z = x.pad([(1, 2)], 0);
+    /// std::println!("{:?}", z.shape());
+    /// std::println!("{}", z);
     /// assert_eq!(z, [[0, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
-    /// ```rust
+    /// rust
     /// use zyx_opencl;
     /// let dev = zyx_opencl::device().unwrap();
     /// let x = dev.tensor([[2, 3],
@@ -407,7 +505,7 @@ impl<B: Backend> Tensor<B> {
     ///                [7, 7, 2],
     ///                [7, 7, 4],
     ///                [7, 7, 7]]);
-    /// ```
+    /// 
     ///
     /// # Panics
     /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
@@ -424,9 +522,11 @@ impl<B: Backend> Tensor<B> {
         assert_eq!(get_dtype(value.clone()), self.dtype());
         // TODO asserts
         // TODO add support for value
+        let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
+        let sh = self.shape().pad(&padding);
         tensor(
             self.backend
-                .push(Node::Pad(self.id, padding.into_iter().collect()))
+                .push(Node::Pad(self.id, padding, sh))
                 .unwrap(),
             self.backend,
         )
@@ -890,5 +990,23 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
                 .unwrap(),
             backend,
         )
+    }
+}
+
+impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize> PartialEq<[T; D0]> for Tensor<B> {
+    fn eq(&self, other: &[T; D0]) -> bool {
+        self.shape() == [D0] && self.dtype() == T::dtype() && self.to_vec::<T>().unwrap().into_iter().zip(other.iter()).all(|(x, y)| x == *y)
+    }
+}
+
+impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for Tensor<B> {
+    fn eq(&self, other: &[[T; D1]; D0]) -> bool {
+        self.shape() == [D0, D1] && self.dtype() == T::dtype() && self.to_vec::<T>().unwrap().into_iter().zip(other.iter().flatten()).all(|(x, y)| x == *y)
+    }
+}
+
+impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[T; D2]; D1]; D0]> for Tensor<B> {
+    fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
+        self.shape() == [D0, D1, D2] && self.dtype() == T::dtype() && self.to_vec::<T>().unwrap().into_iter().zip(other.iter().flatten().flatten()).all(|(x, y)| x == *y)
     }
 }

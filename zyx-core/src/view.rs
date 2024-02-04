@@ -82,6 +82,12 @@ impl View {
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
+        if self.contiguous() {
+            for i in 0..self.shape().rank() {
+                idx += &f!("idx{i}");
+            }
+            return (padding_condition, idx)
+        }
         if let Some(InnerView {
             shape,
             strides,
@@ -94,7 +100,7 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
-                println!("{i}, {d}, {st}, {left_p}, {right_p}");
+                //println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
                     0 => {}
                     1 => {
@@ -105,9 +111,10 @@ impl View {
                     }
                 }
                 if *left_p < 0 {
-                    idx += &f!("-{left_p}");
+                    idx += &f!("+{}", -left_p);
                 } else if *left_p > 0 {
                     padding_condition = f!("{padding_condition} && (idx{i}>{left_p})");
+                    idx += &f!("-{}", left_p);
                 }
                 if *right_p > 0 {
                     padding_condition = f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
@@ -118,7 +125,9 @@ impl View {
         }
         idx.remove(idx.len() - 1);
         if self.views.len() == 1 {
-            padding_condition = f!("({})", &padding_condition[4..]);
+            if !padding_condition.is_empty() {
+                padding_condition = f!("{}", &padding_condition[4..]);
+            }
             return (padding_condition, idx);
         }
         for InnerView {
@@ -129,44 +138,39 @@ impl View {
         {
             idx.insert(0, '(');
             idx.push(')');
-            let mut res = alloc::string::String::new();
+            let mut res = String::new();
             let mut ost = 1;
             for ((d, st), (left_p, right_p)) in
                 shape.into_iter().zip(strides).zip(padding.iter()).rev()
             {
-                //println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 //res += &f!("{idx}/{ost}%{d}*{st}+");
                 //ost *= d;
                 let mut temp = f!("{idx}");
                 match ost {
                     0 => panic!(),
                     1 => {}
-                    _ => {
-                        temp += &f!("/{ost}");
-                    }
+                    _ => temp += &f!("/{ost}"),
                 }
                 ost *= d;
                 match *d {
                     0 => panic!(),
                     1 => temp = f!("0"),
-                    _ => {
-                        temp += &f!("%{d}");
-                    }
+                    _ => temp += &f!("%{d}"),
                 }
                 match *st {
                     0 => temp = f!("0"),
                     1 => {}
-                    _ => {
-                        temp += &f!("*{st}");
-                    }
+                    _ => temp += &f!("*{st}"),
                 }
                 if *left_p < 0 {
-                    temp = f!("{temp}-{left_p}");
+                    temp = f!("{temp}+{}", -left_p);
                 } else if *left_p > 0 {
-                    padding_condition = f!(" && ({idx}>{left_p})");
+                    padding_condition = f!(" && ({temp}>{left_p})");
+                    temp = f!("{temp}-{left_p}");
                 }
                 if *right_p > 0 {
-                    padding_condition = f!(" && ({idx}<{})", d - *right_p as usize);
+                    padding_condition = f!(" && ({temp}<{})", d - *right_p as usize);
                 }
                 res += &f!("{temp}+");
             }
@@ -175,7 +179,9 @@ impl View {
                 idx.remove(idx.len() - 1);
             }
         }
-        padding_condition = f!("({})", &padding_condition[4..]);
+        if !padding_condition.is_empty() {
+            padding_condition = f!("{}", &padding_condition[4..]);
+        }
         (padding_condition, idx)
     }
 
@@ -188,13 +194,20 @@ impl View {
     /// Last shape of self.
     #[must_use]
     pub fn shape(&self) -> &Shape {
-        &self.views[0].shape
+        &self.views.first().unwrap().shape
+    }
+
+
+    /// Original (first) shape of self.
+    #[must_use]
+    pub fn original_shape(&self) -> &Shape {
+        &self.views.last().unwrap().shape
     }
 
     /// Expand self into shape
     #[must_use]
     pub fn expand(&self, shape: &Shape) -> Self {
-        // TODO fix padding
+        // TODO fix padding if needed
         let mut views = self.views.clone();
         //std::println!("Expanding {views:?}");
         views[0].strides = views[0]

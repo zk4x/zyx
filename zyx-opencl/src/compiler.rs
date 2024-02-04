@@ -257,6 +257,8 @@ pub struct Program {
     global_work_size: Box<[usize]>,
     local_work_size: Box<[usize]>,
     res_byte_size: usize,
+    flop: usize,
+    bytes: usize,
 }
 
 impl Program {
@@ -268,6 +270,8 @@ impl Program {
         local_work_size: &[usize],
         res_byte_size: usize,
         reduce: bool,
+        flop: usize,
+        bytes: usize,
     ) -> Result<Self, ZyxError> {
         let name = f!(
             "{}__{}__{}",
@@ -287,7 +291,7 @@ impl Program {
         let source = f!("{pragma}__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
         std::println!("{source}");
-        let sources: &[&str] = &[&source];
+        let sources: &[&str] = &[source.as_str()];
         let mut err = CL_SUCCESS;
         let program = unsafe {
             clCreateProgramWithSource(
@@ -358,6 +362,8 @@ impl Program {
             global_work_size: global_work_size.iter().copied().collect(),
             local_work_size: local_work_size.iter().copied().collect(),
             res_byte_size,
+            flop,
+            bytes,
         })
     }
 }
@@ -370,7 +376,7 @@ pub(crate) struct Compiler {
 }
 
 impl Compiler {
-    pub(crate) fn new() -> Result<Self, ZyxError> {
+    pub(crate) fn new(platform_id: usize, queues_per_device: usize) -> Result<Self, ZyxError> {
         let platform_ids = get_platform_ids().map_err(|err| {
             ZyxError::BackendError(match err {
                 -30 => "Unable to get OpenCL platform ids. ERR -30: CL_INVALID_VALUE",
@@ -378,7 +384,7 @@ impl Compiler {
                 _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
             })
         })?;
-        let Some(platform) = platform_ids.get(1) else {
+        let Some(platform) = platform_ids.get(platform_id) else {
             return Err(ZyxError::BackendError(
                 "There are no available OpenCL platforms.",
             ));
@@ -455,8 +461,7 @@ impl Compiler {
         // This makes our code asynchronous. Creating graph would actually make us 2 times slower (can be optimized),
         // if we couldn't execute kernels asynchronously. We don't need this to be huge. 2 seems to
         // be plenty. And lower values also lower memory usage.
-        let queues_per_device: u32 = 8; //device_ids.iter().map(|dev| get_device_info(*dev,
-                                        // CL_DEVICE_MAX_ON_DEVICE_QUEUES)?.into()).min()?;
+        //device_ids.iter().map(|dev| get_device_info(*dev, CL_DEVICE_MAX_ON_DEVICE_QUEUES)?.into()).min()?;
         #[cfg(feature = "debug1")]
         std::println!("Using {queues_per_device} queues per device.");
         let (queues, errs): (Vec<*mut c_void>, Vec<cl_int>) = (0..queues_per_device)
@@ -802,8 +807,9 @@ impl zyx_core::compiler::Compiler for Compiler {
             let elapsed = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed as f64 / 1000000.;
             std::println!(
-                "Kernel execution took {elapsed_millis:.3}ms, that is {} GFLOPS",
-                (1024u128 * 1024 * 1024 * 2) as f64 / elapsed as f64
+                "Kernel execution took {elapsed_millis:.3}ms ~ {:.2} GFLOPS, {:.2} GB/s",
+                program.flop as f64 / elapsed as f64,
+                program.bytes as f64 / elapsed as f64,
             );
             //std::println!("Output: {:?}", self.load::<f32>(&Buffer { mem, event }, 6));
         }
@@ -811,23 +817,33 @@ impl zyx_core::compiler::Compiler for Compiler {
     }
 
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
-        let (source, gws, lws, rbs) = compile_r_kernel(ast);
-        Program::compile(&source, self.context, &self.devices, &gws, &lws, rbs, ast.rdim().is_some())
+        let (source, gws, lws, rbs, bytes) = compile_kernel(ast);
+        Program::compile(
+            source.as_str(),
+            self.context,
+            &self.devices,
+            gws.as_slice(),
+            lws.as_slice(),
+            rbs,
+            ast.rdim.is_some(),
+            ast.flop,
+            bytes,
+        )
     }
 }
 
-/// Reduce kernel
-fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
+fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     // TODO get this to work with different max local work sizes
     //use std::println;
+    let max_local_work_size = 256;
     let tile_height;
     let tile_width;
     let global_work_size;
     let local_work_size;
-    let rdim = ast.rdim();
+    let rdim = ast.rdim;
     if let Some(rdim) = rdim {
-        let rshape = ast.view().shape();
+        let rshape = ast.view.shape();
         let numel = rdim * rshape[-1];
         (tile_height, tile_width) = match rshape[-1] as usize / 8 {
             1..=7 => (1, 8),
@@ -835,26 +851,29 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
             16..=31 => (8, 16),
             _ => (16, 16),
         };
-        global_work_size = alloc::vec![numel/rdim/tile_width, tile_width];
+        global_work_size = alloc::vec![numel / rdim / tile_width, tile_width];
         local_work_size = alloc::vec![tile_height, tile_width];
     } else {
-        let n = ast.args()[0].0.numel();
-        (tile_height, tile_width) = match n / 8 {
-            1..=7 => (1, 8),
-            8..=15 => (8, 8),
-            16..=31 => (8, 16),
-            _ => (16, 16),
+        let n = ast.view.numel();
+        let mut lw = 8;
+        let mut x = n/8;
+        while x % 2 == 0 && lw <= max_local_work_size/2 {
+            x /= 2;
+            lw *= 2;
+        }
+        (tile_height, tile_width) = match lw {
+            256 => (16, 16),
+            _ => (1, lw),
         };
         global_work_size = alloc::vec![n / tile_width, tile_width];
         local_work_size = alloc::vec![tile_height, tile_width];
     }
 
-    let res_byte_size: usize = global_work_size.iter().product();
     let mut source = f!("(\n  ");
     let mut endl = f!(",\n  ");
 
     let mut res_id = 0;
-    for arg in ast.args() {
+    for arg in &*ast.args {
         source = f!(
             "{source}__global const {}* data{res_id}{endl}",
             arg.1.ocl_str()
@@ -870,47 +889,63 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
 
     endl = f!(";\n  ");
 
-    source = f!("{source}int gidx0 = get_group_id(0){endl}");
+    /*source = f!("{source}int gidx0 = get_group_id(0){endl}");
     source = f!("{source}int gidx1 = get_group_id(1){endl}");
     source = f!("{source}int lidx0 = get_local_id(0){endl}");
-    source = f!("{source}int lidx1 = get_local_id(1){endl}");
+    source = f!("{source}int lidx1 = get_local_id(1){endl}");*/
+    //source = f!("{source}int gidx0 = get_global_id(0){endl}");
+    //source = f!("{source}int gidx1 = get_global_id(1){endl}");
+
+    /*source = f!(
+        "{source}int idx0 = gidx0*{} + gidx1{endl}",
+        tile_height*global_work_size[1]
+    );*/
+
+    /*source = f!(
+        "{source}int idx0 = gidx0*{} + (lidx0 + gidx1)*{tile_width} + lidx1{endl}",
+        tile_height*global_work_size[1],
+        //global_work_size[1]
+    );*/
+
+    source = f!(
+        "{source}int idx0 = get_group_id(0)*{}+(get_local_id(0)+get_group_id(1))*{tile_width}+get_local_id(0){endl}",
+        tile_height*global_work_size[1],
+        //global_work_size[1]
+    );
 
     let _rid = if let Some(rdim) = rdim {
-        source = f!(
-            "{source}int idx1 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
-            global_work_size[1]
-        );
         // Create register acc
-        let rid = ast.ops().iter().position(|op| matches!(op, Op::Sum(_) | Op::Max(_))).unwrap();
+        let rid = ast
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::Sum(_) | Op::Max(_)))
+            .unwrap();
         source = f!("{source}RES_DTYPE var{rid} = 0{endl}");
         source = f!("{source}for (int ridx0 = 0; ridx0 < {rdim}; ridx0++) {{\n    ");
         endl = f!(";\n    ");
         source = f!("{source}int idx0 = ridx0{endl}");
-
         //source = f!("{source}printf(\"idx0: %d  \", idx0){endl}");
-
         Some(rid)
     } else {
-        source = f!(
-            "{source}int idx0 = (gidx0*{tile_height} + lidx0)*{} + gidx1*{tile_width} + lidx1{endl}",
-            global_work_size[1]
-        );
         None
     };
 
+    let mut bytes = 0;
     let mut dtype = DType::F32.ocl_str();
     let mut nid = 0;
-    for op in ast.ops().iter() {
+    for op in ast.ops.iter() {
+        let fdt = DType::from_ocl_str(dtype).is_floating();
         let res = match op {
             // TODO check if this should be tile or data
             Op::Leaf(x) => {
-                let (view, t) = &ast.args()[*x];
+                let (view, t) = &ast.args[*x];
+                bytes += view.original_shape().numel();
                 dtype = t.ocl_str();
                 let (p, i) = view.cidx();
                 if p.is_empty() {
                     f!("{dtype} var{nid} = data{x}[{i}]")
                 } else {
-                    f!("{dtype} var{nid} = {p}*data{x}[{i}]")
+                    f!("{dtype} var{nid} = {p} ? data{x}[{i}] : 0")
                 }
             }
             Op::UniformF32(..) => {
@@ -926,12 +961,12 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
             }
             Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
             Op::ReLU(x) => f!("{dtype} var{nid} = (var{x} > 0)*var{x}"),
-            Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
-            Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
-            Op::Ln(x) => f!("{dtype} var{nid} = ln(var{x})"),
-            Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
-            Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
-            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
+            Op::Sin(x) => f!("{dtype} var{nid} = sin({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Cos(x) => f!("{dtype} var{nid} = cos({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Ln(x) => f!("{dtype} var{nid} = ln({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Exp(x) => f!("{dtype} var{nid} = exp({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Tanh(x) => f!("{dtype} var{nid} = tanh({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt({}var{x})", if fdt { "" } else { "(float)" }),
             Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
             Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
             Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
@@ -951,47 +986,56 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
         source = f!("{source}}}\n  ");
         endl = f!(";\n  ");
     }
-    let (p, i) = ast.view().cidx();
-    source = f!("{source}int idx0 = 0{endl}");
+    let (p, i) = ast.view.cidx();
+    if rdim.is_some() {
+        source = f!("{source}int idx0 = 0{endl}");
+    }
     source = if p.is_empty() {
         f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
     } else {
         f!(
-            "{source}if ({p}) {{\n    data{res_id}[{i}] = var{};\n  }}\n  ",
+            "{source}if {p} data{res_id}[{i}] = var{}{endl}",
             nid - 1
         )
     };
     source.pop();
     source.pop();
     source = f!("{source}}}");
+    let dtype_byte_size = DType::from_ocl_str(dtype).byte_size();
     (
         source,
         global_work_size,
         local_work_size,
-        res_byte_size * DType::from_ocl_str(dtype).byte_size(),
+        ast.view.original_shape().numel() * dtype_byte_size,
+        bytes * dtype_byte_size,
     )
 }
 
-/*#[test]
+#[test]
 fn exp_test() -> Result<(), ZyxError> {
-    let dev = crate::device()?;
-    let x = dev.randn([4, 5], DType::F32);
+    let dev = crate::device_builder().platform_id(0).build()?;
+    let x = dev.randn([1024, 1024], DType::F32);
+    //let x = dev.randn([4, 5], DType::F32);
     let y = x.exp() + &x;
     //let x_vec: Vec<f32> = x.to_vec()?;
-    let y_vec: Vec<f32> = y.to_vec()?;
-    panic!("{y_vec:?}");
+    let _y_vec: Vec<f32> = y.to_vec()?;
+    panic!();
+    //panic!("{y_vec:?}");
     //Ok(())
-}*/
+}
 
-#[test]
+/*#[test]
 fn sum_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
     let x = dev.tensor([[8, 4, 3], [5, 4, 2]]).transpose();
+    //let x = dev.randn([1024, 1024], DType::I32);
     //let x = dev.randn([10, 12], DType::F32);
     let y = x.sum(-1);
-    std::println!("y shape: {:?}", y.shape());
+    //std::println!("y shape: {:?}", y.shape());
     let y_vec: Vec<i32> = y.to_vec()?;
-    panic!("{y_vec:?}");
+    assert_eq!(y_vec, [13, 8, 5]);
+    //panic!();
+    //panic!("{y_vec:?}");
     // res [[9], [7]]
-    //Ok(())
-}
+    Ok(())
+}*/

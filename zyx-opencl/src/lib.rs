@@ -78,8 +78,44 @@ pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
 /// and all hardware devices in that platform.
 pub fn device() -> Result<OpenCL, ZyxError> {
     Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
-        Compiler::new()?,
+        Compiler::new(0, 8)?,
     )))))
+}
+
+/// Create new OpenCL backend using builder.
+pub fn device_builder() -> OpenCLBuilder {
+    OpenCLBuilder {
+        platform_id: 0,
+        queues_per_device: 8,
+    }
+}
+
+/// OpenCL backend builder
+#[derive(Clone, Debug)]
+pub struct OpenCLBuilder {
+    platform_id: usize,
+    queues_per_device: usize,
+}
+
+impl OpenCLBuilder {
+    /// Choose OpenCL platform by id
+    pub fn platform_id(&mut self, platform_id: usize) -> Self {
+        self.platform_id = platform_id;
+        self.clone()
+    }
+
+    /// Choose number of queues per each platform device
+    pub fn queues_per_device(&mut self, queues_per_device: usize) -> Self {
+        self.queues_per_device = queues_per_device;
+        self.clone()
+    }
+
+    /// Build
+    pub fn build(self) -> Result<OpenCL, ZyxError> {
+        Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
+            Compiler::new(self.platform_id, self.queues_per_device)?,
+        )))))
+    }
 }
 
 impl OpenCL {

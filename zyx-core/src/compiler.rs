@@ -94,32 +94,16 @@ pub enum Op {
 /// This struct is immutable.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AST {
-    args: Box<[(View, DType)]>,
-    ops: Box<[Op]>,
-    view: View,
-    rdim: Option<usize>,
-}
-
-impl AST {
     /// Get AST arguments metadata
-    pub fn args(&self) -> &[(View, DType)] {
-        &self.args
-    }
-
+    pub args: Box<[(View, DType)]>,
     /// Get AST ops
-    pub fn ops(&self) -> &[Op] {
-        &self.ops
-    }
-
+    pub ops: Box<[Op]>,
     /// View of the result, for reduce kernel, this is after the reduce op
-    pub fn view(&self) -> &View {
-        &self.view
-    }
-
+    pub view: View,
     /// Reduce dimension size, if any
-    pub fn rdim(&self) -> Option<usize> {
-        self.rdim
-    }
+    pub rdim: Option<usize>,
+    /// Operations to execute this AST
+    pub flop: usize,
 }
 
 /// Compiled backend that holds compiler, buffers and programs
@@ -207,8 +191,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             if to_eval.contains(&nid) && !self.buffers.contains_key(&nid) {
                 self.evaluate_buffer(nid, order, nodes)?;
             }
-            // TODO release nodes that are no longer needed.
-            // And release intermediate buffers.
+            // TODO release nodes that are no longer needed
+            // and release intermediate buffers.
         }
         Ok(())
     }
@@ -249,8 +233,14 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut raxes = None;
         let mut mapping = BTreeMap::new();
         let mut rshape = [].into();
+        let mut flop = 0;
+        // TODO don't load the same buffer twice if used in different positions unless it
+        // uses different views for those loads, this can be done as deduplication in the end
+        // of this function.
         for nid in porder {
-            mapping.insert(nid, ops.len());
+            flop += nodes[nid.i()].flop(nodes);
+            //println!("Node {:?}", nodes[nid.i()]);
+            let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
                 if ar {
                     &mut ar_args
@@ -268,7 +258,11 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::UniformF32(sh) => ops.push(Op::UniformF32(View::new(sh.clone()))),
                     Node::CastF32(x) => ops.push(Op::CastF32(mapping[x])),
                     Node::CastI32(x) => ops.push(Op::CastI32(mapping[x])),
-                    Node::Neg(x) => ops.push(Op::Neg(mapping[x])),
+                    Node::Neg(x) => {
+                        println!("{ops:?}");
+                        println!("{mapping:?}");
+                        ops.push(Op::Neg(mapping[x]))
+                    },
                     Node::ReLU(x) => ops.push(Op::ReLU(mapping[x])),
                     Node::Sin(x) => ops.push(Op::Sin(mapping[x])),
                     Node::Cos(x) => ops.push(Op::Cos(mapping[x])),
@@ -278,6 +272,8 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::Sqrt(x) => ops.push(Op::Sqrt(mapping[x])),
                     // TODO also apply movement ops to UniformF32
                     Node::Expand(x, sh) => {
+                        mapped = false;
+                        mapping.insert(nid, mapping[x]);
                         let mut params = alloc::vec![*x];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p.i()] {
@@ -287,6 +283,8 @@ impl<C: Compiler> CompiledBackend<C> {
                         }
                     }
                     Node::Reshape(x, sh) => {
+                        mapped = false;
+                        mapping.insert(nid, mapping[x]);
                         let mut params = alloc::vec![*x];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p.i()] {
@@ -295,7 +293,9 @@ impl<C: Compiler> CompiledBackend<C> {
                             params.extend(nodes[x.i()].parameters());
                         }
                     }
-                    Node::Pad(x, padding) => {
+                    Node::Pad(x, padding, _) => {
+                        mapped = false;
+                        mapping.insert(nid, mapping[x]);
                         let mut params = alloc::vec![*x];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p.i()] {
@@ -305,6 +305,8 @@ impl<C: Compiler> CompiledBackend<C> {
                         }
                     }
                     Node::Permute(x, axes, _) => {
+                        mapped = false;
+                        mapping.insert(nid, mapping[x]);
                         let mut params = alloc::vec![*x];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p.i()] {
@@ -333,11 +335,14 @@ impl<C: Compiler> CompiledBackend<C> {
                     }
                 }
             };
+            if mapped {
+                mapping.insert(nid, ops.len() - 1);
+            }
         }
         let view;
         let rdim = if let Some(raxes) = raxes {
-            println!("rshape: {rshape:?}");
-            println!("raxes: {raxes:?}");
+            //println!("rshape: {rshape:?}");
+            //println!("raxes: {raxes:?}");
             let s0: usize = rshape.iter().enumerate().filter(|(a, _)| raxes.0.contains(a)).map(|(_, d)| *d).product();
             let s1: usize = rshape.iter().enumerate().filter(|(a, _)| !raxes.0.contains(a)).map(|(_, d)| *d).product();
             let axes: (Vec<usize>, Vec<usize>) = (0..rshape.rank()).partition(|a| raxes.0.contains(a));
@@ -346,9 +351,9 @@ impl<C: Compiler> CompiledBackend<C> {
             let ar_new_shape = [1, s1].into();
             // Join raxes together to be second last dimension
             // permute first and then reshape
-            println!("Permute axes {axes:?}");
-            println!("New shape before reduce: {new_shape:?}");
-            println!("New shape after reduce: {ar_new_shape:?}");
+            //println!("Permute axes {axes:?}");
+            //println!("New shape before reduce: {new_shape:?}");
+            //println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
                 *aview = aview
                     .permute(&axes)
@@ -368,9 +373,9 @@ impl<C: Compiler> CompiledBackend<C> {
             }
             Some(if s0 != 1 && s0 % 8 != 0 {(s0/8 + 1)*8} else { s0 })
         } else {
-            let rshape = shape(nodes, x);
-            let n = rshape.numel();
-            view = View::new(rshape.clone())
+            let sh = shape(nodes, x);
+            let n = sh.numel();
+            view = View::new(sh.clone())
                 .reshape(&n.into())
                 .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
             for (aview, _) in &mut args {
@@ -386,6 +391,7 @@ impl<C: Compiler> CompiledBackend<C> {
             ops: ops.into_boxed_slice(),
             view,
             rdim,
+            flop,
         };
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {

@@ -123,12 +123,12 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Get shape of tensor x
     pub fn shape(&self, x: Id) -> &Shape {
-        shape(&self.nodes, x)
+        shape(self.nodes.as_slice(), x)
     }
 
     /// Get dtype of tensor x
     pub fn dtype(&self, x: Id) -> DType {
-        dtype(&self.nodes, x)
+        dtype(self.nodes.as_slice(), x)
     }
 
     /// Load tensor x
@@ -139,7 +139,10 @@ impl<R: RuntimeBackend> Runtime<R> {
             // in which case we can directly return iterator with view
             self.evaluate(BTreeSet::from([x]))?;
         }
-        self.runtime_backend.load(x, shape(&self.nodes, x).numel())
+        let numel = shape(self.nodes.as_slice(), x).numel();
+        extern crate std;
+        std::println!("Reading buffer with {numel} elements.");
+        self.runtime_backend.load(x, numel)
     }
 
     /// Set tensor x as leaf. Leaf tensors do not need to store graph of operations,
@@ -527,10 +530,11 @@ impl<R: RuntimeBackend> Runtime<R> {
                         );
                     }
                 }
-                Node::Pad(x, ref padding) => {
+                Node::Pad(x, ref padding, _) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
+                        let sh = shape(&self.nodes, x).clone();
                         let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
-                        e.insert(self.push(Node::Pad(grad, inv_padding))?);
+                        e.insert(self.push(Node::Pad(grad, inv_padding, sh))?);
                     }
                 }
                 Node::Sum(x, ..) => {

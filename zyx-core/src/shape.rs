@@ -110,6 +110,19 @@ impl Shape {
         }
         shape
     }
+
+    /// Pad self with padding
+    #[must_use]
+    pub fn pad(mut self, padding: &[(i64, i64)]) -> Shape {
+        for (i, d) in self.iter_mut().rev().enumerate() {
+            if let Some((left, right)) = padding.get(i) {
+                *d = (*d as i64 + left + right) as usize;
+            } else {
+                break;
+            }
+        }
+        self
+    }
 }
 
 impl core::ops::Index<i32> for Shape {
@@ -140,6 +153,12 @@ impl core::ops::Index<Range<i64>> for Shape {
         self.0
             .get(to_usize_idx(index.start, rank)..to_usize_idx(index.end, rank))
             .unwrap()
+    }
+}
+
+impl From<&Shape> for Shape {
+    fn from(sh: &Shape) -> Self {
+        sh.clone()
     }
 }
 
@@ -180,5 +199,17 @@ impl<'a> IntoIterator for &'a mut Shape {
     type IntoIter = <&'a mut [usize] as IntoIterator>::IntoIter;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter_mut()
+    }
+}
+
+impl PartialEq<[usize]> for Shape {
+    fn eq(&self, other: &[usize]) -> bool {
+        self.rank() == other.len() && self.iter().zip(other).all(|(x, y)| x == y)
+    }
+}
+
+impl<const RANK: usize> PartialEq<[usize; RANK]> for Shape {
+    fn eq(&self, other: &[usize; RANK]) -> bool {
+        self.rank() == RANK && self.iter().zip(other).all(|(x, y)| x == y)
     }
 }

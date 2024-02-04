@@ -16,6 +16,7 @@ pub fn shape(nodes: &[Node], mut x: Id) -> &Shape {
             | Node::Reshape(_, shape)
             | Node::Expand(_, shape)
             | Node::Permute(.., shape)
+            | Node::Pad(.., shape)
             | Node::Sum(.., shape)
             | Node::Max(.., shape) => return shape,
             _ => x = node.parameters().next().unwrap(),

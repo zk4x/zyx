@@ -14,4 +14,12 @@ impl DType {
             Self::I32 | Self::F32 => 4,
         }
     }
+
+    /// Check if self is floating point dtype
+    pub fn is_floating(self) -> bool {
+        match self {
+            Self::F32 => true,
+            Self::I32 => false,
+        }
+    }
 }

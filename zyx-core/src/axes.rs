@@ -46,7 +46,7 @@ pub trait IntoAxes {
     /// Convert value into axes
     /// ```
     /// use zyx_core::axes::IntoAxes;
-    /// let ax = (2, 3, 1);
+    /// let ax = [2, 3, 1];
     /// let axes = ax.into_axes(3);
     /// ```
     fn into_axes(self, rank: usize) -> Axes;
