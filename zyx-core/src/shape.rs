@@ -12,6 +12,12 @@ fn to_usize_idx(index: i64, rank: usize) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Shape(Box<[usize]>);
 
+impl core::fmt::Display for Shape {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("{:?}", self.0))
+    }
+}
+
 impl Shape {
     /// Get shape's rank
     #[must_use]

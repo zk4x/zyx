@@ -29,6 +29,18 @@ pub trait Scalar: Clone + core::fmt::Debug + 'static {
     /// Square root of this scalar.
     /// That this function may be imprecise.
     fn sqrt(self) -> Self;
+    /// Add
+    fn add(self, rhs: Self) -> Self;
+    /// Sub
+    fn sub(self, rhs: Self) -> Self;
+    /// Mul
+    fn mul(self, rhs: Self) -> Self;
+    /// Div
+    fn div(self, rhs: Self) -> Self;
+    /// Pow
+    fn pow(self, rhs: Self) -> Self;
+    /// Compare less than
+    fn cmplt(self, rhs: Self) -> Self;
     /// Comparison for scalars,
     /// if they are floats, this checks for diffs > 0.000001
     fn is_equal(self, rhs: Self) -> bool;
@@ -92,8 +104,32 @@ impl Scalar for f32 {
         }
     }
 
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
+
+    fn pow(self, rhs: Self) -> Self {
+        f32::powf(self, rhs)
+    }
+
+    fn cmplt(self, rhs: Self) -> Self {
+        (self < rhs) as i32 as f32
+    }
+
     fn is_equal(self, rhs: Self) -> bool {
-        (self - rhs).abs() < 0.000001
+        (self == -f32::INFINITY && rhs == -f32::INFINITY) || (self - rhs).abs() < 0.000001
     }
 }
 
@@ -127,27 +163,51 @@ impl Scalar for i32 {
     }
 
     fn sin(self) -> Self {
-        panic!()
+        f32::sin(self as f32) as i32
     }
 
     fn cos(self) -> Self {
-        panic!()
+        f32::cos(self as f32) as i32
     }
 
     fn exp(self) -> Self {
-        panic!()
+        f32::exp(self as f32) as i32
     }
 
     fn ln(self) -> Self {
-        panic!()
+        f32::ln(self as f32) as i32
     }
 
     fn tanh(self) -> Self {
-        panic!()
+        f32::tanh(self as f32) as i32
     }
 
     fn sqrt(self) -> Self {
         (self as f32).sqrt() as i32
+    }
+
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
+
+    fn pow(self, rhs: Self) -> Self {
+        i32::pow(self, rhs as u32)
+    }
+
+    fn cmplt(self, rhs: Self) -> Self {
+        (self < rhs) as i32
     }
 
     fn is_equal(self, rhs: Self) -> bool {

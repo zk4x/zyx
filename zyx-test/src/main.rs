@@ -1,4 +1,5 @@
 mod unary;
+mod binary;
 
 use zyx_core::backend::Backend;
 use zyx_core::scalar::Scalar;
@@ -50,7 +51,17 @@ fn main() {
     run_test!(unary::tanh);
     run_test!(unary::sqrt);
     println!("\nTesting binary ops");
+    run_test!(binary::add);
+    run_test!(binary::sub);
+    run_test!(binary::mul);
+    run_test!(binary::div);
+    run_test!(binary::pow);
+    run_test!(binary::cmplt);
     println!("\nTesting movement ops");
+    //run_test!(movement::reshape);
+    //run_test!(movement::expand);
+    //run_test!(movement::permute);
+    //run_test!(movement::pad);
     println!("\nTesting reduce ops");
     println!("\nTesting combination ops");
     println!("\nTesting autograd engine");

@@ -6,14 +6,33 @@ use zyx_core::{
     shape::Shape,
 };
 use core::ops::Neg;
+use rand::{thread_rng, Rng};
 
 macro_rules! unary_test {
     ( $dev:expr, $x:tt ) => {{
         // TODO random generation of different shapes
-        let shapes: &[Shape] = &[[4, 7, 4, 3].into(), [1, 4].into(), [1801923].into(), [423, 1938].into(), [1024, 1024].into(), [4097, 1049].into()];
+        let mut rng = thread_rng();
+        let mut shapes: Vec<Shape> = Vec::new();
+        for _ in 0..10 {
+            let mut shape = Vec::new();
+            for i in 0..rng.gen_range(1..20) {
+                let n = if i > 1 {
+                    1024usize*1024usize/shape.iter().product::<usize>()
+                } else {
+                    1024
+                };
+                if n > 1 {
+                    shape.insert(0, rng.gen_range(1..n));
+                } else {
+                    break
+                }
+            }
+            shapes.push(shape.into());
+        }
         for shape in shapes {
             let x = $dev.randn(shape, T::dtype());
             let v = x.to_vec()?;
+            //std::println!("{x}");
             assert_eq(x.$x().to_vec()?, v.into_iter().map(|e: T| e.$x()));
         }
         Ok(())

@@ -901,16 +901,11 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
         tile_height*global_work_size[1]
     );*/
 
-    /*source = f!(
-        "{source}int idx0 = gidx0*{} + (lidx0 + gidx1)*{tile_width} + lidx1{endl}",
-        tile_height*global_work_size[1],
-        //global_work_size[1]
-    );*/
-
     source = f!(
-        "{source}int idx0 = get_group_id(0)*{}+(get_local_id(0)+get_group_id(1))*{tile_width}+get_local_id(0){endl}",
+        "{source}int idx{} = get_group_id(0)*{}+get_local_id(0)*{}+get_group_id(1)*{tile_width}+get_local_id(1){endl}",
+        if rdim.is_some() { 1 } else { 0 },
         tile_height*global_work_size[1],
-        //global_work_size[1]
+        global_work_size[1],
     );
 
     let _rid = if let Some(rdim) = rdim {
@@ -963,7 +958,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
             Op::ReLU(x) => f!("{dtype} var{nid} = (var{x} > 0)*var{x}"),
             Op::Sin(x) => f!("{dtype} var{nid} = sin({}var{x})", if fdt { "" } else { "(float)" }),
             Op::Cos(x) => f!("{dtype} var{nid} = cos({}var{x})", if fdt { "" } else { "(float)" }),
-            Op::Ln(x) => f!("{dtype} var{nid} = ln({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Ln(x) => f!("{dtype} var{nid} = {0}log({0}var{x})", if fdt { "" } else { "(float)" }),
             Op::Exp(x) => f!("{dtype} var{nid} = exp({}var{x})", if fdt { "" } else { "(float)" }),
             Op::Tanh(x) => f!("{dtype} var{nid} = tanh({}var{x})", if fdt { "" } else { "(float)" }),
             Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt({}var{x})", if fdt { "" } else { "(float)" }),
@@ -1019,12 +1014,12 @@ fn exp_test() -> Result<(), ZyxError> {
     let y = x.exp() + &x;
     //let x_vec: Vec<f32> = x.to_vec()?;
     let _y_vec: Vec<f32> = y.to_vec()?;
-    panic!();
+    //panic!();
     //panic!("{y_vec:?}");
-    //Ok(())
+    Ok(())
 }
 
-/*#[test]
+#[test]
 fn sum_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
     let x = dev.tensor([[8, 4, 3], [5, 4, 2]]).transpose();
@@ -1038,4 +1033,4 @@ fn sum_test() -> Result<(), ZyxError> {
     //panic!("{y_vec:?}");
     // res [[9], [7]]
     Ok(())
-}*/
+}

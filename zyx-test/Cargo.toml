@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 zyx-opencl = { version = "*", path = "../zyx-opencl" }
 zyx-core = { version = "*", path = "../zyx-core" }
+rand = { version = "0.8.5" }

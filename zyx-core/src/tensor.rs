@@ -30,6 +30,12 @@ impl Id {
     }
 }
 
+impl core::fmt::Display for Id {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("{}", self.0))
+    }
+}
+
 impl SubAssign<usize> for Id {
     fn sub_assign(&mut self, rhs: usize) {
         self.0 -= rhs;
@@ -322,6 +328,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     /// Returns a new tensor with the natural logarithm of the elements of self.
+    /// Due to performance reasons, this function does not check if self fits
+    /// into domain of ln(x). Result on out of domain numbers is implementation
+    /// defined (when x <= 0).
     #[must_use]
     pub fn ln(&self) -> Tensor<B> {
         self.unary_op(UOp::Ln)
@@ -340,6 +349,9 @@ impl<B: Backend> Tensor<B> {
     }
 
     /// Returns a new tensor with the square root of the elements of self.
+    /// Due to performance reasons, this function does not check if self fits
+    /// into domain of ln(x). Result on out of domain numbers is implementation
+    /// defined (when x < 0).
     #[must_use]
     pub fn sqrt(&self) -> Tensor<B> {
         self.unary_op(UOp::Sqrt)
