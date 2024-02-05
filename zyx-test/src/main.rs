@@ -17,10 +17,17 @@ fn assert_eq<T: Scalar>(x: impl IntoIterator<Item = T>, y: impl IntoIterator<Ite
 }
 
 fn run_test_fn<T: Scalar, F: Fn(B, T) -> Result<(), ZyxError>, B: Backend>(test_fn: F, backend: B, x: T) {
-    println!();
-    let name = std::any::type_name::<F>();
+    let mut name: String = std::any::type_name::<F>().into();
     //let b = std::any::type_name::<B>();
-    print!("Running test {name} with dtype {:?} ... ", T::dtype());
+    for _ in 0..4 {
+        if let Some(index) = name.find(':') {
+            name = name[index+1..].into();
+        }
+    }
+    name.replace_range(name.find('&').unwrap()+1..name.find(':').unwrap()+2, "");
+    print!("Running test {name} ... ");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
     let begin = std::time::Instant::now();
     let res = test_fn(backend, x);
     let elapsed = begin.elapsed().as_nanos();
@@ -66,5 +73,5 @@ fn main() {
     println!("\nTesting combination ops");
     println!("\nTesting autograd engine");
     println!("\nTesting optimizers");
-    println!("\nTesting zyx-nn modules");
+    println!("\nTesting nn modules");
 }

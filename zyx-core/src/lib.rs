@@ -21,6 +21,8 @@
 #![forbid(rustdoc::redundant_explicit_links)]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 /// See [Axes](axes::Axes)
 pub mod axes;
@@ -46,3 +48,6 @@ pub mod tensor;
 pub mod utils;
 /// See [View](view::View)
 pub mod view;
+/// Saving and loading of tensors from disk
+#[cfg(feature = "std")]
+pub mod io;

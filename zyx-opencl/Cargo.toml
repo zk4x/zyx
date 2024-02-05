@@ -6,9 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zyx-core = { version = "*", path = "../zyx-core" }
+zyx-core = { version = "*", path = "../zyx-core", default-features = false }
 opencl-sys = { version = "0.2.8", default-features = false }
 
 [features]
-default = ["debug1"]
+default = ["std"]
+#default = ["debug1"]
 debug1 = []
+std = ["zyx-core/std"]

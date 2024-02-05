@@ -5,12 +5,11 @@ use core::ffi::c_void;
 use opencl_sys::{
     clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
     clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
-    clGetDeviceIDs, clGetDeviceInfo, clGetPlatformIDs, clGetPlatformInfo, clGetProgramBuildInfo,
+    clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo,
     clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents,
-    cl_device_id, cl_device_info, cl_device_type, cl_int, cl_platform_id, cl_platform_info,
-    cl_program_info, cl_uint, CL_DEVICE_NAME, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
-    CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PLATFORM_NAME,
-    CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
+    cl_device_id, cl_device_type, cl_int, cl_platform_id,
+    cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
+    CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
 use zyx_core::{
     compiler::{Op, AST},
@@ -72,6 +71,7 @@ fn get_program_build_data(
     get_vector(program, device, param_name, size)
 }
 
+#[cfg(feature = "debug1")]
 pub fn get_device_data(
     device: cl_device_id,
     param_name: cl_device_info,
@@ -153,6 +153,7 @@ fn get_device_ids(
     }
 }
 
+#[cfg(feature = "debug1")]
 fn get_platform_data(
     platform: cl_platform_id,
     param_name: cl_platform_info,
@@ -257,7 +258,9 @@ pub struct Program {
     global_work_size: Box<[usize]>,
     local_work_size: Box<[usize]>,
     res_byte_size: usize,
+    #[cfg(feature = "debug1")]
     flop: usize,
+    #[cfg(feature = "debug1")]
     bytes: usize,
 }
 
@@ -356,13 +359,17 @@ impl Program {
                 ).into_owned()
             ))));*/
         }
+        #[cfg(not(feature = "debug1"))]
+        let (_, _) = (flop, bytes);
         Ok(Self {
             name,
             program,
             global_work_size: global_work_size.iter().copied().collect(),
             local_work_size: local_work_size.iter().copied().collect(),
             res_byte_size,
+            #[cfg(feature = "debug1")]
             flop,
+            #[cfg(feature = "debug1")]
             bytes,
         })
     }
@@ -394,7 +401,7 @@ impl Compiler {
         std::println!(
             "Using OpenCL platform: {}",
             String::from_utf8(
-                get_platform_data(platform, CL_PLATFORM_NAME).map_err(|err| {
+                get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME).map_err(|err| {
                     ZyxError::BackendError(match err {
                         -32 => "Unable to get OpenCL platform name. ERR -32: CL_INVALID_PLATFORM",
                         -30 => "Unable to get OpenCL platform name. ERR -30: CL_INVALID_VALUE",
@@ -422,7 +429,7 @@ impl Compiler {
         for dev in &device_ids {
             std::println!(
                 "{}",
-                String::from_utf8(get_device_data(*dev, CL_DEVICE_NAME).map_err(|err| {
+                String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(|err| {
                     ZyxError::BackendError(match err {
                         -33 => "Unable to get OpenCL device name. ERR -33: CL_INVALID_DEVICE",
                         -30 => "Unable to get OpenCL device name. ERR -30: CL_INVALID_VALUE",
@@ -585,6 +592,19 @@ impl zyx_core::compiler::Compiler for Compiler {
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError> {
         let mut data: Vec<T> = Vec::with_capacity(numel);
         let mut event: *mut c_void = core::ptr::null_mut();
+        let events = [buffer.event];
+        let err = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
+        if err != CL_SUCCESS {
+            return Err(ZyxError::BackendError(match err {
+                -30 => "Unable to finish buffer read event. ERR -30: CL_INVALID_VALUE",
+                -34 => "Unable to finish buffer read event. ERR -34: CL_INVALID_CONTEXT",
+                -58 => "Unable to finish buffer read event. ERR -58: CL_INVALID_EVENT",
+                -14 => "Unable to finish buffer read event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+                -5 => "Unable to finish buffer read event. ERR -5: CL_OUT_OF_RESOURCES",
+                -6 => "Unable to finish buffer read event. ERR -6: CL_OUT_OF_MEMORY",
+                _ => "Unable to finish buffer read event. UNKNOWN ERROR",
+            }));
+        }
         let err = unsafe {
             clEnqueueReadBuffer(
                 self.queue(),
@@ -593,8 +613,9 @@ impl zyx_core::compiler::Compiler for Compiler {
                 0,
                 numel * T::byte_size(),
                 data.as_mut_ptr().cast(),
-                1,
-                (&[buffer.event]).as_ptr().cast(),
+                0,
+                // TODO why does this not work?
+                core::ptr::null_mut(), //events.as_ptr().cast(),
                 &mut event,
             )
         };

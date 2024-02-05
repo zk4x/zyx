@@ -191,26 +191,42 @@ pub const fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
 
 impl<B: Backend> Tensor<B> {
     // Metadata
+    /// Tensor's unique identification.
+    /// Any tensor on one backend will always have different id.
+    pub fn id(&self) -> Id {
+        self.id
+    }
+
     /// Returns the [shape](Shape) of the self tensor.
     /// ```
-    /// # use zyx_core::error::ZyxError;
     /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.shape(), [2, 3]);
-    /// # Ok::<(), ZyxError>(())
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     #[must_use]
     pub fn shape(&self) -> Shape {
         self.backend.shape(self.id)
     }
 
+    /// Returns number of elements in the self tensor.
+    /// ```
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
+    /// assert_eq!(x.numel(), 6);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
+    #[must_use]
+    pub fn numel(&self) -> usize {
+        self.shape().numel()
+    }
+
     /// Returns the [dtype](DType) of the self tensor.
     /// ```
-    /// # use zyx_core::error::ZyxError;
     /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.dtype(), zyx_opencl::DType::I32);
-    /// # Ok::<(), ZyxError>(())
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     #[must_use]
     pub fn dtype(&self) -> DType {
@@ -219,9 +235,10 @@ impl<B: Backend> Tensor<B> {
 
     /// Returns the rank of the self tensor. This is the number of tensor's dimensions.
     /// ```
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// assert_eq!(x.rank(), 2);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     #[must_use]
     pub fn rank(&self) -> usize {
@@ -230,9 +247,10 @@ impl<B: Backend> Tensor<B> {
 
     /// Returns the [backend](Backend) of the self tensor.
     /// ```
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// let y = x.backend().randn([2, 4, 3], zyx_opencl::DType::F32);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     #[must_use]
     pub fn backend(&self) -> B {
@@ -242,10 +260,11 @@ impl<B: Backend> Tensor<B> {
     // Access methods
     /// Load tensor from backend into vector
     /// ```
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
-    /// let xvec: Vec<i32> = x.to_vec().unwrap();
+    /// let xvec: Vec<i32> = x.to_vec()?;
     /// assert_eq!(xvec, vec![2, 3, 1, 4, 1, 3]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     pub fn to_vec<T: Scalar>(&self) -> Result<Vec<T>, ZyxError> {
         if T::dtype() != self.dtype() {
@@ -262,7 +281,7 @@ impl<B: Backend> Tensor<B> {
     /// Error is returned if self tensor contains zero elements
     /// or if backend returns error.
     /// ```
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 1], [4, 1, 3]]);
     /// let xitem: i32 = x.item()?;
     /// assert_eq!(xitem, 2);
@@ -279,7 +298,8 @@ impl<B: Backend> Tensor<B> {
     // Backpropagation
     /// Returns gradients of self w.r.t. sources.
     /// ```rust
-    /// let dev = zyx_opencl::device().unwrap();
+    /// let dev = zyx_opencl::device()?;
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     pub fn backward<'a>(
         &'a self,

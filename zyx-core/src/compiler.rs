@@ -212,8 +212,8 @@ impl<C: Compiler> CompiledBackend<C> {
     /// that is we know that all of it's leafs are already evaluated and stored in device.
     fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
         // Create ordered list of nodes that need to be evaluated
-        extern crate std;
-        use std::println;
+        //extern crate std;
+        //use std::println;
         let mut temp = alloc::vec![x];
         let mut porder = Vec::new();
         while let Some(nid) = temp.pop() {
@@ -258,11 +258,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::UniformF32(sh) => ops.push(Op::UniformF32(View::new(sh.clone()))),
                     Node::CastF32(x) => ops.push(Op::CastF32(mapping[x])),
                     Node::CastI32(x) => ops.push(Op::CastI32(mapping[x])),
-                    Node::Neg(x) => {
-                        println!("{ops:?}");
-                        println!("{mapping:?}");
-                        ops.push(Op::Neg(mapping[x]))
-                    },
+                    Node::Neg(x) => ops.push(Op::Neg(mapping[x])),
                     Node::ReLU(x) => ops.push(Op::ReLU(mapping[x])),
                     Node::Sin(x) => ops.push(Op::Sin(mapping[x])),
                     Node::Cos(x) => ops.push(Op::Cos(mapping[x])),

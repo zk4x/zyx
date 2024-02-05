@@ -1,4 +1,4 @@
-//! OpenCL backend for zyx
+//! CPU pure rust backend for zyx
 //!
 //! zyx-opencl is used as any other Zyx backend.
 //!
@@ -21,21 +21,18 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
-#[cfg(feature = "debug1")]
-extern crate std;
 #[cfg(feature = "std")]
 extern crate std;
 
-mod compiler;
+mod interpreter;
+use crate::interpreter::Interpreter;
 
 extern crate alloc;
-use crate::compiler::Compiler;
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
 use core::ops::Range;
-use zyx_core::compiler::CompiledBackend;
 use zyx_core::{
     backend::Backend,
     node::Node,
@@ -75,54 +72,15 @@ impl<T> MCell<T> {
     }
 }
 
-/// OpenCL backend
-pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
+/// CPU backend
+pub struct CPU(MCell<Runtime<Interpreter>>);
 
-/// Create new OpenCL backend using first OpenCL platform
-/// and all hardware devices in that platform.
-pub fn device() -> Result<OpenCL, ZyxError> {
-    Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
-        Compiler::new(0, 8)?,
-    )))))
+/// Create new CPU backend
+pub fn device() -> Result<CPU, ZyxError> {
+    Ok(CPU(MCell::new(Runtime::new(Interpreter::new()))))
 }
 
-/// Create new OpenCL backend using builder.
-pub fn device_builder() -> OpenCLBuilder {
-    OpenCLBuilder {
-        platform_id: 0,
-        queues_per_device: 8,
-    }
-}
-
-/// OpenCL backend builder
-#[derive(Clone, Debug)]
-pub struct OpenCLBuilder {
-    platform_id: usize,
-    queues_per_device: usize,
-}
-
-impl OpenCLBuilder {
-    /// Choose OpenCL platform by id
-    pub fn platform_id(&mut self, platform_id: usize) -> Self {
-        self.platform_id = platform_id;
-        self.clone()
-    }
-
-    /// Choose number of queues per each platform device
-    pub fn queues_per_device(&mut self, queues_per_device: usize) -> Self {
-        self.queues_per_device = queues_per_device;
-        self.clone()
-    }
-
-    /// Build
-    pub fn build(self) -> Result<OpenCL, ZyxError> {
-        Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
-            Compiler::new(self.platform_id, self.queues_per_device)?,
-        )))))
-    }
-}
-
-impl OpenCL {
+impl CPU {
     /// Create new tensor
     #[must_use]
     pub fn tensor<'a>(&'a self, data: impl IntoTensor<&'a Self>) -> Tensor<&'a Self> {
@@ -166,7 +124,7 @@ impl OpenCL {
     }
 }
 
-impl Backend for &OpenCL {
+impl Backend for &CPU {
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
         tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
     }

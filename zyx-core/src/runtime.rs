@@ -140,8 +140,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.evaluate(BTreeSet::from([x]))?;
         }
         let numel = shape(self.nodes.as_slice(), x).numel();
-        extern crate std;
-        std::println!("Reading buffer with {numel} elements.");
+        //std::println!("Reading buffer with {numel} elements.");
         self.runtime_backend.load(x, numel)
     }
 

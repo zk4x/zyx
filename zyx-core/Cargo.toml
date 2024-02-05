@@ -8,3 +8,7 @@ rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 
 [dev-dependencies]
 zyx-opencl = { version = "*", path = "../zyx-opencl" }
+
+[features]
+default = ["std"]
+std = []

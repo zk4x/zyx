@@ -1,0 +1,13 @@
+[package]
+name = "zyx-cpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zyx-core = { version = "*", path = "../zyx-core", default-features = false }
+rayon = { version = "1.8.1", default-features = false }
+
+[features]
+default = ["std"]
+std = ["zyx-core/std"]
+

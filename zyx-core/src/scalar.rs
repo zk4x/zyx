@@ -6,6 +6,8 @@ pub trait Scalar: Clone + core::fmt::Debug + 'static {
     fn dtype() -> DType;
     /// Get zero of Self
     fn zero() -> Self;
+    /// Get one of Self
+    fn one() -> Self;
     /// Bute size of Self
     fn byte_size() -> usize;
     /// Convert self into f32
@@ -41,8 +43,14 @@ pub trait Scalar: Clone + core::fmt::Debug + 'static {
     fn pow(self, rhs: Self) -> Self;
     /// Compare less than
     fn cmplt(self, rhs: Self) -> Self;
+    /// Max value of this dtype
+    fn max() -> Self;
+    /// Min value of this dtype
+    fn min() -> Self;
+    /// Very small value of scalar, very close to zero
+    fn epsilon() -> Self;
     /// Comparison for scalars,
-    /// if they are floats, this checks for diffs > 0.000001
+    /// if they are floats, this checks for diffs > Self::epsilon()
     fn is_equal(self, rhs: Self) -> bool;
 }
 
@@ -53,6 +61,10 @@ impl Scalar for f32 {
 
     fn zero() -> Self {
         0.
+    }
+
+    fn one() -> Self {
+        1.
     }
 
     fn byte_size() -> usize {
@@ -128,8 +140,21 @@ impl Scalar for f32 {
         (self < rhs) as i32 as f32
     }
 
+    fn max() -> Self {
+        f32::MAX
+    }
+
+    fn min() -> Self {
+        f32::MIN
+    }
+
+    fn epsilon() -> Self {
+        0.00001
+    }
+
     fn is_equal(self, rhs: Self) -> bool {
-        (self == -f32::INFINITY && rhs == -f32::INFINITY) || (self - rhs).abs() < 0.000001
+        // Less than 1% error is OK
+        (self == -f32::INFINITY && rhs == -f32::INFINITY) || (self - rhs).abs() < Self::epsilon() || (self - rhs).abs() < self.abs()*0.01
     }
 }
 
@@ -140,6 +165,10 @@ impl Scalar for i32 {
 
     fn zero() -> Self {
         0
+    }
+
+    fn one() -> Self {
+        1
     }
 
     fn byte_size() -> usize {
@@ -159,7 +188,7 @@ impl Scalar for i32 {
     }
 
     fn relu(self) -> Self {
-        self.max(0)
+        <i32 as Ord>::max(self, 0)
     }
 
     fn sin(self) -> Self {
@@ -208,6 +237,18 @@ impl Scalar for i32 {
 
     fn cmplt(self, rhs: Self) -> Self {
         (self < rhs) as i32
+    }
+
+    fn max() -> Self {
+        i32::MAX
+    }
+
+    fn min() -> Self {
+        i32::MIN
+    }
+
+    fn epsilon() -> Self {
+        0
     }
 
     fn is_equal(self, rhs: Self) -> bool {

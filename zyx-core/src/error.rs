@@ -23,6 +23,11 @@ pub enum ZyxError {
         /// Actual length
         len: usize,
     },
+    /// IO error when writing to or reading from disk
+    #[cfg(feature = "std")]
+    IOError(std::io::Error),
+    /// Parse error
+    ParseError(alloc::string::String),
 }
 
 impl Display for ZyxError {
@@ -38,6 +43,15 @@ impl Display for ZyxError {
             ZyxError::IndexOutOfBounds { index, len } => f.write_fmt(format_args!(
                 "Range out of bounds: The index is {index}, but the len is {len}"
             )),
+            ZyxError::IOError(err) => f.write_fmt(format_args!("{err}")),
+            ZyxError::ParseError(err) => f.write_fmt(format_args!("{err}")),
         }
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<std::io::Error> for ZyxError {
+    fn from(err: std::io::Error) -> Self {
+        Self::IOError(err)
     }
 }

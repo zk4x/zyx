@@ -107,6 +107,18 @@ impl Shape {
         )
     }
 
+    #[cfg(feature = "std")]
+    pub(crate) fn safetensors(&self) -> alloc::string::String {
+        let mut res = alloc::format!("{:?}", self.0);
+        res.retain(|c| !c.is_whitespace());
+        res
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn from_safetensors(shape: &str) -> Result<Shape, crate::error::ZyxError> {
+        Ok(Shape(shape.split(',').map(|d| d.parse::<usize>().map_err(|err| crate::error::ZyxError::ParseError(alloc::format!("Cannot parse safetensors shape: {err}")))).collect::<Result<Box<[usize]>, crate::error::ZyxError>>()?))
+    }
+
     /// Reduce self along axes
     #[must_use]
     pub fn reduce(self, axes: &Axes) -> Shape {

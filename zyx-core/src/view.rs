@@ -41,6 +41,13 @@ impl View {
             .all(|InnerView { shape, strides, .. }| shape.strides() == strides.clone())
     }
 
+    /// Is this view padded?
+    pub fn padded(&self) -> bool {
+        self.views
+            .iter()
+            .any(|InnerView { shape: _, strides: _, padding }| padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0))
+    }
+
     /// Convert contiguous idx into idx indexing data with self view
     #[must_use]
     pub fn get_idx(&self, mut idx: usize) -> usize {
@@ -71,9 +78,9 @@ impl View {
     #[must_use]
     pub fn cidx(&self) -> (String, String) {
         // TODO is padding correctly applied?
-        extern crate std;
-        use std::println;
-        println!("View: {self:?}");
+        //extern crate std;
+        //use std::println;
+        //println!("View: {self:?}");
         // In order to apply padding, we need to have multiple
         // conditions. Then it is like this:
         // conditions ? data[calculated_idx] : padding_value;
@@ -82,7 +89,7 @@ impl View {
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
-        if self.contiguous() {
+        if self.contiguous() && self.padded() {
             for i in 0..self.shape().rank() {
                 idx += &f!("idx{i}");
             }
@@ -143,7 +150,7 @@ impl View {
             for ((d, st), (left_p, right_p)) in
                 shape.into_iter().zip(strides).zip(padding.iter()).rev()
             {
-                println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                //println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 //res += &f!("{idx}/{ost}%{d}*{st}+");
                 //ost *= d;
                 let mut temp = f!("{idx}");
