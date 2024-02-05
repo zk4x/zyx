@@ -1,17 +1,14 @@
-use crate::{
-    backend::Backend,
-    tensor::Tensor,
-    error::ZyxError,
-    dtype::DType,
-    shape::Shape,
-};
+use crate::{backend::Backend, dtype::DType, error::ZyxError, shape::Shape, tensor::Tensor};
 use alloc::vec::Vec;
 
 /// Save all tensors into file.
 /// All parameters must be realized before calling this function, otherwise it will panic.
 /// # Errors
 /// Returns io erorr if there was problem writing file to filesystem.
-pub fn save<'a, B: Backend + 'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, path: impl AsRef<std::path::Path>) -> Result<(), ZyxError> {
+pub fn save<'a, B: Backend + 'a>(
+    tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    path: impl AsRef<std::path::Path>,
+) -> Result<(), ZyxError> {
     use core::fmt::Write as CoreFmtWrite;
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
@@ -21,7 +18,7 @@ pub fn save<'a, B: Backend + 'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>
     for tensor in &tensors {
         let dtype = tensor.dtype();
         //if let Some(label) = tensor.label() {
-            //write!(header, "\"{label}\":{{").unwrap();
+        //write!(header, "\"{label}\":{{").unwrap();
         //} else {
         write!(header, "\"{}\":{{", tensor.id()).unwrap();
         //}
@@ -63,7 +60,10 @@ pub fn save<'a, B: Backend + 'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>
 /// Load all parameters from file
 /// # Errors
 /// Returns io error if there was io erorr or parsing error.
-pub fn load<B: Backend>(dev: B, path: impl AsRef<std::path::Path>) -> Result<impl Iterator<Item = Tensor<B>>, ZyxError> {
+pub fn load<B: Backend>(
+    dev: B,
+    path: impl AsRef<std::path::Path>,
+) -> Result<impl Iterator<Item = Tensor<B>>, ZyxError> {
     use std::io::Read;
     let mut f = std::fs::File::open(path)?;
     let mut header_len = [0u8; 8];
@@ -91,29 +91,40 @@ pub fn load<B: Backend>(dev: B, path: impl AsRef<std::path::Path>) -> Result<imp
                 } else if i % 7 == 6 {
                     // TODO assert offsets
                     //std::println!("Offsets: {text}");
-                    let offsets = text.split(',').map(|offset| offset.parse::<usize>().map_err(|err| ZyxError::ParseError(alloc::format!("Could not parse safetensors offset: {err}")))).collect::<Result<Vec<usize>, ZyxError>>()?;
+                    let offsets = text
+                        .split(',')
+                        .map(|offset| {
+                            offset.parse::<usize>().map_err(|err| {
+                                ZyxError::ParseError(alloc::format!(
+                                    "Could not parse safetensors offset: {err}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<usize>, ZyxError>>()?;
                     //std::println!("Offsets: {offsets:?}");
-                    if offsets[tensors.len()+1] != shape.numel()*dtype.byte_size() {
-                        return Err(ZyxError::ParseError("Safetensors shapes and offsets are incorrect.".into()))
+                    if offsets[tensors.len() + 1] != shape.numel() * dtype.byte_size() {
+                        return Err(ZyxError::ParseError(
+                            "Safetensors shapes and offsets are incorrect.".into(),
+                        ));
                     }
                     let mut buf = alloc::vec![0u8; shape.numel()*dtype.byte_size()];
                     f.read_exact(&mut buf)?;
                     tensors.push(match dtype {
-                            DType::F32 => {
-                                let vec: Vec<f32> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
-                                    .collect();
-                                dev.tensor(vec).reshape(&shape)
-                            }
-                            DType::I32 => {
-                                let vec: Vec<i32> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
-                                    .collect();
-                                dev.tensor(vec).reshape(&shape)
-                            }
-                        });
+                        DType::F32 => {
+                            let vec: Vec<f32> = buf
+                                .chunks_exact(dtype.byte_size())
+                                .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+                                .collect();
+                            dev.tensor(vec).reshape(&shape)
+                        }
+                        DType::I32 => {
+                            let vec: Vec<i32> = buf
+                                .chunks_exact(dtype.byte_size())
+                                .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+                                .collect();
+                            dev.tensor(vec).reshape(&shape)
+                        }
+                    });
                 }
                 i += 1;
                 text.clear();
@@ -128,4 +139,3 @@ pub fn load<B: Backend>(dev: B, path: impl AsRef<std::path::Path>) -> Result<imp
     }
     Ok(tensors.into_iter())
 }
-

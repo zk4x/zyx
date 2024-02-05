@@ -1,8 +1,8 @@
 extern crate alloc;
+use crate::utils::get_shape;
 use crate::{axes::Axes, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::utils::shape;
 
 /// Node representing different possible tensors
 pub enum Node {
@@ -113,7 +113,7 @@ impl Node {
             | Node::Mul(x, _)
             | Node::Div(x, _)
             | Node::Cmplt(x, _)
-            | Node::Pow(x, _) => shape(nodes, *x).numel() * 2, // x and y are guaranteed to be same shape
+            | Node::Pow(x, _) => get_shape(nodes, *x).numel() * 2, // x and y are guaranteed to be same shape
             Node::CastF32(x)
             | Node::CastI32(x)
             | Node::Neg(x)
@@ -123,11 +123,10 @@ impl Node {
             | Node::Sin(x)
             | Node::Cos(x)
             | Node::Sqrt(x)
-            | Node::Tanh(x) => shape(nodes, *x).numel(),
-            Node::Sum(x, _, sh)
-            | Node::Max(x, _, sh) => {
+            | Node::Tanh(x) => get_shape(nodes, *x).numel(),
+            Node::Sum(x, _, sh) | Node::Max(x, _, sh) => {
                 let n = sh.numel();
-                let rdim = shape(nodes, *x).numel() / n;
+                let rdim = get_shape(nodes, *x).numel() / n;
                 (rdim - 1) * n
             }
         }

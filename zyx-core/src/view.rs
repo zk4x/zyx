@@ -43,9 +43,13 @@ impl View {
 
     /// Is this view padded?
     pub fn padded(&self) -> bool {
-        self.views
-            .iter()
-            .any(|InnerView { shape: _, strides: _, padding }| padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0))
+        self.views.iter().any(
+            |InnerView {
+                 shape: _,
+                 strides: _,
+                 padding,
+             }| padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0),
+        )
     }
 
     /// Convert contiguous idx into idx indexing data with self view
@@ -93,7 +97,7 @@ impl View {
             for i in 0..self.shape().rank() {
                 idx += &f!("idx{i}");
             }
-            return (padding_condition, idx)
+            return (padding_condition, idx);
         }
         if let Some(InnerView {
             shape,
@@ -124,7 +128,8 @@ impl View {
                     idx += &f!("-{}", left_p);
                 }
                 if *right_p > 0 {
-                    padding_condition = f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
+                    padding_condition =
+                        f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
                 }
             }
         } else {
@@ -204,7 +209,6 @@ impl View {
         &self.views.first().unwrap().shape
     }
 
-
     /// Original (first) shape of self.
     #[must_use]
     pub fn original_shape(&self) -> &Shape {
@@ -258,7 +262,7 @@ impl View {
     #[must_use]
     pub fn reshape(&self, shape: &Shape) -> Self {
         if shape == self.shape() {
-            return self.clone()
+            return self.clone();
         }
         let mut views = self.views.clone();
         views.insert(

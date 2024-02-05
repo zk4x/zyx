@@ -1,5 +1,5 @@
 use crate::error::ZyxError;
-use crate::utils::{dtype, shape};
+use crate::utils::{get_dtype, get_shape};
 use crate::{
     dtype::DType,
     node::Node,
@@ -7,12 +7,12 @@ use crate::{
     shape::Shape,
     tensor::{id, Id},
 };
+use alloc::collections::btree_map::Entry;
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use alloc::collections::btree_map::Entry;
 use core::ops::Range;
 use rand::distributions::Uniform;
 
@@ -31,7 +31,7 @@ pub trait RuntimeBackend {
     /// order of evaluation.
     fn evaluate(
         &mut self,
-        to_eval: BTreeSet<Id>,
+        rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError>;
@@ -123,12 +123,12 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Get shape of tensor x
     pub fn shape(&self, x: Id) -> &Shape {
-        shape(self.nodes.as_slice(), x)
+        get_shape(self.nodes.as_slice(), x)
     }
 
     /// Get dtype of tensor x
     pub fn dtype(&self, x: Id) -> DType {
-        dtype(self.nodes.as_slice(), x)
+        get_dtype(self.nodes.as_slice(), x)
     }
 
     /// Load tensor x
@@ -139,7 +139,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             // in which case we can directly return iterator with view
             self.evaluate(BTreeSet::from([x]))?;
         }
-        let numel = shape(self.nodes.as_slice(), x).numel();
+        let numel = get_shape(self.nodes.as_slice(), x).numel();
         //std::println!("Reading buffer with {numel} elements.");
         self.runtime_backend.load(x, numel)
     }
@@ -223,14 +223,13 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut order: Vec<Id> = rcs.keys().copied().collect();
         order.sort_by_cached_key(|nid| self.order[nid.i()]);
 
-        self.runtime_backend
-            .evaluate(nodes, &order, &mut self.nodes)?;
+        self.runtime_backend.evaluate(rcs, order.as_ref(), self.nodes.as_mut())?;
 
         // Release parts of graph that are not needed for backpropagation
         while let Some(leaf) = self.leafs.pop_last() {
             //std::println!("Releasing leaf {leaf}");
-            let shape = shape(&self.nodes, leaf).clone();
-            let mut node = match dtype(&self.nodes, leaf) {
+            let shape = get_shape(self.nodes.as_ref(), leaf).clone();
+            let mut node = match get_dtype(self.nodes.as_ref(), leaf) {
                 DType::F32 => Node::LeafF32(shape),
                 DType::I32 => Node::LeafI32(shape),
             };
@@ -244,9 +243,9 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Puts graph of all operations into dot language for visualization
     pub fn show_graph(&self) -> alloc::string::String {
+        use alloc::format;
         use alloc::string::String;
         use core::fmt::Write;
-        use alloc::format;
         let mut user_rc = self.rcs.clone();
         for node in &self.nodes {
             for param in node.parameters() {
@@ -363,19 +362,19 @@ impl<R: RuntimeBackend> Runtime<R> {
         // Node -> Grad
         let mut grads: BTreeMap<Id, Id> = BTreeMap::new();
         // Initial gradient of ones
-        let grad1 = match dtype(&self.nodes, x) {
+        let grad1 = match get_dtype(&self.nodes, x) {
             DType::F32 => self.push(Node::IterF32(
                 Box::new([1.].into_iter()),
-                shape(&self.nodes, x).clone(),
+                get_shape(&self.nodes, x).clone(),
             ))?,
             DType::I32 => self.push(Node::IterF32(
                 Box::new([1.].into_iter()),
-                shape(&self.nodes, x).clone(),
+                get_shape(&self.nodes, x).clone(),
             ))?,
         };
         grads.insert(
             x,
-            self.push(Node::Expand(grad1, shape(&self.nodes, x).clone()))?,
+            self.push(Node::Expand(grad1, get_shape(&self.nodes, x).clone()))?,
         );
         self.release(grad1)?;
         // backpropagate
@@ -418,7 +417,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     }
                     if req_grad.contains(&y) && !grads.contains_key(&y) {
                         // -grad*x/(y^2)
-                        let two = match dtype(&self.nodes, y) {
+                        let two = match get_dtype(&self.nodes, y) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))
                             }
@@ -426,7 +425,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))
                             }
                         }?;
-                        let two_e = self.push(Node::Expand(two, shape(&self.nodes, y).clone()))?;
+                        let two_e = self.push(Node::Expand(two, get_shape(&self.nodes, y).clone()))?;
                         self.release(two)?;
                         let two_2 = self.push(Node::Pow(y, two_e))?;
                         self.release(two_e)?;
@@ -442,7 +441,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::Pow(x, y) => {
                     if req_grad.contains(&x) && !grads.contains_key(&x) {
                         // grad * y * x.pow(y-1)
-                        let one = match dtype(&self.nodes, y) {
+                        let one = match get_dtype(&self.nodes, y) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))
                             }
@@ -450,7 +449,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))
                             }
                         }?;
-                        let one1 = self.push(Node::Expand(one, shape(&self.nodes, y).clone()))?;
+                        let one1 = self.push(Node::Expand(one, get_shape(&self.nodes, y).clone()))?;
                         self.release(one)?;
                         let y_1 = self.push(Node::Sub(y, one1))?;
                         self.release(one1)?;
@@ -477,7 +476,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::ReLU(x) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        let zero = match dtype(&self.nodes, x) {
+                        let zero = match get_dtype(&self.nodes, x) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
                             }
@@ -485,7 +484,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
                             }
                         }?;
-                        let zeros = self.push(Node::Expand(zero, shape(&self.nodes, x).clone()))?;
+                        let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
                         self.release(zero)?;
                         let zl = self.push(Node::Cmplt(zeros, x))?;
                         self.release(zeros)?;
@@ -525,7 +524,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::Sqrt(x) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
                         // x_grad = grad/(2*sqrt(x))
-                        let x_shape = shape(&self.nodes, x).clone();
+                        let x_shape = get_shape(&self.nodes, x).clone();
                         let two1 =
                             self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
                         let two2 = self.push(Node::Expand(two1, x_shape))?;
@@ -539,12 +538,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::CastF32(x) | Node::CastI32(x) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        e.insert(
-                            match dtype(&self.nodes, x) {
-                                DType::F32 => self.push(Node::CastF32(grad))?,
-                                DType::I32 => self.push(Node::CastI32(grad))?,
-                            },
-                        );
+                        e.insert(match get_dtype(&self.nodes, x) {
+                            DType::F32 => self.push(Node::CastF32(grad))?,
+                            DType::I32 => self.push(Node::CastI32(grad))?,
+                        });
                     };
                 }
                 Node::Neg(x) => {
@@ -555,8 +552,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::Tanh(x) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
                         // 1 - tanh^2(x)
-                        let shape = shape(&self.nodes, x).clone();
-                        let (two1, one1) = match dtype(&self.nodes, x) {
+                        let shape = get_shape(&self.nodes, x).clone();
+                        let (two1, one1) = match get_dtype(&self.nodes, x) {
                             DType::F32 => (
                                 self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?,
                                 self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?,
@@ -582,12 +579,12 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::Reshape(x, ..) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        e.insert(self.push(Node::Reshape(grad, shape(&self.nodes, x).clone()))?);
+                        e.insert(self.push(Node::Reshape(grad, get_shape(&self.nodes, x).clone()))?);
                     }
                 }
                 Node::Expand(x, ref sh) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        let org_shape = shape(&self.nodes, x).clone();
+                        let org_shape = get_shape(&self.nodes, x).clone();
                         let axes = org_shape.expand_axes(sh);
                         let temp = self.push(Node::Sum(grad, axes, org_shape.clone()))?;
                         let x_grad = self.push(Node::Reshape(temp, org_shape))?;
@@ -597,30 +594,26 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::Permute(x, ref axes, _) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        let shape = shape(&self.nodes, x);
-                        e.insert(
-                            self.push(Node::Permute(grad, axes.argsort(), shape.clone()))?,
-                        );
+                        let shape = get_shape(&self.nodes, x);
+                        e.insert(self.push(Node::Permute(grad, axes.argsort(), shape.clone()))?);
                     }
                 }
                 Node::Pad(x, ref padding, _) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        let sh = shape(&self.nodes, x).clone();
+                        let sh = get_shape(&self.nodes, x).clone();
                         let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
                         e.insert(self.push(Node::Pad(grad, inv_padding, sh))?);
                     }
                 }
                 Node::Sum(x, ..) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
-                        e.insert(
-                            self.push(Node::Expand(grad, shape(&self.nodes, x).clone()))?,
-                        );
+                        e.insert(self.push(Node::Expand(grad, get_shape(&self.nodes, x).clone()))?);
                     }
                 }
                 Node::Max(x, ..) => {
                     if let Entry::Vacant(e) = grads.entry(x) {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
-                        let x_shape = shape(&self.nodes, x).clone();
+                        let x_shape = get_shape(&self.nodes, x).clone();
                         let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
                         let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
                         self.release(z_temp)?;

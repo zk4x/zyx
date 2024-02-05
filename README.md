@@ -30,7 +30,7 @@ let grads = z.backward([&x, &y]);
 ```
 You can also calculate higher order derivatives.
 ```rust
-let grad_xx = grads.next().unwrap.backward([&x]);
+let grad_xx = grads.next().unwrap().backward([&x]);
 ```
 
 ## Optimizers ⚙️

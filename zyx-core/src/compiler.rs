@@ -6,14 +6,10 @@ use crate::{
     runtime::RuntimeBackend,
     scalar::Scalar,
     tensor::Id,
-    utils::{dtype, shape},
+    utils::{get_dtype, get_shape},
     view::View,
 };
-use alloc::{
-    boxed::Box,
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -131,7 +127,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn evaluate(
         &mut self,
-        to_eval: BTreeSet<Id>,
+        mut rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
@@ -188,11 +184,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     }
                 }
             }
-            if to_eval.contains(&nid) && !self.buffers.contains_key(&nid) {
+            if rcs[&nid] > 0 && !self.buffers.contains_key(&nid) {
                 self.evaluate_buffer(nid, order, nodes)?;
             }
-            // TODO release nodes that are no longer needed
-            // and release intermediate buffers.
+            for p in nodes[nid.i()].parameters() {
+                rcs.entry(p).and_modify(|rc| *rc -= 1);
+                self.remove(p)?;
+            }
         }
         Ok(())
     }
@@ -242,11 +240,8 @@ impl<C: Compiler> CompiledBackend<C> {
             //println!("Node {:?}", nodes[nid.i()]);
             let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
-                if ar {
-                    &mut ar_args
-                } else {
-                    &mut args
-                }.push((View::new(shape(nodes, nid).clone()), dtype(nodes, nid)));
+                if ar { &mut ar_args } else { &mut args }
+                    .push((View::new(get_shape(nodes, nid).clone()), get_dtype(nodes, nid)));
                 program_args.push(x);
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
@@ -320,13 +315,13 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::Sum(x, axes, _) => {
                         ops.push(Op::Sum(mapping[x]));
                         raxes = Some(axes.clone());
-                        rshape = shape(nodes, *x).clone();
+                        rshape = get_shape(nodes, *x).clone();
                         ar = true;
                     }
                     Node::Max(x, axes, _) => {
                         ops.push(Op::Max(mapping[x]));
                         raxes = Some(axes.clone());
-                        rshape = shape(nodes, *x).clone();
+                        rshape = get_shape(nodes, *x).clone();
                         ar = true;
                     }
                 }
@@ -339,9 +334,20 @@ impl<C: Compiler> CompiledBackend<C> {
         let rdim = if let Some(raxes) = raxes {
             //println!("rshape: {rshape:?}");
             //println!("raxes: {raxes:?}");
-            let s0: usize = rshape.iter().enumerate().filter(|(a, _)| raxes.0.contains(a)).map(|(_, d)| *d).product();
-            let s1: usize = rshape.iter().enumerate().filter(|(a, _)| !raxes.0.contains(a)).map(|(_, d)| *d).product();
-            let axes: (Vec<usize>, Vec<usize>) = (0..rshape.rank()).partition(|a| raxes.0.contains(a));
+            let s0: usize = rshape
+                .iter()
+                .enumerate()
+                .filter(|(a, _)| raxes.0.contains(a))
+                .map(|(_, d)| *d)
+                .product();
+            let s1: usize = rshape
+                .iter()
+                .enumerate()
+                .filter(|(a, _)| !raxes.0.contains(a))
+                .map(|(_, d)| *d)
+                .product();
+            let axes: (Vec<usize>, Vec<usize>) =
+                (0..rshape.rank()).partition(|a| raxes.0.contains(a));
             let axes = Axes(axes.0.into_iter().chain(axes.1).collect());
             let new_shape = [s0, s1].into();
             let ar_new_shape = [1, s1].into();
@@ -351,25 +357,59 @@ impl<C: Compiler> CompiledBackend<C> {
             //println!("New shape before reduce: {new_shape:?}");
             //println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
-                *aview = aview
-                    .permute(&axes)
-                    .reshape(&new_shape)
-                    .pad(&new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8 - d % 8) as i64) } else { (0, 0) }).collect::<Vec<(i64, i64)>>());
+                *aview = aview.permute(&axes).reshape(&new_shape).pad(
+                    &new_shape
+                        .iter()
+                        .rev()
+                        .map(|d| {
+                            if *d != 1 && d % 8 != 0 {
+                                (0, (8 - d % 8) as i64)
+                            } else {
+                                (0, 0)
+                            }
+                        })
+                        .collect::<Vec<(i64, i64)>>(),
+                );
             }
             // view after the reduce op
-            view = View::new(shape(nodes, x).clone())
+            view = View::new(get_shape(nodes, x).clone())
                 .permute(&axes)
                 .reshape(&ar_new_shape)
-                .pad(&ar_new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
+                .pad(
+                    &ar_new_shape
+                        .iter()
+                        .rev()
+                        .map(|d| {
+                            if *d != 1 && d % 8 != 0 {
+                                (0, (8 - d % 8) as i64)
+                            } else {
+                                (0, 0)
+                            }
+                        })
+                        .collect::<Vec<(i64, i64)>>(),
+                );
             for (aview, _) in &mut ar_args {
-                *aview = aview
-                    .permute(&axes)
-                    .reshape(&ar_new_shape)
-                    .pad(&ar_new_shape.iter().rev().map(|d| if *d != 1 && d % 8 != 0 { (0, (8-d%8) as i64) } else { (0, 0) } ).collect::<Vec<(i64, i64)>>());
+                *aview = aview.permute(&axes).reshape(&ar_new_shape).pad(
+                    &ar_new_shape
+                        .iter()
+                        .rev()
+                        .map(|d| {
+                            if *d != 1 && d % 8 != 0 {
+                                (0, (8 - d % 8) as i64)
+                            } else {
+                                (0, 0)
+                            }
+                        })
+                        .collect::<Vec<(i64, i64)>>(),
+                );
             }
-            Some(if s0 != 1 && s0 % 8 != 0 {(s0/8 + 1)*8} else { s0 })
+            Some(if s0 != 1 && s0 % 8 != 0 {
+                (s0 / 8 + 1) * 8
+            } else {
+                s0
+            })
         } else {
-            let sh = shape(nodes, x);
+            let sh = get_shape(nodes, x);
             let n = sh.numel();
             view = View::new(sh.clone())
                 .reshape(&n.into())

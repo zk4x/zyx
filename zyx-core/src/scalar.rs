@@ -154,7 +154,9 @@ impl Scalar for f32 {
 
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 1% error is OK
-        (self == -f32::INFINITY && rhs == -f32::INFINITY) || (self - rhs).abs() < Self::epsilon() || (self - rhs).abs() < self.abs()*0.01
+        (self == -f32::INFINITY && rhs == -f32::INFINITY)
+            || (self - rhs).abs() < Self::epsilon()
+            || (self - rhs).abs() < self.abs() * 0.01
     }
 }
 

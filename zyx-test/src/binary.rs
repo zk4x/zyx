@@ -1,12 +1,7 @@
 use super::assert_eq;
-use zyx_core::{
-    scalar::Scalar,
-    backend::Backend,
-    shape::Shape,
-    error::ZyxError,
-};
-use core::ops::{Add, Sub, Mul};
+use core::ops::{Add, Mul, Sub};
 use rand::{thread_rng, Rng};
+use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape};
 
 macro_rules! binary_test {
     ( $dev:expr, $x:tt ) => {{
@@ -16,14 +11,14 @@ macro_rules! binary_test {
             let mut shape = Vec::new();
             for i in 0..rng.gen_range(1..20) {
                 let n = if i > 1 {
-                    1024usize*1024usize/shape.iter().product::<usize>()
+                    1024usize * 1024usize / shape.iter().product::<usize>()
                 } else {
                     1024
                 };
                 if n > 1 {
                     shape.insert(0, rng.gen_range(1..n));
                 } else {
-                    break
+                    break;
                 }
             }
             shapes.push(shape.into());
@@ -32,15 +27,19 @@ macro_rules! binary_test {
             // Since overflow is implementation/hardware defined, we need to limit integers
             // appropriatelly
             let (x, y) = if T::dtype().is_floating() {
-                ($dev.randn(shape, T::dtype()),
-                 $dev.randn(shape, T::dtype()))
+                ($dev.randn(shape, T::dtype()), $dev.randn(shape, T::dtype()))
             } else {
-                ($dev.uniform(shape, T::min().sqrt()..T::max().sqrt()),
-                 $dev.uniform(shape, T::min().sqrt()..T::max().sqrt()))
+                (
+                    $dev.uniform(shape, T::min().sqrt()..T::max().sqrt()),
+                    $dev.uniform(shape, T::min().sqrt()..T::max().sqrt()),
+                )
             };
             let vx = x.to_vec()?;
             let vy = y.to_vec()?;
-            assert_eq(x.$x(y).to_vec()?, vx.into_iter().zip(vy).map(|(ex, ey): (T, T)| ex.$x(ey)));
+            assert_eq(
+                x.$x(y).to_vec()?,
+                vx.into_iter().zip(vy).map(|(ex, ey): (T, T)| ex.$x(ey)),
+            );
         }
         Ok(())
     }};
@@ -108,14 +107,14 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         let mut shape = Vec::new();
         for i in 0..rng.gen_range(1..20) {
             let n = if i > 1 {
-                1024usize*1024usize/shape.iter().product::<usize>()
+                1024usize * 1024usize / shape.iter().product::<usize>()
             } else {
                 1024
             };
             if n > 1 {
                 shape.insert(0, rng.gen_range(1..n));
             } else {
-                break
+                break;
             }
         }
         shapes.push(shape.into());
@@ -124,16 +123,25 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         // Since overflow is implementation/hardware defined, we need to limit integers
         // appropriatelly
         let (x, y) = if T::dtype().is_floating() {
-            (dev.randn(shape, T::dtype()),
-             dev.randn(shape, T::dtype()))
+            (dev.randn(shape, T::dtype()), dev.randn(shape, T::dtype()))
         } else {
-            let six = T::one().add(T::one()).add(T::one()).add(T::one()).add(T::one()).add(T::one());
-            (dev.uniform(shape, T::min().sqrt().sqrt().sqrt()..six.clone()),
-             dev.uniform(shape, T::min().sqrt().sqrt().sqrt()..six))
+            let six = T::one()
+                .add(T::one())
+                .add(T::one())
+                .add(T::one())
+                .add(T::one())
+                .add(T::one());
+            (
+                dev.uniform(shape, T::min().sqrt().sqrt().sqrt()..six.clone()),
+                dev.uniform(shape, T::min().sqrt().sqrt().sqrt()..six),
+            )
         };
         let vx = x.to_vec()?;
         let vy = y.to_vec()?;
-        assert_eq(x.pow(y).to_vec()?, vx.into_iter().zip(vy).map(|(ex, ey): (T, T)| ex.pow(ey)));
+        assert_eq(
+            x.pow(y).to_vec()?,
+            vx.into_iter().zip(vy).map(|(ex, ey): (T, T)| ex.pow(ey)),
+        );
     }
     Ok(())
 }

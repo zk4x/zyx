@@ -1,5 +1,5 @@
-mod unary;
 mod binary;
+mod unary;
 
 use zyx_core::backend::Backend;
 use zyx_core::scalar::Scalar;
@@ -16,15 +16,19 @@ fn assert_eq<T: Scalar>(x: impl IntoIterator<Item = T>, y: impl IntoIterator<Ite
     }
 }
 
-fn run_test_fn<T: Scalar, F: Fn(B, T) -> Result<(), ZyxError>, B: Backend>(test_fn: F, backend: B, x: T) {
+fn run_test_fn<T: Scalar, F: Fn(B, T) -> Result<(), ZyxError>, B: Backend>(
+    test_fn: F,
+    backend: B,
+    x: T,
+) {
     let mut name: String = std::any::type_name::<F>().into();
     //let b = std::any::type_name::<B>();
     for _ in 0..4 {
         if let Some(index) = name.find(':') {
-            name = name[index+1..].into();
+            name = name[index + 1..].into();
         }
     }
-    name.replace_range(name.find('&').unwrap()+1..name.find(':').unwrap()+2, "");
+    name.replace_range(name.find('&').unwrap() + 1..name.find(':').unwrap() + 2, "");
     print!("Running test {name} ... ");
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -36,13 +40,11 @@ fn run_test_fn<T: Scalar, F: Fn(B, T) -> Result<(), ZyxError>, B: Backend>(test_
 }
 
 macro_rules! run_test {
-    ( $test:expr ) => {
-        {
-            let dev = zyx_opencl::device().unwrap();
-            run_test_fn($test, &dev, 0f32);
-            run_test_fn($test, &dev, 0i32);
-        }
-    }
+    ( $test:expr ) => {{
+        let dev = zyx_opencl::device().unwrap();
+        run_test_fn($test, &dev, 0f32);
+        run_test_fn($test, &dev, 0i32);
+    }};
 }
 
 fn main() {

@@ -36,7 +36,9 @@ impl DType {
         match dtype {
             "F32" => Ok(Self::F32),
             "I32" => Ok(Self::I32),
-            _ => Err(crate::error::ZyxError::ParseError(alloc::format!("Could not parse safetensors dtype {dtype}"))),
+            _ => Err(crate::error::ZyxError::ParseError(alloc::format!(
+                "Could not parse safetensors dtype {dtype}"
+            ))),
         }
     }
 }

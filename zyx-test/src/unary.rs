@@ -1,12 +1,7 @@
 use super::assert_eq;
-use zyx_core::{
-    backend::Backend,
-    error::ZyxError,
-    scalar::Scalar,
-    shape::Shape,
-};
 use core::ops::Neg;
 use rand::{thread_rng, Rng};
+use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape};
 
 macro_rules! unary_test {
     ( $dev:expr, $x:tt ) => {{
@@ -16,14 +11,14 @@ macro_rules! unary_test {
             let mut shape = Vec::new();
             for i in 0..rng.gen_range(1..20) {
                 let n = if i > 1 {
-                    1024usize*1024usize/shape.iter().product::<usize>()
+                    1024usize * 1024usize / shape.iter().product::<usize>()
                 } else {
                     1024
                 };
                 if n > 1 {
                     shape.insert(0, rng.gen_range(1..n));
                 } else {
-                    break
+                    break;
                 }
             }
             shapes.push(shape.into());
@@ -50,7 +45,7 @@ pub fn sin<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     if !T::dtype().is_floating() {
         // TODO rounding errors on GPU when using integers
         // cause results to be off by 1
-        return Ok(())
+        return Ok(());
     }
     unary_test!(dev, sin)
 }
@@ -59,7 +54,7 @@ pub fn cos<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     if !T::dtype().is_floating() {
         // TODO rounding errors on GPU when using integers
         // cause results to be off by 1
-        return Ok(())
+        return Ok(());
     }
     unary_test!(dev, cos)
 }
@@ -68,7 +63,7 @@ pub fn ln<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     if !T::dtype().is_floating() {
         // TODO rounding errors on GPU when using integers
         // cause results to be off by 1
-        return Ok(())
+        return Ok(());
     }
     let mut rng = thread_rng();
     let mut shapes: Vec<Shape> = Vec::new();
@@ -76,14 +71,14 @@ pub fn ln<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         let mut shape = Vec::new();
         for i in 0..rng.gen_range(1..20) {
             let n = if i > 1 {
-                1024usize*1024usize/shape.iter().product::<usize>()
+                1024usize * 1024usize / shape.iter().product::<usize>()
             } else {
                 1024
             };
             if n > 1 {
                 shape.insert(0, rng.gen_range(1..n));
             } else {
-                break
+                break;
             }
         }
         shapes.push(shape.into());
@@ -105,7 +100,7 @@ pub fn exp<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     if !T::dtype().is_floating() {
         // TODO rounding errors on GPU when using integers
         // cause results to be off by 1
-        return Ok(())
+        return Ok(());
     }
     unary_test!(dev, exp)
 }
@@ -114,7 +109,7 @@ pub fn tanh<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     if !T::dtype().is_floating() {
         // TODO rounding errors on GPU when using integers
         // cause results to be off by 1
-        return Ok(())
+        return Ok(());
     }
     unary_test!(dev, tanh)
 }
@@ -123,7 +118,7 @@ pub fn sqrt<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     if !T::dtype().is_floating() {
         // TODO rounding errors on GPU when using integers
         // cause results to be off by 1
-        return Ok(())
+        return Ok(());
     }
     let mut rng = thread_rng();
     let mut shapes: Vec<Shape> = Vec::new();
@@ -131,14 +126,14 @@ pub fn sqrt<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         let mut shape = Vec::new();
         for i in 0..rng.gen_range(1..20) {
             let n = if i > 1 {
-                1024usize*1024usize/shape.iter().product::<usize>()
+                1024usize * 1024usize / shape.iter().product::<usize>()
             } else {
                 1024
             };
             if n > 1 {
                 shape.insert(0, rng.gen_range(1..n));
             } else {
-                break
+                break;
             }
         }
         shapes.push(shape.into());

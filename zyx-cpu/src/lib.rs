@@ -33,6 +33,8 @@ use alloc::{
     vec::Vec,
 };
 use core::ops::Range;
+#[cfg(feature = "std")]
+pub use zyx_core::io::{load, save};
 use zyx_core::{
     backend::Backend,
     node::Node,
@@ -43,8 +45,6 @@ use zyx_core::{
     tensor::{tensor, IntoTensor},
 };
 pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
-#[cfg(feature = "std")]
-pub use zyx_core::io::{save, load};
 
 // This works OK, it gets rid of the RefCell overhead,
 // but it's only safe if used in single threaded environment.

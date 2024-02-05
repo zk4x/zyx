@@ -5,14 +5,12 @@ use crate::error::ZyxError;
 use crate::scalar::Scalar;
 use crate::shape::Shape;
 use crate::{backend::Backend, node::Node};
-use alloc::{
-    boxed::Box,
-collections::BTreeSet,
-vec::Vec};
+use alloc::{boxed::Box, collections::BTreeSet, vec::Vec};
 use core::{
     cmp::Ordering,
-iter::repeat,
-ops::{Range, SubAssign}};
+    iter::repeat,
+    ops::{Range, SubAssign},
+};
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
@@ -129,7 +127,11 @@ impl<B: Backend> core::fmt::Display for Tensor<B> {
     }
 }
 
-fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &Shape, precision: usize) -> alloc::string::String {
+fn tensor_to_string<T: core::fmt::Display>(
+    data: &[T],
+    shape: &Shape,
+    precision: usize,
+) -> alloc::string::String {
     use core::fmt::Write;
     // TODO don't print whole tensor if it is big
     let n = shape.numel();
@@ -537,7 +539,7 @@ impl<B: Backend> Tensor<B> {
     ///                [7, 7, 2],
     ///                [7, 7, 4],
     ///                [7, 7, 7]]);
-    /// 
+    ///
     ///
     /// # Panics
     /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
@@ -557,9 +559,7 @@ impl<B: Backend> Tensor<B> {
         let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
         let sh = self.shape().pad(&padding);
         tensor(
-            self.backend
-                .push(Node::Pad(self.id, padding, sh))
-                .unwrap(),
+            self.backend.push(Node::Pad(self.id, padding, sh)).unwrap(),
             self.backend,
         )
     }
@@ -932,14 +932,12 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
         tensor(
             backend
                 .push(match T::dtype() {
-                    DType::F32 => Node::IterF32(
-                        Box::new(self.iter().cloned().map(T::into_f32)),
-                        n.into(),
-                    ),
-                    DType::I32 => Node::IterI32(
-                        Box::new(self.iter().cloned().map(T::into_i32)),
-                        n.into(),
-                    ),
+                    DType::F32 => {
+                        Node::IterF32(Box::new(self.iter().cloned().map(T::into_f32)), n.into())
+                    }
+                    DType::I32 => {
+                        Node::IterI32(Box::new(self.iter().cloned().map(T::into_i32)), n.into())
+                    }
                 })
                 .unwrap(),
             backend,
@@ -1025,20 +1023,52 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
     }
 }
 
-impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize> PartialEq<[T; D0]> for Tensor<B> {
+impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize> PartialEq<[T; D0]>
+    for Tensor<B>
+{
     fn eq(&self, other: &[T; D0]) -> bool {
-        self.shape() == [D0] && self.dtype() == T::dtype() && self.to_vec::<T>().unwrap().into_iter().zip(other.iter()).all(|(x, y)| x == *y)
+        self.shape() == [D0]
+            && self.dtype() == T::dtype()
+            && self
+                .to_vec::<T>()
+                .unwrap()
+                .into_iter()
+                .zip(other.iter())
+                .all(|(x, y)| x == *y)
     }
 }
 
-impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for Tensor<B> {
+impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: usize>
+    PartialEq<[[T; D1]; D0]> for Tensor<B>
+{
     fn eq(&self, other: &[[T; D1]; D0]) -> bool {
-        self.shape() == [D0, D1] && self.dtype() == T::dtype() && self.to_vec::<T>().unwrap().into_iter().zip(other.iter().flatten()).all(|(x, y)| x == *y)
+        self.shape() == [D0, D1]
+            && self.dtype() == T::dtype()
+            && self
+                .to_vec::<T>()
+                .unwrap()
+                .into_iter()
+                .zip(other.iter().flatten())
+                .all(|(x, y)| x == *y)
     }
 }
 
-impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[T; D2]; D1]; D0]> for Tensor<B> {
+impl<
+        B: Backend,
+        T: Scalar + core::cmp::PartialEq,
+        const D0: usize,
+        const D1: usize,
+        const D2: usize,
+    > PartialEq<[[[T; D2]; D1]; D0]> for Tensor<B>
+{
     fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
-        self.shape() == [D0, D1, D2] && self.dtype() == T::dtype() && self.to_vec::<T>().unwrap().into_iter().zip(other.iter().flatten().flatten()).all(|(x, y)| x == *y)
+        self.shape() == [D0, D1, D2]
+            && self.dtype() == T::dtype()
+            && self
+                .to_vec::<T>()
+                .unwrap()
+                .into_iter()
+                .zip(other.iter().flatten().flatten())
+                .all(|(x, y)| x == *y)
     }
 }

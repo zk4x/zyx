@@ -5,11 +5,11 @@ use core::ffi::c_void;
 use opencl_sys::{
     clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
     clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
-    clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo,
-    clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents,
-    cl_device_id, cl_device_type, cl_int, cl_platform_id,
-    cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
-    CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
+    clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject,
+    clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int,
+    cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
+    CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING,
+    CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
 use zyx_core::{
     compiler::{Op, AST},
@@ -429,15 +429,17 @@ impl Compiler {
         for dev in &device_ids {
             std::println!(
                 "{}",
-                String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(|err| {
-                    ZyxError::BackendError(match err {
-                        -33 => "Unable to get OpenCL device name. ERR -33: CL_INVALID_DEVICE",
-                        -30 => "Unable to get OpenCL device name. ERR -30: CL_INVALID_VALUE",
-                        -5 => "Unable to get OpenCL device name. ERR -5: CL_OUT_OF_RESOURCES",
-                        -6 => "Unable to get OpenCL device name. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                        _ => "Unable to get OpenCL device name. UNKNOWN ERROR",
-                    })
-                })?)
+                String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(
+                    |err| {
+                        ZyxError::BackendError(match err {
+                            -33 => "Unable to get OpenCL device name. ERR -33: CL_INVALID_DEVICE",
+                            -30 => "Unable to get OpenCL device name. ERR -30: CL_INVALID_VALUE",
+                            -5 => "Unable to get OpenCL device name. ERR -5: CL_OUT_OF_RESOURCES",
+                            -6 => "Unable to get OpenCL device name. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                            _ => "Unable to get OpenCL device name. UNKNOWN ERROR",
+                        })
+                    }
+                )?)
                 .unwrap()
             );
         }
@@ -877,8 +879,8 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     } else {
         let n = ast.view.numel();
         let mut lw = 8;
-        let mut x = n/8;
-        while x % 2 == 0 && lw <= max_local_work_size/2 {
+        let mut x = n / 8;
+        while x % 2 == 0 && lw <= max_local_work_size / 2 {
             x /= 2;
             lw *= 2;
         }
@@ -977,12 +979,30 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
             }
             Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
             Op::ReLU(x) => f!("{dtype} var{nid} = (var{x} > 0)*var{x}"),
-            Op::Sin(x) => f!("{dtype} var{nid} = sin({}var{x})", if fdt { "" } else { "(float)" }),
-            Op::Cos(x) => f!("{dtype} var{nid} = cos({}var{x})", if fdt { "" } else { "(float)" }),
-            Op::Ln(x) => f!("{dtype} var{nid} = {0}log({0}var{x})", if fdt { "" } else { "(float)" }),
-            Op::Exp(x) => f!("{dtype} var{nid} = exp({}var{x})", if fdt { "" } else { "(float)" }),
-            Op::Tanh(x) => f!("{dtype} var{nid} = tanh({}var{x})", if fdt { "" } else { "(float)" }),
-            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt({}var{x})", if fdt { "" } else { "(float)" }),
+            Op::Sin(x) => f!(
+                "{dtype} var{nid} = sin({}var{x})",
+                if fdt { "" } else { "(float)" }
+            ),
+            Op::Cos(x) => f!(
+                "{dtype} var{nid} = cos({}var{x})",
+                if fdt { "" } else { "(float)" }
+            ),
+            Op::Ln(x) => f!(
+                "{dtype} var{nid} = {0}log({0}var{x})",
+                if fdt { "" } else { "(float)" }
+            ),
+            Op::Exp(x) => f!(
+                "{dtype} var{nid} = exp({}var{x})",
+                if fdt { "" } else { "(float)" }
+            ),
+            Op::Tanh(x) => f!(
+                "{dtype} var{nid} = tanh({}var{x})",
+                if fdt { "" } else { "(float)" }
+            ),
+            Op::Sqrt(x) => f!(
+                "{dtype} var{nid} = sqrt({}var{x})",
+                if fdt { "" } else { "(float)" }
+            ),
             Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
             Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
             Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
@@ -1009,10 +1029,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     source = if p.is_empty() {
         f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
     } else {
-        f!(
-            "{source}if {p} data{res_id}[{i}] = var{}{endl}",
-            nid - 1
-        )
+        f!("{source}if {p} data{res_id}[{i}] = var{}{endl}", nid - 1)
     };
     source.pop();
     source.pop();

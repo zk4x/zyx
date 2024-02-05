@@ -34,6 +34,9 @@ pub mod compiler;
 pub mod dtype;
 /// See [ZyxError](error::ZyxError)
 pub mod error;
+/// Saving and loading of tensors from disk
+#[cfg(feature = "std")]
+pub mod io;
 /// See [Node](node::Node)
 pub mod node;
 /// See [Runtime](runtime::Runtime)
@@ -48,6 +51,3 @@ pub mod tensor;
 pub mod utils;
 /// See [View](view::View)
 pub mod view;
-/// Saving and loading of tensors from disk
-#[cfg(feature = "std")]
-pub mod io;
