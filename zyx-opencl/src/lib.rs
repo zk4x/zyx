@@ -21,9 +21,7 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
-#[cfg(feature = "debug1")]
-extern crate std;
-#[cfg(feature = "std")]
+#[cfg(any(feature = "debug1", feature = "std"))]
 extern crate std;
 
 mod compiler;

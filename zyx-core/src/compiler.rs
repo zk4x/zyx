@@ -127,7 +127,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn evaluate(
         &mut self,
-        mut rcs: BTreeMap<Id, u8>,
+        rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
@@ -187,10 +187,12 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             if rcs[&nid] > 0 && !self.buffers.contains_key(&nid) {
                 self.evaluate_buffer(nid, order, nodes)?;
             }
-            for p in nodes[nid.i()].parameters() {
+            // TODO this does not work with compiled backends, since
+            // they do not evaluate all ops
+            /*for p in nodes[nid.i()].parameters() {
                 rcs.entry(p).and_modify(|rc| *rc -= 1);
                 self.remove(p)?;
-            }
+            }*/
         }
         Ok(())
     }

@@ -522,7 +522,6 @@ impl<B: Backend> Tensor<B> {
     /// let x = dev.tensor([[2, 3],
     ///                     [4, 1]]);
     /// let z = x.pad([(1, 2)], 0);
-    /// std::println!("{:?}", z.shape());
     /// std::println!("{}", z);
     /// assert_eq!(z, [[0, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);

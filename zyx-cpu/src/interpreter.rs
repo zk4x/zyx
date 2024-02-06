@@ -19,7 +19,7 @@ impl Data {
 
 pub struct Interpreter {
     buffers: BTreeMap<Id, Data>,
-    views: BTreeMap<Id, View>,
+    views: BTreeMap<Id, (View, Id)>,
 }
 
 impl Interpreter {
@@ -37,14 +37,15 @@ impl RuntimeBackend for Interpreter {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        self.buffers.remove(&x);
         self.views.remove(&x);
+        // TODO only remove buffers if no view points to it anymore
+        self.buffers.remove(&x);
         Ok(())
     }
 
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
-        let view = &self.views[&x];
-        let data = unsafe { self.buffers[&x].as_type::<T>() };
+        let (view, id) = &self.views[&x];
+        let data = unsafe { self.buffers[&id].as_type::<T>() };
         Ok((0..numel).map(|i| data[view.get_idx(i)].clone()).collect())
     }
 

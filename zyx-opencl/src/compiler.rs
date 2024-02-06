@@ -74,12 +74,12 @@ fn get_program_build_data(
 #[cfg(feature = "debug1")]
 pub fn get_device_data(
     device: cl_device_id,
-    param_name: cl_device_info,
+    param_name: opencl_sys::cl_device_info,
 ) -> Result<Vec<u8>, cl_int> {
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
         let status =
-            unsafe { clGetDeviceInfo(object, param_name, 0, core::ptr::null_mut(), &mut size) };
+            unsafe { opencl_sys::clGetDeviceInfo(object, param_name, 0, core::ptr::null_mut(), &mut size) };
         if CL_SUCCESS != status {
             Err(status)
         } else {
@@ -97,7 +97,7 @@ pub fn get_device_data(
             let mut data: Vec<u8> = Vec::with_capacity(count);
             let status = unsafe {
                 data.set_len(count);
-                clGetDeviceInfo(
+                opencl_sys::clGetDeviceInfo(
                     object,
                     param_name,
                     size,
@@ -156,12 +156,12 @@ fn get_device_ids(
 #[cfg(feature = "debug1")]
 fn get_platform_data(
     platform: cl_platform_id,
-    param_name: cl_platform_info,
+    param_name: opencl_sys::cl_platform_info,
 ) -> Result<Vec<u8>, cl_int> {
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
         let status =
-            unsafe { clGetPlatformInfo(object, param_name, 0, core::ptr::null_mut(), &mut size) };
+            unsafe { opencl_sys::clGetPlatformInfo(object, param_name, 0, core::ptr::null_mut(), &mut size) };
         if CL_SUCCESS != status {
             Err(status)
         } else {
@@ -179,7 +179,7 @@ fn get_platform_data(
             let mut data: Vec<u8> = Vec::with_capacity(count);
             let status = unsafe {
                 data.set_len(count);
-                clGetPlatformInfo(
+                opencl_sys::clGetPlatformInfo(
                     object,
                     param_name,
                     size,
@@ -925,10 +925,11 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     );*/
 
     source = f!(
-        "{source}int idx{} = get_group_id(0)*{}+get_local_id(0)*{}+get_group_id(1)*{tile_width}+get_local_id(1){endl}",
+        "{source}int idx{} = get_group_id(0)*{}+get_local_id(0)*{}+get_group_id(1)*{tile_width}+get_local_id(1) /* 0..{} */{endl}",
         if rdim.is_some() { 1 } else { 0 },
         tile_height*global_work_size[1],
         global_work_size[1],
+        global_work_size.iter().product::<usize>(),
     );
 
     let _rid = if let Some(rdim) = rdim {

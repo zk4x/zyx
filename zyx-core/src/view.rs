@@ -82,18 +82,13 @@ impl View {
     #[must_use]
     pub fn cidx(&self) -> (String, String) {
         // TODO is padding correctly applied?
-        //extern crate std;
-        //use std::println;
-        //println!("View: {self:?}");
-        // In order to apply padding, we need to have multiple
-        // conditions. Then it is like this:
-        // conditions ? data[calculated_idx] : padding_value;
-        // So we should probably just return the whole expression,
-        // not just calculated index.
+        // TODO simplify this as much as possible
+        use std::println;
+        println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
-        if self.contiguous() && self.padded() {
+        if self.contiguous() && !self.padded() {
             for i in 0..self.shape().rank() {
                 idx += &f!("idx{i}");
             }
@@ -124,12 +119,14 @@ impl View {
                 if *left_p < 0 {
                     idx += &f!("+{}", -left_p);
                 } else if *left_p > 0 {
-                    padding_condition = f!("{padding_condition} && (idx{i}>{left_p})");
-                    idx += &f!("-{}", left_p);
+                    padding_condition = f!("{padding_condition} && (idx{i}>{})", left_p - 1);
                 }
                 if *right_p > 0 {
                     padding_condition =
                         f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
+                }
+                if *left_p > 0 {
+                    idx += &f!("-{}", left_p);
                 }
             }
         } else {
@@ -155,7 +152,7 @@ impl View {
             for ((d, st), (left_p, right_p)) in
                 shape.into_iter().zip(strides).zip(padding.iter()).rev()
             {
-                //println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 //res += &f!("{idx}/{ost}%{d}*{st}+");
                 //ost *= d;
                 let mut temp = f!("{idx}");
@@ -170,19 +167,21 @@ impl View {
                     1 => temp = f!("0"),
                     _ => temp += &f!("%{d}"),
                 }
+                if *left_p < 0 {
+                    temp = f!("{temp}+{}", -left_p);
+                } else if *left_p > 0 {
+                    padding_condition = f!("{padding_condition} && ({temp}>{})", left_p - 1);
+                }
+                if *right_p > 0 {
+                    padding_condition = f!("{padding_condition} && ({temp}<{})", d - *right_p as usize);
+                }
+                if *left_p > 0 {
+                    temp = f!("{temp}-{left_p}");
+                }
                 match *st {
                     0 => temp = f!("0"),
                     1 => {}
                     _ => temp += &f!("*{st}"),
-                }
-                if *left_p < 0 {
-                    temp = f!("{temp}+{}", -left_p);
-                } else if *left_p > 0 {
-                    padding_condition = f!(" && ({temp}>{left_p})");
-                    temp = f!("{temp}-{left_p}");
-                }
-                if *right_p > 0 {
-                    padding_condition = f!(" && ({temp}<{})", d - *right_p as usize);
                 }
                 res += &f!("{temp}+");
             }

@@ -10,7 +10,7 @@ zyx-core = { version = "*", path = "../zyx-core", default-features = false }
 opencl-sys = { version = "0.2.8", default-features = false }
 
 [features]
-default = ["std"]
+default = ["std", "debug1"]
 #default = ["debug1"]
 debug1 = []
 std = ["zyx-core/std"]
