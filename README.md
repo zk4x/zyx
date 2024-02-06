@@ -10,7 +10,7 @@ cargo add zyx-opencl
 ```
 And then initialize the device in your code.
 ```rust
-let dev = zyx_opencl::default()?;
+let dev = zyx_opencl::device()?;
 ```
 Now you can create tensors.
 ```rust

@@ -1,5 +1,34 @@
 use crate::{backend::Backend, dtype::DType, error::ZyxError, shape::Shape, tensor::Tensor};
-use alloc::vec::Vec;
+use alloc::{vec::Vec, string::String};
+use std::fs::File;
+use std::path::Path;
+use std::io::{Read, Write};
+use core::fmt::Write as CoreFmtWrite;
+
+/// This trait is implemented automatically for all modules that implement
+/// IntoIterator<Item = &mut Tensor>
+pub trait ModuleIO {
+    /// Save self into path
+    fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError>;
+    /// Load self from path
+    fn load(self, path: impl AsRef<Path>) -> Result<(), ZyxError>;
+}
+
+impl<'a, B: Backend + 'a, Tensors: IntoIterator<Item = &'a mut Tensor<B>>> ModuleIO for Tensors {
+    fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError> {
+        save(self.into_iter().map(|x| &*x), path)
+    }
+
+    fn load(self, path: impl AsRef<Path>) -> Result<(), ZyxError> {
+        let targets: Vec<&mut Tensor<B>> = self.into_iter().collect();
+        let dev = targets[0].backend();
+        let tensors = load(dev, path)?;
+        for (x, y) in targets.into_iter().zip(tensors) {
+            x.set(y);
+        }
+        Ok(())
+    }
+}
 
 /// Save all tensors into file.
 /// All parameters must be realized before calling this function, otherwise it will panic.
@@ -7,12 +36,10 @@ use alloc::vec::Vec;
 /// Returns io erorr if there was problem writing file to filesystem.
 pub fn save<'a, B: Backend + 'a>(
     tensors: impl IntoIterator<Item = &'a Tensor<B>>,
-    path: impl AsRef<std::path::Path>,
+    path: impl AsRef<Path>,
 ) -> Result<(), ZyxError> {
-    use core::fmt::Write as CoreFmtWrite;
-    use std::io::Write;
-    let mut f = std::fs::File::create(path)?;
-    let mut header = alloc::string::String::from("{");
+    let mut f = File::create(path)?;
+    let mut header = String::from("{");
     let mut begin = 0;
     let tensors: Vec<&Tensor<B>> = tensors.into_iter().collect();
     for tensor in &tensors {
@@ -62,10 +89,9 @@ pub fn save<'a, B: Backend + 'a>(
 /// Returns io error if there was io erorr or parsing error.
 pub fn load<B: Backend>(
     dev: B,
-    path: impl AsRef<std::path::Path>,
+    path: impl AsRef<Path>,
 ) -> Result<impl Iterator<Item = Tensor<B>>, ZyxError> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
+    let mut f = File::open(path)?;
     let mut header_len = [0u8; 8];
     f.read_exact(&mut header_len)?;
     let mut header = alloc::vec![0u8; usize::try_from(u64::from_le_bytes(header_len)).unwrap()];
