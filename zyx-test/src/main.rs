@@ -1,5 +1,6 @@
 mod binary;
 mod unary;
+mod movement;
 
 use zyx_core::backend::Backend;
 use zyx_core::scalar::Scalar;
@@ -44,11 +45,13 @@ macro_rules! run_test {
         let dev = zyx_opencl::device().unwrap();
         run_test_fn($test, &dev, 0f32);
         run_test_fn($test, &dev, 0i32);
+        /*let dev = zyx_cpu::device().unwrap();
+        run_test_fn($test, &dev, 0f32);
+        run_test_fn($test, &dev, 0i32);*/
     }};
 }
 
 fn main() {
-    // TODO test for all devices
     println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
     run_test!(unary::neg);
@@ -67,13 +70,23 @@ fn main() {
     run_test!(binary::pow);
     run_test!(binary::cmplt);
     println!("\nTesting movement ops");
-    //run_test!(movement::reshape);
-    //run_test!(movement::expand);
-    //run_test!(movement::permute);
-    //run_test!(movement::pad);
+    run_test!(movement::reshape);
+    run_test!(movement::expand);
+    run_test!(movement::permute);
+    run_test!(movement::pad);
     println!("\nTesting reduce ops");
-    println!("\nTesting combination ops");
+    //run_test!(reduce::sum);
+    //run_test!(reduce::pad);
+    println!("\nTesting combinations of ops");
+    //run_test!(combination::t0);
+    //run_test!(combination::t1);
     println!("\nTesting autograd engine");
+    //run_test!(autograd::t01);
     println!("\nTesting optimizers");
+    //run_test!(optimizer::sgd);
+    //run_test!(optimizer::adam);
     println!("\nTesting nn modules");
+    //run_test!(nn::linear);
+    //run_test!(nn::layer_norm);
+    //run_test!(nn::batch_norm);
 }

@@ -30,8 +30,8 @@ macro_rules! binary_test {
                 ($dev.randn(shape, T::dtype()), $dev.randn(shape, T::dtype()))
             } else {
                 (
-                    $dev.uniform(shape, T::min().sqrt()..T::max().sqrt()),
-                    $dev.uniform(shape, T::min().sqrt()..T::max().sqrt()),
+                    $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt()),
+                    $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt()),
                 )
             };
             let vx = x.to_vec()?;
@@ -87,11 +87,11 @@ pub fn div<T: Scalar>(_dev: impl Backend, _: T) -> Result<(), ZyxError> {
             for _ in 0..100 {
                 lower = lower.add(T::epsilon());
             }
-            (dev.uniform(shape, lower.clone()..T::max()),
-             dev.uniform(shape, lower..T::max()))
+            (dev.uniform(shape, lower.clone()..T::max_value()),
+             dev.uniform(shape, lower..T::max_value()))
         } else {
-            (dev.uniform(shape, T::zero().add(T::one())..T::max()),
-             dev.uniform(shape, T::zero().add(T::one())..T::max()))
+            (dev.uniform(shape, T::zero().add(T::one())..T::max_value()),
+             dev.uniform(shape, T::zero().add(T::one())..T::max_value()))
         };
         let vx = x.to_vec()?;
         let vy = y.to_vec()?;
@@ -132,8 +132,8 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
                 .add(T::one())
                 .add(T::one());
             (
-                dev.uniform(shape, T::min().sqrt().sqrt().sqrt()..six.clone()),
-                dev.uniform(shape, T::min().sqrt().sqrt().sqrt()..six),
+                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six.clone()),
+                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six),
             )
         };
         let vx = x.to_vec()?;

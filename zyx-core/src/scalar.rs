@@ -43,10 +43,12 @@ pub trait Scalar: Clone + core::fmt::Debug + 'static {
     fn pow(self, rhs: Self) -> Self;
     /// Compare less than
     fn cmplt(self, rhs: Self) -> Self;
+    /// Max of two numbers
+    fn max(self, rhs: Self) -> Self;
     /// Max value of this dtype
-    fn max() -> Self;
+    fn max_value() -> Self;
     /// Min value of this dtype
-    fn min() -> Self;
+    fn min_value() -> Self;
     /// Very small value of scalar, very close to zero
     fn epsilon() -> Self;
     /// Comparison for scalars,
@@ -140,11 +142,15 @@ impl Scalar for f32 {
         (self < rhs) as i32 as f32
     }
 
-    fn max() -> Self {
+    fn max(self, rhs: Self) -> Self {
+        f32::max(self, rhs)
+    }
+
+    fn max_value() -> Self {
         f32::MAX
     }
 
-    fn min() -> Self {
+    fn min_value() -> Self {
         f32::MIN
     }
 
@@ -241,11 +247,15 @@ impl Scalar for i32 {
         (self < rhs) as i32
     }
 
-    fn max() -> Self {
+    fn max(self, rhs: Self) -> Self {
+        <i32 as Ord>::max(self, rhs)
+    }
+
+    fn max_value() -> Self {
         i32::MAX
     }
 
-    fn min() -> Self {
+    fn min_value() -> Self {
         i32::MIN
     }
 

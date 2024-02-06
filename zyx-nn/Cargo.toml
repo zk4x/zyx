@@ -2,8 +2,18 @@
 name = "zyx-nn"
 version = "0.1.0"
 edition = "2021"
+authors = ["zk4x"]
+description = "Machine learning tensor library"
+documentation = "https://docs.rs/zyx-nn"
+readme = "README.md"
+homepage = "https://github.com/zk4x/zyx"
+repository = "https://github.com/zk4x/zyx"
+license = "MIT OR Apache-2.0"
+keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
+categories = ["computer-vision", "science"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[badges]
+maintenance = { status = "experimental" }
 
 [dependencies]
 zyx-core = { version = "*", path = "../zyx-core" }

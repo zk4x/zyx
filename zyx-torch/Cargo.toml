@@ -1,10 +1,10 @@
 [package]
-name = "zyx-cpu"
+name = "zyx-torch"
 version = "0.1.0"
 edition = "2021"
 authors = ["zk4x"]
 description = "Machine learning tensor library"
-documentation = "https://docs.rs/zyx-cpu"
+documentation = "https://docs.rs/zyx-torch"
 readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
@@ -17,8 +17,8 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx-core = { version = "*", path = "../zyx-core", default-features = false }
-rayon = { version = "1.8.1", default-features = false, optional = true }
+#tch = { version = "0.15.0", default-features = false }
 
 [features]
 default = ["std"]
-std = ["zyx-core/std", "rayon"]
+std = ["zyx-core/std"]

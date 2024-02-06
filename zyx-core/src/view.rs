@@ -34,16 +34,13 @@ impl View {
     }
 
     /// Is this view contiguous?
+    /// i. e. no padding, expands or permutes, only reshapes are allowed
     #[must_use]
     pub fn contiguous(&self) -> bool {
         self.views
             .iter()
-            .all(|InnerView { shape, strides, .. }| shape.strides() == strides.clone())
-    }
-
-    /// Is this view padded?
-    pub fn padded(&self) -> bool {
-        self.views.iter().any(
+            .all(|InnerView { shape, strides, .. }| shape.strides() == strides.clone()) &&
+        !self.views.iter().any(
             |InnerView {
                  shape: _,
                  strides: _,
@@ -82,13 +79,13 @@ impl View {
     #[must_use]
     pub fn cidx(&self) -> (String, String) {
         // TODO is padding correctly applied?
-        // TODO simplify this as much as possible
-        use std::println;
-        println!("View: {self:?}");
+        // TODO simplify this as much as possible, not for performance (it is cached), just for clarity
+        //use std::println;
+        //println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
-        if self.contiguous() && !self.padded() {
+        if self.contiguous() {
             for i in 0..self.shape().rank() {
                 idx += &f!("idx{i}");
             }
@@ -145,6 +142,7 @@ impl View {
             padding,
         } in &self.views[1..]
         {
+            let n = shape.numel();
             idx.insert(0, '(');
             idx.push(')');
             let mut res = String::new();
@@ -152,7 +150,7 @@ impl View {
             for ((d, st), (left_p, right_p)) in
                 shape.into_iter().zip(strides).zip(padding.iter()).rev()
             {
-                println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                //println!("d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 //res += &f!("{idx}/{ost}%{d}*{st}+");
                 //ost *= d;
                 let mut temp = f!("{idx}");
@@ -165,7 +163,7 @@ impl View {
                 match *d {
                     0 => panic!(),
                     1 => temp = f!("0"),
-                    _ => temp += &f!("%{d}"),
+                    _ => if ost < n { temp += &f!("%{d}"); }
                 }
                 if *left_p < 0 {
                     temp = f!("{temp}+{}", -left_p);

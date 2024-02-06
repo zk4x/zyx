@@ -28,6 +28,17 @@ impl Axes {
         axes.sort_by_key(|(_, v)| *v);
         Axes(axes.iter().map(|(k, _)| *k).collect())
     }
+
+    /// Does self contain axis a?
+    pub fn contains(&self, a: usize) -> bool {
+        self.0.contains(&a)
+    }
+}
+
+impl Into<alloc::vec::Vec<usize>> for Axes {
+    fn into(self) -> alloc::vec::Vec<usize> {
+        self.0.into()
+    }
 }
 
 impl<'a> IntoIterator for &'a Axes {
@@ -53,6 +64,12 @@ pub trait IntoAxes {
 }
 
 impl IntoAxes for Axes {
+    fn into_axes(self, rank: usize) -> Axes {
+        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+    }
+}
+
+impl IntoAxes for &Axes {
     fn into_axes(self, rank: usize) -> Axes {
         Axes(self.iter().copied().filter(|a| *a < rank).collect())
     }

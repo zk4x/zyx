@@ -26,7 +26,6 @@ macro_rules! unary_test {
         for shape in shapes {
             let x = $dev.randn(shape, T::dtype());
             let v = x.to_vec()?;
-            //std::println!("{x}");
             assert_eq(x.$x().to_vec()?, v.into_iter().map(|e: T| e.$x()));
         }
         Ok(())
@@ -89,7 +88,7 @@ pub fn ln<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         } else {
             T::one()
         };
-        let x = dev.uniform(shape, T::zero().add(e)..T::max());
+        let x = dev.uniform(shape, T::zero().add(e)..T::max_value());
         let v = x.to_vec()?;
         assert_eq(x.ln().to_vec()?, v.into_iter().map(|e: T| e.ln()));
     }
@@ -139,7 +138,7 @@ pub fn sqrt<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         shapes.push(shape.into());
     }
     for shape in shapes {
-        let x = dev.uniform(shape, T::zero()..T::max());
+        let x = dev.uniform(shape, T::zero()..T::max_value());
         let v = x.to_vec()?;
         assert_eq(x.ln().to_vec()?, v.into_iter().map(|e: T| e.ln()));
     }

@@ -185,6 +185,12 @@ impl core::ops::Index<Range<i64>> for Shape {
     }
 }
 
+impl Into<Vec<usize>> for Shape {
+    fn into(self) -> Vec<usize> {
+        self.0.into()
+    }
+}
+
 impl From<&Shape> for Shape {
     fn from(sh: &Shape) -> Self {
         sh.clone()
