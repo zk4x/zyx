@@ -122,6 +122,13 @@ impl CPU {
     pub fn eye(&self, n: usize, dtype: DType) -> Tensor<&Self> {
         <&Self as Backend>::eye(self, n, dtype)
     }
+
+    /// Create graph of operations between tensors in dot format for visualization
+    #[must_use]
+    pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+        let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
+        self.0.read(|b| b.plot_graph_dot(&ids))
+    }
 }
 
 impl Backend for &CPU {

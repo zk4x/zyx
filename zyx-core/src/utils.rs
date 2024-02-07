@@ -37,3 +37,80 @@ pub fn get_dtype(nodes: &[Node], mut x: Id) -> DType {
         }
     }
 }
+
+/// Puts graph of nodes into dot language for visualization
+pub fn plot_graph_dot(ids: &[Id], nodes: &[Node], rcs: &[u8]) -> alloc::string::String {
+    use alloc::format;
+    use alloc::string::String;
+    use core::fmt::Write;
+    let mut user_rc = rcs.to_vec();
+    for node in nodes {
+        for param in node.parameters() {
+            user_rc[param.i()] -= 1;
+        }
+    }
+    //std::println!("User {:?}", user_rc);
+    let mut res = String::from("strict digraph {\n  ordering=in\n  rank=source\n");
+    let mut add_node = |i: usize, text: &str, shape: &str| {
+        let fillcolor = if user_rc[i] > 0 { "lightblue" } else { "grey" };
+        /*if let Some(label) = labels.get(&NodeId::new(id)) {
+            write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
+                label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
+        } else {*/
+        write!(
+            res,
+            "  {i}[label=\"{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
+            i,
+            rcs[i],
+            text,
+            get_shape(nodes, crate::tensor::id(i)),
+            shape,
+            fillcolor
+        )
+        .unwrap();
+        writeln!(res).unwrap();
+    };
+    let mut edges = String::new();
+    for id in ids {
+        let id = id.i();
+        let node = &nodes[id];
+        match node {
+            Node::IterF32(_, sh) => add_node(id, &format!("Iter(F32, {sh})"), "box"),
+            Node::IterI32(_, sh) => add_node(id, &format!("Iter(I32, {sh})"), "box"),
+            Node::LeafF32(sh) => add_node(id, &format!("Leaf(F32, {sh})"), "box"),
+            Node::LeafI32(sh) => add_node(id, &format!("Leaf(I32, {sh})"), "box"),
+            Node::UniformF32(sh) => add_node(id, &format!("Uniform(F32, {sh})"), "box"),
+            Node::Add(x, y) => add_node(id, &format!("Add({x}, {y})"), "oval"),
+            Node::Sub(x, y) => add_node(id, &format!("Sub({x}, {y})"), "oval"),
+            Node::Mul(x, y) => add_node(id, &format!("Mul({x}, {y})"), "oval"),
+            Node::Div(x, y) => add_node(id, &format!("Div({x}, {y})"), "oval"),
+            Node::Cmplt(x, y) => add_node(id, &format!("Cmplt({x}, {y})"), "oval"),
+            Node::Pow(x, y) => add_node(id, &format!("Pow({x}, {y})"), "oval"),
+            Node::Neg(x) => add_node(id, &format!("Neg({x})"), "oval"),
+            Node::Exp(x) => add_node(id, &format!("Exp({x})"), "oval"),
+            Node::ReLU(x) => add_node(id, &format!("ReLU({x})"), "oval"),
+            Node::Ln(x) => add_node(id, &format!("Ln({x})"), "oval"),
+            Node::Sin(x) => add_node(id, &format!("Sin({x})"), "oval"),
+            Node::Cos(x) => add_node(id, &format!("Cos({x})"), "oval"),
+            Node::Sqrt(x) => add_node(id, &format!("Sqrt({x})"), "oval"),
+            Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
+            Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),
+            Node::Pad(x, ..) => add_node(id, &format!("Pad({x})"), "oval"),
+            Node::CastF32(x) => add_node(id, &format!("CastF32({x})"), "oval"),
+            Node::CastI32(x) => add_node(id, &format!("CastI32({x})"), "oval"),
+            Node::Reshape(x, ..) => add_node(id, &format!("Reshape({x})"), "oval"),
+            Node::Permute(x, axes, ..) => {
+                add_node(id, &format!("Permute({x}, axes {axes:?})"), "oval")
+            }
+            Node::Sum(x, axes, ..) => add_node(id, &format!("Sum({x}, axes {axes:?})"), "oval"),
+            Node::Max(x, axes, ..) => add_node(id, &format!("Max({x}, axes {axes:?})"), "oval"),
+        }
+        for param in node.parameters() {
+            writeln!(edges, "  {} -> {id}", param.i()).unwrap();
+        }
+    }
+    res = res.replace("NL", "\n");
+    write!(res, "{edges}}}").unwrap();
+    res
+}
+
