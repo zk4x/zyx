@@ -4,6 +4,7 @@ use zyx_core::{
 };
 #[cfg(feature = "std")]
 use rayon::prelude::*;
+//use std::println;
 
 macro_rules! unary_op {
     ($ctx: expr, $x: expr, $nid: expr, $op: expr) => {
@@ -86,16 +87,17 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
         (false, false) => {
             #[cfg(not(feature = "std"))]
             {
-                (0..xview.numel()).map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[xview.get_idx(i)].clone()))).collect()
+                (0..xview.numel()).map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone()))).collect()
             }
             #[cfg(feature = "std")]
             {
-                (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[xview.get_idx(i)].clone()))).collect()
+                (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone()))).collect()
             }
         }
     }
 }
 
+#[derive(Debug)]
 enum Data {
     F32(Vec<f32>),
     I32(Vec<i32>),
@@ -131,13 +133,14 @@ impl Interpreter {
 
 impl RuntimeBackend for Interpreter {
     fn is_evaluated(&self, x: Id) -> bool {
-        self.buffers.contains_key(&x)
+        self.views.contains_key(&x)
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
         self.views.remove(&x);
-        // TODO only remove buffers if no view points to it anymore
-        self.buffers.remove(&x);
+        if !self.views.values().any(|(_, id)| *id == x) {
+            self.buffers.remove(&x);
+        }
         Ok(())
     }
 
@@ -158,6 +161,8 @@ impl RuntimeBackend for Interpreter {
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
+        //println!("\nrcs: {rcs:?}");
+        //println!("views: {:?}\n", self.views);
         //std::println!("Evaluating: {_to_eval:?}, rcs: {rcs:?}");
         //std::println!("Order: {order:?}");
         for nid in order.iter().copied() {
@@ -216,6 +221,7 @@ impl RuntimeBackend for Interpreter {
                 Node::Reshape(x, sh) => {
                     let (view, id) = &self.views[x];
                     self.views.insert(nid, (view.reshape(sh), *id));
+                    //println!("views: {:?}, buffers: {:?}", self.views, self.buffers);
                 }
                 Node::Expand(x, sh) => {
                     let (view, id) = &self.views[x];
@@ -235,7 +241,7 @@ impl RuntimeBackend for Interpreter {
                         Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| x.add(y))),
                         Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| x.add(y))),
                     };
-                    self.views.insert(nid, (view.clone(), nid));
+                    self.views.insert(nid, (View::new(sh.clone()), nid));
                     self.buffers.insert(nid, data);
                 }
                 Node::Max(x, ax, sh) => {
@@ -244,7 +250,7 @@ impl RuntimeBackend for Interpreter {
                         Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
                         Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
                     };
-                    self.views.insert(nid, (view.clone(), nid));
+                    self.views.insert(nid, (View::new(sh.clone()), nid));
                     self.buffers.insert(nid, data);
                 }
             }

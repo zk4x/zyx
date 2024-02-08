@@ -126,12 +126,16 @@ impl CPU {
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
     pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
-        let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
-        self.0.read(|b| b.plot_graph_dot(&ids))
+        <&Self as Backend>::plot_graph(self, tensors)
     }
 }
 
 impl Backend for &CPU {
+    fn plot_graph<'a, B: Backend + 'a>(self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+        let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
+        self.0.read(|b| b.plot_graph_dot(&ids))
+    }
+
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
         tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
     }

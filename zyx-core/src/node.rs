@@ -4,7 +4,12 @@ use crate::{axes::Axes, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+/// Blah
+pub trait Blah<T>: Iterator<Item = T> + core::fmt::Debug {}
+impl<A: Iterator<Item = T> + core::fmt::Debug, T> Blah<T> for A {}
+
 /// Node representing different possible tensors
+#[derive(Debug)]
 pub enum Node {
     /// F32 leaf that is guaranteed to be evaluated
     LeafF32(Shape),
@@ -13,9 +18,9 @@ pub enum Node {
     /// UniformF32 initializer for range 0..1
     UniformF32(Shape),
     /// IterF32 initializer
-    IterF32(Box<dyn Iterator<Item = f32>>, Shape),
+    IterF32(Box<dyn Blah<f32>>, Shape),
     /// IterI32 initializer
-    IterI32(Box<dyn Iterator<Item = i32>>, Shape),
+    IterI32(Box<dyn Blah<i32>>, Shape),
     /// Cast to F32 unary op
     CastF32(Id),
     /// Cast to I32 unary op

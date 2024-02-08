@@ -22,8 +22,12 @@ pub fn sum<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         shapes.push(shape.into());
     }
     for shape in shapes {
-        let a = rng.gen_range(1..shape.rank());
-        let axes = (0..shape.rank()).collect::<Vec<usize>>().choose_multiple(&mut rng, a).copied().collect::<Vec<usize>>().into_axes(a);
+        let a = rng.gen_range(0..shape.rank());
+        let axes = (0..shape.rank()).collect::<Vec<usize>>().choose_multiple(&mut rng, a).copied().collect::<Vec<usize>>();
+        if axes.is_empty() {
+            continue
+        }
+        let axes = axes.into_axes(a);
         let x = match T::dtype() {
             DType::F32 => dev.randn(&shape, T::dtype()),
             DType::I32 => dev.uniform(&shape, i32::MIN/1024/1024..i32::MAX/1024/1024),
@@ -55,12 +59,16 @@ pub fn max<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         shapes.push(shape.into());
     }
     for shape in shapes {
-        let a = rng.gen_range(1..shape.rank());
-        let axes = (0..shape.rank()).collect::<Vec<usize>>().choose_multiple(&mut rng, a).copied().collect::<Vec<usize>>().into_axes(a);
+        let a = rng.gen_range(0..shape.rank());
+        let axes = (0..shape.rank()).collect::<Vec<usize>>().choose_multiple(&mut rng, a).copied().collect::<Vec<usize>>();
+        if axes.is_empty() {
+            continue
+        }
+        let axes = axes.into_axes(a);
         let x = dev.randn(&shape, T::dtype());
         let v: Vec<T> = x.to_vec()?;
         let rv = x.sum(&axes).to_vec()?;
-        assert_eq(rv, reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), |(x, y)| x.max(y)));
+        assert_eq(rv, reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), |(x, y)| Scalar::max(x, y)));
     }
     Ok(())
 }

@@ -42,3 +42,9 @@ impl DType {
         }
     }
 }
+
+impl core::fmt::Display for DType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        f.write_fmt(format_args!("{self:?}"))
+    }
+}

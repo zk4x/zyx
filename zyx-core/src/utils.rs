@@ -44,9 +44,12 @@ pub fn plot_graph_dot(ids: &[Id], nodes: &[Node], rcs: &[u8]) -> alloc::string::
     use alloc::string::String;
     use core::fmt::Write;
     let mut user_rc = rcs.to_vec();
-    for node in nodes {
-        for param in node.parameters() {
-            user_rc[param.i()] -= 1;
+    for (i, node) in nodes.iter().enumerate() {
+        // not all nodes are alive :)
+        if rcs[i] > 0 {
+            for param in node.parameters() {
+                user_rc[param.i()] -= 1;
+            }
         }
     }
     //std::println!("User {:?}", user_rc);
@@ -60,7 +63,7 @@ pub fn plot_graph_dot(ids: &[Id], nodes: &[Node], rcs: &[u8]) -> alloc::string::
         write!(
             res,
             "  {i}[label=\"{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
-            i,
+            crate::tensor::id(i),
             rcs[i],
             text,
             get_shape(nodes, crate::tensor::id(i)),
@@ -95,15 +98,15 @@ pub fn plot_graph_dot(ids: &[Id], nodes: &[Node], rcs: &[u8]) -> alloc::string::
             Node::Sqrt(x) => add_node(id, &format!("Sqrt({x})"), "oval"),
             Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
             Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),
-            Node::Pad(x, ..) => add_node(id, &format!("Pad({x})"), "oval"),
+            Node::Pad(x, padding, ..) => add_node(id, &format!("Pad({x}, {padding:?})"), "oval"),
             Node::CastF32(x) => add_node(id, &format!("CastF32({x})"), "oval"),
             Node::CastI32(x) => add_node(id, &format!("CastI32({x})"), "oval"),
             Node::Reshape(x, ..) => add_node(id, &format!("Reshape({x})"), "oval"),
             Node::Permute(x, axes, ..) => {
-                add_node(id, &format!("Permute({x}, axes {axes:?})"), "oval")
+                add_node(id, &format!("Permute({x}, {axes:?})"), "oval")
             }
-            Node::Sum(x, axes, ..) => add_node(id, &format!("Sum({x}, axes {axes:?})"), "oval"),
-            Node::Max(x, axes, ..) => add_node(id, &format!("Max({x}, axes {axes:?})"), "oval"),
+            Node::Sum(x, axes, ..) => add_node(id, &format!("Sum({x}, {axes:?})"), "oval"),
+            Node::Max(x, axes, ..) => add_node(id, &format!("Max({x}, {axes:?})"), "oval"),
         }
         for param in node.parameters() {
             writeln!(edges, "  {} -> {id}", param.i()).unwrap();

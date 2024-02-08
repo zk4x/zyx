@@ -827,12 +827,13 @@ impl zyx_core::compiler::Compiler for Compiler {
                     _ => "Unable to finish kernel execution event. UNKNOWN ERROR",
                 }));
             }
-            let elapsed = begin.elapsed().as_nanos();
-            let elapsed_millis = elapsed as f64 / 1000000.;
+            let elapsed_nanos = begin.elapsed().as_nanos();
+            let elapsed_millis = elapsed_nanos as f64 / 1000000.;
+            std::println!("bytes: {}, flops: {}", program.bytes, program.flop);
             std::println!(
                 "Kernel execution took {elapsed_millis:.3}ms ~ {:.2} GFLOPS, {:.2} GB/s",
-                program.flop as f64 / elapsed as f64,
-                program.bytes as f64 / elapsed as f64,
+                program.flop as f64 / elapsed_nanos as f64,
+                program.bytes as f64 / elapsed_nanos as f64,
             );
             //std::println!("Output: {:?}", self.load::<f32>(&Buffer { mem, event }, 6));
         }
@@ -857,8 +858,8 @@ impl zyx_core::compiler::Compiler for Compiler {
 
 fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
+    //use std::println;
     // TODO get this to work with different max local work sizes
-    use std::println;
     let max_local_work_size = 256;
     let tile_height;
     let tile_width;
@@ -868,9 +869,9 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     if let Some(rdim) = rdim {
         let rshape = ast.view.shape();
         let n: usize = rdim * rshape[-1];
-        println!("n: {n}, rshape: {rshape}, rdim: {rdim}");
+        //println!("n: {n}, rshape: {rshape}, rdim: {rdim}");
         let mut lw = 1;
-        let mut x: usize = rshape[-1] / 8usize;
+        let mut x: usize = rshape[-1];
         while x % 2 == 0 && x > 1 && lw <= max_local_work_size / 2 {
             x /= 2;
             lw *= 2;
@@ -963,7 +964,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
             // TODO check if this should be tile or data
             Op::Leaf(x) => {
                 let (view, t) = &ast.args[*x];
-                bytes += view.original_shape().numel();
+                bytes += view.original_numel();
                 dtype = t.ocl_str();
                 let (p, i) = view.cidx();
                 if p.is_empty() {
@@ -1045,7 +1046,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
         source,
         global_work_size,
         local_work_size,
-        ast.view.original_shape().numel() * dtype_byte_size,
+        ast.view.original_numel() * dtype_byte_size,
         bytes * dtype_byte_size,
     )
 }
@@ -1076,5 +1077,15 @@ fn sum_test() -> Result<(), ZyxError> {
     //panic!();
     //panic!("{y_vec:?}");
     // res [[9], [7]]
+    Ok(())
+}
+
+#[test]
+fn dot_test() -> Result<(), ZyxError> {
+    let dev = crate::device_builder().platform_id(0).build()?;
+    let x = dev.randn([1024, 1024], DType::F32);
+    let y = dev.randn([1024, 1024], DType::F32);
+    let z = x.dot(&y);
+    let _: Vec<f32> = z.to_vec()?;
     Ok(())
 }

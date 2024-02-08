@@ -84,6 +84,23 @@ pub enum Op {
     Max(usize),
 }
 
+impl Op {
+    fn access_parameters(&self, mut op: impl FnMut(usize)) {
+        match self {
+            Op::Leaf(..) | Op::UniformF32(..) => {}
+            Op::CastF32(x) | Op::CastI32(x)
+            | Op::Neg(x) | Op::ReLU(x)
+            | Op::Sin(x) | Op::Cos(x)
+            | Op::Ln(x) | Op::Exp(x)
+            | Op::Tanh(x) | Op::Sqrt(x)
+            | Op::Sum(x) | Op::Max(x) => op(*x),
+            Op::Add(x, y) | Op::Sub(x, y)
+            | Op::Mul(x, y) | Op::Div(x, y)
+            | Op::Pow(x, y) | Op::Cmplt(x, y) => { op(*x); op(*y); }
+        }
+    }
+}
+
 /// Abstract syntax tree that can be compiled into program.
 /// Consists of kernel arguments, elementwise ops, optional reduce op
 /// and elementwise ops after reduce.
@@ -215,7 +232,8 @@ impl<C: Compiler> CompiledBackend<C> {
     fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
         // Create ordered list of nodes that need to be evaluated
         //extern crate std;
-        use std::println;
+        //use std::println;
+        //println!("x: {x}\norder: {order:?}\nnodes: {nodes:?}");
         let mut temp = alloc::vec![x];
         let mut porder = BTreeSet::new();
         while let Some(nid) = temp.pop() {
@@ -241,7 +259,9 @@ impl<C: Compiler> CompiledBackend<C> {
         // TODO don't load the same buffer twice if used in different positions unless it
         // uses different views for those loads, this can be done as deduplication in the end
         // of this function.
+        //println!();
         for nid in porder {
+            //println!("ops: {ops:?}");
             flop += nodes[nid.i()].flop(nodes);
             //println!("Node {:?}", nodes[nid.i()]);
             let mut mapped = true;
@@ -271,45 +291,45 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::Expand(x, sh) => {
                         mapped = false;
                         mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![*x];
+                        let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p.i()] {
+                            if let Op::Leaf(a) = ops[p] {
                                 args[a].0 = args[a].0.expand(sh);
                             }
-                            params.extend(nodes[x.i()].parameters());
+                            ops[p].access_parameters(|x| params.push(x));
                         }
                     }
                     Node::Reshape(x, sh) => {
                         mapped = false;
                         mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![*x];
+                        let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p.i()] {
+                            if let Op::Leaf(a) = ops[p] {
                                 args[a].0 = args[a].0.reshape(sh);
                             }
-                            params.extend(nodes[x.i()].parameters());
+                            ops[p].access_parameters(|x| params.push(x));
                         }
                     }
                     Node::Pad(x, padding, _) => {
                         mapped = false;
                         mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![*x];
+                        let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p.i()] {
+                            if let Op::Leaf(a) = ops[p] {
                                 args[a].0 = args[a].0.pad(padding);
                             }
-                            params.extend(nodes[x.i()].parameters());
+                            ops[p].access_parameters(|x| params.push(x));
                         }
                     }
                     Node::Permute(x, axes, _) => {
                         mapped = false;
                         mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![*x];
+                        let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p.i()] {
+                            if let Op::Leaf(a) = ops[p] {
                                 args[a].0 = args[a].0.permute(axes);
                             }
-                            params.extend(nodes[x.i()].parameters());
+                            ops[p].access_parameters(|x| params.push(x));
                         }
                     }
                     Node::Add(x, y) => ops.push(Op::Add(mapping[x], mapping[y])),
@@ -338,8 +358,8 @@ impl<C: Compiler> CompiledBackend<C> {
         }
         let view;
         let rdim = if let Some(raxes) = raxes {
-            println!("rshape: {rshape:?}");
-            println!("raxes: {raxes:?}");
+            //println!("rshape: {rshape:?}");
+            //println!("raxes: {raxes:?}");
             //std::println!("s1: {s1}");
             let s0: usize = rshape
                 .iter()
@@ -364,7 +384,8 @@ impl<C: Compiler> CompiledBackend<C> {
             //println!("New shape before reduce: {new_shape:?}");
             //println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
-                *aview = aview.permute(&axes).reshape(&new_shape).pad(
+                std::println!("aview: {aview:?}");
+                *aview = aview.reshape(&rshape).permute(&axes).reshape(&new_shape).pad(
                     &new_shape
                         .iter()
                         .rev()
@@ -378,8 +399,9 @@ impl<C: Compiler> CompiledBackend<C> {
                         .collect::<Vec<(i64, i64)>>(),
                 );
             }
+            let ar_rshape = rshape.reduce(&axes);
             // view after the reduce op
-            view = View::new(get_shape(nodes, x).clone())
+            view = View::new(ar_rshape.clone())
                 .permute(&axes)
                 .reshape(&ar_new_shape)
                 .pad(
@@ -396,7 +418,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         .collect::<Vec<(i64, i64)>>(),
                 );
             for (aview, _) in &mut ar_args {
-                *aview = aview.permute(&axes).reshape(&ar_new_shape).pad(
+                *aview = aview.reshape(&ar_rshape).permute(&axes).reshape(&ar_new_shape).pad(
                     &ar_new_shape
                         .iter()
                         .rev()
@@ -410,7 +432,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         .collect::<Vec<(i64, i64)>>(),
                 );
             }
-            std::println!("view: {view:?}");
+            //std::println!("view: {view:?}");
             Some(if s0 != 1 && s0 % 8 != 0 {
                 (s0 / 8 + 1) * 8
             } else {

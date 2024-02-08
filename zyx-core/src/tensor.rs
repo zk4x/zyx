@@ -30,7 +30,7 @@ impl Id {
 
 impl core::fmt::Display for Id {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("{}", self.0))
+        f.write_fmt(format_args!("{:?}", self))
     }
 }
 
@@ -460,25 +460,24 @@ impl<B: Backend> Tensor<B> {
         let xshape = self.shape();
         let yshape = y.shape();
         let yrank = yshape.rank();
-        assert_eq!(xshape[-1], yshape[-(yrank.min(2) as i64)]);
+        assert_eq!(xshape[-1], yshape[-(yrank.min(2) as i64)], "Cannot dot tensors with shapes {xshape} and {yshape}");
         (self.reshape(
             xshape[0..-1]
                 .iter()
                 .copied()
                 .chain([1])
                 .chain([xshape[-1]])
-                .collect::<Vec<usize>>(),
+                .collect::<Box<[usize]>>(),
         ) * y
             .reshape(
                 yshape[0..-2]
                     .iter()
                     .copied()
                     .chain([1])
-                    .chain([yshape[-(yrank.min(2) as i64)]])
-                    .collect::<Vec<usize>>(),
-            )
-            .transpose())
-        .sum(-1)
+                    .chain(yshape[-(yrank.min(2) as i64)..yrank as i64].iter().copied())
+                    .collect::<Box<[usize]>>(),
+            ).transpose())
+        .sum(-1).reshape(xshape[0..-1].iter().copied().chain([yshape[-1]]).collect::<Box<[usize]>>())
     }
 
     // Movement ops
@@ -489,7 +488,7 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn reshape(&self, shape: impl Into<Shape>) -> Tensor<B> {
         let shape = shape.into();
-        assert_eq!(self.shape().numel(), shape.numel());
+        assert_eq!(self.shape().numel(), shape.numel(), "Cannot reshape tensor with shape {} to {shape}", self.shape());
         tensor(
             self.backend.push(Node::Reshape(self.id, shape)).unwrap(),
             self.backend,
@@ -552,7 +551,7 @@ impl<B: Backend> Tensor<B> {
         fn get_dtype<T: Scalar>(_: T) -> DType {
             T::dtype()
         }
-        assert_eq!(get_dtype(value.clone()), self.dtype());
+        assert_eq!(get_dtype(value.clone()), self.dtype(), "Cannot pad tensor with dtype {} with value of dtype {}", self.dtype(), get_dtype(value.clone()));
         // TODO asserts
         // TODO add support for value
         let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
@@ -676,6 +675,7 @@ impl<B: Backend> Tensor<B> {
     pub fn get(&self, index: impl IntoIndex) -> Tensor<B> {
         let shape = self.shape();
         // TODO asserts
+        // TODO is this even correct?
         self.pad(
             index
                 .into_index()

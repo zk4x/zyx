@@ -20,6 +20,12 @@ struct InnerView {
     padding: Box<[(i64, i64)]>,
 }
 
+impl InnerView {
+    fn contiguous(&self) -> bool {
+        self.shape.strides() == self.strides && self.padding.iter().all(|(lp, rp)| *lp == 0 && *rp == 0)
+    }
+}
+
 impl View {
     /// Create new view from shape
     #[must_use]
@@ -39,14 +45,7 @@ impl View {
     pub fn contiguous(&self) -> bool {
         self.views
             .iter()
-            .all(|InnerView { shape, strides, .. }| shape.strides() == strides.clone()) &&
-        !self.views.iter().any(
-            |InnerView {
-                 shape: _,
-                 strides: _,
-                 padding,
-             }| padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0),
-        )
+            .all(InnerView::contiguous)
     }
 
     /// Convert contiguous idx into idx indexing data with self view
@@ -213,6 +212,13 @@ impl View {
         &self.views.last().unwrap().shape
     }
 
+    /// Original number of elements of self.
+    #[must_use]
+    pub fn original_numel(&self) -> usize {
+        let InnerView { shape, strides, .. } = self.views.last().unwrap();
+        shape.iter().zip(strides.iter()).filter_map(|(d, s)| if *s != 0 { Some(d) } else { None }).copied().product()
+    }
+
     /// Expand self into shape
     #[must_use]
     pub fn expand(&self, shape: &Shape) -> Self {
@@ -263,14 +269,23 @@ impl View {
             return self.clone();
         }
         let mut views = self.views.clone();
-        views.insert(
-            0,
-            InnerView {
+        // If we are reshaping InnerView that is contiguous, we just delete the last reshape
+        if views.first().unwrap().contiguous() {
+            views[0] = InnerView {
                 shape: shape.clone(),
                 strides: shape.strides(),
                 padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
-            },
-        );
+            };
+        } else {
+            views.insert(
+                0,
+                InnerView {
+                    shape: shape.clone(),
+                    strides: shape.strides(),
+                    padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
+                },
+            );
+        }
         Self { views }
     }
 

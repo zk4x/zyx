@@ -269,15 +269,20 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Plot dot graph in dot format between given nodes
     pub fn plot_graph_dot(&self, ids: &[Id]) -> alloc::string::String {
+        let max_id = ids.iter().max().unwrap();
         let mut nodes = ids.to_vec();
         for nid in &self.order {
+            if nid > max_id {
+                break
+            }
             for p in self.nodes[nid.i()].parameters() {
                 if nodes.contains(&p) {
                     nodes.push(*nid);
                 }
             }
         }
-        crate::utils::plot_graph_dot(ids, &self.nodes, &self.rcs)
+        //std::println!("{:?}");
+        crate::utils::plot_graph_dot(&nodes, &self.nodes, &self.rcs)
     }
 
     /// Common autograd engine, currently used by all backends.

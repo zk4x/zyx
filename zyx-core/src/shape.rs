@@ -5,7 +5,11 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 fn to_usize_idx(index: i64, rank: usize) -> usize {
-    (index + rank as i64) as usize % rank
+    if index >= 0 && index <= rank as i64 {
+        index as usize
+    } else {
+        (index + rank as i64) as usize % rank
+    }
 }
 
 /// Shape of tensor
@@ -66,8 +70,11 @@ impl Shape {
     }
 
     /// Permute shape's dimensions with axes
+    /// # Panics
+    /// Panics if axes is incorrect.
     #[must_use]
     pub fn permute(&self, axes: &Axes) -> Self {
+        //std::println!("self: {self}, axes: {axes:?}");
         Self(axes.into_iter().map(|axis| self.0[*axis]).collect())
     }
 
@@ -194,6 +201,12 @@ impl From<Shape> for Vec<usize> {
 impl From<&Shape> for Shape {
     fn from(sh: &Shape) -> Self {
         sh.clone()
+    }
+}
+
+impl From<Box<[usize]>> for Shape {
+    fn from(value: Box<[usize]>) -> Self {
+        Shape(value)
     }
 }
 

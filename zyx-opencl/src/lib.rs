@@ -54,22 +54,26 @@ pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 // But it should not be possible to move inner while reading or updating,
 // is it possible?.
 struct MCell<T> {
-    inner: core::cell::UnsafeCell<T>,
+    //inner: core::cell::UnsafeCell<T>,
+    inner: core::cell::RefCell<T>,
 }
 
 impl<T> MCell<T> {
     const fn new(inner: T) -> MCell<T> {
         MCell {
-            inner: core::cell::UnsafeCell::new(inner),
+            //inner: core::cell::UnsafeCell::new(inner),
+            inner: core::cell::RefCell::new(inner),
         }
     }
 
-    fn read<R>(&self, func: impl FnOnce(&T) -> R) -> R {
-        func(unsafe { &*self.inner.get() })
+    fn read<R>(&self, func: impl FnOnce(core::cell::Ref<T>) -> R) -> R {
+        //func(unsafe { &*self.inner.get() })
+        func(self.inner.borrow())
     }
 
-    fn update<R>(&self, func: impl FnOnce(&mut T) -> R) -> R {
-        func(unsafe { &mut *self.inner.get() })
+    fn update<R>(&self, func: impl FnOnce(core::cell::RefMut<T>) -> R) -> R {
+        //func(unsafe { &mut *self.inner.get() })
+        func(self.inner.borrow_mut())
     }
 }
 
@@ -166,18 +170,22 @@ impl OpenCL {
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
     pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
-        let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
-        self.0.read(|b| b.plot_graph_dot(&ids))
+        <&Self as Backend>::plot_graph(self, tensors)
     }
 }
 
 impl Backend for &OpenCL {
+    fn plot_graph<'a, B: Backend + 'a>(self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+        let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
+        self.0.read(|b| b.plot_graph_dot(&ids))
+    }
+
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
-        tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
+        tensor(self.0.update(|mut b| b.randn(shape.into(), dtype)), self)
     }
 
     fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<Self> {
-        tensor(self.0.update(|b| b.uniform(shape.into(), range)), self)
+        tensor(self.0.update(|mut b| b.uniform(shape.into(), range)), self)
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -189,27 +197,27 @@ impl Backend for &OpenCL {
     }
 
     fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
-        self.0.update(|b| b.backward(x, sources))
+        self.0.update(|mut b| b.backward(x, sources))
     }
 
     fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, ZyxError> {
-        self.0.update(|b| b.load(x))
+        self.0.update(|mut b| b.load(x))
     }
 
     fn push(self, node: Node) -> Result<Id, ZyxError> {
-        self.0.update(|b| b.push(node))
+        self.0.update(|mut b| b.push(node))
     }
 
     fn set_leaf(self, x: Id) {
-        self.0.update(|b| b.set_leaf(x));
+        self.0.update(|mut b| b.set_leaf(x));
     }
 
     fn release(self, x: Id) -> Result<(), ZyxError> {
-        self.0.update(|b| b.release(x))
+        self.0.update(|mut b| b.release(x))
     }
 
     fn retain(self, x: Id) {
-        self.0.update(|b| b.retain(x));
+        self.0.update(|mut b| b.retain(x));
     }
 }
 

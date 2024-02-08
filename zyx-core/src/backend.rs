@@ -4,6 +4,7 @@ use crate::tensor::{tensor, IntoTensor, Tensor};
 use crate::{dtype::DType, node::Node, scalar::Scalar, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use alloc::{
+    string::String,
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
@@ -12,6 +13,10 @@ use core::ops::Range;
 /// Backend for [tensors](Tensor).
 /// Tensor requires that all backends implement this trait and only this trait.
 pub trait Backend: Copy {
+    /// Create graph of operations between tensors in dot format for visualization
+    #[must_use]
+    fn plot_graph<'a, B: Backend + 'a>(self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> String;
+
     /// Create new tensor
     #[must_use]
     fn tensor(self, data: impl IntoTensor<Self>) -> Tensor<Self> {

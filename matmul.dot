@@ -1,0 +1,52 @@
+strict digraph {
+  ordering=in
+  rank=source
+  0[label="Id(0) x 2
+Iter(I32, [2, 3])
+[2, 3]", shape=box, fillcolor="lightblue", style=filled]
+  1[label="Id(1) x 2
+Iter(I32, [3, 3])
+[3, 3]", shape=box, fillcolor="lightblue", style=filled]
+  9[label="Id(9) x 1
+Reshape(Id(8))
+[2, 3]", shape=oval, fillcolor="lightblue", style=filled]
+  2[label="Id(2) x 1
+Reshape(Id(0))
+[2, 1, 3]", shape=oval, fillcolor="grey", style=filled]
+  3[label="Id(3) x 1
+Permute(Id(2), Axes([0, 2, 1]))
+[2, 3, 1]", shape=oval, fillcolor="grey", style=filled]
+  4[label="Id(4) x 1
+Reshape(Id(1))
+[1, 3, 3]", shape=oval, fillcolor="grey", style=filled]
+  5[label="Id(5) x 1
+Expand(Id(3))
+[2, 3, 3]", shape=oval, fillcolor="grey", style=filled]
+  6[label="Id(6) x 1
+Expand(Id(4))
+[2, 3, 3]", shape=oval, fillcolor="grey", style=filled]
+  7[label="Id(7) x 1
+Mul(Id(5), Id(6))
+[2, 3, 3]", shape=oval, fillcolor="grey", style=filled]
+  7[label="Id(7) x 1
+Mul(Id(5), Id(6))
+[2, 3, 3]", shape=oval, fillcolor="grey", style=filled]
+  8[label="Id(8) x 1
+Sum(Id(7), Axes([1]))
+[2, 1, 3]", shape=oval, fillcolor="grey", style=filled]
+  9[label="Id(9) x 1
+Reshape(Id(8))
+[2, 3]", shape=oval, fillcolor="lightblue", style=filled]
+  8 -> 9
+  0 -> 2
+  2 -> 3
+  1 -> 4
+  3 -> 5
+  4 -> 6
+  5 -> 7
+  6 -> 7
+  5 -> 7
+  6 -> 7
+  7 -> 8
+  8 -> 9
+}
