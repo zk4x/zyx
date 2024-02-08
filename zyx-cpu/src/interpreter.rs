@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View, shape::Shape, axes::Axes
 };
@@ -38,11 +38,11 @@ macro_rules! binary_op {
             let data = match xdata {
                 Data::F32(xdata) => {
                     let Data::F32(ydata) = ydata else { panic!() };
-                    Data::F32(binary(xview, xdata, yview, ydata, |(x, y)| x + y))
+                    Data::F32(binary(xview, xdata, yview, ydata, $op))
                 }
                 Data::I32(xdata) => {
                     let Data::I32(ydata) = ydata else { panic!() };
-                    Data::I32(binary(xview, xdata, yview, ydata, |(x, y)| x + y))
+                    Data::I32(binary(xview, xdata, yview, ydata, $op))
                 }
             };
             $ctx.views.insert($nid, (View::new(xview.shape().clone()), $nid));
@@ -153,14 +153,33 @@ impl RuntimeBackend for Interpreter {
 
     fn evaluate(
         &mut self,
+        _to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
+        //std::println!("Evaluating: {_to_eval:?}, rcs: {rcs:?}");
+        //std::println!("Order: {order:?}");
         for nid in order.iter().copied() {
             match &mut nodes[nid.i()] {
                 Node::LeafF32(..)
                 | Node::LeafI32(..) => {}
+                Node::IterF32(_, shape) => {
+                    let mut new_node = Node::LeafF32(shape.clone());
+                    self.views.insert(nid, (View::new(shape.clone()), nid));
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterF32(iter, _) = new_node {
+                        self.buffers.insert(nid, Data::F32(iter.collect()));
+                    }
+                }
+                Node::IterI32(_, shape) => {
+                    let mut new_node = Node::LeafI32(shape.clone());
+                    self.views.insert(nid, (View::new(shape.clone()), nid));
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterI32(iter, _) = new_node {
+                        self.buffers.insert(nid, Data::I32(iter.collect()));
+                    }
+                }
                 Node::UniformF32(..) => todo!(),
                 Node::CastF32(x) => {
                     let (view, data) = self.get(x);
@@ -192,7 +211,7 @@ impl RuntimeBackend for Interpreter {
                 Node::Sub(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.sub(y)),
                 Node::Mul(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.mul(y)),
                 Node::Div(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.div(y)),
-                Node::Pow(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.pow(y)),
+                Node::Pow(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::pow(x, y)),
                 Node::Cmplt(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.cmplt(y)),
                 Node::Reshape(x, sh) => {
                     let (view, id) = &self.views[x];
@@ -228,24 +247,13 @@ impl RuntimeBackend for Interpreter {
                     self.views.insert(nid, (view.clone(), nid));
                     self.buffers.insert(nid, data);
                 }
-                Node::IterF32(_, shape) => {
-                    let mut new_node = Node::LeafF32(shape.clone());
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF32(iter, _) = new_node {
-                        self.buffers.insert(nid, Data::F32(iter.collect()));
-                    }
-                }
-                Node::IterI32(_, shape) => {
-                    let mut new_node = Node::LeafI32(shape.clone());
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterI32(iter, _) = new_node {
-                        self.buffers.insert(nid, Data::I32(iter.collect()));
-                    }
-                }
             }
             for p in nodes[nid.i()].parameters() {
-                rcs.entry(p).and_modify(|rc| *rc -= 1);
-                self.remove(p)?;
+                if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
+                    if *e.get() == 0 {
+                        self.remove(p)?;
+                    }
+                }
             }
         }
         Ok(())

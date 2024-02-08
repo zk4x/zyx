@@ -1,5 +1,6 @@
 extern crate alloc;
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
+use core::ops::Range;
 
 /// Axes used in reduce and permute operations.
 /// Just Box<[usize]>.
@@ -35,9 +36,9 @@ impl Axes {
     }
 }
 
-impl Into<alloc::vec::Vec<usize>> for Axes {
-    fn into(self) -> alloc::vec::Vec<usize> {
-        self.0.into()
+impl From<Axes> for alloc::vec::Vec<usize> {
+    fn from(val: Axes) -> Self {
+        val.0.into()
     }
 }
 
@@ -75,9 +76,27 @@ impl IntoAxes for &Axes {
     }
 }
 
+impl IntoAxes for Vec<usize> {
+    fn into_axes(self, rank: usize) -> Axes {
+        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+    }
+}
+
 impl IntoAxes for Box<[usize]> {
     fn into_axes(self, rank: usize) -> Axes {
         Axes(self.iter().copied().filter(|a| *a < rank).collect())
+    }
+}
+
+impl IntoAxes for Range<usize> {
+    fn into_axes(self, rank: usize) -> Axes {
+        Axes(self.filter(|a| *a < rank).collect())
+    }
+}
+
+impl IntoAxes for () {
+    fn into_axes(self, rank: usize) -> Axes {
+        (0..rank).into_axes(rank)
     }
 }
 

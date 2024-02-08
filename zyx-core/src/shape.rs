@@ -185,9 +185,9 @@ impl core::ops::Index<Range<i64>> for Shape {
     }
 }
 
-impl Into<Vec<usize>> for Shape {
-    fn into(self) -> Vec<usize> {
-        self.0.into()
+impl From<Shape> for Vec<usize> {
+    fn from(val: Shape) -> Self {
+        val.0.into()
     }
 }
 

@@ -87,8 +87,9 @@ impl View {
         let mut padding_condition = String::new();
         if self.contiguous() {
             for i in 0..self.shape().rank() {
-                idx += &f!("idx{i}");
+                idx += &f!("+idx{i}");
             }
+            idx.remove(0);
             return (padding_condition, idx);
         }
         if let Some(InnerView {

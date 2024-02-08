@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View,
 };
@@ -51,6 +51,7 @@ impl RuntimeBackend for Interpreter {
 
     fn evaluate(
         &mut self,
+        _to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
@@ -100,8 +101,11 @@ impl RuntimeBackend for Interpreter {
                 }
             }
             for p in nodes[nid.i()].parameters() {
-                rcs.entry(p).and_modify(|rc| *rc -= 1);
-                self.remove(p)?;
+                if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
+                    if *e.get() == 0 {
+                        self.remove(p)?;
+                    }
+                }
             }
         }
         Ok(())

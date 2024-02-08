@@ -858,7 +858,7 @@ impl zyx_core::compiler::Compiler for Compiler {
 fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     // TODO get this to work with different max local work sizes
-    //use std::println;
+    use std::println;
     let max_local_work_size = 256;
     let tile_height;
     let tile_width;
@@ -867,14 +867,19 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     let rdim = ast.rdim;
     if let Some(rdim) = rdim {
         let rshape = ast.view.shape();
-        let numel = rdim * rshape[-1];
-        (tile_height, tile_width) = match rshape[-1] as usize / 8 {
-            1..=7 => (1, 8),
-            8..=15 => (8, 8),
-            16..=31 => (8, 16),
-            _ => (16, 16),
+        let n: usize = rdim * rshape[-1];
+        println!("n: {n}, rshape: {rshape}, rdim: {rdim}");
+        let mut lw = 1;
+        let mut x: usize = rshape[-1] / 8usize;
+        while x % 2 == 0 && x > 1 && lw <= max_local_work_size / 2 {
+            x /= 2;
+            lw *= 2;
+        }
+        (tile_height, tile_width) = match lw {
+            256 => (16, 16),
+            _ => (1, lw),
         };
-        global_work_size = alloc::vec![numel / rdim / tile_width, tile_width];
+        global_work_size = alloc::vec![n / rdim / tile_width, tile_width];
         local_work_size = alloc::vec![tile_height, tile_width];
     } else {
         let n = ast.view.numel();

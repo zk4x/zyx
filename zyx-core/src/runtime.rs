@@ -31,6 +31,7 @@ pub trait RuntimeBackend {
     /// order of evaluation.
     fn evaluate(
         &mut self,
+        to_eval: BTreeSet<Id>,
         rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
@@ -178,8 +179,24 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
             self.order[i.i()] = id(self.order.len() - 1);
         }
-        // TODO if there are too many nodes, then evaluate last leafs
+        // TODO This evaluates last leafs if there are too many nodes,
+        // is it better to find repeating nodes and evaluate those?
+        if self.nodes.len() > 100000 { // Roughly 5 MiB of Nodes
+            self.evaluate(self.leafs.iter().copied().filter(|nid| self.is_user_id(*nid)).collect::<BTreeSet<Id>>())?;
+        }
         Ok(i)
+    }
+
+    fn is_user_id(&self, nid: Id) -> bool {
+        let mut rc = self.rcs[nid.i()];
+        for node in &self.nodes {
+            for p in node.parameters() {
+                if p == nid {
+                    rc -= 1;
+                }
+            }
+        }
+        rc > 0
     }
 
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
@@ -215,27 +232,36 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
         while let Some(nid) = params.pop() {
-            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                params.extend(self.nodes[nid.i()].parameters());
-                1
-            });
+            if !self.runtime_backend.is_evaluated(nid) {
+                // TODO should we increase refcount of some other nodes? Probably not.
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                    params.extend(self.nodes[nid.i()].parameters());
+                    1
+                });
+                if matches!(self.nodes[nid.i()], Node::LeafF32(..) | Node::LeafI32(..) | Node::IterF32(..) | Node::IterI32(..)) {
+                    *rcs.get_mut(&nid).unwrap() += 1;
+                }
+            }
         }
         let mut order: Vec<Id> = rcs.keys().copied().collect();
         order.sort_by_cached_key(|nid| self.order[nid.i()]);
 
-        self.runtime_backend.evaluate(rcs, order.as_ref(), self.nodes.as_mut())?;
+        self.runtime_backend.evaluate(nodes, rcs, order.as_ref(), self.nodes.as_mut())?;
 
         // Release parts of graph that are not needed for backpropagation
-        while let Some(leaf) = self.leafs.pop_last() {
-            //std::println!("Releasing leaf {leaf}");
-            let shape = get_shape(self.nodes.as_ref(), leaf).clone();
-            let mut node = match get_dtype(self.nodes.as_ref(), leaf) {
-                DType::F32 => Node::LeafF32(shape),
-                DType::I32 => Node::LeafI32(shape),
-            };
-            core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
-            for nid in node.parameters() {
-                self.release(nid)?;
+        for leaf in self.leafs.clone() {
+            if self.runtime_backend.is_evaluated(leaf) {
+                self.leafs.remove(&leaf);
+                //std::println!("Releasing leaf {leaf}");
+                let shape = get_shape(self.nodes.as_ref(), leaf).clone();
+                let mut node = match get_dtype(self.nodes.as_ref(), leaf) {
+                    DType::F32 => Node::LeafF32(shape),
+                    DType::I32 => Node::LeafI32(shape),
+                };
+                core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
+                for nid in node.parameters() {
+                    self.release(nid)?;
+                }
             }
         }
         Ok(())
@@ -251,7 +277,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
             }
         }
-        crate::utils::plot_graph_dot(&ids, &self.nodes, &self.rcs)
+        crate::utils::plot_graph_dot(ids, &self.nodes, &self.rcs)
     }
 
     /// Common autograd engine, currently used by all backends.

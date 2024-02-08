@@ -9,7 +9,7 @@ use crate::{
     utils::{get_dtype, get_shape},
     view::View,
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -127,7 +127,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn evaluate(
         &mut self,
-        rcs: BTreeMap<Id, u8>,
+        to_eval: BTreeSet<Id>,
+        mut rcs: BTreeMap<Id, u8>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
@@ -184,15 +185,16 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     }
                 }
             }
-            if rcs[&nid] > 0 && !self.buffers.contains_key(&nid) {
+            if to_eval.contains(&nid) && !self.buffers.contains_key(&nid) {
                 self.evaluate_buffer(nid, order, nodes)?;
             }
-            // TODO this does not work with compiled backends, since
-            // they do not evaluate all ops
-            /*for p in nodes[nid.i()].parameters() {
-                rcs.entry(p).and_modify(|rc| *rc -= 1);
-                self.remove(p)?;
-            }*/
+            for p in nodes[nid.i()].parameters() {
+                if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
+                    if *e.get() == 0 {
+                        self.remove(p)?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -213,17 +215,19 @@ impl<C: Compiler> CompiledBackend<C> {
     fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
         // Create ordered list of nodes that need to be evaluated
         //extern crate std;
-        //use std::println;
+        use std::println;
         let mut temp = alloc::vec![x];
-        let mut porder = Vec::new();
+        let mut porder = BTreeSet::new();
         while let Some(nid) = temp.pop() {
-            porder.push(nid);
+            porder.insert(nid);
             if self.buffers.contains_key(&nid) {
                 continue;
             }
             temp.extend(nodes[nid.i()].parameters());
         }
-        porder.sort_by_cached_key(|nid| order[nid.i()]);
+        let p_order: Vec<Id> = order.iter().copied().filter(|nid| porder.contains(nid)).collect();
+        let porder: Vec<Id> = porder.iter().copied().filter(|nid| !p_order.contains(nid)).chain(p_order.clone()).collect();
+        //std::println!("porder {porder:?}");
         // Convert this list to kernel
         let mut program_args = Vec::new();
         let mut args = Vec::new();
@@ -334,8 +338,9 @@ impl<C: Compiler> CompiledBackend<C> {
         }
         let view;
         let rdim = if let Some(raxes) = raxes {
-            //println!("rshape: {rshape:?}");
-            //println!("raxes: {raxes:?}");
+            println!("rshape: {rshape:?}");
+            println!("raxes: {raxes:?}");
+            //std::println!("s1: {s1}");
             let s0: usize = rshape
                 .iter()
                 .enumerate()
@@ -405,6 +410,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         .collect::<Vec<(i64, i64)>>(),
                 );
             }
+            std::println!("view: {view:?}");
             Some(if s0 != 1 && s0 % 8 != 0 {
                 (s0 / 8 + 1) * 8
             } else {
