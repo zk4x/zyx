@@ -61,6 +61,7 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
             }
             #[cfg(feature = "std")]
             {
+                std::println!("workgin\n\n\n\n xview: {xview:?}, yview: {yview:?}");
                 xdata.par_iter().cloned().zip(ydata.par_iter().cloned()).map(op).collect()
             }
         }
@@ -71,7 +72,7 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
             }
             #[cfg(feature = "std")]
             {
-                (0..xview.numel()).into_par_iter().map(|i| op((xdata[i].clone(), ydata[xview.get_idx(i)].clone()))).collect()
+                (0..xview.numel()).into_par_iter().map(|i| op((xdata[i].clone(), ydata[yview.get_idx(i)].clone()))).collect()
             }
         }
         (false, true) => {
@@ -91,7 +92,15 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
             }
             #[cfg(feature = "std")]
             {
-                (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone()))).collect()
+                //std::println!("\nxview: {xview:?}\n");
+                //std::println!("\nyview: {yview:?}\n");
+                //panic!();
+                match (xview.original_numel(), yview.original_numel()) {
+                    (1, 1) => core::iter::repeat(op((xdata[0].clone(), ydata[0].clone()))).take(xview.numel()).collect(),
+                    (1, _) => (0..xview.numel()).into_par_iter().map(|i| op((xdata[0].clone(), ydata[yview.get_idx(i)].clone()))).collect(),
+                    (_, 1) => (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[0].clone()))).collect(),
+                    (_, _) => (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone()))).collect(),
+                }
             }
         }
     }
@@ -147,6 +156,7 @@ impl RuntimeBackend for Interpreter {
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
         let (view, id) = &self.views[&x];
         let data = unsafe { self.buffers[&id].as_type::<T>() };
+        std::println!("{view:?}, {data:?}");
         Ok(if view.contiguous() {
             data.to_vec()
         } else {
@@ -212,12 +222,18 @@ impl RuntimeBackend for Interpreter {
                 Node::Exp(x) => unary_op!(self, x, nid, Scalar::exp),
                 Node::Tanh(x) => unary_op!(self, x, nid, Scalar::tanh),
                 Node::Sqrt(x) => unary_op!(self, x, nid, Scalar::sqrt),
-                Node::Add(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.add(y)),
-                Node::Sub(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.sub(y)),
-                Node::Mul(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.mul(y)),
-                Node::Div(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.div(y)),
+                Node::Add(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::add(x, y)),
+                Node::Sub(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::sub(x, y)),
+                Node::Mul(x, y) => {
+                    let (xview, _) = &self.views[&x];
+                    std::println!("blhj {xview:?}");
+                    let (yview, _) = &self.views[&y];
+                    std::println!("blhj {yview:?}");
+                    binary_op!(self, x, y, nid, |(x, y)| Scalar::mul(x, y))
+                }
+                Node::Div(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::div(x, y)),
                 Node::Pow(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::pow(x, y)),
-                Node::Cmplt(x, y) => binary_op!(self, x, y, nid, |(x, y)| x.cmplt(y)),
+                Node::Cmplt(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::cmplt(x, y)),
                 Node::Reshape(x, sh) => {
                     let (view, id) = &self.views[x];
                     self.views.insert(nid, (view.reshape(sh), *id));
@@ -238,8 +254,8 @@ impl RuntimeBackend for Interpreter {
                 Node::Sum(x, ax, sh) => {
                     let (view, data) = self.get(x);
                     let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| x.add(y))),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| x.add(y))),
+                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
+                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
                     };
                     self.views.insert(nid, (View::new(sh.clone()), nid));
                     self.buffers.insert(nid, data);

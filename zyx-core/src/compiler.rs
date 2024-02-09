@@ -384,7 +384,7 @@ impl<C: Compiler> CompiledBackend<C> {
             //println!("New shape before reduce: {new_shape:?}");
             //println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
-                std::println!("aview: {aview:?}");
+                //std::println!("aview: {aview:?}");
                 *aview = aview.reshape(&rshape).permute(&axes).reshape(&new_shape).pad(
                     &new_shape
                         .iter()

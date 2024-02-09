@@ -13,11 +13,18 @@ pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([[2, 4, 3], [5, 2, 4]]);
     let y = dev.tensor([[2, 2, 4], [1, 2, 1], [3, 4, 2]]);
     let z = x.dot(&y);
-    //let _ = std::fs::write("matmul.dot", dev.plot_graph([&x, &y, &z]));
-    //std::println!("\n{x}\n\n{y}");
-    //std::println!("\n{}\n", x.reshape([2, 1, 3]).transpose().expand([2, 3, 3]));
-    //std::println!("{}\n", y.reshape([1, 3, 3]).expand([2, 3, 3]));
-    //std::println!("{}", z);
     assert_eq!(z, [[17, 24, 18], [24, 30, 30]]);
+
+    let mut grads = z.backward([&x, &y]);
+    let xgrad = grads.next().unwrap().unwrap();
+    let ygrad = grads.next().unwrap().unwrap();
+    //println!("{}, {}", xgrad.dtype(), xgrad.shape());
+    //println!("{}, {}", ygrad.dtype(), ygrad.shape());
+    //std::fs::write("matmul.dot", dev.plot_graph([&x, &y, &xgrad])).unwrap();
+    println!("{xgrad}");
+    println!("{ygrad}");
+    assert_eq!(xgrad, [[8, 4, 9], [8, 4, 9]]);
+    assert_eq!(ygrad, [[7, 7, 7], [6, 6, 6], [7, 7, 7]]);
+
     Ok(())
 }

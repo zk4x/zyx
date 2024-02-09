@@ -67,7 +67,7 @@ pub fn max<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         let axes = axes.into_axes(a);
         let x = dev.randn(&shape, T::dtype());
         let v: Vec<T> = x.to_vec()?;
-        let rv = x.sum(&axes).to_vec()?;
+        let rv = x.max(&axes).to_vec()?;
         assert_eq(rv, reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), |(x, y)| Scalar::max(x, y)));
     }
     Ok(())

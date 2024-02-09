@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-mod binary;
 mod unary;
+mod binary;
 mod movement;
 mod reduce;
 mod combination;
+mod autograd;
 
 use zyx_core::backend::Backend;
 use zyx_core::scalar::Scalar;
@@ -77,15 +78,15 @@ fn main() {
     run_test!(movement::reshape);
     run_test!(movement::expand);
     run_test!(movement::permute);
-    run_test!(movement::pad);*/
+    run_test!(movement::pad);
     println!("\nTesting reduce ops");
-    //run_test!(reduce::sum);
-    //run_test!(reduce::max);
+    run_test!(reduce::sum);
+    run_test!(reduce::max);
     println!("\nTesting combinations of ops");
-    //run_test!(combination::t0);
-    run_test!(combination::t1);
+    run_test!(combination::t0);
+    //run_test!(combination::t1);*/
     println!("\nTesting autograd engine");
-    //run_test!(autograd::t01);
+    run_test!(autograd::t0);
     println!("\nTesting optimizers");
     //run_test!(optimizer::sgd);
     //run_test!(optimizer::adam);
