@@ -81,10 +81,10 @@ fn main() {
     run_test!(movement::pad);
     println!("\nTesting reduce ops");
     run_test!(reduce::sum);
-    run_test!(reduce::max);
+    run_test!(reduce::max);*/
     println!("\nTesting combinations of ops");
     run_test!(combination::t0);
-    //run_test!(combination::t1);*/
+    run_test!(combination::t1);
     println!("\nTesting autograd engine");
     run_test!(autograd::t0);
     println!("\nTesting optimizers");

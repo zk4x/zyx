@@ -152,7 +152,16 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Push new Node into the graph creating new tensor.
+    /// This function does ZERO verification that the node is correct, but it optimizes
+    /// out useless operations (like reshaping to the same shape)
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
+        // get rid of noops :)
+        if let Node::Reshape(x, ref shape) = node {
+            if shape == self.shape(x) {
+                self.retain(x);
+                return Ok(x)
+            }
+        }
         for nid in node.parameters() {
             self.rcs[nid.i()] += 1;
         }
@@ -270,17 +279,30 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// Plot dot graph in dot format between given nodes
     pub fn plot_graph_dot(&self, ids: &[Id]) -> alloc::string::String {
         let max_id = ids.iter().max().unwrap();
-        let mut nodes = ids.to_vec();
+        let mut nodes: BTreeSet<Id> = ids.iter().copied().collect();
+        let mut temp = nodes.clone();
         for nid in &self.order {
             if nid > max_id {
                 break
             }
             for p in self.nodes[nid.i()].parameters() {
                 if nodes.contains(&p) {
-                    nodes.push(*nid);
+                    nodes.insert(*nid);
                 }
             }
         }
+        let min_id = ids.iter().min().unwrap();
+        let mut rev_nodes: BTreeSet<Id> = ids.iter().copied().collect();
+        while let Some(nid) = temp.pop_last() {
+            if nid < *min_id {
+                continue
+            }
+            let params: BTreeSet<Id> = self.nodes[nid.i()].parameters().collect();
+            temp.extend(params.clone());
+            rev_nodes.extend(params);
+        }
+        let nodes: Vec<Id> = nodes.intersection(&rev_nodes).copied().collect();
+        //let nodes: Vec<Id> = rev_nodes.into_iter().collect();
         //std::println!("{:?}");
         crate::utils::plot_graph_dot(&nodes, &self.nodes, &self.rcs)
     }

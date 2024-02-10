@@ -1,7 +1,7 @@
 use alloc::{
     boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::String, vec::Vec,
 };
-use core::ffi::c_void;
+use core::{ffi::c_void, ptr};
 use opencl_sys::{
     clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
     clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
@@ -18,6 +18,23 @@ use zyx_core::{
     scalar::Scalar,
 };
 
+fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), ZyxError> {
+    let err = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
+    if err != CL_SUCCESS {
+        Err(ZyxError::BackendError(match err {
+            -30 => "Unable to finish buffer read event. ERR -30: CL_INVALID_VALUE",
+            -34 => "Unable to finish buffer read event. ERR -34: CL_INVALID_CONTEXT",
+            -58 => "Unable to finish buffer read event. ERR -58: CL_INVALID_EVENT",
+            -14 => "Unable to finish buffer read event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+            -5 => "Unable to finish buffer read event. ERR -5: CL_OUT_OF_RESOURCES",
+            -6 => "Unable to finish buffer read event. ERR -6: CL_OUT_OF_MEMORY",
+            _ => "Unable to finish buffer read event. UNKNOWN ERROR",
+        }))
+    } else {
+        Ok(())
+    }
+}
+
 fn get_program_build_data(
     program: *mut c_void,
     device: cl_device_id,
@@ -30,7 +47,7 @@ fn get_program_build_data(
     ) -> Result<usize, cl_int> {
         let mut size: usize = 0;
         let status = unsafe {
-            clGetProgramBuildInfo(object, idx, param_name, 0, core::ptr::null_mut(), &mut size)
+            clGetProgramBuildInfo(object, idx, param_name, 0, ptr::null_mut(), &mut size)
         };
         if CL_SUCCESS != status {
             Err(status)
@@ -56,7 +73,7 @@ fn get_program_build_data(
                     param_name,
                     size,
                     data.as_mut_ptr() as *mut c_void,
-                    core::ptr::null_mut(),
+                    ptr::null_mut(),
                 )
             };
             if CL_SUCCESS != status {
@@ -79,7 +96,7 @@ pub fn get_device_data(
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
         let status =
-            unsafe { opencl_sys::clGetDeviceInfo(object, param_name, 0, core::ptr::null_mut(), &mut size) };
+            unsafe { opencl_sys::clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size) };
         if CL_SUCCESS != status {
             Err(status)
         } else {
@@ -102,7 +119,7 @@ pub fn get_device_data(
                     param_name,
                     size,
                     data.as_mut_ptr() as *mut c_void,
-                    core::ptr::null_mut(),
+                    ptr::null_mut(),
                 )
             };
             if CL_SUCCESS != status {
@@ -124,7 +141,7 @@ fn get_device_ids(
     // Get the number of devices of device_type
     let mut count: cl_uint = 0;
     let mut status =
-        unsafe { clGetDeviceIDs(platform, device_type, 0, core::ptr::null_mut(), &mut count) };
+        unsafe { clGetDeviceIDs(platform, device_type, 0, ptr::null_mut(), &mut count) };
 
     if (CL_SUCCESS != status) && (CL_DEVICE_NOT_FOUND != status) {
         Err(status)
@@ -138,7 +155,7 @@ fn get_device_ids(
                 device_type,
                 count,
                 ids.as_mut_ptr(),
-                core::ptr::null_mut(),
+                ptr::null_mut(),
             );
             ids.set_len(len);
         };
@@ -161,7 +178,7 @@ fn get_platform_data(
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
         let status =
-            unsafe { opencl_sys::clGetPlatformInfo(object, param_name, 0, core::ptr::null_mut(), &mut size) };
+            unsafe { opencl_sys::clGetPlatformInfo(object, param_name, 0, ptr::null_mut(), &mut size) };
         if CL_SUCCESS != status {
             Err(status)
         } else {
@@ -184,7 +201,7 @@ fn get_platform_data(
                     param_name,
                     size,
                     data.as_mut_ptr() as *mut c_void,
-                    core::ptr::null_mut(),
+                    ptr::null_mut(),
                 )
             };
             if CL_SUCCESS != status {
@@ -197,32 +214,6 @@ fn get_platform_data(
         }
     }
     get_vector(platform, param_name, size)
-}
-
-fn get_platform_ids() -> Result<Vec<*mut c_void>, cl_int> {
-    // Get the number of platforms
-    let mut count: cl_uint = 0;
-    let mut status = unsafe { clGetPlatformIDs(0, core::ptr::null_mut(), &mut count) };
-
-    if CL_SUCCESS != status {
-        Err(status)
-    } else if 0 < count {
-        // Get the platform ids.
-        let len = count as usize;
-        let mut ids: Vec<*mut c_void> = Vec::with_capacity(len);
-        unsafe {
-            status = clGetPlatformIDs(count, ids.as_mut_ptr(), core::ptr::null_mut());
-            ids.set_len(len);
-        };
-
-        if CL_SUCCESS != status {
-            Err(status)
-        } else {
-            Ok(ids)
-        }
-    } else {
-        Ok(Vec::new())
-    }
 }
 
 trait OpenCLDType {
@@ -325,7 +316,7 @@ impl Program {
                     .as_ptr()
                     .cast(),
                 None,
-                core::ptr::null_mut(),
+                ptr::null_mut(),
             )
         };
         if err != CL_SUCCESS {
@@ -384,13 +375,36 @@ pub(crate) struct Compiler {
 
 impl Compiler {
     pub(crate) fn new(platform_id: usize, queues_per_device: usize) -> Result<Self, ZyxError> {
-        let platform_ids = get_platform_ids().map_err(|err| {
-            ZyxError::BackendError(match err {
-                -30 => "Unable to get OpenCL platform ids. ERR -30: CL_INVALID_VALUE",
-                -6 => "Unable to get OpenCL platform ids. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
-            })
-        })?;
+        let platform_ids = {
+            // Get the number of platforms
+            let mut count: cl_uint = 0;
+            let mut err = unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut count) };
+            if err != CL_SUCCESS {
+                return Err(ZyxError::BackendError(match err {
+                    -30 => "Unable to get OpenCL platform ids. ERR -30: CL_INVALID_VALUE",
+                    -6 => "Unable to get OpenCL platform ids. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                    _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
+                }));
+            } else if count > 0 {
+                // Get the platform ids.
+                let len = count as usize;
+                let mut ids: Vec<*mut c_void> = Vec::with_capacity(len);
+                unsafe {
+                    err = clGetPlatformIDs(count, ids.as_mut_ptr(), ptr::null_mut());
+                    ids.set_len(len);
+                };
+                if CL_SUCCESS != err {
+                    return Err(ZyxError::BackendError(match err {
+                        -30 => "Unable to get OpenCL platform ids. ERR -30: CL_INVALID_VALUE",
+                        -6 => "Unable to get OpenCL platform ids. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                        _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
+                    }));
+                }
+                ids
+            } else {
+                Vec::new()
+            }
+        };
         let Some(platform) = platform_ids.get(platform_id) else {
             return Err(ZyxError::BackendError(
                 "There are no available OpenCL platforms.",
@@ -446,11 +460,11 @@ impl Compiler {
         let mut err = CL_SUCCESS;
         let context = unsafe {
             clCreateContext(
-                core::ptr::null(),
+                ptr::null(),
                 device_ids.len() as cl_uint,
                 device_ids.as_ptr(),
                 None,
-                core::ptr::null_mut(),
+                ptr::null_mut(),
                 &mut err,
             )
         };
@@ -528,7 +542,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 self.context,
                 CL_MEM_READ_ONLY,
                 size,
-                core::ptr::null_mut(),
+                ptr::null_mut(),
                 &mut err,
             )
         };
@@ -544,7 +558,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 _ => "Unable to create buffer. UNKNOWN ERROR",
             }));
         }
-        let mut event: *mut c_void = core::ptr::null_mut();
+        let mut event: *mut c_void = ptr::null_mut();
         let err = unsafe {
             clEnqueueWriteBuffer(
                 self.queue(),
@@ -554,7 +568,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 size,
                 data.as_ptr().cast(),
                 0,
-                core::ptr::null(),
+                ptr::null(),
                 &mut event,
             )
         };
@@ -593,20 +607,8 @@ impl zyx_core::compiler::Compiler for Compiler {
 
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError> {
         let mut data: Vec<T> = Vec::with_capacity(numel);
-        let mut event: *mut c_void = core::ptr::null_mut();
-        let events = [buffer.event];
-        let err = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
-        if err != CL_SUCCESS {
-            return Err(ZyxError::BackendError(match err {
-                -30 => "Unable to finish buffer read event. ERR -30: CL_INVALID_VALUE",
-                -34 => "Unable to finish buffer read event. ERR -34: CL_INVALID_CONTEXT",
-                -58 => "Unable to finish buffer read event. ERR -58: CL_INVALID_EVENT",
-                -14 => "Unable to finish buffer read event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-                -5 => "Unable to finish buffer read event. ERR -5: CL_OUT_OF_RESOURCES",
-                -6 => "Unable to finish buffer read event. ERR -6: CL_OUT_OF_MEMORY",
-                _ => "Unable to finish buffer read event. UNKNOWN ERROR",
-            }));
-        }
+        let mut event: *mut c_void = ptr::null_mut();
+        cl_wait_for_events(&[buffer.event])?;
         let err = unsafe {
             clEnqueueReadBuffer(
                 self.queue(),
@@ -617,7 +619,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 data.as_mut_ptr().cast(),
                 0,
                 // TODO why does this not work?
-                core::ptr::null_mut(), //events.as_ptr().cast(),
+                ptr::null_mut(), //events.as_ptr().cast(),
                 &mut event,
             )
         };
@@ -639,18 +641,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 _ => "Unable to read buffer. UNKNOWN ERROR",
             }));
         }
-        let err = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
-        if err != CL_SUCCESS {
-            return Err(ZyxError::BackendError(match err {
-                -30 => "Unable to finish buffer read event. ERR -30: CL_INVALID_VALUE",
-                -34 => "Unable to finish buffer read event. ERR -34: CL_INVALID_CONTEXT",
-                -58 => "Unable to finish buffer read event. ERR -58: CL_INVALID_EVENT",
-                -14 => "Unable to finish buffer read event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-                -5 => "Unable to finish buffer read event. ERR -5: CL_OUT_OF_RESOURCES",
-                -6 => "Unable to finish buffer read event. ERR -6: CL_OUT_OF_MEMORY",
-                _ => "Unable to finish buffer read event. UNKNOWN ERROR",
-            }));
-        }
+        cl_wait_for_events(&[event])?;
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(numel) }
         Ok(data)
@@ -748,7 +739,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 self.context,
                 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY,
                 program.res_byte_size,
-                core::ptr::null_mut(),
+                ptr::null_mut(),
                 &mut err,
             )
         };
@@ -770,7 +761,7 @@ impl zyx_core::compiler::Compiler for Compiler {
         if err != CL_SUCCESS {
             return Err(kernel_arg_err_handler(err));
         }
-        let mut event: *mut c_void = core::ptr::null_mut();
+        let mut event: *mut c_void = ptr::null_mut();
         #[cfg(feature = "debug1")]
         let begin = std::time::Instant::now();
         let err = unsafe {
@@ -778,12 +769,12 @@ impl zyx_core::compiler::Compiler for Compiler {
                 self.queue(),
                 kernel,
                 u32::try_from(program.global_work_size.len()).unwrap(),
-                core::ptr::null(),
+                ptr::null(),
                 program.global_work_size.as_ptr(),
                 program.local_work_size.as_ptr(),
                 u32::try_from(events.len()).unwrap(),
                 if events.is_empty() {
-                    core::ptr::null()
+                    ptr::null()
                 } else {
                     events.as_ptr()
                 },

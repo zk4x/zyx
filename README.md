@@ -26,11 +26,11 @@ let z = (&x + &y).exp() - &x;
 
 Zyx allows for arbitrary differentiation. Using the previously created tensors we calculate derivative of z w.r.t. x and y.
 ```rust
-let grads = z.backward([&x, &y]);
+let (grad_x, grad_y) = z.backward([&x, &y]).flatten().collect_tuple().unwrap();
 ```
 You can also calculate higher order derivatives.
 ```rust
-let grad_xx = grads.next().unwrap().backward([&x]);
+let grad_xx = grad_x.backward([&x]).unwrap();
 ```
 
 ## Optimizers ⚙️
