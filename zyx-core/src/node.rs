@@ -19,8 +19,10 @@ pub enum Node {
     UniformF32(Shape),
     /// IterF32 initializer
     IterF32(Box<dyn Blah<f32>>, Shape),
+    //IterF32(Box<dyn Iterator<Item = f32>>, Shape),
     /// IterI32 initializer
     IterI32(Box<dyn Blah<i32>>, Shape),
+    //IterI32(Box<dyn Iterator<Item = i32>>, Shape),
     /// Cast to F32 unary op
     CastF32(Id),
     /// Cast to I32 unary op

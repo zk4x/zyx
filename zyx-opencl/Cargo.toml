@@ -20,7 +20,7 @@ zyx-core = { version = "*", path = "../zyx-core", default-features = false }
 opencl-sys = { version = "0.2.8", default-features = false }
 
 [features]
-default = ["std", "CL_VERSION_1_1", "CL_VERSION_1_2"] #, "debug1"]
+default = ["std", "CL_VERSION_1_1", "CL_VERSION_1_2", "debug1"]
 debug1 = []
 std = ["zyx-core/std"]
 CL_VERSION_1_1 = ["opencl-sys/CL_VERSION_1_1"]

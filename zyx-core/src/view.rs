@@ -79,8 +79,8 @@ impl View {
     pub fn cidx(&self) -> (String, String) {
         // TODO is padding correctly applied?
         // TODO simplify this as much as possible, not for performance (it is cached), just for clarity
-        //use std::println;
-        //println!("View: {self:?}");
+        use std::println;
+        println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
@@ -174,7 +174,7 @@ impl View {
                     padding_condition = f!("{padding_condition} && ({temp}<{})", d - *right_p as usize);
                 }
                 if *left_p > 0 {
-                    temp = f!("{temp}-{left_p}");
+                    temp = f!("({temp}-{left_p})");
                 }
                 match *st {
                     0 => temp = f!("0"),

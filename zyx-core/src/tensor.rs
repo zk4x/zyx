@@ -513,11 +513,8 @@ impl<B: Backend> Tensor<B> {
     ///
     /// Pad last dimension by (1, 2)
     /// ```rust
-    /// # use zyx_opencl;
-    /// // let dev = zyx_opencl::device()?;
-    /// let dev = zyx_opencl::device_builder()
-    ///     .platform_id(1)
-    ///     .build()?;
+    /// use zyx_opencl;
+    /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3],
     ///                     [4, 1]]);
     /// let z = x.pad([(1, 2)], 0);
@@ -527,17 +524,19 @@ impl<B: Backend> Tensor<B> {
     /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
-    /// rust
-    /// use zyx_opencl;
-    /// let dev = zyx_opencl::device().unwrap();
-    /// let x = dev.tensor([[2, 3],
-    ///                     [4, 1]]);
-    /// let z = x.pad([(2, -1), (1, 1)], 7);
-    /// assert_eq!(z, [[7, 7, 7],
-    ///                [7, 7, 2],
-    ///                [7, 7, 4],
-    ///                [7, 7, 7]]);
-    ///
+    /// ```rust
+    /// # use zyx_opencl;
+    /// # let dev = zyx_opencl::device()?;
+    /// # let x = dev.tensor([[2, 3],
+    /// #                     [4, 1]]);
+    /// let z = x.pad([(2, -1), (1, 1)], 0);
+    /// println!("z: {z}");
+    /// assert_eq!(z, [[0, 0, 0],
+    ///                [0, 0, 2],
+    ///                [0, 0, 4],
+    ///                [0, 0, 0]]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
     ///
     /// # Panics
     /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.

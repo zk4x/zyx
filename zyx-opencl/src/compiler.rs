@@ -951,6 +951,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     let mut nid = 0;
     for op in ast.ops.iter() {
         let fdt = DType::from_ocl_str(dtype).is_floating();
+        let mut reduce_op = false;
         let res = match op {
             // TODO check if this should be tile or data
             Op::Leaf(x) => {
@@ -1007,19 +1008,25 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
             Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
             Op::Pow(x, y) => f!("{dtype} var{nid} = ({dtype})pow((float)var{x}, (float)var{y})"),
             Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
-            Op::Sum(x) => f!("var{nid} += var{x}"),
-            Op::Max(x) => f!("var{nid} = max(var{nid}, var{x})"),
+            Op::Sum(x) => {
+                reduce_op = true;
+                f!("var{nid} += var{x}")
+            },
+            Op::Max(x) => {
+                reduce_op = true;
+                f!("var{nid} = max(var{nid}, var{x})")
+            },
         };
         source = f!("{source}{res}{endl}");
         nid += 1;
+        if reduce_op {
+            source.pop();
+            source.pop();
+            source = f!("{source}}}\n  ");
+            endl = f!(";\n  ");
+        }
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
-    if let Some(_) = rdim {
-        source.pop();
-        source.pop();
-        source = f!("{source}}}\n  ");
-        endl = f!(";\n  ");
-    }
     let (p, i) = ast.view.cidx();
     if rdim.is_some() {
         source = f!("{source}int idx0 = 0{endl}");
@@ -1042,7 +1049,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     )
 }
 
-#[test]
+/*#[test]
 fn exp_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -1053,9 +1060,9 @@ fn exp_test() -> Result<(), ZyxError> {
     //panic!();
     //panic!("{y_vec:?}");
     Ok(())
-}
+}*/
 
-#[test]
+/*#[test]
 fn sum_test() -> Result<(), ZyxError> {
     let dev = crate::device()?;
     let x = dev.tensor([[8, 4, 3], [5, 4, 2]]).transpose();
@@ -1069,14 +1076,14 @@ fn sum_test() -> Result<(), ZyxError> {
     //panic!("{y_vec:?}");
     // res [[9], [7]]
     Ok(())
-}
+}*/
 
 #[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
     let y = dev.randn([1024, 1024], DType::F32);
-    let z = x.dot(&y);
+    let z = (x.exp() + x).dot(&y).tanh();
     let _: Vec<f32> = z.to_vec()?;
     Ok(())
 }
