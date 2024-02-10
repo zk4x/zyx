@@ -16,12 +16,7 @@ pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     assert_eq!(z, [[17, 24, 18], [24, 30, 30]]);
 
     let (xgrad, ygrad) = z.backward([&x, &y]).flatten().collect_tuple().unwrap();
-    //println!("{xgrad}");
-    //println!("{ygrad}");
     assert_eq!(xgrad, [[8, 4, 9], [8, 4, 9]]);
     assert_eq!(ygrad, [[7, 7, 7], [6, 6, 6], [7, 7, 7]]);
-
-    std::fs::write("matmul.dot", dev.plot_graph([&x, &y, &ygrad])).unwrap();
-
     Ok(())
 }

@@ -215,8 +215,8 @@ impl View {
     /// Original number of elements of self.
     #[must_use]
     pub fn original_numel(&self) -> usize {
-        let InnerView { shape, strides, .. } = self.views.last().unwrap();
-        shape.iter().zip(strides.iter()).filter_map(|(d, s)| if *s != 0 { Some(d) } else { None }).copied().product()
+        let InnerView { shape, strides, padding } = self.views.last().unwrap();
+        shape.iter().zip(strides.iter()).zip(padding.iter()).filter_map(|((d, s), (lp, rp))| if *s != 0 { Some((*d as i64-lp-rp) as usize) } else { None }).product()
     }
 
     /// Expand self into shape

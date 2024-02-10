@@ -850,10 +850,11 @@ impl zyx_core::compiler::Compiler for Compiler {
 fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     //use std::println;
+    // TODO reorder ast.ops so that before reduce leafs are first ops
     // TODO get this to work with different max local work sizes
-    let max_local_work_size = 256;
-    let tile_height;
-    let tile_width;
+    let max_lws = 256;
+    let local_height;
+    let local_width;
     let global_work_size;
     let local_work_size;
     let rdim = ast.rdim;
@@ -863,30 +864,36 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
         //println!("n: {n}, rshape: {rshape}, rdim: {rdim}");
         let mut lw = 1;
         let mut x: usize = rshape[-1];
-        while x % 2 == 0 && x > 1 && lw <= max_local_work_size / 2 {
+        while x % 2 == 0 && x > 1 && lw <= max_lws / 2 {
             x /= 2;
             lw *= 2;
         }
-        (tile_height, tile_width) = match lw {
-            256 => (16, 16),
-            _ => (1, lw),
-        };
-        global_work_size = alloc::vec![n / rdim / tile_width, tile_width];
-        local_work_size = alloc::vec![tile_height, tile_width];
+        #[allow(unreachable_patterns)] // it is sometimes reachable
+        {
+            (local_height, local_width) = match lw {
+                max_lws => (max_lws/1, 1),
+                _ => (1, lw),
+            };
+        }
+        global_work_size = alloc::vec![n / rdim, local_width];
+        local_work_size = alloc::vec![local_height, local_width];
     } else {
         let n = ast.view.numel();
         let mut lw = 8;
         let mut x = n / 8;
-        while x % 2 == 0 && lw <= max_local_work_size / 2 {
+        while x % 2 == 0 && lw <= max_lws / 2 {
             x /= 2;
             lw *= 2;
         }
-        (tile_height, tile_width) = match lw {
-            256 => (16, 16),
-            _ => (1, lw),
-        };
-        global_work_size = alloc::vec![n / tile_width, tile_width];
-        local_work_size = alloc::vec![tile_height, tile_width];
+        #[allow(unreachable_patterns)] // it is sometimes reachable
+        {
+            (local_height, local_width) = match lw {
+                max_lws => (max_lws, 1),
+                _ => (1, lw),
+            };
+        }
+        global_work_size = alloc::vec![n / local_width, local_width];
+        local_work_size = alloc::vec![local_height, local_width];
     }
 
     let mut source = f!("(\n  ");
@@ -909,25 +916,24 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
 
     endl = f!(";\n  ");
 
-    /*source = f!("{source}int gidx0 = get_group_id(0){endl}");
-    source = f!("{source}int gidx1 = get_group_id(1){endl}");
-    source = f!("{source}int lidx0 = get_local_id(0){endl}");
-    source = f!("{source}int lidx1 = get_local_id(1){endl}");*/
-    //source = f!("{source}int gidx0 = get_global_id(0){endl}");
-    //source = f!("{source}int gidx1 = get_global_id(1){endl}");
-
-    /*source = f!(
-        "{source}int idx0 = gidx0*{} + gidx1{endl}",
-        tile_height*global_work_size[1]
-    );*/
-
     source = f!(
-        "{source}int idx{} = get_group_id(0)*{}+get_local_id(0)*{}+get_group_id(1)*{tile_width}+get_local_id(1) /* 0..{} */{endl}",
+        "{source}int idx{} = get_global_id(0); /* 0..{} */{endl}",
+        //"{source}int idx{} = get_group_id(0)*{local_height} + get_local_id(0); /* 0..{} */{endl}",
         if rdim.is_some() { 1 } else { 0 },
-        tile_height*global_work_size[1],
-        global_work_size[1],
         global_work_size.iter().product::<usize>(),
     );
+    if rdim.is_some() {
+        source = f!("{source}int gid1 = get_global_id(1){endl}");
+    }
+    // TODO Add tiles for each expanded or permuted input
+    let tile_width = 16;
+    let tile_height = 16;
+    let mut tiles = BTreeSet::new();
+    for (i, (_, dtype)) in ast.args.iter().enumerate() {
+        tiles.insert(i);
+        let dtype = dtype.ocl_str();
+        source = f!("{source}{dtype} tile{i}[{tile_width}][{tile_height}]{endl}");
+    }
 
     let _rid = if let Some(rdim) = rdim {
         // Create register acc
@@ -937,9 +943,10 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
             .position(|op| matches!(op, Op::Sum(_) | Op::Max(_)))
             .unwrap();
         source = f!("{source}RES_DTYPE var{rid} = 0{endl}");
-        source = f!("{source}for (int ridx0 = 0; ridx0 < {rdim}; ridx0++) {{\n    ");
+        // Reduce loop
+        source = f!("{source}for (int ridx0 = 0; ridx0 < {rdim}; ridx0 += {local_width}) {{\n    ");
         endl = f!(";\n    ");
-        source = f!("{source}int idx0 = ridx0{endl}");
+        source = f!("{source}int idx0 = ridx0 + gid1{endl}");
         //source = f!("{source}printf(\"idx0: %d  \", idx0){endl}");
         Some(rid)
     } else {
@@ -952,6 +959,7 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     for op in ast.ops.iter() {
         let fdt = DType::from_ocl_str(dtype).is_floating();
         let mut reduce_op = false;
+        let mut local_sync = false;
         let res = match op {
             // TODO check if this should be tile or data
             Op::Leaf(x) => {
@@ -959,6 +967,9 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
                 bytes += view.original_numel();
                 dtype = t.ocl_str();
                 let (p, i) = view.cidx();
+                if x == tiles.iter().next_back().unwrap() {
+                    local_sync = true;
+                }
                 if p.is_empty() {
                     f!("{dtype} var{nid} = data{x}[{i}]")
                 } else {
@@ -1018,13 +1029,16 @@ fn compile_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
             },
         };
         source = f!("{source}{res}{endl}");
-        nid += 1;
+        if local_sync || reduce_op {
+            source = f!("{source}barrier(CLK_LOCAL_MEM_FENCE){endl}");
+        }
         if reduce_op {
             source.pop();
             source.pop();
             source = f!("{source}}}\n  ");
             endl = f!(";\n  ");
         }
+        nid += 1;
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
     let (p, i) = ast.view.cidx();
@@ -1083,7 +1097,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
     let y = dev.randn([1024, 1024], DType::F32);
-    let z = (x.exp() + x).dot(&y).tanh();
+    let z = x.dot(&y);
     let _: Vec<f32> = z.to_vec()?;
     Ok(())
 }

@@ -57,7 +57,23 @@ macro_rules! run_test {
 }
 
 fn main() {
-    /*println!("\nTesting tensor initialization");
+    let n = 128;
+
+    let dev = zyx_opencl::device().unwrap();
+    let x = dev.randn([n, n], zyx_opencl::DType::F32);
+    let y_ocl = dev.randn([n, n], zyx_opencl::DType::F32);
+    let z_ocl = x.dot(&y_ocl);
+
+    let dev = zyx_cpu::device().unwrap();
+    let x = dev.randn([n, n], zyx_opencl::DType::F32);
+    let y = dev.randn([n, n], zyx_opencl::DType::F32);
+    assert_eq(y_ocl.to_vec::<f32>().unwrap().into_iter(), y.to_vec::<f32>().unwrap().into_iter());
+    let z_cpu = x.dot(y);
+
+    assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
+
+
+    println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
     run_test!(unary::neg);
     run_test!(unary::relu);
@@ -81,7 +97,7 @@ fn main() {
     run_test!(movement::pad);
     println!("\nTesting reduce ops");
     run_test!(reduce::sum);
-    run_test!(reduce::max);*/
+    run_test!(reduce::max);
     println!("\nTesting combinations of ops");
     run_test!(combination::t0);
     run_test!(combination::t1);
