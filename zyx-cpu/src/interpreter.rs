@@ -101,6 +101,18 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
     }
 }
 
+fn terciary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, ZT: Scalar + Sync + Send, T2: Scalar + Send>(xview: &View, xdata: &[XT], yview: &View, ydata: &[YT], zview: &View, zdata: &[ZT], op: impl Fn((XT, YT, ZT)) -> T2 + Sync + Send) -> Vec<T2> {
+    let sdf = |i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone(), zdata[zview.get_idx(i)].clone()));
+    #[cfg(not(feature = "std"))]
+    {
+        (0..xview.numel()).map(sdf).collect()
+    }
+    #[cfg(feature = "std")]
+    {
+        (0..xview.numel()).into_par_iter().map(sdf).collect()
+    }
+}
+
 #[derive(Debug)]
 enum Data {
     F32(Vec<f32>),
@@ -218,6 +230,25 @@ impl RuntimeBackend for Interpreter {
                 Node::Div(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::div(x, y)),
                 Node::Pow(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::pow(x, y)),
                 Node::Cmplt(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::cmplt(x, y)),
+                Node::Where(x, y, z) => {
+                    let (xview, xdata) = self.get(x);
+                    let (yview, ydata) = self.get(y);
+                    let (zview, zdata) = self.get(z);
+                    let data = match xdata {
+                        Data::F32(xdata) => {
+                            let Data::F32(ydata) = ydata else { panic!() };
+                            let Data::F32(zdata) = zdata else { panic!() };
+                            Data::F32(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0.0 { y } else { z }))
+                        }
+                        Data::I32(xdata) => {
+                            let Data::I32(ydata) = ydata else { panic!() };
+                            let Data::I32(zdata) = zdata else { panic!() };
+                            Data::I32(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0 { y } else { z }))
+                        }
+                    };
+                    self.views.insert(nid, (View::new(xview.shape().clone()), nid));
+                    self.buffers.insert(nid, data);
+                }
                 Node::Reshape(x, sh) => {
                     let (view, id) = &self.views[x];
                     self.views.insert(nid, (view.reshape(sh), *id));

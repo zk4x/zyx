@@ -489,6 +489,41 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::Cmplt(..) => {
                     panic!("Compare less than (operator <) is not a differentiable operation.");
                 }
+                Node::Where(x, y, z) => {
+                    //return None, \
+                    //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None, \
+                    //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
+                    if req_grad.contains(&y) {
+                        let zero = match get_dtype(&self.nodes, x) {
+                            DType::F32 => {
+                                self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
+                            }
+                            DType::I32 => {
+                                self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
+                            }
+                        }?;
+                        let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                        self.release(zero)?;
+                        let y_grad = self.push(Node::Where(x, grad, zeros))?;
+                        self.release(zeros)?;
+                        insert_or_add_grad(self, &mut grads, y, y_grad)?;
+                    }
+                    if req_grad.contains(&z) {
+                        let zero = match get_dtype(&self.nodes, x) {
+                            DType::F32 => {
+                                self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
+                            }
+                            DType::I32 => {
+                                self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
+                            }
+                        }?;
+                        let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                        self.release(zero)?;
+                        let z_grad = self.push(Node::Where(x, zeros, grad))?;
+                        self.release(zeros)?;
+                        insert_or_add_grad(self, &mut grads, z, z_grad)?;
+                    }
+                }
                 Node::ReLU(x) => {
                     let zero = match get_dtype(&self.nodes, x) {
                         DType::F32 => {

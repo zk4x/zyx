@@ -89,6 +89,7 @@ pub fn plot_graph_dot(ids: &[Id], nodes: &[Node], rcs: &[u8]) -> alloc::string::
             Node::Mul(x, y) => add_node(id, &format!("Mul({x}, {y})"), "oval"),
             Node::Div(x, y) => add_node(id, &format!("Div({x}, {y})"), "oval"),
             Node::Cmplt(x, y) => add_node(id, &format!("Cmplt({x}, {y})"), "oval"),
+            Node::Where(x, y, z) => add_node(id, &format!("Cmplt({x}, {y}, {z})"), "oval"),
             Node::Pow(x, y) => add_node(id, &format!("Pow({x}, {y})"), "oval"),
             Node::Neg(x) => add_node(id, &format!("Neg({x})"), "oval"),
             Node::Exp(x) => add_node(id, &format!("Exp({x})"), "oval"),

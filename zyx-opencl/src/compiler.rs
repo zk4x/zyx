@@ -1060,6 +1060,7 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
                     }
                 }
             },
+            Op::Where(x, y, z) => f!("{dtype}{vws} var{nid} = var{x} ? var{y} : var{z}"),
             Op::Sum(..) | Op::Max(..) => panic!(),
         };
         source = f!("{source}{res}{endl}");
@@ -1259,6 +1260,7 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
             Op::Pow(x, y) => f!("{dtype} var{nid} = ({dtype})pow((float)var{x}, (float)var{y})"),
             Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
+            Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
             Op::Sum(x) => {
                 reduce_op = true;
                 f!("var{nid} += var{x}")

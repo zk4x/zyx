@@ -9,7 +9,11 @@ use crate::{
     utils::{get_dtype, get_shape},
     view::View,
 };
-use alloc::{boxed::Box, collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -78,6 +82,8 @@ pub enum Op {
     Pow(usize, usize),
     /// Compare less than binary op
     Cmplt(usize, usize),
+    /// Where op
+    Where(usize, usize, usize),
     /// Sum reduce op
     Sum(usize),
     /// Max reduce op
@@ -88,15 +94,32 @@ impl Op {
     fn access_parameters(&self, mut op: impl FnMut(usize)) {
         match self {
             Op::Leaf(..) | Op::UniformF32(..) => {}
-            Op::CastF32(x) | Op::CastI32(x)
-            | Op::Neg(x) | Op::ReLU(x)
-            | Op::Sin(x) | Op::Cos(x)
-            | Op::Ln(x) | Op::Exp(x)
-            | Op::Tanh(x) | Op::Sqrt(x)
-            | Op::Sum(x) | Op::Max(x) => op(*x),
-            Op::Add(x, y) | Op::Sub(x, y)
-            | Op::Mul(x, y) | Op::Div(x, y)
-            | Op::Pow(x, y) | Op::Cmplt(x, y) => { op(*x); op(*y); }
+            Op::CastF32(x)
+            | Op::CastI32(x)
+            | Op::Neg(x)
+            | Op::ReLU(x)
+            | Op::Sin(x)
+            | Op::Cos(x)
+            | Op::Ln(x)
+            | Op::Exp(x)
+            | Op::Tanh(x)
+            | Op::Sqrt(x)
+            | Op::Sum(x)
+            | Op::Max(x) => op(*x),
+            Op::Add(x, y)
+            | Op::Sub(x, y)
+            | Op::Mul(x, y)
+            | Op::Div(x, y)
+            | Op::Pow(x, y)
+            | Op::Cmplt(x, y) => {
+                op(*x);
+                op(*y);
+            }
+            Op::Where(x, y, z) => {
+                op(*x);
+                op(*y);
+                op(*z);
+            }
         }
     }
 }
@@ -170,6 +193,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 | Node::Div(..)
                 | Node::Pow(..)
                 | Node::Cmplt(..)
+                | Node::Where(..)
                 | Node::Reshape(..)
                 | Node::Permute(..)
                 | Node::Pad(..)
@@ -243,8 +267,17 @@ impl<C: Compiler> CompiledBackend<C> {
             }
             temp.extend(nodes[nid.i()].parameters());
         }
-        let p_order: Vec<Id> = order.iter().copied().filter(|nid| porder.contains(nid)).collect();
-        let porder: Vec<Id> = porder.iter().copied().filter(|nid| !p_order.contains(nid)).chain(p_order.clone()).collect();
+        let p_order: Vec<Id> = order
+            .iter()
+            .copied()
+            .filter(|nid| porder.contains(nid))
+            .collect();
+        let porder: Vec<Id> = porder
+            .iter()
+            .copied()
+            .filter(|nid| !p_order.contains(nid))
+            .chain(p_order.clone())
+            .collect();
         //std::println!("porder {porder:?}");
         // Convert this list to kernel
         let mut program_args = Vec::new();
@@ -266,8 +299,10 @@ impl<C: Compiler> CompiledBackend<C> {
             //std::println!("Node {:?}, flop: {tflop}", nodes[nid.i()]);
             let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
-                if ar { &mut ar_args } else { &mut args }
-                    .push((View::new(get_shape(nodes, nid).clone()), get_dtype(nodes, nid)));
+                if ar { &mut ar_args } else { &mut args }.push((
+                    View::new(get_shape(nodes, nid).clone()),
+                    get_dtype(nodes, nid),
+                ));
                 program_args.push(x);
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
@@ -338,6 +373,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     Node::Div(x, y) => ops.push(Op::Div(mapping[x], mapping[y])),
                     Node::Pow(x, y) => ops.push(Op::Pow(mapping[x], mapping[y])),
                     Node::Cmplt(x, y) => ops.push(Op::Cmplt(mapping[x], mapping[y])),
+                    Node::Where(x, y, z) => ops.push(Op::Where(mapping[x], mapping[y], mapping[z])),
                     Node::Sum(x, axes, _) => {
                         ops.push(Op::Sum(mapping[x]));
                         raxes = Some(axes.clone());
@@ -387,19 +423,23 @@ impl<C: Compiler> CompiledBackend<C> {
             //println!("New shape after reduce: {ar_new_shape:?}");
             for (aview, _) in &mut args {
                 //std::println!("aview: {aview:?}");
-                *aview = aview.reshape(&rshape).permute(&axes).reshape(&new_shape).pad(
-                    &new_shape
-                        .iter()
-                        .rev()
-                        .map(|d| {
-                            if *d != 1 && d % 8 != 0 {
-                                (0, (8 - d % 8) as i64)
-                            } else {
-                                (0, 0)
-                            }
-                        })
-                        .collect::<Vec<(i64, i64)>>(),
-                );
+                *aview = aview
+                    .reshape(&rshape)
+                    .permute(&axes)
+                    .reshape(&new_shape)
+                    .pad(
+                        &new_shape
+                            .iter()
+                            .rev()
+                            .map(|d| {
+                                if *d != 1 && d % 8 != 0 {
+                                    (0, (8 - d % 8) as i64)
+                                } else {
+                                    (0, 0)
+                                }
+                            })
+                            .collect::<Vec<(i64, i64)>>(),
+                    );
             }
             let ar_rshape = rshape.reduce(&axes);
             // view after the reduce op
@@ -420,19 +460,23 @@ impl<C: Compiler> CompiledBackend<C> {
                         .collect::<Vec<(i64, i64)>>(),
                 );
             for (aview, _) in &mut ar_args {
-                *aview = aview.reshape(&ar_rshape).permute(&axes).reshape(&ar_new_shape).pad(
-                    &ar_new_shape
-                        .iter()
-                        .rev()
-                        .map(|d| {
-                            if *d != 1 && d % 8 != 0 {
-                                (0, (8 - d % 8) as i64)
-                            } else {
-                                (0, 0)
-                            }
-                        })
-                        .collect::<Vec<(i64, i64)>>(),
-                );
+                *aview = aview
+                    .reshape(&ar_rshape)
+                    .permute(&axes)
+                    .reshape(&ar_new_shape)
+                    .pad(
+                        &ar_new_shape
+                            .iter()
+                            .rev()
+                            .map(|d| {
+                                if *d != 1 && d % 8 != 0 {
+                                    (0, (8 - d % 8) as i64)
+                                } else {
+                                    (0, 0)
+                                }
+                            })
+                            .collect::<Vec<(i64, i64)>>(),
+                    );
             }
             //std::println!("view: {view:?}");
             Some(if s0 != 1 && s0 % 8 != 0 {

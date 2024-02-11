@@ -77,6 +77,7 @@ impl RuntimeBackend for Interpreter {
                 | Node::Div(..)
                 | Node::Pow(..)
                 | Node::Cmplt(..)
+                | Node::Where(..)
                 | Node::Reshape(..)
                 | Node::Expand(..)
                 | Node::Permute(..)

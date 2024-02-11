@@ -55,6 +55,8 @@ pub enum Node {
     Pow(Id, Id),
     /// Compare less than binary op
     Cmplt(Id, Id),
+    /// Where op
+    Where(Id, Id, Id),
     /// Reshape movement op
     Reshape(Id, Shape),
     /// Expand movement op
@@ -78,12 +80,6 @@ impl Node {
             | Node::UniformF32(..)
             | Node::IterF32(..)
             | Node::IterI32(..) => Vec::new().into_iter(),
-            Node::Add(x, y)
-            | Node::Sub(x, y)
-            | Node::Mul(x, y)
-            | Node::Div(x, y)
-            | Node::Cmplt(x, y)
-            | Node::Pow(x, y) => Vec::from([*x, *y]).into_iter(),
             Node::CastF32(x)
             | Node::CastI32(x)
             | Node::Neg(x)
@@ -100,6 +96,13 @@ impl Node {
             | Node::Pad(x, ..)
             | Node::Sum(x, ..)
             | Node::Max(x, ..) => Vec::from([*x]).into_iter(),
+            Node::Add(x, y)
+            | Node::Sub(x, y)
+            | Node::Mul(x, y)
+            | Node::Div(x, y)
+            | Node::Cmplt(x, y)
+            | Node::Pow(x, y) => Vec::from([*x, *y]).into_iter(),
+            Node::Where(x, y, z) => Vec::from([*x, *y, *z]).into_iter(),
         }
     }
 
@@ -115,7 +118,8 @@ impl Node {
             | Node::Expand(..)
             | Node::Permute(..)
             | Node::Pad(..) => 0,
-            Node::Add(x, _)
+            Node::Where(x, ..)
+            | Node::Add(x, _)
             | Node::Sub(x, _)
             | Node::Mul(x, _)
             | Node::Div(x, _)

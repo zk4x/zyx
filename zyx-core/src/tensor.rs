@@ -453,6 +453,16 @@ impl<B: Backend> Tensor<B> {
         self.binary_op(rhs, BOp::Cmplt)
     }
 
+    /// Returns a new tensor with the true values replaced with if_true and the false values replaced with if_false.
+    #[must_use]
+    pub fn where_(&self, if_true: impl IntoTensor<B>, if_false: impl IntoTensor<B>) -> Tensor<B> {
+        let x = todo!();
+        let y = todo!();
+        let z = todo!();
+        self.backend.push(Node::Where(x, y, z)).unwrap();
+        todo!()
+    }
+
     /// Dot product (mathematical multiplication) of self and rhs
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
@@ -460,7 +470,11 @@ impl<B: Backend> Tensor<B> {
         let xshape = self.shape();
         let yshape = y.shape();
         let yrank = yshape.rank();
-        assert_eq!(xshape[-1], yshape[-(yrank.min(2) as i64)], "Cannot dot tensors with shapes {xshape} and {yshape}");
+        assert_eq!(
+            xshape[-1],
+            yshape[-(yrank.min(2) as i64)],
+            "Cannot dot tensors with shapes {xshape} and {yshape}"
+        );
         (self.reshape(
             xshape[0..-1]
                 .iter()
@@ -476,8 +490,16 @@ impl<B: Backend> Tensor<B> {
                     .chain([1])
                     .chain(yshape[-(yrank.min(2) as i64)..yrank as i64].iter().copied())
                     .collect::<Box<[usize]>>(),
-            ).transpose())
-        .sum(-1).reshape(xshape[0..-1].iter().copied().chain([yshape[-1]]).collect::<Box<[usize]>>())
+            )
+            .transpose())
+        .sum(-1)
+        .reshape(
+            xshape[0..-1]
+                .iter()
+                .copied()
+                .chain([yshape[-1]])
+                .collect::<Box<[usize]>>(),
+        )
     }
 
     // Movement ops
@@ -488,7 +510,12 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn reshape(&self, shape: impl Into<Shape>) -> Tensor<B> {
         let shape = shape.into();
-        assert_eq!(self.shape().numel(), shape.numel(), "Cannot reshape tensor with shape {} to {shape}", self.shape());
+        assert_eq!(
+            self.shape().numel(),
+            shape.numel(),
+            "Cannot reshape tensor with shape {} to {shape}",
+            self.shape()
+        );
         tensor(
             self.backend.push(Node::Reshape(self.id, shape)).unwrap(),
             self.backend,
@@ -550,15 +577,43 @@ impl<B: Backend> Tensor<B> {
         fn get_dtype<T: Scalar>(_: T) -> DType {
             T::dtype()
         }
-        assert_eq!(get_dtype(value.clone()), self.dtype(), "Cannot pad tensor with dtype {} with value of dtype {}", self.dtype(), get_dtype(value.clone()));
+        fn get_zero<T: Scalar>(_: T) -> T {
+            T::zero()
+        }
+        let dtype = self.dtype();
+        assert_eq!(
+            get_dtype(value.clone()),
+            dtype,
+            "Cannot pad tensor with dtype {} with value of dtype {}",
+            dtype,
+            get_dtype(value.clone())
+        );
         // TODO asserts
-        // TODO add support for value
         let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
-        let sh = self.shape().pad(&padding);
-        tensor(
-            self.backend.push(Node::Pad(self.id, padding, sh)).unwrap(),
+        let sh = self.shape();
+        let psh = sh.clone().pad(&padding);
+        let t0 = tensor(
+            self.backend
+                .push(Node::Pad(self.id, padding.clone(), psh.clone()))
+                .unwrap(),
             self.backend,
-        )
+        );
+        let zero = get_zero(value.clone());
+        if value.clone().is_equal(zero.clone()) {
+            t0
+        } else {
+            t0 + tensor(
+                self.backend
+                    .push(Node::Pad(
+                        self.backend.ones(sh, dtype).id,
+                        padding,
+                        psh.clone(),
+                    ))
+                    .unwrap(),
+                self.backend,
+            )
+            .where_(zero, value)
+        }
     }
 
     /// Reorder axes of self
