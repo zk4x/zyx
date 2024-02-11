@@ -357,6 +357,8 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
         let view;
+        // TODO reorder ast.ops so that before reduce leafs are first ops,
+        // if it is not a reduce kernel, then all leafs should be first.
         let rdim = if let Some(raxes) = raxes {
             //println!("rshape: {rshape:?}");
             //println!("raxes: {raxes:?}");
