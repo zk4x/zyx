@@ -1,5 +1,5 @@
 use alloc::{
-    boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::String, vec::Vec,
+    boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::{String, ToString}, vec::Vec,
 };
 use core::{ffi::c_void, ptr};
 use opencl_sys::{
@@ -17,6 +17,25 @@ use zyx_core::{
     error::ZyxError,
     scalar::Scalar,
 };
+
+const VECTOR_SYMBOLS: [&str; 16] = [
+    ".s0",
+    ".s1",
+    ".s2",
+    ".s3",
+    ".s4",
+    ".s5",
+    ".s6",
+    ".s7",
+    ".s8",
+    ".s9",
+    ".sa",
+    ".sb",
+    ".sc",
+    ".sd",
+    ".se",
+    ".sf",
+];
 
 fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), ZyxError> {
     let err = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
@@ -854,41 +873,61 @@ impl zyx_core::compiler::Compiler for Compiler {
 fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     //use std::println;
+    // Maximum number of registers to use for caching
+    //let max_registers = 32;
+    // Maximum local work size
+    let max_lws = 256;
+    // Preferred vector dtype width
+    let vw = 4;
+    let vws = &match vw {
+        1 => String::new(),
+        _ => vw.to_string(),
+    };
+    // dtype used for indexes
+    let id_t = "int";
+
     // TODO get this to work with different max local work sizes
     let tile_width = 16;
-    // Maximum number of registers to use for caching
-    let max_registers = 32;
     // Change this to Some to enable local memory tiles
     let mut tiles: Option<BTreeSet<usize>> = None;
-    let max_lws = 256;
-    let global_work_size;
-    let local_work_size;
 
 
     let n = ast.view.numel();
-    let mut local_width = 8;
-    let mut x = n / 8;
+    let mut local_width = 1;
+    let mut x = n / vw;
     while x % 2 == 0 && local_width <= max_lws / 2 {
         x /= 2;
         local_width *= 2;
     }
-    local_width %= max_lws;
-    let num_registers = max_registers % local_width;
-    global_work_size = alloc::vec![n/num_registers];
-    local_work_size = alloc::vec![local_width];
+    if local_width > max_lws {
+        local_width = max_lws;
+    }
+    let global_work_size = alloc::vec![n / vw];
+    let local_work_size = alloc::vec![local_width];
 
     let mut source = f!("(\n  ");
     let mut endl = f!(",\n  ");
 
     let mut res_id = 0;
-    for arg in &*ast.args {
-        source = f!(
-            "{source}__global const {}* data{res_id}{endl}",
-            arg.1.ocl_str()
-        );
+    for (view, dtype) in &*ast.args {
+        source = if view.contiguous() {
+            f!(
+                "{source}__global const {}{vws}* data{res_id}{endl}",
+                dtype.ocl_str()
+            )
+        } else {
+            f!(
+                "{source}__global const {}* data{res_id}{endl}",
+                dtype.ocl_str()
+            )
+        };
         res_id += 1;
     }
-    source = f!("{source}__global RES_DTYPE* data{res_id}{endl}");
+    if ast.view.contiguous() {
+        source = f!("{source}__global RES_DTYPE{vws}* data{res_id}{endl}");
+    } else {
+        source = f!("{source}__global RES_DTYPE* data{res_id}{endl}");
+    }
     source.pop();
     source.pop();
     source.pop();
@@ -898,7 +937,7 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     endl = f!(";\n  ");
 
     source = f!(
-        "{source}int idx0 = get_global_id(0); /* 0..{} */{endl}",
+        "{source}{id_t} gid0 = get_global_id(0); /* 0..{} */\n  {id_t} idx0 = gid0*{vw}{endl}",
         global_work_size.iter().product::<usize>(),
     );
 
@@ -911,11 +950,15 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     }
 
     let mut bytes = 0;
-    let mut dtype = DType::F32.ocl_str();
+    let mut dtype = ast.args.first().unwrap().1.ocl_str();
     let mut nid = 0;
     for op in ast.ops.iter() {
         let fdt = DType::from_ocl_str(dtype).is_floating();
         let mut local_sync = false;
+        let zero = match DType::from_ocl_str(dtype) {
+            DType::F32 => "0.0f",
+            DType::I32 => "0",
+        };
         let res = match op {
             // TODO check if this should be tile or data
             Op::Leaf(x) => {
@@ -930,9 +973,37 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
                     }
                 }
                 if p.is_empty() {
-                    f!("{dtype} var{nid} = data{x}[{i}]")
+                    if view.contiguous() {
+                        f!("idx0 = gid0{endl}{dtype}{vws} var{nid} = data{x}[{i}]")
+                    } else {
+                        match vw {
+                            1 => f!("{dtype}{vw} var{nid} = data{x}[{i}]"),
+                            _ => {
+                                let mut temp = f!("{dtype}{vw} var{nid}{endl}");
+                                for k in 0..vw {
+                                    temp += &f!("idx0 = gid0*{vw}+{k}{endl}var{nid}{} = data{x}[{i}]", VECTOR_SYMBOLS[k]);
+                                    if k < vw - 1 {
+                                        temp += &endl;
+                                    }
+                                }
+                                temp
+                            }
+                        }
+                    }
                 } else {
-                    f!("{dtype} var{nid} = {p} ? data{x}[{i}] : 0")
+                    match vw {
+                        1 => f!("{dtype}{vw} var{nid} = {p} ? data{x}[{i}] : {zero}"),
+                        _ => {
+                            let mut temp = f!("{dtype}{vw} var{nid}{endl}");
+                            for k in 0..vw {
+                                temp += &f!("idx0 = gid0*{vw}+{k}{endl}var{nid}{} = {p} ? data{x}[{i}] : {zero}", VECTOR_SYMBOLS[k]);
+                                if k < vw - 1 {
+                                    temp += &endl;
+                                }
+                            }
+                            temp
+                        }
+                    }
                 }
             }
             Op::UniformF32(..) => {
@@ -940,44 +1011,55 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             }
             Op::CastF32(x) => {
                 dtype = DType::F32.ocl_str();
-                f!("{dtype} var{nid} = ({dtype})var{x}")
+                f!("{dtype}{vws} var{nid} = ({dtype}{vws})var{x}")
             }
             Op::CastI32(x) => {
                 dtype = DType::I32.ocl_str();
-                f!("{dtype} var{nid} = ({dtype})var{x}")
+                f!("{dtype}{vws} var{nid} = ({dtype}{vws})var{x}")
             }
-            Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
-            Op::ReLU(x) => f!("{dtype} var{nid} = (var{x} > 0)*var{x}"),
+            Op::Neg(x) => f!("{dtype}{vws} var{nid} = -var{x}"),
+            Op::ReLU(x) => f!("{dtype}{vws} var{nid} = max(var{x}, {zero})"),
             Op::Sin(x) => f!(
-                "{dtype} var{nid} = sin({}var{x})",
+                "{dtype}{vws} var{nid} = sin({}var{x})",
                 if fdt { "" } else { "(float)" }
             ),
             Op::Cos(x) => f!(
-                "{dtype} var{nid} = cos({}var{x})",
+                "{dtype}{vws} var{nid} = cos({}var{x})",
                 if fdt { "" } else { "(float)" }
             ),
             Op::Ln(x) => f!(
-                "{dtype} var{nid} = {0}log({0}var{x})",
+                "{dtype}{vws} var{nid} = {0}log({0}var{x})",
                 if fdt { "" } else { "(float)" }
             ),
             Op::Exp(x) => f!(
-                "{dtype} var{nid} = exp({}var{x})",
+                "{dtype}{vws} var{nid} = exp({}var{x})",
                 if fdt { "" } else { "(float)" }
             ),
             Op::Tanh(x) => f!(
-                "{dtype} var{nid} = tanh({}var{x})",
+                "{dtype}{vws} var{nid} = tanh({}var{x})",
                 if fdt { "" } else { "(float)" }
             ),
             Op::Sqrt(x) => f!(
-                "{dtype} var{nid} = sqrt({}var{x})",
+                "{dtype}{vws} var{nid} = sqrt({}var{x})",
                 if fdt { "" } else { "(float)" }
             ),
-            Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
-            Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
-            Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
-            Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
-            Op::Pow(x, y) => f!("{dtype} var{nid} = ({dtype})pow((float)var{x}, (float)var{y})"),
-            Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
+            Op::Add(x, y) => f!("{dtype}{vws} var{nid} = var{x} + var{y}"),
+            Op::Sub(x, y) => f!("{dtype}{vws} var{nid} = var{x} - var{y}"),
+            Op::Mul(x, y) => f!("{dtype}{vws} var{nid} = var{x} * var{y}"),
+            Op::Div(x, y) => f!("{dtype}{vws} var{nid} = var{x} / var{y}"),
+            Op::Pow(x, y) => f!("{dtype}{vws} var{nid} = convert_{dtype}{vws}(pow(convert_float{vw}(var{x}), convert_float{vw}(var{y})))"),
+            Op::Cmplt(x, y) => {
+                match vw {
+                    1 => f!("{dtype}{vws} var{nid} = ({dtype})(var{x} < var{y})"),
+                    _ => {
+                        let mut temp = String::new();
+                        for k in 0..vw {
+                            temp += &f!("var{x}{0} < var{y}{0}, ", VECTOR_SYMBOLS[k]);
+                        }
+                        f!("{dtype}{vws} var{nid} = ({dtype}{vws}){{ {} }}", &temp[..temp.len()-2])
+                    }
+                }
+            },
             Op::Sum(..) | Op::Max(..) => panic!(),
         };
         source = f!("{source}{res}{endl}");
@@ -988,10 +1070,23 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
     let (p, i) = ast.view.cidx();
-    source = if p.is_empty() {
-        f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
+    source += &if p.is_empty() {
+        if ast.view.contiguous() {
+            f!("idx0 = gid0{endl}data{res_id}[{i}] = var{}{endl}", nid - 1)
+        } else {
+            f!("idx0 = gid0*{vw}{endl}data{res_id}[{i}] = var{}{endl}", nid - 1)
+        }
     } else {
-        f!("{source}if {p} data{res_id}[{i}] = var{}{endl}", nid - 1)
+        match vw {
+            1 => f!("idx0 = gid0*{vw}{endl}if {p} data{res_id}[{i}] = var{}{endl}", nid - 1),
+            _ => {
+                let mut temp = String::new();
+                for k in 0..vw {
+                    temp += &f!("idx0 = gid0*{vw}+{k}{endl}if {p} data{res_id}[{i}] = var{}{}{endl}", nid - 1, VECTOR_SYMBOLS[k])
+                }
+                temp
+            }
+        }
     };
     source.pop();
     source.pop();
@@ -1009,13 +1104,23 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
 fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
     //std::println!("\nCompiling ast: {ast:#?}");
     //use std::println;
+    // Maximum number of registers to use for caching
+    let max_registers = 32;
+    // Maximum local work size
+    let max_lws = 256;
+    // Preferred vector dtype width
+    let vw = 4;
+    // dtype used for indexes
+    let id_t = "int";
+
     // TODO get this to work with different max local work sizes
     let tile_width = 16;
     let tile_height = 16;
     let mut tiles: Option<BTreeSet<usize>> = None;
-    let max_lws = 256;
     let local_height;
     let local_width;
+
+
     let rdim = ast.rdim.unwrap();
     let rshape = ast.view.shape();
     let n: usize = rdim * rshape[-1];
@@ -1029,12 +1134,14 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     #[allow(unreachable_patterns)] // it is sometimes reachable
     {
         (local_height, local_width) = match lw {
-            max_lws => (max_lws/1, 1),
-            _ => (1, lw),
+            max_lws => (1, max_lws/1),
+            _ => (lw, 1),
         };
     }
-    let global_work_size = alloc::vec![n / rdim, local_width];
+    let global_work_size = alloc::vec![local_height, n / rdim];
     let local_work_size = alloc::vec![local_height, local_width];
+
+    let num_registers = max_registers % (local_width * local_height);
 
     let mut source = f!("(\n  ");
     let mut endl = f!(",\n  ");
@@ -1056,11 +1163,11 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
 
     endl = f!(";\n  ");
 
+    source = f!("{source}{id_t} gid0 = get_global_id(0){endl}");
     source = f!(
-        "{source}int idx1 = get_global_id(0); /* 0..{} */{endl}",
+        "{source}{id_t} idx1 = get_global_id(1); /* 0..{} */{endl}",
         global_work_size.iter().product::<usize>(),
     );
-    source = f!("{source}int gid1 = get_global_id(1){endl}");
 
     if let Some(tiles) = &mut tiles {
         for (i, (_, dtype)) in ast.args.iter().enumerate() {
@@ -1078,9 +1185,9 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
         .unwrap();
     source = f!("{source}RES_DTYPE var{rid} = 0{endl}");
     // Reduce loop
-    source = f!("{source}for (int ridx0 = 0; ridx0 < {rdim}; ridx0 += {local_width}) {{\n    ");
+    source = f!("{source}for ({id_t} ridx0 = 0; ridx0 < {rdim}; ridx0 += {local_height}) {{\n    ");
     endl = f!(";\n    ");
-    source = f!("{source}int idx0 = ridx0 + gid1{endl}");
+    source = f!("{source}{id_t} idx0 = ridx0 + gid0{endl}");
     //source = f!("{source}printf(\"idx0: %d  \", idx0){endl}");
 
     let mut bytes = 0;
@@ -1175,7 +1282,7 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
     let (p, i) = ast.view.cidx();
-    source = f!("{source}int idx0 = 0{endl}");
+    source = f!("{source}{id_t} idx0 = 0{endl}");
     source = if p.is_empty() {
         f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
     } else {

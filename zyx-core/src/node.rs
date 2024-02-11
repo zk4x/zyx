@@ -134,7 +134,7 @@ impl Node {
             Node::Sum(x, _, sh) | Node::Max(x, _, sh) => {
                 let n = sh.numel();
                 let rdim = get_shape(nodes, *x).numel() / n;
-                (rdim - 1) * n
+                rdim * n // technically (rdim-1)*n, but hardware needs to do rdim*n
             }
         }
     }

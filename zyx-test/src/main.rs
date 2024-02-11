@@ -72,7 +72,6 @@ fn main() {
 
     assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
 
-
     println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
     run_test!(unary::neg);

@@ -263,7 +263,7 @@ impl<C: Compiler> CompiledBackend<C> {
         for nid in porder {
             //println!("ops: {ops:?}");
             flop += nodes[nid.i()].flop(nodes);
-            //println!("Node {:?}", nodes[nid.i()]);
+            //std::println!("Node {:?}, flop: {tflop}", nodes[nid.i()]);
             let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
                 if ar { &mut ar_args } else { &mut args }
