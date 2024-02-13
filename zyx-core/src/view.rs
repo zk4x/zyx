@@ -258,6 +258,7 @@ impl View {
                 .zip(padding.iter())
                 .map(|(x, y)| (x.0 + y.0, x.1 + y.1))
                 .collect();
+            std::println!("new_padding: {:?}", padding);
         }
         Self { views }
     }

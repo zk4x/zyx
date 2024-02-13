@@ -40,35 +40,75 @@ impl SubAssign<usize> for Id {
     }
 }
 
+/// Into i64 range, used for indexing
+pub trait IntoRange: Clone {
+    /// Convert self to range i64, if it is scalar, it gets converted to x..x+1
+    fn into_range(self) -> Range<i64>;
+}
+
+impl IntoRange for Range<i64> {
+    fn into_range(self) -> Range<i64> {
+        self
+    }
+}
+
+impl IntoRange for i64 {
+    fn into_range(self) -> Range<i64> {
+        self..self+1
+    }
+}
+
 /// Implemented for objects that can be used to index tensors.
 pub trait IntoIndex {
     /// Convert self to tensor index.
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>>;
 }
 
-impl IntoIndex for &[Range<i64>] {
+impl<I: IntoRange> IntoIndex for &[I] {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
-        self.iter().cloned()
+        self.iter().cloned().map(IntoRange::into_range)
     }
 }
 
-impl<const N: usize> IntoIndex for [Range<i64>; N] {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
-        self.into_iter()
+impl<I0: IntoRange, I1: IntoRange> IntoIndex for (I0, I1) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range()].into_iter()
     }
 }
 
-impl IntoIndex for &[i64] {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
-        // TODO this is incorrect, what about index -1?
-        self.iter().copied().map(|i| i..i + 1)
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange> IntoIndex for (I0, I1, I2) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range(), self.2.into_range()].into_iter()
     }
 }
 
-impl<const N: usize> IntoIndex for [i64; N] {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
-        // TODO this is incorrect, what about index -1?
-        self.into_iter().map(|i| i..i + 1)
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (I0, I1, I2, I3) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range()].into_iter()
+    }
+}
+
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> IntoIndex for (I0, I1, I2, I3, I4) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range()].into_iter()
+    }
+}
+
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange> IntoIndex for (I0, I1, I2, I3, I4, I5) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range(), self.5.into_range()].into_iter()
+    }
+}
+
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange, I6: IntoRange> IntoIndex for (I0, I1, I2, I3, I4, I5, I6) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range(), self.5.into_range(), self.6.into_range()].into_iter()
+    }
+}
+
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange, I6: IntoRange, I7: IntoRange> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7) {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range(), self.5.into_range(), self.6.into_range(), self.7.into_range()].into_iter()
     }
 }
 
@@ -726,19 +766,51 @@ impl<B: Backend> Tensor<B> {
     }
 
     /// Tensor indexing
+    /// ```rust
+    /// use zyx_opencl;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[2, 3, 4],
+    ///                     [4, 1, 8]]);
+    /// let y = x.get((-1, -3));
+    /// assert_eq!(y, 4);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
+    #[must_use]
     pub fn get(&self, index: impl IntoIndex) -> Tensor<B> {
-        let shape = self.shape();
         // TODO asserts
-        // TODO is this even correct?
+        let padding: Vec<(i64, i64)> = index.into_index()
+            .into_iter()
+            .zip(self.shape().iter())
+            .map(|(r, d)| (
+                if r.start >= 0 { -r.start } else { -r.start - *d as i64 },
+                if r.end > 0 { *d as i64-r.end } else { r.end }
+            )).collect();
         self.pad(
-            index
-                .into_index()
-                .into_iter()
-                .enumerate()
-                .map(|(a, r)| (-r.start, shape[-(a as i64)] as i64 - r.end)),
+            padding.into_iter().rev(),
             0,
         )
     }
+
+    /// Stack multiple tensors into one
+    #[must_use]
+    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
+    where
+        B: 'a
+    {
+        todo!()
+    }
+
+    /// Split into multiple tensors
+    #[must_use]
+    pub fn split(&self, sizes: &[i64], dim: i64) -> Vec<Tensor<B>> {
+        todo!()
+    }
+
+    //#[must_use]
+    //pub fn pool(&self)
+
+    //#[must_use]
+    //pub fn conv(&self)
 
     /// Tensors should be treated as immutable data structures.
     /// However optimizers need to update model's parameters with new values.
@@ -1076,7 +1148,16 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
     }
 }
 
-impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize> PartialEq<[T; D0]>
+impl<B: Backend, T: Scalar + PartialEq> PartialEq<T> for Tensor<B>
+{
+    fn eq(&self, other: &T) -> bool {
+        self.numel() == 1
+            && self.dtype() == T::dtype()
+            && self.item::<T>().unwrap() == *other
+    }
+}
+
+impl<B: Backend, T: Scalar + PartialEq, const D0: usize> PartialEq<[T; D0]>
     for Tensor<B>
 {
     fn eq(&self, other: &[T; D0]) -> bool {
@@ -1091,7 +1172,7 @@ impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize> PartialEq<[T
     }
 }
 
-impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: usize>
+impl<B: Backend, T: Scalar + PartialEq, const D0: usize, const D1: usize>
     PartialEq<[[T; D1]; D0]> for Tensor<B>
 {
     fn eq(&self, other: &[[T; D1]; D0]) -> bool {
@@ -1108,7 +1189,7 @@ impl<B: Backend, T: Scalar + core::cmp::PartialEq, const D0: usize, const D1: us
 
 impl<
         B: Backend,
-        T: Scalar + core::cmp::PartialEq,
+        T: Scalar + PartialEq,
         const D0: usize,
         const D1: usize,
         const D2: usize,

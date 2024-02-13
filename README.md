@@ -72,8 +72,8 @@ let x = dev.eye(3, DType::F16);
 Index tensors.
 ```rust
 let x = dev.randn([2, 3, 4, 5], DType::F32);
-let z = x.get([.., 2.., 1..-2, ..-1]).unwrap();
-let v: f32 = x.get([1, 2, 1, -1]).unwrap().item().unwrap();
+let z = x.get((.., 2, 1..-2, ..-1)).unwrap();
+let v: f32 = x.get((1, 2, .., -1)).unwrap().item().unwrap();
 ```
 IO operations.
 ```shell
@@ -88,14 +88,14 @@ Custom models.
 cargo add zyx-nn
 ```
 ```rust
-use zyx_nn::{IntoTensor, Tensor};
+use zyx_nn::{IntoTensor, Tensor, Backend};
 
-struct MyModel<B> {
+struct MyModel<B: Backend> {
     l0: zyx_nn::Linear<B>,
     l1: zyx_nn::Linear<B>,
 }
 
-impl<B> MyModel<B> {
+impl<B: Backend> MyModel<B> {
     fn forward(&self, x: impl IntoTensor<B>) -> Tensor<B> {
         let x = self.l0.forward(x).relu();
         self.l1.forward(x)
@@ -119,10 +119,6 @@ tensors for backpropagation or not, and so it does not unnecessarily allocate me
 ## Contributing
 
 See CONTRIBUTING.md
-
-## Questions
-
-There is matrix chat: ...
 
 ## Thanks ❤️
 
