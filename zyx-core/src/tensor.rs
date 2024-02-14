@@ -791,14 +791,37 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
-    /// Stack multiple tensors into one
     #[must_use]
+    fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
+    where
+        B: 'a
+    {
+        let tensors: Vec<&Tensor<B>> = tensors.into_iter().collect();
+        let shape = tensors[0].shape();
+        let rank = shape.rank();
+        let dim = if dim < 0 { dim + rank as i64 } else { dim } as usize;
+        // Dimension check
+        for tensor in tensors {
+            for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
+                if i != dim {
+                    assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
+                }
+            }
+        }
+        // pad everything
+        let offset = 0;
+        // then sum it together
+        todo!()
+    }
+
+    /// Stack multiple tensors into one
+    /*#[must_use]
     pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
     where
         B: 'a
     {
         todo!()
-    }
+    }*/
 
     /// Split into multiple tensors
     #[must_use]
