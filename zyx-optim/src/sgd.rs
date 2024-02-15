@@ -3,22 +3,21 @@ use zyx_core::backend::Backend;
 use zyx_core::tensor::Tensor;
 
 /// # Stochastic gradient descent optimizer
-///
-/// ## Parameters
-/// - learning_rate – learning rate (default: 0.001)
-/// - momentum – momentum factor (default: 0.0)
-/// - weight_decay – weight decay (L2 penalty) (default: 0.0)
-/// - dampening – dampening for momentum (default: 0.0)
-/// - nesterov – enables Nesterov momentum (default: false)
-/// - maximize – maximize the objective with respect to the params, instead of minimizing (default: false)
 pub struct SGD<B: Backend> {
+    /// learning rate (default: 0.001)
     pub learning_rate: f32,
+    /// momentum factor (default: 0.0)
     pub momentum: f32,
-    pub dampening: f32,
+    /// weight decay (L2 penalty) (default: 0.0)
     pub weight_decay: f32,
+    /// dampening for momentum (default: 0.0)
+    pub dampening: f32,
+    /// enables Nesterov momentum (default: false)
     pub nesterov: bool,
+    /// maximize the objective with respect to the params, instead of minimizing (default: false)
     pub maximize: bool,
-    pub bias: Option<Vec<Tensor<B>>>,
+    /// stores momentum, starts empty and will be initialized on demand
+    pub bias: Vec<Tensor<B>>,
 }
 
 impl<B: Backend> Default for SGD<B> {
@@ -26,11 +25,11 @@ impl<B: Backend> Default for SGD<B> {
         Self {
             learning_rate: 0.001,
             momentum: 0.0,
-            dampening: 0.0,
             weight_decay: 0.0,
+            dampening: 0.0,
             nesterov: false,
             maximize: false,
-            bias: None,
+            bias: Vec::new(),
         }
     }
 }
@@ -54,19 +53,15 @@ impl<B: Backend> SGD<B> {
                     grad = grad + &*param * self.weight_decay;
                 }
                 if self.momentum != 0.0 {
-                    if let Some(bias) = &mut self.bias {
-                        if let Some(bias) = bias.get_mut(i) {
-                            *bias = &*bias * self.momentum + &grad * (1.0 - self.dampening);
-                        } else {
-                            bias.push(grad.clone());
-                        }
+                    if let Some(bias) = self.bias.get_mut(i) {
+                        *bias = &*bias * self.momentum + &grad * (1.0 - self.dampening);
                     } else {
-                        self.bias = Some(alloc::vec![grad.clone()]);
+                        self.bias.push(grad.clone());
                     }
                     if self.nesterov {
-                        grad = grad + &self.bias.as_ref().unwrap()[i] * self.momentum;
+                        grad = grad + &self.bias[i] * self.momentum;
                     } else {
-                        grad = self.bias.as_ref().unwrap()[i].clone();
+                        grad = self.bias[i].clone();
                     }
                 }
                 if self.maximize {
