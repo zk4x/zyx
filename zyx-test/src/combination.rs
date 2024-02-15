@@ -15,8 +15,8 @@ pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let z = x.dot(&y);
     assert_eq!(z, [[17, 24, 18], [24, 30, 30]]);
 
-    let (xgrad, ygrad) = z.backward([&x, &y]).flatten().collect_tuple().unwrap();
-    assert_eq!(xgrad, [[8, 4, 9], [8, 4, 9]]);
-    assert_eq!(ygrad, [[7, 7, 7], [6, 6, 6], [7, 7, 7]]);
+    let (x_grad, y_grad) = z.backward([&x, &y]).into_iter().flatten().collect_tuple().unwrap();
+    assert_eq!(x_grad, [[8, 4, 9], [8, 4, 9]]);
+    assert_eq!(y_grad, [[7, 7, 7], [6, 6, 6], [7, 7, 7]]);
     Ok(())
 }

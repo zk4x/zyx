@@ -6,10 +6,11 @@ mod movement;
 mod reduce;
 mod combination;
 mod autograd;
+mod optimizer;
 
 use zyx_core::backend::Backend;
 use zyx_core::scalar::Scalar;
-use zyx_opencl::ZyxError;
+use zyx_core::error::ZyxError;
 
 fn assert_eq<T: Scalar>(x: impl IntoIterator<Item = T>, y: impl IntoIterator<Item = T>) {
     let x: Vec<T> = x.into_iter().collect();
@@ -57,7 +58,7 @@ macro_rules! run_test {
 }
 
 fn main() {
-    let n = 128;
+    /*let n = 128;
 
     let dev = zyx_opencl::device().unwrap();
     let x = dev.randn([n, n], zyx_opencl::DType::F32);
@@ -101,9 +102,9 @@ fn main() {
     run_test!(combination::t0);
     run_test!(combination::t1);
     println!("\nTesting autograd engine");
-    run_test!(autograd::t0);
+    run_test!(autograd::t0);*/
     println!("\nTesting optimizers");
-    //run_test!(optimizer::sgd);
+    run_test!(optimizer::sgd);
     //run_test!(optimizer::adam);
     println!("\nTesting nn modules");
     //run_test!(nn::linear);

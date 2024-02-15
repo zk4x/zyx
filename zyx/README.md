@@ -4,7 +4,9 @@ Zyx is machine learning library written in Rust.
 Most ML models can be created with just tensors and operations on them.
 Tensors must be stored somewhere. Zyx can use both RAM and VRAM (on the gpu) to store tensors.
 
-This is how you create gpu backend. First add some backend as dependency.
+Please do not directly add zyx as your dependency. Instead add one of the backends: zyx-opencl, zyx-cpu.
+
+This is how you create gpu backend.
 ```shell
 cargo add zyx-opencl
 ```
@@ -26,19 +28,19 @@ let z = (&x + &y).exp() - &x;
 
 Zyx allows for arbitrary differentiation. Using the previously created tensors we calculate derivative of z w.r.t. x and y.
 ```rust
-let (grad_x, grad_y) = z.backward([&x, &y]).flatten().collect_tuple().unwrap();
+let grads = z.backward([&x, &y]);
 ```
 You can also calculate higher order derivatives.
 ```rust
-let grad_xx = grad_x.backward([&x]).unwrap();
+let grad_xx = grads[0].unwrap().backward([&x]).unwrap();
 ```
 
 ## Optimizers ⚙️
 
 Optimizers optimize something (usually minimize loss). For this they need to know what is the derivative of loss w.r.t. model's parameters.
 ```rust
-let optimizer = zyx_nn::SGD::new();
-let loss = (model.forward(&x) - label).pow(2);
+let optimizer = zyx_optim::SGD { learning_rate: 0.01, momentum: 0.9, ..Default::default() };
+let loss = (model.forward(&x) - &label).pow(2);
 let grads = loss.backward(&model);
 optimizer.update(&mut model, grads);
 ```
@@ -72,8 +74,8 @@ let x = dev.eye(3, DType::F16);
 Index tensors.
 ```rust
 let x = dev.randn([2, 3, 4, 5], DType::F32);
-let z = x.get((.., 2, 1..-2, ..-1)).unwrap();
-let v: f32 = x.get((1, 2, .., -1)).unwrap().item().unwrap();
+let z = x.get((.., 2, 1..-2, ..-1));
+let v: f32 = x.get((1, 2, .., -1)).item().unwrap();
 ```
 IO operations.
 ```shell

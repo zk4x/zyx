@@ -112,9 +112,8 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, 
     }
 }
 
-/// Tensor is the atom of zyx.
-/// Tensor is multidimensional array.
-/// Tensor is immutable (with one [exception](Tensor::set)
+/// Tensor is the core object of zyx.
+/// It is multidimensional array.
 pub struct Tensor<B: Backend> {
     id: Id,
     backend: B,
@@ -346,7 +345,7 @@ impl<B: Backend> Tensor<B> {
     pub fn backward<'a>(
         &'a self,
         sources: impl IntoIterator<Item = &'a Tensor<B>>,
-    ) -> impl Iterator<Item = Option<Tensor<B>>> + 'a
+    ) -> Vec<Option<Tensor<B>>>
     where
         B: 'a,
     {
@@ -358,7 +357,7 @@ impl<B: Backend> Tensor<B> {
         sources
             .into_iter()
             .map(move |x: &Tensor<B>| grads.get(&x.id).cloned())
-            .map(move |x| x.map(|x| tensor(x, self.backend)))
+            .map(move |x| x.map(|x| tensor(x, self.backend))).collect()
     }
 
     // Unary ops
@@ -834,20 +833,6 @@ impl<B: Backend> Tensor<B> {
 
     //#[must_use]
     //pub fn conv(&self)
-
-    /// Tensors should be treated as immutable data structures.
-    /// However optimizers need to update model's parameters with new values.
-    /// This is the only function that mutates tensor.
-    pub fn set(&mut self, x: impl IntoTensor<B>) {
-        self.backend.release(self.id).unwrap();
-        let x = x.into_tensor(self.backend);
-        // TODO assert equality of backends
-        assert_eq!(self.shape(), x.shape());
-        assert_eq!(self.dtype(), x.dtype());
-        self.backend.retain(x.id);
-        self.id = x.id;
-        self.backend.set_leaf(self.id);
-    }
 }
 
 enum UOp {
@@ -916,36 +901,43 @@ impl<B: Backend> Tensor<B> {
                 (DType::I32, DType::F32) => x = x.cast(DType::F32),
                 _ => {}
             }
-            let mut shapex = x.shape();
-            let mut shapey = y.shape();
-            let rx = shapex.rank();
-            let ry = shapey.rank();
+            let mut x_shape = x.shape();
+            let mut y_shape = y.shape();
+
+            for (x, y) in x_shape.iter().zip(y_shape.iter()) {
+                if x != y {
+                    assert!(*x == 1 || *y == 1, "Left and right tensors have incompatible shapes for binary op: {x_shape} and {y_shape}");
+                }
+            }
+
+            let rx = x_shape.rank();
+            let ry = y_shape.rank();
             match rx.cmp(&ry) {
                 Ordering::Less => {
-                    shapex = repeat(1)
+                    x_shape = repeat(1)
                         .take(ry - rx)
-                        .chain(shapex.into_iter().copied())
+                        .chain(x_shape.into_iter().copied())
                         .collect::<Vec<usize>>()
                         .into();
                 }
                 Ordering::Greater => {
-                    shapey = repeat(1)
+                    y_shape = repeat(1)
                         .take(rx - ry)
-                        .chain(shapey.into_iter().copied())
+                        .chain(y_shape.into_iter().copied())
                         .collect::<Vec<usize>>()
                         .into();
                 }
                 Ordering::Equal => {}
             }
             let mut eshape = Vec::new();
-            for (x, y) in shapex.into_iter().zip(shapey.into_iter()) {
+            for (x, y) in x_shape.into_iter().zip(y_shape.into_iter()) {
                 eshape.push(*x.max(y));
             }
             let eshape: Shape = eshape.into();
-            if shapex != eshape {
+            if x_shape != eshape {
                 x = x.expand(eshape.clone());
             }
-            if shapey != eshape {
+            if y_shape != eshape {
                 y = y.expand(eshape);
             }
         }

@@ -51,17 +51,28 @@ impl View {
     /// Convert contiguous idx into idx indexing data with self view
     #[must_use]
     pub fn get_idx(&self, mut idx: usize) -> usize {
-        // TODO padding
         // TODO can this be faster???
         // Preferably like MUCH faster???
+        /*if *left_p < 0 {
+            idx += &f!("+{}", -left_p);
+        } else if *left_p > 0 {
+            padding_condition = f!("{padding_condition} && (idx{i}>{})", left_p - 1);
+        }
+        if *right_p > 0 {
+            padding_condition =
+                f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
+        }
+        if *left_p > 0 {
+            idx += &f!("-{}", left_p);
+        }*/
         for InnerView {
             shape,
             strides,
-            padding: _,
+            padding,
         } in &self.views
         {
             let mut res = 0;
-            for (d, st) in shape.into_iter().zip(strides).rev() {
+            for ((d, st), (lp, rp)) in shape.into_iter().zip(strides).zip(padding.iter()).rev() {
                 res += idx % d * st;
                 idx /= d;
             }

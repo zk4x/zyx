@@ -24,7 +24,7 @@ impl<'a, B: Backend + 'a, Tensors: IntoIterator<Item = &'a mut Tensor<B>>> Modul
         let dev = targets[0].backend();
         let tensors = load(dev, path)?;
         for (x, y) in targets.into_iter().zip(tensors) {
-            x.set(y);
+            *x = y;
         }
         Ok(())
     }

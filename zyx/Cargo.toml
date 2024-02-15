@@ -1,10 +1,10 @@
 [package]
-name = "zyx-core"
+name = "zyx"
 version = "0.1.0"
 edition = "2021"
 authors = ["zk4x"]
-description = "Zyx core utilities"
-documentation = "https://docs.rs/zyx-core"
+description = "Zyx machine learning library"
+documentation = "https://docs.rs/zyx"
 readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
@@ -16,11 +16,3 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
-
-[dev-dependencies]
-zyx-opencl = { version = "*", path = "../zyx-opencl" }
-
-[features]
-default = ["std"]
-std = []

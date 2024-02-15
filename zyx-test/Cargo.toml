@@ -3,7 +3,7 @@ name = "zyx-test"
 version = "0.1.0"
 edition = "2021"
 authors = ["zk4x"]
-description = "Machine learning tensor library"
+description = "Zyx testing binary"
 #documentation = "https://docs.rs/zyx-test"
 readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
@@ -17,6 +17,7 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx-core = { version = "*", path = "../zyx-core" }
+zyx-optim = { version = "*", path = "../zyx-optim" }
 rand = { version = "0.8.5" }
 zyx-opencl = { version = "*", path = "../zyx-opencl" }
 zyx-cpu = { version = "*", path = "../zyx-cpu" }
