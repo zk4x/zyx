@@ -58,7 +58,7 @@ macro_rules! run_test {
 }
 
 fn main() {
-    /*let n = 128;
+    let n = 128;
 
     let dev = zyx_opencl::device().unwrap();
     let x = dev.randn([n, n], zyx_opencl::DType::F32);
@@ -102,7 +102,7 @@ fn main() {
     run_test!(combination::t0);
     run_test!(combination::t1);
     println!("\nTesting autograd engine");
-    run_test!(autograd::t0);*/
+    run_test!(autograd::t0);
     println!("\nTesting optimizers");
     run_test!(optimizer::sgd);
     //run_test!(optimizer::adam);

@@ -166,7 +166,7 @@ impl RuntimeBackend for Interpreter {
         Ok(if view.contiguous() {
             data.to_vec()
         } else {
-            (0..numel).map(|i| data[view.get_idx(i)].clone()).collect()
+            view.iterate(data).collect()
         })
     }
 

@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 use zyx_core::backend::Backend;
 use zyx_core::tensor::Tensor;
 
-
 /// # Adaptive momentum estimation optimizer
 pub struct Adam<B: Backend> {
     /// learning rate (default: 1e-3)

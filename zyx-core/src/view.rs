@@ -3,6 +3,7 @@ use crate::{axes::Axes, shape::Shape};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::{vec, vec::Vec};
+use crate::scalar::Scalar;
 
 /// View holds shape of the tensor and allows for arbitrary number of movement ops
 /// (reshape, expand, pad, permute) to be executed as noops (without accessing the
@@ -23,6 +24,55 @@ struct InnerView {
 impl InnerView {
     fn contiguous(&self) -> bool {
         self.shape.strides() == self.strides && self.padding.iter().all(|(lp, rp)| *lp == 0 && *rp == 0)
+    }
+}
+
+/// CPU iterator
+pub struct CPUIter<'a, T> {
+    data: &'a [T],
+    view: &'a View,
+    idx: usize,
+    num_iters: usize,
+}
+
+impl<'a, T: Scalar> Iterator for CPUIter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx > self.num_iters {
+            return None
+        }
+        let mut idx = self.idx;
+        self.idx += 1;
+        for InnerView {
+            shape,
+            strides,
+            padding,
+        } in &self.view.views
+        {
+            let mut res = 0;
+            for ((d, st), (lp, rp)) in shape.into_iter().zip(strides).zip(padding.iter()).rev() {
+                let mut dim_idx = idx % d;
+                if *lp > 0 {
+                    let lpu = *lp as usize;
+                    if dim_idx < lpu {
+                        return Some(T::zero())
+                    }
+                    dim_idx -= lpu;
+                } else if *lp < 0 {
+                    dim_idx += (-*lp) as usize;
+                }
+                if *rp > 0 {
+                    if dim_idx > *rp as usize {
+                        return Some(T::zero())
+                    }
+                }
+                res += dim_idx * st;
+                idx /= d;
+            }
+            idx = res;
+        }
+        Some(self.data[idx].clone())
     }
 }
 
@@ -48,23 +98,12 @@ impl View {
             .all(InnerView::contiguous)
     }
 
-    /// Convert contiguous idx into idx indexing data with self view
+    // TODO delete this
+    /// Convert contiguous idx into idx indexing data with self view, if self is not padded
     #[must_use]
     pub fn get_idx(&self, mut idx: usize) -> usize {
         // TODO can this be faster???
         // Preferably like MUCH faster???
-        /*if *left_p < 0 {
-            idx += &f!("+{}", -left_p);
-        } else if *left_p > 0 {
-            padding_condition = f!("{padding_condition} && (idx{i}>{})", left_p - 1);
-        }
-        if *right_p > 0 {
-            padding_condition =
-                f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
-        }
-        if *left_p > 0 {
-            idx += &f!("-{}", left_p);
-        }*/
         for InnerView {
             shape,
             strides,
@@ -79,6 +118,27 @@ impl View {
             idx = res;
         }
         idx
+    }
+
+    /* TODO specialization for permformance on CPU backend
+    /// Simple iteration
+    pub fn iterate_contiguous<T>(&self, data: &[T]) -> impl Iterator<Item = T> {
+        todo!()
+    }
+
+    /// Iteration with expands, permutes and reshapes, but without padding
+    pub fn iterate_without_padding<T>(&self, data: &[T]) -> impl Iterator<Item = T> {
+        todo!()
+    }*/
+
+    /// Iteration with expands, permutes, reshapes and padding
+    pub fn iterate<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+        CPUIter {
+            data,
+            view: self,
+            idx: 0,
+            num_iters: self.numel() - 1,
+        }
     }
 
     /// Access data called name with idx0-idx{rank} converted into self view.
