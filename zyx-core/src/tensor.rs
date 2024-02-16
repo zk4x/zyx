@@ -495,17 +495,19 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the true values replaced with if_true and the false values replaced with if_false.
     #[must_use]
     pub fn where_(&self, if_true: impl IntoTensor<B>, if_false: impl IntoTensor<B>) -> Tensor<B> {
-        //let x = todo!();
-        //let y = todo!();
-        //let z = todo!();
-        //self.backend.push(Node::Where(x, y, z)).unwrap();
-        todo!()
+        let x = self.clone();
+        let y = self.backend.tensor(if_true);
+        let z = self.backend.tensor(if_false);
+        let (x, y) = Tensor::broadcast(x, y);
+        let (x, z) = Tensor::broadcast(x, z);
+        let (y, z) = Tensor::broadcast(y, z);
+        tensor(self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap(), self.backend)
     }
 
     /// Dot product (mathematical multiplication) of self and rhs
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        let y = rhs.into_tensor(self.backend);
+        let y = self.backend.tensor(rhs);
         let xshape = self.shape();
         let yshape = y.shape();
         let yrank = yshape.rank();
@@ -882,65 +884,7 @@ impl<B: Backend> Tensor<B> {
 
     #[must_use]
     fn binary_op(&self, rhs: impl IntoTensor<B>, op: BOp) -> Tensor<B> {
-        let mut x = self.clone();
-        let mut y = rhs.into_tensor(self.backend);
-        // This does both automatic expand AND automatic casting between dtypes.
-        // TODO Both of these can be disable by changing a setting in the backend.
-        {
-            /*assert_eq!(
-                graph.dtype(xid),
-                graph.dtype(yid),
-                "{op} parameters {xid} and {yid} have different dtypes: {} and {}",
-                graph.dtype(xid),
-                graph.dtype(yid)
-            );*/
-            // Now we just do implicit conversions. Not exactly rust style, but it's convenient.
-            // We can later add option for backend to disable these implicit conversions.
-            match (x.dtype(), y.dtype()) {
-                (DType::F32, DType::I32) => y = y.cast(DType::F32),
-                (DType::I32, DType::F32) => x = x.cast(DType::F32),
-                _ => {}
-            }
-            let mut x_shape = x.shape();
-            let mut y_shape = y.shape();
-
-            for (x, y) in x_shape.iter().zip(y_shape.iter()) {
-                if x != y {
-                    assert!(*x == 1 || *y == 1, "Left and right tensors have incompatible shapes for binary op: {x_shape} and {y_shape}");
-                }
-            }
-
-            let rx = x_shape.rank();
-            let ry = y_shape.rank();
-            match rx.cmp(&ry) {
-                Ordering::Less => {
-                    x_shape = repeat(1)
-                        .take(ry - rx)
-                        .chain(x_shape.into_iter().copied())
-                        .collect::<Vec<usize>>()
-                        .into();
-                }
-                Ordering::Greater => {
-                    y_shape = repeat(1)
-                        .take(rx - ry)
-                        .chain(y_shape.into_iter().copied())
-                        .collect::<Vec<usize>>()
-                        .into();
-                }
-                Ordering::Equal => {}
-            }
-            let mut eshape = Vec::new();
-            for (x, y) in x_shape.into_iter().zip(y_shape.into_iter()) {
-                eshape.push(*x.max(y));
-            }
-            let eshape: Shape = eshape.into();
-            if x_shape != eshape {
-                x = x.expand(eshape.clone());
-            }
-            if y_shape != eshape {
-                y = y.expand(eshape);
-            }
-        }
+        let (x, y) = Tensor::broadcast(self.clone(), rhs.into_tensor(self.backend));
         tensor(
             x.backend
                 .push(match op {
@@ -954,6 +898,67 @@ impl<B: Backend> Tensor<B> {
                 .unwrap(),
             x.backend,
         )
+    }
+
+    /// Braodcasts to synchronize shapes and casts to synchronize dtypss
+    /// This does both automatic expand AND automatic casting between dtypes.
+    // TODO Both of these can be disable by changing a setting in the backend.
+    #[must_use]
+    fn broadcast(mut x: Tensor<B>, mut y: Tensor<B>) -> (Tensor<B>, Tensor<B>) {
+        /*assert_eq!(
+            graph.dtype(xid),
+            graph.dtype(yid),
+            "{op} parameters {xid} and {yid} have different dtypes: {} and {}",
+            graph.dtype(xid),
+            graph.dtype(yid)
+        );*/
+        // Now we just do implicit conversions. Not exactly rust style, but it's convenient.
+        // We can later add option for backend to disable these implicit conversions.
+        match (x.dtype(), y.dtype()) {
+            (DType::F32, DType::I32) => y = y.cast(DType::F32),
+            (DType::I32, DType::F32) => x = x.cast(DType::F32),
+            _ => {}
+        }
+        let mut x_shape = x.shape();
+        let mut y_shape = y.shape();
+
+        for (x, y) in x_shape.iter().zip(y_shape.iter()) {
+            if x != y {
+                assert!(*x == 1 || *y == 1, "Left and right tensors have incompatible shapes for binary op: {x_shape} and {y_shape}");
+            }
+        }
+
+        let rx = x_shape.rank();
+        let ry = y_shape.rank();
+        match rx.cmp(&ry) {
+            Ordering::Less => {
+                x_shape = repeat(1)
+                    .take(ry - rx)
+                    .chain(x_shape.into_iter().copied())
+                    .collect::<Vec<usize>>()
+                    .into();
+            }
+            Ordering::Greater => {
+                y_shape = repeat(1)
+                    .take(rx - ry)
+                    .chain(y_shape.into_iter().copied())
+                    .collect::<Vec<usize>>()
+                    .into();
+            }
+            Ordering::Equal => {}
+        }
+        let mut eshape = Vec::new();
+        for (x, y) in x_shape.into_iter().zip(y_shape.into_iter()) {
+            eshape.push(*x.max(y));
+        }
+        let eshape: Shape = eshape.into();
+        if x_shape != eshape {
+            x = x.expand(eshape.clone());
+        }
+        if y_shape != eshape {
+            y = y.expand(eshape);
+        }
+        (x, y)
     }
 }
 
