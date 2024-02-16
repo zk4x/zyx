@@ -340,6 +340,10 @@ impl<B: Backend> Tensor<B> {
     /// Returns gradients of self w.r.t. sources.
     /// ```rust
     /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([3., 2., 1.]);
+    /// let y = x.exp() + &x;
+    /// let x_grad = y.backward([&x]).into_iter().next().unwrap().unwrap();
+    /// assert_eq!(x_grad, [21.0855369, 8.3890561, 3.7182818]);
     /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     pub fn backward<'a>(
@@ -362,6 +366,15 @@ impl<B: Backend> Tensor<B> {
 
     // Unary ops
     /// Cast self into dtype.
+    /// ```rust
+    /// # use zyx_opencl::DType;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[3, 4, 2], [4, 5, 2]]);
+    /// let y = x.cast(DType::F32);
+    /// assert_eq!(y.dtype(), DType::F32);
+    /// assert_eq!(y, [[3f32, 4., 2.], [4., 5., 2.]]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor<B> {
         match dtype {
@@ -421,15 +434,13 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with each element of self randomly zeroed with given probability.
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
-        self * probability
-            .into_tensor(self.backend)
-            .cmplt(self.backend.uniform(self.shape(), 0.0..1.0))
+        self.backend.tensor(probability).cmplt(self.backend.uniform(self.shape(), 0.0..1.0)) * self
     }
 
     /// Returns a new tensor with the sigmoid (logistic function) of the elements of self.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor<B> {
-        let one = 1.into_tensor(self.backend);
+        let one = self.backend.tensor(1);
         &one / (&one + (-self).exp())
     }
 
@@ -468,12 +479,6 @@ impl<B: Backend> Tensor<B> {
     }
 
     /// Returns a new tensor with the quick gelu of the elements of self.
-    /// ```
-    ///
-    /// let dev = zyx_opencl::device()?;
-    /// let x = dev.randn([2, 3, 1], zyx_opencl::DType::F32);
-    /// # Ok::<(), zyx_opencl::ZyxError>(())
-    /// ```
     #[must_use]
     pub fn quick_gelu(&self) -> Tensor<B> {
         self * (self * 1.702).sigmoid()
@@ -504,7 +509,15 @@ impl<B: Backend> Tensor<B> {
         tensor(self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap(), self.backend)
     }
 
-    /// Dot product (mathematical multiplication) of self and rhs
+    /// Dot product (mathematical multiplication) of self and rhs.
+    /// ```rust
+    /// # use zyx_opencl::DType;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[3, 4, 2], [4, 5, 2]]);
+    /// let y = dev.tensor([[3, 1, 4]]);
+    /// assert_eq!(x.dot(y), [[21], [25]]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
         let y = self.backend.tensor(rhs);
@@ -693,7 +706,19 @@ impl<B: Backend> Tensor<B> {
     }
 
     // Reduce ops
-    /// Reduce self by summing along axes
+    /// Reduce self by summing along axes. Shape is not squeezed.
+    /// ```rust
+    /// use zyx_opencl;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[2, 3], [4, 1]]);
+    /// let z = x.sum(-1);
+    /// assert_eq!(z.shape(), [2, 1]);
+    /// let z = x.sum(0);
+    /// assert_eq!(z.shape(), [1, 2]);
+    /// let z = x.sum(());
+    /// assert_eq!(z.shape(), [1, 1]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
@@ -719,7 +744,19 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
-    /// Reduce self by maximizing along axes
+    /// Reduce self by maximizing along axes. Shape is not squeezed.
+    /// ```rust
+    /// use zyx_opencl;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[2, 3], [4, 1]]);
+    /// let z = x.max(-1);
+    /// assert_eq!(z.shape(), [2, 1]);
+    /// let z = x.max(0);
+    /// assert_eq!(z.shape(), [1, 2]);
+    /// let z = x.max(());
+    /// assert_eq!(z.shape(), [1, 1]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
     #[must_use]
     pub fn max(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
@@ -766,7 +803,10 @@ impl<B: Backend> Tensor<B> {
         self.var(axes).sqrt()
     }
 
-    /// Tensor indexing
+    /// Tensor indexing.
+    ///
+    /// Tensors can be indexed by tuples of any combination of values or ranges of i64.
+    /// If indexing along more than 8 dimensions, use \&\[Range\<i64\>\] or \&\[i64\]
     /// ```rust
     /// use zyx_opencl;
     /// let dev = zyx_opencl::device()?;
@@ -792,8 +832,19 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
+    /// Concatenate multiple tensors together along dim.
+    /// ```rust
+    /// # use zyx_opencl;
+    /// # use zyx_opencl::Tensor;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[2, 3, 4], [4, 1, 8]]);
+    /// let y = dev.tensor([[2, 3], [4, 1]]);
+    /// let z = Tensor::cat([&x, &y], -1);
+    /// // assert_eq!(z, []);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
     #[must_use]
-    fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
+    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
     where
         B: 'a
     {
@@ -802,17 +853,20 @@ impl<B: Backend> Tensor<B> {
         let rank = shape.rank();
         let dim = if dim < 0 { dim + rank as i64 } else { dim } as usize;
         // Dimension check
-        for tensor in tensors {
+        for tensor in &tensors {
             for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
                 if i != dim {
                     assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
                 }
             }
         }
-        // pad everything
-        let offset = 0;
-        // then sum it together
-        todo!()
+        let mut offset = 0i64;
+        let mut res = tensors[0].backend.zeros(tensors[0].shape(), tensors[0].dtype());
+        for tensor in tensors {
+            res = res + tensor.pad(repeat((0i64, 0i64)).take(rank - dim - 1).chain([(offset, 0i64)]), 0);
+            offset += tensor.shape()[dim] as i64;
+        }
+        res
     }
 
     /// Stack multiple tensors into one
@@ -824,9 +878,11 @@ impl<B: Backend> Tensor<B> {
         todo!()
     }*/
 
-    /// Split into multiple tensors
+    /// Split self into multiple tensors along dim with given sizes.
+    // TODO example
     #[must_use]
-    pub fn split(&self, sizes: &[i64], dim: i64) -> Vec<Tensor<B>> {
+    pub fn split(&self, sizes: &[usize], dim: i64) -> Vec<Tensor<B>> {
+        // just use negative padding
         todo!()
     }
 
@@ -1168,16 +1224,16 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
     }
 }
 
-impl<B: Backend, T: Scalar + PartialEq> PartialEq<T> for Tensor<B>
+impl<B: Backend, T: Scalar> PartialEq<T> for Tensor<B>
 {
     fn eq(&self, other: &T) -> bool {
         self.numel() == 1
             && self.dtype() == T::dtype()
-            && self.item::<T>().unwrap() == *other
+            && self.item::<T>().unwrap().is_equal(other.clone())
     }
 }
 
-impl<B: Backend, T: Scalar + PartialEq, const D0: usize> PartialEq<[T; D0]>
+impl<B: Backend, T: Scalar, const D0: usize> PartialEq<[T; D0]>
     for Tensor<B>
 {
     fn eq(&self, other: &[T; D0]) -> bool {
@@ -1188,11 +1244,11 @@ impl<B: Backend, T: Scalar + PartialEq, const D0: usize> PartialEq<[T; D0]>
                 .unwrap()
                 .into_iter()
                 .zip(other.iter())
-                .all(|(x, y)| x == *y)
+                .all(|(x, y)| x.is_equal(y.clone()))
     }
 }
 
-impl<B: Backend, T: Scalar + PartialEq, const D0: usize, const D1: usize>
+impl<B: Backend, T: Scalar, const D0: usize, const D1: usize>
     PartialEq<[[T; D1]; D0]> for Tensor<B>
 {
     fn eq(&self, other: &[[T; D1]; D0]) -> bool {
@@ -1203,13 +1259,13 @@ impl<B: Backend, T: Scalar + PartialEq, const D0: usize, const D1: usize>
                 .unwrap()
                 .into_iter()
                 .zip(other.iter().flatten())
-                .all(|(x, y)| x == *y)
+                .all(|(x, y)| x.is_equal(y.clone()))
     }
 }
 
 impl<
         B: Backend,
-        T: Scalar + PartialEq,
+        T: Scalar,
         const D0: usize,
         const D1: usize,
         const D2: usize,
@@ -1223,6 +1279,6 @@ impl<
                 .unwrap()
                 .into_iter()
                 .zip(other.iter().flatten().flatten())
-                .all(|(x, y)| x == *y)
+                .all(|(x, y)| x.is_equal(y.clone()))
     }
 }

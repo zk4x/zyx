@@ -142,4 +142,38 @@ impl Node {
             }
         }
     }
+
+    /// Check if parameters of self contains nid.
+    pub fn parameters_contain(&self, nid: Id) -> bool {
+        match self {
+            Node::LeafF32(..)
+            | Node::LeafI32(..)
+            | Node::UniformF32(..)
+            | Node::IterF32(..)
+            | Node::IterI32(..) => false,
+            Node::CastF32(x)
+            | Node::CastI32(x)
+            | Node::Neg(x)
+            | Node::ReLU(x)
+            | Node::Exp(x)
+            | Node::Ln(x)
+            | Node::Sin(x)
+            | Node::Cos(x)
+            | Node::Sqrt(x)
+            | Node::Tanh(x)
+            | Node::Sum(x, ..)
+            | Node::Max(x, ..)
+            | Node::Reshape(x, ..)
+            | Node::Expand(x, ..)
+            | Node::Permute(x, ..)
+            | Node::Pad(x, ..) => nid == *x,
+            Node::Add(x, y)
+            | Node::Sub(x, y)
+            | Node::Mul(x, y)
+            | Node::Div(x, y)
+            | Node::Cmplt(x, y)
+            | Node::Pow(x, y) => nid == *x || nid == *y,
+            Node::Where(x, y, z) => nid == *x || nid == *y || nid == *z,
+        }
+    }
 }

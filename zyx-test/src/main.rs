@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod nn;
 mod unary;
 mod binary;
 mod movement;
@@ -58,6 +59,9 @@ macro_rules! run_test {
 }
 
 fn main() {
+    run_test!(optimizer::sgd);
+    run_test!(optimizer::adam);
+
     let n = 128;
 
     let dev = zyx_opencl::device().unwrap();
@@ -100,14 +104,16 @@ fn main() {
     run_test!(reduce::max);
     println!("\nTesting combinations of ops");
     run_test!(combination::t0);
-    run_test!(combination::t1);
+    run_test!(combination::dot);
+    run_test!(combination::cat);
+    run_test!(combination::split);
     println!("\nTesting autograd engine");
     run_test!(autograd::t0);
     println!("\nTesting optimizers");
     run_test!(optimizer::sgd);
-    //run_test!(optimizer::adam);
+    run_test!(optimizer::adam);
     println!("\nTesting nn modules");
-    //run_test!(nn::linear);
-    //run_test!(nn::layer_norm);
-    //run_test!(nn::batch_norm);
+    run_test!(nn::linear);
+    run_test!(nn::layer_norm);
+    run_test!(nn::batch_norm);
 }

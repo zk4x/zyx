@@ -1011,11 +1011,11 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             }
             Op::CastF32(x) => {
                 dtype = DType::F32.ocl_str();
-                f!("{dtype}{vws} var{nid} = ({dtype}{vws})var{x}")
+                f!("{dtype}{vws} var{nid} = convert_{dtype}{vws}(var{x})")
             }
             Op::CastI32(x) => {
                 dtype = DType::I32.ocl_str();
-                f!("{dtype}{vws} var{nid} = ({dtype}{vws})var{x}")
+                f!("{dtype}{vws} var{nid} = convert_{dtype}{vws}(var{x})")
             }
             Op::Neg(x) => f!("{dtype}{vws} var{nid} = -var{x}"),
             Op::ReLU(x) => f!("{dtype}{vws} var{nid} = max(var{x}, {zero})"),
@@ -1103,8 +1103,11 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
 }
 
 fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize) {
-    //std::println!("\nCompiling ast: {ast:#?}");
     //use std::println;
+    //println!("\nCompiling ast: {ast:?}");
+    /*for op in &*ast.ops {
+        println!("{op:?}");
+    }*/
     // Maximum number of registers to use for caching
     let max_registers = 32;
     // Maximum local work size
@@ -1120,7 +1123,6 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     let mut tiles: Option<BTreeSet<usize>> = None;
     let local_height;
     let local_width;
-
 
     let rdim = ast.rdim.unwrap();
     let rshape = ast.view.shape();
@@ -1279,12 +1281,12 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             source.pop();
             source = f!("{source}}}\n  ");
             endl = f!(";\n  ");
+            source = f!("{source}{id_t} idx0 = 0{endl}");
         }
         nid += 1;
     }
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
     let (p, i) = ast.view.cidx();
-    source = f!("{source}{id_t} idx0 = 0{endl}");
     source = if p.is_empty() {
         f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
     } else {

@@ -16,10 +16,10 @@ pub struct Adam<B: Backend> {
     pub amsgrad: bool,
     /// maximize the objective with respect to the params, instead of minimizing (default: false)
     pub maximize: bool,
-    m: Vec<Tensor<B>>,
-    v: Vec<Tensor<B>>,
-    vm: Vec<Tensor<B>>,
-    t: usize,
+    pub m: Vec<Tensor<B>>,
+    pub v: Vec<Tensor<B>>,
+    pub vm: Vec<Tensor<B>>,
+    pub t: usize,
 }
 
 impl<B: Backend> Default for Adam<B> {

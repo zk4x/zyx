@@ -9,7 +9,7 @@ pub fn t0<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     Ok(())
 }
 
-pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
+pub fn dot<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([[2, 4, 3], [5, 2, 4]]);
     let y = dev.tensor([[2, 2, 4], [1, 2, 1], [3, 4, 2]]);
     let z = x.dot(&y);
@@ -19,4 +19,12 @@ pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     assert_eq!(x_grad, [[8, 4, 9], [8, 4, 9]]);
     assert_eq!(y_grad, [[7, 7, 7], [6, 6, 6], [7, 7, 7]]);
     Ok(())
+}
+
+pub fn cat<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
+    todo!()
+}
+
+pub fn split<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
+    todo!()
 }

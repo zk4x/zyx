@@ -191,16 +191,12 @@ impl View {
     pub fn view_type(&self) -> ViewType {
         if self.contiguous() {
             ViewType::Contiguous
+        } else if self.padded() {
+            ViewType::Padded
+        } else if self.views.len() > 1 {
+            ViewType::Reshaped
         } else {
-            if self.views.len() > 1 {
-                if self.padded() {
-                    ViewType::Padded
-                } else {
-                    ViewType::Reshaped
-                }
-            } else {
-                ViewType::Strided
-            }
+            ViewType::Strided
         }
     }
 
@@ -254,8 +250,8 @@ impl View {
     pub fn cidx(&self) -> (String, String) {
         // TODO is padding correctly applied?
         // TODO simplify this as much as possible, not for performance (it is cached), just for clarity
-        use std::println;
-        println!("View: {self:?}");
+        //use std::println;
+        //println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
@@ -280,13 +276,9 @@ impl View {
             {
                 //println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
-                    0 => {}
-                    1 => {
-                        idx += &f!("idx{i}+");
-                    }
-                    _ => {
-                        idx += &f!("idx{i}*{st}+");
-                    }
+                    0 => idx += "0+",
+                    1 => idx += &f!("idx{i}+"),
+                    _ => idx += &f!("idx{i}*{st}+"),
                 }
                 if *left_p < 0 {
                     idx += &f!("+{}", -left_p);
@@ -433,7 +425,7 @@ impl View {
                 .zip(padding.iter())
                 .map(|(x, y)| (x.0 + y.0, x.1 + y.1))
                 .collect();
-            std::println!("new_padding: {:?}", padding);
+            //std::println!("new_padding: {:?}", padding);
         }
         Self { views }
     }

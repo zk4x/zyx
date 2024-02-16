@@ -14,6 +14,7 @@ use alloc::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec::Vec,
 };
+use std::println;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -172,7 +173,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
-        for nid in order.iter().copied() {
+        for (i, nid) in order.iter().copied().enumerate() {
+            //println!("Node {:?}", nodes[nid.i()]);
+            if to_eval.contains(&nid) {
+                self.evaluate_buffer(nid, order, nodes)?;
+            }
             match &mut nodes[nid.i()] {
                 Node::LeafF32(..)
                 | Node::LeafI32(..)
@@ -196,9 +201,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 | Node::Where(..)
                 | Node::Reshape(..)
                 | Node::Permute(..)
-                | Node::Pad(..)
-                | Node::Sum(..)
-                | Node::Max(..) => {}
+                | Node::Expand(..)
+                | Node::Pad(..) => {}
                 Node::IterF32(_, shape) => {
                     let mut new_node = Node::LeafF32(shape.clone());
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
@@ -213,21 +217,24 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         self.buffers.insert(nid, self.compiler.store(iter)?);
                     }
                 }
-                Node::Expand(x, _) => {
-                    // if reduce operation preceded expand, we call evaluate_buffer
-                    let mut params = alloc::vec![*x];
-                    while let Some(p) = params.pop() {
-                        // TODO check that there is no more than one reduce
-                        if matches!(nodes[p.i()], Node::Sum(..) | Node::Max(..)) {
-                            self.evaluate_buffer(p, order, nodes)?;
-                            break;
+                Node::Sum(..)
+                | Node::Max(..) => {
+                    // Search forward for first expand, in to_eval or rc > 1, then evaluate that.
+                    // That way we fuse as much as possible :)
+                    let mut p = nid;
+                    for x in &order[i..] {
+                        let node = &nodes[x.i()];
+                        if node.parameters_contain(p) {
+                            if matches!(node, Node::Expand(..)) {
+                                self.evaluate_buffer(p, order, nodes)?;
+                            }
+                            if to_eval.contains(x) || rcs[x] > 1 {
+                                self.evaluate_buffer(*x, order, nodes)?;
+                            }
+                            p = *x;
                         }
-                        params.extend(nodes[p.i()].parameters());
                     }
                 }
-            }
-            if to_eval.contains(&nid) && !self.buffers.contains_key(&nid) {
-                self.evaluate_buffer(nid, order, nodes)?;
             }
             for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
@@ -254,9 +261,12 @@ impl<C: Compiler> CompiledBackend<C> {
     /// This function evaluates concrete buffer that we know can be directly evaluated,
     /// that is we know that all of it's leafs are already evaluated and stored in device.
     fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
+        println!("Evaluating buffer {x}");
+        if self.is_evaluated(x) {
+            return Ok(())
+        }
         // Create ordered list of nodes that need to be evaluated
         //extern crate std;
-        //use std::println;
         //println!("x: {x}\norder: {order:?}\nnodes: {nodes:?}");
         let mut temp = alloc::vec![x];
         let mut porder = BTreeSet::new();
@@ -282,8 +292,8 @@ impl<C: Compiler> CompiledBackend<C> {
         // Convert this list to kernel
         let mut program_args = Vec::new();
         let mut args = Vec::new();
-        let mut ar_args = Vec::new();
         let mut ar = false;
+        let mut first_ar_arg = usize::MAX;
         let mut ops = Vec::new();
         let mut raxes = None;
         let mut mapping = BTreeMap::new();
@@ -293,16 +303,23 @@ impl<C: Compiler> CompiledBackend<C> {
         // uses different views for those loads, this can be done as deduplication in the end
         // of this function.
         //println!();
+        // TODO reorder in such a way, that first are all before reduce loads,
+        // then before reduce ops, then after reduce loads, then after reduce ops.
+        // If it is not a reduce kernel, then all leafs should be first.
         for nid in porder {
             //println!("ops: {ops:?}");
             flop += nodes[nid.i()].flop(nodes);
-            //std::println!("Node {:?}, flop: {tflop}", nodes[nid.i()]);
             let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
-                if ar { &mut ar_args } else { &mut args }.push((
-                    View::new(get_shape(nodes, nid).clone()),
-                    get_dtype(nodes, nid),
-                ));
+                if ar {
+                    if first_ar_arg != usize::MAX {
+                        first_ar_arg = args.len();
+                    }
+                    args.push((
+                        View::new(get_shape(nodes, nid).clone()),
+                        get_dtype(nodes, nid),
+                    ));
+                }
                 program_args.push(x);
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
@@ -329,7 +346,15 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                args[a].0 = args[a].0.expand(sh);
+                                if ar {
+                                    if a >= first_ar_arg {
+                                        args[a].0 = args[a].0.expand(sh);
+                                    }
+                                } else {
+                                    if a < first_ar_arg {
+                                        args[a].0 = args[a].0.expand(sh);
+                                    }
+                                }
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -340,7 +365,15 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                args[a].0 = args[a].0.reshape(sh);
+                                if ar {
+                                    if a >= first_ar_arg {
+                                        args[a].0 = args[a].0.reshape(sh);
+                                    }
+                                } else {
+                                    if a < first_ar_arg {
+                                        args[a].0 = args[a].0.reshape(sh);
+                                    }
+                                }
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -351,7 +384,15 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                args[a].0 = args[a].0.pad(padding);
+                                if ar {
+                                    if a >= first_ar_arg {
+                                        args[a].0 = args[a].0.pad(padding);
+                                    }
+                                } else {
+                                    if a < first_ar_arg {
+                                        args[a].0 = args[a].0.pad(padding);
+                                    }
+                                }
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -362,7 +403,15 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                args[a].0 = args[a].0.permute(axes);
+                                if ar {
+                                    if a >= first_ar_arg {
+                                        args[a].0 = args[a].0.permute(axes);
+                                    }
+                                } else {
+                                    if a < first_ar_arg {
+                                        args[a].0 = args[a].0.permute(axes);
+                                    }
+                                }
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -393,8 +442,6 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
         let view;
-        // TODO reorder ast.ops so that before reduce leafs are first ops,
-        // if it is not a reduce kernel, then all leafs should be first.
         let rdim = if let Some(raxes) = raxes {
             //println!("rshape: {rshape:?}");
             //println!("raxes: {raxes:?}");
@@ -421,63 +468,31 @@ impl<C: Compiler> CompiledBackend<C> {
             //println!("Permute axes {axes:?}");
             //println!("New shape before reduce: {new_shape:?}");
             //println!("New shape after reduce: {ar_new_shape:?}");
-            for (aview, _) in &mut args {
-                //std::println!("aview: {aview:?}");
-                *aview = aview
-                    .reshape(&rshape)
-                    .permute(&axes)
-                    .reshape(&new_shape)
-                    .pad(
-                        &new_shape
-                            .iter()
-                            .rev()
-                            .map(|d| {
-                                if *d != 1 && d % 8 != 0 {
-                                    (0, (8 - d % 8) as i64)
-                                } else {
-                                    (0, 0)
-                                }
-                            })
-                            .collect::<Vec<(i64, i64)>>(),
-                    );
-            }
             let ar_rshape = rshape.reduce(&axes);
-            // view after the reduce op
-            view = View::new(ar_rshape.clone())
-                .permute(&axes)
-                .reshape(&ar_new_shape)
-                .pad(
-                    &ar_new_shape
-                        .iter()
-                        .rev()
-                        .map(|d| {
-                            if *d != 1 && d % 8 != 0 {
-                                (0, (8 - d % 8) as i64)
-                            } else {
-                                (0, 0)
-                            }
-                        })
-                        .collect::<Vec<(i64, i64)>>(),
-                );
-            for (aview, _) in &mut ar_args {
-                *aview = aview
-                    .reshape(&ar_rshape)
+            let apply_padding = |sh| sh.pad(
+                &new_shape
+                    .iter()
+                    .rev()
+                    .map(|d| {
+                        if *d != 1 && d % 8 != 0 {
+                            (0, (8 - d % 8) as i64)
+                        } else {
+                            (0, 0)
+                        }
+                    })
+                    .collect::<Vec<(i64, i64)>>(),
+            );
+            for (a, (aview, _)) in args.iter_mut().enumerate() {
+                //std::println!("aview: {aview:?}");
+                *aview = apply_padding(aview
+                    .reshape(if a < first_ar_arg { &rshape } else { &ar_rshape })
                     .permute(&axes)
-                    .reshape(&ar_new_shape)
-                    .pad(
-                        &ar_new_shape
-                            .iter()
-                            .rev()
-                            .map(|d| {
-                                if *d != 1 && d % 8 != 0 {
-                                    (0, (8 - d % 8) as i64)
-                                } else {
-                                    (0, 0)
-                                }
-                            })
-                            .collect::<Vec<(i64, i64)>>(),
-                    );
+                    .reshape(if a < first_ar_arg { &new_shape } else { &ar_new_shape }));
             }
+            // view after the reduce op
+            view = apply_padding(View::new(ar_rshape.clone())
+                .permute(&axes)
+                .reshape(&ar_new_shape));
             //std::println!("view: {view:?}");
             Some(if s0 != 1 && s0 % 8 != 0 {
                 (s0 / 8 + 1) * 8
@@ -505,6 +520,9 @@ impl<C: Compiler> CompiledBackend<C> {
             rdim,
             flop,
         };
+        for op in &*ast.ops {
+            println!("{op:?}");
+        }
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {
             program
