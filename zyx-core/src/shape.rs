@@ -261,3 +261,9 @@ impl<const RANK: usize> PartialEq<[usize; RANK]> for Shape {
         self.rank() == RANK && self.iter().zip(other).all(|(x, y)| x == y)
     }
 }
+
+impl AsRef<[usize]> for Shape {
+    fn as_ref(&self) -> &[usize] {
+        &self.0
+    }
+}

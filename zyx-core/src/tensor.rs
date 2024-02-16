@@ -495,10 +495,10 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the true values replaced with if_true and the false values replaced with if_false.
     #[must_use]
     pub fn where_(&self, if_true: impl IntoTensor<B>, if_false: impl IntoTensor<B>) -> Tensor<B> {
-        let x = todo!();
-        let y = todo!();
-        let z = todo!();
-        self.backend.push(Node::Where(x, y, z)).unwrap();
+        //let x = todo!();
+        //let y = todo!();
+        //let z = todo!();
+        //self.backend.push(Node::Where(x, y, z)).unwrap();
         todo!()
     }
 

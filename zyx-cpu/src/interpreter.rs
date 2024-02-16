@@ -4,6 +4,7 @@ use zyx_core::{
 };
 #[cfg(feature = "std")]
 use rayon::prelude::*;
+use zyx_core::view::ViewType;
 
 macro_rules! unary_op {
     ($ctx: expr, $x: expr, $nid: expr, $op: expr) => {
@@ -52,65 +53,33 @@ macro_rules! binary_op {
 }
 
 fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>(xview: &View, xdata: &[XT], yview: &View, ydata: &[YT], op: impl Fn((XT, YT)) -> T2 + Sync + Send) -> Vec<T2> {
-    match (xview.contiguous(), yview.contiguous()) {
-        (true, true) => {
-            #[cfg(not(feature = "std"))]
-            {
-                xdata.iter().cloned().zip(ydata.iter().cloned()).map(op).collect()
-            }
-            #[cfg(feature = "std")]
-            {
-                xdata.par_iter().cloned().zip(ydata.par_iter().cloned()).map(op).collect()
-            }
-        }
-        (true, false) => {
-            #[cfg(not(feature = "std"))]
-            {
-                (0..xview.numel()).map(|i| op((xdata[i].clone(), ydata[xview.get_idx(i)].clone()))).collect()
-            }
-            #[cfg(feature = "std")]
-            {
-                (0..xview.numel()).into_par_iter().map(|i| op((xdata[i].clone(), ydata[yview.get_idx(i)].clone()))).collect()
-            }
-        }
-        (false, true) => {
-            #[cfg(not(feature = "std"))]
-            {
-                (0..xview.numel()).map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[i].clone()))).collect()
-            }
-            #[cfg(feature = "std")]
-            {
-                (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[i].clone()))).collect()
-            }
-        }
-        (false, false) => {
-            #[cfg(not(feature = "std"))]
-            {
-                (0..xview.numel()).map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone()))).collect()
-            }
-            #[cfg(feature = "std")]
-            {
-                match (xview.original_numel(), yview.original_numel()) {
-                    (1, 1) => core::iter::repeat(op((xdata[0].clone(), ydata[0].clone()))).take(xview.numel()).collect(),
-                    (1, _) => (0..xview.numel()).into_par_iter().map(|i| op((xdata[0].clone(), ydata[yview.get_idx(i)].clone()))).collect(),
-                    (_, 1) => (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[0].clone()))).collect(),
-                    (_, _) => (0..xview.numel()).into_par_iter().map(|i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone()))).collect(),
-                }
-            }
-        }
-    }
+    /*Ok(match view.view_type() {
+        ViewType::Contiguous => view.iterate_contiguous(data).collect(),
+        ViewType::Strided => view.iterate_strided(data).collect(),
+        ViewType::Reshaped => view.iterate_reshaped(data).collect(),
+        ViewType::Padded => view.iterate_padded(data).collect(),
+    })*/
+    //#[cfg(not(feature = "std"))]
+    //{
+    // TODO parallel iterator and match on view_type()
+    xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).map(op).collect()
+    //}
+    //#[cfg(feature = "std")]
+    //{
+        //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).into_par_iter().map(op).collect()
+    //}
 }
 
 fn terciary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, ZT: Scalar + Sync + Send, T2: Scalar + Send>(xview: &View, xdata: &[XT], yview: &View, ydata: &[YT], zview: &View, zdata: &[ZT], op: impl Fn((XT, YT, ZT)) -> T2 + Sync + Send) -> Vec<T2> {
-    let sdf = |i| op((xdata[xview.get_idx(i)].clone(), ydata[yview.get_idx(i)].clone(), zdata[zview.get_idx(i)].clone()));
-    #[cfg(not(feature = "std"))]
-    {
-        (0..xview.numel()).map(sdf).collect()
-    }
-    #[cfg(feature = "std")]
-    {
-        (0..xview.numel()).into_par_iter().map(sdf).collect()
-    }
+    // TODO parallel iterator and match on view_type()
+    //#[cfg(not(feature = "std"))]
+    //{
+        //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).zip(zview.iterate_padded(zdata)).map(|((x, y), z)| (x, y, z)).map(op).collect()
+    //}
+    //#[cfg(feature = "std")]
+    //{
+    xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).zip(zview.iterate_padded(zdata)).map(|((x, y), z)| (x, y, z)).map(op).collect()
+    //}
 }
 
 #[derive(Debug)]
@@ -163,10 +132,11 @@ impl RuntimeBackend for Interpreter {
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
         let (view, id) = &self.views[&x];
         let data = unsafe { self.buffers[&id].as_type::<T>() };
-        Ok(if view.contiguous() {
-            data.to_vec()
-        } else {
-            view.iterate(data).collect()
+        Ok(match view.view_type() {
+            ViewType::Contiguous => view.iterate_contiguous(data).take(numel).collect(),
+            ViewType::Strided => view.iterate_strided(data).take(numel).collect(),
+            ViewType::Reshaped => view.iterate_reshaped(data).take(numel).collect(),
+            ViewType::Padded => view.iterate_padded(data).take(numel).collect(),
         })
     }
 
@@ -330,14 +300,14 @@ fn reduce_op<T: Scalar + Sync + Send>(
             res[j] = op((res[j].clone(), data[i].clone()));
         }
     } else {
-        for i in 0..view.shape().numel() {
+        for (i, x) in view.iterate_padded(data).enumerate() {
             // calculate index in result
             let mut j = 0;
             for dim in &*included_dims {
                 j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
             }
             // apply reduce function, in this case sum
-            res[j] = op((res[j].clone(), data[view.get_idx(i)].clone()));
+            res[j] = op((res[j].clone(), x));
         }
     }
     res

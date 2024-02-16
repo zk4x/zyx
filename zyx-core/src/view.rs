@@ -5,6 +5,18 @@ use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use crate::scalar::Scalar;
 
+/// View type
+pub enum ViewType {
+    /// Contiguous
+    Contiguous,
+    /// Permuted or expanded
+    Strided,
+    /// Permuted, expanded or reshaped
+    Reshaped,
+    /// Permuted, expanded, reshaped or padded
+    Padded,
+}
+
 /// View holds shape of the tensor and allows for arbitrary number of movement ops
 /// (reshape, expand, pad, permute) to be executed as noops (without accessing the
 /// actual data).
@@ -22,20 +34,26 @@ struct InnerView {
 }
 
 impl InnerView {
+    #[must_use]
     fn contiguous(&self) -> bool {
-        self.shape.strides() == self.strides && self.padding.iter().all(|(lp, rp)| *lp == 0 && *rp == 0)
+        self.shape.strides() == self.strides && !self.padded()
+    }
+
+    #[must_use]
+    fn padded(&self) -> bool {
+        self.padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0)
     }
 }
 
 /// CPU iterator
-pub struct CPUIter<'a, T> {
+pub struct CPUPaddedIter<'a, T> {
     data: &'a [T],
     view: &'a View,
     idx: usize,
     num_iters: usize,
 }
 
-impl<'a, T: Scalar> Iterator for CPUIter<'a, T> {
+impl<'a, T: Scalar> Iterator for CPUPaddedIter<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -76,6 +94,68 @@ impl<'a, T: Scalar> Iterator for CPUIter<'a, T> {
     }
 }
 
+/// CPU iterator
+pub struct CPUReshapedIter<'a, T> {
+    data: &'a [T],
+    view: &'a View,
+    idx: usize,
+    num_iters: usize,
+}
+
+impl<'a, T: Scalar> Iterator for CPUReshapedIter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx > self.num_iters {
+            return None
+        }
+        let mut idx = self.idx;
+        self.idx += 1;
+        for InnerView {
+            shape,
+            strides,
+            padding: _,
+        } in &self.view.views
+        {
+            let mut res = 0;
+            for (d, st) in shape.into_iter().zip(strides).rev() {
+                let mut dim_idx = idx % d;
+                res += dim_idx * st;
+                idx /= d;
+            }
+            idx = res;
+        }
+        Some(self.data[idx].clone())
+    }
+}
+
+/// Strided iterator, only expand and permute
+pub struct CPUStridedIter<'a, T> {
+    data: &'a [T],
+    shape: &'a [usize],
+    strides: &'a [usize],
+    idx: usize,
+    num_iters: usize,
+}
+
+impl<'a, T: Scalar> Iterator for CPUStridedIter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx > self.num_iters {
+            return None
+        }
+        let mut idx = self.idx;
+        self.idx += 1;
+        let mut res = 0;
+        for (d, st) in self.shape.into_iter().copied().zip(self.strides.into_iter().copied()).rev() {
+            res += idx % d * st;
+            idx /= d;
+        }
+        Some(self.data[res].clone())
+    }
+}
+
 impl View {
     /// Create new view from shape
     #[must_use]
@@ -98,42 +178,66 @@ impl View {
             .all(InnerView::contiguous)
     }
 
-    // TODO delete this
-    /// Convert contiguous idx into idx indexing data with self view, if self is not padded
+    /// Is this view padded?
     #[must_use]
-    pub fn get_idx(&self, mut idx: usize) -> usize {
-        // TODO can this be faster???
-        // Preferably like MUCH faster???
-        for InnerView {
-            shape,
-            strides,
-            padding,
-        } in &self.views
-        {
-            let mut res = 0;
-            for ((d, st), (lp, rp)) in shape.into_iter().zip(strides).zip(padding.iter()).rev() {
-                res += idx % d * st;
-                idx /= d;
-            }
-            idx = res;
-        }
-        idx
+    pub fn padded(&self) -> bool {
+        self.views
+            .iter()
+            .any(InnerView::padded)
     }
 
-    /* TODO specialization for permformance on CPU backend
+    /// For cpu backend
+    #[must_use]
+    pub fn view_type(&self) -> ViewType {
+        if self.contiguous() {
+            ViewType::Contiguous
+        } else {
+            if self.views.len() > 1 {
+                if self.padded() {
+                    ViewType::Padded
+                } else {
+                    ViewType::Reshaped
+                }
+            } else {
+                ViewType::Strided
+            }
+        }
+    }
+
     /// Simple iteration
-    pub fn iterate_contiguous<T>(&self, data: &[T]) -> impl Iterator<Item = T> {
-        todo!()
+    #[must_use]
+    pub fn iterate_contiguous<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+        data.iter().cloned()
+    }
+
+    /// Iteration with expands and permutes
+    #[must_use]
+    pub fn iterate_strided<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+        let InnerView { shape, strides, padding: _} = self.views.first().unwrap();
+        CPUStridedIter {
+            data,
+            num_iters: shape.numel() - 1,
+            shape: shape.as_ref(),
+            strides: strides.as_ref(),
+            idx: 0,
+        }
     }
 
     /// Iteration with expands, permutes and reshapes, but without padding
-    pub fn iterate_without_padding<T>(&self, data: &[T]) -> impl Iterator<Item = T> {
-        todo!()
-    }*/
+    #[must_use]
+    pub fn iterate_reshaped<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+        CPUReshapedIter {
+            data,
+            view: self,
+            idx: 0,
+            num_iters: self.numel() - 1,
+        }
+    }
 
     /// Iteration with expands, permutes, reshapes and padding
-    pub fn iterate<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
-        CPUIter {
+    #[must_use]
+    pub fn iterate_padded<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+        CPUPaddedIter {
             data,
             view: self,
             idx: 0,

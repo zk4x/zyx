@@ -2,6 +2,7 @@ use alloc::{boxed::Box, collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View,
 };
+use zyx_core::view::ViewType;
 
 enum Data {
     F32(Box<[f32]>),
@@ -44,9 +45,7 @@ impl RuntimeBackend for Interpreter {
     }
 
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
-        let (view, id) = &self.views[&x];
-        let data = unsafe { self.buffers[&id].as_type::<T>() };
-        Ok((0..numel).map(|i| data[view.get_idx(i)].clone()).collect())
+        todo!()
     }
 
     fn evaluate(
