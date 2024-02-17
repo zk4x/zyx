@@ -72,6 +72,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new((0..n).map(move |_| rng.sample(Standard))),
                 shape,
             )),
+            DType::F64 => self.push(Node::IterF64(
+                Box::new((0..n).map(move |_| rng.sample(Standard))),
+                shape,
+            )),
             DType::I32 => self.push(Node::IterI32(
                 Box::new((0..n).map(move |_| rng.sample(Standard))),
                 shape,
@@ -98,6 +102,15 @@ impl<R: RuntimeBackend> Runtime<R> {
                     rng.sample(Uniform::new(
                         range.start.clone().into_f32(),
                         range.end.clone().into_f32(),
+                    ))
+                })),
+                shape,
+            )),
+            DType::F64 => self.push(Node::IterF64(
+                Box::new((0..n).map(move |_| {
+                    rng.sample(Uniform::new(
+                        range.start.clone().into_f64(),
+                        range.end.clone().into_f64(),
                     ))
                 })),
                 shape,
@@ -261,7 +274,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         // Like if they are referenced by the user and in the graph that needs to be evaluated?
         // TODO this memory <=> performance tradeoff should be decided by the user, with some setting.
         for nid in &order {
-            if matches!(self.nodes[nid.i()], Node::LeafF32(..) | Node::LeafI32(..) | Node::IterF32(..) | Node::IterI32(..)) {
+            if matches!(self.nodes[nid.i()], Node::Leaf(..) | Node::IterF32(..) | Node::IterI32(..) | Node::IterF64(..) | Node::Uniform(..)) {
                 *rcs.get_mut(&nid).unwrap() += 1;
             }
         }
@@ -274,10 +287,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 self.leafs.remove(&leaf);
                 //std::println!("Releasing leaf {leaf}");
                 let shape = get_shape(self.nodes.as_ref(), leaf).clone();
-                let mut node = match get_dtype(self.nodes.as_ref(), leaf) {
-                    DType::F32 => Node::LeafF32(shape),
-                    DType::I32 => Node::LeafI32(shape),
-                };
+                let mut node = Node::Leaf(shape, get_dtype(self.nodes.as_ref(), leaf));
                 core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
                 for nid in node.parameters() {
                     self.release(nid)?;
@@ -386,6 +396,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Box::new([1.].into_iter()),
                 [1].into(),
             ))?,
+            DType::F64 => self.push(Node::IterF64(
+                Box::new([1.].into_iter()),
+                [1].into(),
+            ))?,
             DType::I32 => self.push(Node::IterI32(
                 Box::new([1].into_iter()),
                 [1].into(),
@@ -418,10 +432,10 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in topo {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {
-                Node::LeafF32(..)
-                | Node::LeafI32(..)
-                | Node::UniformF32(..)
+                Node::Leaf(..)
+                | Node::Uniform(..)
                 | Node::IterF32(..)
+                | Node::IterF64(..)
                 | Node::IterI32(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) {
@@ -464,6 +478,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))
                             }
+                            DType::F64 => {
+                                self.push(Node::IterF64(Box::new([2.].into_iter()), 1.into()))
+                            }
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))
                             }
@@ -488,6 +505,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                         let one = match get_dtype(&self.nodes, y) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))
+                            }
+                            DType::F64 => {
+                                self.push(Node::IterF64(Box::new([1.].into_iter()), 1.into()))
                             }
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))
@@ -527,6 +547,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
                             }
+                            DType::F64 => {
+                                self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
+                            }
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
                             }
@@ -541,6 +564,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                         let zero = match get_dtype(&self.nodes, x) {
                             DType::F32 => {
                                 self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
+                            }
+                            DType::F64 => {
+                                self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
                             }
                             DType::I32 => {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
@@ -557,6 +583,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     let zero = match get_dtype(&self.nodes, x) {
                         DType::F32 => {
                             self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
+                        }
+                        DType::F64 => {
+                            self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
                         }
                         DType::I32 => {
                             self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
@@ -605,11 +634,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                     self.release(x_temp)?;
                     insert_or_add_grad(self, &mut grads, x, grad)?;
                 }
-                Node::CastF32(x) | Node::CastI32(x) => {
-                    let grad = match get_dtype(&self.nodes, x) {
-                        DType::F32 => self.push(Node::CastF32(grad))?,
-                        DType::I32 => self.push(Node::CastI32(grad))?,
-                    };
+                Node::Cast(x, dtype) => {
+                    let grad = self.push(Node::Cast(grad, get_dtype(&self.nodes, x)))?;
                     insert_or_add_grad(self, &mut grads, x, grad)?;
                 }
                 Node::Neg(x) => {
@@ -623,6 +649,10 @@ impl<R: RuntimeBackend> Runtime<R> {
                         DType::F32 => (
                             self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?,
                             self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?,
+                        ),
+                        DType::F64 => (
+                            self.push(Node::IterF64(Box::new([2.].into_iter()), 1.into()))?,
+                            self.push(Node::IterF64(Box::new([1.].into_iter()), 1.into()))?,
                         ),
                         DType::I32 => (
                             self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))?,

@@ -50,12 +50,10 @@ pub enum Op {
     Leaf(usize),
     // TODO uniform generators should also take shape into consideration
     // and repeat the same random number if this shape is expanded.
-    /// Shaped uniform F32 generator of numbers from 0. to 1.
-    UniformF32(View),
-    /// Cast into F32 unary op
-    CastF32(usize),
-    /// Cast into I32 unary op
-    CastI32(usize),
+    /// Shaped uniform generator of numbers from 0. to 1.
+    Uniform(View, DType),
+    /// Cast into dtype unary op
+    Cast(usize, DType),
     /// Neg unary op
     Neg(usize),
     /// ReLU unary op
@@ -95,9 +93,8 @@ pub enum Op {
 impl Op {
     fn access_parameters(&self, mut op: impl FnMut(usize)) {
         match self {
-            Op::Leaf(..) | Op::UniformF32(..) => {}
-            Op::CastF32(x)
-            | Op::CastI32(x)
+            Op::Leaf(..) | Op::Uniform(..) => {}
+            Op::Cast(x, ..)
             | Op::Neg(x)
             | Op::ReLU(x)
             | Op::Sin(x)
@@ -181,24 +178,29 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             }
             match &mut nodes[nid.i()] {
                 Node::IterF32(_, shape) => {
-                    let mut new_node = Node::LeafF32(shape.clone());
+                    let mut new_node = Node::Leaf(shape.clone(), DType::F32);
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterF32(iter, _) = new_node {
                         self.buffers.insert(nid, self.compiler.store(iter)?);
                     }
                 }
+                Node::IterF64(_, shape) => {
+                    let mut new_node = Node::Leaf(shape.clone(), DType::F64);
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterF64(iter, _) = new_node {
+                        self.buffers.insert(nid, self.compiler.store(iter)?);
+                    }
+                }
                 Node::IterI32(_, shape) => {
-                    let mut new_node = Node::LeafI32(shape.clone());
+                    let mut new_node = Node::Leaf(shape.clone(), DType::I32);
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterI32(iter, _) = new_node {
                         self.buffers.insert(nid, self.compiler.store(iter)?);
                     }
                 }
-                Node::LeafF32(..)
-                | Node::LeafI32(..)
-                | Node::UniformF32(..)
-                | Node::CastF32(..)
-                | Node::CastI32(..)
+                Node::Leaf(..)
+                | Node::Uniform(..)
+                | Node::Cast(..)
                 | Node::Neg(..)
                 | Node::ReLU(..)
                 | Node::Sin(..)
@@ -340,13 +342,12 @@ impl<C: Compiler> CompiledBackend<C> {
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
                 match &nodes[nid.i()] {
-                    Node::LeafF32(..)
-                    | Node::LeafI32(..)
+                    Node::Leaf(..)
                     | Node::IterF32(..)
+                    | Node::IterF64(..)
                     | Node::IterI32(..) => {}
-                    Node::UniformF32(sh) => ops.push(Op::UniformF32(View::new(sh.clone()))),
-                    Node::CastF32(x) => ops.push(Op::CastF32(mapping[x])),
-                    Node::CastI32(x) => ops.push(Op::CastI32(mapping[x])),
+                    Node::Uniform(sh, dtype) => ops.push(Op::Uniform(View::new(sh.clone()), *dtype)),
+                    Node::Cast(x, dtype) => ops.push(Op::Cast(mapping[x], *dtype)),
                     Node::Neg(x) => ops.push(Op::Neg(mapping[x])),
                     Node::ReLU(x) => ops.push(Op::ReLU(mapping[x])),
                     Node::Sin(x) => ops.push(Op::Sin(mapping[x])),

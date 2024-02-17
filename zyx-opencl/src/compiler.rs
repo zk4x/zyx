@@ -244,6 +244,7 @@ impl OpenCLDType for DType {
     fn ocl_str(self) -> &'static str {
         match self {
             DType::F32 => "float",
+            DType::F64 => "double",
             DType::I32 => "int",
         }
     }
@@ -957,6 +958,7 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
         let mut local_sync = false;
         let zero = match DType::from_ocl_str(dtype) {
             DType::F32 => "0.0f",
+            DType::F64 => "0.0d",
             DType::I32 => "0",
         };
         let res = match op {
@@ -1006,15 +1008,11 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
                     }
                 }
             }
-            Op::UniformF32(..) => {
+            Op::Uniform(..) => {
                 todo!()
             }
-            Op::CastF32(x) => {
-                dtype = DType::F32.ocl_str();
-                f!("{dtype}{vws} var{nid} = convert_{dtype}{vws}(var{x})")
-            }
-            Op::CastI32(x) => {
-                dtype = DType::I32.ocl_str();
+            Op::Cast(x, dt) => {
+                dtype = dt.ocl_str();
                 f!("{dtype}{vws} var{nid} = convert_{dtype}{vws}(var{x})")
             }
             Op::Neg(x) => f!("{dtype}{vws} var{nid} = -var{x}"),
@@ -1219,15 +1217,11 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
                     f!("{dtype} var{nid} = {p} ? data{x}[{i}] : 0")
                 }
             }
-            Op::UniformF32(..) => {
+            Op::Uniform(..) => {
                 todo!()
             }
-            Op::CastF32(x) => {
-                dtype = DType::F32.ocl_str();
-                f!("{dtype} var{nid} = ({dtype})var{x}")
-            }
-            Op::CastI32(x) => {
-                dtype = DType::I32.ocl_str();
+            Op::Cast(x, dt) => {
+                dtype = dt.ocl_str();
                 f!("{dtype} var{nid} = ({dtype})var{x}")
             }
             Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),

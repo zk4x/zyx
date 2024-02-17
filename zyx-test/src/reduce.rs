@@ -29,7 +29,7 @@ pub fn sum<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         }
         let axes = axes.into_axes(a);
         let x = match T::dtype() {
-            DType::F32 => dev.randn(&shape, T::dtype()),
+            DType::F32 | DType::F64 => dev.randn(&shape, T::dtype()),
             DType::I32 => dev.uniform(&shape, i32::MIN/1024/1024..i32::MAX/1024/1024),
         };
         let v: Vec<T> = x.to_vec()?;

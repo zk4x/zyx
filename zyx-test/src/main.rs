@@ -51,9 +51,11 @@ macro_rules! run_test {
     ( $test:expr ) => {{
         let dev = zyx_cpu::device().unwrap();
         run_test_fn($test, &dev, 0f32);
+        run_test_fn($test, &dev, 0f64);
         run_test_fn($test, &dev, 0i32);
         let dev = zyx_opencl::device().unwrap();
         run_test_fn($test, &dev, 0f32);
+        run_test_fn($test, &dev, 0f64);
         run_test_fn($test, &dev, 0i32);
     }};
 }

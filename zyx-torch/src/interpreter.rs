@@ -2,10 +2,12 @@ use alloc::{boxed::Box, collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View,
 };
+use zyx_core::dtype::DType;
 use zyx_core::view::ViewType;
 
 enum Data {
     F32(Box<[f32]>),
+    F64(Box<[f64]>),
     I32(Box<[i32]>),
 }
 
@@ -13,6 +15,7 @@ impl Data {
     unsafe fn as_type<T: Scalar>(&self) -> &[T] {
         match self {
             Data::F32(data) => core::mem::transmute(data.as_ref()),
+            Data::F64(data) => core::mem::transmute(data.as_ref()),
             Data::I32(data) => core::mem::transmute(data.as_ref()),
         }
     }
@@ -57,11 +60,9 @@ impl RuntimeBackend for Interpreter {
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             match &mut nodes[nid.i()] {
-                Node::LeafF32(..)
-                | Node::LeafI32(..)
-                | Node::UniformF32(..)
-                | Node::CastF32(..)
-                | Node::CastI32(..)
+                Node::Leaf(..)
+                | Node::Uniform(..)
+                | Node::Cast(..)
                 | Node::Neg(..)
                 | Node::ReLU(..)
                 | Node::Sin(..)
@@ -86,14 +87,21 @@ impl RuntimeBackend for Interpreter {
                     todo!()
                 }
                 Node::IterF32(_, shape) => {
-                    let mut new_node = Node::LeafF32(shape.clone());
+                    let mut new_node = Node::Leaf(shape.clone(), DType::F32);
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterF32(iter, _) = new_node {
                         self.buffers.insert(nid, Data::F32(iter.collect()));
                     }
                 }
+                Node::IterF64(_, shape) => {
+                    let mut new_node = Node::Leaf(shape.clone(), DType::F64);
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterF64(iter, _) = new_node {
+                        self.buffers.insert(nid, Data::F64(iter.collect()));
+                    }
+                }
                 Node::IterI32(_, shape) => {
-                    let mut new_node = Node::LeafI32(shape.clone());
+                    let mut new_node = Node::Leaf(shape.clone(), DType::I32);
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterI32(iter, _) = new_node {
                         self.buffers.insert(nid, Data::I32(iter.collect()));

@@ -154,6 +154,13 @@ impl<B: Backend> core::fmt::Display for Tensor<B> {
                     "f32 tensor failed to realize".into()
                 }
             }
+            DType::F64 => {
+                if let Ok(data) = &self.to_vec::<f64>() {
+                    tensor_to_string(data, &self.shape(), precision)
+                } else {
+                    "f64 tensor failed to realize".into()
+                }
+            }
             DType::I32 => {
                 if let Ok(data) = &self.to_vec::<i32>() {
                     tensor_to_string(data, &self.shape(), precision)
@@ -379,6 +386,7 @@ impl<B: Backend> Tensor<B> {
     pub fn cast(&self, dtype: DType) -> Tensor<B> {
         match dtype {
             DType::F32 => self.unary_op(UOp::CastF32),
+            DType::F64 => self.unary_op(UOp::CastF64),
             DType::I32 => self.unary_op(UOp::CastI32),
         }
     }
@@ -895,6 +903,7 @@ impl<B: Backend> Tensor<B> {
 
 enum UOp {
     CastF32,
+    CastF64,
     CastI32,
     Neg,
     ReLU,
@@ -922,8 +931,9 @@ impl<B: Backend> Tensor<B> {
         tensor(
             self.backend
                 .push(match op {
-                    UOp::CastF32 => Node::CastF32(self.id),
-                    UOp::CastI32 => Node::CastI32(self.id),
+                    UOp::CastF32 => Node::Cast(self.id, DType::F32),
+                    UOp::CastF64 => Node::Cast(self.id, DType::F64),
+                    UOp::CastI32 => Node::Cast(self.id, DType::I32),
                     UOp::Neg => Node::Neg(self.id),
                     UOp::ReLU => Node::ReLU(self.id),
                     UOp::Sin => Node::Sin(self.id),
@@ -1117,6 +1127,9 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
                     DType::F32 => {
                         Node::IterF32(Box::new(self.into_iter().map(T::into_f32)), n.into())
                     }
+                    DType::F64 => {
+                        Node::IterF64(Box::new(self.into_iter().map(T::into_f64)), n.into())
+                    }
                     DType::I32 => {
                         Node::IterI32(Box::new(self.into_iter().map(T::into_i32)), n.into())
                     }
@@ -1136,6 +1149,9 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
                     DType::F32 => {
                         Node::IterF32(Box::new(self.iter().cloned().map(T::into_f32)), n.into())
                     }
+                    DType::F64 => {
+                        Node::IterF64(Box::new(self.iter().cloned().map(T::into_f64)), n.into())
+                    }
                     DType::I32 => {
                         Node::IterI32(Box::new(self.iter().cloned().map(T::into_i32)), n.into())
                     }
@@ -1153,6 +1169,9 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for T {
                 .push(match T::dtype() {
                     DType::F32 => {
                         Node::IterF32(Box::new([self].into_iter().map(T::into_f32)), 1.into())
+                    }
+                    DType::F64 => {
+                        Node::IterF64(Box::new([self].into_iter().map(T::into_f64)), 1.into())
                     }
                     DType::I32 => {
                         Node::IterI32(Box::new([self].into_iter().map(T::into_i32)), 1.into())
@@ -1172,6 +1191,9 @@ impl<B: Backend, T: Scalar, const D0: usize> IntoTensor<B> for [T; D0] {
                     DType::F32 => {
                         Node::IterF32(Box::new(self.into_iter().map(T::into_f32)), D0.into())
                     }
+                    DType::F64 => {
+                        Node::IterF64(Box::new(self.into_iter().map(T::into_f64)), D0.into())
+                    }
                     DType::I32 => {
                         Node::IterI32(Box::new(self.into_iter().map(T::into_i32)), D0.into())
                     }
@@ -1189,6 +1211,10 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize> IntoTensor<B> for 
                 .push(match T::dtype() {
                     DType::F32 => Node::IterF32(
                         Box::new(self.into_iter().flatten().map(T::into_f32)),
+                        [D0, D1].into(),
+                    ),
+                    DType::F64 => Node::IterF64(
+                        Box::new(self.into_iter().flatten().map(T::into_f64)),
                         [D0, D1].into(),
                     ),
                     DType::I32 => Node::IterI32(
@@ -1211,6 +1237,10 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
                 .push(match T::dtype() {
                     DType::F32 => Node::IterF32(
                         Box::new(self.into_iter().flatten().flatten().map(T::into_f32)),
+                        [D0, D1, D2].into(),
+                    ),
+                    DType::F64 => Node::IterF64(
+                        Box::new(self.into_iter().flatten().flatten().map(T::into_f64)),
                         [D0, D1, D2].into(),
                     ),
                     DType::I32 => Node::IterI32(

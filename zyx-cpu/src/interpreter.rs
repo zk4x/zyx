@@ -4,6 +4,7 @@ use zyx_core::{
 };
 #[cfg(feature = "std")]
 use rayon::prelude::*;
+use zyx_core::dtype::DType;
 use zyx_core::view::ViewType;
 
 macro_rules! unary_op {
@@ -12,6 +13,7 @@ macro_rules! unary_op {
             let (view, data) = $ctx.get($x);
             let data = match data {
                 Data::F32(data) => Data::F32(unary(data, $op)),
+                Data::F64(data) => Data::F64(unary(data, $op)),
                 Data::I32(data) => Data::I32(unary(data, $op)),
             };
             $ctx.views.insert($nid, (view.clone(), $nid));
@@ -40,6 +42,10 @@ macro_rules! binary_op {
                 Data::F32(xdata) => {
                     let Data::F32(ydata) = ydata else { panic!() };
                     Data::F32(binary(xview, xdata, yview, ydata, $op))
+                }
+                Data::F64(xdata) => {
+                    let Data::F64(ydata) = ydata else { panic!() };
+                    Data::F64(binary(xview, xdata, yview, ydata, $op))
                 }
                 Data::I32(xdata) => {
                     let Data::I32(ydata) = ydata else { panic!() };
@@ -85,6 +91,7 @@ fn terciary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, ZT: Scalar + Syn
 #[derive(Debug)]
 enum Data {
     F32(Vec<f32>),
+    F64(Vec<f64>),
     I32(Vec<i32>),
 }
 
@@ -92,6 +99,7 @@ impl Data {
     unsafe fn as_type<T: Scalar>(&self) -> &[T] {
         match self {
             Data::F32(data) => core::mem::transmute(data.as_slice()),
+            Data::F64(data) => core::mem::transmute(data.as_slice()),
             Data::I32(data) => core::mem::transmute(data.as_slice()),
         }
     }
@@ -149,39 +157,50 @@ impl RuntimeBackend for Interpreter {
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             match &mut nodes[nid.i()] {
-                Node::LeafF32(..)
-                | Node::LeafI32(..) => {}
+                Node::Leaf(..) => {}
                 Node::IterF32(_, shape) => {
-                    let mut new_node = Node::LeafF32(shape.clone());
+                    let mut new_node = Node::Leaf(shape.clone(), DType::F32);
                     self.views.insert(nid, (View::new(shape.clone()), nid));
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterF32(iter, _) = new_node {
                         self.buffers.insert(nid, Data::F32(iter.collect()));
                     }
                 }
+                Node::IterF64(_, shape) => {
+                    let mut new_node = Node::Leaf(shape.clone(), DType::F64);
+                    self.views.insert(nid, (View::new(shape.clone()), nid));
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterF64(iter, _) = new_node {
+                        self.buffers.insert(nid, Data::F64(iter.collect()));
+                    }
+                }
                 Node::IterI32(_, shape) => {
-                    let mut new_node = Node::LeafI32(shape.clone());
+                    let mut new_node = Node::Leaf(shape.clone(), DType::I32);
                     self.views.insert(nid, (View::new(shape.clone()), nid));
                     core::mem::swap(&mut nodes[nid.i()], &mut new_node);
                     if let Node::IterI32(iter, _) = new_node {
                         self.buffers.insert(nid, Data::I32(iter.collect()));
                     }
                 }
-                Node::UniformF32(..) => todo!(),
-                Node::CastF32(x) => {
+                Node::Uniform(..) => todo!(),
+                Node::Cast(x, dtype) => {
                     let (view, data) = self.get(x);
                     let data = match data {
-                        Data::F32(data) => Data::F32(unary(data, Scalar::into_f32)),
-                        Data::I32(data) => Data::F32(unary(data, Scalar::into_f32)),
-                    };
-                    self.views.insert(nid, (view.clone(), nid));
-                    self.buffers.insert(nid, data);
-                }
-                Node::CastI32(x) => {
-                    let (view, data) = self.get(x);
-                    let data = match data {
-                        Data::F32(data) => Data::I32(unary(data, Scalar::into_i32)),
-                        Data::I32(data) => Data::I32(unary(data, Scalar::into_i32)),
+                        Data::F32(data) => match dtype {
+                            DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
+                            DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
+                            DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
+                        }
+                        Data::F64(data) => match dtype {
+                            DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
+                            DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
+                            DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
+                        }
+                        Data::I32(data) => match dtype {
+                            DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
+                            DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
+                            DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
+                        }
                     };
                     self.views.insert(nid, (view.clone(), nid));
                     self.buffers.insert(nid, data);
@@ -209,6 +228,11 @@ impl RuntimeBackend for Interpreter {
                             let Data::F32(ydata) = ydata else { panic!() };
                             let Data::F32(zdata) = zdata else { panic!() };
                             Data::F32(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0.0 { y } else { z }))
+                        }
+                        Data::F64(xdata) => {
+                            let Data::F64(ydata) = ydata else { panic!() };
+                            let Data::F64(zdata) = zdata else { panic!() };
+                            Data::F64(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0.0 { y } else { z }))
                         }
                         Data::I32(xdata) => {
                             let Data::I32(ydata) = ydata else { panic!() };
@@ -239,6 +263,7 @@ impl RuntimeBackend for Interpreter {
                     let (view, data) = self.get(x);
                     let data = match data {
                         Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
+                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
                         Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
                     };
                     self.views.insert(nid, (View::new(sh.clone()), nid));
@@ -248,6 +273,7 @@ impl RuntimeBackend for Interpreter {
                     let (view, data) = self.get(x);
                     let data = match data {
                         Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
+                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
                         Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
                     };
                     self.views.insert(nid, (View::new(sh.clone()), nid));

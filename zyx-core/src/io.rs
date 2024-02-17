@@ -71,6 +71,14 @@ pub fn save<'a, B: Backend + 'a>(
                 }
                 f.write_all(&bytes)?;
             }
+            DType::F64 => {
+                let vec = tensor.to_vec::<f64>()?;
+                let mut bytes: Vec<u8> = Vec::with_capacity(vec.len() * 4);
+                for x in vec {
+                    bytes.extend(x.to_le_bytes());
+                }
+                f.write_all(&bytes)?;
+            }
             DType::I32 => {
                 let vec = tensor.to_vec::<i32>().unwrap();
                 let mut bytes: Vec<u8> = Vec::with_capacity(vec.len() * 4);
@@ -140,6 +148,13 @@ pub fn load<B: Backend>(
                             let vec: Vec<f32> = buf
                                 .chunks_exact(dtype.byte_size())
                                 .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+                                .collect();
+                            dev.tensor(vec).reshape(&shape)
+                        }
+                        DType::F64 => {
+                            let vec: Vec<f64> = buf
+                                .chunks_exact(dtype.byte_size())
+                                .map(|x| f64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
                                 .collect();
                             dev.tensor(vec).reshape(&shape)
                         }

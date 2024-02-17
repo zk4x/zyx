@@ -12,6 +12,8 @@ pub trait Scalar: Clone + core::fmt::Debug + 'static {
     fn byte_size() -> usize;
     /// Convert self into f32
     fn into_f32(self) -> f32;
+    /// Convert self into f64
+    fn into_f64(self) -> f64;
     /// Convert self into i32
     fn into_i32(self) -> i32;
     /// Neg
@@ -76,6 +78,8 @@ impl Scalar for f32 {
     fn into_f32(self) -> f32 {
         self
     }
+
+    fn into_f64(self) -> f64 { self as f64 }
 
     fn into_i32(self) -> i32 {
         self as i32
@@ -166,6 +170,113 @@ impl Scalar for f32 {
     }
 }
 
+impl Scalar for f64 {
+    fn dtype() -> DType {
+        DType::F64
+    }
+
+    fn zero() -> Self {
+        0.
+    }
+
+    fn one() -> Self {
+        1.
+    }
+
+    fn byte_size() -> usize {
+        8
+    }
+
+    fn into_f32(self) -> f32 {
+        self as f32
+    }
+
+    fn into_f64(self) -> f64 { self }
+
+    fn into_i32(self) -> i32 {
+        self as i32
+    }
+
+    fn neg(self) -> Self {
+        -self
+    }
+
+    fn relu(self) -> Self {
+        self.max(0.)
+    }
+
+    fn sin(self) -> Self {
+        f64::sin(self)
+    }
+
+    fn cos(self) -> Self {
+        f64::cos(self)
+    }
+
+    fn exp(self) -> Self {
+        f64::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        f64::ln(self)
+    }
+
+    fn tanh(self) -> Self {
+        f64::tanh(self)
+    }
+
+    fn sqrt(self) -> Self {
+        f64::sqrt(self)
+    }
+
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
+
+    fn pow(self, rhs: Self) -> Self {
+        f64::powf(self, rhs)
+    }
+
+    fn cmplt(self, rhs: Self) -> Self {
+        (self < rhs) as i32 as f64
+    }
+
+    fn max(self, rhs: Self) -> Self {
+        f64::max(self, rhs)
+    }
+
+    fn max_value() -> Self {
+        f64::MAX
+    }
+
+    fn min_value() -> Self {
+        f64::MIN
+    }
+
+    fn epsilon() -> Self {
+        0.00001
+    }
+
+    fn is_equal(self, rhs: Self) -> bool {
+        // Less than 1% error is OK
+        (self == -f64::INFINITY && rhs == -f64::INFINITY)
+            || (self - rhs).abs() < Self::epsilon()
+            || (self - rhs).abs() < self.abs() * 0.01
+    }
+}
+
 impl Scalar for i32 {
     fn dtype() -> DType {
         DType::I32
@@ -185,6 +296,10 @@ impl Scalar for i32 {
 
     fn into_f32(self) -> f32 {
         self as f32
+    }
+
+    fn into_f64(self) -> f64 {
+        self as f64
     }
 
     fn into_i32(self) -> i32 {

@@ -3,25 +3,23 @@ use crate::utils::get_shape;
 use crate::{axes::Axes, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use core::fmt::Formatter;
+use crate::dtype::DType;
 
 /// Node representing different possible tensors
 pub enum Node {
-    /// F32 leaf that is guaranteed to be evaluated
-    LeafF32(Shape),
-    /// I32 leaf that is guaranteed to be evaluated
-    LeafI32(Shape),
-    /// UniformF32 initializer for range 0..1
-    UniformF32(Shape),
     /// IterF32 initializer
     IterF32(Box<dyn Iterator<Item = f32>>, Shape),
-    //IterF32(Box<dyn Iterator<Item = f32>>, Shape),
+    /// IterF64 initializer
+    IterF64(Box<dyn Iterator<Item = f64>>, Shape),
     /// IterI32 initializer
     IterI32(Box<dyn Iterator<Item = i32>>, Shape),
+    /// Leaf that is guaranteed to be evaluated
+    Leaf(Shape, DType),
+    /// Uniform initializer for range 0..1
+    Uniform(Shape, DType),
     //IterI32(Box<dyn Iterator<Item = i32>>, Shape),
-    /// Cast to F32 unary op
-    CastF32(Id),
-    /// Cast to I32 unary op
-    CastI32(Id),
+    /// Cast to dtype unary op
+    Cast(Id, DType),
     /// Neg unary op
     Neg(Id),
     /// ReLU unary op
@@ -69,13 +67,12 @@ pub enum Node {
 impl core::fmt::Debug for Node {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            Node::LeafF32(sh) => f.write_fmt(format_args!("Leaf({sh}, F32)")),
-            Node::LeafI32(sh) => f.write_fmt(format_args!("Leaf({sh}, I32)")),
+            Node::Leaf(sh, dtype) => f.write_fmt(format_args!("Leaf({sh}, {dtype})")),
             Node::IterF32(_, sh) => f.write_fmt(format_args!("Iter({sh}, F32)")),
+            Node::IterF64(_, sh) => f.write_fmt(format_args!("Iter({sh}, F64)")),
             Node::IterI32(_, sh) => f.write_fmt(format_args!("Iter({sh}, I32)")),
-            Node::CastF32(x) => f.write_fmt(format_args!("Cast({x}, F32)")),
-            Node::CastI32(x) => f.write_fmt(format_args!("Cast({x}, I32)")),
-            Node::UniformF32(sh) => f.write_fmt(format_args!("Uniform({sh}, F32)")),
+            Node::Cast(x, dtype) => f.write_fmt(format_args!("Cast({x}, {dtype})")),
+            Node::Uniform(sh, dtype) => f.write_fmt(format_args!("Uniform({sh}, {dtype})")),
             Node::Neg(x) => f.write_fmt(format_args!("Neg({x})")),
             Node::ReLU(x) => f.write_fmt(format_args!("ReLU({x})")),
             Node::Sin(x) => f.write_fmt(format_args!("Sin({x})")),
@@ -124,13 +121,12 @@ impl Node {
     /// Get number of parameters of self. This method does not allocate.
     pub const fn num_parameters(&self) -> u8 {
         match self {
-            Node::LeafF32(..)
-            | Node::LeafI32(..)
-            | Node::UniformF32(..)
+            Node::Leaf(..)
+            | Node::Uniform(..)
             | Node::IterF32(..)
+            | Node::IterF64(..)
             | Node::IterI32(..) => 0,
-            Node::CastF32(x)
-            | Node::CastI32(x)
+            Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)
@@ -158,13 +154,12 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = Id> {
         match self {
-            Node::LeafF32(..)
-            | Node::LeafI32(..)
-            | Node::UniformF32(..)
+            Node::Leaf(..)
+            | Node::Uniform(..)
             | Node::IterF32(..)
+            | Node::IterF64(..)
             | Node::IterI32(..) => NodeParametersIterator { parameters: [crate::tensor::id(0); 3], idx: 0, len: 0 },
-            Node::CastF32(x)
-            | Node::CastI32(x)
+            Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)
@@ -192,10 +187,10 @@ impl Node {
     /// Get number of operations necessary to calculate this node
     pub fn flop(&self, nodes: &[Node]) -> usize {
         match self {
-            Node::LeafF32(..)
-            | Node::LeafI32(..)
-            | Node::UniformF32(..)
+            Node::Leaf(..)
+            | Node::Uniform(..)
             | Node::IterF32(..)
+            | Node::IterF64(..)
             | Node::IterI32(..)
             | Node::Reshape(..)
             | Node::Expand(..)
@@ -208,8 +203,7 @@ impl Node {
             | Node::Div(x, _)
             | Node::Cmplt(x, _)
             | Node::Pow(x, _) => get_shape(nodes, *x).numel() * 2, // x and y are guaranteed to be same shape
-            Node::CastF32(x)
-            | Node::CastI32(x)
+            Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)
@@ -229,13 +223,12 @@ impl Node {
     /// Check if parameters of self contains nid.
     pub fn parameters_contain(&self, nid: Id) -> bool {
         match self {
-            Node::LeafF32(..)
-            | Node::LeafI32(..)
-            | Node::UniformF32(..)
+            Node::Leaf(..)
+            | Node::Uniform(..)
             | Node::IterF32(..)
+            | Node::IterF64(..)
             | Node::IterI32(..) => false,
-            Node::CastF32(x)
-            | Node::CastI32(x)
+            Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)

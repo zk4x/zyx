@@ -9,10 +9,10 @@ pub fn get_shape(nodes: &[Node], mut x: Id) -> &Shape {
     loop {
         let node = &nodes[x.i()];
         match node {
-            Node::LeafF32(shape)
+            Node::Leaf(shape, ..)
+            | Node::Uniform(shape, ..)
             | Node::IterF32(_, shape)
-            | Node::UniformF32(shape, ..)
-            | Node::LeafI32(shape)
+            | Node::IterF64(_, shape)
             | Node::IterI32(_, shape)
             | Node::Reshape(_, shape)
             | Node::Expand(_, shape)
@@ -30,10 +30,10 @@ pub fn get_dtype(nodes: &[Node], mut x: Id) -> DType {
     loop {
         let node = &nodes[x.i()];
         match node {
-            Node::LeafF32(..) | Node::IterF32(..) | Node::UniformF32(..) | Node::CastF32(..) => {
-                return DType::F32
-            }
-            Node::LeafI32(..) | Node::IterI32(..) | Node::CastI32(..) => return DType::I32,
+            Node::Leaf(_, dtype) | Node::Uniform(_, dtype) | Node::Cast(_, dtype) => return *dtype,
+            Node::IterF32(..)  => return DType::F32,
+            Node::IterF64(..)  => return DType::F64,
+            Node::IterI32(..) => return DType::I32,
             _ => x = node.parameters().next().unwrap(),
         }
     }
@@ -80,11 +80,11 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u8]) -> alloc::
         let id = id.i();
         let node = &nodes[id];
         match node {
-            Node::IterF32(_, sh) => add_node(id, &format!("Iter(F32, {sh})"), "box"),
-            Node::IterI32(_, sh) => add_node(id, &format!("Iter(I32, {sh})"), "box"),
-            Node::LeafF32(sh) => add_node(id, &format!("Leaf(F32, {sh})"), "box"),
-            Node::LeafI32(sh) => add_node(id, &format!("Leaf(I32, {sh})"), "box"),
-            Node::UniformF32(sh) => add_node(id, &format!("Uniform(F32, {sh})"), "box"),
+            Node::IterF32(_, sh) => add_node(id, &format!("Iter({sh}, F32)"), "box"),
+            Node::IterF64(_, sh) => add_node(id, &format!("Iter({sh}, F64)"), "box"),
+            Node::IterI32(_, sh) => add_node(id, &format!("Iter({sh}, I32)"), "box"),
+            Node::Leaf(sh, dtype) => add_node(id, &format!("Leaf({sh}, {dtype})"), "box"),
+            Node::Uniform(sh, dtype) => add_node(id, &format!("Uniform({sh}, {dtype})"), "box"),
             Node::Add(x, y) => add_node(id, &format!("Add({x}, {y})"), "oval"),
             Node::Sub(x, y) => add_node(id, &format!("Sub({x}, {y})"), "oval"),
             Node::Mul(x, y) => add_node(id, &format!("Mul({x}, {y})"), "oval"),
@@ -102,8 +102,7 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u8]) -> alloc::
             Node::Tanh(x) => add_node(id, &format!("Tanh({x})"), "oval"),
             Node::Expand(x, ..) => add_node(id, &format!("Expand({x})"), "oval"),
             Node::Pad(x, padding, ..) => add_node(id, &format!("Pad({x}, {padding:?})"), "oval"),
-            Node::CastF32(x) => add_node(id, &format!("CastF32({x})"), "oval"),
-            Node::CastI32(x) => add_node(id, &format!("CastI32({x})"), "oval"),
+            Node::Cast(x, dtype) => add_node(id, &format!("CastI32({x}, {dtype})"), "oval"),
             Node::Reshape(x, ..) => add_node(id, &format!("Reshape({x})"), "oval"),
             Node::Permute(x, axes, ..) => {
                 add_node(id, &format!("Permute({x}, {axes:?})"), "oval")

@@ -44,6 +44,10 @@ pub trait Backend: Copy {
                     Box::new(core::iter::repeat(value.into_f32()).take(shape.numel())),
                     shape,
                 )),
+                DType::F64 => self.push(Node::IterF64(
+                    Box::new(core::iter::repeat(value.into_f64()).take(shape.numel())),
+                    shape,
+                )),
                 DType::I32 => self.push(Node::IterI32(
                     Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
                     shape,
@@ -58,7 +62,8 @@ pub trait Backend: Copy {
     #[must_use]
     fn zeros(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
         match dtype {
-            DType::F32 => self.full(shape.into(), 0.),
+            DType::F32 => self.full(shape.into(), 0f32),
+            DType::F64 => self.full(shape.into(), 0f64),
             DType::I32 => self.full(shape.into(), 0),
         }
     }
@@ -67,7 +72,8 @@ pub trait Backend: Copy {
     #[must_use]
     fn ones(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
         match dtype {
-            DType::F32 => self.full(shape.into(), 1.),
+            DType::F32 => self.full(shape.into(), 1f32),
+            DType::F64 => self.full(shape.into(), 1f64),
             DType::I32 => self.full(shape.into(), 1),
         }
     }
@@ -78,6 +84,12 @@ pub trait Backend: Copy {
         tensor(
             match dtype {
                 DType::F32 => self.push(Node::IterF32(
+                    Box::new(
+                        (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. })),
+                    ),
+                    [n, n].into(),
+                )),
+                DType::F64 => self.push(Node::IterF64(
                     Box::new(
                         (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. })),
                     ),
