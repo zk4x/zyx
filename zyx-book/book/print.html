@@ -1,0 +1,513 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>zyx-book</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('light')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">zyx-book</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="zyx-book"><a class="header" href="#zyx-book">Zyx book</a></h1>
+<p>This book is an introductory to machine learning with zyx library.</p>
+<p>It is meant to serve as a tutorial and provide examples of working with zyx. For documentation, please see:
+[https://docs.rs/zyx-core/latest/zyx-core]
+[https://docs.rs/zyx-optim/latest/zyx-optim]
+[https://docs.rs/zyx-nn/latest/zyx-nn]</p>
+<p>For documentation on zyx backends:
+[https://docs.rs/zyx-opencl/latest/zyx-opencl]
+[https://docs.rs/zyx-cpu/latest/zyx-cpu]</p>
+<p>If you are already familiar with machine learning and want the quickest possible tutorial, please see <a href="https://www.github.com/zk4x/zyx">README</a>.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="why-create-zyx"><a class="header" href="#why-create-zyx">Why create zyx?</a></h1>
+<p>Zyx was created as a learning exercise to understand machine learning from low level, close to the metal perspective.
+As the time went on, I saw the lack of good ML libraries in Rust ecosystem which meant that if zyx got completed,
+other people could use it too.</p>
+<p>When researching architecture of other ML libraries, in particular the most popular ones - pytorch and tensorflow,
+I found that their creators made certain compromises in order to simplify the development and reach the widest
+possible audience.</p>
+<p>These days we have a pretty good perspective on what a good ML library should look like. It should run on all hardware
+with solid performance, it should not take too much disk space or memory and it should be easy to use.
+Crucially it does not need to support many operations, just a few unary, binary, movement and reduce operations
+are plenty, as shown by tinygrad.</p>
+<p>In zyx, core operations are rarely added, but adding backends is very simple. Zyx automatically optimizes
+for backpropagation and uses as little memory as possible during both training and inference.</p>
+<p>And as for the ease of use? I want you to be the judge of that.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="first-tensors"><a class="header" href="#first-tensors">First tensors</a></h1>
+<p>In this chapter we go over tensor initialization and running your first operations.</p>
+<h2 id="choosing-your-backend"><a class="header" href="#choosing-your-backend">Choosing your backend</a></h2>
+<p>Before we can create tensors, we need to choose which device they should be stored in.
+The recommended backend is zyx-opencl, so that is what we will use in this book,
+but if it does not work for you, or you can't figure out how to install OpenCL runtime
+on your OS, you can go with zyx-cpu backend which does not have any dependencies outside
+of rust.</p>
+<pre><code class="language-shell">cargo add zyx-opencl
+</code></pre>
+<p>Let's initialize the backend.</p>
+<pre><pre class="playground"><code class="language-rust">use zyx_opencl;
+use zyx_opencl::ZyxError;
+
+fn main() -&gt; Result&lt;(), ZyxError&gt; {
+    let dev = zyx_opencl::device()?;
+    Ok(())
+}</code></pre></pre>
+<p>That's it!</p>
+<h2 id="tensor-1"><a class="header" href="#tensor-1">Tensor #1</a></h2>
+<p>Now we can create your first tensor with zyx.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let x = dev.tensor([[[3, 2]], [[3, 4]]]);
+<span class="boring">}</span></code></pre></pre>
+<p>Tensor is multidimensional array. We can ask how many dimensions it has.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>assert_eq!(x.rank(), 3);
+<span class="boring">}</span></code></pre></pre>
+<p>And also what those dimensions are.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>assert_eq!(x.shape(), [2, 1, 2]);
+<span class="boring">}</span></code></pre></pre>
+<p>Tensors can only hold data of a single type. In this case, it is i32.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>assert_eq!(x.dtype(), DType::I32);
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="tensor-operations"><a class="header" href="#tensor-operations">Tensor Operations</a></h1>
+<p>Zyx supports most important operations used in other ML libraries.</p>
+<p>Examples. For full list, please check tensor's <a href="https://docs.rs/zyx-core/latest/zyx-core/tensor/struct.Tensor.html">documentation</a>.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let x = dev.randn([1024, 1024], DType::F32);
+let y = dev.randn([1024, 1024], DType::F32);
+
+let z = x.exp();
+let z = x.relu();
+let z = x.sin();
+let z = x.tanh();
+
+let z = &amp;x + &amp;y;
+let z = &amp;x - &amp;y;
+let z = &amp;x * &amp;y;
+let z = &amp;x / &amp;y;
+let z = x.pow(&amp;y);
+let z = x.cmplt(&amp;y);
+let z = x.dot(&amp;y);
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="automatic-differentiation"><a class="header" href="#automatic-differentiation">Automatic differentiation</a></h1>
+<p>Everything that is differentiable in math is differentiable in zyx (sometimes even functions that are not differentiable in math, like ReLU at 0).</p>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<p>You can just do any operations with your tensors.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span><span class="boring">use zyx_opencl;
+</span><span class="boring">let dev = zyx_opencl::device()?;
+</span>let x = dev.randn([1024, 1024], DType::F32);
+let y = dev.tensor([2, 3, 1]);
+let z = (x + y.pad([(1000, 21)], 8)) * x;
+<span class="boring">}</span></code></pre></pre>
+<p>At any point in time, you can differentiate any tensor w.r.t. any other tensor or set of tensors. This example differentiates
+z w.r.t. x and y.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let grads = z.backward([&amp;x, &amp;y]);
+<span class="boring">}</span></code></pre></pre>
+<p>Backward function return Vec&lt;Option<Tensor>&gt;. Grads can contain some None values, if there is no direct connection
+between dependent and independent variables.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let x = dev.randn([2, 3], DType::F32);
+let y = dev.randn([2, 3], DType::F32);
+let z = y.exp();
+let grads = z.backward([&amp;x]);
+assert_eq!(grads, vec![None]);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
+<p>Some other ML libraries require users to provide additional information in order to make backpropagation efficient. This
+is needed, because they store intermediate tensors in memory in order to be able to backpropagate. Zyx does not store
+anything in memory. Instead, zyx stores a graph of operations, which takes just a few MB even for millions of tensors
+and calculation is done only when user accessses the data, for example when saving to the disk. During backpropagation
+the graph is traversed and new tensors are added to the graph.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="optimizers"><a class="header" href="#optimizers">Optimizers</a></h1>
+<pre><code class="language-shell">cargo add zyx-optim
+</code></pre>
+<p>Optimizers take gradients calculated as your loss w.r.t. your parameters and update those parameters
+so that the next time you run your model with the same inputs, the loss will be lower.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut optim = zyx_optim::SGD { ..Default::default() };
+let grads = loss.backward();
+optim.update(&amp;mut model, grads);
+<span class="boring">}</span></code></pre></pre>
+<p>Zyx has multiple optimizers. All are accessible from crate <a href="https://docs.rs/zyx-optim/latest/zyx-optim/index.html">zyx-optim</a>.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="creating-modules"><a class="header" href="#creating-modules">Creating Modules</a></h1>
+<pre><code class="language-shell">cargo add zyx-nn
+</code></pre>
+<p>Zyx only has statefull modules. That is all modules must store one or more tensors. One of the simplest modules
+is <a href="https://docs.rs/zyx-nn/latest/zyx-nn/struct.Linear.html">linear layer</a>.</p>
+<p>In order to initialize modules, you need a device. Modules have traits implemented for all backends to allow for more ergonomic API:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let l0 = dev.linear(1024, 128);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="custom-modules"><a class="header" href="#custom-modules">Custom Modules</a></h2>
+<p>Custom modules are easy to create, you only need to import Backend trait from core.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx_core::backend::Backend;
+struct MyModule&lt;B: Backend&gt; {
+    l0: Linear&lt;B&gt;,
+    l1: Linear&lt;B&gt;,
+}
+<span class="boring">}</span></code></pre></pre>
+<p>For modules to be useful, they need forward function.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx_core::tensor::IntoTensor;
+impl&lt;B: Backend&gt; MyModule&lt;B&gt; {
+    fn forward(&amp;self, x: impl IntoTensor&lt;B&gt;) -&gt; Tensor&lt;B&gt; {
+        let x = self.l0.forward(x).relu();
+        self.l1.forward(x).sigmoid()
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Since relu is stateless, it is not a module, it is just a function on tensor.</p>
+<p>Modules can be initialized with any device.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dev = zyx_cpu::device()?;
+
+let my_module = MyModule {
+    l0: dev.linear(1024, 512),
+    l1: dev.linear(512, 128),
+};
+<span class="boring">}</span></code></pre></pre>
+<p>Also you need to implement IntoIterator&lt;Item = &amp;Tensor&gt; to be able to easily save and IntoIterator&lt;Item = &amp;mut Tensor&gt;
+to backpropagate over parameters of the module and to load these parameters into the model.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl&lt;'a, B: Backend&gt; IntoIterator for &amp;'a MyModule&lt;B&gt; {
+    type Item = &amp;'a Tensor&lt;B&gt;;
+    type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
+    fn into_iter(self) -&gt; Self::IntoIter {
+        self.l0.into_iter().chain(self.l1)
+    }
+}
+
+impl&lt;'a, B: Backend&gt; IntoIterator for &amp;'a mut MyModule&lt;B&gt; {
+    type Item = &amp;'a mut Tensor&lt;B&gt;;
+    type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
+    fn into_iter(self) -&gt; Self::IntoIter {
+        self.l0.into_iter().chain(self.l1)
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Both implementations of IntoIterator could be done using procedural macros, but those are currently difficult for me. If you are expert
+in procedural macros, please write such procedural macro, so that we can all enjoy it! ❤️</p>
+<p>Forward function is used for inference.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let input = dev.randn([8, 1024], DType::F32);
+
+let out = my_module.forward(&amp;input);
+<span class="boring">}</span></code></pre></pre>
+<p>Backpropagation is provided automatically.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let input = dev.randn([8, 1024], DType::F32);
+let label = dev.randn([8, 128], DType::F32);
+
+let epochs = 100;
+for _ in 0..epochs {
+    let out = my_module.forward(&amp;input);
+    let loss = (out - label).pow(2);
+    loss.backward(&amp;my_module);
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="disk-io"><a class="header" href="#disk-io">Disk IO</a></h1>
+<p>Zyx does not have special trait for modules. Instead all modules implement IntoIterator&lt;&amp;Tensor&gt; and IntoIterator&lt;&amp;mut Tensor&gt;.</p>
+<p>Anything that implements the first trait can be saved.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let model = dev.linear(1024, 128);
+
+model.save(&quot;model.safetensors&quot;)?;
+<span class="boring">}</span></code></pre></pre>
+<p>Zyx uses safetensors format for saving tensors.</p>
+<p>Loading is similar.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut model = dev.linear(1024, 128);
+
+model.load(&quot;model.safetensors&quot;)?;
+<span class="boring">}</span></code></pre></pre>
+<p>If you don't know the structure of tensors saved on disks, you can load them like this.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dev = zyx_opencl::device();
+let tensors = dev.load(&quot;my_tensors.safetensors&quot;)?;
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="library-vs-framework"><a class="header" href="#library-vs-framework">Library vs. Framework</a></h1>
+<p>Zyx aspires to be just a library, not a framework. The difference is that libraries plug into your workflow, while frameworks impose a certain workflow on you.</p>
+<p>Some ML libraries force you to do the training loop in their way, sometimes forcing you to statically define the whole graph beforehand and then just call .train() or .fit() to run the whole training loop. This method discourages debugging and makes trial and error development difficult. Because of this, dynamic PyTorch is the most used ML library these days.</p>
+<p>Zyx aspires to be even more dynamic than PyTorch, because it does not require you to specify which tensors require gradient beforehand. Instead, you specify which gradients you want to calculate when you call backward function.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="execution-model"><a class="header" href="#execution-model">Execution Model</a></h1>
+<p>PyTorch executes most of the ops immediatelly. This straightforward, but it means that in order to be able to backpropagate, it needs to know which tensors must be stored in memory. Zyx uses lazy execution. It does not evaluate anything until user explicitly requests the data. This would not work for training/inference loops, so zyx uses caching mechanism that detects repetition of parts of graph and once any part of graph is repeated more than once, the whole graph get evaluated in order to remove no longer needed nodes (node is internal representation of unrealized tensor, takes only few bytes).</p>
+<p>This is cool by itself, because it means that zyx is as dynamic as pytorch while allowing for optimizations only possible in static graphs, but it also allows zyx to be more dynamic than PyTorch, because there is no longer need to specify which tensors require gradient, as you can see in <a href="autograd.html">autograd</a> chapter.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
+<p>Zyx removes a number of PyTorch errors. Zyx tensors are immutable, so there is no:</p>
+<ul>
+<li>RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: ... , which is output 0 of TBackward, is at version 2; expected version 1 instead. Hint: the backtrace further above shows the operation that failed to compute its gradient. The variable in question was changed in there or anywhere later. Good luck!</li>
+</ul>
+<p>Zyx technically allows mutability of tensors using set method, setting values of tensor A to tensor B, but tensors are just pointers, so this means merely that tensor B will now point to values previously pointed to be tensor A and tensor A will not exist anymore.</p>
+<p>Another error that cannot occur:</p>
+<ul>
+<li>RuntimeError: Trying to backward through the graph a second time, but the saved intermediate results have already been freed. Specify retain_graph=True when calling backward the first time.</li>
+</ul>
+<p>Zyx does not store intermediate tensors, so they cannot be freed :)</p>
+<h1 id="visualization"><a class="header" href="#visualization">Visualization</a></h1>
+<p>One aspect of debugging which is often overlooked is visual representation of graph. Programmers often like reading code more than looking at visualizatinos, but in particular if you are using complex modules defined somewhere outside of your code, it may be beneficial to be able to look at any part of the graph visually.</p>
+<p>Zyx asks you to give it any number of tensors and then plots all relations between them into picture. Let x, y and z be tensors.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dot_graph = dev.plot_graph([&amp;x, &amp;y, &amp;z]);
+fs::write(&quot;graph.dot&quot;, dot_graph).unwrap();
+<span class="boring">}</span></code></pre></pre>
+<p>If you want to see just forward part of graph, you can do for example this:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dot_graph = dev.plot_graph(model.into_iter().chain([&amp;x, &amp;loss]));
+<span class="boring">}</span></code></pre></pre>
+<p>Where model is your model, x is your input and loss is your loss/error.</p>
+<p>If you want to only look at the backward part of graph, that is also simple:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dot_graph = dev.plot_graph(grads.chain([&amp;loss]));
+<span class="boring">}</span></code></pre></pre>
+<p>Zyx will order nodes automatically, so there is no difference in the order in which tensors are stored in the iterator.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+    </div>
+    </body>
+</html>

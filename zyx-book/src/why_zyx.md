@@ -1,4 +1,4 @@
-# Why zyx?
+# Why create zyx?
 
 Zyx was created as a learning exercise to understand machine learning from low level, close to the metal perspective.
 As the time went on, I saw the lack of good ML libraries in Rust ecosystem which meant that if zyx got completed,
@@ -17,4 +17,3 @@ In zyx, core operations are rarely added, but adding backends is very simple. Zy
 for backpropagation and uses as little memory as possible during both training and inference.
 
 And as for the ease of use? I want you to be the judge of that.
-

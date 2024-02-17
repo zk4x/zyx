@@ -123,6 +123,12 @@ impl Torch {
         <&Self as Backend>::eye(self, n, dtype)
     }
 
+    /// Load tensors from disk.
+    #[cfg(feature = "std")]
+    pub fn load(&self, path: impl AsRef<std::path::Path>) -> Result<Vec<Tensor<&Torch>>, ZyxError> {
+        zyx_core::io::load(self, path)
+    }
+
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
     pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {

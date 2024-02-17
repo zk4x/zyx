@@ -40,6 +40,9 @@ impl<B: Backend> Default for Adam<B> {
 }
 
 impl<B: Backend> Adam<B> {
+    /// Updates parameters with gradients.
+    /// Number of parameters must be the same as number of gradients.
+    /// Gradients can be None, those are simply skipped.
     pub fn update<'a>(&mut self, parameters: impl IntoIterator<Item = &'a mut Tensor<B>>, gradients: impl IntoIterator<Item = Option<Tensor<B>>>)
     where
         B: 'a

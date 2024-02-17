@@ -35,7 +35,7 @@ use alloc::{
 use core::ops::Range;
 use zyx_core::compiler::CompiledBackend;
 #[cfg(feature = "std")]
-pub use zyx_core::io::{load, save};
+pub use zyx_core::io::save;
 use zyx_core::{
     backend::Backend,
     node::Node,
@@ -165,6 +165,12 @@ impl OpenCL {
     #[must_use]
     pub fn eye(&self, n: usize, dtype: DType) -> Tensor<&Self> {
         <&Self as Backend>::eye(self, n, dtype)
+    }
+
+    /// Load tensors from disk.
+    #[cfg(feature = "std")]
+    pub fn load(&self, path: impl AsRef<std::path::Path>) -> Result<Vec<Tensor<&OpenCL>>, ZyxError> {
+        zyx_core::io::load(self, path)
     }
 
     /// Create graph of operations between tensors in dot format for visualization

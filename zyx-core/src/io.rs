@@ -90,7 +90,7 @@ pub fn save<'a, B: Backend + 'a>(
 pub fn load<B: Backend>(
     dev: B,
     path: impl AsRef<Path>,
-) -> Result<impl Iterator<Item = Tensor<B>>, ZyxError> {
+) -> Result<Vec<Tensor<B>>, ZyxError> {
     let mut f = File::open(path)?;
     let mut header_len = [0u8; 8];
     f.read_exact(&mut header_len)?;
@@ -163,5 +163,5 @@ pub fn load<B: Backend>(
             text.push(x);
         }
     }
-    Ok(tensors.into_iter())
+    Ok(tensors)
 }

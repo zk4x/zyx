@@ -175,7 +175,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
         for (i, nid) in order.iter().copied().enumerate() {
-            println!("Node {:?}", nodes[nid.i()]);
+            //println!("Node {:?}", nodes[nid.i()]);
             if to_eval.contains(&nid) {
                 self.evaluate_buffer(nid, order, nodes)?;
             }
