@@ -5,7 +5,7 @@ use crate::{
     node::Node,
     scalar::Scalar,
     shape::Shape,
-    tensor::{id, Id},
+    tensor::{self, Id},
 };
 use alloc::collections::btree_map::Entry;
 use alloc::{
@@ -43,7 +43,6 @@ pub trait RuntimeBackend {
 pub struct Runtime<R: RuntimeBackend> {
     rng: rand::rngs::SmallRng,
     rcs: Vec<u8>,
-    order: Vec<Id>,
     nodes: Vec<Node>,
     leafs: BTreeSet<Id>, // these do not need backward graph
     runtime_backend: R,
@@ -56,7 +55,6 @@ impl<R: RuntimeBackend> Runtime<R> {
         Self {
             rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
             rcs: Vec::new(),
-            order: Vec::new(),
             nodes: Vec::new(),
             leafs: BTreeSet::new(),
             runtime_backend,
@@ -166,31 +164,20 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.rcs[nid.i()] += 1;
         }
         let (i, new_node) = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
-            (id(i), false)
+            (tensor::id(i), false)
         } else {
-            (id(self.rcs.len()), true)
+            (tensor::id(self.rcs.len()), true)
         };
         if new_node {
             self.rcs.push(1);
             self.nodes.push(node);
-            self.order.push(i);
         } else {
             self.rcs[i.i()] = 1;
             self.nodes[i.i()] = node;
-            // Keep the ordering, this is probably as fast as it gets
-            // (i. e. better track the ordering here then reconstruct
-            // the whole tree during evaluation)
-            let prev = self.order[i.i()];
-            for x in self.order.iter_mut() {
-                if *x > prev {
-                    *x -= 1;
-                }
-            }
-            self.order[i.i()] = id(self.order.len() - 1);
         }
         // TODO This evaluates last leafs if there are too many nodes,
         // is it better to find repeating nodes and evaluate those?
-        if self.nodes.len() > 100000 { // Roughly 5 MiB of Nodes
+        if self.nodes.len() > 10000 { // Roughly 500 KiB of Nodes
             self.evaluate(self.leafs.iter().copied().filter(|nid| self.is_user_id(*nid)).collect::<BTreeSet<Id>>())?;
         }
         Ok(i)
@@ -237,25 +224,49 @@ impl<R: RuntimeBackend> Runtime<R> {
         // Then we go back again to create subgraphs for individual kernels.
         // Then we go forward again to create the kernel itself.
 
-        // Find all needed parameters for calculation of nodes
+        // TODO in order to be more efficient, we can optimize the graph
+        // by reordering nodes and removing unnecessary nodes
+
+        // This creation of graph that needs to be evaluated runs in linear time,
+        // max once per node in self.nodes
+
+        // Make a list of visited nodes and their reference counts.
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
         while let Some(nid) = params.pop() {
-            if !self.runtime_backend.is_evaluated(nid) {
-                // TODO should we increase refcount of some other nodes? Probably not.
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                if !self.runtime_backend.is_evaluated(nid) {
                     params.extend(self.nodes[nid.i()].parameters());
-                    1
-                });
-                if matches!(self.nodes[nid.i()], Node::LeafF32(..) | Node::LeafI32(..) | Node::IterF32(..) | Node::IterI32(..)) {
-                    *rcs.get_mut(&nid).unwrap() += 1;
+                }
+                1
+            });
+        }
+
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
+        let mut params: Vec<Id> = nodes.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                order.push(nid);
+                if rcs.contains_key(&nid) {
+                    params.extend(self.nodes[nid.i()].parameters());
                 }
             }
         }
-        let mut order: Vec<Id> = rcs.keys().copied().collect();
-        order.sort_by_cached_key(|nid| self.order[nid.i()]);
+        let order: Vec<Id> = order.into_iter().rev().collect();
+        //std::println!("Order: {order:?}");
 
-        self.runtime_backend.evaluate(nodes, rcs, order.as_ref(), self.nodes.as_mut())?;
+        // TODO should we increase refcount of some other nodes to keep them evaluated in memory?
+        // Like if they are referenced by the user and in the graph that needs to be evaluated?
+        // TODO this memory <=> performance tradeoff should be decided by the user, with some setting.
+        for nid in &order {
+            if matches!(self.nodes[nid.i()], Node::LeafF32(..) | Node::LeafI32(..) | Node::IterF32(..) | Node::IterI32(..)) {
+                *rcs.get_mut(&nid).unwrap() += 1;
+            }
+        }
+
+        self.runtime_backend.evaluate(nodes, rcs, &order, self.nodes.as_mut())?;
 
         // Release parts of graph that are not needed for backpropagation
         for leaf in self.leafs.clone() {
@@ -278,72 +289,90 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Plot dot graph in dot format between given nodes
     pub fn plot_graph_dot(&self, ids: &[Id]) -> alloc::string::String {
-        let max_id = ids.iter().max().unwrap();
-        let mut nodes: BTreeSet<Id> = ids.iter().copied().collect();
-        let mut temp = nodes.clone();
-        for nid in &self.order {
-            if nid > max_id {
-                break
-            }
-            for p in self.nodes[nid.i()].parameters() {
-                if nodes.contains(&p) {
-                    nodes.insert(*nid);
+        // Make a list of visited nodes and their reference counts.
+        let mut params: Vec<Id> = ids.into();
+        let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                params.extend(self.nodes[nid.i()].parameters());
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
+        let mut params: Vec<Id> = ids.into();
+        while let Some(nid) = params.pop() {
+            if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                order.push(nid);
+                if rcs.contains_key(&nid) {
+                    params.extend(self.nodes[nid.i()].parameters());
                 }
             }
         }
-        let min_id = ids.iter().min().unwrap();
-        let mut rev_nodes: BTreeSet<Id> = ids.iter().copied().collect();
-        while let Some(nid) = temp.pop_last() {
-            if nid < *min_id {
-                continue
+        // Build topo, this way it ensures that grad is not used in backprop
+        // before it was insert_or_add by all parents.
+        let mut topo: BTreeSet<Id> = ids.iter().copied().collect();
+        for nid in order.into_iter().rev() {
+            for p in self.nodes[nid.i()].parameters() {
+                if topo.contains(&p) {
+                    topo.insert(nid);
+                }
             }
-            let params: BTreeSet<Id> = self.nodes[nid.i()].parameters().collect();
-            temp.extend(params.clone());
-            rev_nodes.extend(params);
         }
-        let nodes: Vec<Id> = nodes.intersection(&rev_nodes).copied().collect();
-        //let nodes: Vec<Id> = rev_nodes.into_iter().collect();
-        //std::println!("{:?}");
-        crate::utils::plot_graph_dot(&nodes, &self.nodes, &self.rcs)
+
+        crate::utils::plot_graph_dot(&topo, &self.nodes, &self.rcs)
     }
 
     /// Common autograd engine, currently used by all backends.
-    /// Backpropagation by itself probably should not evaluate.
     pub fn backward(
         &mut self,
         x: Id,
         sources: &BTreeSet<Id>,
     ) -> Result<BTreeMap<Id, Id>, ZyxError> {
-        fn build_topo(x: Id, sources: &BTreeSet<Id>, nodes: &[Node], order: &[Id]) -> Vec<Id> {
-            // First we need to know which nodes require gradient
-            let mut req_grad = BTreeSet::new();
-            for i in order {
-                for p in nodes[i.i()].parameters() {
-                    if sources.contains(&p) || req_grad.contains(&p) {
-                        req_grad.insert(i);
+        fn build_topo(x: Id, sources: &BTreeSet<Id>, nodes: &[Node]) -> Vec<Id> {
+            // Make a list of visited nodes and their reference counts.
+            let mut params: Vec<Id> = alloc::vec![x];
+            let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
+            while let Some(nid) = params.pop() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                    if !sources.contains(&nid) {
+                        params.extend(nodes[nid.i()].parameters());
+                    }
+                    1
+                });
+            }
+            // Order them using rcs reference counts
+            let mut order = Vec::new();
+            let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
+            let mut params: Vec<Id> = alloc::vec![x];
+            while let Some(nid) = params.pop() {
+                if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    if rcs.contains_key(&nid) {
+                        params.extend(nodes[nid.i()].parameters());
                     }
                 }
             }
-            // Here we build topo
+            // Build topo, this way it ensures that grad is not used in backprop
+            // before it was insert_or_add by all parents.
             let mut topo = Vec::new();
-            if !req_grad.contains(&x) {
-                return topo;
-            }
-            let mut visited = BTreeSet::new();
-            let mut params = alloc::collections::VecDeque::with_capacity(32);
-            params.push_back(x);
-            while let Some(p) = params.pop_front() {
-                if req_grad.contains(&p) {
-                    topo.push(p);
-                    if visited.insert(p) {
-                        params.extend(nodes[p.i()].parameters());
+            let mut req_grad = sources.clone();
+            for nid in order.into_iter().rev() {
+                for p in nodes[nid.i()].parameters() {
+                    if req_grad.contains(&p) {
+                        req_grad.insert(nid);
+                        topo.push(nid);
                     }
                 }
             }
+            topo.reverse();
             topo
         }
 
-        let topo = build_topo(x, sources, &self.nodes, &self.order);
+        let topo = build_topo(x, sources, &self.nodes);
+        //std::println!("Topo: {topo:?}");
+
         let req_grad: BTreeSet<Id> = topo
             .iter()
             .copied()

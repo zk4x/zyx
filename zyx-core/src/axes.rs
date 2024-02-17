@@ -1,5 +1,6 @@
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
+use core::fmt::{Display, Formatter};
 use core::ops::Range;
 
 /// Axes used in reduce and permute operations.
@@ -36,7 +37,13 @@ impl Axes {
     }
 }
 
-impl From<Axes> for alloc::vec::Vec<usize> {
+impl Display for Axes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("{self:?}"))
+    }
+}
+
+impl From<Axes> for Vec<usize> {
     fn from(val: Axes) -> Self {
         val.0.into()
     }

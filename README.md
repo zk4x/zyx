@@ -120,7 +120,7 @@ tensors for backpropagation or not, and so it does not unnecessarily allocate me
 
 ## Contributing
 
-See CONTRIBUTING.md
+See [CONTRIBUTING.md]
 
 ## Thanks ❤️
 

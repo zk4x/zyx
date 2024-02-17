@@ -15,6 +15,7 @@ use alloc::{
     vec::Vec,
 };
 use std::println;
+use crate::shape::Shape;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -174,11 +175,25 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
         for (i, nid) in order.iter().copied().enumerate() {
-            //println!("Node {:?}", nodes[nid.i()]);
+            println!("Node {:?}", nodes[nid.i()]);
             if to_eval.contains(&nid) {
                 self.evaluate_buffer(nid, order, nodes)?;
             }
             match &mut nodes[nid.i()] {
+                Node::IterF32(_, shape) => {
+                    let mut new_node = Node::LeafF32(shape.clone());
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterF32(iter, _) = new_node {
+                        self.buffers.insert(nid, self.compiler.store(iter)?);
+                    }
+                }
+                Node::IterI32(_, shape) => {
+                    let mut new_node = Node::LeafI32(shape.clone());
+                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
+                    if let Node::IterI32(iter, _) = new_node {
+                        self.buffers.insert(nid, self.compiler.store(iter)?);
+                    }
+                }
                 Node::LeafF32(..)
                 | Node::LeafI32(..)
                 | Node::UniformF32(..)
@@ -203,20 +218,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 | Node::Permute(..)
                 | Node::Expand(..)
                 | Node::Pad(..) => {}
-                Node::IterF32(_, shape) => {
-                    let mut new_node = Node::LeafF32(shape.clone());
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF32(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter)?);
-                    }
-                }
-                Node::IterI32(_, shape) => {
-                    let mut new_node = Node::LeafI32(shape.clone());
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterI32(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter)?);
-                    }
-                }
                 Node::Sum(..)
                 | Node::Max(..) => {
                     // Search forward for first expand, in to_eval or rc > 1, then evaluate that.
@@ -261,22 +262,37 @@ impl<C: Compiler> CompiledBackend<C> {
     /// This function evaluates concrete buffer that we know can be directly evaluated,
     /// that is we know that all of it's leafs are already evaluated and stored in device.
     fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
-        println!("Evaluating buffer {x}");
+        //println!("Evaluating buffer {x}");
         if self.is_evaluated(x) {
             return Ok(())
         }
         // Create ordered list of nodes that need to be evaluated
         //extern crate std;
         //println!("x: {x}\norder: {order:?}\nnodes: {nodes:?}");
+        let mut reduce_nid = None;
         let mut temp = alloc::vec![x];
         let mut porder = BTreeSet::new();
         while let Some(nid) = temp.pop() {
             porder.insert(nid);
-            if self.buffers.contains_key(&nid) {
+            if self.is_evaluated(nid) {
                 continue;
+            }
+            if matches!(nodes[nid.i()], Node::Sum(..) | Node::Max(..)) {
+                reduce_nid = Some(nid);
             }
             temp.extend(nodes[nid.i()].parameters());
         }
+        /*let mut br_leafs = Vec::new();
+        if let Some(reduce_nid) = reduce_nid {
+            let mut temp = alloc::vec![reduce_nid];
+            while let Some(nid) = temp.pop() {
+                if self.is_evaluated(nid) {
+                    br_leafs.push(nid);
+                    continue;
+                }
+                temp.extend(nodes[nid.i()].parameters());
+            }
+        }*/
         let p_order: Vec<Id> = order
             .iter()
             .copied()
@@ -315,11 +331,11 @@ impl<C: Compiler> CompiledBackend<C> {
                     if first_ar_arg != usize::MAX {
                         first_ar_arg = args.len();
                     }
-                    args.push((
-                        View::new(get_shape(nodes, nid).clone()),
-                        get_dtype(nodes, nid),
-                    ));
                 }
+                args.push((
+                    View::new(get_shape(nodes, nid).clone()),
+                    get_dtype(nodes, nid),
+                ));
                 program_args.push(x);
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
@@ -461,15 +477,15 @@ impl<C: Compiler> CompiledBackend<C> {
             let axes: (Vec<usize>, Vec<usize>) =
                 (0..rshape.rank()).partition(|a| raxes.0.contains(a));
             let axes = Axes(axes.0.into_iter().chain(axes.1).collect());
-            let new_shape = [s0, s1].into();
-            let ar_new_shape = [1, s1].into();
+            let new_shape: Shape = [s0, s1].into();
+            let ar_new_shape: Shape = [1, s1].into();
             // Join raxes together to be second last dimension
             // permute first and then reshape
             //println!("Permute axes {axes:?}");
             //println!("New shape before reduce: {new_shape:?}");
             //println!("New shape after reduce: {ar_new_shape:?}");
-            let ar_rshape = rshape.reduce(&axes);
-            let apply_padding = |sh| sh.pad(
+            let ar_rshape = rshape.clone().reduce(&axes);
+            let apply_padding = |sh: View| sh.pad(
                 &new_shape
                     .iter()
                     .rev()

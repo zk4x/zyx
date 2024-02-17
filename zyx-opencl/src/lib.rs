@@ -238,6 +238,10 @@ fn t0() -> Result<(), ZyxError> {
     let y = dev.randn([2, 3], DType::F32);
     let z = (&x + &y).exp() + &x;
     let _grads = z.backward([&y]);
+    let y_grad = _grads.into_iter().next().unwrap().unwrap();
+    //std::fs::write("graph.dot", dev.plot_graph([&y, &z])).unwrap();
+    //y_grad.to_vec::<f32>()?;
+    //panic!();
     Ok(())
 }*/
 
