@@ -57,6 +57,10 @@ macro_rules! run_test {
         run_test_fn($test, &dev, 0f32);
         run_test_fn($test, &dev, 0f64);
         run_test_fn($test, &dev, 0i32);
+        let dev = zyx_torch::device().unwrap();
+        run_test_fn($test, &dev, 0f32);
+        run_test_fn($test, &dev, 0f64);
+        run_test_fn($test, &dev, 0i32);
     }};
 }
 

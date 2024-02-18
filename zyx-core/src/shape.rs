@@ -159,6 +159,12 @@ impl Shape {
         }
         self
     }
+
+    /// Get self as vector i64
+    #[must_use]
+    pub fn vi64(&self) -> Vec<i64> {
+        self.0.iter().map(|x| *x as i64).collect()
+    }
 }
 
 impl core::ops::Index<i32> for Shape {

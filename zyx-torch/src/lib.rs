@@ -35,7 +35,7 @@ use alloc::{
 };
 use core::ops::Range;
 #[cfg(feature = "std")]
-pub use zyx_core::io::{load, save};
+pub use zyx_core::io::save;
 use zyx_core::{
     backend::Backend,
     node::Node,

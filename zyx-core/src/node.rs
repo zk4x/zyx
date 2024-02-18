@@ -126,28 +126,28 @@ impl Node {
             | Node::IterF32(..)
             | Node::IterF64(..)
             | Node::IterI32(..) => 0,
-            Node::Cast(x, ..)
-            | Node::Neg(x)
-            | Node::ReLU(x)
-            | Node::Exp(x)
-            | Node::Ln(x)
-            | Node::Sin(x)
-            | Node::Cos(x)
-            | Node::Sqrt(x)
-            | Node::Tanh(x)
-            | Node::Reshape(x, ..)
-            | Node::Expand(x, ..)
-            | Node::Permute(x, ..)
-            | Node::Pad(x, ..)
-            | Node::Sum(x, ..)
-            | Node::Max(x, ..) => 1,
-            Node::Add(x, y)
-            | Node::Sub(x, y)
-            | Node::Mul(x, y)
-            | Node::Div(x, y)
-            | Node::Cmplt(x, y)
-            | Node::Pow(x, y) => 2,
-            Node::Where(x, y, z) => 3,
+            Node::Cast(..)
+            | Node::Neg(..)
+            | Node::ReLU(..)
+            | Node::Exp(..)
+            | Node::Ln(..)
+            | Node::Sin(..)
+            | Node::Cos(..)
+            | Node::Sqrt(..)
+            | Node::Tanh(..)
+            | Node::Reshape(..)
+            | Node::Expand(..)
+            | Node::Permute(..)
+            | Node::Pad(..)
+            | Node::Sum(..)
+            | Node::Max(..) => 1,
+            Node::Add(..)
+            | Node::Sub(..)
+            | Node::Mul(..)
+            | Node::Div(..)
+            | Node::Cmplt(..)
+            | Node::Pow(..) => 2,
+            Node::Where(..) => 3,
         }
     }
 

@@ -2,9 +2,7 @@
 
 Libtorch backend for zyx machine learning library.
 
-Libtorch backend uses libtorch c++ library for executing graph. You may find that when you use libtorch with zyx,
-you may get better performance than using libtorch directly. This is because zyx optimizes graph of operations before
-sending it to libtorch. There may also be particularly noticeable reduction in memory usage.
+Libtorch backend uses libtorch c++ library for executing graph.
 
 This backend needs to have access to libtorch c++ library. LibTorch can be downloaded directly from pytorch
 [website](https://pytorch.org/get-started/locally/). Select stable, your OS, LibTorch and your preferred compute platform.

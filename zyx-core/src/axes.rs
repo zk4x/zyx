@@ -35,6 +35,12 @@ impl Axes {
     pub fn contains(&self, a: usize) -> bool {
         self.0.contains(&a)
     }
+
+    /// Get self as vector i64
+    #[must_use]
+    pub fn vi64(&self) -> Vec<i64> {
+        self.0.iter().map(|x| *x as i64).collect()
+    }
 }
 
 impl Display for Axes {

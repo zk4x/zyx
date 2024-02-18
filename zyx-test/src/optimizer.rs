@@ -6,8 +6,6 @@ pub fn sgd<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let mut p0 = dev.tensor([[2, 3, 4], [4, 3, 2]]);
     let mut p1 = dev.tensor([[2, 3, 4], [4, 3, 2], [5, 4, 3]]);
     let l0 = dev.tensor([[2, 3, 4], [4, 3, 2]]);
-    let p00 = p0.clone();
-    let p10 = p1.clone();
 
     //println!("{p0}\n{p1}");
 

@@ -633,22 +633,16 @@ impl<B: Backend> Tensor<B> {
     pub fn pad(
         &self,
         padding: impl IntoIterator<Item = (i64, i64)>,
-        value: impl Scalar,
+        value: impl IntoTensor<B>,
     ) -> Tensor<B> {
-        // Cool trick :)
-        fn get_dtype<T: Scalar>(_: T) -> DType {
-            T::dtype()
-        }
-        fn get_zero<T: Scalar>(_: T) -> T {
-            T::zero()
-        }
         let dtype = self.dtype();
+        let value = self.backend.tensor(value);
         assert_eq!(
-            get_dtype(value.clone()),
+            value.dtype(),
             dtype,
             "Cannot pad tensor with dtype {} with value of dtype {}",
             dtype,
-            get_dtype(value.clone())
+            value.dtype()
         );
         // TODO asserts
         let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
@@ -660,8 +654,11 @@ impl<B: Backend> Tensor<B> {
                 .unwrap(),
             self.backend,
         );
-        let zero = get_zero(value.clone());
-        if value.clone().is_equal(zero.clone()) {
+        if value.numel() == 1 && match dtype {
+            DType::F32 => value.item::<f32>().unwrap().is_equal(0f32),
+            DType::F64 => value.item::<f64>().unwrap().is_equal(0f64),
+            DType::I32 => value.item::<i32>().unwrap().is_equal(0i32),
+        } {
             t0
         } else {
             t0 + tensor(
@@ -674,7 +671,7 @@ impl<B: Backend> Tensor<B> {
                     .unwrap(),
                 self.backend,
             )
-            .where_(zero, value)
+            .where_(self.backend.zeros(self.shape(), self.dtype()), value)
         }
     }
 
