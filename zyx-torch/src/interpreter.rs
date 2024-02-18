@@ -12,12 +12,13 @@ enum Data {
 }
 
 impl Data {
-    unsafe fn as_type<T: Scalar>(&self) -> &[T] {
-        match self {
+    fn as_type<T: Scalar>(&self) -> &[T] {
+        /*match self {
             Data::F32(data) => core::mem::transmute(data.as_ref()),
             Data::F64(data) => core::mem::transmute(data.as_ref()),
             Data::I32(data) => core::mem::transmute(data.as_ref()),
-        }
+        }*/
+        todo!()
     }
 }
 

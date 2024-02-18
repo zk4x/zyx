@@ -35,13 +35,13 @@ impl Display for ZyxError {
         match self {
             ZyxError::BackendError(err) => f.write_fmt(format_args!("{err:?}")),
             ZyxError::CompileError(err) => f.write_fmt(format_args!(
-                "Compiled backend could not compile this program:\n{err:?}"
+                "compiled backend could not compile this program:\n{err:?}"
             )),
             ZyxError::InvalidDType { expected, found } => f.write_fmt(format_args!(
-                "InvalidDType: Expected {expected:?} but found {found:?}."
+                "invalid dtype: expected {expected:?} but found {found:?}."
             )),
             ZyxError::IndexOutOfBounds { index, len } => f.write_fmt(format_args!(
-                "Range out of bounds: The index is {index}, but the len is {len}"
+                "range out of bounds: the index is {index}, but the len is {len}"
             )),
             ZyxError::IOError(err) => f.write_fmt(format_args!("{err}")),
             ZyxError::ParseError(err) => f.write_fmt(format_args!("{err}")),
@@ -55,3 +55,6 @@ impl From<std::io::Error> for ZyxError {
         Self::IOError(err)
     }
 }
+
+#[cfg(feature = "std")]
+impl std::error::Error for ZyxError {}

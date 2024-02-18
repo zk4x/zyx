@@ -2,12 +2,17 @@ use zyx_core::backend::Backend;
 use zyx_core::dtype::DType;
 use zyx_core::tensor::{IntoTensor, Tensor};
 
+/// Linear layer
 pub struct Linear<B: Backend> {
+    /// weight
     pub weight: Tensor<B>,
+    /// bias
     pub bias: Option<Tensor<B>>,
 }
 
+/// Initilization trait for linear layer
 pub trait LinearInit: Backend {
+    /// Initilize linear layer in device self
     fn linear(self, in_features: usize, out_features: usize) -> Linear<Self> {
         Linear {
             weight: self.randn([in_features, out_features], DType::F32),
@@ -42,8 +47,9 @@ impl<'a, B: Backend> IntoIterator for &'a mut Linear<B> {
     }
 }
 
-// TODO
 impl<B: Backend> Linear<B> {
+    /// Forward function for linear.
+    /// Calculates x.dot(&self.weight) + self.bias
     pub fn forward(&self, x: impl IntoTensor<B>) -> Tensor<B> {
         let x = self.weight.backend().tensor(x);
         let x = x.dot(&self.weight);
