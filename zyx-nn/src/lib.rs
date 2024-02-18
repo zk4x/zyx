@@ -21,3 +21,6 @@ pub mod prelude;
 
 mod linear;
 pub use linear::Linear;
+
+mod layer_norm;
+pub use layer_norm::LayerNorm;

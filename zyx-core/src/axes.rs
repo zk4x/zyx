@@ -2,6 +2,7 @@ extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt::{Display, Formatter};
 use core::ops::Range;
+use std::ops::RangeInclusive;
 
 /// Axes used in reduce and permute operations.
 /// Just Box<[usize]>.
@@ -104,6 +105,24 @@ impl IntoAxes for Box<[usize]> {
 impl IntoAxes for Range<usize> {
     fn into_axes(self, rank: usize) -> Axes {
         Axes(self.filter(|a| *a < rank).collect())
+    }
+}
+
+impl IntoAxes for Range<i64> {
+    fn into_axes(self, rank: usize) -> Axes {
+        Axes((((self.start + i64::try_from(rank).unwrap()) as usize % rank)..((self.end + i64::try_from(rank).unwrap()) as usize % rank)).collect())
+    }
+}
+
+impl IntoAxes for RangeInclusive<i64> {
+    fn into_axes(self, rank: usize) -> Axes {
+        (&*(self.collect::<Box<[i64]>>())).into_axes(rank)
+    }
+}
+
+impl IntoAxes for &RangeInclusive<i64> {
+    fn into_axes(self, rank: usize) -> Axes {
+        (&*(self.clone().collect::<Box<[i64]>>())).into_axes(rank)
     }
 }
 

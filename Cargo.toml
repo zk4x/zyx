@@ -2,7 +2,7 @@
 resolver = "2"
 
 members = [
-  "zyx-core", "zyx-cpu", "zyx-torch", "zyx-nn", "zyx-opencl", "zyx-test", "zyx-optim", "zyx",
+  "zyx-core", "zyx-cpu", "zyx-torch", "zyx-nn", "zyx-opencl", "zyx-test", "zyx-optim", "zyx", "zyx-derive", "zyx-examples",
 ]
 
 [profile.release]

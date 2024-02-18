@@ -1,11 +1,10 @@
 [package]
-name = "zyx-nn"
+name = "zyx-derive"
 version = "0.1.0"
 edition = "2021"
 authors = ["zk4x"]
-description = "Zyx nn modules"
-documentation = "https://docs.rs/zyx-nn"
-readme = "README.md"
+description = "Zyx procedural macros"
+documentation = "https://docs.rs/zyx-derive"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
 license = "MIT OR Apache-2.0"
@@ -17,6 +16,11 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx-core = { version = "0.1.0", path = "../zyx-core" }
+syn = { version = "2.0.49",features = ["full", "fold"] }
+quote = { version = "1.0.35" }
+
+[lib]
+proc-macro = true
 
 [features]
 default = ["std"]

@@ -1,0 +1,24 @@
+[package]
+name = "zyx-examples"
+version = "0.1.0"
+edition = "2021"
+authors = ["zk4x"]
+description = "Zyx examples"
+documentation = "https://docs.rs/zyx-torch"
+homepage = "https://github.com/zk4x/zyx"
+repository = "https://github.com/zk4x/zyx"
+license = "MIT OR Apache-2.0"
+keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
+categories = ["computer-vision", "science"]
+
+[badges]
+maintenance = { status = "experimental" }
+
+[dependencies]
+zyx-core = { version = "0.1.0", path = "../zyx-core" }
+zyx-nn = { version = "0.1.0", path = "../zyx-nn" }
+zyx-optim = { version = "0.1.0", path = "../zyx-optim" }
+zyx-derive = { version = "0.1.0", path = "../zyx-derive" }
+zyx-opencl = { version = "0.1.0", path = "../zyx-opencl" }
+zyx-cpu = { version = "0.1.0", path = "../zyx-cpu" }
+zyx-torch = { version = "0.1.0", path = "../zyx-torch" }
