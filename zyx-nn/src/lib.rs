@@ -24,3 +24,6 @@ pub use linear::Linear;
 
 mod layer_norm;
 pub use layer_norm::LayerNorm;
+
+mod batch_norm;
+pub use batch_norm::BatchNorm;

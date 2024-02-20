@@ -3,7 +3,7 @@ use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
 use zyx_core::tensor::{IntoTensor, Tensor};
 
-/// Linear layer
+/// Lyaer norm layer
 pub struct LayerNorm<B: Backend> {
     /// weight
     pub weight: Option<Tensor<B>>,
