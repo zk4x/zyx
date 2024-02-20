@@ -82,7 +82,7 @@ impl<B: Backend> BatchNorm<B> {
 
         if self.training {
             batch_mean = x.mean([0, 2, 3]);
-            let y = (x - batch_mean.reshape([1, batch_mean.numel(), 1, 1]));
+            let y = x - batch_mean.reshape([1, batch_mean.numel(), 1, 1]);
             let batch_var = (&y * &y).mean([0, 2, 3]);
             batch_invstd = (self
                 .running_var

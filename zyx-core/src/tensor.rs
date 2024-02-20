@@ -439,16 +439,28 @@ impl<B: Backend> Tensor<B> {
         self.unary_op(UOp::Sqrt)
     }
 
+    /// Returns 1/self.sqrt()
+    #[must_use]
+    pub fn rsqrt(&self) -> Tensor<B> {
+        (self.backend().ones(self.shape(), self.dtype())/self).sqrt()
+    }
+
     /// Returns a new tensor with each element of self randomly zeroed with given probability.
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
-        self.backend.tensor(probability).cmplt(self.backend.uniform(self.shape(), 0.0..1.0)) * self
+        self.backend().tensor(probability).cmplt(self.backend().uniform(self.shape(), 0.0..1.0)) * self
+    }
+
+    /// Returns a new tensor with the absolute value of the elements of self.
+    #[must_use]
+    pub fn abs(&self) -> Tensor<B> {
+        self.relu() + (-self).relu()
     }
 
     /// Returns a new tensor with the sigmoid (logistic function) of the elements of self.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor<B> {
-        let one = self.backend.tensor(1);
+        let one = self.backend().tensor(1);
         &one / (&one + (-self).exp())
     }
 
@@ -492,10 +504,52 @@ impl<B: Backend> Tensor<B> {
         self * (self * 1.702).sigmoid()
     }
 
+    /// Returns a new tensor with the softmax of the elements of self.
+    #[must_use]
+    pub fn softmax(&self, axes: impl IntoAxes) -> Tensor<B> {
+        let axes = axes.into_axes(self.rank());
+        let e = (self - self.max(axes.clone())).exp();
+        &e / e.sum(axes)
+    }
+
+    /// Returns a new tensor with the log softmax of the elements of self.
+    #[must_use]
+    pub fn ln_softmax(&self, axes: impl IntoAxes) -> Tensor<B> {
+        let axes = axes.into_axes(self.rank());
+        let m = self - self.max(axes.clone());
+        &m - m.exp().sum(axes).ln()
+    }
+
+    // Loss functions, all losses are without reduce
+    /// Measures the mean absolute error (MAE) between each element in the input self and target.
+    #[must_use]
+    pub fn l1_loss(&self, target: impl IntoTensor<B>) -> Tensor<B> {
+        (self - target).abs()
+    }
+
+    /// Measures the mean squared error (MSE) between each element in the input self and target.
+    #[must_use]
+    pub fn mse_loss(&self, target: impl IntoTensor<B>) -> Tensor<B> {
+        (self - target).pow(2)
+    }
+
+    /// Computes the cross entropy loss between self logits and target.
+    /// This function expects self to contain probabilities for each class.
+    #[must_use]
+    pub fn cross_entropy_loss(&self, target: impl IntoTensor<B>, axes: impl IntoAxes) -> Tensor<B> {
+        self.ln_softmax(axes) * target
+    }
+
     // Binary ops
     /// Exponentiation on self
     #[must_use]
     pub fn pow(&self, exponent: impl IntoTensor<B>) -> Tensor<B> {
+        let exponent = self.backend.tensor(exponent);
+        if exponent.numel() == 1 {
+            if exponent == 2i32 {
+                return self * self
+            }
+        }
         self.binary_op(exponent, BOp::Pow)
     }
 
@@ -515,6 +569,15 @@ impl<B: Backend> Tensor<B> {
         let (x, z) = Tensor::broadcast(x, z);
         let (y, z) = Tensor::broadcast(y, z);
         tensor(self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap(), self.backend)
+    }
+
+    /// Returns cosine_similarity between self and rhs, computed along axes.
+    #[must_use]
+    pub fn cosine_similarity(&self, rhs: impl IntoTensor<B>, eps: impl IntoTensor<B>) -> Tensor<B> {
+        let rhs = self.backend.tensor(rhs);
+        let eps = self.backend.tensor(eps);
+        let x = self.pow(2).sqrt() * rhs.pow(2).sqrt();
+        self * rhs / x.cmplt(&eps).where_(eps, x)
     }
 
     /// Dot product (mathematical multiplication) of self and rhs.
@@ -708,6 +771,19 @@ impl<B: Backend> Tensor<B> {
                 .unwrap(),
             self.backend,
         )
+    }
+
+    /// Flatten. Joins axes into one dimension,
+    #[must_use]
+    pub fn flatten(&self, axes: Range<i64>) -> Tensor<B> {
+        let sh = self.shape();
+        let mut ld = 1;
+        for a in axes {
+            if (a.abs() as usize) < sh.rank() {
+                ld *= sh[a];
+            }
+        }
+        self.reshape([sh.numel()/ld, ld])
     }
 
     // Reduce ops
