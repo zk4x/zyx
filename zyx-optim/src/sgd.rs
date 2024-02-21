@@ -65,9 +65,11 @@ impl<B: Backend> SGD<B> {
                     }
                 }
                 if self.maximize {
-                    *param = &*param + grad * self.learning_rate;
+                    // Cast since learning_rate is f32, but parameters can have different precision.
+                    // Can this cast be somehow avoided? Is it better to always work with original dtype?
+                    *param = (&*param + grad * self.learning_rate).cast(param.dtype());
                 } else {
-                    *param = &*param - grad * self.learning_rate;
+                    *param = (&*param - grad * self.learning_rate).cast(param.dtype());
                 }
             }
         }
