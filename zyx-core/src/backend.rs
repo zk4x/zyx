@@ -37,25 +37,24 @@ pub trait Backend: Copy {
         fn get_dtype<T: Scalar>(_: T) -> DType {
             T::dtype()
         }
-        let shape = shape.into();
         tensor(
             match get_dtype(value.clone()) {
                 DType::F32 => self.push(Node::IterF32(
-                    Box::new(core::iter::repeat(value.into_f32()).take(shape.numel())),
-                    shape,
+                    Box::new([value.into_f32()].into_iter()),
+                    1.into(),
                 )),
                 DType::F64 => self.push(Node::IterF64(
-                    Box::new(core::iter::repeat(value.into_f64()).take(shape.numel())),
-                    shape,
+                    Box::new([value.into_f64()].into_iter()),
+                    1.into(),
                 )),
                 DType::I32 => self.push(Node::IterI32(
-                    Box::new(core::iter::repeat(value.into_i32()).take(shape.numel())),
-                    shape,
+                    Box::new([value.into_i32()].into_iter()),
+                    1.into(),
                 )),
             }
             .unwrap(), // Can't fail, as this does not call backend
             self,
-        )
+        ).reshape(shape)
     }
 
     /// Create new tensor by repeating zeroes

@@ -439,10 +439,16 @@ impl<B: Backend> Tensor<B> {
         self.unary_op(UOp::Sqrt)
     }
 
+    /// Returns 1/self
+    #[must_use]
+    pub fn reciprocal(&self) -> Tensor<B> {
+        self.backend().ones(self.shape(), self.dtype())/self
+    }
+
     /// Returns 1/self.sqrt()
     #[must_use]
     pub fn rsqrt(&self) -> Tensor<B> {
-        (self.backend().ones(self.shape(), self.dtype())/self).sqrt()
+        self.reciprocal().sqrt()
     }
 
     /// Returns a new tensor with each element of self randomly zeroed with given probability.
@@ -460,21 +466,39 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the sigmoid (logistic function) of the elements of self.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor<B> {
-        let one = self.backend().tensor(1);
+        let one = self.backend().ones(1, self.dtype());
         &one / (&one + (-self).exp())
     }
 
-    /// Returns a new tensor with the swish of the elements of self.
+    /// Returns a new tensor with the swish/silu of the elements of self.
     #[must_use]
     pub fn swish(&self) -> Tensor<B> {
         self * self.sigmoid()
     }
 
+    /// Returns a new tensor with the mish of the elements of self.
+    #[must_use]
+    pub fn mish(&self) -> Tensor<B> {
+        self * self.softplus(1, 20).tanh()
+    }
+
+    /// Returns a new tensor with the softplus of the elements of self.
+    #[must_use]
+    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor<B> {
+        let x = self * beta;
+        x.cmplt(threshold).where_(beta.reciprocal() * (1 + (x).exp()).ln(), x)
+    }
+
+    /// Returns a new tensor with the tangent of the elements of self.
+    #[must_use]
+    pub fn tan(&self) -> Tensor<B> {
+        self.sin() / self.cos()
+    }
+
     /// Returns a new tensor with the leaky relu of the elements of self.
     #[must_use]
     pub fn leaky_relu(&self, neg_slope: impl Scalar) -> Tensor<B> {
-        let neg_slope = neg_slope.into_tensor(self.backend);
-        self.relu() - (self * (-neg_slope)).relu()
+        self.relu() - (self * (-self.backend.tensor(neg_slope))).relu()
     }
 
     /// Returns a new tensor with the elu of the elements of self.
@@ -483,10 +507,16 @@ impl<B: Backend> Tensor<B> {
         self.relu() - (1f32.into_tensor(self.backend) - self.exp()).relu() * alpha
     }
 
-    /// Returns a new tensor with the tangent of the elements of self.
+    /// Returns a new tensor with the selu of the elements of self.
     #[must_use]
-    pub fn tan(&self) -> Tensor<B> {
-        self.sin() / self.cos()
+    pub fn selu(&self) -> Tensor<B> {
+        1.0507009873554804934193349852946f32 * (self.relu() - (1.6732632423543772848170429916717f32 * (self.backend.ones(1, self.dtype()) - self.exp())).relu())
+    }
+
+    /// Returns a new tensor with the celu of the elements of self.
+    #[must_use]
+    pub fn celu(&self, alpha: impl Scalar) -> Tensor<B> {
+        self.relu() - ((self.backend.ones(1, self.dtype()) - (self/alpha.clone()).exp()) * alpha).relu()
     }
 
     /// Returns a new tensor with the gelu of the elements of self.
@@ -501,7 +531,7 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the quick gelu of the elements of self.
     #[must_use]
     pub fn quick_gelu(&self) -> Tensor<B> {
-        self * (self * 1.702).sigmoid()
+        self * (1.702f32 * self).sigmoid()
     }
 
     /// Returns a new tensor with the softmax of the elements of self.
@@ -1150,6 +1180,48 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Mul<IT> for &Tensor<B> {
     }
 }
 
+impl<B: Backend> core::ops::Mul<Tensor<B>> for f32 {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: Tensor<B>) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl<B: Backend> core::ops::Mul<&Tensor<B>> for f32 {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: &Tensor<B>) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl<B: Backend> core::ops::Mul<Tensor<B>> for f64 {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: Tensor<B>) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl<B: Backend> core::ops::Mul<&Tensor<B>> for f64 {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: &Tensor<B>) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl<B: Backend> core::ops::Mul<Tensor<B>> for i32 {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: Tensor<B>) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl<B: Backend> core::ops::Mul<&Tensor<B>> for i32 {
+    type Output = Tensor<B>;
+    fn mul(self, rhs: &Tensor<B>) -> Self::Output {
+        rhs * self
+    }
+}
+
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Mul<IT> for Tensor<B> {
     type Output = Tensor<B>;
     fn mul(self, rhs: IT) -> Self::Output {
@@ -1168,6 +1240,48 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Div<IT> for Tensor<B> {
     type Output = Tensor<B>;
     fn div(self, rhs: IT) -> Self::Output {
         self.binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend> core::ops::Div<Tensor<B>> for f32 {
+    type Output = Tensor<B>;
+    fn div(self, rhs: Tensor<B>) -> Self::Output {
+        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend> core::ops::Div<&Tensor<B>> for f32 {
+    type Output = Tensor<B>;
+    fn div(self, rhs: &Tensor<B>) -> Self::Output {
+        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend> core::ops::Div<Tensor<B>> for f64 {
+    type Output = Tensor<B>;
+    fn div(self, rhs: Tensor<B>) -> Self::Output {
+        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend> core::ops::Div<&Tensor<B>> for f64 {
+    type Output = Tensor<B>;
+    fn div(self, rhs: &Tensor<B>) -> Self::Output {
+        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend> core::ops::Div<Tensor<B>> for i32 {
+    type Output = Tensor<B>;
+    fn div(self, rhs: Tensor<B>) -> Self::Output {
+        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+    }
+}
+
+impl<B: Backend> core::ops::Div<&Tensor<B>> for i32 {
+    type Output = Tensor<B>;
+    fn div(self, rhs: &Tensor<B>) -> Self::Output {
+        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
     }
 }
 
