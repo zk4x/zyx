@@ -65,8 +65,18 @@ impl<'a, B: Backend> IntoIterator for &'a mut MyModule<B> {
 }
 ```
 
-Both implementations of IntoIterator could be done using procedural macros, but those are currently difficult for me. If you are expert
-in procedural macros, please write such procedural macro, so that we can all enjoy it! ❤️
+Both implementations of IntoIterator could be done using procedural macro Module.
+So you can choose this simpler method if you prefer.
+```shell
+cargo add zyx_derive
+```
+```rust
+#[derive(Module)]
+struct MyModule<B: Backend> {
+    l0: Linear<B>,
+    l1: Linear<B>,
+}
+```
 
 Forward function is used for inference.
 ```rust

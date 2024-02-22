@@ -8,6 +8,7 @@ use zyx_core::error::ZyxError;
 struct TinyNet<B: Backend> {
     l0: Linear<B>,
     lr: f32,
+    l1: Linear<B>,
 }
 
 fn main() -> Result<(), ZyxError> {
@@ -16,6 +17,7 @@ fn main() -> Result<(), ZyxError> {
     let tiny_net = TinyNet {
         l0: dev.linear(128, 128),
         lr: 0.0,
+        l1: dev.linear(128, 128),
     };
 
     for t in tiny_net.into_iter() {

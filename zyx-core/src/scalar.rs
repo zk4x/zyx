@@ -16,6 +16,8 @@ pub trait Scalar: Clone + core::fmt::Debug + 'static {
     fn into_f64(self) -> f64;
     /// Convert self into i32
     fn into_i32(self) -> i32;
+    /// 1/self
+    fn reciprocal(self) -> Self;
     /// Neg
     fn neg(self) -> Self;
     /// ReLU
@@ -83,6 +85,10 @@ impl Scalar for f32 {
 
     fn into_i32(self) -> i32 {
         self as i32
+    }
+
+    fn reciprocal(self) -> Self {
+        1.0/self
     }
 
     fn neg(self) -> Self {
@@ -197,6 +203,10 @@ impl Scalar for f64 {
         self as i32
     }
 
+    fn reciprocal(self) -> Self {
+        1.0/self
+    }
+
     fn neg(self) -> Self {
         -self
     }
@@ -304,6 +314,10 @@ impl Scalar for i32 {
 
     fn into_i32(self) -> i32 {
         self
+    }
+
+    fn reciprocal(self) -> Self {
+        1/self
     }
 
     fn neg(self) -> Self {

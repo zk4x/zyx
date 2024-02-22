@@ -11,23 +11,19 @@ pub fn into_iterator_for_a(input: TokenStream) -> TokenStream {
     let struct_name = &input.ident;
 
     let mut field_iterators = quote! {
-        macro_rules! is_trait{
-            ($name:ty, $trait_name:path)=>{{
-                trait __InnerMarkerTrait{
-                    fn __is_trait_inner_method()->bool{
-                        false
-                    }
-                }
-                struct __TraitTest<T>(T);
-                impl<T:$trait_name> __TraitTest<T> {
-                    fn __is_trait_inner_method()->bool{
-                        true
-                    }
-                }
-                impl<T> __InnerMarkerTrait for __TraitTest<T>{}
-                __TraitTest::<$name>::__is_trait_inner_method()
-            }}
+        trait __InnerMarkerTrait<'a, B: zyx_core::backend::Backend + 'a> {
+            fn __is_trait_inner_method(&self, res: &mut Vec<&'a zyx_core::tensor::Tensor<B>>) {}
         }
+
+        struct __TraitTest<T: Copy>(T);
+
+        impl<'a, B: zyx_core::backend::Backend + 'a, T: IntoIterator<Item = &'a zyx_core::tensor::Tensor<B>> + Copy> __TraitTest<T> {
+            fn __is_trait_inner_method(&self, res: &mut Vec<&'a zyx_core::tensor::Tensor<B>>) {
+                res.extend((&self.0).into_iter());
+            }
+        }
+
+        impl<'a, B: zyx_core::backend::Backend + 'a, T: Copy> __InnerMarkerTrait<'a, B> for __TraitTest<T>{}
 
         let mut res = Vec::new();
     };
@@ -39,11 +35,11 @@ pub fn into_iterator_for_a(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
 
+            let field_ty: &syn::Type = &field.ty;
+
             field_iterators = quote! {
                 #field_iterators
-                if is_trait!(#field_name, IntoIterator) {
-                    res.extend(self.#field_name.into_iter());
-                }
+                __TraitTest::<&#field_ty>::__is_trait_inner_method(&__TraitTest(&self.#field_name), &mut res);
             };
         }
     }

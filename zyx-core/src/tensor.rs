@@ -485,8 +485,8 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the softplus of the elements of self.
     #[must_use]
     pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor<B> {
-        let x = self * beta;
-        x.cmplt(threshold).where_(beta.reciprocal() * (1 + (x).exp()).ln(), x)
+        let x = self * beta.clone();
+        x.cmplt(threshold).where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
     }
 
     /// Returns a new tensor with the tangent of the elements of self.
