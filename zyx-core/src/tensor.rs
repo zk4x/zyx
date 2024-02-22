@@ -353,6 +353,7 @@ impl<B: Backend> Tensor<B> {
     /// assert_eq!(x_grad, [21.0855369, 8.3890561, 3.7182818]);
     /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
+    #[must_use]
     pub fn backward<'a>(
         &'a self,
         sources: impl IntoIterator<Item = &'a Tensor<B>>,
