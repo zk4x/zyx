@@ -173,9 +173,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     ) -> Result<(), ZyxError> {
         for (i, nid) in order.iter().copied().enumerate() {
             //println!("Node {:?}", nodes[nid.i()]);
-            if to_eval.contains(&nid) {
-                self.evaluate_buffer(nid, order, nodes)?;
-            }
             match &mut nodes[nid.i()] {
                 Node::IterF32(_, shape) => {
                     let mut new_node = Node::Leaf(shape.clone(), DType::F32);
@@ -229,15 +226,18 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         let node = &nodes[x.i()];
                         if node.parameters_contain(p) {
                             if matches!(node, Node::Expand(..)) {
-                                self.evaluate_buffer(p, order, nodes)?;
+                                self.evaluate_buffer(p, Some(nid), nodes)?;
                             }
                             if to_eval.contains(x) || rcs[x] > 1 {
-                                self.evaluate_buffer(*x, order, nodes)?;
+                                self.evaluate_buffer(*x, Some(nid), nodes)?;
                             }
                             p = *x;
                         }
                     }
                 }
+            }
+            if to_eval.contains(&nid) {
+                self.evaluate_buffer(nid, None, nodes)?;
             }
             for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
@@ -263,49 +263,60 @@ impl<C: Compiler> CompiledBackend<C> {
 
     /// This function evaluates concrete buffer that we know can be directly evaluated,
     /// that is we know that all of it's leafs are already evaluated and stored in device.
-    fn evaluate_buffer(&mut self, x: Id, order: &[Id], nodes: &[Node]) -> Result<(), ZyxError> {
+    fn evaluate_buffer(&mut self, x: Id, reduce_id: Option<Id>, nodes: &[Node]) -> Result<(), ZyxError> {
         //println!("Evaluating buffer {x}");
         if self.is_evaluated(x) {
             return Ok(())
         }
-        // Create ordered list of nodes that need to be evaluated
-        //extern crate std;
-        //println!("x: {x}\norder: {order:?}\nnodes: {nodes:?}");
-        let mut reduce_nid = None;
-        let mut temp = alloc::vec![x];
-        let mut porder = BTreeSet::new();
-        while let Some(nid) = temp.pop() {
-            porder.insert(nid);
-            if self.is_evaluated(nid) {
-                continue;
+
+        let topological_order = |x: Id, check_reduce: bool| {
+            let mut params: Vec<Id> = alloc::vec![x];
+            let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
+            while let Some(nid) = params.pop() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                    if !self.is_evaluated(nid) {
+                        for p in nodes[nid.i()].parameters() {
+                            if check_reduce {
+                                if !nodes[p.i()].is_reduce() {
+                                    params.push(p);
+                                }
+                            } else {
+                                params.push(p);
+                            }
+                        }
+                    }
+                    1
+                });
             }
-            if matches!(nodes[nid.i()], Node::Sum(..) | Node::Max(..)) {
-                reduce_nid = Some(nid);
-            }
-            temp.extend(nodes[nid.i()].parameters());
-        }
-        /*let mut br_leafs = Vec::new();
-        if let Some(reduce_nid) = reduce_nid {
-            let mut temp = alloc::vec![reduce_nid];
-            while let Some(nid) = temp.pop() {
-                if self.is_evaluated(nid) {
-                    br_leafs.push(nid);
-                    continue;
+            //println!("{:?}", rcs.keys());
+            let mut order = Vec::new();
+            let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
+            let mut params: Vec<Id> = alloc::vec![x];
+            while let Some(nid) = params.pop() {
+                if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    if rcs.contains_key(&nid) {
+                        for p in nodes[nid.i()].parameters() {
+                            if check_reduce {
+                                if !nodes[p.i()].is_reduce() {
+                                    params.push(p);
+                                }
+                            } else {
+                                params.push(p);
+                            }
+                        }
+                    }
                 }
-                temp.extend(nodes[nid.i()].parameters());
             }
-        }*/
-        let p_order: Vec<Id> = order
-            .iter()
-            .copied()
-            .filter(|nid| porder.contains(nid))
-            .collect();
-        let porder: Vec<Id> = porder
-            .iter()
-            .copied()
-            .filter(|nid| !p_order.contains(nid))
-            .chain(p_order.clone())
-            .collect();
+            order.into_iter().rev()
+        };
+
+        let order: Vec<Id> = if let Some(reduce_id) = reduce_id {
+            topological_order(reduce_id, false).chain(topological_order(x, true)).collect()
+        } else {
+            topological_order(x, false).collect()
+        };
+
         //std::println!("porder {porder:?}");
         // Convert this list to kernel
         let mut program_args = Vec::new();
@@ -317,20 +328,17 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut mapping = BTreeMap::new();
         let mut rshape = [].into();
         let mut flop = 0;
-        // TODO don't load the same buffer twice if used in different positions unless it
-        // uses different views for those loads, this can be done as deduplication in the end
-        // of this function.
-        //println!();
         // TODO reorder in such a way, that first are all before reduce loads,
         // then before reduce ops, then after reduce loads, then after reduce ops.
         // If it is not a reduce kernel, then all leafs should be first.
-        for nid in porder {
+        for nid in order {
             //println!("ops: {ops:?}");
+            //println!("{:?}", nodes[nid.i()]);
             flop += nodes[nid.i()].flop(nodes);
             let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
                 if ar {
-                    if first_ar_arg != usize::MAX {
+                    if first_ar_arg == usize::MAX {
                         first_ar_arg = args.len();
                     }
                 }

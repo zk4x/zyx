@@ -1,7 +1,7 @@
 use zyx_core::backend::Backend;
 use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
-use zyx_core::tensor::{IntoTensor, Tensor};
+use zyx_core::tensor::Tensor;
 
 /// Lyaer norm layer
 pub struct LayerNorm<B: Backend> {

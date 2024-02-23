@@ -1,10 +1,9 @@
-use alloc::{boxed::Box, collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
+use alloc::{collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
 use tch::{Kind, Tensor};
 use zyx_core::{
-    error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View,
+    error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id,
 };
 use zyx_core::dtype::DType;
-use zyx_core::view::ViewType;
 
 pub struct Interpreter {
     tensors: BTreeMap<Id, Tensor>,
@@ -113,9 +112,10 @@ impl RuntimeBackend for Interpreter {
                 Node::Permute(x, axes, ..) => {
                     self.tensors.insert(nid, self.tensors[x].permute(axes.vi64()));
                 }
-                Node::Pad(_x, _padding, ..) => {
-                    todo!()
-                    //self.tensors.insert(nid, self.tensors[x].pad(padding));
+                Node::Pad(x, padding, ..) => {
+                    let padding: (Vec<i64>, Vec<i64>) = padding.iter().copied().unzip();
+                    let padding: Vec<i64> = padding.0.into_iter().chain(padding.1).collect();
+                    self.tensors.insert(nid, self.tensors[x].pad(&padding, &"constant", 0.0));
                 }
                 Node::Sum(x, axes, ..) => {
                     self.tensors.insert(nid, self.tensors[x].sum_dim_intlist(axes.vi64(), true, None));

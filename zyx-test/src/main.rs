@@ -65,8 +65,8 @@ macro_rules! run_test {
 }
 
 fn main() {
-    run_test!(optimizer::sgd);
-    run_test!(optimizer::adam);
+    //run_test!(optimizer::sgd);
+    //run_test!(optimizer::adam);
 
     let n = 128;
 

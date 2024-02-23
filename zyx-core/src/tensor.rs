@@ -981,8 +981,9 @@ impl<B: Backend> Tensor<B> {
         res
     }
 
+    /*
     /// Stack multiple tensors into one
-    /*#[must_use]
+    #[must_use]
     pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
     where
         B: 'a
@@ -990,13 +991,14 @@ impl<B: Backend> Tensor<B> {
         todo!()
     }*/
 
+    /*
     /// Split self into multiple tensors along dim with given sizes.
     // TODO example
     #[must_use]
     pub fn split(&self, sizes: &[usize], dim: i64) -> Vec<Tensor<B>> {
         // just use negative padding
         todo!()
-    }
+    }*/
 
     //#[must_use]
     //pub fn pool(&self)
@@ -1086,7 +1088,11 @@ impl<B: Backend> Tensor<B> {
         // We can later add option for backend to disable these implicit conversions.
         match (x.dtype(), y.dtype()) {
             (DType::F32, DType::I32) => y = y.cast(DType::F32),
+            (DType::F32, DType::F64) => x = x.cast(DType::F64),
             (DType::I32, DType::F32) => x = x.cast(DType::F32),
+            (DType::I32, DType::F64) => x = x.cast(DType::F64),
+            (DType::F64, DType::F32) => y = y.cast(DType::F64),
+            (DType::F64, DType::I32) => y = y.cast(DType::F64),
             _ => {}
         }
         let mut x_shape = x.shape();

@@ -167,11 +167,20 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// out useless operations (like reshaping to the same shape)
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
         // get rid of noops :)
-        if let Node::Reshape(x, ref shape) = node {
-            if shape == self.shape(x) {
-                self.retain(x);
-                return Ok(x)
+        match node {
+            Node::Reshape(x, ref shape) => {
+                if shape == self.shape(x) {
+                    self.retain(x);
+                    return Ok(x)
+                }
             }
+            Node::Sum(x, ref axes, ..) | Node::Max(x, ref axes, ..) => {
+                if axes.len() == 0 {
+                    self.retain(x);
+                    return Ok(x)
+                }
+            }
+            _ => {}
         }
         for nid in node.parameters() {
             self.rcs[nid.i()] += 1;
@@ -634,7 +643,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     self.release(x_temp)?;
                     insert_or_add_grad(self, &mut grads, x, grad)?;
                 }
-                Node::Cast(x, dtype) => {
+                Node::Cast(x, _) => {
                     let grad = self.push(Node::Cast(grad, get_dtype(&self.nodes, x)))?;
                     insert_or_add_grad(self, &mut grads, x, grad)?;
                 }

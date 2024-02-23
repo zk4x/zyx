@@ -21,10 +21,10 @@ pub fn dot<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     Ok(())
 }
 
-pub fn cat<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
+pub fn cat<T: Scalar>(_dev: impl Backend, _: T) -> Result<(), ZyxError> {
     todo!()
 }
 
-pub fn split<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
+pub fn split<T: Scalar>(_dev: impl Backend, _: T) -> Result<(), ZyxError> {
     todo!()
 }

@@ -252,4 +252,9 @@ impl Node {
             Node::Where(x, y, z) => nid == *x || nid == *y || nid == *z,
         }
     }
+
+    /// Is this reduce node? (sum or max)
+    pub fn is_reduce(&self) -> bool {
+        matches!(self, Node::Sum(..) | Node::Max(..))
+    }
 }

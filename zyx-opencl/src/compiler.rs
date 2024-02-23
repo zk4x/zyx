@@ -252,6 +252,7 @@ impl OpenCLDType for DType {
     fn from_ocl_str(str: &str) -> DType {
         match str {
             "float" => DType::F32,
+            "double" => DType::F64,
             "int" => DType::I32,
             _ => panic!(),
         }
@@ -301,7 +302,10 @@ impl Program {
                 .collect::<Vec<_>>()
                 .join("_"),
         );
-        let pragma = f!("");
+        let mut pragma = f!("");
+        if source.contains("double") {
+            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
         let source = f!("{pragma}__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
         std::println!("{source}");
@@ -958,7 +962,7 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
         let mut local_sync = false;
         let zero = match DType::from_ocl_str(dtype) {
             DType::F32 => "0.0f",
-            DType::F64 => "0.0d",
+            DType::F64 => "0.0",
             DType::I32 => "0",
         };
         let res = match op {
@@ -1106,12 +1110,12 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     /*for op in &*ast.ops {
         println!("{op:?}");
     }*/
-    // Maximum number of registers to use for caching
-    let max_registers = 32;
+    // TODO Maximum number of registers to use for caching
+    //let max_registers = 32;
     // Maximum local work size
     let max_lws = 256;
-    // Preferred vector dtype width
-    let vw = 4;
+    // TODO Preferred vector dtype width
+    //let vw = 4;
     // dtype used for indexes
     let id_t = "int";
 
@@ -1142,7 +1146,8 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     let global_work_size = alloc::vec![local_height, n / rdim];
     let local_work_size = alloc::vec![local_height, local_width];
 
-    let num_registers = max_registers % (local_width * local_height);
+    // TODO
+    // let num_registers = max_registers % (local_width * local_height);
 
     let mut source = f!("(\n  ");
     let mut endl = f!(",\n  ");
@@ -1166,7 +1171,7 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
 
     source = f!("{source}{id_t} gid0 = get_global_id(0){endl}");
     source = f!(
-        "{source}{id_t} idx1 = get_global_id(1); /* 0..{} */{endl}",
+        "{source}{id_t} idx1 = get_global_id(1); /* 0..{} */\n  ",
         global_work_size.iter().product::<usize>(),
     );
 
@@ -1282,12 +1287,10 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     source = source.replace("RES_DTYPE", &f!("{dtype}"));
     let (p, i) = ast.view.cidx();
     source = if p.is_empty() {
-        f!("{source}data{res_id}[{i}] = var{}{endl}", nid - 1)
+        f!("{source}data{res_id}[{i}] = var{};\n", nid - 1)
     } else {
-        f!("{source}if {p} data{res_id}[{i}] = var{}{endl}", nid - 1)
+        f!("{source}if ({p}) {{\n    data{res_id}[{i}] = var{};\n  }}\n", nid - 1)
     };
-    source.pop();
-    source.pop();
     source = f!("{source}}}");
     let dtype_byte_size = DType::from_ocl_str(dtype).byte_size();
     (
@@ -1328,12 +1331,22 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
     let y = dev.randn([1024, 1024], DType::F32);
     let z = x.dot(&y);
     let _: Vec<f32> = z.to_vec()?;
+    Ok(())
+}*/
+
+#[test]
+fn t5() -> Result<(), ZyxError> {
+    let dev = crate::device_builder().platform_id(0).build()?;
+    let x = dev.tensor([[2, 3, 1], [4, 2, 1]]);
+    let y = dev.tensor([2]);
+    let z = (x + &y).sum(0) + &y;
+    std::println!("{z}");
     Ok(())
 }

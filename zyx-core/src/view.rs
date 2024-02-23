@@ -119,7 +119,7 @@ impl<'a, T: Scalar> Iterator for CPUReshapedIter<'a, T> {
         {
             let mut res = 0;
             for (d, st) in shape.into_iter().zip(strides).rev() {
-                let mut dim_idx = idx % d;
+                let dim_idx = idx % d;
                 res += dim_idx * st;
                 idx /= d;
             }
@@ -389,13 +389,14 @@ impl View {
     /// Expand self into shape
     #[must_use]
     pub fn expand(&self, shape: &Shape) -> Self {
-        // TODO fix padding if needed
         let mut views = self.views.clone();
         //std::println!("Expanding {views:?}");
         views[0].strides = views[0]
             .shape
             .expand_strides(shape, views[0].strides.clone());
         views[0].shape = shape.clone();
+        let n = shape.rank() - views[0].padding.len();
+        views[0].padding = core::iter::repeat((0, 0)).take(n).chain(views[0].padding.iter().copied()).collect();
         //std::println!("To {views:?}");
         Self { views }
     }
@@ -403,6 +404,7 @@ impl View {
     /// Pad self by padding
     #[must_use]
     pub fn pad(&self, new_padding: &[(i64, i64)]) -> Self {
+        //std::println!("{:?}\n{new_padding:?}", self);
         let mut views = self.views.clone();
         if let Some(InnerView {
             shape,
@@ -460,6 +462,7 @@ impl View {
     /// Permute self by axes
     #[must_use]
     pub fn permute(&self, axes: &Axes) -> Self {
+        //std::println!("{:?}\n{:?}", self, axes);
         let mut views = self.views.clone();
         views[0].shape = views[0].shape.permute(axes);
         views[0].strides = views[0].strides.permute(axes);
