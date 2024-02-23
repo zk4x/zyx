@@ -896,7 +896,6 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
     // Change this to Some to enable local memory tiles
     let mut tiles: Option<BTreeSet<usize>> = None;
 
-
     let n = ast.view.numel();
     let mut local_width = 1;
     let mut x = n / vw;
@@ -1189,7 +1188,7 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
         .iter()
         .position(|op| matches!(op, Op::Sum(_) | Op::Max(_)))
         .unwrap();
-    source = f!("{source}RES_DTYPE var{rid} = 0{endl}");
+    source = f!("{source}ACC_DTYPE var{rid} = ACC_INIT{endl}");
     // Reduce loop
     source = f!("{source}for ({id_t} ridx0 = 0; ridx0 < {rdim}; ridx0 += {local_height}) {{\n    ");
     endl = f!(";\n    ");
@@ -1263,12 +1262,14 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
             Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
             Op::Sum(x) => {
+                source = source.replace("ACC_DTYPE", dtype).replace("ACC_INIT", "0");
                 reduce_op = true;
-                f!("var{nid} += var{x}")
+                f!("var{nid} = var{x} + var{nid}")
             },
             Op::Max(x) => {
+                source = source.replace("ACC_DTYPE", dtype).replace("ACC_INIT", DType::from_ocl_str(dtype).min_value_str());
                 reduce_op = true;
-                f!("var{nid} = max(var{nid}, var{x})")
+                f!("var{nid} = max(var{x}, var{nid})")
             },
         };
         source = f!("{source}{res}{endl}");
@@ -1331,22 +1332,26 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
     let y = dev.randn([1024, 1024], DType::F32);
-    let z = x.dot(&y);
+    let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
     Ok(())
-}*/
+}
 
-#[test]
+/*#[test]
 fn t5() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.tensor([[2, 3, 1], [4, 2, 1]]);
     let y = dev.tensor([2]);
-    let z = (x + &y).sum(0) + &y;
+    let z = x.sum(0) + y.expand([2, 3]).sum(0);
+    //let x = dev.randn([7, 4, 2], DType::F32);
+    //let z = (x + &y).sum(0) + &y;
+    //let z = x.max([0, 1]);
+    //let z = x.pad([(0, 0)], 0).max(1);
     std::println!("{z}");
     Ok(())
-}
+}*/

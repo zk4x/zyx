@@ -41,9 +41,8 @@ pub fn get_dtype(nodes: &[Node], mut x: Id) -> DType {
 
 /// Puts graph of nodes into dot language for visualization
 pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u8]) -> alloc::string::String {
-    //let ids = &(0..nodes.len()).map(crate::tensor::id).collect::<alloc::vec::Vec<Id>>();
-    use alloc::format;
-    use alloc::string::String;
+    //let ids = &(0..nodes.len()).map(crate::tensor::id).collect::<BTreeSet<Id>>();
+    use alloc::{format, string::String};
     use core::fmt::Write;
     let mut user_rc = rcs.to_vec();
     for (i, node) in nodes.iter().enumerate() {

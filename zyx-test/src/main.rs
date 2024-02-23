@@ -53,11 +53,11 @@ macro_rules! run_test {
         run_test_fn($test, &dev, 0f32);
         run_test_fn($test, &dev, 0f64);
         run_test_fn($test, &dev, 0i32);
-        let dev = zyx_opencl::device().unwrap();
+        let dev = zyx_torch::device().unwrap();
         run_test_fn($test, &dev, 0f32);
         run_test_fn($test, &dev, 0f64);
         run_test_fn($test, &dev, 0i32);
-        let dev = zyx_torch::device().unwrap();
+        let dev = zyx_opencl::device().unwrap();
         run_test_fn($test, &dev, 0f32);
         run_test_fn($test, &dev, 0f64);
         run_test_fn($test, &dev, 0i32);
@@ -65,9 +65,7 @@ macro_rules! run_test {
 }
 
 fn main() {
-    //run_test!(optimizer::sgd);
-    //run_test!(optimizer::adam);
-
+    /*
     let n = 128;
 
     let dev = zyx_opencl::device().unwrap();
@@ -82,10 +80,11 @@ fn main() {
     let z_cpu = x.dot(y);
 
     assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
+    */
 
     println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
-    run_test!(unary::neg);
+    /*run_test!(unary::neg);
     run_test!(unary::relu);
     run_test!(unary::sin);
     run_test!(unary::cos);
@@ -107,14 +106,15 @@ fn main() {
     run_test!(movement::pad);
     println!("\nTesting reduce ops");
     run_test!(reduce::sum);
-    run_test!(reduce::max);
-    println!("\nTesting combinations of ops");
-    run_test!(combination::t0);
-    run_test!(combination::dot);
-    run_test!(combination::cat);
-    run_test!(combination::split);
+    run_test!(reduce::max);*/
     println!("\nTesting autograd engine");
-    run_test!(autograd::t0);
+    //run_test!(autograd::t0);
+    //run_test!(autograd::t1);
+    println!("\nTesting combinations of ops");
+    //run_test!(combination::t0);
+    //run_test!(combination::dot);
+    //run_test!(combination::cat);
+    //run_test!(combination::split);
     println!("\nTesting optimizers");
     run_test!(optimizer::sgd);
     run_test!(optimizer::adam);

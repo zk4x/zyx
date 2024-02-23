@@ -262,9 +262,9 @@ impl RuntimeBackend for Interpreter {
                 Node::Sum(x, ax, sh) => {
                     let (view, data) = self.get(x);
                     let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
-                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::add(x, y))),
+                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, true)),
+                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, true)),
+                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, true)),
                     };
                     self.views.insert(nid, (View::new(sh.clone()), nid));
                     self.buffers.insert(nid, data);
@@ -272,9 +272,9 @@ impl RuntimeBackend for Interpreter {
                 Node::Max(x, ax, sh) => {
                     let (view, data) = self.get(x);
                     let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
-                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, |(x, y)| Scalar::max(x, y))),
+                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, false)),
+                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, false)),
+                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, false)),
                     };
                     self.views.insert(nid, (View::new(sh.clone()), nid));
                     self.buffers.insert(nid, data);
@@ -297,7 +297,7 @@ fn reduce_op<T: Scalar + Sync + Send>(
     data: &[T],
     axes: &Axes,
     res_shape: &Shape,
-    op: impl Fn((T, T)) -> T,
+    sum_reduce: bool
 ) -> Vec<T> {
     // TODO parallelize this
     use alloc::boxed::Box;
@@ -308,9 +308,11 @@ fn reduce_op<T: Scalar + Sync + Send>(
     let included_dims: Box<[usize]> = (0..shape.rank()).filter(|x| !axes.contains(*x)).collect();
     // Strides of the result
     let res_strides = res_shape.strides();
-    let mut res: Vec<T> = core::iter::repeat(T::zero())
-        .take(res_shape.numel())
-        .collect();
+    let mut res: Vec<T> = if sum_reduce {
+        core::iter::repeat(T::zero())
+    } else {
+        core::iter::repeat(T::min_value())
+    }.take(res_shape.numel()).collect();
 
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly
@@ -323,7 +325,11 @@ fn reduce_op<T: Scalar + Sync + Send>(
                 j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
             }
             // apply reduce function, in this case sum
-            res[j] = op((res[j].clone(), data[i].clone()));
+            if sum_reduce {
+                res[j] = Scalar::add(res[j].clone(), data[i].clone());
+            } else {
+                res[j] = Scalar::max(res[j].clone(), data[i].clone());
+            }
         }
     } else {
         for (i, x) in view.iterate_padded(data).enumerate() {
@@ -333,7 +339,11 @@ fn reduce_op<T: Scalar + Sync + Send>(
                 j += ((i / strides[*dim]) % shape[*dim]) * res_strides[*dim]; // TODO this is quite a lot of calculations, do this with just adding and subtracting
             }
             // apply reduce function, in this case sum
-            res[j] = op((res[j].clone(), x));
+            if sum_reduce {
+                res[j] = Scalar::add(res[j].clone(), x);
+            } else {
+                res[j] = Scalar::max(res[j].clone(), x);
+            }
         }
     }
     res

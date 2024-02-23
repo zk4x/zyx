@@ -11,10 +11,9 @@ use crate::{
 };
 use alloc::{
     boxed::Box,
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use std::println;
 use crate::shape::Shape;
 
 /// Implement this trait for compiled backends
@@ -167,85 +166,50 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        mut rcs: BTreeMap<Id, u8>,
+        rcs: BTreeMap<Id, u8>,
         order: &[Id],
-        nodes: &mut [Node],
+        mut nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
-        for (i, nid) in order.iter().copied().enumerate() {
-            //println!("Node {:?}", nodes[nid.i()]);
-            match &mut nodes[nid.i()] {
-                Node::IterF32(_, shape) => {
-                    let mut new_node = Node::Leaf(shape.clone(), DType::F32);
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF32(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter)?);
-                    }
+        let mut found_reduce = None;
+        for nid in order.iter().copied() {
+            std::println!("{nid}: {:?}", nodes[nid.i()]);
+            self.store(nid, &mut nodes)?;
+            if nodes[nid.i()].is_reduce() {
+                if let Some(_) = found_reduce {
+                    self.evaluate_buffer(nid, Some(nid), nodes)?;
+                } else {
+                    found_reduce = Some((nid, nid));
                 }
-                Node::IterF64(_, shape) => {
-                    let mut new_node = Node::Leaf(shape.clone(), DType::F64);
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF64(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter)?);
+            }
+            let mut nullify_found_reduce = false;
+            if let Some((rid, p)) = &mut found_reduce {
+                let node = &nodes[nid.i()];
+                if node.parameters_contain(*p) {
+                    if matches!(node, Node::Expand(..)) {
+                        self.evaluate_buffer(*p, Some(*rid), nodes)?;
+                        nullify_found_reduce = true;
                     }
-                }
-                Node::IterI32(_, shape) => {
-                    let mut new_node = Node::Leaf(shape.clone(), DType::I32);
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterI32(iter, _) = new_node {
-                        self.buffers.insert(nid, self.compiler.store(iter)?);
+                    if to_eval.contains(&nid) || rcs[&nid] > 1 {
+                        self.evaluate_buffer(nid, Some(*rid), nodes)?;
+                        nullify_found_reduce = true;
                     }
+                    *p = nid;
                 }
-                Node::Leaf(..)
-                | Node::Uniform(..)
-                | Node::Cast(..)
-                | Node::Neg(..)
-                | Node::ReLU(..)
-                | Node::Sin(..)
-                | Node::Cos(..)
-                | Node::Ln(..)
-                | Node::Exp(..)
-                | Node::Tanh(..)
-                | Node::Sqrt(..)
-                | Node::Add(..)
-                | Node::Sub(..)
-                | Node::Mul(..)
-                | Node::Div(..)
-                | Node::Pow(..)
-                | Node::Cmplt(..)
-                | Node::Where(..)
-                | Node::Reshape(..)
-                | Node::Permute(..)
-                | Node::Expand(..)
-                | Node::Pad(..) => {}
-                Node::Sum(..)
-                | Node::Max(..) => {
-                    // Search forward for first expand, in to_eval or rc > 1, then evaluate that.
-                    // That way we fuse as much as possible :)
-                    let mut p = nid;
-                    for x in &order[i..] {
-                        let node = &nodes[x.i()];
-                        if node.parameters_contain(p) {
-                            if matches!(node, Node::Expand(..)) {
-                                self.evaluate_buffer(p, Some(nid), nodes)?;
-                            }
-                            if to_eval.contains(x) || rcs[x] > 1 {
-                                self.evaluate_buffer(*x, Some(nid), nodes)?;
-                            }
-                            p = *x;
-                        }
-                    }
-                }
+            }
+            if nullify_found_reduce {
+                found_reduce = None;
             }
             if to_eval.contains(&nid) {
                 self.evaluate_buffer(nid, None, nodes)?;
             }
-            for p in nodes[nid.i()].parameters() {
+            // TODO removing buffers must be done properly
+            /*for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
                     if *e.get() == 0 {
                         self.remove(p)?;
                     }
                 }
-            }
+            }*/
         }
         Ok(())
     }
@@ -261,10 +225,38 @@ impl<C: Compiler> CompiledBackend<C> {
         }
     }
 
+    fn store(&mut self, x: Id, nodes: &mut [Node]) -> Result<(), ZyxError> {
+        match &nodes[x.i()] {
+            Node::IterF32(_, shape) => {
+                let mut new_node = Node::Leaf(shape.clone(), DType::F32);
+                core::mem::swap(&mut nodes[x.i()], &mut new_node);
+                if let Node::IterF32(iter, _) = new_node {
+                    self.buffers.insert(x, self.compiler.store(iter)?);
+                }
+            }
+            Node::IterF64(_, shape) => {
+                let mut new_node = Node::Leaf(shape.clone(), DType::F64);
+                core::mem::swap(&mut nodes[x.i()], &mut new_node);
+                if let Node::IterF64(iter, _) = new_node {
+                    self.buffers.insert(x, self.compiler.store(iter)?);
+                }
+            }
+            Node::IterI32(_, shape) => {
+                let mut new_node = Node::Leaf(shape.clone(), DType::I32);
+                core::mem::swap(&mut nodes[x.i()], &mut new_node);
+                if let Node::IterI32(iter, _) = new_node {
+                    self.buffers.insert(x, self.compiler.store(iter)?);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// This function evaluates concrete buffer that we know can be directly evaluated,
     /// that is we know that all of it's leafs are already evaluated and stored in device.
     fn evaluate_buffer(&mut self, x: Id, reduce_id: Option<Id>, nodes: &[Node]) -> Result<(), ZyxError> {
-        //println!("Evaluating buffer {x}");
+        //std::println!("Evaluating buffer {x}, reduce_id: {reduce_id:?}");
         if self.is_evaluated(x) {
             return Ok(())
         }
@@ -272,12 +264,15 @@ impl<C: Compiler> CompiledBackend<C> {
         let topological_order = |x: Id, check_reduce: bool| {
             let mut params: Vec<Id> = alloc::vec![x];
             let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
+            //std::println!("Evaluated: {}", self.is_evaluated(crate::tensor::id(2)));
             while let Some(nid) = params.pop() {
+                //std::println!("{nid}");
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     if !self.is_evaluated(nid) {
                         for p in nodes[nid.i()].parameters() {
+                            //std::println!("Adding param: {p}, reduce_id: {reduce_id:?}");
                             if check_reduce {
-                                if !nodes[p.i()].is_reduce() {
+                                if p != reduce_id.unwrap() {
                                     params.push(p);
                                 }
                             } else {
@@ -288,17 +283,16 @@ impl<C: Compiler> CompiledBackend<C> {
                     1
                 });
             }
-            //println!("{:?}", rcs.keys());
             let mut order = Vec::new();
             let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
             let mut params: Vec<Id> = alloc::vec![x];
             while let Some(nid) = params.pop() {
                 if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
                     order.push(nid);
-                    if rcs.contains_key(&nid) {
+                    if rcs.contains_key(&nid) && !self.is_evaluated(nid) {
                         for p in nodes[nid.i()].parameters() {
                             if check_reduce {
-                                if !nodes[p.i()].is_reduce() {
+                                if p != reduce_id.unwrap() {
                                     params.push(p);
                                 }
                             } else {
@@ -312,12 +306,18 @@ impl<C: Compiler> CompiledBackend<C> {
         };
 
         let order: Vec<Id> = if let Some(reduce_id) = reduce_id {
-            topological_order(reduce_id, false).chain(topological_order(x, true)).collect()
+            let temp = topological_order(reduce_id, false);
+            if reduce_id != x {
+                //std::println!("Adding AR ops.");
+                temp.chain(topological_order(x, true)).collect()
+            } else {
+                temp.collect()
+            }
         } else {
             topological_order(x, false).collect()
         };
 
-        //std::println!("porder {porder:?}");
+        //std::println!("order {order:?}");
         // Convert this list to kernel
         let mut program_args = Vec::new();
         let mut args = Vec::new();
@@ -328,12 +328,13 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut mapping = BTreeMap::new();
         let mut rshape = [].into();
         let mut flop = 0;
+        let mut reduce_type_max = false;
         // TODO reorder in such a way, that first are all before reduce loads,
         // then before reduce ops, then after reduce loads, then after reduce ops.
         // If it is not a reduce kernel, then all leafs should be first.
         for nid in order {
-            //println!("ops: {ops:?}");
-            //println!("{:?}", nodes[nid.i()]);
+            //std::println!("ops: {ops:?}");
+            //std::println!("{nid}: {:?}", nodes[nid.i()]);
             flop += nodes[nid.i()].flop(nodes);
             let mut mapped = true;
             if let Some(x) = self.buffers.get(&nid) {
@@ -371,14 +372,8 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                if ar {
-                                    if a >= first_ar_arg {
-                                        args[a].0 = args[a].0.expand(sh);
-                                    }
-                                } else {
-                                    if a < first_ar_arg {
-                                        args[a].0 = args[a].0.expand(sh);
-                                    }
+                                if a < first_ar_arg {
+                                    args[a].0 = args[a].0.expand(sh);
                                 }
                             }
                             ops[p].access_parameters(|x| params.push(x));
@@ -391,9 +386,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
                                 if ar {
-                                    if a >= first_ar_arg {
-                                        args[a].0 = args[a].0.reshape(sh);
-                                    }
+                                    args[a].0 = args[a].0.reshape(sh);
                                 } else {
                                     if a < first_ar_arg {
                                         args[a].0 = args[a].0.reshape(sh);
@@ -410,9 +403,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
                                 if ar {
-                                    if a >= first_ar_arg {
-                                        args[a].0 = args[a].0.pad(padding);
-                                    }
+                                    args[a].0 = args[a].0.pad(padding);
                                 } else {
                                     if a < first_ar_arg {
                                         args[a].0 = args[a].0.pad(padding);
@@ -429,9 +420,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
                                 if ar {
-                                    if a >= first_ar_arg {
-                                        args[a].0 = args[a].0.permute(axes);
-                                    }
+                                    args[a].0 = args[a].0.permute(axes);
                                 } else {
                                     if a < first_ar_arg {
                                         args[a].0 = args[a].0.permute(axes);
@@ -455,6 +444,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         ar = true;
                     }
                     Node::Max(x, axes, _) => {
+                        reduce_type_max = true;
                         ops.push(Op::Max(mapping[x]));
                         raxes = Some(axes.clone());
                         rshape = get_shape(nodes, *x).clone();
@@ -466,10 +456,11 @@ impl<C: Compiler> CompiledBackend<C> {
                 mapping.insert(nid, ops.len() - 1);
             }
         }
+        let padding_width = 4;
         let view;
         let rdim = if let Some(raxes) = raxes {
-            //println!("rshape: {rshape:?}");
-            //println!("raxes: {raxes:?}");
+            //std::println!("rshape: {rshape:?}");
+            //std::println!("raxes: {raxes:?}");
             //std::println!("s1: {s1}");
             let s0: usize = rshape
                 .iter()
@@ -490,17 +481,19 @@ impl<C: Compiler> CompiledBackend<C> {
             let ar_new_shape: Shape = [1, s1].into();
             // Join raxes together to be second last dimension
             // permute first and then reshape
-            //println!("Permute axes {axes:?}");
-            //println!("New shape before reduce: {new_shape:?}");
-            //println!("New shape after reduce: {ar_new_shape:?}");
+            //std::println!("Permute axes {axes:?}");
+            //std::println!("New shape before reduce: {new_shape:?}");
+            //std::println!("New shape after reduce: {ar_new_shape:?}");
             let ar_rshape = rshape.clone().reduce(&axes);
+            // Padding is not applied, in max kernel, because in max op
+            // we can not pad with zeros, because it is incorrect!!!
             let apply_padding = |sh: View| sh.pad(
                 &new_shape
                     .iter()
                     .rev()
                     .map(|d| {
-                        if *d != 1 && d % 8 != 0 {
-                            (0, (8 - d % 8) as i64)
+                        if d % padding_width != 0 {
+                            (0, (padding_width - d % padding_width) as i64)
                         } else {
                             (0, 0)
                         }
@@ -509,18 +502,28 @@ impl<C: Compiler> CompiledBackend<C> {
             );
             for (a, (aview, _)) in args.iter_mut().enumerate() {
                 //std::println!("aview: {aview:?}");
-                *aview = apply_padding(aview
+                let temp = aview
                     .reshape(if a < first_ar_arg { &rshape } else { &ar_rshape })
                     .permute(&axes)
-                    .reshape(if a < first_ar_arg { &new_shape } else { &ar_new_shape }));
+                    .reshape(if a < first_ar_arg { &new_shape } else { &ar_new_shape });
+                if reduce_type_max {
+                    *aview = temp;
+                } else {
+                    *aview = apply_padding(temp);
+                }
             }
             // view after the reduce op
-            view = apply_padding(View::new(ar_rshape.clone())
+            let temp = View::new(ar_rshape.clone())
                 .permute(&axes)
-                .reshape(&ar_new_shape));
+                .reshape(&ar_new_shape);
+            if reduce_type_max {
+                view = temp;
+            } else {
+                view = apply_padding(temp);
+            }
             //std::println!("view: {view:?}");
-            Some(if s0 != 1 && s0 % 8 != 0 {
-                (s0 / 8 + 1) * 8
+            Some(if s0 != 1 && s0 % padding_width != 0 && !reduce_type_max {
+                (s0 / padding_width + 1) * padding_width
             } else {
                 s0
             })
@@ -529,12 +532,12 @@ impl<C: Compiler> CompiledBackend<C> {
             let n = sh.numel();
             view = View::new(sh.clone())
                 .reshape(&n.into())
-                .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+                .pad(&[(0, if n % padding_width != 0 { (padding_width - n % padding_width) as i64 } else { 0 })]);
             for (aview, _) in &mut args {
                 let n = aview.numel();
                 *aview = aview
                     .reshape(&n.into())
-                    .pad(&[(0, if n % 8 != 0 { (8 - n % 8) as i64 } else { 0 })]);
+                    .pad(&[(0, if n % padding_width != 0 { (padding_width - n % padding_width) as i64 } else { 0 })]);
             }
             None
         };
@@ -545,9 +548,7 @@ impl<C: Compiler> CompiledBackend<C> {
             rdim,
             flop,
         };
-        for op in &*ast.ops {
-            println!("{op:?}");
-        }
+        for op in &*ast.ops { std::println!("{op:?}"); }
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {
             program

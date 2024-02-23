@@ -250,14 +250,17 @@ impl View {
     pub fn cidx(&self) -> (String, String) {
         // TODO is padding correctly applied?
         // TODO simplify this as much as possible, not for performance (it is cached), just for clarity
-        //use std::println;
-        //println!("View: {self:?}");
+        //std::println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
         if self.contiguous() {
-            for i in 0..self.shape().rank() {
-                idx += &f!("+idx{i}");
+            for (i, st) in self.views[0].strides.iter().enumerate() {
+                if *st == 1 {
+                    idx += &f!("+idx{i}");
+                } else {
+                    idx += &f!("+idx{i}*{st}");
+                }
             }
             idx.remove(0);
             return (padding_condition, idx);
@@ -274,7 +277,7 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
-                //println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                //std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
                     0 => idx += "0+",
                     1 => idx += &f!("idx{i}+"),

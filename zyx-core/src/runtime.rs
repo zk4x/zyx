@@ -168,7 +168,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
         // get rid of noops :)
         match node {
-            Node::Reshape(x, ref shape) => {
+            Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
                 if shape == self.shape(x) {
                     self.retain(x);
                     return Ok(x)
@@ -377,9 +377,10 @@ impl<R: RuntimeBackend> Runtime<R> {
             // before it was insert_or_add by all parents.
             let mut topo = Vec::new();
             let mut req_grad = sources.clone();
+            let mut visited = BTreeSet::new();
             for nid in order.into_iter().rev() {
                 for p in nodes[nid.i()].parameters() {
-                    if req_grad.contains(&p) {
+                    if req_grad.contains(&p) && visited.insert(nid) {
                         req_grad.insert(nid);
                         topo.push(nid);
                     }
@@ -420,6 +421,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.push(Node::Expand(grad1, sh))?,
         );
         self.release(grad1)?;
+        //std::println!("{:?}", self.nodes.last().unwrap());
 
         fn insert_or_add_grad<B: RuntimeBackend>(r: &mut Runtime<B>, grads: &mut BTreeMap<Id, Id>, x: Id, grad: Id) -> Result<(), ZyxError> {
             match grads.entry(x) {

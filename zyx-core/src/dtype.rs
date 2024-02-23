@@ -26,6 +26,15 @@ impl DType {
         }
     }
 
+    /// Min value as string
+    pub fn min_value_str(self) -> &'static str {
+        match self {
+            Self::F32 => "-3.40282347E+38f",
+            Self::F64 => "-1.7976931348623157E+308",
+            Self::I32 => "-2147483648",
+        }
+    }
+
     #[cfg(feature = "std")]
     pub(crate) fn safetensors(self) -> &'static str {
         match self {

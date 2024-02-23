@@ -54,16 +54,16 @@ pub trait Backend: Copy {
             }
             .unwrap(), // Can't fail, as this does not call backend
             self,
-        ).reshape(shape)
+        ).expand(shape)
     }
 
     /// Create new tensor by repeating zeroes
     #[must_use]
     fn zeros(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
         match dtype {
-            DType::F32 => self.full(shape.into(), 0f32),
-            DType::F64 => self.full(shape.into(), 0f64),
-            DType::I32 => self.full(shape.into(), 0),
+            DType::F32 => self.full(shape, 0f32),
+            DType::F64 => self.full(shape, 0f64),
+            DType::I32 => self.full(shape, 0),
         }
     }
 
@@ -71,9 +71,9 @@ pub trait Backend: Copy {
     #[must_use]
     fn ones(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
         match dtype {
-            DType::F32 => self.full(shape.into(), 1f32),
-            DType::F64 => self.full(shape.into(), 1f64),
-            DType::I32 => self.full(shape.into(), 1),
+            DType::F32 => self.full(shape, 1f32),
+            DType::F64 => self.full(shape, 1f64),
+            DType::I32 => self.full(shape, 1),
         }
     }
 
