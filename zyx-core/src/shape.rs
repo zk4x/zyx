@@ -38,13 +38,13 @@ impl Shape {
 
     /// Iter
     #[must_use]
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &usize> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &usize> + ExactSizeIterator {
         self.into_iter()
     }
 
     /// Iter mut
     #[must_use]
-    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut usize> {
+    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut usize> + ExactSizeIterator {
         self.into_iter()
     }
 

@@ -1281,7 +1281,7 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             source.pop();
             source = f!("{source}}}\n  ");
             endl = f!(";\n  ");
-            source = f!("{source}{id_t} idx0 = 0{endl}");
+            source = f!("{source}{id_t} idx0 = idx1{endl}");
         }
         nid += 1;
     }

@@ -11,6 +11,7 @@ use core::{
     iter::repeat,
     ops::{Range, SubAssign},
 };
+use std::ops::RangeFull;
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
@@ -46,6 +47,12 @@ pub trait IntoRange: Clone {
     fn into_range(self) -> Range<i64>;
 }
 
+impl IntoRange for RangeFull {
+    fn into_range(self) -> Range<i64> {
+        0..i64::MAX
+    }
+}
+
 impl IntoRange for Range<i64> {
     fn into_range(self) -> Range<i64> {
         self
@@ -67,6 +74,12 @@ pub trait IntoIndex {
 impl<I: IntoRange> IntoIndex for &[I] {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         self.iter().cloned().map(IntoRange::into_range)
+    }
+}
+
+impl<I0: IntoRange> IntoIndex for I0 {
+    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+        [self.into_range()].into_iter()
     }
 }
 
@@ -622,38 +635,36 @@ impl<B: Backend> Tensor<B> {
     /// ```
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        let y = self.backend.tensor(rhs);
+        let y = self.backend.tensor(rhs).transpose();
         let xshape = self.shape();
         let yshape = y.shape();
         let yrank = yshape.rank();
         assert_eq!(
             xshape[-1],
-            yshape[-(yrank.min(2) as i64)],
+            yshape[-1],
+            //yshape[-(yrank.min(2) as i64)],
             "Cannot dot tensors with shapes {xshape} and {yshape}"
         );
-        (self.reshape(
-            xshape[0..-1]
-                .iter()
-                .copied()
-                .chain([1])
-                .chain([xshape[-1]])
-                .collect::<Box<[usize]>>(),
-        ) * y
-            .reshape(
-                yshape[0..-2]
-                    .iter()
-                    .copied()
-                    .chain([1])
-                    .chain(yshape[-(yrank.min(2) as i64)..yrank as i64].iter().copied())
-                    .collect::<Box<[usize]>>(),
-            )
-            .transpose())
-        .sum(-1)
+        let x_shape = xshape[0..-1]
+            .iter()
+            .copied()
+            .chain([1])
+            .chain([xshape[-1]])
+            .collect::<Box<[usize]>>();
+        let y_shape = yshape[0..-2]
+            .iter()
+            .copied()
+            .chain([1])
+            .chain(yshape[-(yrank.min(2) as i64)..yrank as i64].iter().copied())
+            .collect::<Box<[usize]>>();
+        //std::println!("{x_shape:?}");
+        //std::println!("{y_shape:?}");
+        (self.reshape(x_shape) * y.reshape(y_shape)).sum(-1)
         .reshape(
             xshape[0..-1]
                 .iter()
                 .copied()
-                .chain([yshape[-1]])
+                .chain([yshape[-2]])
                 .collect::<Box<[usize]>>(),
         )
     }
@@ -931,15 +942,18 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn get(&self, index: impl IntoIndex) -> Tensor<B> {
         // TODO asserts
+        let shape = self.shape();
         let padding: Vec<(i64, i64)> = index.into_index()
             .into_iter()
-            .zip(self.shape().iter())
+            .zip(shape.iter())
             .map(|(r, d)| (
                 if r.start >= 0 { -r.start } else { -r.start - *d as i64 },
-                if r.end > 0 { *d as i64-r.end } else { r.end }
+                if r.end == i64::MAX { 0 } else if r.end > 0 { -(*d as i64-r.end) } else { r.end }
             )).collect();
+        //std::println!("Get padding: {padding:?}");
+        let n = shape.rank() - padding.len();
         self.pad(
-            padding.into_iter().rev(),
+            padding.into_iter().chain(repeat((0, 0)).take(n)).collect::<Vec<(i64, i64)>>().into_iter().rev(),
             0,
         )
     }
@@ -1098,9 +1112,9 @@ impl<B: Backend> Tensor<B> {
         let mut x_shape = x.shape();
         let mut y_shape = y.shape();
 
-        for (x, y) in x_shape.iter().zip(y_shape.iter()) {
+        for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
-                assert!(*x == 1 || *y == 1, "Left and right tensors have incompatible shapes for binary op: {x_shape} and {y_shape}");
+                assert!(*x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape} and {y_shape}");
             }
         }
 
@@ -1312,6 +1326,31 @@ impl<B: Backend> IntoTensor<B> for &Tensor<B> {
     }
 }
 
+impl<B: Backend, T: Scalar> IntoTensor<B> for Range<T>
+where
+    Range<T>: Iterator<Item = T>,
+{
+    fn into_tensor(self, backend: B) -> Tensor<B> {
+        let n = self.clone().count();
+        tensor(
+            backend
+                .push(match T::dtype() {
+                    DType::F32 => {
+                        Node::IterF32(Box::new(self.map(T::into_f32)), n.into())
+                    }
+                    DType::F64 => {
+                        Node::IterF64(Box::new(self.map(T::into_f64)), n.into())
+                    }
+                    DType::I32 => {
+                        Node::IterI32(Box::new(self.map(T::into_i32)), n.into())
+                    }
+                })
+                .unwrap(),
+            backend,
+        )
+    }
+}
+
 impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         let n = self.len();
@@ -1448,61 +1487,15 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
     }
 }
 
-impl<B: Backend, T: Scalar> PartialEq<T> for Tensor<B>
+impl<B: Backend, IT: IntoTensor<B> + Clone> PartialEq<IT> for Tensor<B>
 {
-    fn eq(&self, other: &T) -> bool {
-        self.numel() == 1
-            && self.dtype() == T::dtype()
-            && self.item::<T>().unwrap().is_equal(other.clone())
-    }
-}
-
-impl<B: Backend, T: Scalar, const D0: usize> PartialEq<[T; D0]>
-    for Tensor<B>
-{
-    fn eq(&self, other: &[T; D0]) -> bool {
-        self.shape() == [D0]
-            && self.dtype() == T::dtype()
-            && self
-                .to_vec::<T>()
-                .unwrap()
-                .into_iter()
-                .zip(other.iter())
-                .all(|(x, y)| x.is_equal(y.clone()))
-    }
-}
-
-impl<B: Backend, T: Scalar, const D0: usize, const D1: usize>
-    PartialEq<[[T; D1]; D0]> for Tensor<B>
-{
-    fn eq(&self, other: &[[T; D1]; D0]) -> bool {
-        self.shape() == [D0, D1]
-            && self.dtype() == T::dtype()
-            && self
-                .to_vec::<T>()
-                .unwrap()
-                .into_iter()
-                .zip(other.iter().flatten())
-                .all(|(x, y)| x.is_equal(y.clone()))
-    }
-}
-
-impl<
-        B: Backend,
-        T: Scalar,
-        const D0: usize,
-        const D1: usize,
-        const D2: usize,
-    > PartialEq<[[[T; D2]; D1]; D0]> for Tensor<B>
-{
-    fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
-        self.shape() == [D0, D1, D2]
-            && self.dtype() == T::dtype()
-            && self
-                .to_vec::<T>()
-                .unwrap()
-                .into_iter()
-                .zip(other.iter().flatten().flatten())
-                .all(|(x, y)| x.is_equal(y.clone()))
+    fn eq(&self, other: &IT) -> bool {
+        let other = self.backend.tensor(other.clone());
+        let dtype = self.dtype();
+        self.shape() == other.shape() && dtype == other.dtype() && match dtype {
+            DType::F32 => self.to_vec::<f32>().unwrap().into_iter().zip(other.to_vec::<f32>().unwrap()).all(|(x, y)| x.is_equal(y)),
+            DType::F64 => self.to_vec::<f64>().unwrap().into_iter().zip(other.to_vec::<f64>().unwrap()).all(|(x, y)| x.is_equal(y)),
+            DType::I32 => self.to_vec::<i32>().unwrap().into_iter().zip(other.to_vec::<i32>().unwrap()).all(|(x, y)| x.is_equal(y)),
+        }
     }
 }

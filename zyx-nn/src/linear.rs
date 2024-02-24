@@ -16,7 +16,7 @@ pub trait LinearInit: Backend {
     fn linear(self, in_features: usize, out_features: usize) -> Linear<Self> {
         Linear {
             weight: self.randn([in_features, out_features], DType::F32),
-            bias: Some(self.randn([in_features, out_features], DType::F32)),
+            bias: Some(self.randn([out_features], DType::F32)),
         }
     }
 }

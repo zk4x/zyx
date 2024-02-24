@@ -14,6 +14,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
+use alloc::collections::btree_map::Entry;
 use crate::shape::Shape;
 
 /// Implement this trait for compiled backends
@@ -166,7 +167,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        rcs: BTreeMap<Id, u8>,
+        mut rcs: BTreeMap<Id, u8>,
         order: &[Id],
         mut nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
@@ -202,14 +203,19 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             if to_eval.contains(&nid) {
                 self.evaluate_buffer(nid, None, nodes)?;
             }
-            // TODO removing buffers must be done properly
-            /*for p in nodes[nid.i()].parameters() {
-                if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
-                    if *e.get() == 0 {
-                        self.remove(p)?;
+            if self.is_evaluated(nid) {
+                let mut params: Vec<Id> = nodes[nid.i()].parameters().collect();
+                while let Some(p) = params.pop() {
+                    //std::println!("Param: {p}, rc: {}", rcs[&p]);
+                    if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
+                        if *e.get() == 0 {
+                            e.remove_entry();
+                            self.remove(p)?;
+                            params.extend(nodes[p.i()].parameters());
+                        }
                     }
                 }
-            }*/
+            }
         }
         Ok(())
     }
@@ -478,7 +484,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 (0..rshape.rank()).partition(|a| raxes.0.contains(a));
             let axes = Axes(axes.0.into_iter().chain(axes.1).collect());
             let new_shape: Shape = [s0, s1].into();
-            let ar_new_shape: Shape = [1, s1].into();
+            let ar_new_shape: Shape = [s1].into();
             // Join raxes together to be second last dimension
             // permute first and then reshape
             //std::println!("Permute axes {axes:?}");
@@ -487,8 +493,8 @@ impl<C: Compiler> CompiledBackend<C> {
             let ar_rshape = rshape.clone().reduce(&axes);
             // Padding is not applied, in max kernel, because in max op
             // we can not pad with zeros, because it is incorrect!!!
-            let apply_padding = |sh: View| sh.pad(
-                &new_shape
+            let apply_padding = |sh: View, shape: &Shape| sh.pad(
+                &shape
                     .iter()
                     .rev()
                     .map(|d| {
@@ -509,7 +515,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 if reduce_type_max {
                     *aview = temp;
                 } else {
-                    *aview = apply_padding(temp);
+                    *aview = apply_padding(temp, if a < first_ar_arg { &new_shape } else { &ar_new_shape });
                 }
             }
             // view after the reduce op
@@ -519,7 +525,7 @@ impl<C: Compiler> CompiledBackend<C> {
             if reduce_type_max {
                 view = temp;
             } else {
-                view = apply_padding(temp);
+                view = apply_padding(temp, &ar_new_shape);
             }
             //std::println!("view: {view:?}");
             Some(if s0 != 1 && s0 % padding_width != 0 && !reduce_type_max {

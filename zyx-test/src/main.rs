@@ -82,9 +82,9 @@ fn main() {
     assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
     */
 
-    println!("\nTesting tensor initialization");
+    /*println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
-    /*run_test!(unary::neg);
+    run_test!(unary::neg);
     run_test!(unary::relu);
     run_test!(unary::sin);
     run_test!(unary::cos);
@@ -106,18 +106,19 @@ fn main() {
     run_test!(movement::pad);
     println!("\nTesting reduce ops");
     run_test!(reduce::sum);
-    run_test!(reduce::max);*/
+    run_test!(reduce::max);
     println!("\nTesting autograd engine");
-    //run_test!(autograd::t0);
-    //run_test!(autograd::t1);
+    run_test!(autograd::t0);
+    run_test!(autograd::t1);
     println!("\nTesting combinations of ops");
-    //run_test!(combination::t0);
-    //run_test!(combination::dot);
+    run_test!(combination::t0);
+    run_test!(combination::t1);*/
+    run_test!(combination::dot);
     //run_test!(combination::cat);
     //run_test!(combination::split);
     println!("\nTesting optimizers");
-    run_test!(optimizer::sgd);
-    run_test!(optimizer::adam);
+    //run_test!(optimizer::sgd);
+    //run_test!(optimizer::adam);
     println!("\nTesting nn modules");
     run_test!(nn::linear);
     run_test!(nn::layer_norm);

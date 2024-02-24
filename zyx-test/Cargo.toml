@@ -18,6 +18,7 @@ maintenance = { status = "experimental" }
 [dependencies]
 zyx-core = { version = "*", path = "../zyx-core" }
 zyx-optim = { version = "*", path = "../zyx-optim" }
+zyx-nn = { version = "*", path = "../zyx-nn" }
 rand = { version = "0.8.5" }
 zyx-opencl = { version = "*", path = "../zyx-opencl" }
 zyx-cpu = { version = "*", path = "../zyx-cpu" }

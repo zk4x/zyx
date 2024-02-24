@@ -437,28 +437,51 @@ impl View {
 
     /// Reshape self into shape
     #[must_use]
-    pub fn reshape(&self, shape: &Shape) -> Self {
-        if shape == self.shape() {
+    pub fn reshape(&self, n_shape: &Shape) -> Self {
+        if n_shape == self.shape() {
             return self.clone();
         }
         let mut views = self.views.clone();
         // If we are reshaping InnerView that is contiguous, we just delete the last reshape
         if views.first().unwrap().contiguous() {
             views[0] = InnerView {
-                shape: shape.clone(),
-                strides: shape.strides(),
-                padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
+                shape: n_shape.clone(),
+                strides: n_shape.strides(),
+                padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
             };
         } else {
-            views.insert(
-                0,
-                InnerView {
-                    shape: shape.clone(),
-                    strides: shape.strides(),
-                    padding: core::iter::repeat((0, 0)).take(shape.rank()).collect(),
-                },
-            );
+            if n_shape.iter().filter(|d| **d != 1).zip(self.shape().iter().filter(|d| **d != 1)).all(|(nd, d)| nd == d) {
+                // If not  contiguous, then merge, this merges if reshape is unsqueeze
+                //std::println!("Ok to merge {n_shape} with {}", self.shape());
+                if let Some(InnerView { shape, strides, padding }) = views.first_mut() {
+                    //std::println!("Merging");
+                    *shape = n_shape.clone();
+                    let mut n_strides: Vec<usize> = strides.clone().into();
+                    let mut n_padding = padding.to_vec();
+                    for (i, d) in n_shape.iter().rev().enumerate() {
+                        if *d == 1 {
+                            //std::println!("Inserting");
+                            n_strides.insert(n_strides.len() - i, if i == 0 { 1 } else { n_strides[n_strides.len() - i] });
+                            n_padding.insert(n_padding.len() - i, (0, 0));
+                        }
+                    }
+                    //std::println!("n_strides: {n_strides:?}, n_padding: {n_padding:?}");
+                    *strides = n_strides.into();
+                    *padding = n_padding.into_boxed_slice();
+                }
+            } else {
+                // If there is no merge.
+                views.insert(
+                    0,
+                    InnerView {
+                        shape: n_shape.clone(),
+                        strides: n_shape.strides(),
+                        padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
+                    },
+                );
+            }
         }
+        //std::println!("Merged into: {:?}", views);
         Self { views }
     }
 
@@ -480,14 +503,16 @@ impl View {
 fn view() {
     use crate::axes::IntoAxes;
 
-    let s0 = View::new(Shape::from([4, 5, 2]));
+    let s0 = View::new([10, 15].into());
+    let s5 = s0.permute(&[1, 0].into_axes(2)).reshape(&[10, 15].into());
+    /*let s0 = View::new(Shape::from([4, 5, 2]));
     let s1 = s0.permute(&[2, 0, 1].into_axes(3));
     let s2 = s1.reshape(&[4, 1, 5, 2, 1].into());
     let s3 = s2.expand(&[4, 3, 5, 2, 2].into());
     let s4 = s3.permute(&[3, 0, 4, 2, 1].into_axes(5));
-    let s5 = s4.reshape(&[12, 20].into());
-    for (shape, strides) in s5.views {
-        std::println!("{shape:?}, {strides:?}");
+    let s5 = s4.reshape(&[12, 20].into());*/
+    for InnerView { shape, strides, padding } in s5.views {
+        std::println!("{shape:?}, {strides:?}, {padding:?}");
     }
-    //panic!();
+    panic!();
 }*/

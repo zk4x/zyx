@@ -266,3 +266,18 @@ fn test_layer_norm() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
+
+#[test]
+fn t0() -> Result<(), ZyxError> {
+    let dev = device()?;
+    let x = dev.tensor(0..150).reshape([10, 15]);
+    let x = x.transpose().reshape([10, 15]);
+
+    let x = dev.tensor(0..150).reshape([10, 15]).transpose();
+    let x = x.reshape([15, 1, 10]).expand([15, 2, 10]);
+
+    std::println!("{x}");
+
+    panic!();
+    Ok(())
+}
