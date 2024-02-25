@@ -229,11 +229,9 @@ impl Backend for &OpenCL {
 
 /*#[test]
 fn t0() -> Result<(), ZyxError> {
-    let dev = crate::device()?;
-    //let x = dev.tensor([[3, 2, 4], [4, 2, 3]]);
-    //crate::save([&x], "../x.safetensors")?;
-    let x = crate::load(&dev, "../x.safetensors")?.next().unwrap();
-    std::println!("{x}");
+    let dev = device()?;
+    let x = dev.randn([1024, 1024], DType::F32);
+    let _ = x.exp().to_vec::<f32>()?;
     Ok(())
 }*/
 
@@ -282,15 +280,24 @@ fn t0() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
+fn t1() -> Result<(), ZyxError> {
+    let dev = device()?;
+    let x = dev.uniform([2, 1, 1], 0f32..1f32);
+    let x = x.expand([2, 1, 3]);
+    std::println!("{x}");
+    panic!();
+    Ok(())
+}*/
+
+/*#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
-    let x = dev.uniform([2], 0f32..1f32);
+    let x = dev.uniform([2, 1, 1], 0f32..1f32);
     let y = &x + x.exp();
     let x = x.expand([2, 1, 5]);
     let z = x.expand([2, 3, 5]) + y.reshape([2, 1, 1]);
     std::println!("{z}");
-
     panic!();
     Ok(())
-}
+}*/

@@ -22,3 +22,4 @@ tch = { version = "0.15.0", default-features = false }
 [features]
 default = ["std"]
 std = ["zyx-core/std"]
+download-libtorch = ["tch/download-libtorch"]

@@ -18,7 +18,7 @@ pub fn sgd<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let mut optim = zyx_optim::SGD { learning_rate: 0.01, momentum: 0.9, nesterov: true, ..Default::default() };
     optim.update([&mut p0, &mut p1], grads);
 
-    std::fs::write("graph.dot", dev.plot_graph([&p0, &p1, &p00, &p10])).unwrap();
+    //std::fs::write("graph.dot", dev.plot_graph([&p0, &p1, &p00, &p10])).unwrap();
 
     println!("{p0:.6}\n\n{p1:.6}");
 

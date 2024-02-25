@@ -6,15 +6,12 @@ use crate::{
     runtime::RuntimeBackend,
     scalar::Scalar,
     tensor::Id,
-    utils::{get_dtype, get_shape},
     view::View,
 };
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use alloc::collections::btree_map::Entry;
 use crate::shape::Shape;
 
 /// Implement this trait for compiled backends
@@ -37,6 +34,7 @@ pub trait Compiler {
         &mut self,
         program: &Self::Program,
         args: &[&Self::Buffer],
+        flop: usize
     ) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError>;
@@ -44,56 +42,58 @@ pub trait Compiler {
 
 /// Op executable on device with compiled backend
 /// usize are all IDs into ops, leafs have IDs into args
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
+    // We are not gonna have so gigantic kernels with more than 256 arguments or ops.
+    // OpenCL does not support more than 255 args.
     /// Leaf (holds data, id to kernel arg)
-    Leaf(usize),
+    Leaf(u8),
     // TODO uniform generators should also take shape into consideration
     // and repeat the same random number if this shape is expanded.
-    /// Shaped uniform generator of numbers from 0. to 1.
-    Uniform(View, DType),
+    // Shaped uniform generator of numbers from 0. to 1.
+    //Uniform(View, DType),
     /// Cast into dtype unary op
-    Cast(usize, DType),
+    Cast(u8, DType),
     /// Neg unary op
-    Neg(usize),
+    Neg(u8),
     /// ReLU unary op
-    ReLU(usize),
+    ReLU(u8),
     /// Sin unary op
-    Sin(usize),
+    Sin(u8),
     /// Cos unary op
-    Cos(usize),
+    Cos(u8),
     /// Ln unary op
-    Ln(usize),
+    Ln(u8),
     /// Exp unary op
-    Exp(usize),
+    Exp(u8),
     /// Tanh unary op
-    Tanh(usize),
+    Tanh(u8),
     /// Sqrt unary op
-    Sqrt(usize),
+    Sqrt(u8),
     /// Addition binary op
-    Add(usize, usize),
+    Add(u8, u8),
     /// Substitution binary op
-    Sub(usize, usize),
+    Sub(u8, u8),
     /// Multiplication binary op
-    Mul(usize, usize),
+    Mul(u8, u8),
     /// Division binary op
-    Div(usize, usize),
+    Div(u8, u8),
     /// Exponentiation binary op
-    Pow(usize, usize),
+    Pow(u8, u8),
     /// Compare less than binary op
-    Cmplt(usize, usize),
+    Cmplt(u8, u8),
     /// Where op
-    Where(usize, usize, usize),
+    Where(u8, u8, u8),
     /// Sum reduce op
-    Sum(usize),
+    Sum(u8),
     /// Max reduce op
-    Max(usize),
+    Max(u8),
 }
 
 impl Op {
-    fn access_parameters(&self, mut op: impl FnMut(usize)) {
+    fn access_parameters(&mut self, mut op: impl FnMut(&mut u8)) {
         match self {
-            Op::Leaf(..) | Op::Uniform(..) => {}
+            Op::Leaf(..) => {}
             Op::Cast(x, ..)
             | Op::Neg(x)
             | Op::ReLU(x)
@@ -104,20 +104,20 @@ impl Op {
             | Op::Tanh(x)
             | Op::Sqrt(x)
             | Op::Sum(x)
-            | Op::Max(x) => op(*x),
+            | Op::Max(x) => op(x),
             Op::Add(x, y)
             | Op::Sub(x, y)
             | Op::Mul(x, y)
             | Op::Div(x, y)
             | Op::Pow(x, y)
             | Op::Cmplt(x, y) => {
-                op(*x);
-                op(*y);
+                op(x);
+                op(y);
             }
             Op::Where(x, y, z) => {
-                op(*x);
-                op(*y);
-                op(*z);
+                op(x);
+                op(y);
+                op(z);
             }
         }
     }
@@ -129,16 +129,45 @@ impl Op {
 /// This struct is immutable.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AST {
-    /// Get AST arguments metadata
-    pub args: Box<[(View, DType)]>,
-    /// Get AST ops
-    pub ops: Box<[Op]>,
-    /// View of the result, for reduce kernel, this is after the reduce op
-    pub view: View,
-    /// Reduce dimension size, if any
-    pub rdim: Option<usize>,
-    /// Operations to execute this AST
-    pub flop: usize,
+    /// AST argument views
+    pub arg_views: Vec<View>,
+    /// AST argument dtypes
+    pub arg_dtypes: Vec<DType>,
+    /// AST ops
+    pub ops: Vec<Op>,
+    /// Shape of the result
+    pub shape: Shape,
+    /// DType of the result
+    pub dtype: DType,
+    /// Reduce axes, if any
+    pub reduce_axes: Option<Axes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
+struct Buffer {
+    program_args: Vec<Id>,
+    arg_views: Vec<View>,
+    arg_dtypes: Vec<DType>,
+    ops: Vec<Op>,
+    reduce_axes: Option<Axes>,
+    shape: Shape,
+    dtype: DType,
+    flop: usize,
+}
+
+impl Buffer {
+    fn leaf(x: Id, shape: &Shape, dtype: &DType) -> Self {
+        Self {
+            program_args: alloc::vec![x],
+            arg_views: alloc::vec![View::new(shape.clone())],
+            arg_dtypes: alloc::vec![dtype.clone()],
+            ops: alloc::vec![Op::Leaf(0)],
+            reduce_axes: None,
+            shape: shape.clone(),
+            dtype: *dtype,
+            flop: 0,
+        }
+    }
 }
 
 /// Compiled backend that holds compiler, buffers and programs
@@ -167,49 +196,115 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        mut rcs: BTreeMap<Id, u8>,
+        rcs: BTreeMap<Id, u8>,
         order: &[Id],
         mut nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
-        let mut found_reduce = None;
+        let mut buffers: BTreeMap<Id, Buffer> = BTreeMap::new();
+        // TODO calculate flops for buffers :D
         for nid in order.iter().copied() {
-            //std::println!("{nid}: {:?} - {}", nodes[nid.i()], get_shape(nodes, nid));
             self.store(nid, &mut nodes)?;
-            if nodes[nid.i()].is_reduce() {
-                if let Some(_) = found_reduce {
-                    self.evaluate_buffer(nid, Some(nid), nodes)?;
-                } else {
-                    found_reduce = Some((nid, nid));
+            let buffer = match &nodes[nid.i()] {
+                Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => { panic!() }
+                Node::Leaf(sh, dtype) => {
+                    Buffer::leaf(nid, sh, dtype)
                 }
-            }
-            let mut nullify_found_reduce = false;
-            if let Some((rid, p)) = &mut found_reduce {
-                let node = &nodes[nid.i()];
-                if node.parameters_contain(*p) {
-                    // Expand, pad and reshape force creation and evaluation of kernel.
-                    // Reshape can't be fused because how would we permute args?
-                    //std::println!("id: {nid}");
-                    if matches!(node, Node::Expand(..) | Node::Pad(..) | Node::Reshape(..)) {
-                        //std::println!("Evaluating");
-                        self.evaluate_buffer(*p, Some(*rid), nodes)?;
-                        nullify_found_reduce = true;
-                    }
-                    if to_eval.contains(&nid) || rcs[&nid] > 1 {
-                        self.evaluate_buffer(nid, Some(*rid), nodes)?;
-                        nullify_found_reduce = true;
-                    }
-                    *p = nid;
+                Node::Uniform(..) => { todo!() }
+                Node::Cast(x, dtype) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
+                    buffer.dtype = *dtype;
+                    buffer
                 }
+                Node::Ln(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::Exp(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Exp(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::Add(x, y) => {
+                    self.binary_buffer(*x, *y, &mut buffers)?
+                }
+                Node::Reshape(x, sh) => {
+                    let mut buffer = buffers[&x].clone();
+                    for view in &mut buffer.arg_views {
+                        *view = view.reshape(sh);
+                    }
+                    buffer.shape = sh.clone();
+                    buffer
+                }
+                Node::Expand(x, sh) => {
+                    let mut buffer = buffers[&x].clone();
+                    for view in &mut buffer.arg_views {
+                        *view = view.expand(sh);
+                    }
+                    buffer.shape = sh.clone();
+                    buffer
+                }
+                Node::Permute(x, ax, sh) => {
+                    let mut buffer = buffers[&x].clone();
+                    for view in &mut buffer.arg_views {
+                        *view = view.permute(ax);
+                    }
+                    buffer.shape = sh.clone();
+                    buffer
+                }
+                Node::Pad(x, padding, sh) => {
+                    let mut buffer = buffers[&x].clone();
+                    for view in &mut buffer.arg_views {
+                        *view = view.pad(padding);
+                    }
+                    buffer.shape = sh.clone();
+                    buffer
+                }
+                Node::Sum(x, ax, sh) => {
+                    let mut buffer = buffers[&x].clone();
+                    if buffer.reduce_axes.is_some() {
+                        buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
+                        buffer.reduce_axes = Some(ax.clone());
+                        buffer.ops.push(Op::Sum(0));
+                        buffer.shape = sh.clone();
+                    } else {
+                        buffer.ops.push(Op::Sum(buffer.ops.len() as u8));
+                        buffer.reduce_axes = Some(ax.clone());
+                    }
+                    buffer
+                }
+                Node::Max(x, ax, sh) => {
+                    let mut buffer = buffers[&x].clone();
+                    if buffer.reduce_axes.is_some() {
+                        self.evaluate_buffer(*x, &mut buffers)?;
+                        buffer = Buffer::leaf(*x, &buffer.shape, &buffer.dtype);
+                        buffer.reduce_axes = Some(ax.clone());
+                        buffer.ops.push(Op::Max(0));
+                        buffer.shape = sh.clone();
+                    } else {
+                        buffer.ops.push(Op::Max(buffer.ops.len() as u8));
+                        buffer.reduce_axes = Some(ax.clone());
+                    }
+                    buffer
+                }
+                _ => { todo!() }
+            };
+            buffers.insert(nid, buffer);
+
+           if to_eval.contains(&nid) || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1) {
+                self.evaluate_buffer(nid, &mut buffers)?;
             }
-            if nullify_found_reduce {
-                found_reduce = None;
-            }
-            if to_eval.contains(&nid) {
-                self.evaluate_buffer(nid, None, nodes)?;
-            }
-            // TODO also evaluate all kernels with rcs > 1 if they have more than 1 arg,
+
+            /*for p in nodes[nid.i()].parameters() {
+                if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
+                    if *e.get() == 0 {
+                        self.remove(p)?;
+                    }
+                }
+            }*/
             // i. e. if they contain other than just unary ops.
-            if self.is_evaluated(nid) {
+            /*if self.is_evaluated(nid) {
                 let mut params: Vec<Id> = nodes[nid.i()].parameters().collect();
                 while let Some(p) = params.pop() {
                     //std::println!("Param: {p}, rc: {}", rcs[&p]);
@@ -221,7 +316,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         }
                     }
                 }
-            }
+            }*/
         }
         Ok(())
     }
@@ -265,288 +360,19 @@ impl<C: Compiler> CompiledBackend<C> {
         Ok(())
     }
 
-    /// This function evaluates concrete buffer that we know can be directly evaluated,
-    /// that is we know that all of it's leafs are already evaluated and stored in device.
-    fn evaluate_buffer(&mut self, x: Id, reduce_id: Option<Id>, nodes: &[Node]) -> Result<(), ZyxError> {
-        //std::println!("Evaluating buffer {x}, reduce_id: {reduce_id:?}");
-        if self.is_evaluated(x) {
-            return Ok(())
-        }
-
-        let topological_order = |x: Id, check_reduce: bool| {
-            let mut params: Vec<Id> = alloc::vec![x];
-            let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
-            //std::println!("Evaluated: {}", self.is_evaluated(crate::tensor::id(2)));
-            while let Some(nid) = params.pop() {
-                //std::println!("{nid}");
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    if !self.is_evaluated(nid) {
-                        for p in nodes[nid.i()].parameters() {
-                            //std::println!("Adding param: {p}, reduce_id: {reduce_id:?}");
-                            if check_reduce {
-                                if p != reduce_id.unwrap() {
-                                    params.push(p);
-                                }
-                            } else {
-                                params.push(p);
-                            }
-                        }
-                    }
-                    1
-                });
-            }
-            let mut order = Vec::new();
-            let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
-            let mut params: Vec<Id> = alloc::vec![x];
-            while let Some(nid) = params.pop() {
-                if let Some(rc) = rcs.get(&nid) {
-                    if *rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                        order.push(nid);
-                        std::println!("Pushing {nid}: {:?}", nodes[nid.i()]);
-                        for p in nodes[nid.i()].parameters() {
-                            if check_reduce {
-                                if p != reduce_id.unwrap() {
-                                    params.push(p);
-                                }
-                            } else {
-                                params.push(p);
-                            }
-                        }
-                    }
-                }
-            }
-            order.into_iter().rev()
-        };
-
-        let order: Vec<Id> = if let Some(reduce_id) = reduce_id {
-            let temp = topological_order(reduce_id, false);
-            if reduce_id != x {
-                //std::println!("Adding AR ops.");
-                temp.chain(topological_order(x, true)).collect()
-            } else {
-                temp.collect()
-            }
-        } else {
-            topological_order(x, false).collect()
-        };
-
-        //std::println!("order {order:?}");
-        // Convert this list to kernel
-        let mut program_args = Vec::new();
-        let mut args = Vec::new();
-        let mut ar = false;
-        let mut first_ar_arg = usize::MAX;
-        let mut ops = Vec::new();
-        let mut raxes = None;
-        let mut mapping = BTreeMap::new();
-        let mut rshape = [].into();
-        let mut flop = 0;
-        let mut reduce_type_max = false;
-        // TODO reorder in such a way, that first are all before reduce loads,
-        // then before reduce ops, then after reduce loads, then after reduce ops.
-        // If it is not a reduce kernel, then all leafs should be first.
-        for nid in order {
-            //std::println!("ops: {ops:?}");
-            //std::println!("{nid}: {:?}", nodes[nid.i()]);
-            flop += nodes[nid.i()].flop(nodes);
-            let mut mapped = true;
-            if let Some(x) = self.buffers.get(&nid) {
-                if ar {
-                    if first_ar_arg == usize::MAX {
-                        first_ar_arg = args.len();
-                    }
-                }
-                args.push((
-                    View::new(get_shape(nodes, nid).clone()),
-                    get_dtype(nodes, nid),
-                ));
-                std::println!("new arg: {:?}", args.last().unwrap().0.shape());
-                program_args.push(x);
-                ops.push(Op::Leaf(args.len() - 1));
-            } else {
-                match &nodes[nid.i()] {
-                    Node::Leaf(..)
-                    | Node::IterF32(..)
-                    | Node::IterF64(..)
-                    | Node::IterI32(..) => {}
-                    Node::Uniform(sh, dtype) => ops.push(Op::Uniform(View::new(sh.clone()), *dtype)),
-                    Node::Cast(x, dtype) => ops.push(Op::Cast(mapping[x], *dtype)),
-                    Node::Neg(x) => ops.push(Op::Neg(mapping[x])),
-                    Node::ReLU(x) => ops.push(Op::ReLU(mapping[x])),
-                    Node::Sin(x) => ops.push(Op::Sin(mapping[x])),
-                    Node::Cos(x) => ops.push(Op::Cos(mapping[x])),
-                    Node::Ln(x) => ops.push(Op::Ln(mapping[x])),
-                    Node::Exp(x) => ops.push(Op::Exp(mapping[x])),
-                    Node::Tanh(x) => ops.push(Op::Tanh(mapping[x])),
-                    Node::Sqrt(x) => ops.push(Op::Sqrt(mapping[x])),
-                    // TODO also apply movement ops to UniformF32
-                    Node::Expand(x, sh) => {
-                        mapped = false;
-                        mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![mapping[x]];
-                        while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p] {
-                                std::println!("Expanding to: {sh}");
-                                args[a].0 = args[a].0.expand(sh);
-                            }
-                            ops[p].access_parameters(|x| params.push(x));
-                        }
-                    }
-                    Node::Reshape(x, sh) => {
-                        mapped = false;
-                        mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![mapping[x]];
-                        while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p] {
-                                //std::println!("Arg: {:?}", args[a]);
-                                args[a].0 = args[a].0.reshape(sh);
-                            }
-                            ops[p].access_parameters(|x| params.push(x));
-                        }
-                    }
-                    Node::Pad(x, padding, _) => {
-                        mapped = false;
-                        mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![mapping[x]];
-                        while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p] {
-                                args[a].0 = args[a].0.pad(padding);
-                            }
-                            ops[p].access_parameters(|x| params.push(x));
-                        }
-                    }
-                    Node::Permute(x, axes, _) => {
-                        mapped = false;
-                        mapping.insert(nid, mapping[x]);
-                        let mut params = alloc::vec![mapping[x]];
-                        while let Some(p) = params.pop() {
-                            if let Op::Leaf(a) = ops[p] {
-                                args[a].0 = args[a].0.permute(axes);
-                            }
-                            ops[p].access_parameters(|x| params.push(x));
-                        }
-                    }
-                    Node::Add(x, y) => ops.push(Op::Add(mapping[x], mapping[y])),
-                    Node::Sub(x, y) => ops.push(Op::Sub(mapping[x], mapping[y])),
-                    Node::Mul(x, y) => ops.push(Op::Mul(mapping[x], mapping[y])),
-                    Node::Div(x, y) => ops.push(Op::Div(mapping[x], mapping[y])),
-                    Node::Pow(x, y) => ops.push(Op::Pow(mapping[x], mapping[y])),
-                    Node::Cmplt(x, y) => ops.push(Op::Cmplt(mapping[x], mapping[y])),
-                    Node::Where(x, y, z) => ops.push(Op::Where(mapping[x], mapping[y], mapping[z])),
-                    Node::Sum(x, axes, _) => {
-                        ops.push(Op::Sum(mapping[x]));
-                        raxes = Some(axes.clone());
-                        rshape = get_shape(nodes, *x).clone();
-                        ar = true;
-                    }
-                    Node::Max(x, axes, _) => {
-                        reduce_type_max = true;
-                        ops.push(Op::Max(mapping[x]));
-                        raxes = Some(axes.clone());
-                        rshape = get_shape(nodes, *x).clone();
-                        ar = true;
-                    }
-                }
-            };
-            if mapped {
-                mapping.insert(nid, ops.len() - 1);
-            }
-        }
-        let padding_width = 4;
-        let view;
-        let rdim = if let Some(raxes) = raxes {
-            //std::println!("rshape: {rshape:?}");
-            //std::println!("raxes: {raxes:?}");
-            //std::println!("s1: {s1}");
-            let s0: usize = rshape
-                .iter()
-                .enumerate()
-                .filter(|(a, _)| raxes.0.contains(a))
-                .map(|(_, d)| *d)
-                .product();
-            let s1: usize = rshape
-                .iter()
-                .enumerate()
-                .filter(|(a, _)| !raxes.0.contains(a))
-                .map(|(_, d)| *d)
-                .product();
-            let axes: (Vec<usize>, Vec<usize>) =
-                (0..rshape.rank()).partition(|a| raxes.0.contains(a));
-            let axes = Axes(axes.0.into_iter().chain(axes.1).collect());
-            let new_shape: Shape = [s0, s1].into();
-            let ar_new_shape: Shape = [s1].into();
-            // Join raxes together to be second last dimension
-            // permute first and then reshape
-            //std::println!("Permute axes {axes:?}");
-            //std::println!("New shape before reduce: {new_shape:?}");
-            //std::println!("New shape after reduce: {ar_new_shape:?}");
-            let ar_rshape = rshape.clone().reduce(&raxes);
-            // Padding is not applied, in max kernel, because in max op
-            // we can not pad with zeros, because it is incorrect!!!
-            let apply_padding = |sh: View| sh.pad(
-                &sh.shape()
-                    .iter()
-                    .rev()
-                    .map(|d| {
-                        if d % padding_width != 0 {
-                            (0, (padding_width - d % padding_width) as i64)
-                        } else {
-                            (0, 0)
-                        }
-                    })
-                    .collect::<Vec<(i64, i64)>>(),
-            );
-            for (a, (aview, _)) in args.iter_mut().enumerate() {
-                //std::println!("aview: {aview:?}");
-                //std::println!("rshape: {rshape}, ar_shape: {ar_rshape}, new_shape: {new_shape}, ar_new_shape: {ar_new_shape}");
-                let sh = if a < first_ar_arg { &rshape } else { &ar_rshape };
-                let temp = aview
-                    .reshape(sh)
-                    .permute(&axes)
-                    .reshape(if a < first_ar_arg { &new_shape } else { &ar_new_shape });
-                if reduce_type_max {
-                    *aview = temp;
-                } else {
-                    *aview = apply_padding(temp);
-                }
-            }
-            // view after the reduce op
-            let temp = View::new(ar_rshape.clone())
-                .permute(&axes)
-                .reshape(&ar_new_shape);
-            if reduce_type_max {
-                view = temp;
-            } else {
-                view = apply_padding(temp);
-            }
-            //std::println!("view: {view:?}");
-            Some(if s0 != 1 && s0 % padding_width != 0 && !reduce_type_max {
-                (s0 / padding_width + 1) * padding_width
-            } else {
-                s0
-            })
-        } else {
-            let sh = get_shape(nodes, x);
-            let n = sh.numel();
-            view = View::new(sh.clone())
-                .reshape(&n.into())
-                .pad(&[(0, if n % padding_width != 0 { (padding_width - n % padding_width) as i64 } else { 0 })]);
-            for (aview, _) in &mut args {
-                let n = aview.numel();
-                *aview = aview
-                    .reshape(&n.into())
-                    .pad(&[(0, if n % padding_width != 0 { (padding_width - n % padding_width) as i64 } else { 0 })]);
-            }
-            None
-        };
+    fn evaluate_buffer<'a>(&mut self, x: Id, buffers: &'a mut BTreeMap<Id, Buffer>) -> Result<&'a Buffer, ZyxError> {
+        let Buffer { program_args, arg_views, arg_dtypes, ops, reduce_axes, shape, dtype, flop } = buffers[&x].clone();
+        // TODO reshape and permute reduce axes
         let ast = AST {
-            args: args.into_boxed_slice(),
-            ops: ops.into_boxed_slice(),
-            view,
-            rdim,
-            flop,
+            arg_views,
+            arg_dtypes,
+            ops,
+            shape: shape.clone(),
+            dtype,
+            reduce_axes,
         };
-        //for op in &*ast.ops { std::println!("{op:?}"); }
+        std::println!("Ops");
+        for op in &*ast.ops { std::println!("{op:?}"); }
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {
             program
@@ -554,10 +380,43 @@ impl<C: Compiler> CompiledBackend<C> {
             let program = self.compiler.compile(&ast)?;
             self.programs.entry(ast).or_insert(program)
         };
-        //panic!("Number of args: {}", program_args.len());
+        let program_args: Vec<&C::Buffer> = program_args.into_iter().map(|nid| &self.buffers[&nid]).collect();
         // Run the program
-        self.buffers
-            .insert(x, self.compiler.launch(program, &program_args)?);
-        Ok(())
+        self.buffers.insert(x, self.compiler.launch(program, &program_args, flop)?);
+        Ok(buffers.entry(x).or_insert(Buffer::leaf(x, &shape, &dtype)))
+    }
+
+    fn binary_buffer(&mut self, x: Id, y: Id, buffers: &mut BTreeMap<Id, Buffer>) -> Result<Buffer, ZyxError> {
+        let reduce_axes = match (buffers[&x].reduce_axes.clone(), buffers[&y].reduce_axes.clone()) {
+            (Some(x_ax), Some(_)) => {
+                self.evaluate_buffer(y, buffers)?;
+                Some(x_ax)
+            }
+            (Some(x_ax), None) => {
+                Some(x_ax)
+            }
+            (None, Some(y_ax)) => {
+                Some(y_ax)
+            }
+            (None, None) => {
+                None
+            }
+        };
+        let y_buffer = &buffers[&y];
+        let x_buffer = &buffers[&x];
+        let n = x_buffer.ops.len() as u8;
+        Ok(Buffer {
+            program_args: x_buffer.program_args.iter().chain(y_buffer.program_args.iter()).copied().collect(),
+            arg_views: x_buffer.arg_views.iter().chain(y_buffer.arg_views.iter()).cloned().collect(),
+            arg_dtypes: x_buffer.arg_dtypes.iter().chain(y_buffer.arg_dtypes.iter()).copied().collect(),
+            ops: x_buffer.ops.iter().cloned().chain(y_buffer.ops.iter().cloned().map(|mut op| {
+                op.access_parameters(|x| *x += n);
+                op
+            })).collect(),
+            reduce_axes,
+            shape: x_buffer.shape.clone(),
+            dtype: x_buffer.dtype,
+            flop: x_buffer.flop + y_buffer.flop,
+        })
     }
 }

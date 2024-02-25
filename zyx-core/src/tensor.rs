@@ -193,7 +193,6 @@ fn tensor_to_string<T: core::fmt::Display>(
     width: Option<usize>,
 ) -> alloc::string::String {
     use core::fmt::Write;
-    // TODO don't print whole tensor if it is big
     let n = shape.numel();
     let ndim = shape.rank();
     let mut res = alloc::string::String::new();
@@ -644,7 +643,7 @@ impl<B: Backend> Tensor<B> {
         let xshape = self.shape();
         let yshape = y.shape();
         let yrank = yshape.rank();
-        assert_eq!(
+        debug_assert_eq!(
             xshape[-1],
             yshape[-1],
             //yshape[-(yrank.min(2) as i64)],
@@ -682,7 +681,7 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn reshape(&self, shape: impl Into<Shape>) -> Tensor<B> {
         let shape = shape.into();
-        assert_eq!(
+        debug_assert_eq!(
             self.shape().numel(),
             shape.numel(),
             "Cannot reshape tensor with shape {} to {shape}",
@@ -697,9 +696,12 @@ impl<B: Backend> Tensor<B> {
     /// Expand self into bigger shape
     #[must_use]
     pub fn expand(&self, shape: impl Into<Shape>) -> Tensor<B> {
+        let shape = shape.into();
+        let sh = self.shape();
+        debug_assert!(shape.iter().rev().enumerate().all(|(i, d)| if sh.rank() > i { *d == sh[sh.rank() - i - 1] || sh[sh.rank() - i - 1] == 1 } else { true }), "Can't expand tensor with shape {sh} to {shape}");
         tensor(
             self.backend
-                .push(Node::Expand(self.id, shape.into()))
+                .push(Node::Expand(self.id, shape))
                 .unwrap(),
             self.backend,
         )
@@ -747,16 +749,19 @@ impl<B: Backend> Tensor<B> {
     ) -> Tensor<B> {
         let dtype = self.dtype();
         let value = self.backend.tensor(value);
-        assert_eq!(
+        debug_assert_eq!(
             value.dtype(),
             dtype,
             "Cannot pad tensor with dtype {} with value of dtype {}",
             dtype,
             value.dtype()
         );
-        // TODO asserts
         let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
         let sh = self.shape();
+        debug_assert!(
+            padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|((lp, rp), d)| (*lp < 0 && ((-lp) as usize) < *d) && (*rp < 0 && ((-rp) as usize) < *d)),
+            "Cannot pad tensor with shape {sh} with padding {padding:?}"
+        );
         let psh = sh.clone().pad(&padding);
         let t0 = tensor(
             self.backend
@@ -790,6 +795,7 @@ impl<B: Backend> Tensor<B> {
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
         let shape = self.shape().permute(&axes);
+        debug_assert!(axes.len() == shape.rank(), "Cannot permute tensor with shape {shape} with axes {axes}");
         tensor(
             self.backend
                 .push(Node::Permute(self.id, axes, shape))
@@ -798,7 +804,8 @@ impl<B: Backend> Tensor<B> {
         )
     }
 
-    /// Swap last two axes of self
+    /// Swap last two axes of self.
+    /// If self has rank == 1 and numel == n, then result will have shape /[n, 1/]
     #[must_use]
     pub fn transpose(&self) -> Tensor<B> {
         let rank = self.rank();
@@ -852,14 +859,14 @@ impl<B: Backend> Tensor<B> {
         let axes = axes.into_axes(self.rank());
         let shape = self.shape().reduce(&axes);
         let mut uniq = BTreeSet::new();
-        assert!(
+        debug_assert!(
             axes.into_iter().all(move |x| uniq.insert(x)),
             "Cannot sum tensor with shape {:?} by axes {:?}, because axes contain duplicates.",
             self.shape(),
             axes
         );
         for a in &axes {
-            assert!(
+            debug_assert!(
                 *a < shape.rank(),
                 "Cannot sum tensor with shape {:?} by axes {:?}, because some axes are greater than rank.",
                 self.shape(),
@@ -890,14 +897,14 @@ impl<B: Backend> Tensor<B> {
         let axes = axes.into_axes(self.rank());
         let shape = self.shape().reduce(&axes);
         let mut uniq = BTreeSet::new();
-        assert!(
+        debug_assert!(
             axes.into_iter().all(move |x| uniq.insert(x)),
             "Cannot sum tensor with shape {:?} by axes {:?}, because axes contain duplicates.",
             self.shape(),
             axes
         );
         for a in &axes {
-            assert!(
+            debug_assert!(
                 *a < shape.rank(),
                 "Cannot sum tensor with shape {:?} by axes {:?}, because some axes are greater than rank.",
                 self.shape(),
@@ -987,7 +994,7 @@ impl<B: Backend> Tensor<B> {
         for tensor in &tensors {
             for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
                 if i != dim {
-                    assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
+                    debug_assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
                 }
             }
         }
@@ -1119,7 +1126,7 @@ impl<B: Backend> Tensor<B> {
 
         for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
-                assert!(*x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape} and {y_shape}");
+                debug_assert!(*x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape} and {y_shape}");
             }
         }
 
