@@ -92,8 +92,8 @@ impl core::fmt::Debug for Node {
             Node::Reshape(x, sh) => f.write_fmt(format_args!("Reshape({x}, {sh})")),
             Node::Pad(x, padding, ..) => f.write_fmt(format_args!("Pad({x}, {padding:?})")),
             Node::Permute(x, ax, ..) => f.write_fmt(format_args!("Permute({x}, {ax})")),
-            Node::Sum(x, ax, ..) => f.write_fmt(format_args!("Sum({x}, {ax})")),
-            Node::Max(x, ax, ..) => f.write_fmt(format_args!("Max({x}, {ax})")),
+            Node::Sum(x, ax, sh) => f.write_fmt(format_args!("Sum({x}, {ax}, {sh})")),
+            Node::Max(x, ax, sh) => f.write_fmt(format_args!("Max({x}, {ax}, {sh})")),
         }
     }
 }

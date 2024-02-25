@@ -441,6 +441,7 @@ impl View {
         if n_shape == self.shape() {
             return self.clone();
         }
+        debug_assert_eq!(n_shape.numel(), self.numel(), "Can't reshape {} to {}", self.shape(), n_shape);
         let mut views = self.views.clone();
         // If we are reshaping InnerView that is contiguous, we just delete the last reshape
         if views.first().unwrap().contiguous() {
@@ -450,7 +451,7 @@ impl View {
                 padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
             };
         } else {
-            if n_shape.iter().filter(|d| **d != 1).zip(self.shape().iter().filter(|d| **d != 1)).all(|(nd, d)| nd == d) {
+            if n_shape.iter().filter(|d| **d != 1).zip(self.shape().iter()).all(|(nd, d)| nd == d) {
                 // If not  contiguous, then merge, this merges if reshape is unsqueeze
                 //std::println!("Ok to merge {n_shape} with {}", self.shape());
                 if let Some(InnerView { shape, strides, padding }) = views.first_mut() {

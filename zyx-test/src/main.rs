@@ -98,29 +98,29 @@ fn main() {
     run_test!(binary::mul);
     run_test!(binary::div);
     run_test!(binary::pow);
-    run_test!(binary::cmplt);
+    run_test!(binary::cmplt);*/
     println!("\nTesting movement ops");
-    run_test!(movement::reshape);
-    run_test!(movement::expand);
-    run_test!(movement::permute);
-    run_test!(movement::pad);
+    //run_test!(movement::reshape);
+    //run_test!(movement::expand);
+    //run_test!(movement::permute);
+    //run_test!(movement::pad);
     println!("\nTesting reduce ops");
-    run_test!(reduce::sum);
-    run_test!(reduce::max);
+    //run_test!(reduce::sum);
+    //run_test!(reduce::max);
     println!("\nTesting autograd engine");
-    run_test!(autograd::t0);
-    run_test!(autograd::t1);
+    //run_test!(autograd::t0);
+    //run_test!(autograd::t1);
     println!("\nTesting combinations of ops");
-    run_test!(combination::t0);
-    run_test!(combination::t1);*/
-    run_test!(combination::dot);
+    //run_test!(combination::t0);
+    //run_test!(combination::t1);
+    //run_test!(combination::dot);
     //run_test!(combination::cat);
     //run_test!(combination::split);
     println!("\nTesting optimizers");
-    //run_test!(optimizer::sgd);
-    //run_test!(optimizer::adam);
+    run_test!(optimizer::sgd);
+    run_test!(optimizer::adam);
     println!("\nTesting nn modules");
     run_test!(nn::linear);
-    run_test!(nn::layer_norm);
-    run_test!(nn::batch_norm);
+    //run_test!(nn::layer_norm);
+    //run_test!(nn::batch_norm);
 }

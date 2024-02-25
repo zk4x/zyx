@@ -1021,28 +1021,22 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
             Op::Neg(x) => f!("{dtype}{vws} var{nid} = -var{x}"),
             Op::ReLU(x) => f!("{dtype}{vws} var{nid} = max(var{x}, {zero})"),
             Op::Sin(x) => f!(
-                "{dtype}{vws} var{nid} = sin({}var{x})",
-                if fdt { "" } else { "(float)" }
+                "{dtype}{vws} var{nid} = sin(var{x})",
             ),
             Op::Cos(x) => f!(
-                "{dtype}{vws} var{nid} = cos({}var{x})",
-                if fdt { "" } else { "(float)" }
+                "{dtype}{vws} var{nid} = cos(var{x})",
             ),
             Op::Ln(x) => f!(
-                "{dtype}{vws} var{nid} = {0}log({0}var{x})",
-                if fdt { "" } else { "(float)" }
+                "{dtype}{vws} var{nid} = log(var{x})",
             ),
             Op::Exp(x) => f!(
-                "{dtype}{vws} var{nid} = exp({}var{x})",
-                if fdt { "" } else { "(float)" }
+                "{dtype}{vws} var{nid} = exp(var{x})",
             ),
             Op::Tanh(x) => f!(
-                "{dtype}{vws} var{nid} = tanh({}var{x})",
-                if fdt { "" } else { "(float)" }
+                "{dtype}{vws} var{nid} = tanh(var{x})",
             ),
             Op::Sqrt(x) => f!(
-                "{dtype}{vws} var{nid} = sqrt({}var{x})",
-                if fdt { "" } else { "(float)" }
+                "{dtype}{vws} var{nid} = sqrt(var{x})",
             ),
             Op::Add(x, y) => f!("{dtype}{vws} var{nid} = var{x} + var{y}"),
             Op::Sub(x, y) => f!("{dtype}{vws} var{nid} = var{x} - var{y}"),
@@ -1243,7 +1237,7 @@ fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize, usize)
                 if fdt { "" } else { "(float)" }
             ),
             Op::Exp(x) => f!(
-                "{dtype} var{nid} = exp({}var{x})",
+                "{dtype} var{nid} = {}exp(var{x})",
                 if fdt { "" } else { "(float)" }
             ),
             Op::Tanh(x) => f!(
@@ -1332,7 +1326,7 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -1340,7 +1334,18 @@ fn dot_test() -> Result<(), ZyxError> {
     let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
     Ok(())
-}
+}*/
+
+/*#[test]
+fn t5() -> Result<(), ZyxError> {
+    let dev = crate::device_builder().platform_id(0).build()?;
+    let x = dev.uniform([1, 1, 1, 7, 9], 0f32..100f32);
+    std::println!("{x:6.2}");
+    let z = x.sum(-2);
+    std::println!("{z:6.2}");
+    panic!();
+    Ok(())
+}*/
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {

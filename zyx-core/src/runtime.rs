@@ -240,12 +240,6 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Evaluate specified nodes.
     pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
-        // TODO we are probably going too many times back and forth in the graph.
-        // First we go back to create graph of all nodes that need to be evaluated.
-        // Then we go forward to find which nodes are kernel subgraphs.
-        // Then we go back again to create subgraphs for individual kernels.
-        // Then we go forward again to create the kernel itself.
-
         // TODO in order to be more efficient, we can optimize the graph
         // by reordering nodes and removing unnecessary nodes
 
@@ -269,9 +263,9 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         while let Some(nid) = params.pop() {
-            if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                order.push(nid);
-                if rcs.contains_key(&nid) {
+            if let Some(rc) = rcs.get(&nid) {
+                if *rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
                     params.extend(self.nodes[nid.i()].parameters());
                 }
             }
@@ -366,9 +360,9 @@ impl<R: RuntimeBackend> Runtime<R> {
             let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
             let mut params: Vec<Id> = alloc::vec![x];
             while let Some(nid) = params.pop() {
-                if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    if rcs.contains_key(&nid) {
+                if let Some(rc) = rcs.get(&nid) {
+                    if *rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                        order.push(nid);
                         params.extend(nodes[nid.i()].parameters());
                     }
                 }

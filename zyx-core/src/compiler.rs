@@ -173,7 +173,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     ) -> Result<(), ZyxError> {
         let mut found_reduce = None;
         for nid in order.iter().copied() {
-            std::println!("{nid}: {:?}", nodes[nid.i()]);
+            //std::println!("{nid}: {:?} - {}", nodes[nid.i()], get_shape(nodes, nid));
             self.store(nid, &mut nodes)?;
             if nodes[nid.i()].is_reduce() {
                 if let Some(_) = found_reduce {
@@ -186,7 +186,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             if let Some((rid, p)) = &mut found_reduce {
                 let node = &nodes[nid.i()];
                 if node.parameters_contain(*p) {
-                    if matches!(node, Node::Expand(..)) {
+                    // Expand, pad and reshape force creation and evaluation of kernel.
+                    // Reshape can't be fused because how would we permute args?
+                    //std::println!("id: {nid}");
+                    if matches!(node, Node::Expand(..) | Node::Pad(..) | Node::Reshape(..)) {
+                        //std::println!("Evaluating");
                         self.evaluate_buffer(*p, Some(*rid), nodes)?;
                         nullify_found_reduce = true;
                     }
@@ -203,6 +207,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             if to_eval.contains(&nid) {
                 self.evaluate_buffer(nid, None, nodes)?;
             }
+            // TODO also evaluate all kernels with rcs > 1 if they have more than 1 arg,
+            // i. e. if they contain other than just unary ops.
             if self.is_evaluated(nid) {
                 let mut params: Vec<Id> = nodes[nid.i()].parameters().collect();
                 while let Some(p) = params.pop() {
@@ -293,9 +299,10 @@ impl<C: Compiler> CompiledBackend<C> {
             let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
             let mut params: Vec<Id> = alloc::vec![x];
             while let Some(nid) = params.pop() {
-                if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    if rcs.contains_key(&nid) && !self.is_evaluated(nid) {
+                if let Some(rc) = rcs.get(&nid) {
+                    if *rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                        order.push(nid);
+                        std::println!("Pushing {nid}: {:?}", nodes[nid.i()]);
                         for p in nodes[nid.i()].parameters() {
                             if check_reduce {
                                 if p != reduce_id.unwrap() {
@@ -353,6 +360,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     View::new(get_shape(nodes, nid).clone()),
                     get_dtype(nodes, nid),
                 ));
+                std::println!("new arg: {:?}", args.last().unwrap().0.shape());
                 program_args.push(x);
                 ops.push(Op::Leaf(args.len() - 1));
             } else {
@@ -378,9 +386,8 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                if a < first_ar_arg {
-                                    args[a].0 = args[a].0.expand(sh);
-                                }
+                                std::println!("Expanding to: {sh}");
+                                args[a].0 = args[a].0.expand(sh);
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -391,13 +398,8 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                if ar {
-                                    args[a].0 = args[a].0.reshape(sh);
-                                } else {
-                                    if a < first_ar_arg {
-                                        args[a].0 = args[a].0.reshape(sh);
-                                    }
-                                }
+                                //std::println!("Arg: {:?}", args[a]);
+                                args[a].0 = args[a].0.reshape(sh);
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -408,13 +410,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                if ar {
-                                    args[a].0 = args[a].0.pad(padding);
-                                } else {
-                                    if a < first_ar_arg {
-                                        args[a].0 = args[a].0.pad(padding);
-                                    }
-                                }
+                                args[a].0 = args[a].0.pad(padding);
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -425,13 +421,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         let mut params = alloc::vec![mapping[x]];
                         while let Some(p) = params.pop() {
                             if let Op::Leaf(a) = ops[p] {
-                                if ar {
-                                    args[a].0 = args[a].0.permute(axes);
-                                } else {
-                                    if a < first_ar_arg {
-                                        args[a].0 = args[a].0.permute(axes);
-                                    }
-                                }
+                                args[a].0 = args[a].0.permute(axes);
                             }
                             ops[p].access_parameters(|x| params.push(x));
                         }
@@ -490,11 +480,11 @@ impl<C: Compiler> CompiledBackend<C> {
             //std::println!("Permute axes {axes:?}");
             //std::println!("New shape before reduce: {new_shape:?}");
             //std::println!("New shape after reduce: {ar_new_shape:?}");
-            let ar_rshape = rshape.clone().reduce(&axes);
+            let ar_rshape = rshape.clone().reduce(&raxes);
             // Padding is not applied, in max kernel, because in max op
             // we can not pad with zeros, because it is incorrect!!!
-            let apply_padding = |sh: View, shape: &Shape| sh.pad(
-                &shape
+            let apply_padding = |sh: View| sh.pad(
+                &sh.shape()
                     .iter()
                     .rev()
                     .map(|d| {
@@ -508,14 +498,16 @@ impl<C: Compiler> CompiledBackend<C> {
             );
             for (a, (aview, _)) in args.iter_mut().enumerate() {
                 //std::println!("aview: {aview:?}");
+                //std::println!("rshape: {rshape}, ar_shape: {ar_rshape}, new_shape: {new_shape}, ar_new_shape: {ar_new_shape}");
+                let sh = if a < first_ar_arg { &rshape } else { &ar_rshape };
                 let temp = aview
-                    .reshape(if a < first_ar_arg { &rshape } else { &ar_rshape })
+                    .reshape(sh)
                     .permute(&axes)
                     .reshape(if a < first_ar_arg { &new_shape } else { &ar_new_shape });
                 if reduce_type_max {
                     *aview = temp;
                 } else {
-                    *aview = apply_padding(temp, if a < first_ar_arg { &new_shape } else { &ar_new_shape });
+                    *aview = apply_padding(temp);
                 }
             }
             // view after the reduce op
@@ -525,7 +517,7 @@ impl<C: Compiler> CompiledBackend<C> {
             if reduce_type_max {
                 view = temp;
             } else {
-                view = apply_padding(temp, &ar_new_shape);
+                view = apply_padding(temp);
             }
             //std::println!("view: {view:?}");
             Some(if s0 != 1 && s0 % padding_width != 0 && !reduce_type_max {
@@ -554,7 +546,7 @@ impl<C: Compiler> CompiledBackend<C> {
             rdim,
             flop,
         };
-        for op in &*ast.ops { std::println!("{op:?}"); }
+        //for op in &*ast.ops { std::println!("{op:?}"); }
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {
             program

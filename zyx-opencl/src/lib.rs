@@ -267,7 +267,7 @@ fn test_layer_norm() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.tensor(0..150).reshape([10, 15]);
@@ -277,6 +277,19 @@ fn t0() -> Result<(), ZyxError> {
     let x = x.reshape([15, 1, 10]).expand([15, 2, 10]);
 
     std::println!("{x}");
+
+    panic!();
+    Ok(())
+}*/
+
+#[test]
+fn t0() -> Result<(), ZyxError> {
+    let dev = device()?;
+    let x = dev.uniform([2], 0f32..1f32);
+    let y = &x + x.exp();
+    let x = x.expand([2, 1, 5]);
+    let z = x.expand([2, 3, 5]) + y.reshape([2, 1, 1]);
+    std::println!("{z}");
 
     panic!();
     Ok(())

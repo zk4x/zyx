@@ -162,21 +162,21 @@ impl<B: Backend> core::fmt::Display for Tensor<B> {
         let res = match self.dtype() {
             DType::F32 => {
                 if let Ok(data) = &self.to_vec::<f32>() {
-                    tensor_to_string(data, &self.shape(), precision)
+                    tensor_to_string(data, &self.shape(), precision, f.width())
                 } else {
                     "f32 tensor failed to realize".into()
                 }
             }
             DType::F64 => {
                 if let Ok(data) = &self.to_vec::<f64>() {
-                    tensor_to_string(data, &self.shape(), precision)
+                    tensor_to_string(data, &self.shape(), precision, f.width())
                 } else {
                     "f64 tensor failed to realize".into()
                 }
             }
             DType::I32 => {
                 if let Ok(data) = &self.to_vec::<i32>() {
-                    tensor_to_string(data, &self.shape(), precision)
+                    tensor_to_string(data, &self.shape(), precision, f.width())
                 } else {
                     "i32 tensor failed to realize".into()
                 }
@@ -190,6 +190,7 @@ fn tensor_to_string<T: core::fmt::Display>(
     data: &[T],
     shape: &Shape,
     precision: usize,
+    width: Option<usize>,
 ) -> alloc::string::String {
     use core::fmt::Write;
     // TODO don't print whole tensor if it is big
@@ -201,10 +202,14 @@ fn tensor_to_string<T: core::fmt::Display>(
     }
     // get maximal width of single value
     let mut w = 0;
-    for x in data {
-        let l = alloc::format!("{x:>w$.precision$}").len();
-        if l > w {
-            w = l;
+    if let Some(width) = width {
+        w = width;
+    } else {
+        for x in data {
+            let l = alloc::format!("{x:>.precision$}").len();
+            if l > w {
+                w = l;
+            }
         }
     }
     let d0 = shape[-1];
