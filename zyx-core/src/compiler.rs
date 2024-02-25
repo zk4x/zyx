@@ -216,9 +216,14 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     buffer.dtype = *dtype;
                     buffer
                 }
-                Node::Ln(x) => {
+                Node::Neg(x) => {
                     let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(Op::Neg(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::ReLU(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::ReLU(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Exp(x) => {
@@ -226,8 +231,103 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     buffer.ops.push(Op::Exp(buffer.ops.len() as u8 - 1));
                     buffer
                 }
+                Node::Ln(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::Sin(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Sin(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::Cos(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Cos(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::Sqrt(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Sqrt(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
+                Node::Tanh(x) => {
+                    let mut buffer = buffers[&x].clone();
+                    buffer.ops.push(Op::Tanh(buffer.ops.len() as u8 - 1));
+                    buffer
+                }
                 Node::Add(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers)?
+                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Add(x, y))?
+                }
+                Node::Sub(x, y) => {
+                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Sub(x, y))?
+                }
+                Node::Mul(x, y) => {
+                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Mul(x, y))?
+                }
+                Node::Div(x, y) => {
+                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Div(x, y))?
+                }
+                Node::Pow(x, y) => {
+                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Pow(x, y))?
+                }
+                Node::Cmplt(x, y) => {
+                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Cmplt(x, y))?
+                }
+                Node::Where(x, y, z) => {
+                    let reduce_axes = match (buffers[&x].reduce_axes.clone(), buffers[&y].reduce_axes.clone(), buffers[&z].reduce_axes.clone()) {
+                        (Some(x_ax), Some(_), Some(_)) => {
+                            self.evaluate_buffer(*y, &mut buffers)?;
+                            self.evaluate_buffer(*z, &mut buffers)?;
+                            Some(x_ax)
+                        }
+                        (Some(x_ax), Some(_), None) => {
+                            self.evaluate_buffer(*y, &mut buffers)?;
+                            Some(x_ax)
+                        }
+                        (Some(x_ax), None, Some(_)) => {
+                            self.evaluate_buffer(*z, &mut buffers)?;
+                            Some(x_ax)
+                        }
+                        (Some(x_ax), None, None) => {
+                            Some(x_ax)
+                        }
+                        (None, Some(y_ax), Some(_)) => {
+                            self.evaluate_buffer(*z, &mut buffers)?;
+                            Some(y_ax)
+                        }
+                        (None, Some(y_ax), None) => {
+                            self.evaluate_buffer(*z, &mut buffers)?;
+                            Some(y_ax)
+                        }
+                        (None, None, Some(z_ax)) => {
+                            Some(z_ax)
+                        }
+                        (None, None, None) => {
+                            None
+                        }
+                    };
+                    let y_buffer = &buffers[y];
+                    let x_buffer = &buffers[x];
+                    let z_buffer = &buffers[z];
+                    let n = x_buffer.ops.len() as u8;
+                    let n2 = n + y_buffer.ops.len() as u8;
+                    Buffer {
+                        program_args: x_buffer.program_args.iter().chain(y_buffer.program_args.iter()).copied().collect(),
+                        arg_views: x_buffer.arg_views.iter().chain(y_buffer.arg_views.iter()).cloned().collect(),
+                        arg_dtypes: x_buffer.arg_dtypes.iter().chain(y_buffer.arg_dtypes.iter()).copied().collect(),
+                        ops: x_buffer.ops.iter().cloned().chain(y_buffer.ops.iter().cloned().map(|mut op| {
+                            op.access_parameters(|x| *x += n);
+                            op
+                        })).chain(z_buffer.ops.iter().cloned().map(|mut op| {
+                            op.access_parameters(|x| *x += n2);
+                            op
+                        })).chain([Op::Where(n-1, n2-1, n2+z_buffer.ops.len() as u8 - 1)]).collect(),
+                        reduce_axes,
+                        shape: x_buffer.shape.clone(),
+                        dtype: x_buffer.dtype,
+                        flop: x_buffer.flop + y_buffer.flop,
+                    }
                 }
                 Node::Reshape(x, sh) => {
                     let mut buffer = buffers[&x].clone();
@@ -288,7 +388,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     }
                     buffer
                 }
-                _ => { todo!() }
             };
             buffers.insert(nid, buffer);
 
@@ -361,6 +460,9 @@ impl<C: Compiler> CompiledBackend<C> {
     }
 
     fn evaluate_buffer<'a>(&mut self, x: Id, buffers: &'a mut BTreeMap<Id, Buffer>) -> Result<&'a Buffer, ZyxError> {
+        if self.is_evaluated(x) {
+            return Ok(&buffers[&x])
+        }
         let Buffer { program_args, arg_views, arg_dtypes, ops, reduce_axes, shape, dtype, flop } = buffers[&x].clone();
         // TODO reshape and permute reduce axes
         let ast = AST {
@@ -386,7 +488,7 @@ impl<C: Compiler> CompiledBackend<C> {
         Ok(buffers.entry(x).or_insert(Buffer::leaf(x, &shape, &dtype)))
     }
 
-    fn binary_buffer(&mut self, x: Id, y: Id, buffers: &mut BTreeMap<Id, Buffer>) -> Result<Buffer, ZyxError> {
+    fn binary_buffer(&mut self, x: Id, y: Id, buffers: &mut BTreeMap<Id, Buffer>, op: impl Fn(u8, u8) -> Op) -> Result<Buffer, ZyxError> {
         let reduce_axes = match (buffers[&x].reduce_axes.clone(), buffers[&y].reduce_axes.clone()) {
             (Some(x_ax), Some(_)) => {
                 self.evaluate_buffer(y, buffers)?;
@@ -412,7 +514,7 @@ impl<C: Compiler> CompiledBackend<C> {
             ops: x_buffer.ops.iter().cloned().chain(y_buffer.ops.iter().cloned().map(|mut op| {
                 op.access_parameters(|x| *x += n);
                 op
-            })).collect(),
+            })).chain([op(x_buffer.ops.len() as u8 - 1, x_buffer.ops.len() as u8+y_buffer.ops.len() as u8 - 1)]).collect(),
             reduce_axes,
             shape: x_buffer.shape.clone(),
             dtype: x_buffer.dtype,

@@ -19,22 +19,8 @@ use zyx_core::{
 };
 
 const VECTOR_SYMBOLS: [&str; 16] = [
-    ".s0",
-    ".s1",
-    ".s2",
-    ".s3",
-    ".s4",
-    ".s5",
-    ".s6",
-    ".s7",
-    ".s8",
-    ".s9",
-    ".sa",
-    ".sb",
-    ".sc",
-    ".sd",
-    ".se",
-    ".sf",
+    ".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc",
+    ".sd", ".se", ".sf",
 ];
 
 fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), ZyxError> {
@@ -114,8 +100,9 @@ pub fn get_device_data(
 ) -> Result<Vec<u8>, cl_int> {
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
-        let status =
-            unsafe { opencl_sys::clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size) };
+        let status = unsafe {
+            opencl_sys::clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size)
+        };
         if CL_SUCCESS != status {
             Err(status)
         } else {
@@ -196,8 +183,9 @@ fn get_platform_data(
 ) -> Result<Vec<u8>, cl_int> {
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
-        let status =
-            unsafe { opencl_sys::clGetPlatformInfo(object, param_name, 0, ptr::null_mut(), &mut size) };
+        let status = unsafe {
+            opencl_sys::clGetPlatformInfo(object, param_name, 0, ptr::null_mut(), &mut size)
+        };
         if CL_SUCCESS != status {
             Err(status)
         } else {
@@ -290,7 +278,8 @@ impl Program {
                 .map(|x| f!("{x}"))
                 .collect::<Vec<_>>()
                 .join("_"),
-            local_work_size.iter()
+            local_work_size
+                .iter()
                 .map(|x| f!("{x}"))
                 .collect::<Vec<_>>()
                 .join("_"),
@@ -876,26 +865,42 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     let mut lws = 1;
     let global_work_size: Vec<usize> = ast.shape.clone().into();
     // OpenCL runtimes are horrible at inferring local work sizes, we just have to give it our
-    let local_work_size: Vec<usize> = global_work_size.iter().rev().map(|d| {
-        let mut x = 1;
-        while d%(x*2) == 0 && x*lws < max_lws {
-            x *= 2;
-        }
-        lws *= x;
-        x
-    }).collect::<Vec<_>>().into_iter().rev().collect();
+    let local_work_size: Vec<usize> = global_work_size
+        .iter()
+        .rev()
+        .map(|d| {
+            let mut x = 1;
+            while d % (x * 2) == 0 && x * lws < max_lws {
+                x *= 2;
+            }
+            lws *= x;
+            x
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
 
     let mut source = f!("(\n  ");
 
     let mut res_id = 0;
     for dtype in &ast.arg_dtypes {
-        source = f!("{source}__global const {}* data{res_id},\n  ", dtype.ocl_str());
+        source = f!(
+            "{source}__global const {}* data{res_id},\n  ",
+            dtype.ocl_str()
+        );
         res_id += 1;
     }
-    source = f!("{source}__global {}* data{res_id}\n) {{\n  ", ast.dtype.ocl_str());
+    source = f!(
+        "{source}__global {}* data{res_id}\n) {{\n  ",
+        ast.dtype.ocl_str()
+    );
 
     for i in 0..global_work_size.len() {
-        source = f!("{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ", global_work_size[i]);
+        source = f!(
+            "{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ",
+            global_work_size[i]
+        );
     }
 
     let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
@@ -945,9 +950,24 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
         source = f!("{source}{res};\n  ");
         nid += 1;
     }
-    source = f!("{source}data{res_id}[{}] = var{};\n}}", ast.shape.strides().iter().enumerate().map(|(i, st)| f!("idx{i}*{st}")).collect::<Vec<_>>().join("+"), nid-1);
+    source = f!(
+        "{source}data{res_id}[{}] = var{};\n}}",
+        ast.shape
+            .strides()
+            .iter()
+            .enumerate()
+            .map(|(i, st)| f!("idx{i}*{st}"))
+            .collect::<Vec<_>>()
+            .join("+"),
+        nid - 1
+    );
 
-    (source, global_work_size, local_work_size, ast.shape.numel() * ast.dtype.byte_size())
+    (
+        source,
+        global_work_size,
+        local_work_size,
+        ast.shape.numel() * ast.dtype.byte_size(),
+    )
 }
 
 /*#[test]
@@ -1001,16 +1021,17 @@ fn t5() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn t5() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.tensor([[2, 3, 1], [4, 2, 1]]);
-    let y = dev.tensor([2]);
-    let z = x.sum(0) + y.expand([2, 3]).sum(0);
+    //let y = dev.tensor([2]);
+    //let z = x.sum(0) + y.expand([2, 3]).sum(0);
     //let x = dev.randn([7, 4, 2], DType::F32);
     //let z = (x + &y).sum(0) + &y;
     //let z = x.max([0, 1]);
-    //let z = x.pad([(0, 0)], 0).max(1);
+    //let z = x.pad([(-1, 0)], 0);
+    let z = x.get((.., 1..3));
     std::println!("{z}");
     Ok(())
-}*/
+}

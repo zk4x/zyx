@@ -1,9 +1,9 @@
 extern crate alloc;
+use crate::scalar::Scalar;
 use crate::{axes::Axes, shape::Shape};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::{vec, vec::Vec};
-use crate::scalar::Scalar;
 
 /// View type
 pub enum ViewType {
@@ -58,7 +58,7 @@ impl<'a, T: Scalar> Iterator for CPUPaddedIter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx > self.num_iters {
-            return None
+            return None;
         }
         let mut idx = self.idx;
         self.idx += 1;
@@ -74,7 +74,7 @@ impl<'a, T: Scalar> Iterator for CPUPaddedIter<'a, T> {
                 if *lp > 0 {
                     let lpu = *lp as usize;
                     if dim_idx < lpu {
-                        return Some(T::zero())
+                        return Some(T::zero());
                     }
                     dim_idx -= lpu;
                 } else if *lp < 0 {
@@ -82,7 +82,7 @@ impl<'a, T: Scalar> Iterator for CPUPaddedIter<'a, T> {
                 }
                 if *rp > 0 {
                     if dim_idx > *rp as usize {
-                        return Some(T::zero())
+                        return Some(T::zero());
                     }
                 }
                 res += dim_idx * st;
@@ -107,7 +107,7 @@ impl<'a, T: Scalar> Iterator for CPUReshapedIter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx > self.num_iters {
-            return None
+            return None;
         }
         let mut idx = self.idx;
         self.idx += 1;
@@ -143,12 +143,18 @@ impl<'a, T: Scalar> Iterator for CPUStridedIter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx > self.num_iters {
-            return None
+            return None;
         }
         let mut idx = self.idx;
         self.idx += 1;
         let mut res = 0;
-        for (d, st) in self.shape.into_iter().copied().zip(self.strides.into_iter().copied()).rev() {
+        for (d, st) in self
+            .shape
+            .into_iter()
+            .copied()
+            .zip(self.strides.into_iter().copied())
+            .rev()
+        {
             res += idx % d * st;
             idx /= d;
         }
@@ -173,17 +179,13 @@ impl View {
     /// i. e. no padding, expands or permutes, only reshapes are allowed
     #[must_use]
     pub fn contiguous(&self) -> bool {
-        self.views
-            .iter()
-            .all(InnerView::contiguous)
+        self.views.iter().all(InnerView::contiguous)
     }
 
     /// Is this view padded?
     #[must_use]
     pub fn padded(&self) -> bool {
-        self.views
-            .iter()
-            .any(InnerView::padded)
+        self.views.iter().any(InnerView::padded)
     }
 
     /// For cpu backend
@@ -202,14 +204,21 @@ impl View {
 
     /// Simple iteration
     #[must_use]
-    pub fn iterate_contiguous<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+    pub fn iterate_contiguous<'a, T: Scalar>(
+        &'a self,
+        data: &'a [T],
+    ) -> impl Iterator<Item = T> + 'a {
         data.iter().cloned()
     }
 
     /// Iteration with expands and permutes
     #[must_use]
     pub fn iterate_strided<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
-        let InnerView { shape, strides, padding: _} = self.views.first().unwrap();
+        let InnerView {
+            shape,
+            strides,
+            padding: _,
+        } = self.views.first().unwrap();
         CPUStridedIter {
             data,
             num_iters: shape.numel() - 1,
@@ -221,7 +230,10 @@ impl View {
 
     /// Iteration with expands, permutes and reshapes, but without padding
     #[must_use]
-    pub fn iterate_reshaped<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+    pub fn iterate_reshaped<'a, T: Scalar>(
+        &'a self,
+        data: &'a [T],
+    ) -> impl Iterator<Item = T> + 'a {
         CPUReshapedIter {
             data,
             view: self,
@@ -277,14 +289,14 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
-                //std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
                     0 => idx += "0+",
                     1 => idx += &f!("idx{i}+"),
                     _ => idx += &f!("idx{i}*{st}+"),
                 }
                 if *left_p < 0 {
-                    idx += &f!("+{}", -left_p);
+                    idx += &f!("{}+", -left_p);
                 } else if *left_p > 0 {
                     padding_condition = f!("{padding_condition} && (idx{i}>{})", left_p - 1);
                 }
@@ -293,7 +305,7 @@ impl View {
                         f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
                 }
                 if *left_p > 0 {
-                    idx += &f!("-{}", left_p);
+                    idx += &f!("-{}+", left_p);
                 }
             }
         } else {
@@ -333,7 +345,11 @@ impl View {
                 match *d {
                     0 => panic!(),
                     1 => temp = f!("0"),
-                    _ => if ost < n { temp += &f!("%{d}"); }
+                    _ => {
+                        if ost < n {
+                            temp += &f!("%{d}");
+                        }
+                    }
                 }
                 if *left_p < 0 {
                     temp = f!("{temp}+{}", -left_p);
@@ -341,7 +357,8 @@ impl View {
                     padding_condition = f!("{padding_condition} && ({temp}>{})", left_p - 1);
                 }
                 if *right_p > 0 {
-                    padding_condition = f!("{padding_condition} && ({temp}<{})", d - *right_p as usize);
+                    padding_condition =
+                        f!("{padding_condition} && ({temp}<{})", d - *right_p as usize);
                 }
                 if *left_p > 0 {
                     temp = f!("({temp}-{left_p})");
@@ -385,8 +402,23 @@ impl View {
     /// Original number of elements of self.
     #[must_use]
     pub fn original_numel(&self) -> usize {
-        let InnerView { shape, strides, padding } = self.views.last().unwrap();
-        shape.iter().zip(strides.iter()).zip(padding.iter()).filter_map(|((d, s), (lp, rp))| if *s != 0 { Some((*d as i64-lp-rp) as usize) } else { None }).product()
+        let InnerView {
+            shape,
+            strides,
+            padding,
+        } = self.views.last().unwrap();
+        shape
+            .iter()
+            .zip(strides.iter())
+            .zip(padding.iter())
+            .filter_map(|((d, s), (lp, rp))| {
+                if *s != 0 {
+                    Some((*d as i64 - lp - rp) as usize)
+                } else {
+                    None
+                }
+            })
+            .product()
     }
 
     /// Expand self into shape
@@ -399,7 +431,10 @@ impl View {
             .expand_strides(shape, views[0].strides.clone());
         views[0].shape = shape.clone();
         let n = shape.rank() - views[0].padding.len();
-        views[0].padding = core::iter::repeat((0, 0)).take(n).chain(views[0].padding.iter().copied()).collect();
+        views[0].padding = core::iter::repeat((0, 0))
+            .take(n)
+            .chain(views[0].padding.iter().copied())
+            .collect();
         //std::println!("To {views:?}");
         Self { views }
     }
@@ -441,7 +476,13 @@ impl View {
         if n_shape == self.shape() {
             return self.clone();
         }
-        debug_assert_eq!(n_shape.numel(), self.numel(), "Can't reshape {} to {}", self.shape(), n_shape);
+        debug_assert_eq!(
+            n_shape.numel(),
+            self.numel(),
+            "Can't reshape {} to {}",
+            self.shape(),
+            n_shape
+        );
         let mut views = self.views.clone();
         // If we are reshaping InnerView that is contiguous, we just delete the last reshape
         if views.first().unwrap().contiguous() {
@@ -451,10 +492,20 @@ impl View {
                 padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
             };
         } else {
-            if n_shape.iter().filter(|d| **d != 1).zip(self.shape().iter()).all(|(nd, d)| nd == d) {
+            if n_shape
+                .iter()
+                .filter(|d| **d != 1)
+                .zip(self.shape().iter())
+                .all(|(nd, d)| nd == d)
+            {
                 // If not  contiguous, then merge, this merges if reshape is unsqueeze
                 //std::println!("Ok to merge {n_shape} with {}", self.shape());
-                if let Some(InnerView { shape, strides, padding }) = views.first_mut() {
+                if let Some(InnerView {
+                    shape,
+                    strides,
+                    padding,
+                }) = views.first_mut()
+                {
                     //std::println!("Merging");
                     *shape = n_shape.clone();
                     let mut n_strides: Vec<usize> = strides.clone().into();
@@ -462,7 +513,14 @@ impl View {
                     for (i, d) in n_shape.iter().rev().enumerate() {
                         if *d == 1 {
                             //std::println!("Inserting");
-                            n_strides.insert(n_strides.len() - i, if i == 0 { 1 } else { n_strides[n_strides.len() - i] });
+                            n_strides.insert(
+                                n_strides.len() - i,
+                                if i == 0 {
+                                    1
+                                } else {
+                                    n_strides[n_strides.len() - i]
+                                },
+                            );
                             n_padding.insert(n_padding.len() - i, (0, 0));
                         }
                     }

@@ -6,11 +6,11 @@ Tensors must be stored somewhere. Zyx can use both RAM and VRAM (on the gpu) to 
 
 Please do not directly add zyx as your dependency. Instead add one of the backends: zyx-opencl, zyx-cpu.
 
-This is how you create gpu backend.
+This is how you add gpu backend.
 ```shell
 cargo add zyx-opencl
 ```
-And then initialize the device in your code.
+Initialize the device in your code.
 ```rust
 let dev = zyx_opencl::device()?;
 ```
@@ -19,7 +19,7 @@ Now you can create tensors.
 let x = dev.randn([2, 2], DType::F32);
 let y = dev.tensor([[2., -3.], [4., 1.]]);
 ```
-Let's do some mathematical operations on these tensors.
+And do some mathematical operations on these tensors.
 ```rust
 let z = (&x + &y).exp() - &x;
 ```
