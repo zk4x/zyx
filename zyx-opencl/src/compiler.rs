@@ -833,237 +833,189 @@ impl zyx_core::compiler::Compiler for Compiler {
     }
 
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
-        let (source, gws, lws, rbs) = if ast.reduce_axes.is_some() {
-            compile_r_kernel(ast)
+        let max_lws = 256;
+        let id_t = "int";
+
+        //std::println!("Reduce dimensions: {:?}", ast.reduce_axes);
+        // TODO permute so that reduce axes are last
+        // TODO add padding to max_lws
+        // TODO add wide vectorized loads
+        
+        // reshape so that there are at most 3 dimensions
+        let (arg_views, shape) = if let Some(_) = &ast.reduce_axes {
+            (ast.arg_views.clone(), ast.shape.clone())
         } else {
-            compile_e_kernel(ast)
+            let mut arg_views = ast.arg_views.clone();
+            let n = ast.shape.numel();
+            for view in &mut arg_views {
+                *view = view.reshape(&[n].into());
+            }
+            (arg_views, [n].into())
         };
+
+        let mut lws = 1;
+        let mut global_work_size: Vec<usize> = shape.iter().enumerate().filter_map(|(i, d)| if ast.reduce_axes.as_ref().map(|ra| ra.contains(i)).unwrap_or(false) { None } else { Some(*d) }).collect();
+        let mut full_reduce = false; // reduce across all axes
+        if global_work_size.len() == 0 {
+            full_reduce = true;
+            global_work_size.push(1);
+        }
+        // OpenCL runtimes are horrible at inferring local work sizes, we just have to give it our
+        let local_work_size: Vec<usize> = global_work_size
+            .iter()
+            .rev()
+            .map(|d| {
+                let mut x = 1;
+                while d % (x * 2) == 0 && x * lws < max_lws {
+                    x *= 2;
+                }
+                lws *= x;
+                x
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        let mut source = f!("(\n  ");
+
+        let mut res_id = 0;
+        for dtype in &ast.arg_dtypes {
+            source = f!(
+                "{source}__global const {}* data{res_id},\n  ",
+                dtype.ocl_str()
+            );
+            res_id += 1;
+        }
+        source = f!(
+            "{source}__global {}* data{res_id}\n) {{\n  ",
+            ast.dtype.ocl_str()
+        );
+
+        if !full_reduce {
+            for i in 0..global_work_size.len() {
+                source = f!(
+                    "{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ",
+                    global_work_size[i]
+                );
+            }
+        }
+
+        let mut endl = f!(";\n  ");
+        let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
+
+        let mut reduce_dims_n = 0;
+        if let Some(reduce_axes) = &ast.reduce_axes {
+            reduce_dims_n = reduce_axes.len();
+            let mut i = if full_reduce { 0 } else { global_work_size.len() };
+            let zero = match ast.reduce_dtype.unwrap() {
+                DType::F32 => "0.0f",
+                DType::F64 => "0.0",
+                DType::I32 => "0",
+            };
+            let reduce_nid = ast.ops.iter().position(|op| matches!(op, Op::Sum(..) | Op::Max(..))).unwrap();
+            source += &f!("{} var{reduce_nid} = {zero}{endl}", ast.reduce_dtype.unwrap().ocl_str());
+            for _ in reduce_axes {
+                source += &f!("{id_t} idx{i}{endl}");
+                i += 1;
+            }
+            i = if full_reduce { 0 } else { global_work_size.len() };
+            if full_reduce { i = 0; }
+            for a in reduce_axes {
+                endl = f!("{endl}  ");
+                source += &f!("for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}", shape[*a]);
+                i += 1;
+            }
+        }
+
+        let mut nid = 0;
+        for op in ast.ops.iter() {
+            //let fdt = DType::from_ocl_str(dtype).is_floating();
+            let zero = match DType::from_ocl_str(dtype) {
+                DType::F32 => "0.0f",
+                DType::F64 => "0.0",
+                DType::I32 => "0",
+            };
+            let mut reduce = false;
+            let res = match op {
+                // TODO check if this should be tile or data
+                Op::Leaf(x) => {
+                    let view = &arg_views[*x as usize];
+                    //std::println!("{view:?}");
+                    dtype = ast.arg_dtypes[*x as usize].ocl_str();
+                    //bytes += view.original_numel();
+                    let (p, i) = view.cidx();
+                    if p.is_empty() {
+                        f!("{dtype} var{nid} = data{x}[{i}]")
+                    } else {
+                        f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
+                    }
+                }
+                Op::Cast(x, dt) => {
+                    dtype = dt.ocl_str();
+                    f!("{dtype} var{nid} = convert_{dtype}(var{x})")
+                }
+                Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
+                Op::ReLU(x) => f!("{dtype} var{nid} = max(var{x}, {zero})"),
+                Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
+                Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
+                Op::Ln(x) => f!("{dtype} var{nid} = log(var{x})"),
+                Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
+                Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
+                Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
+                Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
+                Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
+                Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
+                Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
+                Op::Pow(x, y) => {
+                    f!("{dtype} var{nid} = pow{}var{x}, var{y})",
+                        if DType::from_ocl_str(dtype).is_floating() { "(" } else { "n((double)" })
+                }
+                Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
+                Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
+                Op::Sum(x) => {
+                    reduce = true;
+                    f!("var{nid} = var{x} + var{nid}")
+                }
+                Op::Max(..) => panic!(),
+            };
+            source += &f!("{res}{endl}");
+            if reduce {
+                endl = f!(";\n  ");
+                let mut i = if full_reduce { 0 } else { global_work_size.len() };
+                for i in 0..reduce_dims_n {
+                    source.pop();
+                    source.pop();
+                    source += &f!("}}\n{}", "  ".repeat(reduce_dims_n-i));
+                }
+                for _ in 0..reduce_dims_n {
+                    source += &f!("idx{i} = 0{endl}");
+                    i += 1;
+                }
+            }
+            nid += 1;
+        }
+        let shape = if let Some(ra) = ast.reduce_axes.as_ref() {
+            shape.reduce(ra)
+        } else {
+            shape
+        };
+        source = f!(
+            "{source}data{res_id}[{}] = var{};\n}}",
+            zyx_core::view::View::new(shape.clone()).cidx().1,
+            nid - 1
+        );
+
         Program::compile(
             source.as_str(),
             self.context,
             &self.devices,
-            gws.as_slice(),
-            lws.as_slice(),
-            rbs,
+            global_work_size.as_slice(),
+            local_work_size.as_slice(),
+            shape.numel() * ast.dtype.byte_size(),
             ast.reduce_axes.is_some(),
         )
     }
-}
-
-fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
-    // TODO perhaps padding
-    // TODO perhaps local memory tiling
-    // TODO perhaps register tiling
-
-    let max_lws = 256;
-    let id_t = "int";
-
-    let mut lws = 1;
-    let global_work_size: Vec<usize> = ast.shape.clone().into();
-    // OpenCL runtimes are horrible at inferring local work sizes, we just have to give it our
-    let local_work_size: Vec<usize> = global_work_size
-        .iter()
-        .rev()
-        .map(|d| {
-            let mut x = 1;
-            while d % (x * 2) == 0 && x * lws < max_lws {
-                x *= 2;
-            }
-            lws *= x;
-            x
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-
-    let mut source = f!("(\n  ");
-
-    let mut res_id = 0;
-    for dtype in &ast.arg_dtypes {
-        source = f!(
-            "{source}__global const {}* data{res_id},\n  ",
-            dtype.ocl_str()
-        );
-        res_id += 1;
-    }
-    source = f!(
-        "{source}__global {}* data{res_id}\n) {{\n  ",
-        ast.dtype.ocl_str()
-    );
-
-    for i in 0..global_work_size.len() {
-        source = f!(
-            "{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ",
-            global_work_size[i]
-        );
-    }
-
-    let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
-    let mut nid = 0;
-    for op in ast.ops.iter() {
-        //let fdt = DType::from_ocl_str(dtype).is_floating();
-        let zero = match DType::from_ocl_str(dtype) {
-            DType::F32 => "0.0f",
-            DType::F64 => "0.0",
-            DType::I32 => "0",
-        };
-        let res = match op {
-            // TODO check if this should be tile or data
-            Op::Leaf(x) => {
-                let view = &ast.arg_views[*x as usize];
-                std::println!("{view:?}");
-                dtype = ast.arg_dtypes[*x as usize].ocl_str();
-                //bytes += view.original_numel();
-                let (p, i) = view.cidx();
-                if p.is_empty() {
-                    f!("{dtype} var{nid} = data{x}[{i}]")
-                } else {
-                    f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
-                }
-            }
-            Op::Cast(x, dt) => {
-                dtype = dt.ocl_str();
-                f!("{dtype} var{nid} = convert_{dtype}(var{x})")
-            }
-            Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
-            Op::ReLU(x) => f!("{dtype} var{nid} = max(var{x}, {zero})"),
-            Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
-            Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
-            Op::Ln(x) => f!("{dtype} var{nid} = log(var{x})"),
-            Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
-            Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
-            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
-            Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
-            Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
-            Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
-            Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
-            Op::Pow(x, y) => f!("{dtype} var{nid} = pow(var{x}, var{y})"),
-            Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
-            Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
-            Op::Sum(..) | Op::Max(..) => panic!(),
-        };
-        source = f!("{source}{res};\n  ");
-        nid += 1;
-    }
-    source = f!(
-        "{source}data{res_id}[{}] = var{};\n}}",
-        zyx_core::view::View::new(ast.shape.clone()).cidx().1,
-        nid - 1
-    );
-
-    (
-        source,
-        global_work_size,
-        local_work_size,
-        ast.shape.numel() * ast.dtype.byte_size(),
-    )
-}
-
-fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
-    let max_lws = 256;
-    let id_t = "int";
-
-    let mut lws = 1;
-    let global_work_size: Vec<usize> = ast.shape.clone().into();
-    // OpenCL runtimes are horrible at inferring local work sizes, we just have to give it our
-    let local_work_size: Vec<usize> = global_work_size
-        .iter()
-        .rev()
-        .map(|d| {
-            let mut x = 1;
-            while d % (x * 2) == 0 && x * lws < max_lws {
-                x *= 2;
-            }
-            lws *= x;
-            x
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-
-    let mut source = f!("(\n  ");
-
-    let mut res_id = 0;
-    for dtype in &ast.arg_dtypes {
-        source = f!(
-            "{source}__global const {}* data{res_id},\n  ",
-            dtype.ocl_str()
-        );
-        res_id += 1;
-    }
-    source = f!(
-        "{source}__global {}* data{res_id}\n) {{\n  ",
-        ast.dtype.ocl_str()
-    );
-
-    for i in 0..global_work_size.len() {
-        source = f!(
-            "{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ",
-            global_work_size[i]
-        );
-    }
-
-    let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
-    let mut nid = 0;
-    for op in ast.ops.iter() {
-        //let fdt = DType::from_ocl_str(dtype).is_floating();
-        let zero = match DType::from_ocl_str(dtype) {
-            DType::F32 => "0.0f",
-            DType::F64 => "0.0",
-            DType::I32 => "0",
-        };
-        let res = match op {
-            // TODO check if this should be tile or data
-            Op::Leaf(x) => {
-                let view = &ast.arg_views[*x as usize];
-                std::println!("{view:?}");
-                dtype = ast.arg_dtypes[*x as usize].ocl_str();
-                //bytes += view.original_numel();
-                let (p, i) = view.cidx();
-                if p.is_empty() {
-                    f!("{dtype} var{nid} = data{x}[{i}]")
-                } else {
-                    f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
-                }
-            }
-            Op::Cast(x, dt) => {
-                dtype = dt.ocl_str();
-                f!("{dtype} var{nid} = convert_{dtype}(var{x})")
-            }
-            Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
-            Op::ReLU(x) => f!("{dtype} var{nid} = max(var{x}, {zero})"),
-            Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
-            Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
-            Op::Ln(x) => f!("{dtype} var{nid} = log(var{x})"),
-            Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
-            Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
-            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
-            Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
-            Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
-            Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
-            Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
-            Op::Pow(x, y) => f!("{dtype} var{nid} = pow(var{x}, var{y})"),
-            Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
-            Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
-            Op::Sum(..) | Op::Max(..) => panic!(),
-        };
-        source = f!("{source}{res};\n  ");
-        nid += 1;
-    }
-    source = f!(
-        "{source}data{res_id}[{}] = var{};\n}}",
-        zyx_core::view::View::new(ast.shape.clone()).cidx().1,
-        nid - 1
-    );
-
-    (
-        source,
-        global_work_size,
-        local_work_size,
-        ast.shape.numel() * ast.dtype.byte_size(),
-    )
 }
 
 /*#[test]

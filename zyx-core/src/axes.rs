@@ -42,6 +42,15 @@ impl Axes {
     pub fn vi64(&self) -> Vec<i64> {
         self.0.iter().map(|x| *x as i64).collect()
     }
+
+    /// Permute shape's dimensions with axes
+    /// # Panics
+    /// Panics if axes is incorrect.
+    #[must_use]
+    pub fn permute(&self, axes: &Axes) -> Self {
+        //std::println!("self: {self}, axes: {axes:?}");
+        Self(axes.into_iter().map(|axis| self.0[*axis]).collect())
+    }
 }
 
 impl Display for Axes {

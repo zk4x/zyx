@@ -1,17 +1,17 @@
 #![allow(dead_code)]
 
-mod nn;
-mod unary;
-mod binary;
-mod movement;
-mod reduce;
-mod combination;
 mod autograd;
+mod binary;
+mod combination;
+mod movement;
+mod nn;
 mod optimizer;
+mod reduce;
+mod unary;
 
 use zyx_core::backend::Backend;
-use zyx_core::scalar::Scalar;
 use zyx_core::error::ZyxError;
+use zyx_core::scalar::Scalar;
 
 fn assert_eq<T: Scalar>(x: impl IntoIterator<Item = T>, y: impl IntoIterator<Item = T>) {
     let x: Vec<T> = x.into_iter().collect();
@@ -82,23 +82,23 @@ fn main() {
     assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
     */
 
-    /*println!("\nTesting tensor initialization");
+    println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
-    run_test!(unary::neg);
+    /*run_test!(unary::neg);
     run_test!(unary::relu);
     run_test!(unary::sin);
     run_test!(unary::cos);
     run_test!(unary::ln);
     run_test!(unary::exp);
     run_test!(unary::tanh);
-    run_test!(unary::sqrt);
+    run_test!(unary::sqrt);*/
     println!("\nTesting binary ops");
     run_test!(binary::add);
     run_test!(binary::sub);
     run_test!(binary::mul);
     run_test!(binary::div);
     run_test!(binary::pow);
-    run_test!(binary::cmplt);*/
+    run_test!(binary::cmplt);
     println!("\nTesting movement ops");
     //run_test!(movement::reshape);
     //run_test!(movement::expand);

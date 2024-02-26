@@ -169,19 +169,28 @@ impl OpenCL {
 
     /// Load tensors from disk.
     #[cfg(feature = "std")]
-    pub fn load(&self, path: impl AsRef<std::path::Path>) -> Result<Vec<Tensor<&OpenCL>>, ZyxError> {
+    pub fn load(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Vec<Tensor<&OpenCL>>, ZyxError> {
         zyx_core::io::load(self, path)
     }
 
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
-    pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+    pub fn plot_graph<'a, B: Backend + 'a>(
+        &self,
+        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> alloc::string::String {
         <&Self as Backend>::plot_graph(self, tensors)
     }
 }
 
 impl Backend for &OpenCL {
-    fn plot_graph<'a, B: Backend + 'a>(self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+    fn plot_graph<'a, B: Backend + 'a>(
+        self,
+        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> alloc::string::String {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
         self.0.read(|b| b.plot_graph_dot(&ids))
     }
@@ -289,6 +298,15 @@ fn t1() -> Result<(), ZyxError> {
     panic!();
     Ok(())
 }*/
+
+#[test]
+fn t0() -> Result<(), ZyxError> {
+    let dev = device()?;
+    let x = dev.tensor([[2, 3, 4], [2, 3, 1]]);
+    let x = x.sum(());
+    std::println!("{}", x);
+    Ok(())
+}
 
 /*#[test]
 fn t0() -> Result<(), ZyxError> {
