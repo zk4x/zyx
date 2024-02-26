@@ -18,10 +18,7 @@ use zyx_core::{
     scalar::Scalar,
 };
 
-const VECTOR_SYMBOLS: [&str; 16] = [
-    ".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc",
-    ".sd", ".se", ".sf",
-];
+//const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
 
 fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), ZyxError> {
     let err = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
@@ -837,8 +834,7 @@ impl zyx_core::compiler::Compiler for Compiler {
 
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
         let (source, gws, lws, rbs) = if ast.reduce_axes.is_some() {
-            todo!()
-            //compile_r_kernel(ast)
+            compile_r_kernel(ast)
         } else {
             compile_e_kernel(ast)
         };
@@ -952,13 +948,113 @@ fn compile_e_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
     }
     source = f!(
         "{source}data{res_id}[{}] = var{};\n}}",
-        ast.shape
-            .strides()
-            .iter()
-            .enumerate()
-            .map(|(i, st)| f!("idx{i}*{st}"))
-            .collect::<Vec<_>>()
-            .join("+"),
+        zyx_core::view::View::new(ast.shape.clone()).cidx().1,
+        nid - 1
+    );
+
+    (
+        source,
+        global_work_size,
+        local_work_size,
+        ast.shape.numel() * ast.dtype.byte_size(),
+    )
+}
+
+fn compile_r_kernel(ast: &AST) -> (String, Vec<usize>, Vec<usize>, usize) {
+    let max_lws = 256;
+    let id_t = "int";
+
+    let mut lws = 1;
+    let global_work_size: Vec<usize> = ast.shape.clone().into();
+    // OpenCL runtimes are horrible at inferring local work sizes, we just have to give it our
+    let local_work_size: Vec<usize> = global_work_size
+        .iter()
+        .rev()
+        .map(|d| {
+            let mut x = 1;
+            while d % (x * 2) == 0 && x * lws < max_lws {
+                x *= 2;
+            }
+            lws *= x;
+            x
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let mut source = f!("(\n  ");
+
+    let mut res_id = 0;
+    for dtype in &ast.arg_dtypes {
+        source = f!(
+            "{source}__global const {}* data{res_id},\n  ",
+            dtype.ocl_str()
+        );
+        res_id += 1;
+    }
+    source = f!(
+        "{source}__global {}* data{res_id}\n) {{\n  ",
+        ast.dtype.ocl_str()
+    );
+
+    for i in 0..global_work_size.len() {
+        source = f!(
+            "{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ",
+            global_work_size[i]
+        );
+    }
+
+    let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
+    let mut nid = 0;
+    for op in ast.ops.iter() {
+        //let fdt = DType::from_ocl_str(dtype).is_floating();
+        let zero = match DType::from_ocl_str(dtype) {
+            DType::F32 => "0.0f",
+            DType::F64 => "0.0",
+            DType::I32 => "0",
+        };
+        let res = match op {
+            // TODO check if this should be tile or data
+            Op::Leaf(x) => {
+                let view = &ast.arg_views[*x as usize];
+                std::println!("{view:?}");
+                dtype = ast.arg_dtypes[*x as usize].ocl_str();
+                //bytes += view.original_numel();
+                let (p, i) = view.cidx();
+                if p.is_empty() {
+                    f!("{dtype} var{nid} = data{x}[{i}]")
+                } else {
+                    f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
+                }
+            }
+            Op::Cast(x, dt) => {
+                dtype = dt.ocl_str();
+                f!("{dtype} var{nid} = convert_{dtype}(var{x})")
+            }
+            Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
+            Op::ReLU(x) => f!("{dtype} var{nid} = max(var{x}, {zero})"),
+            Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
+            Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
+            Op::Ln(x) => f!("{dtype} var{nid} = log(var{x})"),
+            Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
+            Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
+            Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
+            Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
+            Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
+            Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
+            Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
+            Op::Pow(x, y) => f!("{dtype} var{nid} = pow(var{x}, var{y})"),
+            Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
+            Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
+            Op::Sum(..) | Op::Max(..) => panic!(),
+        };
+        source = f!("{source}{res};\n  ");
+        nid += 1;
+    }
+    source = f!(
+        "{source}data{res_id}[{}] = var{};\n}}",
+        zyx_core::view::View::new(ast.shape.clone()).cidx().1,
         nid - 1
     );
 
@@ -1025,13 +1121,13 @@ fn t5() -> Result<(), ZyxError> {
 fn t5() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.tensor([[2, 3, 1], [4, 2, 1]]);
-    //let y = dev.tensor([2]);
+    let y = dev.tensor([2]);
     //let z = x.sum(0) + y.expand([2, 3]).sum(0);
     //let x = dev.randn([7, 4, 2], DType::F32);
     //let z = (x + &y).sum(0) + &y;
     //let z = x.max([0, 1]);
     //let z = x.pad([(-1, 0)], 0);
-    let z = x.get((.., 1..3));
+    let z = x.get((.., 1..3)) + y;
     std::println!("{z}");
     Ok(())
 }

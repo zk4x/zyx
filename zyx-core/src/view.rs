@@ -291,7 +291,7 @@ impl View {
             {
                 std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
-                    0 => idx += "0+",
+                    0 => idx += "",
                     1 => idx += &f!("idx{i}+"),
                     _ => idx += &f!("idx{i}*{st}+"),
                 }
@@ -307,6 +307,9 @@ impl View {
                 if *left_p > 0 {
                     idx += &f!("-{}+", left_p);
                 }
+            }
+            if idx.is_empty() {
+                idx = f!("0+");
             }
         } else {
             return (padding_condition, "0".into());

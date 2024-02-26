@@ -126,7 +126,10 @@ impl CPU {
 
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
-    pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+    pub fn plot_graph<'a, B: Backend + 'a>(
+        &self,
+        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> alloc::string::String {
         <&Self as Backend>::plot_graph(self, tensors)
     }
 
@@ -138,7 +141,10 @@ impl CPU {
 }
 
 impl Backend for &CPU {
-    fn plot_graph<'a, B: Backend + 'a>(self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+    fn plot_graph<'a, B: Backend + 'a>(
+        self,
+        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> alloc::string::String {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
         self.0.read(|b| b.plot_graph_dot(&ids))
     }
@@ -220,13 +226,21 @@ fn test_layer_norm() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
-    let x = dev.tensor(0..150).reshape([10, 15]);
-    let x = x.transpose().reshape([10, 15]).get((1..2, ..));
-    std::println!("{x}");
+    let Q = dev.tensor([[0.0, 0.75], [0.0, 0.0]]);
+    let E = dev.eye(2, DType::F32);
+    let p = dev.tensor([30000., 20000.]);
+    let d = 0.909090909090909090;
+    let R = dev.tensor([[0.0, 0.25], [0.8, 0.2]]);
+    let n = dev.tensor([0.0, 100.0]);
+    let inv = dev.tensor([[1.0, 0.681818], [0.0, 1.0]]);
 
+    let y = p.dot(inv).dot(R).dot(n);
+
+    std::println!("{y}");
+    //std::println!("{}", n.transpose());
     panic!();
     Ok(())
-}*/
+}

@@ -1,18 +1,13 @@
 use crate::axes::Axes;
 use crate::error::ZyxError;
+use crate::shape::Shape;
 use crate::{
-    dtype::DType,
-    node::Node,
-    runtime::RuntimeBackend,
-    scalar::Scalar,
-    tensor::Id,
-    view::View,
+    dtype::DType, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View,
 };
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use crate::shape::Shape;
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -34,7 +29,7 @@ pub trait Compiler {
         &mut self,
         program: &Self::Program,
         args: &[&Self::Buffer],
-        flop: usize
+        flop: usize,
     ) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError>;
@@ -91,9 +86,10 @@ pub enum Op {
 }
 
 impl Op {
+    // also accesses leafs, needed for binary and where op!!!
     fn access_parameters(&mut self, mut op: impl FnMut(&mut u8)) {
         match self {
-            Op::Leaf(..) => {}
+            Op::Leaf(x) => op(x),
             Op::Cast(x, ..)
             | Op::Neg(x)
             | Op::ReLU(x)
@@ -205,14 +201,18 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         for nid in order.iter().copied() {
             self.store(nid, &mut nodes)?;
             let buffer = match &nodes[nid.i()] {
-                Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => { panic!() }
-                Node::Leaf(sh, dtype) => {
-                    Buffer::leaf(nid, sh, dtype)
+                Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => {
+                    panic!()
                 }
-                Node::Uniform(..) => { todo!() }
+                Node::Leaf(sh, dtype) => Buffer::leaf(nid, sh, dtype),
+                Node::Uniform(..) => {
+                    todo!()
+                }
                 Node::Cast(x, dtype) => {
                     let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
+                    buffer
+                        .ops
+                        .push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
                     buffer.dtype = *dtype;
                     buffer
                 }
@@ -275,7 +275,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Cmplt(x, y))?
                 }
                 Node::Where(x, y, z) => {
-                    let reduce_axes = match (buffers[&x].reduce_axes.clone(), buffers[&y].reduce_axes.clone(), buffers[&z].reduce_axes.clone()) {
+                    let reduce_axes = match (
+                        buffers[&x].reduce_axes.clone(),
+                        buffers[&y].reduce_axes.clone(),
+                        buffers[&z].reduce_axes.clone(),
+                    ) {
                         (Some(x_ax), Some(_), Some(_)) => {
                             self.evaluate_buffer(*y, &mut buffers)?;
                             self.evaluate_buffer(*z, &mut buffers)?;
@@ -289,9 +293,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             self.evaluate_buffer(*z, &mut buffers)?;
                             Some(x_ax)
                         }
-                        (Some(x_ax), None, None) => {
-                            Some(x_ax)
-                        }
+                        (Some(x_ax), None, None) => Some(x_ax),
                         (None, Some(y_ax), Some(_)) => {
                             self.evaluate_buffer(*z, &mut buffers)?;
                             Some(y_ax)
@@ -300,12 +302,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             self.evaluate_buffer(*z, &mut buffers)?;
                             Some(y_ax)
                         }
-                        (None, None, Some(z_ax)) => {
-                            Some(z_ax)
-                        }
-                        (None, None, None) => {
-                            None
-                        }
+                        (None, None, Some(z_ax)) => Some(z_ax),
+                        (None, None, None) => None,
                     };
                     let y_buffer = &buffers[y];
                     let x_buffer = &buffers[x];
@@ -313,16 +311,38 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     let n = x_buffer.ops.len() as u8;
                     let n2 = n + y_buffer.ops.len() as u8;
                     Buffer {
-                        program_args: x_buffer.program_args.iter().chain(y_buffer.program_args.iter()).copied().collect(),
-                        arg_views: x_buffer.arg_views.iter().chain(y_buffer.arg_views.iter()).cloned().collect(),
-                        arg_dtypes: x_buffer.arg_dtypes.iter().chain(y_buffer.arg_dtypes.iter()).copied().collect(),
-                        ops: x_buffer.ops.iter().cloned().chain(y_buffer.ops.iter().cloned().map(|mut op| {
-                            op.access_parameters(|x| *x += n);
-                            op
-                        })).chain(z_buffer.ops.iter().cloned().map(|mut op| {
-                            op.access_parameters(|x| *x += n2);
-                            op
-                        })).chain([Op::Where(n-1, n2-1, n2+z_buffer.ops.len() as u8 - 1)]).collect(),
+                        program_args: x_buffer
+                            .program_args
+                            .iter()
+                            .chain(y_buffer.program_args.iter())
+                            .copied()
+                            .collect(),
+                        arg_views: x_buffer
+                            .arg_views
+                            .iter()
+                            .chain(y_buffer.arg_views.iter())
+                            .cloned()
+                            .collect(),
+                        arg_dtypes: x_buffer
+                            .arg_dtypes
+                            .iter()
+                            .chain(y_buffer.arg_dtypes.iter())
+                            .copied()
+                            .collect(),
+                        ops: x_buffer
+                            .ops
+                            .iter()
+                            .cloned()
+                            .chain(y_buffer.ops.iter().cloned().map(|mut op| {
+                                op.access_parameters(|x| *x += n);
+                                op
+                            }))
+                            .chain(z_buffer.ops.iter().cloned().map(|mut op| {
+                                op.access_parameters(|x| *x += n2);
+                                op
+                            }))
+                            .chain([Op::Where(n - 1, n2 - 1, n2 + z_buffer.ops.len() as u8 - 1)])
+                            .collect(),
                         reduce_axes,
                         shape: x_buffer.shape.clone(),
                         dtype: x_buffer.dtype,
@@ -330,7 +350,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     }
                 }
                 Node::Reshape(x, sh) => {
-                    let mut buffer = buffers[&x].clone();
+                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                        self.evaluate_buffer(*x, &mut buffers)?.clone()
+                    } else {
+                        buffers[&x].clone()
+                    };
                     for view in &mut buffer.arg_views {
                         *view = view.reshape(sh);
                     }
@@ -338,7 +362,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     buffer
                 }
                 Node::Expand(x, sh) => {
-                    let mut buffer = buffers[&x].clone();
+                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                        self.evaluate_buffer(*x, &mut buffers)?.clone()
+                    } else {
+                        buffers[&x].clone()
+                    };
                     for view in &mut buffer.arg_views {
                         *view = view.expand(sh);
                     }
@@ -346,7 +374,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     buffer
                 }
                 Node::Permute(x, ax, sh) => {
-                    let mut buffer = buffers[&x].clone();
+                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                        self.evaluate_buffer(*x, &mut buffers)?.clone()
+                    } else {
+                        buffers[&x].clone()
+                    };
                     for view in &mut buffer.arg_views {
                         *view = view.permute(ax);
                     }
@@ -354,7 +386,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     buffer
                 }
                 Node::Pad(x, padding, sh) => {
-                    let mut buffer = buffers[&x].clone();
+                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                        self.evaluate_buffer(*x, &mut buffers)?.clone()
+                    } else {
+                        buffers[&x].clone()
+                    };
                     for view in &mut buffer.arg_views {
                         *view = view.pad(padding);
                     }
@@ -391,7 +427,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             };
             buffers.insert(nid, buffer);
 
-           if to_eval.contains(&nid) || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1) {
+            if to_eval.contains(&nid) || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1) {
                 self.evaluate_buffer(nid, &mut buffers)?;
             }
 
@@ -459,11 +495,24 @@ impl<C: Compiler> CompiledBackend<C> {
         Ok(())
     }
 
-    fn evaluate_buffer<'a>(&mut self, x: Id, buffers: &'a mut BTreeMap<Id, Buffer>) -> Result<&'a Buffer, ZyxError> {
+    fn evaluate_buffer<'a>(
+        &mut self,
+        x: Id,
+        buffers: &'a mut BTreeMap<Id, Buffer>,
+    ) -> Result<&'a Buffer, ZyxError> {
         if self.is_evaluated(x) {
-            return Ok(&buffers[&x])
+            return Ok(&buffers[&x]);
         }
-        let Buffer { program_args, arg_views, arg_dtypes, ops, reduce_axes, shape, dtype, flop } = buffers[&x].clone();
+        let Buffer {
+            program_args,
+            arg_views,
+            arg_dtypes,
+            ops,
+            reduce_axes,
+            shape,
+            dtype,
+            flop,
+        } = buffers[&x].clone();
         // TODO reshape and permute reduce axes
         let ast = AST {
             arg_views,
@@ -474,7 +523,9 @@ impl<C: Compiler> CompiledBackend<C> {
             reduce_axes,
         };
         std::println!("Ops");
-        for op in &*ast.ops { std::println!("{op:?}"); }
+        for op in &*ast.ops {
+            std::println!("{op:?}");
+        }
         // Used cached program or compile new program
         let program = if let Some(program) = self.programs.get(&ast) {
             program
@@ -482,39 +533,70 @@ impl<C: Compiler> CompiledBackend<C> {
             let program = self.compiler.compile(&ast)?;
             self.programs.entry(ast).or_insert(program)
         };
-        let program_args: Vec<&C::Buffer> = program_args.into_iter().map(|nid| &self.buffers[&nid]).collect();
+        let program_args: Vec<&C::Buffer> = program_args
+            .into_iter()
+            .map(|nid| &self.buffers[&nid])
+            .collect();
         // Run the program
-        self.buffers.insert(x, self.compiler.launch(program, &program_args, flop)?);
+        self.buffers
+            .insert(x, self.compiler.launch(program, &program_args, flop)?);
         Ok(buffers.entry(x).or_insert(Buffer::leaf(x, &shape, &dtype)))
     }
 
-    fn binary_buffer(&mut self, x: Id, y: Id, buffers: &mut BTreeMap<Id, Buffer>, op: impl Fn(u8, u8) -> Op) -> Result<Buffer, ZyxError> {
-        let reduce_axes = match (buffers[&x].reduce_axes.clone(), buffers[&y].reduce_axes.clone()) {
+    fn binary_buffer(
+        &mut self,
+        x: Id,
+        y: Id,
+        buffers: &mut BTreeMap<Id, Buffer>,
+        op: impl Fn(u8, u8) -> Op,
+    ) -> Result<Buffer, ZyxError> {
+        let reduce_axes = match (
+            buffers[&x].reduce_axes.clone(),
+            buffers[&y].reduce_axes.clone(),
+        ) {
             (Some(x_ax), Some(_)) => {
                 self.evaluate_buffer(y, buffers)?;
                 Some(x_ax)
             }
-            (Some(x_ax), None) => {
-                Some(x_ax)
-            }
-            (None, Some(y_ax)) => {
-                Some(y_ax)
-            }
-            (None, None) => {
-                None
-            }
+            (Some(x_ax), None) => Some(x_ax),
+            (None, Some(y_ax)) => Some(y_ax),
+            (None, None) => None,
         };
         let y_buffer = &buffers[&y];
         let x_buffer = &buffers[&x];
         let n = x_buffer.ops.len() as u8;
         Ok(Buffer {
-            program_args: x_buffer.program_args.iter().chain(y_buffer.program_args.iter()).copied().collect(),
-            arg_views: x_buffer.arg_views.iter().chain(y_buffer.arg_views.iter()).cloned().collect(),
-            arg_dtypes: x_buffer.arg_dtypes.iter().chain(y_buffer.arg_dtypes.iter()).copied().collect(),
-            ops: x_buffer.ops.iter().cloned().chain(y_buffer.ops.iter().cloned().map(|mut op| {
-                op.access_parameters(|x| *x += n);
-                op
-            })).chain([op(x_buffer.ops.len() as u8 - 1, x_buffer.ops.len() as u8+y_buffer.ops.len() as u8 - 1)]).collect(),
+            program_args: x_buffer
+                .program_args
+                .iter()
+                .chain(y_buffer.program_args.iter())
+                .copied()
+                .collect(),
+            arg_views: x_buffer
+                .arg_views
+                .iter()
+                .chain(y_buffer.arg_views.iter())
+                .cloned()
+                .collect(),
+            arg_dtypes: x_buffer
+                .arg_dtypes
+                .iter()
+                .chain(y_buffer.arg_dtypes.iter())
+                .copied()
+                .collect(),
+            ops: x_buffer
+                .ops
+                .iter()
+                .cloned()
+                .chain(y_buffer.ops.iter().cloned().map(|mut op| {
+                    op.access_parameters(|x| *x += n);
+                    op
+                }))
+                .chain([op(
+                    x_buffer.ops.len() as u8 - 1,
+                    x_buffer.ops.len() as u8 + y_buffer.ops.len() as u8 - 1,
+                )])
+                .collect(),
             reduce_axes,
             shape: x_buffer.shape.clone(),
             dtype: x_buffer.dtype,

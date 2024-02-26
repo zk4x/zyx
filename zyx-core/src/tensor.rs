@@ -61,7 +61,7 @@ impl IntoRange for Range<i64> {
 
 impl IntoRange for i64 {
     fn into_range(self) -> Range<i64> {
-        self..self+1
+        self..self + 1
     }
 }
 
@@ -78,50 +78,118 @@ impl<I: IntoRange> IntoIndex for &[I] {
 }
 
 impl<I0: IntoRange> IntoIndex for I0 {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         [self.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange> IntoIndex for (I0, I1) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         [self.0.into_range(), self.1.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange> IntoIndex for (I0, I1, I2) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
-        [self.0.into_range(), self.1.into_range(), self.2.into_range()].into_iter()
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        [
+            self.0.into_range(),
+            self.1.into_range(),
+            self.2.into_range(),
+        ]
+        .into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (I0, I1, I2, I3) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
-        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range()].into_iter()
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        [
+            self.0.into_range(),
+            self.1.into_range(),
+            self.2.into_range(),
+            self.3.into_range(),
+        ]
+        .into_iter()
     }
 }
 
-impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> IntoIndex for (I0, I1, I2, I3, I4) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
-        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range()].into_iter()
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> IntoIndex
+    for (I0, I1, I2, I3, I4)
+{
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        [
+            self.0.into_range(),
+            self.1.into_range(),
+            self.2.into_range(),
+            self.3.into_range(),
+            self.4.into_range(),
+        ]
+        .into_iter()
     }
 }
 
-impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange> IntoIndex for (I0, I1, I2, I3, I4, I5) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
-        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range(), self.5.into_range()].into_iter()
+impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange>
+    IntoIndex for (I0, I1, I2, I3, I4, I5)
+{
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        [
+            self.0.into_range(),
+            self.1.into_range(),
+            self.2.into_range(),
+            self.3.into_range(),
+            self.4.into_range(),
+            self.5.into_range(),
+        ]
+        .into_iter()
     }
 }
 
-impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange, I6: IntoRange> IntoIndex for (I0, I1, I2, I3, I4, I5, I6) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
-        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range(), self.5.into_range(), self.6.into_range()].into_iter()
+impl<
+        I0: IntoRange,
+        I1: IntoRange,
+        I2: IntoRange,
+        I3: IntoRange,
+        I4: IntoRange,
+        I5: IntoRange,
+        I6: IntoRange,
+    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
+{
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        [
+            self.0.into_range(),
+            self.1.into_range(),
+            self.2.into_range(),
+            self.3.into_range(),
+            self.4.into_range(),
+            self.5.into_range(),
+            self.6.into_range(),
+        ]
+        .into_iter()
     }
 }
 
-impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange, I6: IntoRange, I7: IntoRange> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7) {
-    fn into_index(self) -> impl IntoIterator<Item=Range<i64>> {
-        [self.0.into_range(), self.1.into_range(), self.2.into_range(), self.3.into_range(), self.4.into_range(), self.5.into_range(), self.6.into_range(), self.7.into_range()].into_iter()
+impl<
+        I0: IntoRange,
+        I1: IntoRange,
+        I2: IntoRange,
+        I3: IntoRange,
+        I4: IntoRange,
+        I5: IntoRange,
+        I6: IntoRange,
+        I7: IntoRange,
+    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
+{
+    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+        [
+            self.0.into_range(),
+            self.1.into_range(),
+            self.2.into_range(),
+            self.3.into_range(),
+            self.4.into_range(),
+            self.5.into_range(),
+            self.6.into_range(),
+            self.7.into_range(),
+        ]
+        .into_iter()
     }
 }
 
@@ -386,7 +454,8 @@ impl<B: Backend> Tensor<B> {
         sources
             .into_iter()
             .map(move |x: &Tensor<B>| grads.get(&x.id).cloned())
-            .map(move |x| x.map(|x| tensor(x, self.backend))).collect()
+            .map(move |x| x.map(|x| tensor(x, self.backend)))
+            .collect()
     }
 
     // Unary ops
@@ -460,7 +529,7 @@ impl<B: Backend> Tensor<B> {
     /// Returns 1/self
     #[must_use]
     pub fn reciprocal(&self) -> Tensor<B> {
-        self.backend().ones(self.shape(), self.dtype())/self
+        self.backend().ones(self.shape(), self.dtype()) / self
     }
 
     /// Returns 1/self.sqrt()
@@ -472,7 +541,10 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with each element of self randomly zeroed with given probability.
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
-        self.backend().tensor(probability).cmplt(self.backend().uniform(self.shape(), 0.0..1.0)) * self
+        self.backend()
+            .tensor(probability)
+            .cmplt(self.backend().uniform(self.shape(), 0.0..1.0))
+            * self
     }
 
     /// Returns a new tensor with the absolute value of the elements of self.
@@ -504,7 +576,8 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor<B> {
         let x = self * beta.clone();
-        x.cmplt(threshold).where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
+        x.cmplt(threshold)
+            .where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
     }
 
     /// Returns a new tensor with the tangent of the elements of self.
@@ -528,13 +601,18 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the selu of the elements of self.
     #[must_use]
     pub fn selu(&self) -> Tensor<B> {
-        1.0507009873554804934193349852946f32 * (self.relu() - (1.6732632423543772848170429916717f32 * (self.backend.ones(1, self.dtype()) - self.exp())).relu())
+        1.0507009873554804934193349852946f32
+            * (self.relu()
+                - (1.6732632423543772848170429916717f32
+                    * (self.backend.ones(1, self.dtype()) - self.exp()))
+                .relu())
     }
 
     /// Returns a new tensor with the celu of the elements of self.
     #[must_use]
     pub fn celu(&self, alpha: impl Scalar) -> Tensor<B> {
-        self.relu() - ((self.backend.ones(1, self.dtype()) - (self/alpha.clone()).exp()) * alpha).relu()
+        self.relu()
+            - ((self.backend.ones(1, self.dtype()) - (self / alpha.clone()).exp()) * alpha).relu()
     }
 
     /// Returns a new tensor with the gelu of the elements of self.
@@ -595,7 +673,7 @@ impl<B: Backend> Tensor<B> {
         let exponent = self.backend.tensor(exponent);
         if exponent.numel() == 1 {
             if exponent == 2i32 {
-                return self * self
+                return self * self;
             }
         }
         self.binary_op(exponent, BOp::Pow)
@@ -616,7 +694,10 @@ impl<B: Backend> Tensor<B> {
         let (x, y) = Tensor::broadcast(x, y);
         let (x, z) = Tensor::broadcast(x, z);
         let (y, z) = Tensor::broadcast(y, z);
-        tensor(self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap(), self.backend)
+        tensor(
+            self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap(),
+            self.backend,
+        )
     }
 
     /// Returns cosine_similarity between self and rhs, computed along axes.
@@ -644,8 +725,7 @@ impl<B: Backend> Tensor<B> {
         let yshape = y.shape();
         let yrank = yshape.rank();
         debug_assert_eq!(
-            xshape[-1],
-            yshape[-1],
+            xshape[-1], yshape[-1],
             //yshape[-(yrank.min(2) as i64)],
             "Cannot dot tensors with shapes {xshape} and {yshape}"
         );
@@ -663,14 +743,15 @@ impl<B: Backend> Tensor<B> {
             .collect::<Box<[usize]>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        (self.reshape(x_shape) * y.reshape(y_shape)).sum(-1)
-        .reshape(
-            xshape[0..-1]
-                .iter()
-                .copied()
-                .chain([yshape[-2]])
-                .collect::<Box<[usize]>>(),
-        )
+        (self.reshape(x_shape) * y.reshape(y_shape))
+            .sum(-1)
+            .reshape(
+                xshape[0..-1]
+                    .iter()
+                    .copied()
+                    .chain([yshape[-2]])
+                    .collect::<Box<[usize]>>(),
+            )
     }
 
     // Movement ops
@@ -698,11 +779,20 @@ impl<B: Backend> Tensor<B> {
     pub fn expand(&self, shape: impl Into<Shape>) -> Tensor<B> {
         let shape = shape.into();
         let sh = self.shape();
-        debug_assert!(shape.iter().rev().enumerate().all(|(i, d)| if sh.rank() > i { *d == sh[sh.rank() - i - 1] || sh[sh.rank() - i - 1] == 1 } else { true }), "Can't expand tensor with shape {sh} to {shape}");
+        debug_assert!(
+            shape
+                .iter()
+                .rev()
+                .enumerate()
+                .all(|(i, d)| if sh.rank() > i {
+                    *d == sh[sh.rank() - i - 1] || sh[sh.rank() - i - 1] == 1
+                } else {
+                    true
+                }),
+            "Can't expand tensor with shape {sh} to {shape}"
+        );
         tensor(
-            self.backend
-                .push(Node::Expand(self.id, shape))
-                .unwrap(),
+            self.backend.push(Node::Expand(self.id, shape)).unwrap(),
             self.backend,
         )
     }
@@ -759,7 +849,12 @@ impl<B: Backend> Tensor<B> {
         let padding: Box<[(i64, i64)]> = padding.into_iter().collect();
         let sh = self.shape();
         debug_assert!(
-            padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|((lp, rp), d)| (*lp < 0 && ((-lp) as usize) < *d) && (*rp < 0 && ((-rp) as usize) < *d)),
+            padding.len() <= sh.rank()
+                && padding
+                    .iter()
+                    .zip(sh.iter().rev())
+                    .all(|((lp, rp), d)| (*lp < 0 && ((-lp) as usize) < *d)
+                        && (*rp < 0 && ((-rp) as usize) < *d)),
             "Cannot pad tensor with shape {sh} with padding {padding:?}"
         );
         let psh = sh.clone().pad(&padding);
@@ -769,11 +864,13 @@ impl<B: Backend> Tensor<B> {
                 .unwrap(),
             self.backend,
         );
-        if value.numel() == 1 && match dtype {
-            DType::F32 => value.item::<f32>().unwrap().is_equal(0f32),
-            DType::F64 => value.item::<f64>().unwrap().is_equal(0f64),
-            DType::I32 => value.item::<i32>().unwrap().is_equal(0i32),
-        } {
+        if value.numel() == 1
+            && match dtype {
+                DType::F32 => value.item::<f32>().unwrap().is_equal(0f32),
+                DType::F64 => value.item::<f64>().unwrap().is_equal(0f64),
+                DType::I32 => value.item::<i32>().unwrap().is_equal(0i32),
+            }
+        {
             t0
         } else {
             t0 + tensor(
@@ -795,7 +892,10 @@ impl<B: Backend> Tensor<B> {
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor<B> {
         let axes = axes.into_axes(self.rank());
         let shape = self.shape().permute(&axes);
-        debug_assert!(axes.len() == shape.rank(), "Cannot permute tensor with shape {shape} with axes {axes}");
+        debug_assert!(
+            axes.len() == shape.rank(),
+            "Cannot permute tensor with shape {shape} with axes {axes}"
+        );
         tensor(
             self.backend
                 .push(Node::Permute(self.id, axes, shape))
@@ -808,23 +908,17 @@ impl<B: Backend> Tensor<B> {
     /// If self has rank == 1 and numel == n, then result will have shape /[n, 1/]
     #[must_use]
     pub fn transpose(&self) -> Tensor<B> {
-        let rank = self.rank();
+        let mut rank = self.rank();
         let x = if rank == 1 {
-            self.reshape([1, self.shape()[0]])
+            let n = self.numel();
+            rank = 2;
+            self.reshape([1, n])
         } else {
             self.clone()
         };
-        let shape = x.shape();
-        let mut axes: Box<[usize]> = (0..rank).collect();
+        let mut axes: Vec<usize> = (0..rank).collect();
         axes.swap(rank - 1, rank - 2);
-        let axes = axes.into_axes(rank);
-        let res_shape = shape.permute(&axes);
-        tensor(
-            self.backend
-                .push(Node::Permute(x.id, axes, res_shape))
-                .unwrap(),
-            self.backend,
-        )
+        x.permute(axes)
     }
 
     /// Flatten. Joins axes into one dimension,
@@ -837,7 +931,7 @@ impl<B: Backend> Tensor<B> {
                 ld *= sh[a];
             }
         }
-        self.reshape([sh.numel()/ld, ld])
+        self.reshape([sh.numel() / ld, ld])
     }
 
     // Reduce ops
@@ -955,17 +1049,36 @@ impl<B: Backend> Tensor<B> {
     pub fn get(&self, index: impl IntoIndex) -> Tensor<B> {
         // TODO asserts
         let shape = self.shape();
-        let padding: Vec<(i64, i64)> = index.into_index()
+        let padding: Vec<(i64, i64)> = index
+            .into_index()
             .into_iter()
             .zip(shape.iter())
-            .map(|(r, d)| (
-                if r.start >= 0 { -r.start } else { -r.start - *d as i64 },
-                if r.end == i64::MAX { 0 } else if r.end > 0 { -(*d as i64-r.end) } else { r.end }
-            )).collect();
+            .map(|(r, d)| {
+                (
+                    if r.start >= 0 {
+                        -r.start
+                    } else {
+                        -r.start - *d as i64
+                    },
+                    if r.end == i64::MAX {
+                        0
+                    } else if r.end > 0 {
+                        -(*d as i64 - r.end)
+                    } else {
+                        r.end
+                    },
+                )
+            })
+            .collect();
         //std::println!("Get padding: {padding:?}");
         let n = shape.rank() - padding.len();
         self.pad(
-            padding.into_iter().chain(repeat((0, 0)).take(n)).collect::<Vec<(i64, i64)>>().into_iter().rev(),
+            padding
+                .into_iter()
+                .chain(repeat((0, 0)).take(n))
+                .collect::<Vec<(i64, i64)>>()
+                .into_iter()
+                .rev(),
             0,
         )
     }
@@ -984,7 +1097,7 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>, dim: i64) -> Tensor<B>
     where
-        B: 'a
+        B: 'a,
     {
         let tensors: Vec<&Tensor<B>> = tensors.into_iter().collect();
         let shape = tensors[0].shape();
@@ -999,9 +1112,17 @@ impl<B: Backend> Tensor<B> {
             }
         }
         let mut offset = 0i64;
-        let mut res = tensors[0].backend.zeros(tensors[0].shape(), tensors[0].dtype());
+        let mut res = tensors[0]
+            .backend
+            .zeros(tensors[0].shape(), tensors[0].dtype());
         for tensor in tensors {
-            res = res + tensor.pad(repeat((0i64, 0i64)).take(rank - dim - 1).chain([(offset, 0i64)]), 0);
+            res = res
+                + tensor.pad(
+                    repeat((0i64, 0i64))
+                        .take(rank - dim - 1)
+                        .chain([(offset, 0i64)]),
+                    0,
+                );
             offset += tensor.shape()[dim] as i64;
         }
         res
@@ -1126,7 +1247,10 @@ impl<B: Backend> Tensor<B> {
 
         for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
-                debug_assert!(*x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape} and {y_shape}");
+                debug_assert!(
+                    *x == 1 || *y == 1,
+                    "Left and right tensor shapes can not be broadcasted: {x_shape} and {y_shape}"
+                );
             }
         }
 
@@ -1347,15 +1471,9 @@ where
         tensor(
             backend
                 .push(match T::dtype() {
-                    DType::F32 => {
-                        Node::IterF32(Box::new(self.map(T::into_f32)), n.into())
-                    }
-                    DType::F64 => {
-                        Node::IterF64(Box::new(self.map(T::into_f64)), n.into())
-                    }
-                    DType::I32 => {
-                        Node::IterI32(Box::new(self.map(T::into_i32)), n.into())
-                    }
+                    DType::F32 => Node::IterF32(Box::new(self.map(T::into_f32)), n.into()),
+                    DType::F64 => Node::IterF64(Box::new(self.map(T::into_f64)), n.into()),
+                    DType::I32 => Node::IterI32(Box::new(self.map(T::into_i32)), n.into()),
                 })
                 .unwrap(),
             backend,
@@ -1499,15 +1617,31 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
     }
 }
 
-impl<B: Backend, IT: IntoTensor<B> + Clone> PartialEq<IT> for Tensor<B>
-{
+impl<B: Backend, IT: IntoTensor<B> + Clone> PartialEq<IT> for Tensor<B> {
     fn eq(&self, other: &IT) -> bool {
         let other = self.backend.tensor(other.clone());
         let dtype = self.dtype();
-        self.shape() == other.shape() && dtype == other.dtype() && match dtype {
-            DType::F32 => self.to_vec::<f32>().unwrap().into_iter().zip(other.to_vec::<f32>().unwrap()).all(|(x, y)| x.is_equal(y)),
-            DType::F64 => self.to_vec::<f64>().unwrap().into_iter().zip(other.to_vec::<f64>().unwrap()).all(|(x, y)| x.is_equal(y)),
-            DType::I32 => self.to_vec::<i32>().unwrap().into_iter().zip(other.to_vec::<i32>().unwrap()).all(|(x, y)| x.is_equal(y)),
-        }
+        self.shape() == other.shape()
+            && dtype == other.dtype()
+            && match dtype {
+                DType::F32 => self
+                    .to_vec::<f32>()
+                    .unwrap()
+                    .into_iter()
+                    .zip(other.to_vec::<f32>().unwrap())
+                    .all(|(x, y)| x.is_equal(y)),
+                DType::F64 => self
+                    .to_vec::<f64>()
+                    .unwrap()
+                    .into_iter()
+                    .zip(other.to_vec::<f64>().unwrap())
+                    .all(|(x, y)| x.is_equal(y)),
+                DType::I32 => self
+                    .to_vec::<i32>()
+                    .unwrap()
+                    .into_iter()
+                    .zip(other.to_vec::<i32>().unwrap())
+                    .all(|(x, y)| x.is_equal(y)),
+            }
     }
 }
