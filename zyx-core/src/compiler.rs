@@ -2,10 +2,11 @@ use crate::axes::Axes;
 use crate::error::ZyxError;
 use crate::shape::Shape;
 use crate::{
-    dtype::DType, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View, utils::get_dtype
+    dtype::DType, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id,
+    utils::get_dtype, view::View,
 };
 use alloc::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     vec::Vec,
 };
 
@@ -85,40 +86,6 @@ pub enum Op {
     Max(u8),
 }
 
-impl Op {
-    // also accesses leafs, needed for binary and where op!!!
-    fn access_parameters(&mut self, mut op: impl FnMut(&mut u8)) {
-        match self {
-            Op::Leaf(x) => op(x),
-            Op::Cast(x, ..)
-            | Op::Neg(x)
-            | Op::ReLU(x)
-            | Op::Sin(x)
-            | Op::Cos(x)
-            | Op::Ln(x)
-            | Op::Exp(x)
-            | Op::Tanh(x)
-            | Op::Sqrt(x)
-            | Op::Sum(x)
-            | Op::Max(x) => op(x),
-            Op::Add(x, y)
-            | Op::Sub(x, y)
-            | Op::Mul(x, y)
-            | Op::Div(x, y)
-            | Op::Pow(x, y)
-            | Op::Cmplt(x, y) => {
-                op(x);
-                op(y);
-            }
-            Op::Where(x, y, z) => {
-                op(x);
-                op(y);
-                op(z);
-            }
-        }
-    }
-}
-
 /// Abstract syntax tree that can be compiled into program.
 /// Consists of kernel arguments, elementwise ops, optional reduce op
 /// and elementwise ops after reduce.
@@ -196,7 +163,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        rcs: BTreeMap<Id, u8>,
+        mut rcs: BTreeMap<Id, u8>,
         order: &[Id],
         mut nodes: &mut [Node],
     ) -> Result<(), ZyxError> {
@@ -204,6 +171,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         // TODO calculate flops for buffers :D
         for nid in order.iter().copied() {
             self.store(nid, &mut nodes)?;
+
             let buffer = match &nodes[nid.i()] {
                 Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => {
                     panic!()
@@ -279,6 +247,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Cmplt(x, y))?
                 }
                 Node::Where(x, y, z) => {
+                    // TODO fix this for x == y == z or any combination of those
                     let (reduce_axes, reduce_dtype) = match (
                         buffers[&x].reduce_axes.clone(),
                         buffers[&y].reduce_axes.clone(),
@@ -297,9 +266,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             self.evaluate_buffer(*z, &mut buffers)?;
                             (Some(x_ax), Some(buffers[&x].dtype))
                         }
-                        (Some(x_ax), None, None) => {
-                            (Some(x_ax), Some(buffers[&x].dtype))
-                        }
+                        (Some(x_ax), None, None) => (Some(x_ax), Some(buffers[&x].dtype)),
                         (None, Some(y_ax), Some(_)) => {
                             self.evaluate_buffer(*z, &mut buffers)?;
                             (Some(y_ax), Some(buffers[&y].dtype))
@@ -308,9 +275,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             self.evaluate_buffer(*z, &mut buffers)?;
                             (Some(y_ax), Some(buffers[&y].dtype))
                         }
-                        (None, None, Some(z_ax)) => {
-                            (Some(z_ax), Some(buffers[&z].dtype))
-                        }
+                        (None, None, Some(z_ax)) => (Some(z_ax), Some(buffers[&z].dtype)),
                         (None, None, None) => (None, None),
                     };
                     let y_buffer = &buffers[y];
@@ -341,12 +306,12 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             .ops
                             .iter()
                             .cloned()
-                            .chain(y_buffer.ops.iter().cloned().map(|mut op| {
-                                op.access_parameters(|x| *x += n);
+                            .chain(y_buffer.ops.iter().cloned().map(|op| {
+                                //op.access_parameters(|x| *x += n);
                                 op
                             }))
-                            .chain(z_buffer.ops.iter().cloned().map(|mut op| {
-                                op.access_parameters(|x| *x += n2);
+                            .chain(z_buffer.ops.iter().cloned().map(|op| {
+                                //op.access_parameters(|x| *x += n2);
                                 op
                             }))
                             .chain([Op::Where(n - 1, n2 - 1, n2 + z_buffer.ops.len() as u8 - 1)])
@@ -436,27 +401,16 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             };
             buffers.insert(nid, buffer);
 
-            if to_eval.contains(&nid) || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1) {
+            if to_eval.contains(&nid) || buffers[&nid].ops.len() > 200 || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1) {
                 self.evaluate_buffer(nid, &mut buffers)?;
             }
 
             /*for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
                     if *e.get() == 0 {
-                        self.remove(p)?;
-                    }
-                }
-            }*/
-            // i. e. if they contain other than just unary ops.
-            /*if self.is_evaluated(nid) {
-                let mut params: Vec<Id> = nodes[nid.i()].parameters().collect();
-                while let Some(p) = params.pop() {
-                    //std::println!("Param: {p}, rc: {}", rcs[&p]);
-                    if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
-                        if *e.get() == 0 {
-                            e.remove_entry();
+                        buffers.remove(&p);
+                        if self.is_evaluated(p) && buffers.values().all(|buffer| !buffer.program_args.contains(&p)) {
                             self.remove(p)?;
-                            params.extend(nodes[p.i()].parameters());
                         }
                     }
                 }
@@ -548,7 +502,8 @@ impl<C: Compiler> CompiledBackend<C> {
         // Run the program
         self.buffers
             .insert(x, self.compiler.launch(program, &program_args, flop)?);
-        Ok(buffers.entry(x).or_insert(Buffer::leaf(x, &shape, &dtype)))
+        buffers.insert(x, Buffer::leaf(x, &shape, &dtype));
+        Ok(&buffers[&x])
     }
 
     fn binary_buffer(
@@ -558,20 +513,36 @@ impl<C: Compiler> CompiledBackend<C> {
         buffers: &mut BTreeMap<Id, Buffer>,
         op: impl Fn(u8, u8) -> Op,
     ) -> Result<Buffer, ZyxError> {
-        let (reduce_axes, reduce_dtype) = match (
-            buffers[&x].reduce_axes.clone(),
-            buffers[&y].reduce_axes.clone(),
-        ) {
-            (Some(x_ax), Some(_)) => {
-                self.evaluate_buffer(y, buffers)?;
-                (Some(x_ax), Some(buffers[&x].dtype))
+        let (reduce_axes, reduce_dtype) = if x != y {
+            //std::println!("{:?}, {:?}", buffers[&x], buffers[&y]);
+            match (
+                buffers[&x].reduce_axes.clone(),
+                buffers[&y].reduce_axes.clone(),
+            ) {
+                (Some(x_ax), Some(_)) => {
+                    std::println!("Evaluating: {:?}", buffers[&y]);
+                    self.evaluate_buffer(y, buffers)?;
+                    (Some(x_ax), Some(buffers[&x].dtype))
+                }
+                (Some(x_ax), None) => (Some(x_ax), Some(buffers[&x].dtype)),
+                (None, Some(y_ax)) => (Some(y_ax), Some(buffers[&y].dtype)),
+                (None, None) => (None, None),
             }
-            (Some(x_ax), None) => (Some(x_ax), Some(buffers[&x].dtype)),
-            (None, Some(y_ax)) => (Some(y_ax), Some(buffers[&y].dtype)),
-            (None, None) => (None, None),
+        } else {
+            //(buffers[&x].reduce_axes.clone(), buffers[&x].reduce_dtype)
+            // TODO if it is one reduce, it could be merged, but it is lot of work
+            let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                self.evaluate_buffer(x, buffers)?.clone()
+            } else {
+                buffers[&x].clone()
+            };
+            let n = buffer.ops.len() as u8 - 1;
+            buffer.ops.push(op(n, n));
+            //(None, None)
+            return Ok(buffer)
         };
-        let y_buffer = &buffers[&y];
         let x_buffer = &buffers[&x];
+        let y_buffer = &buffers[&y];
         let n = x_buffer.ops.len() as u8;
         Ok(Buffer {
             program_args: x_buffer
@@ -597,13 +568,23 @@ impl<C: Compiler> CompiledBackend<C> {
                 .iter()
                 .cloned()
                 .chain(y_buffer.ops.iter().cloned().map(|mut op| {
-                    op.access_parameters(|x| *x += n);
+                    match &mut op {
+                        Op::Leaf(x) => *x += x_buffer.arg_views.len() as u8,
+                        Op::Cast(x, ..) | Op::Neg(x) | Op::ReLU(x) |
+                        Op::Exp(x) | Op::Ln(x) | Op::Tanh(x) | Op::Sin(x) | Op::Cos(x) | Op::Sqrt(x) | Op::Sum(x) | Op::Max(x) => *x += n,
+                        Op::Add(x, y) | Op::Sub(x, y) | Op::Mul(x, y) | Op::Div(x, y) | Op::Pow(x, y) | Op::Cmplt(x, y) => {
+                            *x += n;
+                            *y += n;
+                        }
+                        Op::Where(x, y, z) => {
+                            *x += n;
+                            *y += n;
+                            *z += n;
+                        }
+                    }
                     op
                 }))
-                .chain([op(
-                    x_buffer.ops.len() as u8 - 1,
-                    x_buffer.ops.len() as u8 + y_buffer.ops.len() as u8 - 1,
-                )])
+                .chain([op(n - 1, n + y_buffer.ops.len() as u8 - 1)])
                 .collect(),
             reduce_axes,
             reduce_dtype,

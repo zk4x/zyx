@@ -12,10 +12,12 @@ use opencl_sys::{
     CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
 use zyx_core::{
+    axes::IntoAxes,
     compiler::{Op, AST},
     dtype::DType,
     error::ZyxError,
     scalar::Scalar,
+    shape::Shape,
 };
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
@@ -833,6 +835,7 @@ impl zyx_core::compiler::Compiler for Compiler {
     }
 
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
+        //std::println!("{ast:?}");
         let max_lws = 256;
         let id_t = "int";
 
@@ -840,21 +843,61 @@ impl zyx_core::compiler::Compiler for Compiler {
         // TODO permute so that reduce axes are last
         // TODO add padding to max_lws
         // TODO add wide vectorized loads
-        
+        // TODO register tiling
+        // TODO local memory tiling
+
         // reshape so that there are at most 3 dimensions
-        let (arg_views, shape) = if let Some(_) = &ast.reduce_axes {
-            (ast.arg_views.clone(), ast.shape.clone())
+        let (arg_views, shape, reduce_axes) = if let Some(reduce_axes) = &ast.reduce_axes {
+            let mut arg_views = ast.arg_views.clone();
+            let rank = ast.shape.rank();
+            let permute_axes = (0..rank as i64)
+                .filter(|a| !reduce_axes.contains(*a as usize))
+                .chain(reduce_axes.iter().map(|a| *a as i64))
+                .collect::<Box<_>>()
+                .into_axes(rank);
+            let d1: usize = ast
+                .shape
+                .iter()
+                .enumerate()
+                .filter_map(|(a, d)| {
+                    if reduce_axes.contains(a) {
+                        Some(*d)
+                    } else {
+                        None
+                    }
+                })
+                .product();
+            let d0 = ast.shape.numel() / d1;
+            let shape: Shape = [d0, d1].into();
+            for view in &mut arg_views {
+                *view = view.permute(&permute_axes).reshape(&shape);
+            }
+            (arg_views, shape, Some([1].into_axes(2)))
         } else {
             let mut arg_views = ast.arg_views.clone();
             let n = ast.shape.numel();
             for view in &mut arg_views {
                 *view = view.reshape(&[n].into());
             }
-            (arg_views, [n].into())
+            (arg_views, [n].into(), None)
         };
 
         let mut lws = 1;
-        let mut global_work_size: Vec<usize> = shape.iter().enumerate().filter_map(|(i, d)| if ast.reduce_axes.as_ref().map(|ra| ra.contains(i)).unwrap_or(false) { None } else { Some(*d) }).collect();
+        let mut global_work_size: Vec<usize> = shape
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| {
+                if reduce_axes
+                    .as_ref()
+                    .map(|ra| ra.contains(i))
+                    .unwrap_or(false)
+                {
+                    None
+                } else {
+                    Some(*d)
+                }
+            })
+            .collect();
         let mut full_reduce = false; // reduce across all axes
         if global_work_size.len() == 0 {
             full_reduce = true;
@@ -905,25 +948,56 @@ impl zyx_core::compiler::Compiler for Compiler {
         let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
 
         let mut reduce_dims_n = 0;
-        if let Some(reduce_axes) = &ast.reduce_axes {
+        if let Some(reduce_axes) = &reduce_axes {
             reduce_dims_n = reduce_axes.len();
-            let mut i = if full_reduce { 0 } else { global_work_size.len() };
+            let mut i = if full_reduce {
+                0
+            } else {
+                global_work_size.len()
+            };
             let zero = match ast.reduce_dtype.unwrap() {
                 DType::F32 => "0.0f",
                 DType::F64 => "0.0",
                 DType::I32 => "0",
             };
-            let reduce_nid = ast.ops.iter().position(|op| matches!(op, Op::Sum(..) | Op::Max(..))).unwrap();
-            source += &f!("{} var{reduce_nid} = {zero}{endl}", ast.reduce_dtype.unwrap().ocl_str());
+            let reduce_nid = ast
+                .ops
+                .iter()
+                .position(|op| matches!(op, Op::Sum(..) | Op::Max(..)))
+                .unwrap();
+            if ast.ops.iter().any(|op| matches!(op, Op::Sum(..))) {
+                // sum reduce
+                source += &f!(
+                    "{} var{reduce_nid} = {zero}{endl}",
+                    ast.reduce_dtype.unwrap().ocl_str()
+                );
+            } else {
+                // max reduce
+                source += &f!(
+                    "{} var{reduce_nid} = {}{endl}",
+                    ast.reduce_dtype.unwrap().ocl_str(),
+                    ast.reduce_dtype.unwrap().min_value_str()
+                );
+            }
             for _ in reduce_axes {
                 source += &f!("{id_t} idx{i}{endl}");
                 i += 1;
             }
-            i = if full_reduce { 0 } else { global_work_size.len() };
-            if full_reduce { i = 0; }
+            i = if full_reduce {
+                0
+            } else {
+                global_work_size.len()
+            };
+            if full_reduce {
+                i = 0;
+            }
             for a in reduce_axes {
+                std::println!("{a}");
                 endl = f!("{endl}  ");
-                source += &f!("for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}", shape[*a]);
+                source += &f!(
+                    "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
+                    shape[*a]
+                );
                 i += 1;
             }
         }
@@ -953,23 +1027,59 @@ impl zyx_core::compiler::Compiler for Compiler {
                 }
                 Op::Cast(x, dt) => {
                     dtype = dt.ocl_str();
-                    f!("{dtype} var{nid} = convert_{dtype}(var{x})")
+                    f!("{dtype} var{nid} = ({dtype})var{x}")
                 }
                 Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
                 Op::ReLU(x) => f!("{dtype} var{nid} = max(var{x}, {zero})"),
-                Op::Sin(x) => f!("{dtype} var{nid} = sin(var{x})"),
-                Op::Cos(x) => f!("{dtype} var{nid} = cos(var{x})"),
-                Op::Ln(x) => f!("{dtype} var{nid} = log(var{x})"),
-                Op::Exp(x) => f!("{dtype} var{nid} = exp(var{x})"),
-                Op::Tanh(x) => f!("{dtype} var{nid} = tanh(var{x})"),
+                Op::Sin(x) => f!("{dtype} var{nid} = sin({}var{x})",
+                    if DType::from_ocl_str(dtype).is_floating() {
+                        ""
+                    } else {
+                        "(double)"
+                    }
+                ),
+                Op::Cos(x) => f!("{dtype} var{nid} = cos({}var{x})",
+                    if DType::from_ocl_str(dtype).is_floating() {
+                        ""
+                    } else {
+                        "(double)"
+                    }
+                ),
+                Op::Ln(x) => f!("{dtype} var{nid} = log({}var{x})",
+                    if DType::from_ocl_str(dtype).is_floating() {
+                        ""
+                    } else {
+                        "(double)"
+                    }
+                ),
+                Op::Exp(x) => f!("{dtype} var{nid} = exp({}var{x})",
+                    if DType::from_ocl_str(dtype).is_floating() {
+                        ""
+                    } else {
+                        "(double)"
+                    }
+                ),
+                Op::Tanh(x) => f!("{dtype} var{nid} = tanh({}var{x})",
+                    if DType::from_ocl_str(dtype).is_floating() {
+                        ""
+                    } else {
+                        "(double)"
+                    }
+                ),
                 Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
                 Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
                 Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
                 Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
                 Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
                 Op::Pow(x, y) => {
-                    f!("{dtype} var{nid} = pow{}var{x}, var{y})",
-                        if DType::from_ocl_str(dtype).is_floating() { "(" } else { "n((double)" })
+                    f!(
+                        "{dtype} var{nid} = pow{}var{x}, var{y})",
+                        if DType::from_ocl_str(dtype).is_floating() {
+                            "("
+                        } else {
+                            "n((double)"
+                        }
+                    )
                 }
                 Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
                 Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
@@ -977,16 +1087,23 @@ impl zyx_core::compiler::Compiler for Compiler {
                     reduce = true;
                     f!("var{nid} = var{x} + var{nid}")
                 }
-                Op::Max(..) => panic!(),
+                Op::Max(x) => {
+                    reduce = true;
+                    f!("var{nid} = max(var{x}, var{nid})")
+                }
             };
             source += &f!("{res}{endl}");
             if reduce {
                 endl = f!(";\n  ");
-                let mut i = if full_reduce { 0 } else { global_work_size.len() };
+                let mut i = if full_reduce {
+                    0
+                } else {
+                    global_work_size.len()
+                };
                 for i in 0..reduce_dims_n {
                     source.pop();
                     source.pop();
-                    source += &f!("}}\n{}", "  ".repeat(reduce_dims_n-i));
+                    source += &f!("}}\n{}", "  ".repeat(reduce_dims_n - i));
                 }
                 for _ in 0..reduce_dims_n {
                     source += &f!("idx{i} = 0{endl}");
@@ -995,7 +1112,7 @@ impl zyx_core::compiler::Compiler for Compiler {
             }
             nid += 1;
         }
-        let shape = if let Some(ra) = ast.reduce_axes.as_ref() {
+        let shape = if let Some(ra) = reduce_axes.as_ref() {
             shape.reduce(ra)
         } else {
             shape
@@ -1013,7 +1130,7 @@ impl zyx_core::compiler::Compiler for Compiler {
             global_work_size.as_slice(),
             local_work_size.as_slice(),
             shape.numel() * ast.dtype.byte_size(),
-            ast.reduce_axes.is_some(),
+            reduce_axes.is_some(),
         )
     }
 }
@@ -1079,7 +1196,8 @@ fn t5() -> Result<(), ZyxError> {
     //let z = (x + &y).sum(0) + &y;
     //let z = x.max([0, 1]);
     //let z = x.pad([(-1, 0)], 0);
-    let z = x.get((.., 1..3)) + y;
+    let z = &x + &x + y;
+    let z = x.pow(100000);
     std::println!("{z}");
     Ok(())
 }

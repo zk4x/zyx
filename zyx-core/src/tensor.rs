@@ -672,9 +672,18 @@ impl<B: Backend> Tensor<B> {
     pub fn pow(&self, exponent: impl IntoTensor<B>) -> Tensor<B> {
         let exponent = self.backend.tensor(exponent);
         if exponent.numel() == 1 {
-            if exponent == 2i32 {
-                return self * self;
+            let dtype = exponent.dtype();
+            if !dtype.is_floating() {
+                // TODO other int dtypes
+                if exponent.item::<i32>().unwrap() == 2i32 {
+                    return self * self
+                } else if exponent.item::<i32>().unwrap() == 3i32 {
+                    return self * self * self
+                }
             }
+        }
+        if self.dtype().is_floating() {
+            return (exponent * self.ln()).exp()
         }
         self.binary_op(exponent, BOp::Pow)
     }
@@ -1127,6 +1136,8 @@ impl<B: Backend> Tensor<B> {
         }
         res
     }
+
+    // TODO Cholesky and QR solve functions that are backend accelerated
 
     /*
     /// Stack multiple tensors into one
