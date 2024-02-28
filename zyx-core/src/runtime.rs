@@ -287,6 +287,8 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // TODO should we increase refcount of some other nodes to keep them evaluated in memory?
         // Like if they are referenced by the user and in the graph that needs to be evaluated?
+        // TODO we can add constant folding by adding nodes that are evaluated multiple times into
+        // to_eval
         // TODO this memory <=> performance tradeoff should be decided by the user, with some setting.
         for nid in &order {
             if matches!(

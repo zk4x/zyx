@@ -61,9 +61,8 @@ impl Shape {
                     a *= d;
                     t
                 })
-                .collect::<Box<[usize]>>()
-                .iter()
-                .copied()
+                .collect::<Vec<usize>>()
+                .into_iter()
                 .rev()
                 .collect(),
         )

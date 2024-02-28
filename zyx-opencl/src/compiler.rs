@@ -855,31 +855,44 @@ impl zyx_core::compiler::Compiler for Compiler {
                 .chain(reduce_axes.iter().map(|a| *a as i64))
                 .collect::<Box<_>>()
                 .into_axes(rank);
-            let d1: usize = ast
-                .shape
-                .iter()
-                .enumerate()
-                .filter_map(|(a, d)| {
-                    if reduce_axes.contains(a) {
-                        Some(*d)
-                    } else {
-                        None
-                    }
-                })
-                .product();
-            let d0 = ast.shape.numel() / d1;
-            let shape: Shape = [d0, d1].into();
-            for view in &mut arg_views {
-                *view = view.permute(&permute_axes).reshape(&shape);
-            }
-            (arg_views, shape, Some([1].into_axes(2)))
+            let (shape, axes) = if rank > 4 || reduce_axes.len() > 1 {
+                let d1: usize = ast
+                    .shape
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(a, d)| {
+                        if reduce_axes.contains(a) {
+                            Some(*d)
+                        } else {
+                            None
+                        }
+                    })
+                    .product();
+                let d0 = ast.shape.numel() / d1;
+                let shape: Shape = [d0, d1].into();
+                for view in &mut arg_views {
+                    *view = view.permute(&permute_axes).reshape(&shape);
+                }
+                (shape, Some([1].into_axes(2)))
+            } else {
+                for view in &mut arg_views {
+                    *view = view.permute(&permute_axes);
+                }
+                (ast.shape.permute(&permute_axes), Some([-1].into_axes(rank)))
+            };
+            (arg_views, shape, axes)
         } else {
             let mut arg_views = ast.arg_views.clone();
-            let n = ast.shape.numel();
-            for view in &mut arg_views {
-                *view = view.reshape(&[n].into());
-            }
-            (arg_views, [n].into(), None)
+            let shape = if ast.shape.rank() > 3 {
+                let n = ast.shape.numel();
+                for view in &mut arg_views {
+                    *view = view.reshape(&[n].into());
+                }
+                [n].into()
+            } else {
+                ast.shape.clone()
+            };
+            (arg_views, shape, None)
         };
 
         let mut lws = 1;
@@ -1111,14 +1124,17 @@ impl zyx_core::compiler::Compiler for Compiler {
             }
             nid += 1;
         }
+        //std::println!("shape: {shape}");
         let shape = if let Some(ra) = reduce_axes.as_ref() {
             shape.reduce(ra)
         } else {
             shape
         };
+        let view = zyx_core::view::View::new(shape.clone());
+        //std::println!("{shape}\n{view:?}\n{}", view.cidx().1);
         source = f!(
             "{source}data{res_id}[{}] = var{};\n}}",
-            zyx_core::view::View::new(shape.clone()).cidx().1,
+            view.cidx().1,
             nid - 1
         );
 

@@ -476,7 +476,7 @@ impl View {
     /// Reshape self into shape
     #[must_use]
     pub fn reshape(&self, n_shape: &Shape) -> Self {
-        std::println!("Reshaping {self:?} into {n_shape}");
+        //std::println!("Reshaping {self:?} into {n_shape}");
         if n_shape == self.shape() {
             return self.clone();
         }
