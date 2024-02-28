@@ -171,13 +171,13 @@ impl<R: RuntimeBackend> Runtime<R> {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
                 if shape == self.shape(x) {
                     self.retain(x);
-                    return Ok(x)
+                    return Ok(x);
                 }
             }
             Node::Sum(x, ref axes, ..) | Node::Max(x, ref axes, ..) => {
                 if axes.len() == 0 {
                     self.retain(x);
-                    return Ok(x)
+                    return Ok(x);
                 }
             }
             _ => {}
@@ -199,8 +199,15 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
         // TODO This evaluates last leafs if there are too many nodes,
         // is it better to find repeating nodes and evaluate those?
-        if self.nodes.len() > 10000 { // Roughly 500 KiB of Nodes
-            self.evaluate(self.leafs.iter().copied().filter(|nid| self.is_user_id(*nid)).collect::<BTreeSet<Id>>())?;
+        if self.nodes.len() > 10000 {
+            // Roughly 500 KiB of Nodes
+            self.evaluate(
+                self.leafs
+                    .iter()
+                    .copied()
+                    .filter(|nid| self.is_user_id(*nid))
+                    .collect::<BTreeSet<Id>>(),
+            )?;
         }
         Ok(i)
     }
@@ -239,7 +246,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Evaluate specified nodes.
-    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
+    pub fn evaluate(&mut self, mut nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
         // TODO in order to be more efficient, we can optimize the graph
         // by reordering nodes and removing unnecessary nodes
 
@@ -264,7 +271,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(rc) = rcs.get(&nid) {
-                if *rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                if *rc
+                    == *internal_rcs
+                        .entry(nid)
+                        .and_modify(|rc| *rc += 1)
+                        .or_insert(1)
+                {
                     order.push(nid);
                     params.extend(self.nodes[nid.i()].parameters());
                 }
@@ -277,12 +289,36 @@ impl<R: RuntimeBackend> Runtime<R> {
         // Like if they are referenced by the user and in the graph that needs to be evaluated?
         // TODO this memory <=> performance tradeoff should be decided by the user, with some setting.
         for nid in &order {
-            if matches!(self.nodes[nid.i()], Node::Leaf(..) | Node::IterF32(..) | Node::IterI32(..) | Node::IterF64(..) | Node::Uniform(..)) {
-                *rcs.get_mut(&nid).unwrap() += 1;
+            if matches!(
+                self.nodes[nid.i()],
+                Node::Leaf(..)
+                    | Node::IterF32(..)
+                    | Node::IterI32(..)
+                    | Node::IterF64(..)
+                    | Node::Uniform(..)
+            ) {
+                *rcs.get_mut(nid).unwrap() += 1;
+                nodes.insert(*nid);
             }
         }
 
-        self.runtime_backend.evaluate(nodes, rcs, &order, self.nodes.as_mut())?;
+        for leaf in self.leafs.iter() {
+            if let Some(rc) = rcs.get_mut(leaf) {
+                *rc += 1;
+                nodes.insert(*leaf);
+            }
+        }
+
+        /*std::println!("");
+        std::println!("");
+        for nid in &order {
+            std::println!("{nid} x {}: {:?}", rcs[nid], self.nodes[nid.i()]);
+        }
+        std::println!("");
+        std::println!("");*/
+
+        self.runtime_backend
+            .evaluate(nodes, rcs, &order, self.nodes.as_mut())?;
 
         // Release parts of graph that are not needed for backpropagation
         for leaf in self.leafs.clone() {
@@ -316,7 +352,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
         let mut params: Vec<Id> = ids.into();
         while let Some(nid) = params.pop() {
-            if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+            if rcs[&nid]
+                == *internal_rcs
+                    .entry(nid)
+                    .and_modify(|rc| *rc += 1)
+                    .or_insert(1)
+            {
                 order.push(nid);
                 if rcs.contains_key(&nid) {
                     params.extend(self.nodes[nid.i()].parameters());
@@ -361,7 +402,12 @@ impl<R: RuntimeBackend> Runtime<R> {
             let mut params: Vec<Id> = alloc::vec![x];
             while let Some(nid) = params.pop() {
                 if let Some(rc) = rcs.get(&nid) {
-                    if *rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    if *rc
+                        == *internal_rcs
+                            .entry(nid)
+                            .and_modify(|rc| *rc += 1)
+                            .or_insert(1)
+                    {
                         order.push(nid);
                         params.extend(nodes[nid.i()].parameters());
                     }
@@ -396,28 +442,21 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut grads: BTreeMap<Id, Id> = BTreeMap::new();
         // Initial gradient of ones
         let grad1 = match get_dtype(&self.nodes, x) {
-            DType::F32 => self.push(Node::IterF32(
-                Box::new([1.].into_iter()),
-                [1].into(),
-            ))?,
-            DType::F64 => self.push(Node::IterF64(
-                Box::new([1.].into_iter()),
-                [1].into(),
-            ))?,
-            DType::I32 => self.push(Node::IterI32(
-                Box::new([1].into_iter()),
-                [1].into(),
-            ))?,
+            DType::F32 => self.push(Node::IterF32(Box::new([1.].into_iter()), [1].into()))?,
+            DType::F64 => self.push(Node::IterF64(Box::new([1.].into_iter()), [1].into()))?,
+            DType::I32 => self.push(Node::IterI32(Box::new([1].into_iter()), [1].into()))?,
         };
         let sh = get_shape(&self.nodes, x).clone();
-        grads.insert(
-            x,
-            self.push(Node::Expand(grad1, sh))?,
-        );
+        grads.insert(x, self.push(Node::Expand(grad1, sh))?);
         self.release(grad1)?;
         //std::println!("{:?}", self.nodes.last().unwrap());
 
-        fn insert_or_add_grad<B: RuntimeBackend>(r: &mut Runtime<B>, grads: &mut BTreeMap<Id, Id>, x: Id, grad: Id) -> Result<(), ZyxError> {
+        fn insert_or_add_grad<B: RuntimeBackend>(
+            r: &mut Runtime<B>,
+            grads: &mut BTreeMap<Id, Id>,
+            x: Id,
+            grad: Id,
+        ) -> Result<(), ZyxError> {
             match grads.entry(x) {
                 Entry::Vacant(e) => {
                     e.insert(grad);
@@ -490,7 +529,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))
                             }
                         }?;
-                        let two_e = self.push(Node::Expand(two, get_shape(&self.nodes, y).clone()))?;
+                        let two_e =
+                            self.push(Node::Expand(two, get_shape(&self.nodes, y).clone()))?;
                         self.release(two)?;
                         let two_2 = self.push(Node::Pow(y, two_e))?;
                         self.release(two_e)?;
@@ -518,7 +558,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))
                             }
                         }?;
-                        let one1 = self.push(Node::Expand(one, get_shape(&self.nodes, y).clone()))?;
+                        let one1 =
+                            self.push(Node::Expand(one, get_shape(&self.nodes, y).clone()))?;
                         self.release(one)?;
                         let y_1 = self.push(Node::Sub(y, one1))?;
                         self.release(one1)?;
@@ -559,7 +600,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
                             }
                         }?;
-                        let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                        let zeros =
+                            self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
                         self.release(zero)?;
                         let y_grad = self.push(Node::Where(x, grad, zeros))?;
                         self.release(zeros)?;
@@ -577,7 +619,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                                 self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
                             }
                         }?;
-                        let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                        let zeros =
+                            self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
                         self.release(zero)?;
                         let z_grad = self.push(Node::Where(x, zeros, grad))?;
                         self.release(zeros)?;
@@ -592,9 +635,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                         DType::F64 => {
                             self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
                         }
-                        DType::I32 => {
-                            self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
-                        }
+                        DType::I32 => self.push(Node::IterI32(Box::new([0].into_iter()), 1.into())),
                     }?;
                     let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
                     self.release(zero)?;
@@ -629,8 +670,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::Sqrt(x) => {
                     // x_grad = grad/(2*sqrt(x))
                     let x_shape = get_shape(&self.nodes, x).clone();
-                    let two1 =
-                        self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
+                    let two1 = self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
                     let two2 = self.push(Node::Expand(two1, x_shape))?;
                     self.release(two1)?;
                     let x_temp = self.push(Node::Mul(two2, nid))?;
@@ -710,8 +750,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
                     let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
                     self.release(z_temp)?;
-                    let one1 =
-                        self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?;
+                    let one1 = self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?;
                     let one2 = self.push(Node::Expand(one1, x_shape))?;
                     self.release(one1)?;
                     let max_1s = self.push(Node::Sub(one2, cmp_t))?;

@@ -6,7 +6,7 @@ use crate::{
     utils::get_dtype, view::View,
 };
 use alloc::{
-    collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec::Vec,
 };
 
@@ -170,242 +170,251 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         let mut buffers: BTreeMap<Id, Buffer> = BTreeMap::new();
         // TODO calculate flops for buffers :D
         for nid in order.iter().copied() {
+            //std::println!("{nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
             self.store(nid, &mut nodes)?;
 
-            let buffer = match &nodes[nid.i()] {
-                Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => {
-                    panic!()
-                }
-                Node::Leaf(sh, dtype) => Buffer::leaf(nid, sh, dtype),
-                Node::Uniform(..) => {
-                    todo!()
-                }
-                Node::Cast(x, dtype) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer
-                        .ops
-                        .push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
-                    buffer.dtype = *dtype;
-                    buffer
-                }
-                Node::Neg(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Neg(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::ReLU(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::ReLU(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Exp(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Exp(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Ln(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Sin(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Sin(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Cos(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Cos(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Sqrt(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Sqrt(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Tanh(x) => {
-                    let mut buffer = buffers[&x].clone();
-                    buffer.ops.push(Op::Tanh(buffer.ops.len() as u8 - 1));
-                    buffer
-                }
-                Node::Add(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Add(x, y))?
-                }
-                Node::Sub(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Sub(x, y))?
-                }
-                Node::Mul(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Mul(x, y))?
-                }
-                Node::Div(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Div(x, y))?
-                }
-                Node::Pow(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Pow(x, y))?
-                }
-                Node::Cmplt(x, y) => {
-                    self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Cmplt(x, y))?
-                }
-                Node::Where(x, y, z) => {
-                    // TODO fix this for x == y == z or any combination of those
-                    let (reduce_axes, reduce_dtype) = match (
-                        buffers[&x].reduce_axes.clone(),
-                        buffers[&y].reduce_axes.clone(),
-                        buffers[&z].reduce_axes.clone(),
-                    ) {
-                        (Some(x_ax), Some(_), Some(_)) => {
-                            self.evaluate_buffer(*y, &mut buffers)?;
-                            self.evaluate_buffer(*z, &mut buffers)?;
-                            (Some(x_ax), Some(buffers[&x].dtype))
-                        }
-                        (Some(x_ax), Some(_), None) => {
-                            self.evaluate_buffer(*y, &mut buffers)?;
-                            (Some(x_ax), Some(buffers[&x].dtype))
-                        }
-                        (Some(x_ax), None, Some(_)) => {
-                            self.evaluate_buffer(*z, &mut buffers)?;
-                            (Some(x_ax), Some(buffers[&x].dtype))
-                        }
-                        (Some(x_ax), None, None) => (Some(x_ax), Some(buffers[&x].dtype)),
-                        (None, Some(y_ax), Some(_)) => {
-                            self.evaluate_buffer(*z, &mut buffers)?;
-                            (Some(y_ax), Some(buffers[&y].dtype))
-                        }
-                        (None, Some(y_ax), None) => {
-                            self.evaluate_buffer(*z, &mut buffers)?;
-                            (Some(y_ax), Some(buffers[&y].dtype))
-                        }
-                        (None, None, Some(z_ax)) => (Some(z_ax), Some(buffers[&z].dtype)),
-                        (None, None, None) => (None, None),
-                    };
-                    let y_buffer = &buffers[y];
-                    let x_buffer = &buffers[x];
-                    let z_buffer = &buffers[z];
-                    let n = x_buffer.ops.len() as u8;
-                    let n2 = n + y_buffer.ops.len() as u8;
-                    Buffer {
-                        program_args: x_buffer
-                            .program_args
-                            .iter()
-                            .chain(y_buffer.program_args.iter())
-                            .copied()
-                            .collect(),
-                        arg_views: x_buffer
-                            .arg_views
-                            .iter()
-                            .chain(y_buffer.arg_views.iter())
-                            .cloned()
-                            .collect(),
-                        arg_dtypes: x_buffer
-                            .arg_dtypes
-                            .iter()
-                            .chain(y_buffer.arg_dtypes.iter())
-                            .copied()
-                            .collect(),
-                        ops: x_buffer
+            let buffer = if self.is_evaluated(nid) {
+                Buffer::leaf(nid, crate::utils::get_shape(nodes, nid), &get_dtype(nodes, nid))
+            } else {
+                match &nodes[nid.i()] {
+                    Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => {
+                        panic!()
+                    }
+                    Node::Leaf(sh, dtype) => Buffer::leaf(nid, sh, dtype),
+                    Node::Uniform(..) => {
+                        todo!()
+                    }
+                    Node::Cast(x, dtype) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer
                             .ops
-                            .iter()
-                            .cloned()
-                            .chain(y_buffer.ops.iter().cloned().map(|op| {
-                                //op.access_parameters(|x| *x += n);
-                                op
-                            }))
-                            .chain(z_buffer.ops.iter().cloned().map(|op| {
-                                //op.access_parameters(|x| *x += n2);
-                                op
-                            }))
-                            .chain([Op::Where(n - 1, n2 - 1, n2 + z_buffer.ops.len() as u8 - 1)])
-                            .collect(),
-                        reduce_axes,
-                        reduce_dtype,
-                        shape: x_buffer.shape.clone(),
-                        dtype: x_buffer.dtype,
-                        flop: x_buffer.flop + y_buffer.flop,
+                            .push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
+                        buffer.dtype = *dtype;
+                        buffer
                     }
-                }
-                Node::Reshape(x, sh) => {
-                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                        self.evaluate_buffer(*x, &mut buffers)?.clone()
-                    } else {
-                        buffers[&x].clone()
-                    };
-                    for view in &mut buffer.arg_views {
-                        *view = view.reshape(sh);
+                    Node::Neg(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Neg(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    buffer.shape = sh.clone();
-                    buffer
-                }
-                Node::Expand(x, sh) => {
-                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                        self.evaluate_buffer(*x, &mut buffers)?.clone()
-                    } else {
-                        buffers[&x].clone()
-                    };
-                    for view in &mut buffer.arg_views {
-                        *view = view.expand(sh);
+                    Node::ReLU(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::ReLU(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    buffer.shape = sh.clone();
-                    buffer
-                }
-                Node::Permute(x, ax, sh) => {
-                    let mut buffer = buffers[&x].clone();
-                    for view in &mut buffer.arg_views {
-                        *view = view.permute(ax);
+                    Node::Exp(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Exp(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    if let Some(reduce_axes) = &mut buffer.reduce_axes {
-                        *reduce_axes = reduce_axes.permute(ax);
+                    Node::Ln(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    buffer.shape = sh.clone();
-                    buffer
-                }
-                Node::Pad(x, padding, sh) => {
-                    let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                        self.evaluate_buffer(*x, &mut buffers)?.clone()
-                    } else {
-                        buffers[&x].clone()
-                    };
-                    for view in &mut buffer.arg_views {
-                        *view = view.pad(padding);
+                    Node::Sin(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Sin(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    buffer.shape = sh.clone();
-                    buffer
-                }
-                Node::Sum(x, ax, _) => {
-                    let mut buffer = buffers[&x].clone();
-                    if buffer.reduce_axes.is_some() {
-                        buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
-                        buffer.reduce_axes = Some(ax.clone());
-                        buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                        buffer.ops.push(Op::Sum(0));
-                    } else {
-                        buffer.reduce_axes = Some(ax.clone());
-                        buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                        buffer.ops.push(Op::Sum(buffer.ops.len() as u8 - 1));
+                    Node::Cos(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Cos(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    buffer
-                }
-                Node::Max(x, ax, _) => {
-                    let mut buffer = buffers[&x].clone();
-                    if buffer.reduce_axes.is_some() {
-                        buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
-                        buffer.reduce_axes = Some(ax.clone());
-                        buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                        buffer.ops.push(Op::Max(0));
-                    } else {
-                        buffer.reduce_axes = Some(ax.clone());
-                        buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                        buffer.ops.push(Op::Max(buffer.ops.len() as u8 - 1));
+                    Node::Sqrt(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Sqrt(buffer.ops.len() as u8 - 1));
+                        buffer
                     }
-                    buffer
+                    Node::Tanh(x) => {
+                        let mut buffer = buffers[&x].clone();
+                        buffer.ops.push(Op::Tanh(buffer.ops.len() as u8 - 1));
+                        buffer
+                    }
+                    Node::Add(x, y) => {
+                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Add(x, y))?
+                    }
+                    Node::Sub(x, y) => {
+                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Sub(x, y))?
+                    }
+                    Node::Mul(x, y) => {
+                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Mul(x, y))?
+                    }
+                    Node::Div(x, y) => {
+                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Div(x, y))?
+                    }
+                    Node::Pow(x, y) => {
+                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Pow(x, y))?
+                    }
+                    Node::Cmplt(x, y) => {
+                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Cmplt(x, y))?
+                    }
+                    Node::Where(x, y, z) => {
+                        // TODO fix this for x == y == z or any combination of those
+                        let (reduce_axes, reduce_dtype) = match (
+                            buffers[&x].reduce_axes.clone(),
+                            buffers[&y].reduce_axes.clone(),
+                            buffers[&z].reduce_axes.clone(),
+                        ) {
+                            (Some(x_ax), Some(_), Some(_)) => {
+                                self.evaluate_buffer(*y, &mut buffers)?;
+                                self.evaluate_buffer(*z, &mut buffers)?;
+                                (Some(x_ax), Some(buffers[&x].dtype))
+                            }
+                            (Some(x_ax), Some(_), None) => {
+                                self.evaluate_buffer(*y, &mut buffers)?;
+                                (Some(x_ax), Some(buffers[&x].dtype))
+                            }
+                            (Some(x_ax), None, Some(_)) => {
+                                self.evaluate_buffer(*z, &mut buffers)?;
+                                (Some(x_ax), Some(buffers[&x].dtype))
+                            }
+                            (Some(x_ax), None, None) => (Some(x_ax), Some(buffers[&x].dtype)),
+                            (None, Some(y_ax), Some(_)) => {
+                                self.evaluate_buffer(*z, &mut buffers)?;
+                                (Some(y_ax), Some(buffers[&y].dtype))
+                            }
+                            (None, Some(y_ax), None) => {
+                                self.evaluate_buffer(*z, &mut buffers)?;
+                                (Some(y_ax), Some(buffers[&y].dtype))
+                            }
+                            (None, None, Some(z_ax)) => (Some(z_ax), Some(buffers[&z].dtype)),
+                            (None, None, None) => (None, None),
+                        };
+                        let y_buffer = &buffers[y];
+                        let x_buffer = &buffers[x];
+                        let z_buffer = &buffers[z];
+                        let n = x_buffer.ops.len() as u8;
+                        let n2 = n + y_buffer.ops.len() as u8;
+                        Buffer {
+                            program_args: x_buffer
+                                .program_args
+                                .iter()
+                                .chain(y_buffer.program_args.iter())
+                                .copied()
+                                .collect(),
+                            arg_views: x_buffer
+                                .arg_views
+                                .iter()
+                                .chain(y_buffer.arg_views.iter())
+                                .cloned()
+                                .collect(),
+                            arg_dtypes: x_buffer
+                                .arg_dtypes
+                                .iter()
+                                .chain(y_buffer.arg_dtypes.iter())
+                                .copied()
+                                .collect(),
+                            ops: x_buffer
+                                .ops
+                                .iter()
+                                .cloned()
+                                .chain(y_buffer.ops.iter().cloned().map(|op| {
+                                    //op.access_parameters(|x| *x += n);
+                                    op
+                                }))
+                                .chain(z_buffer.ops.iter().cloned().map(|op| {
+                                    //op.access_parameters(|x| *x += n2);
+                                    op
+                                }))
+                                .chain([Op::Where(n - 1, n2 - 1, n2 + z_buffer.ops.len() as u8 - 1)])
+                                .collect(),
+                            reduce_axes,
+                            reduce_dtype,
+                            shape: x_buffer.shape.clone(),
+                            dtype: x_buffer.dtype,
+                            flop: x_buffer.flop + y_buffer.flop,
+                        };
+                        todo!()
+                    }
+                    Node::Reshape(x, sh) => {
+                        let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                            self.evaluate_buffer(*x, &mut buffers)?.clone()
+                        } else {
+                            buffers[&x].clone()
+                        };
+                        for view in &mut buffer.arg_views {
+                            *view = view.reshape(sh);
+                        }
+                        buffer.shape = sh.clone();
+                        buffer
+                    }
+                    Node::Expand(x, sh) => {
+                        let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                            self.evaluate_buffer(*x, &mut buffers)?.clone()
+                        } else {
+                            buffers[&x].clone()
+                        };
+                        for view in &mut buffer.arg_views {
+                            *view = view.expand(sh);
+                        }
+                        buffer.shape = sh.clone();
+                        buffer
+                    }
+                    Node::Permute(x, ax, sh) => {
+                        let mut buffer = buffers[&x].clone();
+                        for view in &mut buffer.arg_views {
+                            *view = view.permute(ax);
+                        }
+                        if let Some(reduce_axes) = &mut buffer.reduce_axes {
+                            *reduce_axes = reduce_axes.permute(ax);
+                        }
+                        buffer.shape = sh.clone();
+                        buffer
+                    }
+                    Node::Pad(x, padding, sh) => {
+                        let mut buffer = if buffers[&x].reduce_axes.is_some() {
+                            self.evaluate_buffer(*x, &mut buffers)?.clone()
+                        } else {
+                            buffers[&x].clone()
+                        };
+                        for view in &mut buffer.arg_views {
+                            *view = view.pad(padding);
+                        }
+                        buffer.shape = sh.clone();
+                        buffer
+                    }
+                    Node::Sum(x, ax, _) => {
+                        let mut buffer = buffers[&x].clone();
+                        if buffer.reduce_axes.is_some() {
+                            buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
+                            buffer.reduce_axes = Some(ax.clone());
+                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
+                            buffer.ops.push(Op::Sum(0));
+                        } else {
+                            buffer.reduce_axes = Some(ax.clone());
+                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
+                            buffer.ops.push(Op::Sum(buffer.ops.len() as u8 - 1));
+                        }
+                        buffer
+                    }
+                    Node::Max(x, ax, _) => {
+                        let mut buffer = buffers[&x].clone();
+                        if buffer.reduce_axes.is_some() {
+                            buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
+                            buffer.reduce_axes = Some(ax.clone());
+                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
+                            buffer.ops.push(Op::Max(0));
+                        } else {
+                            buffer.reduce_axes = Some(ax.clone());
+                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
+                            buffer.ops.push(Op::Max(buffer.ops.len() as u8 - 1));
+                        }
+                        buffer
+                    }
                 }
             };
             buffers.insert(nid, buffer);
 
-            if to_eval.contains(&nid) || buffers[&nid].ops.len() > 200 || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1) {
+            if to_eval.contains(&nid)
+                || buffers[&nid].ops.len() > 200
+                || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1)
+            {
                 self.evaluate_buffer(nid, &mut buffers)?;
             }
 
-            /*for p in nodes[nid.i()].parameters() {
+            for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
                     if *e.get() == 0 {
                         buffers.remove(&p);
@@ -414,7 +423,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         }
                     }
                 }
-            }*/
+            }
         }
         Ok(())
     }
@@ -492,6 +501,8 @@ impl<C: Compiler> CompiledBackend<C> {
         let program = if let Some(program) = self.programs.get(&ast) {
             program
         } else {
+            // TODO optimize ast as much as possible here
+            // for example deduplicate args
             let program = self.compiler.compile(&ast)?;
             self.programs.entry(ast).or_insert(program)
         };
@@ -520,7 +531,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 buffers[&y].reduce_axes.clone(),
             ) {
                 (Some(x_ax), Some(_)) => {
-                    std::println!("Evaluating: {:?}", buffers[&y]);
+                    //std::println!("Evaluating: {:?}", buffers[&y]);
                     self.evaluate_buffer(y, buffers)?;
                     (Some(x_ax), Some(buffers[&x].dtype))
                 }
@@ -539,7 +550,7 @@ impl<C: Compiler> CompiledBackend<C> {
             let n = buffer.ops.len() as u8 - 1;
             buffer.ops.push(op(n, n));
             //(None, None)
-            return Ok(buffer)
+            return Ok(buffer);
         };
         let x_buffer = &buffers[&x];
         let y_buffer = &buffers[&y];
@@ -570,9 +581,23 @@ impl<C: Compiler> CompiledBackend<C> {
                 .chain(y_buffer.ops.iter().cloned().map(|mut op| {
                     match &mut op {
                         Op::Leaf(x) => *x += x_buffer.arg_views.len() as u8,
-                        Op::Cast(x, ..) | Op::Neg(x) | Op::ReLU(x) |
-                        Op::Exp(x) | Op::Ln(x) | Op::Tanh(x) | Op::Sin(x) | Op::Cos(x) | Op::Sqrt(x) | Op::Sum(x) | Op::Max(x) => *x += n,
-                        Op::Add(x, y) | Op::Sub(x, y) | Op::Mul(x, y) | Op::Div(x, y) | Op::Pow(x, y) | Op::Cmplt(x, y) => {
+                        Op::Cast(x, ..)
+                        | Op::Neg(x)
+                        | Op::ReLU(x)
+                        | Op::Exp(x)
+                        | Op::Ln(x)
+                        | Op::Tanh(x)
+                        | Op::Sin(x)
+                        | Op::Cos(x)
+                        | Op::Sqrt(x)
+                        | Op::Sum(x)
+                        | Op::Max(x) => *x += n,
+                        Op::Add(x, y)
+                        | Op::Sub(x, y)
+                        | Op::Mul(x, y)
+                        | Op::Div(x, y)
+                        | Op::Pow(x, y)
+                        | Op::Cmplt(x, y) => {
                             *x += n;
                             *y += n;
                         }

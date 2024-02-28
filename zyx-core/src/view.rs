@@ -289,7 +289,7 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
-                std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                //std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
                     0 => idx += "",
                     1 => idx += &f!("idx{i}+"),

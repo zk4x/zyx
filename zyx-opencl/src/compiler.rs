@@ -355,8 +355,6 @@ impl Program {
                 ).into_owned()
             ))));*/
         }
-        #[cfg(not(feature = "debug1"))]
-        let (_, _) = (flop, bytes);
         Ok(Self {
             name,
             program,
@@ -689,6 +687,8 @@ impl zyx_core::compiler::Compiler for Compiler {
         args: &[&Self::Buffer],
         flop: usize,
     ) -> Result<Self::Buffer, ZyxError> {
+        #[cfg(not(feature = "debug1"))]
+        let _ = flop;
         let program_name = &CString::new(program.name.clone()).unwrap();
         let mut err = CL_SUCCESS;
         let kernel =
@@ -823,7 +823,7 @@ impl zyx_core::compiler::Compiler for Compiler {
             let elapsed_nanos = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed_nanos as f64 / 1000000.;
             let bytes = 0;
-            std::println!("bytes: {}, flops: {}", bytes, flop);
+            //std::println!("bytes: {}, flops: {}", bytes, flop);
             std::println!(
                 "Kernel execution took {elapsed_millis:.3}ms ~ {:.2} GFLOPS, {:.2} GB/s",
                 flop as f64 / elapsed_nanos as f64,
@@ -992,7 +992,6 @@ impl zyx_core::compiler::Compiler for Compiler {
                 i = 0;
             }
             for a in reduce_axes {
-                std::println!("{a}");
                 endl = f!("{endl}  ");
                 source += &f!(
                     "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
