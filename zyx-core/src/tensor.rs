@@ -215,7 +215,8 @@ impl<B: Backend> Drop for Tensor<B> {
 
 impl<B: Backend> core::fmt::Debug for Tensor<B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("Tensor {{ id = {:?} }}", self.id))
+        f.write_fmt(format_args!("{self}"))
+        //f.write_fmt(format_args!("Tensor {{ id = {:?} }}", self.id))
     }
 }
 
@@ -250,7 +251,7 @@ impl<B: Backend> core::fmt::Display for Tensor<B> {
                 }
             }
         };
-        f.write_str(&res)
+        f.write_fmt(format_args!("Tensor {} {}\n{res}", self.shape(), self.dtype()))
     }
 }
 
@@ -1050,7 +1051,7 @@ impl<B: Backend> Tensor<B> {
     /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([[2, 3, 4],
     ///                     [4, 1, 8]]);
-    /// let y = x.get((-1, -3));
+    /// let y: i32 = x.get((-1, -3)).item()?;
     /// assert_eq!(y, 4);
     /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```

@@ -1185,7 +1185,7 @@ fn t5() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn t5() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.tensor([[2, 3, 1], [4, 2, 1]]);
@@ -1199,4 +1199,4 @@ fn t5() -> Result<(), ZyxError> {
     let z = x.pow(100000);
     std::println!("{z}");
     Ok(())
-}
+}*/

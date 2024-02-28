@@ -476,6 +476,7 @@ impl View {
     /// Reshape self into shape
     #[must_use]
     pub fn reshape(&self, n_shape: &Shape) -> Self {
+        std::println!("Reshaping {self:?} into {n_shape}");
         if n_shape == self.shape() {
             return self.clone();
         }
@@ -495,10 +496,11 @@ impl View {
                 padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
             };
         } else {
-            if n_shape
+            let shape = self.shape();
+            if n_shape.rank() > shape.rank() && n_shape
                 .iter()
                 .filter(|d| **d != 1)
-                .zip(self.shape().iter())
+                .zip(shape.iter())
                 .all(|(nd, d)| nd == d)
             {
                 // If not  contiguous, then merge, this merges if reshape is unsqueeze
