@@ -48,7 +48,7 @@ impl Axes {
     /// Panics if axes is incorrect.
     #[must_use]
     pub fn permute(&self, axes: &Axes) -> Self {
-        //std::println!("self: {self}, axes: {axes:?}");
+        debug_assert!(axes.iter().all(|a| *a < self.len()));
         Self(axes.into_iter().map(|axis| self.0[*axis]).collect())
     }
 }
@@ -89,36 +89,42 @@ pub trait IntoAxes {
 
 impl IntoAxes for Axes {
     fn into_axes(self, rank: usize) -> Axes {
-        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+        debug_assert!(self.iter().all(|a| *a < rank));
+        self
     }
 }
 
 impl IntoAxes for &Axes {
     fn into_axes(self, rank: usize) -> Axes {
-        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+        debug_assert!(self.iter().all(|a| *a < rank));
+        self.clone()
     }
 }
 
 impl IntoAxes for Vec<usize> {
     fn into_axes(self, rank: usize) -> Axes {
-        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+        debug_assert!(self.iter().all(|a| *a < rank));
+        Axes(self.into_boxed_slice())
     }
 }
 
 impl IntoAxes for Box<[usize]> {
     fn into_axes(self, rank: usize) -> Axes {
-        Axes(self.iter().copied().filter(|a| *a < rank).collect())
+        debug_assert!(self.iter().all(|a| *a < rank));
+        Axes(self)
     }
 }
 
 impl IntoAxes for Range<usize> {
-    fn into_axes(self, rank: usize) -> Axes {
-        Axes(self.filter(|a| *a < rank).collect())
+    fn into_axes(mut self, rank: usize) -> Axes {
+        debug_assert!(self.all(|a| a < rank));
+        Axes(self.collect())
     }
 }
 
 impl IntoAxes for Range<i64> {
-    fn into_axes(self, rank: usize) -> Axes {
+    fn into_axes(mut self, rank: usize) -> Axes {
+        debug_assert!(self.all(|a| if a > 0 { (a as usize) < rank } else { ((-a) as usize) <= rank }));
         Axes((((self.start + i64::try_from(rank).unwrap()) as usize % rank)..((self.end + i64::try_from(rank).unwrap()) as usize % rank)).collect())
     }
 }
@@ -137,12 +143,13 @@ impl IntoAxes for &RangeInclusive<i64> {
 
 impl IntoAxes for () {
     fn into_axes(self, rank: usize) -> Axes {
-        (0..rank).into_axes(rank)
+        Axes((0..rank).collect())
     }
 }
 
 impl IntoAxes for &[i64] {
     fn into_axes(self, rank: usize) -> Axes {
+        debug_assert!(self.iter().all(|a| if *a > 0 { (*a as usize) < rank } else { ((-*a) as usize) <= rank }));
         Axes(
             self.iter()
                 .map(|x| (x + i64::try_from(rank).unwrap()) as usize % rank)
@@ -153,6 +160,7 @@ impl IntoAxes for &[i64] {
 
 impl IntoAxes for i64 {
     fn into_axes(self, rank: usize) -> Axes {
+        debug_assert!(if self > 0 { (self as usize) < rank } else { ((-self) as usize) <= rank });
         [self].into_axes(rank)
     }
 }
@@ -167,6 +175,7 @@ impl<const N: usize> IntoAxes for [i64; N] {
 impl core::ops::Index<i64> for Axes {
     type Output = usize;
     fn index(&self, index: i64) -> &Self::Output {
+        debug_assert!(if index > 0 { (index as usize) < self.len() } else { (-index) as usize <= self.len() });
         let rank = self.len();
         self.0.get((index + rank as i64) as usize % rank).unwrap()
     }
