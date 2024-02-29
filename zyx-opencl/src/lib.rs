@@ -223,10 +223,6 @@ impl Backend for &OpenCL {
         self.0.update(|mut b| b.push(node))
     }
 
-    fn set_leaf(self, x: Id) {
-        self.0.update(|mut b| b.set_leaf(x));
-    }
-
     fn release(self, x: Id) -> Result<(), ZyxError> {
         self.0.update(|mut b| b.release(x))
     }
@@ -234,6 +230,10 @@ impl Backend for &OpenCL {
     fn retain(self, x: Id) {
         self.0.update(|mut b| b.retain(x));
     }
+
+    /*fn detach(self, x: Id) -> Tensor<Self> {
+        tensor(self.0.update(|mut b| b.detach(x)), self)
+    }*/
 }
 
 /*#[test]
@@ -288,25 +288,6 @@ fn t0() -> Result<(), ZyxError> {
     panic!();
     Ok(())
 }*/
-
-/*#[test]
-fn t1() -> Result<(), ZyxError> {
-    let dev = device()?;
-    let x = dev.uniform([2, 1, 1], 0f32..1f32);
-    let x = x.expand([2, 1, 3]);
-    std::println!("{x}");
-    panic!();
-    Ok(())
-}*/
-
-#[test]
-fn t0() -> Result<(), ZyxError> {
-    let dev = device()?;
-    let x = dev.tensor([[2, 3, 4], [2, 3, 1]]);
-    let x = x.sum(());
-    std::println!("{}", x);
-    Ok(())
-}
 
 /*#[test]
 fn t0() -> Result<(), ZyxError> {

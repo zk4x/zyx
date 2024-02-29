@@ -532,6 +532,7 @@ impl zyx_core::compiler::Compiler for Compiler {
     type Program = Program;
 
     fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, ZyxError> {
+        //std::println!("Storing");
         // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.collect();
         let size = data.len() * core::mem::size_of::<T>();
@@ -1201,18 +1202,21 @@ fn t5() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn t5() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
-    let x = dev.tensor([[2, 3, 1], [4, 2, 1]]);
-    let y = dev.tensor([2]);
-    //let z = x.sum(0) + y.expand([2, 3]).sum(0);
-    //let x = dev.randn([7, 4, 2], DType::F32);
-    //let z = (x + &y).sum(0) + &y;
-    //let z = x.max([0, 1]);
-    //let z = x.pad([(-1, 0)], 0);
-    let z = &x + &x + y;
-    let z = x.pow(100000);
-    std::println!("{z}");
+    let mut x = dev.randn([1024, 1024], DType::F32);
+    let y = dev.randn([1024, 1024], DType::F32);
+
+    for i in 0..100000000 {
+        if i % 100000 == 0 {
+            std::println!("Iter: {}", i%100000);
+        }
+        x = x + &y;
+        x = x - &y;
+    }
+
+    std::println!("{x}");
+    panic!();
     Ok(())
-}*/
+}

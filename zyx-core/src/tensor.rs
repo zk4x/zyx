@@ -326,7 +326,7 @@ pub const fn tensor<B: Backend>(id: Id, backend: B) -> Tensor<B> {
 impl<B: Backend> Tensor<B> {
     // Metadata
     /// Tensor's unique identification.
-    /// Any tensor on one backend will always have different id.
+    /// All tensors on one backend will always have different ids.
     pub fn id(&self) -> Id {
         self.id
     }
@@ -390,6 +390,30 @@ impl<B: Backend> Tensor<B> {
     pub fn backend(&self) -> B {
         self.backend
     }
+
+    /*
+    /// Detach gradient tape from tensor.
+    /// This means that resulting tensor is a shallow copy of self,
+    /// but it's gradient will be ones. Result of this operation
+    /// can only be differentiated by itself.
+    /// ```rust
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([2, 3]);
+    /// let y = &x + &x;
+    /// let g = x.backward([&x]).pop().unwrap().unwrap();
+    /// assert_eq!(g, [2, 2]);
+    /// let z = y.detach();
+    /// let g = z.backward([&z]).pop().unwrap().unwrap();
+    /// assert_eq!(g, [1, 1]);
+    /// let g = z.backward([&x]).pop().unwrap();
+    /// assert_eq!(g, None);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
+    #[must_use]
+    pub fn detach(&self) -> Tensor<B> {
+        // It should be possible to just be optimize this away.
+        self.backend.detach(self.id)
+    }*/
 
     // Access methods
     /// Load tensor from backend into vector

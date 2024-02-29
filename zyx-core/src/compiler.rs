@@ -163,7 +163,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        mut rcs: BTreeMap<Id, u8>,
+        mut rcs: BTreeMap<Id, u16>,
         order: &[Id],
         mut nodes: &mut [Node],
     ) -> Result<(), ZyxError> {

@@ -44,7 +44,7 @@ impl RuntimeBackend for Interpreter {
     fn evaluate(
         &mut self,
         _to_eval: BTreeSet<Id>,
-        mut rcs: BTreeMap<Id, u8>,
+        mut rcs: BTreeMap<Id, u16>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError> {

@@ -32,7 +32,7 @@ pub trait RuntimeBackend {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        rcs: BTreeMap<Id, u8>,
+        rcs: BTreeMap<Id, u16>,
         order: &[Id],
         nodes: &mut [Node],
     ) -> Result<(), ZyxError>;
@@ -42,9 +42,10 @@ pub trait RuntimeBackend {
 /// This runtime uses [Node] enum as representation of tensors.
 pub struct Runtime<R: RuntimeBackend> {
     rng: rand::rngs::SmallRng,
-    rcs: Vec<u8>,
+    rcs: Vec<u16>,
+    user_rcs: Vec<u16>,
     nodes: Vec<Node>,
-    leafs: BTreeSet<Id>, // these do not need backward graph
+    non_evaluated_nodes_count: u16,
     runtime_backend: R,
 }
 
@@ -55,8 +56,9 @@ impl<R: RuntimeBackend> Runtime<R> {
         Self {
             rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
             rcs: Vec::new(),
+            user_rcs: Vec::new(),
             nodes: Vec::new(),
-            leafs: BTreeSet::new(),
+            non_evaluated_nodes_count: 0,
             runtime_backend,
         }
     }
@@ -156,16 +158,11 @@ impl<R: RuntimeBackend> Runtime<R> {
         self.runtime_backend.load(x, numel)
     }
 
-    /// Set tensor x as leaf. Leaf tensors do not need to store graph of operations,
-    /// because user does not hold references to any of it's predecessors.
-    pub fn set_leaf(&mut self, x: Id) {
-        self.leafs.insert(x);
-    }
-
     /// Push new Node into the graph creating new tensor.
     /// This function does ZERO verification that the node is correct, but it optimizes
     /// out useless operations (like reshaping to the same shape)
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
+        std::println!("Pushing {node:?}, len: {}", self.nodes.len());
         // get rid of noops :)
         match node {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
@@ -183,57 +180,65 @@ impl<R: RuntimeBackend> Runtime<R> {
             _ => {}
         }
         for nid in node.parameters() {
-            self.rcs[nid.i()] += 1;
+            let nid_rc = &mut self.rcs[nid.i()];
+            *nid_rc = nid_rc.checked_add(1).unwrap();
         }
-        let (i, new_node) = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
-            (tensor::id(i), false)
+        let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
+            let id = tensor::id(i);
+            self.rcs[i] = 1;
+            self.user_rcs[i] = 1;
+            self.nodes[i] = node;
+            id
         } else {
-            (tensor::id(self.rcs.len()), true)
-        };
-        if new_node {
+            let id = tensor::id(self.rcs.len());
             self.rcs.push(1);
+            self.user_rcs.push(1);
             self.nodes.push(node);
-        } else {
-            self.rcs[i.i()] = 1;
-            self.nodes[i.i()] = node;
+            id
+        };
+        self.non_evaluated_nodes_count += 1;
+        if self.non_evaluated_nodes_count > 30000 {
+            // Approx. 1500 KiB of Nodes
+            self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
         }
-        // TODO This evaluates last leafs if there are too many nodes,
-        // is it better to find repeating nodes and evaluate those?
-        if self.nodes.len() > 10000 {
-            // Roughly 500 KiB of Nodes
-            self.evaluate(
-                self.leafs
-                    .iter()
-                    .copied()
-                    .filter(|nid| self.is_user_id(*nid))
-                    .collect::<BTreeSet<Id>>(),
-            )?;
-        }
-        Ok(i)
+        //std::println!("Assigned id: {id}");
+        Ok(id)
     }
 
-    fn is_user_id(&self, nid: Id) -> bool {
-        let mut rc = self.rcs[nid.i()];
-        for node in &self.nodes {
-            for p in node.parameters() {
-                if p == nid {
-                    rc -= 1;
+    /*
+    /// Release nodes that are not needed for backpropagation.
+    /// Creates a new tensor from x and marks it as only differentiable by itself, so that it can drop it's tape
+    /// once it's evaluated.
+    pub fn detach(&mut self, x: Id) -> Id {
+        todo!()
+        //self.push(Node::Copy(x))
+        /*let mut params = Vec::with_capacity(10);
+        params.push(x);
+        while let Some(x) = params.pop() {
+            if self.runtime_backend.is_evaluated(x) {
+                self.release(x)?;
+            } else {
+                for p in self.nodes[x.i()].parameters() {
+                    if self.user_rcs[p.i()] == 0 {
+                        params.push(p);
+                    }
                 }
             }
         }
-        rc > 0
-    }
+        Ok(())*/
+    }*/
 
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
     /// x and release all of it's predecessors in the graph.
+    // This function can not be called internally by runtime, because it would invalidate user_rcs
     pub fn release(&mut self, x: Id) -> Result<(), ZyxError> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(p) = params.pop() {
             self.rcs[p.i()] -= 1;
+            self.user_rcs[p.i()] -= 1;
             if self.rcs[p.i()] == 0 {
                 params.extend(self.nodes[p.i()].parameters());
-                self.leafs.remove(&p);
                 self.runtime_backend.remove(p)?;
             }
         }
@@ -241,12 +246,15 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Increase reference count of tensor x.
+    // This function can not be called internally by runtime, because it would invalidate user_rcs
     pub fn retain(&mut self, x: Id) {
         self.rcs[x.i()] += 1;
+        self.user_rcs[x.i()] += 1;
     }
 
     /// Evaluate specified nodes.
     pub fn evaluate(&mut self, mut nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
+        //std::println!("Evaluating");
         // TODO in order to be more efficient, we can optimize the graph
         // by reordering nodes and removing unnecessary nodes
 
@@ -255,7 +263,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<Id> = nodes.iter().copied().collect();
-        let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
+        let mut rcs: BTreeMap<Id, u16> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !self.runtime_backend.is_evaluated(nid) {
@@ -267,7 +275,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: BTreeMap<Id, u8> = BTreeMap::new();
+        let mut internal_rcs: BTreeMap<Id, u16> = BTreeMap::new();
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(rc) = rcs.get(&nid) {
@@ -304,13 +312,6 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
 
-        for leaf in self.leafs.iter() {
-            if let Some(rc) = rcs.get_mut(leaf) {
-                *rc += 1;
-                nodes.insert(*leaf);
-            }
-        }
-
         /*std::println!("");
         std::println!("");
         for nid in &order {
@@ -323,7 +324,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             .evaluate(nodes, rcs, &order, self.nodes.as_mut())?;
 
         // Release parts of graph that are not needed for backpropagation
-        for leaf in self.leafs.clone() {
+        /*for leaf in self.leafs.clone() {
             if self.runtime_backend.is_evaluated(leaf) {
                 self.leafs.remove(&leaf);
                 //std::println!("Releasing leaf {leaf}");
@@ -334,7 +335,11 @@ impl<R: RuntimeBackend> Runtime<R> {
                     self.release(nid)?;
                 }
             }
-        }
+        }*/
+
+        let n = self.nodes.len();
+        self.non_evaluated_nodes_count = (n - (0..n).filter(|i| self.runtime_backend.is_evaluated(tensor::id(*i))).count()) as u16;
+
         Ok(())
     }
 

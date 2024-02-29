@@ -17,7 +17,6 @@ pub enum Node {
     Leaf(Shape, DType),
     /// Uniform initializer for range 0..1
     Uniform(Shape, DType),
-    //IterI32(Box<dyn Iterator<Item = i32>>, Shape),
     /// Cast to dtype unary op
     Cast(Id, DType),
     /// Neg unary op

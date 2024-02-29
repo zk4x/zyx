@@ -171,10 +171,6 @@ impl Backend for &Torch {
         self.0.update(|b| b.push(node))
     }
 
-    fn set_leaf(self, x: Id) {
-        self.0.update(|b| b.set_leaf(x));
-    }
-
     fn release(self, x: Id) -> Result<(), ZyxError> {
         self.0.update(|b| b.release(x))
     }

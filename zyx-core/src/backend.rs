@@ -119,10 +119,10 @@ pub trait Backend: Copy {
     fn load<T: Scalar>(self, id: Id) -> Result<Vec<T>, ZyxError>;
     /// Create new tensor from given operation
     fn push(self, node: Node) -> Result<Id, ZyxError>;
-    /// Set some tensor as leaf, i. e. it no longer "requires grad"
-    fn set_leaf(self, x: Id);
     /// Decrease reference count of tensor
     fn release(self, x: Id) -> Result<(), ZyxError>;
     /// Increase reference count of tensor
     fn retain(self, x: Id);
+    // Returns tensor detached from gradient tape
+    //fn detach(self, x: Id) -> Tensor<Self>;
 }
