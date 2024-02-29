@@ -4,6 +4,38 @@ use crate::node::Node;
 use crate::shape::Shape;
 use crate::tensor::Id;
 
+/// Sized iterator
+pub trait SizedIterator: Iterator + Sized {
+    /// Manually add exact size to any iterator
+    fn make_sized(self, len: usize) -> SizedIter<Self::Item, Self> {
+        SizedIter {
+            iter: self,
+            len,
+        }
+    }
+}
+
+impl<IT: Iterator> SizedIterator for IT {}
+
+/// Sized iterator
+pub struct SizedIter<T, IT: Iterator<Item = T>> {
+    iter: IT,
+    len: usize,
+}
+
+impl<T, IT: Iterator<Item = T>> Iterator for SizedIter<T, IT> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+}
+
+impl<T, IT: Iterator<Item = T>> ExactSizeIterator for SizedIter<T, IT> {
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
 /// Recursive search to get shape of x in nodes
 pub fn get_shape(nodes: &[Node], mut x: Id) -> &Shape {
     loop {
@@ -11,9 +43,6 @@ pub fn get_shape(nodes: &[Node], mut x: Id) -> &Shape {
         match node {
             Node::Leaf(shape, ..)
             | Node::Uniform(shape, ..)
-            | Node::IterF32(_, shape)
-            | Node::IterF64(_, shape)
-            | Node::IterI32(_, shape)
             | Node::Reshape(_, shape)
             | Node::Expand(_, shape)
             | Node::Permute(.., shape)
@@ -31,9 +60,6 @@ pub fn get_dtype(nodes: &[Node], mut x: Id) -> DType {
         let node = &nodes[x.i()];
         match node {
             Node::Leaf(_, dtype) | Node::Uniform(_, dtype) | Node::Cast(_, dtype) => return *dtype,
-            Node::IterF32(..)  => return DType::F32,
-            Node::IterF64(..)  => return DType::F64,
-            Node::IterI32(..) => return DType::I32,
             _ => x = node.parameters().next().unwrap(),
         }
     }
@@ -79,9 +105,6 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u16]) -> alloc:
         let id = id.i();
         let node = &nodes[id];
         match node {
-            Node::IterF32(_, sh) => add_node(id, &format!("Iter({sh}, F32)"), "box"),
-            Node::IterF64(_, sh) => add_node(id, &format!("Iter({sh}, F64)"), "box"),
-            Node::IterI32(_, sh) => add_node(id, &format!("Iter({sh}, I32)"), "box"),
             Node::Leaf(sh, dtype) => add_node(id, &format!("Leaf({sh}, {dtype})"), "box"),
             Node::Uniform(sh, dtype) => add_node(id, &format!("Uniform({sh}, {dtype})"), "box"),
             Node::Add(x, y) => add_node(id, &format!("Add({x}, {y})"), "oval"),

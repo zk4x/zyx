@@ -17,8 +17,7 @@ pub trait Compiler {
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
     /// Store iter into buffer
-    fn store<T: Scalar>(&mut self, iter: impl Iterator<Item = T>)
-        -> Result<Self::Buffer, ZyxError>;
+    fn store<T: Scalar>(&mut self, iter: impl IntoIterator<Item = T>) -> Result<Self::Buffer, ZyxError>;
     /// Load buffer into vec
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Drop Buffer
@@ -156,6 +155,15 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         Ok(())
     }
 
+    fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
+    where
+        IT: IntoIterator<Item=T>,
+        IT::IntoIter: ExactSizeIterator,
+    {
+        self.buffers.insert(x, self.compiler.store(iter)?);
+        Ok(())
+    }
+
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
         self.compiler.load(&self.buffers[&x], numel)
     }
@@ -165,21 +173,16 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u16>,
         order: &[Id],
-        mut nodes: &mut [Node],
+        nodes: &[Node],
     ) -> Result<(), ZyxError> {
         let mut buffers: BTreeMap<Id, Buffer> = BTreeMap::new();
         // TODO calculate flops for buffers :D
         for nid in order.iter().copied() {
             //std::println!("{nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
-            self.store(nid, &mut nodes)?;
-
             let buffer = if self.is_evaluated(nid) {
                 Buffer::leaf(nid, crate::utils::get_shape(nodes, nid), &get_dtype(nodes, nid))
             } else {
                 match &nodes[nid.i()] {
-                    Node::IterF32(..) | Node::IterF64(..) | Node::IterI32(..) => {
-                        panic!()
-                    }
                     Node::Leaf(sh, dtype) => Buffer::leaf(nid, sh, dtype),
                     Node::Uniform(..) => {
                         todo!()
@@ -437,34 +440,6 @@ impl<C: Compiler> CompiledBackend<C> {
             buffers: BTreeMap::new(),
             programs: BTreeMap::new(),
         }
-    }
-
-    fn store(&mut self, x: Id, nodes: &mut [Node]) -> Result<(), ZyxError> {
-        match &nodes[x.i()] {
-            Node::IterF32(_, shape) => {
-                let mut new_node = Node::Leaf(shape.clone(), DType::F32);
-                core::mem::swap(&mut nodes[x.i()], &mut new_node);
-                if let Node::IterF32(iter, _) = new_node {
-                    self.buffers.insert(x, self.compiler.store(iter)?);
-                }
-            }
-            Node::IterF64(_, shape) => {
-                let mut new_node = Node::Leaf(shape.clone(), DType::F64);
-                core::mem::swap(&mut nodes[x.i()], &mut new_node);
-                if let Node::IterF64(iter, _) = new_node {
-                    self.buffers.insert(x, self.compiler.store(iter)?);
-                }
-            }
-            Node::IterI32(_, shape) => {
-                let mut new_node = Node::Leaf(shape.clone(), DType::I32);
-                core::mem::swap(&mut nodes[x.i()], &mut new_node);
-                if let Node::IterI32(iter, _) = new_node {
-                    self.buffers.insert(x, self.compiler.store(iter)?);
-                }
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     fn evaluate_buffer<'a>(

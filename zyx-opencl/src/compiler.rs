@@ -531,10 +531,10 @@ impl zyx_core::compiler::Compiler for Compiler {
 
     type Program = Program;
 
-    fn store<T>(&mut self, iter: impl Iterator<Item = T>) -> Result<Self::Buffer, ZyxError> {
+    fn store<T>(&mut self, iter: impl IntoIterator<Item = T>) -> Result<Self::Buffer, ZyxError> {
         //std::println!("Storing");
         // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
-        let data: Vec<T> = iter.collect();
+        let data: Vec<T> = iter.into_iter().collect();
         let size = data.len() * core::mem::size_of::<T>();
         let mut err = CL_SUCCESS;
         let mem = unsafe {

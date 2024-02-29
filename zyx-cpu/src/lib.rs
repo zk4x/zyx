@@ -85,43 +85,43 @@ impl CPU {
     /// Create new tensor
     #[must_use]
     pub fn tensor<'a>(&'a self, data: impl IntoTensor<&'a Self>) -> Tensor<&'a Self> {
-        <&Self as Backend>::tensor(self, data)
+        <&Self as Backend>::tensor(self, data).unwrap()
     }
 
     /// Create new tensor using values from standard normal distribution
     #[must_use]
     pub fn randn(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::randn(self, shape, dtype)
+        <&Self as Backend>::randn(self, shape, dtype).unwrap()
     }
 
     /// Create new tensor using values from uniform distribution
     #[must_use]
     pub fn uniform(&self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<&Self> {
-        <&Self as Backend>::uniform(self, shape, range)
+        <&Self as Backend>::uniform(self, shape, range).unwrap()
     }
 
     /// Create new tensor by repeating single value
     #[must_use]
     pub fn full(&self, shape: impl Into<Shape>, value: impl Scalar) -> Tensor<&Self> {
-        <&Self as Backend>::full(self, shape, value)
+        <&Self as Backend>::full(self, shape, value).unwrap()
     }
 
     /// Create new tensor by repeating zeroes
     #[must_use]
     pub fn zeros(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::zeros(self, shape, dtype)
+        <&Self as Backend>::zeros(self, shape, dtype).unwrap()
     }
 
     /// Create new tensor by repeating ones
     #[must_use]
     pub fn ones(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::ones(self, shape, dtype)
+        <&Self as Backend>::ones(self, shape, dtype).unwrap()
     }
 
     /// Create eye tensor
     #[must_use]
     pub fn eye(&self, n: usize, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::eye(self, n, dtype)
+        <&Self as Backend>::eye(self, n, dtype).unwrap()
     }
 
     /// Create graph of operations between tensors in dot format for visualization
@@ -149,12 +149,12 @@ impl Backend for &CPU {
         self.0.read(|b| b.plot_graph_dot(&ids))
     }
 
-    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
-        tensor(self.0.update(|b| b.randn(shape.into(), dtype)), self)
+    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(self.0.update(|b| b.randn(shape.into(), dtype))?, self))
     }
 
-    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<Self> {
-        tensor(self.0.update(|b| b.uniform(shape.into(), range)), self)
+    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(self.0.update(|b| b.uniform(shape.into(), range))?, self))
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -171,6 +171,14 @@ impl Backend for &CPU {
 
     fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, ZyxError> {
         self.0.update(|b| b.load(x))
+    }
+
+    fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
+    where
+        IT: IntoIterator<Item=T>,
+        IT::IntoIter: ExactSizeIterator,
+    {
+        self.0.update(|b| b.store(iter))
     }
 
     fn push(self, node: Node) -> Result<Id, ZyxError> {

@@ -41,15 +41,28 @@ impl RuntimeBackend for Interpreter {
         })
     }
 
+    fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
+    where
+        IT: IntoIterator<Item=T>,
+        IT::IntoIter: ExactSizeIterator,
+    {
+        match T::dtype() {
+            DType::F32 => self.tensors.insert(x, <Vec<f32> as TryInto<Tensor>>::try_into(iter.into_iter().map(|x| x.into_f32()).collect::<Vec<f32>>()).unwrap()),
+            DType::F64 => self.tensors.insert(x, <Vec<f64> as TryInto<Tensor>>::try_into(iter.into_iter().map(|x| x.into_f64()).collect::<Vec<f64>>()).unwrap()),
+            DType::I32 => self.tensors.insert(x, <Vec<i32> as TryInto<Tensor>>::try_into(iter.into_iter().map(|x| x.into_i32()).collect::<Vec<i32>>()).unwrap()),
+        };
+        Ok(())
+    }
+
     fn evaluate(
         &mut self,
         _to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u16>,
         order: &[Id],
-        nodes: &mut [Node],
+        nodes: &[Node],
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
-            match &mut nodes[nid.i()] {
+            match &nodes[nid.i()] {
                 Node::Leaf(..) => {}
                 Node::Uniform(..) => { todo!() }
                 Node::Cast(x, dtype) => {
@@ -122,30 +135,6 @@ impl RuntimeBackend for Interpreter {
                 }
                 Node::Max(x, axes, ..) => {
                     self.tensors.insert(nid, self.tensors[x].amax(axes.vi64(), true));
-                }
-                Node::IterF32(_, shape) => {
-                    let shape = shape.clone();
-                    let mut new_node = Node::Leaf(shape.clone(), DType::F32);
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF32(iter, _) = new_node {
-                        self.tensors.insert(nid, <Vec<f32> as TryInto<Tensor>>::try_into(iter.collect::<Vec<f32>>()).unwrap().reshape(shape.vi64()));
-                    }
-                }
-                Node::IterF64(_, shape) => {
-                    let shape = shape.clone();
-                    let mut new_node = Node::Leaf(shape.clone(), DType::F64);
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF64(iter, _) = new_node {
-                        self.tensors.insert(nid, <Vec<f64> as TryInto<Tensor>>::try_into(iter.collect::<Vec<f64>>()).unwrap().reshape(shape.vi64()));
-                    }
-                }
-                Node::IterI32(_, shape) => {
-                    let shape = shape.clone();
-                    let mut new_node = Node::Leaf(shape.clone(), DType::I32);
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterI32(iter, _) = new_node {
-                        self.tensors.insert(nid, <Vec<i32> as TryInto<Tensor>>::try_into(iter.collect::<Vec<i32>>()).unwrap().reshape(shape.vi64()));
-                    }
                 }
             }
             for p in nodes[nid.i()].parameters() {

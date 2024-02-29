@@ -12,6 +12,7 @@ use core::{
     ops::{Range, SubAssign},
 };
 use std::ops::RangeFull;
+use crate::utils::SizedIterator;
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
@@ -554,7 +555,7 @@ impl<B: Backend> Tensor<B> {
     /// Returns 1/self
     #[must_use]
     pub fn reciprocal(&self) -> Tensor<B> {
-        self.backend().ones(self.shape(), self.dtype()) / self
+        self.backend().ones(self.shape(), self.dtype()).unwrap() / self
     }
 
     /// Returns 1/self.sqrt()
@@ -567,8 +568,8 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
         self.backend()
-            .tensor(probability)
-            .cmplt(self.backend().uniform(self.shape(), 0.0..1.0))
+            .tensor(probability).unwrap()
+            .cmplt(self.backend().uniform(self.shape(), 0.0..1.0).unwrap())
             * self
     }
 
@@ -581,7 +582,7 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the sigmoid (logistic function) of the elements of self.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor<B> {
-        let one = self.backend().ones(1, self.dtype());
+        let one = self.backend().ones(1, self.dtype()).unwrap();
         &one / (&one + (-self).exp())
     }
 
@@ -614,7 +615,7 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the leaky relu of the elements of self.
     #[must_use]
     pub fn leaky_relu(&self, neg_slope: impl Scalar) -> Tensor<B> {
-        self.relu() - (self * (-self.backend.tensor(neg_slope))).relu()
+        self.relu() - (self * (-self.backend.tensor(neg_slope).unwrap())).relu()
     }
 
     /// Returns a new tensor with the elu of the elements of self.
@@ -629,7 +630,7 @@ impl<B: Backend> Tensor<B> {
         1.0507009873554804934193349852946f32
             * (self.relu()
                 - (1.6732632423543772848170429916717f32
-                    * (self.backend.ones(1, self.dtype()) - self.exp()))
+                    * (self.backend.ones(1, self.dtype()).unwrap() - self.exp()))
                 .relu())
     }
 
@@ -637,7 +638,7 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn celu(&self, alpha: impl Scalar) -> Tensor<B> {
         self.relu()
-            - ((self.backend.ones(1, self.dtype()) - (self / alpha.clone()).exp()) * alpha).relu()
+            - ((self.backend.ones(1, self.dtype()).unwrap() - (self / alpha.clone()).exp()) * alpha).relu()
     }
 
     /// Returns a new tensor with the gelu of the elements of self.
@@ -695,7 +696,7 @@ impl<B: Backend> Tensor<B> {
     /// Exponentiation on self
     #[must_use]
     pub fn pow(&self, exponent: impl IntoTensor<B>) -> Tensor<B> {
-        let exponent = self.backend.tensor(exponent);
+        let exponent = self.backend.tensor(exponent).unwrap();
         if exponent.numel() == 1 {
             let dtype = exponent.dtype();
             if !dtype.is_floating() {
@@ -723,8 +724,8 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn where_(&self, if_true: impl IntoTensor<B>, if_false: impl IntoTensor<B>) -> Tensor<B> {
         let x = self.clone();
-        let y = self.backend.tensor(if_true);
-        let z = self.backend.tensor(if_false);
+        let y = self.backend.tensor(if_true).unwrap();
+        let z = self.backend.tensor(if_false).unwrap();
         let (x, y) = Tensor::broadcast(x, y);
         let (x, z) = Tensor::broadcast(x, z);
         let (y, z) = Tensor::broadcast(y, z);
@@ -737,8 +738,8 @@ impl<B: Backend> Tensor<B> {
     /// Returns cosine_similarity between self and rhs, computed along axes.
     #[must_use]
     pub fn cosine_similarity(&self, rhs: impl IntoTensor<B>, eps: impl IntoTensor<B>) -> Tensor<B> {
-        let rhs = self.backend.tensor(rhs);
-        let eps = self.backend.tensor(eps);
+        let rhs = self.backend.tensor(rhs).unwrap();
+        let eps = self.backend.tensor(eps).unwrap();
         let x = self.pow(2).sqrt() * rhs.pow(2).sqrt();
         self * rhs / x.cmplt(&eps).where_(eps, x)
     }
@@ -754,7 +755,7 @@ impl<B: Backend> Tensor<B> {
     /// ```
     #[must_use]
     pub fn dot(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        let y = self.backend.tensor(rhs).transpose();
+        let y = self.backend.tensor(rhs).unwrap().transpose();
         let xshape = self.shape();
         let yshape = y.shape();
         let yrank = yshape.rank();
@@ -872,7 +873,7 @@ impl<B: Backend> Tensor<B> {
         value: impl IntoTensor<B>,
     ) -> Tensor<B> {
         let dtype = self.dtype();
-        let value = self.backend.tensor(value);
+        let value = self.backend.tensor(value).unwrap();
         debug_assert_eq!(
             value.dtype(),
             dtype,
@@ -910,14 +911,14 @@ impl<B: Backend> Tensor<B> {
             t0 + tensor(
                 self.backend
                     .push(Node::Pad(
-                        self.backend.ones(sh, dtype).id,
+                        self.backend.ones(sh, dtype).unwrap().id,
                         padding,
                         psh.clone(),
                     ))
                     .unwrap(),
                 self.backend,
             )
-            .where_(self.backend.zeros(self.shape(), self.dtype()), value)
+            .where_(self.backend.zeros(self.shape(), self.dtype()).unwrap(), value)
         }
     }
 
@@ -1148,7 +1149,7 @@ impl<B: Backend> Tensor<B> {
         let mut offset = 0i64;
         let mut res = tensors[0]
             .backend
-            .zeros(tensors[0].shape(), tensors[0].dtype());
+            .zeros(tensors[0].shape(), tensors[0].dtype()).unwrap();
         for tensor in tensors {
             res = res
                 + tensor.pad(
@@ -1439,42 +1440,42 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Div<IT> for Tensor<B> {
 impl<B: Backend> core::ops::Div<Tensor<B>> for f32 {
     type Output = Tensor<B>;
     fn div(self, rhs: Tensor<B>) -> Self::Output {
-        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+        rhs.backend.tensor(self).unwrap().binary_op(rhs, BOp::Div)
     }
 }
 
 impl<B: Backend> core::ops::Div<&Tensor<B>> for f32 {
     type Output = Tensor<B>;
     fn div(self, rhs: &Tensor<B>) -> Self::Output {
-        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+        rhs.backend.tensor(self).unwrap().binary_op(rhs, BOp::Div)
     }
 }
 
 impl<B: Backend> core::ops::Div<Tensor<B>> for f64 {
     type Output = Tensor<B>;
     fn div(self, rhs: Tensor<B>) -> Self::Output {
-        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+        rhs.backend.tensor(self).unwrap().binary_op(rhs, BOp::Div)
     }
 }
 
 impl<B: Backend> core::ops::Div<&Tensor<B>> for f64 {
     type Output = Tensor<B>;
     fn div(self, rhs: &Tensor<B>) -> Self::Output {
-        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+        rhs.backend.tensor(self).unwrap().binary_op(rhs, BOp::Div)
     }
 }
 
 impl<B: Backend> core::ops::Div<Tensor<B>> for i32 {
     type Output = Tensor<B>;
     fn div(self, rhs: Tensor<B>) -> Self::Output {
-        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+        rhs.backend.tensor(self).unwrap().binary_op(rhs, BOp::Div)
     }
 }
 
 impl<B: Backend> core::ops::Div<&Tensor<B>> for i32 {
     type Output = Tensor<B>;
     fn div(self, rhs: &Tensor<B>) -> Self::Output {
-        rhs.backend.tensor(self).binary_op(rhs, BOp::Div)
+        rhs.backend.tensor(self).unwrap().binary_op(rhs, BOp::Div)
     }
 }
 
@@ -1500,18 +1501,11 @@ impl<B: Backend> IntoTensor<B> for &Tensor<B> {
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for Range<T>
 where
-    Range<T>: Iterator<Item = T>,
+    Range<T>: Iterator<Item = T> + ExactSizeIterator,
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        let n = self.clone().count();
         tensor(
-            backend
-                .push(match T::dtype() {
-                    DType::F32 => Node::IterF32(Box::new(self.map(T::into_f32)), n.into()),
-                    DType::F64 => Node::IterF64(Box::new(self.map(T::into_f64)), n.into()),
-                    DType::I32 => Node::IterI32(Box::new(self.map(T::into_i32)), n.into()),
-                })
-                .unwrap(),
+            backend.store(self).unwrap(),
             backend,
         )
     }
@@ -1519,21 +1513,8 @@ where
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        let n = self.len();
         tensor(
-            backend
-                .push(match T::dtype() {
-                    DType::F32 => {
-                        Node::IterF32(Box::new(self.into_iter().map(T::into_f32)), n.into())
-                    }
-                    DType::F64 => {
-                        Node::IterF64(Box::new(self.into_iter().map(T::into_f64)), n.into())
-                    }
-                    DType::I32 => {
-                        Node::IterI32(Box::new(self.into_iter().map(T::into_i32)), n.into())
-                    }
-                })
-                .unwrap(),
+            backend.store(self).unwrap(),
             backend,
         )
     }
@@ -1541,21 +1522,8 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        let n = self.len();
         tensor(
-            backend
-                .push(match T::dtype() {
-                    DType::F32 => {
-                        Node::IterF32(Box::new(self.iter().cloned().map(T::into_f32)), n.into())
-                    }
-                    DType::F64 => {
-                        Node::IterF64(Box::new(self.iter().cloned().map(T::into_f64)), n.into())
-                    }
-                    DType::I32 => {
-                        Node::IterI32(Box::new(self.iter().cloned().map(T::into_i32)), n.into())
-                    }
-                })
-                .unwrap(),
+            backend.store(self.iter().cloned()).unwrap(),
             backend,
         )
     }
@@ -1565,17 +1533,7 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for T {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
             backend
-                .push(match T::dtype() {
-                    DType::F32 => {
-                        Node::IterF32(Box::new([self].into_iter().map(T::into_f32)), 1.into())
-                    }
-                    DType::F64 => {
-                        Node::IterF64(Box::new([self].into_iter().map(T::into_f64)), 1.into())
-                    }
-                    DType::I32 => {
-                        Node::IterI32(Box::new([self].into_iter().map(T::into_i32)), 1.into())
-                    }
-                })
+                .store( [self])
                 .unwrap(),
             backend,
         )
@@ -1585,19 +1543,7 @@ impl<B: Backend, T: Scalar> IntoTensor<B> for T {
 impl<B: Backend, T: Scalar, const D0: usize> IntoTensor<B> for [T; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
-            backend
-                .push(match T::dtype() {
-                    DType::F32 => {
-                        Node::IterF32(Box::new(self.into_iter().map(T::into_f32)), D0.into())
-                    }
-                    DType::F64 => {
-                        Node::IterF64(Box::new(self.into_iter().map(T::into_f64)), D0.into())
-                    }
-                    DType::I32 => {
-                        Node::IterI32(Box::new(self.into_iter().map(T::into_i32)), D0.into())
-                    }
-                })
-                .unwrap(),
+            backend.store(self).unwrap(),
             backend,
         )
     }
@@ -1606,24 +1552,9 @@ impl<B: Backend, T: Scalar, const D0: usize> IntoTensor<B> for [T; D0] {
 impl<B: Backend, T: Scalar, const D0: usize, const D1: usize> IntoTensor<B> for [[T; D1]; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
-            backend
-                .push(match T::dtype() {
-                    DType::F32 => Node::IterF32(
-                        Box::new(self.into_iter().flatten().map(T::into_f32)),
-                        [D0, D1].into(),
-                    ),
-                    DType::F64 => Node::IterF64(
-                        Box::new(self.into_iter().flatten().map(T::into_f64)),
-                        [D0, D1].into(),
-                    ),
-                    DType::I32 => Node::IterI32(
-                        Box::new(self.into_iter().flatten().map(T::into_i32)),
-                        [D0, D1].into(),
-                    ),
-                })
-                .unwrap(),
+            backend.store(self.into_iter().flatten().make_sized(D0*D1)).unwrap(),
             backend,
-        )
+        ).reshape([D0, D1])
     }
 }
 
@@ -1632,30 +1563,15 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
-            backend
-                .push(match T::dtype() {
-                    DType::F32 => Node::IterF32(
-                        Box::new(self.into_iter().flatten().flatten().map(T::into_f32)),
-                        [D0, D1, D2].into(),
-                    ),
-                    DType::F64 => Node::IterF64(
-                        Box::new(self.into_iter().flatten().flatten().map(T::into_f64)),
-                        [D0, D1, D2].into(),
-                    ),
-                    DType::I32 => Node::IterI32(
-                        Box::new(self.into_iter().flatten().flatten().map(T::into_i32)),
-                        [D0, D1, D2].into(),
-                    ),
-                })
-                .unwrap(),
+            backend.store(self.into_iter().flatten().flatten().make_sized(D0*D1*D2)).unwrap(),
             backend,
-        )
+        ).reshape([D0, D1, D2])
     }
 }
 
 impl<B: Backend, IT: IntoTensor<B> + Clone> PartialEq<IT> for Tensor<B> {
     fn eq(&self, other: &IT) -> bool {
-        let other = self.backend.tensor(other.clone());
+        let other = self.backend.tensor(other.clone()).unwrap();
         let dtype = self.dtype();
         self.shape() == other.shape()
             && dtype == other.dtype()

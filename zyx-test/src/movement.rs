@@ -2,7 +2,7 @@ use super::assert_eq;
 use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape, axes::Axes};
 
 pub fn reshape<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    let x = dev.randn([2, 4, 1, 5], T::dtype());
+    let x = dev.randn([2, 4, 1, 5], T::dtype())?;
     let v: Vec<T> = x.to_vec()?;
     let y = x.reshape([8, 5]);
     assert_eq!(y.shape(), [8, 5]);
@@ -14,7 +14,7 @@ pub fn permute<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     use zyx_core::axes::IntoAxes;
     let sh = [2, 4, 1, 5].into();
     let ax = [-3, 3, 0, 2].into_axes(4);
-    let x = dev.randn(&sh, T::dtype());
+    let x = dev.randn(&sh, T::dtype())?;
     let v: Vec<T> = x.to_vec()?;
     let y = x.permute(&ax);
     assert_eq!(y.shape(), [4, 5, 2, 1]);
@@ -25,7 +25,7 @@ pub fn permute<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
 pub fn expand<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let sh = [2, 4, 1, 5].into();
     let rsh = [2, 4, 10, 5].into();
-    let x = dev.randn(&sh, T::dtype());
+    let x = dev.randn(&sh, T::dtype())?;
     let v: Vec<T> = x.to_vec()?;
     let y = x.expand(&rsh);
     assert_eq!(y.shape(), [2, 4, 10, 5]);
@@ -34,7 +34,7 @@ pub fn expand<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
 }
 
 pub fn pad<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    let x = dev.tensor([[4, 3, 2, 1], [4, 2, 3, 8]]);
+    let x = dev.tensor([[4, 3, 2, 1], [4, 2, 3, 8]])?;
     let y = x.pad([(1, 0), (0, 1)], 0);
     assert_eq!(y.shape(), [3, 5]);
     println!("{y}");

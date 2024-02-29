@@ -15,8 +15,8 @@ pub trait LinearInit: Backend {
     /// Initilize linear layer in device self
     fn linear(self, in_features: usize, out_features: usize) -> Linear<Self> {
         Linear {
-            weight: self.randn([in_features, out_features], DType::F32),
-            bias: Some(self.randn([out_features], DType::F32)),
+            weight: self.randn([in_features, out_features], DType::F32).unwrap(),
+            bias: Some(self.randn([out_features], DType::F32).unwrap()),
         }
     }
 }
@@ -51,7 +51,7 @@ impl<B: Backend> Linear<B> {
     /// Forward function for linear.
     /// Calculates x.dot(&self.weight) + self.bias
     pub fn forward(&self, x: impl IntoTensor<B>) -> Tensor<B> {
-        let x = self.weight.backend().tensor(x);
+        let x = self.weight.backend().tensor(x).unwrap();
         let x = x.dot(&self.weight);
         if let Some(bias) = &self.bias {
             return x + bias;

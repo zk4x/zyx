@@ -149,21 +149,21 @@ pub fn load<B: Backend>(
                                 .chunks_exact(dtype.byte_size())
                                 .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
                                 .collect();
-                            dev.tensor(vec).reshape(&shape)
+                            dev.tensor(vec)?.reshape(&shape)
                         }
                         DType::F64 => {
                             let vec: Vec<f64> = buf
                                 .chunks_exact(dtype.byte_size())
                                 .map(|x| f64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
                                 .collect();
-                            dev.tensor(vec).reshape(&shape)
+                            dev.tensor(vec)?.reshape(&shape)
                         }
                         DType::I32 => {
                             let vec: Vec<i32> = buf
                                 .chunks_exact(dtype.byte_size())
                                 .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
                                 .collect();
-                            dev.tensor(vec).reshape(&shape)
+                            dev.tensor(vec)?.reshape(&shape)
                         }
                     });
                 }

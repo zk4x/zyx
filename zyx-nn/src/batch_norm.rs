@@ -35,12 +35,12 @@ pub trait BatchNormInit: Backend {
             eps: 1e-5,
             momentum: 0.1,
             track_running_stats: true,
-            weight: Some(self.ones(num_features, DType::F32)),
-            bias: Some(self.zeros(num_features, DType::F32)),
-            running_mean: self.zeros(num_features, DType::F32),
-            running_var: self.ones(num_features, DType::F32),
+            weight: Some(self.ones(num_features, DType::F32).unwrap()),
+            bias: Some(self.zeros(num_features, DType::F32).unwrap()),
+            running_mean: self.zeros(num_features, DType::F32).unwrap(),
+            running_var: self.ones(num_features, DType::F32).unwrap(),
             training: true,
-            num_batches_tracked: self.zeros(1, DType::F32),
+            num_batches_tracked: self.zeros(1, DType::F32).unwrap(),
         }
     }
 }

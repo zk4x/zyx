@@ -21,8 +21,8 @@ pub trait LayerNormInit: Backend {
         let normalized_shape = normalized_shape.into();
         LayerNorm {
             d_dims: normalized_shape.rank(),
-            weight: Some(self.randn(normalized_shape.clone(), DType::F32)),
-            bias: Some(self.randn(normalized_shape, DType::F32)),
+            weight: Some(self.randn(normalized_shape.clone(), DType::F32).unwrap()),
+            bias: Some(self.randn(normalized_shape, DType::F32).unwrap()),
             eps: 1e-5,
         }
     }

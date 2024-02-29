@@ -9,7 +9,6 @@ use crate::{
 };
 use alloc::collections::btree_map::Entry;
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
@@ -25,6 +24,11 @@ pub trait RuntimeBackend {
     fn is_evaluated(&self, x: Id) -> bool;
     /// Delete all memory used by tensor x.
     fn remove(&mut self, x: Id) -> Result<(), ZyxError>;
+    /// Store iterator into runtime backend
+    fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
+    where
+        IT: IntoIterator<Item=T>,
+        IT::IntoIter: ExactSizeIterator;
     /// Load evaluated tensor x.
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Evaluate tensors to_eval with given graph of nodes and recommended
@@ -34,7 +38,7 @@ pub trait RuntimeBackend {
         to_eval: BTreeSet<Id>,
         rcs: BTreeMap<Id, u16>,
         order: &[Id],
-        nodes: &mut [Node],
+        nodes: &[Node],
     ) -> Result<(), ZyxError>;
 }
 
@@ -51,6 +55,7 @@ pub struct Runtime<R: RuntimeBackend> {
 
 impl<R: RuntimeBackend> Runtime<R> {
     /// Initialize new runtime.
+    #[must_use]
     pub fn new(runtime_backend: R) -> Self {
         use rand::SeedableRng;
         Self {
@@ -64,88 +69,91 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Create tensor initialized from normal distribution.
-    pub fn randn(&mut self, shape: Shape, dtype: DType) -> Id {
+    #[must_use]
+    pub fn randn(&mut self, shape: Shape, dtype: DType) -> Result<Id, ZyxError> {
         use rand::Rng;
         let n = shape.numel();
         let mut rng = self.rng.clone();
         use rand::distributions::Standard;
-        let data = match dtype {
-            DType::F32 => self.push(Node::IterF32(
-                Box::new((0..n).map(move |_| rng.sample(Standard))),
-                shape,
-            )),
-            DType::F64 => self.push(Node::IterF64(
-                Box::new((0..n).map(move |_| rng.sample(Standard))),
-                shape,
-            )),
-            DType::I32 => self.push(Node::IterI32(
-                Box::new((0..n).map(move |_| rng.sample(Standard))),
-                shape,
-            )),
-        }
-        .unwrap(); // Can't fail, as this does not call backend
-                   // change the state of the random seed in rng
+        let data1 = match dtype {
+            DType::F32 => self.store::<f32, _>((0..n).map(move |_| rng.sample(Standard))),
+            DType::F64 => self.store::<f64, _>((0..n).map(move |_| rng.sample(Standard))),
+            DType::I32 => self.store::<i32, _>((0..n).map(move |_| rng.sample(Standard))),
+        }?;
+        let data = self.push(Node::Reshape(data1, shape))?;
+        self.release(data1)?;
+       // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
         }
-        data
+        Ok(data)
     }
 
     /// Create uniform tensor from range low..high
-    pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Id {
+    #[must_use]
+    pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Result<Id, ZyxError> {
         // TODO for f32 in range 0.0..1.0 switch to Node::UniformF32 for better performance
         use rand::Rng;
         let n = shape.numel();
         let mut rng = self.rng.clone();
         use rand::distributions::Standard;
-        let data = match T::dtype() {
-            DType::F32 => self.push(Node::IterF32(
-                Box::new((0..n).map(move |_| {
-                    rng.sample(Uniform::new(
-                        range.start.clone().into_f32(),
-                        range.end.clone().into_f32(),
-                    ))
-                })),
-                shape,
-            )),
-            DType::F64 => self.push(Node::IterF64(
-                Box::new((0..n).map(move |_| {
-                    rng.sample(Uniform::new(
-                        range.start.clone().into_f64(),
-                        range.end.clone().into_f64(),
-                    ))
-                })),
-                shape,
-            )),
-            DType::I32 => self.push(Node::IterI32(
-                Box::new((0..n).map(move |_| {
-                    rng.sample(Uniform::new(
-                        range.start.clone().into_i32(),
-                        range.end.clone().into_i32(),
-                    ))
-                })),
-                shape,
-            )),
-        }
-        .unwrap(); // Can't fail, as this does not call backend
-                   // change the state of the random seed in rng
+        let data1 = match T::dtype() {
+            DType::F32 => self.store((0..n).map(move |_| { rng.sample(Uniform::new(range.start.clone().into_f32(), range.end.clone().into_f32())) })),
+            DType::F64 => self.store((0..n).map(move |_| { rng.sample(Uniform::new(range.start.clone().into_f64(), range.end.clone().into_f64())) })),
+            DType::I32 => self.store((0..n).map(move |_| { rng.sample(Uniform::new(range.start.clone().into_i32(), range.end.clone().into_i32())) })),
+        }?;
+        let data = self.push(Node::Reshape(data1, shape))?;
+        self.release(data1)?;
+       // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
         }
-        data
+        Ok(data)
+    }
+
+    /// Store iterator into runtime as tensor
+    #[must_use]
+    pub fn store<T: Scalar, IT>(&mut self, iter: IT) -> Result<Id, ZyxError>
+    where
+        IT: IntoIterator<Item = T>,
+        IT::IntoIter: ExactSizeIterator,
+    {
+        // TODO optimizations for scalars and very small tensors, by using Node::Scalar(...) or Node::SmallTensor(..)
+        // With those optimizations, these can be compiled into kernels for better performance.
+        let iter = iter.into_iter();
+        let len = iter.len();
+        let node = Node::Leaf(len.into(), T::dtype());
+        let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
+            let id = tensor::id(i);
+            self.rcs[i] = 1;
+            self.user_rcs[i] = 1;
+            self.nodes[i] = node;
+            id
+        } else {
+            let id = tensor::id(self.rcs.len());
+            self.rcs.push(1);
+            self.user_rcs.push(1);
+            self.nodes.push(node);
+            id
+        };
+        self.runtime_backend.store(id, iter)?;
+        Ok(id)
     }
 
     /// Get shape of tensor x
+    #[must_use]
     pub fn shape(&self, x: Id) -> &Shape {
         get_shape(self.nodes.as_slice(), x)
     }
 
     /// Get dtype of tensor x
+    #[must_use]
     pub fn dtype(&self, x: Id) -> DType {
         get_dtype(self.nodes.as_slice(), x)
     }
 
     /// Load tensor x
+    #[must_use]
     pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
         // This may need to evaluate, therefore we need to take mutable reference to self
         if !self.runtime_backend.is_evaluated(x) {
@@ -161,6 +169,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// Push new Node into the graph creating new tensor.
     /// This function does ZERO verification that the node is correct, but it optimizes
     /// out useless operations (like reshaping to the same shape)
+    #[must_use]
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
         std::println!("Pushing {node:?}, len: {}", self.nodes.len());
         // get rid of noops :)
@@ -301,11 +310,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in &order {
             if matches!(
                 self.nodes[nid.i()],
-                Node::Leaf(..)
-                    | Node::IterF32(..)
-                    | Node::IterI32(..)
-                    | Node::IterF64(..)
-                    | Node::Uniform(..)
+                Node::Leaf(..) | Node::Uniform(..)
             ) {
                 *rcs.get_mut(nid).unwrap() += 1;
                 nodes.insert(*nid);
@@ -344,6 +349,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Plot dot graph in dot format between given nodes
+    #[must_use]
     pub fn plot_graph_dot(&self, ids: &[Id]) -> alloc::string::String {
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<Id> = ids.into();
@@ -449,10 +455,10 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut grads: BTreeMap<Id, Id> = BTreeMap::new();
         // Initial gradient of ones
         let grad1 = match get_dtype(&self.nodes, x) {
-            DType::F32 => self.push(Node::IterF32(Box::new([1.].into_iter()), [1].into()))?,
-            DType::F64 => self.push(Node::IterF64(Box::new([1.].into_iter()), [1].into()))?,
-            DType::I32 => self.push(Node::IterI32(Box::new([1].into_iter()), [1].into()))?,
-        };
+            DType::F32 => self.store([1f32]),
+            DType::F64 => self.store([1f64]),
+            DType::I32 => self.store([1i32]),
+        }?;
         let sh = get_shape(&self.nodes, x).clone();
         grads.insert(x, self.push(Node::Expand(grad1, sh))?);
         self.release(grad1)?;
@@ -484,10 +490,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {
                 Node::Leaf(..)
-                | Node::Uniform(..)
-                | Node::IterF32(..)
-                | Node::IterF64(..)
-                | Node::IterI32(..) => {}
+                | Node::Uniform(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) {
                         self.retain(grad);
@@ -526,15 +529,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     if req_grad.contains(&y) {
                         // -grad*x/(y^2)
                         let two = match get_dtype(&self.nodes, y) {
-                            DType::F32 => {
-                                self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))
-                            }
-                            DType::F64 => {
-                                self.push(Node::IterF64(Box::new([2.].into_iter()), 1.into()))
-                            }
-                            DType::I32 => {
-                                self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))
-                            }
+                            DType::F32 => self.store([2f32]),
+                            DType::F64 => self.store([2f64]),
+                            DType::I32 => self.store([2i32]),
                         }?;
                         let two_e =
                             self.push(Node::Expand(two, get_shape(&self.nodes, y).clone()))?;
@@ -555,15 +552,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     if req_grad.contains(&x) {
                         // grad * y * x.pow(y-1)
                         let one = match get_dtype(&self.nodes, y) {
-                            DType::F32 => {
-                                self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))
-                            }
-                            DType::F64 => {
-                                self.push(Node::IterF64(Box::new([1.].into_iter()), 1.into()))
-                            }
-                            DType::I32 => {
-                                self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))
-                            }
+                            DType::F32 => self.store([1f32]),
+                            DType::F64 => self.store([1f64]),
+                            DType::I32 => self.store([1i32]),
                         }?;
                         let one1 =
                             self.push(Node::Expand(one, get_shape(&self.nodes, y).clone()))?;
@@ -597,15 +588,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
                     if req_grad.contains(&y) {
                         let zero = match get_dtype(&self.nodes, x) {
-                            DType::F32 => {
-                                self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
-                            }
-                            DType::F64 => {
-                                self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
-                            }
-                            DType::I32 => {
-                                self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
-                            }
+                            DType::F32 => self.store([0f32]),
+                            DType::F64 => self.store([0f64]),
+                            DType::I32 => self.store([0i32]),
                         }?;
                         let zeros =
                             self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
@@ -616,15 +601,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     }
                     if req_grad.contains(&z) {
                         let zero = match get_dtype(&self.nodes, x) {
-                            DType::F32 => {
-                                self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
-                            }
-                            DType::F64 => {
-                                self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
-                            }
-                            DType::I32 => {
-                                self.push(Node::IterI32(Box::new([0].into_iter()), 1.into()))
-                            }
+                            DType::F32 => self.store([0f32]),
+                            DType::F64 => self.store([0f64]),
+                            DType::I32 => self.store([0i32]),
                         }?;
                         let zeros =
                             self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
@@ -636,13 +615,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::ReLU(x) => {
                     let zero = match get_dtype(&self.nodes, x) {
-                        DType::F32 => {
-                            self.push(Node::IterF32(Box::new([0.].into_iter()), 1.into()))
-                        }
-                        DType::F64 => {
-                            self.push(Node::IterF64(Box::new([0.].into_iter()), 1.into()))
-                        }
-                        DType::I32 => self.push(Node::IterI32(Box::new([0].into_iter()), 1.into())),
+                        DType::F32 => self.store([0f32]),
+                        DType::F64 => self.store([0f64]),
+                        DType::I32 => self.store([0i32]),
                     }?;
                     let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
                     self.release(zero)?;
@@ -677,7 +652,11 @@ impl<R: RuntimeBackend> Runtime<R> {
                 Node::Sqrt(x) => {
                     // x_grad = grad/(2*sqrt(x))
                     let x_shape = get_shape(&self.nodes, x).clone();
-                    let two1 = self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?;
+                    let two1 = match get_dtype(&self.nodes, x) {
+                        DType::F32 => self.store([2f32]),
+                        DType::F64 => self.store([2f64]),
+                        DType::I32 => self.store([2i32]),
+                    }?;
                     let two2 = self.push(Node::Expand(two1, x_shape))?;
                     self.release(two1)?;
                     let x_temp = self.push(Node::Mul(two2, nid))?;
@@ -699,16 +678,16 @@ impl<R: RuntimeBackend> Runtime<R> {
                     let shape = get_shape(&self.nodes, x).clone();
                     let (two1, one1) = match get_dtype(&self.nodes, x) {
                         DType::F32 => (
-                            self.push(Node::IterF32(Box::new([2.].into_iter()), 1.into()))?,
-                            self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?,
+                            self.store([2f32])?,
+                            self.store([1f32])?,
                         ),
                         DType::F64 => (
-                            self.push(Node::IterF64(Box::new([2.].into_iter()), 1.into()))?,
-                            self.push(Node::IterF64(Box::new([1.].into_iter()), 1.into()))?,
+                            self.store([2f64])?,
+                            self.store([1f64])?,
                         ),
                         DType::I32 => (
-                            self.push(Node::IterI32(Box::new([2].into_iter()), 1.into()))?,
-                            self.push(Node::IterI32(Box::new([1].into_iter()), 1.into()))?,
+                            self.store([2i32])?,
+                            self.store([1i32])?,
                         ),
                     };
                     let two2 = self.push(Node::Expand(two1, shape.clone()))?;
@@ -757,7 +736,11 @@ impl<R: RuntimeBackend> Runtime<R> {
                     let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
                     let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
                     self.release(z_temp)?;
-                    let one1 = self.push(Node::IterF32(Box::new([1.].into_iter()), 1.into()))?;
+                    let one1 = match get_dtype(&self.nodes, x) {
+                        DType::F32 => self.store([1f32]),
+                        DType::F64 => self.store([1f64]),
+                        DType::I32 => self.store([1i32]),
+                    }?;
                     let one2 = self.push(Node::Expand(one1, x_shape))?;
                     self.release(one1)?;
                     let max_1s = self.push(Node::Sub(one2, cmp_t))?;

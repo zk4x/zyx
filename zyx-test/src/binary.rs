@@ -27,11 +27,11 @@ macro_rules! binary_test {
             // Since overflow is implementation/hardware defined, we need to limit integers
             // appropriatelly
             let (x, y) = if T::dtype().is_floating() {
-                ($dev.randn(shape, T::dtype()), $dev.randn(shape, T::dtype()))
+                ($dev.randn(shape, T::dtype())?, $dev.randn(shape, T::dtype())?)
             } else {
                 (
-                    $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt()),
-                    $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt()),
+                    $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt())?,
+                    $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt())?,
                 )
             };
             let vx = x.to_vec()?;
@@ -123,7 +123,7 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         // Since overflow is implementation/hardware defined, we need to limit integers
         // appropriatelly
         let (x, y) = if T::dtype().is_floating() {
-            (dev.randn(shape, T::dtype()), dev.randn(shape, T::dtype()))
+            (dev.randn(shape, T::dtype())?, dev.randn(shape, T::dtype())?)
         } else {
             let six = T::one()
                 .add(T::one())
@@ -132,8 +132,8 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
                 .add(T::one())
                 .add(T::one());
             (
-                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six.clone()),
-                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six),
+                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six.clone())?,
+                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six)?,
             )
         };
         let vx = x.to_vec()?;

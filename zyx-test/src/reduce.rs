@@ -32,7 +32,7 @@ pub fn sum<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         let x = match T::dtype() {
             DType::F32 | DType::F64 => dev.randn(&shape, T::dtype()),
             DType::I32 => dev.uniform(&shape, i32::MIN/1024/1024..i32::MAX/1024/1024),
-        };
+        }?;
         let v: Vec<T> = x.to_vec()?;
         let rv = x.sum(&axes).to_vec()?;
         assert_eq(rv, reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), true));
@@ -69,7 +69,7 @@ pub fn max<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         let axes = axes.into_axes(a);
         //println!("{shape}, {axes}");
         let two = T::one().add(T::one());
-        let x = dev.uniform(&shape, T::min_value().div(two.clone())..T::max_value().div(two));
+        let x = dev.uniform(&shape, T::min_value().div(two.clone())..T::max_value().div(two))?;
         let v: Vec<T> = x.to_vec()?;
         let rv = x.max(&axes).to_vec()?;
         let rv_org = reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), false);

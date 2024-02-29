@@ -148,40 +148,31 @@ impl RuntimeBackend for Interpreter {
         })
     }
 
+    fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
+    where
+        IT: IntoIterator<Item=T>,
+        IT::IntoIter: ExactSizeIterator,
+    {
+        let iter = iter.into_iter();
+        self.views.insert(x, (View::new(iter.len().into()), x));
+        self.buffers.insert(x, match T::dtype() {
+            DType::F32 => Data::F32(iter.map(|x| x.into_f32()).collect()),
+            DType::F64 => Data::F64(iter.map(|x| x.into_f64()).collect()),
+            DType::I32 => Data::I32(iter.map(|x| x.into_i32()).collect()),
+        });
+        Ok(())
+    }
+
     fn evaluate(
         &mut self,
         _to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u16>,
         order: &[Id],
-        nodes: &mut [Node],
+        nodes: &[Node],
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
-            match &mut nodes[nid.i()] {
+            match &nodes[nid.i()] {
                 Node::Leaf(..) => {}
-                Node::IterF32(_, shape) => {
-                    let mut new_node = Node::Leaf(shape.clone(), DType::F32);
-                    self.views.insert(nid, (View::new(shape.clone()), nid));
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF32(iter, _) = new_node {
-                        self.buffers.insert(nid, Data::F32(iter.collect()));
-                    }
-                }
-                Node::IterF64(_, shape) => {
-                    let mut new_node = Node::Leaf(shape.clone(), DType::F64);
-                    self.views.insert(nid, (View::new(shape.clone()), nid));
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterF64(iter, _) = new_node {
-                        self.buffers.insert(nid, Data::F64(iter.collect()));
-                    }
-                }
-                Node::IterI32(_, shape) => {
-                    let mut new_node = Node::Leaf(shape.clone(), DType::I32);
-                    self.views.insert(nid, (View::new(shape.clone()), nid));
-                    core::mem::swap(&mut nodes[nid.i()], &mut new_node);
-                    if let Node::IterI32(iter, _) = new_node {
-                        self.buffers.insert(nid, Data::I32(iter.collect()));
-                    }
-                }
                 Node::Uniform(..) => todo!(),
                 Node::Cast(x, dtype) => {
                     let (view, data) = self.get(x);

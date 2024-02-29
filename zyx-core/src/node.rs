@@ -7,12 +7,6 @@ use crate::dtype::DType;
 
 /// Node representing different possible tensors
 pub enum Node {
-    /// IterF32 initializer
-    IterF32(Box<dyn Iterator<Item = f32>>, Shape),
-    /// IterF64 initializer
-    IterF64(Box<dyn Iterator<Item = f64>>, Shape),
-    /// IterI32 initializer
-    IterI32(Box<dyn Iterator<Item = i32>>, Shape),
     /// Leaf that is guaranteed to be evaluated
     Leaf(Shape, DType),
     /// Uniform initializer for range 0..1
@@ -67,9 +61,6 @@ impl core::fmt::Debug for Node {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             Node::Leaf(sh, dtype) => f.write_fmt(format_args!("Leaf({sh}, {dtype})")),
-            Node::IterF32(_, sh) => f.write_fmt(format_args!("Iter({sh}, F32)")),
-            Node::IterF64(_, sh) => f.write_fmt(format_args!("Iter({sh}, F64)")),
-            Node::IterI32(_, sh) => f.write_fmt(format_args!("Iter({sh}, I32)")),
             Node::Cast(x, dtype) => f.write_fmt(format_args!("Cast({x}, {dtype})")),
             Node::Uniform(sh, dtype) => f.write_fmt(format_args!("Uniform({sh}, {dtype})")),
             Node::Neg(x) => f.write_fmt(format_args!("Neg({x})")),
@@ -121,10 +112,7 @@ impl Node {
     pub const fn num_parameters(&self) -> u8 {
         match self {
             Node::Leaf(..)
-            | Node::Uniform(..)
-            | Node::IterF32(..)
-            | Node::IterF64(..)
-            | Node::IterI32(..) => 0,
+            | Node::Uniform(..) => 0,
             Node::Cast(..)
             | Node::Neg(..)
             | Node::ReLU(..)
@@ -154,10 +142,7 @@ impl Node {
     pub const fn parameters(&self) -> impl Iterator<Item = Id> {
         match self {
             Node::Leaf(..)
-            | Node::Uniform(..)
-            | Node::IterF32(..)
-            | Node::IterF64(..)
-            | Node::IterI32(..) => NodeParametersIterator { parameters: [crate::tensor::id(0); 3], idx: 0, len: 0 },
+            | Node::Uniform(..) => NodeParametersIterator { parameters: [crate::tensor::id(0); 3], idx: 0, len: 0 },
             Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
@@ -188,9 +173,6 @@ impl Node {
         match self {
             Node::Leaf(..)
             | Node::Uniform(..)
-            | Node::IterF32(..)
-            | Node::IterF64(..)
-            | Node::IterI32(..)
             | Node::Reshape(..)
             | Node::Expand(..)
             | Node::Permute(..)
@@ -223,10 +205,7 @@ impl Node {
     pub fn parameters_contain(&self, nid: Id) -> bool {
         match self {
             Node::Leaf(..)
-            | Node::Uniform(..)
-            | Node::IterF32(..)
-            | Node::IterF64(..)
-            | Node::IterI32(..) => false,
+            | Node::Uniform(..) => false,
             Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)

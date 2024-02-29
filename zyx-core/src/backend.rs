@@ -2,13 +2,13 @@ extern crate alloc;
 use crate::error::ZyxError;
 use crate::tensor::{tensor, IntoTensor, Tensor};
 use crate::{dtype::DType, node::Node, scalar::Scalar, shape::Shape, tensor::Id};
-use alloc::boxed::Box;
 use alloc::{
     string::String,
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
 use core::ops::Range;
+use crate::utils::SizedIterator;
 
 /// Backend for [tensors](Tensor).
 /// Tensor requires that all backends implement this trait and only this trait.
@@ -19,47 +19,27 @@ pub trait Backend: Copy {
 
     /// Create new tensor
     #[must_use]
-    fn tensor(self, data: impl IntoTensor<Self>) -> Tensor<Self> {
-        data.into_tensor(self)
+    fn tensor(self, data: impl IntoTensor<Self>) -> Result<Tensor<Self>, ZyxError> {
+        Ok(data.into_tensor(self))
     }
 
     /// Create new tensor using values from standard normal distribution
     #[must_use]
-    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self>;
+    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError>;
 
     /// Create new tensor using values from uniform distribution
     #[must_use]
-    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<Self>;
+    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError>;
 
     /// Create new tensor by repeating single value
     #[must_use]
-    fn full(self, shape: impl Into<Shape>, value: impl Scalar) -> Tensor<Self> {
-        fn get_dtype<T: Scalar>(_: T) -> DType {
-            T::dtype()
-        }
-        tensor(
-            match get_dtype(value.clone()) {
-                DType::F32 => self.push(Node::IterF32(
-                    Box::new([value.into_f32()].into_iter()),
-                    1.into(),
-                )),
-                DType::F64 => self.push(Node::IterF64(
-                    Box::new([value.into_f64()].into_iter()),
-                    1.into(),
-                )),
-                DType::I32 => self.push(Node::IterI32(
-                    Box::new([value.into_i32()].into_iter()),
-                    1.into(),
-                )),
-            }
-            .unwrap(), // Can't fail, as this does not call backend
-            self,
-        ).expand(shape)
+    fn full(self, shape: impl Into<Shape>, value: impl Scalar) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(self.store([value])?, self).expand(shape))
     }
 
     /// Create new tensor by repeating zeroes
     #[must_use]
-    fn zeros(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
+    fn zeros(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         match dtype {
             DType::F32 => self.full(shape, 0f32),
             DType::F64 => self.full(shape, 0f64),
@@ -69,7 +49,7 @@ pub trait Backend: Copy {
 
     /// Create new tensor by repeating ones
     #[must_use]
-    fn ones(self, shape: impl Into<Shape>, dtype: DType) -> Tensor<Self> {
+    fn ones(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         match dtype {
             DType::F32 => self.full(shape, 1f32),
             DType::F64 => self.full(shape, 1f64),
@@ -79,31 +59,15 @@ pub trait Backend: Copy {
 
     /// Create eye tensor
     #[must_use]
-    fn eye(self, n: usize, dtype: DType) -> Tensor<Self> {
-        tensor(
+    fn eye(self, n: usize, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(
             match dtype {
-                DType::F32 => self.push(Node::IterF32(
-                    Box::new(
-                        (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. })),
-                    ),
-                    [n, n].into(),
-                )),
-                DType::F64 => self.push(Node::IterF64(
-                    Box::new(
-                        (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1. } else { 0. })),
-                    ),
-                    [n, n].into(),
-                )),
-                DType::I32 => self.push(Node::IterI32(
-                    Box::new(
-                        (0..n).flat_map(move |i| (0..n).map(move |j| if j == i { 1 } else { 0 })),
-                    ),
-                    [n, n].into(),
-                )),
-            }
-            .unwrap(), // Can't fail, as this does not call backend
+                DType::F32 => self.store((0..n).flat_map(move | i | (0..n).map(move | j | if j == i { 1f32 } else { 0. })).make_sized(n*n))?,
+                DType::F64 => self.store((0..n).flat_map(move | i | (0..n).map(move | j | if j == i { 1f64 } else { 0. })).make_sized(n*n))?,
+                DType::I32 => self.store((0..n).flat_map(move | i | (0..n).map(move | j | if j == i { 1i32 } else { 0 })).make_sized(n*n))?,
+            },
             self,
-        )
+        ).reshape([n, n]))
     }
 
     /// Get shape if tensor x
@@ -117,6 +81,11 @@ pub trait Backend: Copy {
     fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError>;
     /// Returns iterator over data stored in backend
     fn load<T: Scalar>(self, id: Id) -> Result<Vec<T>, ZyxError>;
+    /// Store iterator into backend as tensor
+    fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
+    where
+        IT: IntoIterator<Item=T>,
+        IT::IntoIter: ExactSizeIterator;
     /// Create new tensor from given operation
     fn push(self, node: Node) -> Result<Id, ZyxError>;
     /// Decrease reference count of tensor
