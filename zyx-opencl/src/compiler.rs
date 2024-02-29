@@ -1131,6 +1131,8 @@ impl zyx_core::compiler::Compiler for Compiler {
         } else {
             shape
         };
+        //std::println!("Reduce axes {reduce_axes:?}");
+        //std::println!("Shape {shape}");
         let view = zyx_core::view::View::new(shape.clone());
         //std::println!("{shape}\n{view:?}\n{}", view.cidx().1);
         source = f!(

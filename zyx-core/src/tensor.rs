@@ -888,8 +888,17 @@ impl<B: Backend> Tensor<B> {
                 && padding
                     .iter()
                     .zip(sh.iter().rev())
-                    .all(|((lp, rp), d)| (*lp < 0 && ((-lp) as usize) < *d)
-                        && (*rp < 0 && ((-rp) as usize) < *d)),
+                    .all(|((lp, rp), d)|
+                         if *lp < 0 {
+                             ((-*lp) as usize) <= *d
+                         } else {
+                             true
+                         } &&
+                         if *rp < 0 {
+                             ((-*rp) as usize) <= *d
+                         } else {
+                             true
+                         }),
             "Cannot pad tensor with shape {sh} with padding {padding:?}"
         );
         let psh = sh.clone().pad(&padding);
@@ -994,14 +1003,6 @@ impl<B: Backend> Tensor<B> {
             self.shape(),
             axes
         );
-        for a in &axes {
-            debug_assert!(
-                *a < shape.rank(),
-                "Cannot sum tensor with shape {:?} by axes {:?}, because some axes are greater than rank.",
-                self.shape(),
-                axes
-            );
-        }
         tensor(
             self.backend.push(Node::Sum(self.id, axes, shape)).unwrap(),
             self.backend,

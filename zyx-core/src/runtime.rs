@@ -47,7 +47,6 @@ pub trait RuntimeBackend {
 pub struct Runtime<R: RuntimeBackend> {
     rng: rand::rngs::SmallRng,
     rcs: Vec<u16>,
-    user_rcs: Vec<u16>,
     nodes: Vec<Node>,
     non_evaluated_nodes_count: u16,
     runtime_backend: R,
@@ -61,7 +60,6 @@ impl<R: RuntimeBackend> Runtime<R> {
         Self {
             rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
             rcs: Vec::new(),
-            user_rcs: Vec::new(),
             nodes: Vec::new(),
             non_evaluated_nodes_count: 0,
             runtime_backend,
@@ -126,13 +124,11 @@ impl<R: RuntimeBackend> Runtime<R> {
         let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
             let id = tensor::id(i);
             self.rcs[i] = 1;
-            self.user_rcs[i] = 1;
             self.nodes[i] = node;
             id
         } else {
             let id = tensor::id(self.rcs.len());
             self.rcs.push(1);
-            self.user_rcs.push(1);
             self.nodes.push(node);
             id
         };
@@ -171,7 +167,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// out useless operations (like reshaping to the same shape)
     #[must_use]
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
-        std::println!("Pushing {node:?}, len: {}", self.nodes.len());
+        //std::println!("Pushing {node:?}, len: {}", self.nodes.len());
         // get rid of noops :)
         match node {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
@@ -195,13 +191,11 @@ impl<R: RuntimeBackend> Runtime<R> {
         let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
             let id = tensor::id(i);
             self.rcs[i] = 1;
-            self.user_rcs[i] = 1;
             self.nodes[i] = node;
             id
         } else {
             let id = tensor::id(self.rcs.len());
             self.rcs.push(1);
-            self.user_rcs.push(1);
             self.nodes.push(node);
             id
         };
@@ -214,38 +208,13 @@ impl<R: RuntimeBackend> Runtime<R> {
         Ok(id)
     }
 
-    /*
-    /// Release nodes that are not needed for backpropagation.
-    /// Creates a new tensor from x and marks it as only differentiable by itself, so that it can drop it's tape
-    /// once it's evaluated.
-    pub fn detach(&mut self, x: Id) -> Id {
-        todo!()
-        //self.push(Node::Copy(x))
-        /*let mut params = Vec::with_capacity(10);
-        params.push(x);
-        while let Some(x) = params.pop() {
-            if self.runtime_backend.is_evaluated(x) {
-                self.release(x)?;
-            } else {
-                for p in self.nodes[x.i()].parameters() {
-                    if self.user_rcs[p.i()] == 0 {
-                        params.push(p);
-                    }
-                }
-            }
-        }
-        Ok(())*/
-    }*/
-
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
     /// x and release all of it's predecessors in the graph.
-    // This function can not be called internally by runtime, because it would invalidate user_rcs
     pub fn release(&mut self, x: Id) -> Result<(), ZyxError> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(p) = params.pop() {
             self.rcs[p.i()] -= 1;
-            self.user_rcs[p.i()] -= 1;
             if self.rcs[p.i()] == 0 {
                 params.extend(self.nodes[p.i()].parameters());
                 self.runtime_backend.remove(p)?;
@@ -255,10 +224,8 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Increase reference count of tensor x.
-    // This function can not be called internally by runtime, because it would invalidate user_rcs
     pub fn retain(&mut self, x: Id) {
         self.rcs[x.i()] += 1;
-        self.user_rcs[x.i()] += 1;
     }
 
     /// Evaluate specified nodes.

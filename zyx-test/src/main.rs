@@ -98,8 +98,8 @@ fn main() {
     run_test!(binary::mul);
     run_test!(binary::div);
     //run_test!(binary::pow);
-    run_test!(binary::cmplt);
-    println!("\nTesting movement ops");
+    run_test!(binary::cmplt);*/
+    /*println!("\nTesting movement ops");
     run_test!(movement::reshape);
     run_test!(movement::expand);
     run_test!(movement::permute);

@@ -461,11 +461,16 @@ impl<C: Compiler> CompiledBackend<C> {
             dtype,
             flop,
         } = buffers[&x].clone();
+        let r_shape = if let Some(reduce_axes) = &reduce_axes {
+            shape.clone().reduce(reduce_axes)
+        } else {
+            shape.clone()
+        };
         let ast = AST {
             arg_views,
             arg_dtypes,
             ops,
-            shape: shape.clone(),
+            shape,
             dtype,
             reduce_axes,
             reduce_dtype,
@@ -488,7 +493,7 @@ impl<C: Compiler> CompiledBackend<C> {
         // Run the program
         self.buffers
             .insert(x, self.compiler.launch(program, &program_args, flop)?);
-        buffers.insert(x, Buffer::leaf(x, &shape, &dtype));
+        buffers.insert(x, Buffer::leaf(x, &r_shape, &dtype));
         Ok(&buffers[&x])
     }
 
