@@ -35,7 +35,6 @@ pub trait RuntimeBackend {
     /// order of evaluation.
     fn evaluate(
         &mut self,
-        to_eval: BTreeSet<Id>,
         rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
@@ -142,6 +141,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
+        std::println!("Storing, {:?}", self.rcs);
         // TODO optimizations for scalars and very small tensors, by using Node::Scalar(...) or Node::SmallTensor(..)
         // With those optimizations, these can be compiled into kernels for better performance.
         let iter = iter.into_iter();
@@ -158,7 +158,9 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.nodes.push(node);
             id
         };
+        //if id.i() == 1 { panic!("break") }
         self.runtime_backend.store(id, iter)?;
+        std::println!("Stored, {:?}", self.rcs);
         Ok(id)
     }
 
@@ -185,8 +187,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             _ => {}
         }
         for nid in node.parameters() {
-            let nid_rc = &mut self.rcs[nid.i()];
-            *nid_rc = nid_rc.checked_add(1).unwrap();
+            self.retain(nid);
         }
         let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
             let id = tensor::id(i);
@@ -196,13 +197,19 @@ impl<R: RuntimeBackend> Runtime<R> {
         } else {
             let id = tensor::id(self.rcs.len());
             self.rcs.push(1);
+            if self.rcs.len() > 4000000000 {
+                panic!("Maximum number of tensors has been reached. Zyx supports up to 4 billion tensors. \
+                Please check your code for memory leaks. If you really need to use more tensors, please raise issue on github: https://github.com/zk4x/zyx");
+            }
             self.nodes.push(node);
             id
         };
         self.non_evaluated_nodes_count += 1;
-        if self.non_evaluated_nodes_count > 10 {
-            // Approx. 1500 KiB of Nodes
+        if self.non_evaluated_nodes_count > 3 {
+            // Approx. 50 KiB of Nodes
             self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
+            //std::println!();
+            panic!()
         }
         //std::println!("Assigned id: {id}");
         Ok(id)
@@ -212,9 +219,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// x and release all of it's predecessors in the graph.
     pub fn release(&mut self, x: Id) -> Result<(), ZyxError> {
         std::println!("Releasing {x} {:?}", self.rcs);
-        if x.i() == 5 {
-            panic!();
-        }
+        //if x.i() == 5 { panic!(); }
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(p) = params.pop() {
@@ -229,11 +234,23 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Increase reference count of tensor x.
     pub fn retain(&mut self, x: Id) {
+        std::println!("Retaining {x}, rcs: {:?}", self.rcs);
+        //panic!();
+        debug_assert!(self.rcs[x.i()] < u32::MAX, "Reference count of tensor {x} has been exceeded,\
+        This is zyx bug. please report it at https://github.com/zk4x/zyx");
         self.rcs[x.i()] += 1;
     }
 
     /// Evaluate specified nodes.
-    pub fn evaluate(&mut self, mut nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
+    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
+        // This whole function is needed so that we can batch ops together.
+        // This aleviates the cost of keeping intermediate buffers for backpropagation,
+        // as this function runs independently from backpropagation and if some tensors
+        // are dropped after backpropagation, this function optimizes those away.
+        // Basically the difference between immediate and lazy execution with caching.
+        // We simply wait to get more information about the graph structure before
+        // we push it to the device.
+
         //std::println!("Evaluating {nodes:?}");
         // TODO in order to be more efficient, we can optimize the graph
         // by reordering nodes and removing unnecessary nodes
@@ -278,7 +295,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         // TODO we can add constant folding by adding nodes that are evaluated multiple times into
         // to_eval
         // TODO this memory <=> performance tradeoff should be decided by the user, with some setting.
-        for nid in &order {
+        /*for nid in &order {
             if matches!(
                 self.nodes[nid.i()],
                 Node::Detach(..) | Node::Leaf(..) | Node::Uniform(..)
@@ -286,6 +303,27 @@ impl<R: RuntimeBackend> Runtime<R> {
                 *rcs.get_mut(nid).unwrap() += 1;
                 nodes.insert(*nid);
             }
+        }*/
+        // TODO remove detached parts of graph from backprop nodes
+        let mut backprop_nodes = BTreeSet::new();
+        for nid in &order {
+            for p in self.nodes[nid.i()].parameters() {
+                if backprop_nodes.contains(&p) {
+                    backprop_nodes.insert(*nid);
+                }
+            }
+        }
+
+        // Keep everything that is needed somewhere else, whether it's
+        // user reference or graph reference
+        for nid in &order {
+            if rcs[nid] < self.rcs[nid.i()] {
+                *rcs.get_mut(nid).unwrap() += 1;
+            }
+        }
+
+        for nid in &backprop_nodes {
+            *rcs.get_mut(nid).unwrap() += 1;
         }
 
         /*std::println!("");
@@ -294,20 +332,27 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
         std::println!("");*/
 
-        self.runtime_backend
-            .evaluate(nodes, rcs, &order, self.nodes.as_mut())?;
+        self.runtime_backend.evaluate(rcs.clone(), &order, &self.nodes)?;
 
         // Delete parameter of evaluated detached nodes
         for nid in order {
+            if rcs[&nid] == self.rcs[nid.i()] && !backprop_nodes.contains(&nid) {
+                self.release(nid)?;
+            }
+            // TODO is this needed?
             if let Node::Detach(x) = self.nodes[nid.i()] {
                 if self.runtime_backend.is_evaluated(nid) {
-                    self.release(x).unwrap()
+                    self.release(x)?;
                 }
             }
         }
 
         let n = self.nodes.len();
         self.non_evaluated_nodes_count = n - (0..n).filter(|i| self.runtime_backend.is_evaluated(tensor::id(*i))).count();
+        if self.non_evaluated_nodes_count > 2000000000 {
+            panic!("Maximum number of unrealized tensors has been reached. Zyx supports up to 2 billion unrealized tensors. This is probably due to very long gradient tape.\
+            Such errors can happen for example in RNNs. Please detach gradient tape (Tensor::detach) from some tensors.");
+        }
 
         Ok(())
     }
@@ -545,7 +590,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     }
                 }
                 Node::Cmplt(..) => {
-                    panic!("Compare less than (operator <) is not a differentiable operation.");
+                    panic!("Compare less than (cmplt, operator <) is not a differentiable operation.");
                 }
                 Node::Where(x, y, z) => {
                     //return None, \

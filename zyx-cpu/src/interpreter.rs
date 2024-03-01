@@ -1,4 +1,4 @@
-use alloc::{collections::{BTreeSet, BTreeMap, btree_map::Entry}, vec::Vec};
+use alloc::{collections::{BTreeMap, btree_map::Entry}, vec::Vec};
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View, shape::Shape, axes::Axes
 };
@@ -165,7 +165,6 @@ impl RuntimeBackend for Interpreter {
 
     fn evaluate(
         &mut self,
-        _to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],

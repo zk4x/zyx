@@ -715,13 +715,13 @@ impl<B: Backend> Tensor<B> {
         if self.dtype().is_floating() {
             return (exponent * self.ln()).exp()
         }
-        self.binary_op(exponent, BOp::Pow)
+        self.clone().binary_op(exponent, BOp::Pow)
     }
 
     /// Elementwise compare less than between self and rhs
     #[must_use]
     pub fn cmplt(&self, rhs: impl IntoTensor<B>) -> Tensor<B> {
-        self.binary_op(rhs, BOp::Cmplt)
+        self.clone().binary_op(rhs, BOp::Cmplt)
     }
 
     /// Returns a new tensor with the true values replaced with if_true and the false values replaced with if_false.
@@ -1208,8 +1208,9 @@ enum BOp {
 // Private helper functions
 impl<B: Backend> Tensor<B> {
     #[must_use]
-    fn binary_op(&self, rhs: impl IntoTensor<B>, op: BOp) -> Tensor<B> {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs.into_tensor(self.backend));
+    fn binary_op(self, rhs: impl IntoTensor<B>, op: BOp) -> Tensor<B> {
+        let rhs = rhs.into_tensor(self.backend);
+        let (x, y) = Tensor::broadcast(self, rhs);
         tensor(
             x.backend
                 .push(match op {
@@ -1311,7 +1312,7 @@ impl<B: Backend> core::ops::Neg for &Tensor<B> {
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for &Tensor<B> {
     type Output = Tensor<B>;
     fn add(self, rhs: IT) -> Self::Output {
-        self.binary_op(rhs, BOp::Add)
+        self.clone().binary_op(rhs, BOp::Add)
     }
 }
 
@@ -1325,7 +1326,7 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Add<IT> for Tensor<B> {
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Sub<IT> for &Tensor<B> {
     type Output = Tensor<B>;
     fn sub(self, rhs: IT) -> Self::Output {
-        self.binary_op(rhs, BOp::Sub)
+        self.clone().binary_op(rhs, BOp::Sub)
     }
 }
 
@@ -1339,7 +1340,7 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Sub<IT> for Tensor<B> {
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Mul<IT> for &Tensor<B> {
     type Output = Tensor<B>;
     fn mul(self, rhs: IT) -> Self::Output {
-        self.binary_op(rhs, BOp::Mul)
+        self.clone().binary_op(rhs, BOp::Mul)
     }
 }
 
@@ -1395,7 +1396,7 @@ impl<B: Backend, IT: IntoTensor<B>> core::ops::Mul<IT> for Tensor<B> {
 impl<B: Backend, IT: IntoTensor<B>> core::ops::Div<IT> for &Tensor<B> {
     type Output = Tensor<B>;
     fn div(self, rhs: IT) -> Self::Output {
-        self.binary_op(rhs, BOp::Div)
+        self.clone().binary_op(rhs, BOp::Div)
     }
 }
 

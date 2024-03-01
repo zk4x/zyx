@@ -6,7 +6,7 @@ use crate::{
     utils::get_dtype, view::View,
 };
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap},
     vec::Vec,
 };
 
@@ -175,7 +175,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn evaluate(
         &mut self,
-        to_eval: BTreeSet<Id>,
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
@@ -328,8 +327,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             };
             self.kernels.insert(nid, kernel);
 
-            if to_eval.contains(&nid)
-                || self.kernels[&nid].ops.len() > 200
+            if self.kernels[&nid].ops.len() > 200
                 || (rcs[&nid] > 1 && self.kernels[&nid].program_args.len() > 1)
             {
                 self.evaluate_kernel(nid)?;
