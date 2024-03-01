@@ -1,11 +1,14 @@
-//! CPU pure rust backend for zyx
-//!
-//! zyx-opencl is used as any other Zyx backend.
+//! CPU only, pure rust backend for zyx
 //!
 //! Initialize backend.
+//! ```rust
+//! let dev = zyx_cpu::device()?;
+//! # Ok::<(), zyx_cpu::ZyxError>(())
+//! ```
 //!
-//! Create tensors.
+//! For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
 //!
+//! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
 
 #![no_std]
 //#![forbid(unsafe_code)]

@@ -1,3 +1,44 @@
+//! # zyx-derive
+//!
+//! This crate contains procedural macros for zyx.
+//!
+//! Macro Module automatically implements IntoIterator<Item = &Tensor>
+//! for your module, so that you can use it in backpropagation and save it to disk.
+//! ```rust
+//! use zyx_core::backend::Backend;
+//! use zyx_core::tensor::Tensor;
+//!
+//! #[derive(Module)]
+//! struct MyNet<B: Backend> {
+//!     b: Tensor<B>,
+//!     w: Tensor<B>,
+//! }
+//!
+//! impl<B: Backend> MyNet<B> {
+//!     fn forward(&self, x: &Tensor<B>) -> Tensor<B> {
+//!         x.dot(self.w) + self.b
+//!     }
+//! }
+//! ```
+//!
+//! For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
+//!
+//! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
+#![no_std]
+#![forbid(unsafe_code)]
+#![forbid(rustdoc::broken_intra_doc_links)]
+#![forbid(rustdoc::private_intra_doc_links)]
+#![forbid(missing_docs)]
+#![forbid(rustdoc::missing_crate_level_docs)]
+//#![forbid(rustdoc::missing_doc_code_examples)]
+#![forbid(rustdoc::private_doc_tests)]
+#![forbid(rustdoc::invalid_codeblock_attributes)]
+#![forbid(rustdoc::invalid_html_tags)]
+#![forbid(rustdoc::invalid_rust_codeblocks)]
+#![forbid(rustdoc::bare_urls)]
+#![forbid(rustdoc::unescaped_backticks)]
+#![forbid(rustdoc::redundant_explicit_links)]
+
 extern crate proc_macro;
 use proc_macro::{TokenStream};
 use quote::{quote};

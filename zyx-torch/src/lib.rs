@@ -1,11 +1,14 @@
 //! Libtorch backend for zyx
 //!
-//! zyx-opencl is used as any other Zyx backend.
-//!
 //! Initialize backend.
+//! ```rust
+//! let dev = zyx_torch::device()?;
+//! # Ok::<(), zyx_torch::ZyxError>(())
+//! ```
 //!
-//! Create tensors.
+//! For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
 //!
+//! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
 
 #![no_std]
 //#![forbid(unsafe_code)]

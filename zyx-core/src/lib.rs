@@ -1,4 +1,3 @@
-#![no_std]
 //! # zyx-core
 //!
 //! zyx-core is core part of zyx machine learning library.
@@ -6,6 +5,11 @@
 //! runtime with autograd implementation, dtype, shape, scalar, axes, view
 //! and generic compiler for backends like opencl, cuda and wgpu.
 //!
+//!
+//! For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
+//!
+//! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
+#![no_std]
 #![forbid(unsafe_code)]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]

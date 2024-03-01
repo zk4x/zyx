@@ -1,11 +1,15 @@
 //! OpenCL backend for zyx
 //!
-//! zyx-opencl is used as any other Zyx backend.
+//! Initialize backend. You can use builder if you want to change settings of the backend.
+//! ```rust
+//! let dev = zyx_opencl::device()?;
+//! let dev = zyx_opencl::device_builder().build()?;
+//! # Ok::<(), zyx_opencl::ZyxError>(())
+//! ```
 //!
-//! Initialize backend.
+//! For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
 //!
-//! Create tensors.
-//!
+//! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
 
 #![no_std]
 #![forbid(rustdoc::broken_intra_doc_links)]
