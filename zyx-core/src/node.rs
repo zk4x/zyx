@@ -7,6 +7,8 @@ use crate::dtype::DType;
 
 /// Node representing different possible tensors
 pub enum Node {
+    /// Detach tensor from tape
+    Detach(Id),
     /// Leaf that is guaranteed to be evaluated
     Leaf(Shape, DType),
     /// Uniform initializer for range 0..1
@@ -60,6 +62,7 @@ pub enum Node {
 impl core::fmt::Debug for Node {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
+            Node::Detach(x) => f.write_fmt(format_args!("Detach({x})")),
             Node::Leaf(sh, dtype) => f.write_fmt(format_args!("Leaf({sh}, {dtype})")),
             Node::Cast(x, dtype) => f.write_fmt(format_args!("Cast({x}, {dtype})")),
             Node::Uniform(sh, dtype) => f.write_fmt(format_args!("Uniform({sh}, {dtype})")),
@@ -113,7 +116,8 @@ impl Node {
         match self {
             Node::Leaf(..)
             | Node::Uniform(..) => 0,
-            Node::Cast(..)
+            Node::Detach(..)
+            | Node::Cast(..)
             | Node::Neg(..)
             | Node::ReLU(..)
             | Node::Exp(..)
@@ -144,6 +148,7 @@ impl Node {
             Node::Leaf(..)
             | Node::Uniform(..) => NodeParametersIterator { parameters: [crate::tensor::id(0); 3], idx: 0, len: 0 },
             Node::Cast(x, ..)
+            | Node::Detach(x)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)
@@ -171,7 +176,8 @@ impl Node {
     /// Get number of operations necessary to calculate this node
     pub fn flop(&self, nodes: &[Node]) -> usize {
         match self {
-            Node::Leaf(..)
+            Node::Detach(..)
+            | Node::Leaf(..)
             | Node::Uniform(..)
             | Node::Reshape(..)
             | Node::Expand(..)
@@ -206,7 +212,8 @@ impl Node {
         match self {
             Node::Leaf(..)
             | Node::Uniform(..) => false,
-            Node::Cast(x, ..)
+            Node::Detach(x)
+            | Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)

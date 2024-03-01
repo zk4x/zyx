@@ -108,7 +108,7 @@ pub struct AST {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
-struct Buffer {
+struct Kernel {
     program_args: Vec<Id>,
     arg_views: Vec<View>,
     arg_dtypes: Vec<DType>,
@@ -120,7 +120,7 @@ struct Buffer {
     flop: usize,
 }
 
-impl Buffer {
+impl Kernel {
     fn leaf(x: Id, shape: &Shape, dtype: &DType) -> Self {
         Self {
             program_args: alloc::vec![x],
@@ -139,18 +139,23 @@ impl Buffer {
 /// Compiled backend that holds compiler, buffers and programs
 pub struct CompiledBackend<C: Compiler> {
     compiler: C,
+    kernels: BTreeMap<Id, Kernel>,
     buffers: BTreeMap<Id, C::Buffer>,
     programs: BTreeMap<AST, C::Program>,
 }
 
 impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn is_evaluated(&self, x: Id) -> bool {
-        self.buffers.contains_key(&x)
+        self.kernels.contains_key(&x)
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        if let Some(mut buf) = self.buffers.remove(&x) {
-            self.compiler.drop_buffer(&mut buf)?;
+        if self.kernels.remove(&x).is_some() {
+            if self.kernels.values().all(|kernel| !kernel.program_args.contains(&x)) {
+                if let Some(mut buffer) = self.buffers.remove(&x) {
+                    self.compiler.drop_buffer(&mut buffer)?;
+                }
+            }
         }
         Ok(())
     }
@@ -175,20 +180,20 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         order: &[Id],
         nodes: &[Node],
     ) -> Result<(), ZyxError> {
-        let mut buffers: BTreeMap<Id, Buffer> = BTreeMap::new();
-        // TODO calculate flops for buffers :D
+        // TODO calculate flops for kernels :D
         for nid in order.iter().copied() {
             //std::println!("{nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
             let buffer = if self.is_evaluated(nid) {
-                Buffer::leaf(nid, crate::utils::get_shape(nodes, nid), &get_dtype(nodes, nid))
+                Kernel::leaf(nid, crate::utils::get_shape(nodes, nid), &get_dtype(nodes, nid))
             } else {
                 match &nodes[nid.i()] {
-                    Node::Leaf(sh, dtype) => Buffer::leaf(nid, sh, dtype),
+                    Node::Detach(..) => { panic!() }
+                    Node::Leaf(sh, dtype) => Kernel::leaf(nid, sh, dtype),
                     Node::Uniform(..) => {
                         todo!()
                     }
                     Node::Cast(x, dtype) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer
                             .ops
                             .push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
@@ -196,146 +201,60 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         buffer
                     }
                     Node::Neg(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::Neg(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::ReLU(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::ReLU(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::Exp(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::Exp(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::Ln(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::Sin(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::Sin(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::Cos(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::Cos(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::Sqrt(x) => {
-                        let mut buffer = buffers[&x].clone();
+                        let mut buffer = self.kernels[&x].clone();
                         buffer.ops.push(Op::Sqrt(buffer.ops.len() as u8 - 1));
                         buffer
                     }
                     Node::Tanh(x) => {
-                        let mut buffer = buffers[&x].clone();
-                        buffer.ops.push(Op::Tanh(buffer.ops.len() as u8 - 1));
-                        buffer
+                        let mut kernel = self.kernels[&x].clone();
+                        kernel.ops.push(Op::Tanh(kernel.ops.len() as u8 - 1));
+                        kernel
                     }
-                    Node::Add(x, y) => {
-                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Add(x, y))?
-                    }
-                    Node::Sub(x, y) => {
-                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Sub(x, y))?
-                    }
-                    Node::Mul(x, y) => {
-                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Mul(x, y))?
-                    }
-                    Node::Div(x, y) => {
-                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Div(x, y))?
-                    }
-                    Node::Pow(x, y) => {
-                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Pow(x, y))?
-                    }
-                    Node::Cmplt(x, y) => {
-                        self.binary_buffer(*x, *y, &mut buffers, |x, y| Op::Cmplt(x, y))?
-                    }
-                    Node::Where(x, y, z) => {
+                    Node::Add(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Add(x, y))?,
+                    Node::Sub(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Sub(x, y))?,
+                    Node::Mul(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Mul(x, y))?,
+                    Node::Div(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Div(x, y))?,
+                    Node::Pow(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Pow(x, y))?,
+                    Node::Cmplt(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Cmplt(x, y))?,
+                    Node::Where(..) => {
                         // TODO fix this for x == y == z or any combination of those
-                        let (reduce_axes, reduce_dtype) = match (
-                            buffers[&x].reduce_axes.clone(),
-                            buffers[&y].reduce_axes.clone(),
-                            buffers[&z].reduce_axes.clone(),
-                        ) {
-                            (Some(x_ax), Some(_), Some(_)) => {
-                                self.evaluate_buffer(*y, &mut buffers)?;
-                                self.evaluate_buffer(*z, &mut buffers)?;
-                                (Some(x_ax), Some(buffers[&x].dtype))
-                            }
-                            (Some(x_ax), Some(_), None) => {
-                                self.evaluate_buffer(*y, &mut buffers)?;
-                                (Some(x_ax), Some(buffers[&x].dtype))
-                            }
-                            (Some(x_ax), None, Some(_)) => {
-                                self.evaluate_buffer(*z, &mut buffers)?;
-                                (Some(x_ax), Some(buffers[&x].dtype))
-                            }
-                            (Some(x_ax), None, None) => (Some(x_ax), Some(buffers[&x].dtype)),
-                            (None, Some(y_ax), Some(_)) => {
-                                self.evaluate_buffer(*z, &mut buffers)?;
-                                (Some(y_ax), Some(buffers[&y].dtype))
-                            }
-                            (None, Some(y_ax), None) => {
-                                self.evaluate_buffer(*z, &mut buffers)?;
-                                (Some(y_ax), Some(buffers[&y].dtype))
-                            }
-                            (None, None, Some(z_ax)) => (Some(z_ax), Some(buffers[&z].dtype)),
-                            (None, None, None) => (None, None),
-                        };
-                        let y_buffer = &buffers[y];
-                        let x_buffer = &buffers[x];
-                        let z_buffer = &buffers[z];
-                        let n = x_buffer.ops.len() as u8;
-                        let n2 = n + y_buffer.ops.len() as u8;
-                        Buffer {
-                            program_args: x_buffer
-                                .program_args
-                                .iter()
-                                .chain(y_buffer.program_args.iter())
-                                .copied()
-                                .collect(),
-                            arg_views: x_buffer
-                                .arg_views
-                                .iter()
-                                .chain(y_buffer.arg_views.iter())
-                                .cloned()
-                                .collect(),
-                            arg_dtypes: x_buffer
-                                .arg_dtypes
-                                .iter()
-                                .chain(y_buffer.arg_dtypes.iter())
-                                .copied()
-                                .collect(),
-                            ops: x_buffer
-                                .ops
-                                .iter()
-                                .cloned()
-                                .chain(y_buffer.ops.iter().cloned().map(|op| {
-                                    //op.access_parameters(|x| *x += n);
-                                    op
-                                }))
-                                .chain(z_buffer.ops.iter().cloned().map(|op| {
-                                    //op.access_parameters(|x| *x += n2);
-                                    op
-                                }))
-                                .chain([Op::Where(n - 1, n2 - 1, n2 + z_buffer.ops.len() as u8 - 1)])
-                                .collect(),
-                            reduce_axes,
-                            reduce_dtype,
-                            shape: x_buffer.shape.clone(),
-                            dtype: x_buffer.dtype,
-                            flop: x_buffer.flop + y_buffer.flop,
-                        };
                         todo!()
                     }
                     Node::Reshape(x, sh) => {
-                        let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                            self.evaluate_buffer(*x, &mut buffers)?.clone()
+                        let mut buffer = if self.kernels[&x].reduce_axes.is_some() {
+                            self.evaluate_kernel(*x)?.clone()
                         } else {
-                            buffers[&x].clone()
+                            self.kernels[&x].clone()
                         };
                         for view in &mut buffer.arg_views {
                             *view = view.reshape(sh);
@@ -344,86 +263,83 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         buffer
                     }
                     Node::Expand(x, sh) => {
-                        let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                            self.evaluate_buffer(*x, &mut buffers)?.clone()
+                        let mut kernel = if self.kernels[&x].reduce_axes.is_some() {
+                            self.evaluate_kernel(*x)?.clone()
                         } else {
-                            buffers[&x].clone()
+                            self.kernels[&x].clone()
                         };
-                        for view in &mut buffer.arg_views {
+                        for view in &mut kernel.arg_views {
                             *view = view.expand(sh);
                         }
-                        buffer.shape = sh.clone();
-                        buffer
+                        kernel.shape = sh.clone();
+                        kernel
                     }
                     Node::Permute(x, ax, sh) => {
-                        let mut buffer = buffers[&x].clone();
-                        for view in &mut buffer.arg_views {
+                        let mut kernel = self.kernels[&x].clone();
+                        for view in &mut kernel.arg_views {
                             *view = view.permute(ax);
                         }
-                        if let Some(reduce_axes) = &mut buffer.reduce_axes {
+                        if let Some(reduce_axes) = &mut kernel.reduce_axes {
                             *reduce_axes = reduce_axes.permute(ax);
                         }
-                        buffer.shape = sh.clone();
-                        buffer
+                        kernel.shape = sh.clone();
+                        kernel
                     }
                     Node::Pad(x, padding, sh) => {
-                        let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                            self.evaluate_buffer(*x, &mut buffers)?.clone()
+                        let mut kernel = if self.kernels[&x].reduce_axes.is_some() {
+                            self.evaluate_kernel(*x)?.clone()
                         } else {
-                            buffers[&x].clone()
+                            self.kernels[&x].clone()
                         };
-                        for view in &mut buffer.arg_views {
+                        for view in &mut kernel.arg_views {
                             *view = view.pad(padding);
                         }
-                        buffer.shape = sh.clone();
-                        buffer
+                        kernel.shape = sh.clone();
+                        kernel
                     }
                     Node::Sum(x, ax, _) => {
-                        let mut buffer = buffers[&x].clone();
-                        if buffer.reduce_axes.is_some() {
-                            buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
-                            buffer.reduce_axes = Some(ax.clone());
-                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                            buffer.ops.push(Op::Sum(0));
+                        let mut kernel = self.kernels[&x].clone();
+                        if kernel.reduce_axes.is_some() {
+                            kernel = self.evaluate_kernel(*x)?.clone();
+                            kernel.reduce_axes = Some(ax.clone());
+                            kernel.reduce_dtype = Some(get_dtype(nodes, nid));
+                            kernel.ops.push(Op::Sum(0));
                         } else {
-                            buffer.reduce_axes = Some(ax.clone());
-                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                            buffer.ops.push(Op::Sum(buffer.ops.len() as u8 - 1));
+                            kernel.reduce_axes = Some(ax.clone());
+                            kernel.reduce_dtype = Some(get_dtype(nodes, nid));
+                            kernel.ops.push(Op::Sum(kernel.ops.len() as u8 - 1));
                         }
-                        buffer
+                        kernel
                     }
                     Node::Max(x, ax, _) => {
-                        let mut buffer = buffers[&x].clone();
-                        if buffer.reduce_axes.is_some() {
-                            buffer = self.evaluate_buffer(*x, &mut buffers)?.clone();
-                            buffer.reduce_axes = Some(ax.clone());
-                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                            buffer.ops.push(Op::Max(0));
+                        let mut kernel = self.kernels[&x].clone();
+                        if kernel.reduce_axes.is_some() {
+                            kernel = self.evaluate_kernel(*x)?.clone();
+                            kernel.reduce_axes = Some(ax.clone());
+                            kernel.reduce_dtype = Some(get_dtype(nodes, nid));
+                            kernel.ops.push(Op::Max(0));
                         } else {
-                            buffer.reduce_axes = Some(ax.clone());
-                            buffer.reduce_dtype = Some(get_dtype(nodes, nid));
-                            buffer.ops.push(Op::Max(buffer.ops.len() as u8 - 1));
+                            kernel.reduce_axes = Some(ax.clone());
+                            kernel.reduce_dtype = Some(get_dtype(nodes, nid));
+                            kernel.ops.push(Op::Max(kernel.ops.len() as u8 - 1));
                         }
-                        buffer
+                        kernel
                     }
                 }
             };
-            buffers.insert(nid, buffer);
+            self.kernels.insert(nid, buffer);
 
             if to_eval.contains(&nid)
-                || buffers[&nid].ops.len() > 200
-                || (rcs[&nid] > 1 && buffers[&nid].program_args.len() > 1)
+                || self.kernels[&nid].ops.len() > 200
+                || (rcs[&nid] > 1 && self.kernels[&nid].program_args.len() > 1)
             {
-                self.evaluate_buffer(nid, &mut buffers)?;
+                self.evaluate_kernel(nid)?;
             }
 
             for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
                     if *e.get() == 0 {
-                        buffers.remove(&p);
-                        if self.is_evaluated(p) && buffers.values().all(|buffer| !buffer.program_args.contains(&p)) {
-                            self.remove(p)?;
-                        }
+                        self.remove(p)?;
                     }
                 }
             }
@@ -437,20 +353,20 @@ impl<C: Compiler> CompiledBackend<C> {
     pub fn new(compiler: C) -> Self {
         Self {
             compiler,
+            kernels: BTreeMap::new(),
             buffers: BTreeMap::new(),
             programs: BTreeMap::new(),
         }
     }
 
-    fn evaluate_buffer<'a>(
+    fn evaluate_kernel(
         &mut self,
         x: Id,
-        buffers: &'a mut BTreeMap<Id, Buffer>,
-    ) -> Result<&'a Buffer, ZyxError> {
-        if self.is_evaluated(x) {
-            return Ok(&buffers[&x]);
+    ) -> Result<&Kernel, ZyxError> {
+        if self.buffers.contains_key(&x) {
+            return Ok(&self.kernels[&x]);
         }
-        let Buffer {
+        let Kernel {
             program_args,
             arg_views,
             arg_dtypes,
@@ -460,7 +376,7 @@ impl<C: Compiler> CompiledBackend<C> {
             shape,
             dtype,
             flop,
-        } = buffers[&x].clone();
+        } = self.kernels[&x].clone();
         let r_shape = if let Some(reduce_axes) = &reduce_axes {
             shape.clone().reduce(reduce_axes)
         } else {
@@ -493,49 +409,46 @@ impl<C: Compiler> CompiledBackend<C> {
         // Run the program
         self.buffers
             .insert(x, self.compiler.launch(program, &program_args, flop)?);
-        buffers.insert(x, Buffer::leaf(x, &r_shape, &dtype));
-        Ok(&buffers[&x])
+        self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype));
+        Ok(&self.kernels[&x])
     }
 
-    fn binary_buffer(
+    fn binary_kernel(
         &mut self,
         x: Id,
         y: Id,
-        buffers: &mut BTreeMap<Id, Buffer>,
         op: impl Fn(u8, u8) -> Op,
-    ) -> Result<Buffer, ZyxError> {
+    ) -> Result<Kernel, ZyxError> {
         let (reduce_axes, reduce_dtype) = if x != y {
-            //std::println!("{:?}, {:?}", buffers[&x], buffers[&y]);
             match (
-                buffers[&x].reduce_axes.clone(),
-                buffers[&y].reduce_axes.clone(),
+                self.kernels[&x].reduce_axes.clone(),
+                self.kernels[&y].reduce_axes.clone(),
             ) {
                 (Some(x_ax), Some(_)) => {
-                    //std::println!("Evaluating: {:?}", buffers[&y]);
-                    self.evaluate_buffer(y, buffers)?;
-                    (Some(x_ax), Some(buffers[&x].dtype))
+                    self.evaluate_kernel(y)?;
+                    (Some(x_ax), Some(self.kernels[&x].dtype))
                 }
-                (Some(x_ax), None) => (Some(x_ax), Some(buffers[&x].dtype)),
-                (None, Some(y_ax)) => (Some(y_ax), Some(buffers[&y].dtype)),
+                (Some(x_ax), None) => (Some(x_ax), Some(self.kernels[&x].dtype)),
+                (None, Some(y_ax)) => (Some(y_ax), Some(self.kernels[&y].dtype)),
                 (None, None) => (None, None),
             }
         } else {
-            //(buffers[&x].reduce_axes.clone(), buffers[&x].reduce_dtype)
+            //(self.kernels[&x].reduce_axes.clone(), self.kernels[&x].reduce_dtype)
             // TODO if it is one reduce, it could be merged, but it is lot of work
-            let mut buffer = if buffers[&x].reduce_axes.is_some() {
-                self.evaluate_buffer(x, buffers)?.clone()
+            let mut buffer = if self.kernels[&x].reduce_axes.is_some() {
+                self.evaluate_kernel(x)?.clone()
             } else {
-                buffers[&x].clone()
+                self.kernels[&x].clone()
             };
             let n = buffer.ops.len() as u8 - 1;
             buffer.ops.push(op(n, n));
             //(None, None)
             return Ok(buffer);
         };
-        let x_buffer = &buffers[&x];
-        let y_buffer = &buffers[&y];
+        let x_buffer = &self.kernels[&x];
+        let y_buffer = &self.kernels[&y];
         let n = x_buffer.ops.len() as u8;
-        Ok(Buffer {
+        Ok(Kernel {
             program_args: x_buffer
                 .program_args
                 .iter()

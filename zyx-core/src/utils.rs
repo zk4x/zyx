@@ -114,6 +114,7 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u16]) -> alloc:
             Node::Cmplt(x, y) => add_node(id, &format!("Cmplt({x}, {y})"), "oval"),
             Node::Where(x, y, z) => add_node(id, &format!("Cmplt({x}, {y}, {z})"), "oval"),
             Node::Pow(x, y) => add_node(id, &format!("Pow({x}, {y})"), "oval"),
+            Node::Detach(x) => add_node(id, &format!("Detach({x})"), "oval"),
             Node::Neg(x) => add_node(id, &format!("Neg({x})"), "oval"),
             Node::Exp(x) => add_node(id, &format!("Exp({x})"), "oval"),
             Node::ReLU(x) => add_node(id, &format!("ReLU({x})"), "oval"),

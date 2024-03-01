@@ -62,6 +62,7 @@ impl RuntimeBackend for Interpreter {
         nodes: &[Node],
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
+            //std::println!("Processing: {:?}", nodes[nid.i()]);
             match &nodes[nid.i()] {
                 Node::Leaf(..) => {}
                 Node::Uniform(..) => { todo!() }
@@ -71,6 +72,9 @@ impl RuntimeBackend for Interpreter {
                         DType::F64 => self.tensors[x].to_kind(Kind::Double),
                         DType::I32 => self.tensors[x].to_kind(Kind::Int),
                     });
+                }
+                Node::Detach(x) => {
+                    self.tensors.insert(nid, self.tensors[x].copy());
                 }
                 Node::Neg(x) => {
                     self.tensors.insert(nid, self.tensors[x].neg());

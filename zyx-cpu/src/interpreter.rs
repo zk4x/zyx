@@ -196,6 +196,7 @@ impl RuntimeBackend for Interpreter {
                     self.views.insert(nid, (view.clone(), nid));
                     self.buffers.insert(nid, data);
                 }
+                Node::Detach(x) => unary_op!(self, x, nid, core::convert::identity),
                 Node::Neg(x) => unary_op!(self, x, nid, Scalar::neg),
                 Node::ReLU(x) => unary_op!(self, x, nid, Scalar::relu),
                 Node::Sin(x) => unary_op!(self, x, nid, Scalar::sin),

@@ -392,7 +392,6 @@ impl<B: Backend> Tensor<B> {
         self.backend
     }
 
-    /*
     /// Detach gradient tape from tensor.
     /// This means that resulting tensor is a shallow copy of self,
     /// but it's gradient will be ones. Result of this operation
@@ -413,7 +412,16 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn detach(&self) -> Tensor<B> {
         // It should be possible to just be optimize this away.
-        self.backend.detach(self.id)
+        tensor(self.backend.push(Node::Detach(self.id)).unwrap(), self.backend)
+    }
+
+    /*
+    /// Probably just add no_grad, that is all tensors coming from no_grad tensor
+    /// are not differentiable, unless some other parameter in those ops is differentiable.
+    #[must_use]
+    pub fn no_grad(&self) {
+        // TODO
+        //self.backend.no_grad(self.id);
     }*/
 
     // Access methods
@@ -497,29 +505,25 @@ impl<B: Backend> Tensor<B> {
     /// ```
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor<B> {
-        match dtype {
-            DType::F32 => self.unary_op(UOp::CastF32),
-            DType::F64 => self.unary_op(UOp::CastF64),
-            DType::I32 => self.unary_op(UOp::CastI32),
-        }
+        tensor(self.backend.push(Node::Cast(self.id, dtype)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the rectified linear unit function applied to the elements of self.
     #[must_use]
     pub fn relu(&self) -> Tensor<B> {
-        self.unary_op(UOp::ReLU)
+        tensor(self.backend.push(Node::ReLU(self.id)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the sine of the elements of self.
     #[must_use]
     pub fn sin(&self) -> Tensor<B> {
-        self.unary_op(UOp::Sin)
+        tensor(self.backend.push(Node::Sin(self.id)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the cosine of the elements of self.
     #[must_use]
     pub fn cos(&self) -> Tensor<B> {
-        self.unary_op(UOp::Cos)
+        tensor(self.backend.push(Node::Cos(self.id)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the natural logarithm of the elements of self.
@@ -528,19 +532,19 @@ impl<B: Backend> Tensor<B> {
     /// defined (when x <= 0).
     #[must_use]
     pub fn ln(&self) -> Tensor<B> {
-        self.unary_op(UOp::Ln)
+        tensor(self.backend.push(Node::Ln(self.id)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the exponential of the elements of self.
     #[must_use]
     pub fn exp(&self) -> Tensor<B> {
-        self.unary_op(UOp::Exp)
+        tensor(self.backend.push(Node::Exp(self.id)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the hyperbolic tangent of the elements of self.
     #[must_use]
     pub fn tanh(&self) -> Tensor<B> {
-        self.unary_op(UOp::Tanh)
+        tensor(self.backend.push(Node::Tanh(self.id)).unwrap(), self.backend)
     }
 
     /// Returns a new tensor with the square root of the elements of self.
@@ -549,7 +553,7 @@ impl<B: Backend> Tensor<B> {
     /// defined (when x < 0).
     #[must_use]
     pub fn sqrt(&self) -> Tensor<B> {
-        self.unary_op(UOp::Sqrt)
+        tensor(self.backend.push(Node::Sqrt(self.id)).unwrap(), self.backend)
     }
 
     /// Returns 1/self
@@ -1192,20 +1196,6 @@ impl<B: Backend> Tensor<B> {
     //pub fn conv(&self)
 }
 
-enum UOp {
-    CastF32,
-    CastF64,
-    CastI32,
-    Neg,
-    ReLU,
-    Sin,
-    Cos,
-    Ln,
-    Exp,
-    Tanh,
-    Sqrt,
-}
-
 enum BOp {
     Add,
     Sub,
@@ -1217,28 +1207,6 @@ enum BOp {
 
 // Private helper functions
 impl<B: Backend> Tensor<B> {
-    #[must_use]
-    fn unary_op(&self, op: UOp) -> Tensor<B> {
-        tensor(
-            self.backend
-                .push(match op {
-                    UOp::CastF32 => Node::Cast(self.id, DType::F32),
-                    UOp::CastF64 => Node::Cast(self.id, DType::F64),
-                    UOp::CastI32 => Node::Cast(self.id, DType::I32),
-                    UOp::Neg => Node::Neg(self.id),
-                    UOp::ReLU => Node::ReLU(self.id),
-                    UOp::Sin => Node::Sin(self.id),
-                    UOp::Cos => Node::Cos(self.id),
-                    UOp::Ln => Node::Ln(self.id),
-                    UOp::Exp => Node::Exp(self.id),
-                    UOp::Tanh => Node::Tanh(self.id),
-                    UOp::Sqrt => Node::Sqrt(self.id),
-                })
-                .unwrap(),
-            self.backend,
-        )
-    }
-
     #[must_use]
     fn binary_op(&self, rhs: impl IntoTensor<B>, op: BOp) -> Tensor<B> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs.into_tensor(self.backend));
@@ -1329,14 +1297,14 @@ impl<B: Backend> Tensor<B> {
 impl<B: Backend> core::ops::Neg for Tensor<B> {
     type Output = Tensor<B>;
     fn neg(self) -> Self::Output {
-        self.unary_op(UOp::Neg)
+        tensor(self.backend.push(Node::Neg(self.id)).unwrap(), self.backend)
     }
 }
 
 impl<B: Backend> core::ops::Neg for &Tensor<B> {
     type Output = Tensor<B>;
     fn neg(self) -> Self::Output {
-        self.unary_op(UOp::Neg)
+        tensor(self.backend.push(Node::Neg(self.id)).unwrap(), self.backend)
     }
 }
 

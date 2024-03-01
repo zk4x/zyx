@@ -34,6 +34,7 @@ use alloc::{
     vec::Vec,
 };
 use core::ops::Range;
+use std::cell::RefCell;
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
 use zyx_core::{
@@ -47,38 +48,12 @@ use zyx_core::{
 };
 pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 
-// This works OK, it gets rid of the RefCell overhead,
-// but it's only safe if used in single threaded environment.
-// Can moving things around in memory invalidate these adresses?
-// In that case there could be memory unsafety.
-// But it should not be possible to move inner while reading or updating,
-// is it possible?.
-struct MCell<T> {
-    inner: core::cell::UnsafeCell<T>,
-}
-
-impl<T> MCell<T> {
-    const fn new(inner: T) -> MCell<T> {
-        MCell {
-            inner: core::cell::UnsafeCell::new(inner),
-        }
-    }
-
-    fn read<R>(&self, func: impl FnOnce(&T) -> R) -> R {
-        func(unsafe { &*self.inner.get() })
-    }
-
-    fn update<R>(&self, func: impl FnOnce(&mut T) -> R) -> R {
-        func(unsafe { &mut *self.inner.get() })
-    }
-}
-
 /// CPU backend
-pub struct CPU(MCell<Runtime<Interpreter>>);
+pub struct CPU(RefCell<Runtime<Interpreter>>);
 
 /// Create new CPU backend
 pub fn device() -> Result<CPU, ZyxError> {
-    Ok(CPU(MCell::new(Runtime::new(Interpreter::new()))))
+    Ok(CPU(RefCell::new(Runtime::new(Interpreter::new()))))
 }
 
 impl CPU {
@@ -146,31 +121,31 @@ impl Backend for &CPU {
         tensors: impl IntoIterator<Item = &'a Tensor<B>>,
     ) -> alloc::string::String {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
-        self.0.read(|b| b.plot_graph_dot(&ids))
+        self.0.borrow().plot_graph_dot(&ids)
     }
 
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.update(|b| b.randn(shape.into(), dtype))?, self))
+        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
     }
 
     fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.update(|b| b.uniform(shape.into(), range))?, self))
+        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
     }
 
     fn shape(self, x: Id) -> Shape {
-        self.0.read(|b| b.shape(x).clone())
+        self.0.borrow().shape(x).clone()
     }
 
     fn dtype(self, x: Id) -> DType {
-        self.0.read(|b| b.dtype(x))
+        self.0.borrow().dtype(x)
     }
 
     fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
-        self.0.update(|b| b.backward(x, sources))
+        self.0.borrow_mut().backward(x, sources)
     }
 
     fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, ZyxError> {
-        self.0.update(|b| b.load(x))
+        self.0.borrow_mut().load(x)
     }
 
     fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
@@ -178,19 +153,19 @@ impl Backend for &CPU {
         IT: IntoIterator<Item=T>,
         IT::IntoIter: ExactSizeIterator,
     {
-        self.0.update(|b| b.store(iter))
+        self.0.borrow_mut().store(iter)
     }
 
     fn push(self, node: Node) -> Result<Id, ZyxError> {
-        self.0.update(|b| b.push(node))
+        self.0.borrow_mut().push(node)
     }
 
     fn release(self, x: Id) -> Result<(), ZyxError> {
-        self.0.update(|b| b.release(x))
+        self.0.borrow_mut().release(x)
     }
 
     fn retain(self, x: Id) {
-        self.0.update(|b| b.retain(x));
+        self.0.borrow_mut().retain(x);
     }
 }
 
@@ -245,6 +220,25 @@ fn t0() -> Result<(), ZyxError> {
 
     std::println!("{y}");
     //std::println!("{}", n.transpose());
+    panic!();
+    Ok(())
+}*/
+
+/*#[test]
+fn t5() -> Result<(), ZyxError> {
+    let dev = crate::device()?;
+    let mut x = dev.randn([2, 2], DType::F32);
+    //let y = dev.randn([1024, 1024], DType::F32);
+
+    for i in 0..100000000 {
+        if i % 1000 == 0 {
+            std::println!("Iter: {}", i/1000);
+        }
+        x = x + 1f32;
+        //x = x - 2;
+    }
+
+    std::println!("{x}");
     panic!();
     Ok(())
 }*/

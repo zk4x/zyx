@@ -33,6 +33,7 @@ use alloc::{
     vec::Vec,
 };
 use core::ops::Range;
+use core::cell::RefCell;
 use zyx_core::compiler::CompiledBackend;
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
@@ -47,43 +48,13 @@ use zyx_core::{
 };
 pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 
-// This works OK, it gets rid of the RefCell overhead,
-// but it's only safe if used in single threaded environment.
-// Can moving things around in memory invalidate these adresses?
-// In that case there could be memory unsafety.
-// But it should not be possible to move inner while reading or updating,
-// is it possible?.
-struct MCell<T> {
-    //inner: core::cell::UnsafeCell<T>,
-    inner: core::cell::RefCell<T>,
-}
-
-impl<T> MCell<T> {
-    const fn new(inner: T) -> MCell<T> {
-        MCell {
-            //inner: core::cell::UnsafeCell::new(inner),
-            inner: core::cell::RefCell::new(inner),
-        }
-    }
-
-    fn read<R>(&self, func: impl FnOnce(core::cell::Ref<T>) -> R) -> R {
-        //func(unsafe { &*self.inner.get() })
-        func(self.inner.borrow())
-    }
-
-    fn update<R>(&self, func: impl FnOnce(core::cell::RefMut<T>) -> R) -> R {
-        //func(unsafe { &mut *self.inner.get() })
-        func(self.inner.borrow_mut())
-    }
-}
-
 /// OpenCL backend
-pub struct OpenCL(MCell<Runtime<CompiledBackend<Compiler>>>);
+pub struct OpenCL(RefCell<Runtime<CompiledBackend<Compiler>>>);
 
 /// Create new OpenCL backend using first OpenCL platform
 /// and all hardware devices in that platform.
 pub fn device() -> Result<OpenCL, ZyxError> {
-    Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
+    Ok(OpenCL(RefCell::new(Runtime::new(CompiledBackend::new(
         Compiler::new(0, 8)?,
     )))))
 }
@@ -118,7 +89,7 @@ impl OpenCLBuilder {
 
     /// Build
     pub fn build(self) -> Result<OpenCL, ZyxError> {
-        Ok(OpenCL(MCell::new(Runtime::new(CompiledBackend::new(
+        Ok(OpenCL(RefCell::new(Runtime::new(CompiledBackend::new(
             Compiler::new(self.platform_id, self.queues_per_device)?,
         )))))
     }
@@ -192,31 +163,31 @@ impl Backend for &OpenCL {
         tensors: impl IntoIterator<Item = &'a Tensor<B>>,
     ) -> alloc::string::String {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
-        self.0.read(|b| b.plot_graph_dot(&ids))
+        self.0.borrow().plot_graph_dot(&ids)
     }
 
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.update(|mut b| b.randn(shape.into(), dtype))?, self))
+        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
     }
 
     fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.update(|mut b| b.uniform(shape.into(), range))?, self))
+        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
     }
 
     fn shape(self, x: Id) -> Shape {
-        self.0.read(|b| b.shape(x).clone())
+        self.0.borrow().shape(x).clone()
     }
 
     fn dtype(self, x: Id) -> DType {
-        self.0.read(|b| b.dtype(x))
+        self.0.borrow().dtype(x)
     }
 
     fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
-        self.0.update(|mut b| b.backward(x, sources))
+        self.0.borrow_mut().backward(x, sources)
     }
 
     fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, ZyxError> {
-        self.0.update(|mut b| b.load(x))
+        self.0.borrow_mut().load(x)
     }
 
     fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
@@ -224,24 +195,20 @@ impl Backend for &OpenCL {
         IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
-        self.0.update(|mut b| b.store(iter))
+        self.0.borrow_mut().store(iter)
     }
 
     fn push(self, node: Node) -> Result<Id, ZyxError> {
-        self.0.update(|mut b| b.push(node))
+        self.0.borrow_mut().push(node)
     }
 
     fn release(self, x: Id) -> Result<(), ZyxError> {
-        self.0.update(|mut b| b.release(x))
+        self.0.borrow_mut().release(x)
     }
 
     fn retain(self, x: Id) {
-        self.0.update(|mut b| b.retain(x));
+        self.0.borrow_mut().retain(x);
     }
-
-    /*fn detach(self, x: Id) -> Tensor<Self> {
-        tensor(self.0.update(|mut b| b.detach(x)), self)
-    }*/
 }
 
 /*#[test]

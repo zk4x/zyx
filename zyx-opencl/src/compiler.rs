@@ -1206,16 +1206,18 @@ fn t5() -> Result<(), ZyxError> {
 
 #[test]
 fn t5() -> Result<(), ZyxError> {
-    let dev = crate::device_builder().platform_id(0).build()?;
-    let mut x = dev.randn([1024, 1024], DType::F32);
-    let y = dev.randn([1024, 1024], DType::F32);
+    let dev = crate::device()?;
+    //let mut x = dev.randn([1024, 1024], DType::F32);
+    let mut x = dev.tensor(2);
+    //let y = dev.randn([1024, 1024], DType::F32);
 
     for i in 0..100000000 {
-        if i % 100000 == 0 {
-            std::println!("Iter: {}", i%100000);
+        if i % 1000 == 0 {
+            std::println!("Iter: {}", i/1000);
         }
-        x = x + &y;
-        x = x - &y;
+        // TODO rcs is incorrectly calculated when storing 1 as tensor and probably also for x :)
+        x = x + 1;
+        //x = x - 2;
     }
 
     std::println!("{x}");

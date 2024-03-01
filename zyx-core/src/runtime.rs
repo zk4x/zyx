@@ -109,6 +109,32 @@ impl<R: RuntimeBackend> Runtime<R> {
         Ok(data)
     }
 
+    /// Get shape of tensor x
+    #[must_use]
+    pub fn shape(&self, x: Id) -> &Shape {
+        get_shape(self.nodes.as_slice(), x)
+    }
+
+    /// Get dtype of tensor x
+    #[must_use]
+    pub fn dtype(&self, x: Id) -> DType {
+        get_dtype(self.nodes.as_slice(), x)
+    }
+
+    /// Load tensor x
+    #[must_use]
+    pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
+        // This may need to evaluate, therefore we need to take mutable reference to self
+        if !self.runtime_backend.is_evaluated(x) {
+            // TODO also check if these are only movements ops,
+            // in which case we can directly return iterator with view
+            self.evaluate(BTreeSet::from([x]))?;
+        }
+        let numel = get_shape(self.nodes.as_slice(), x).numel();
+        //std::println!("Reading buffer with {numel} elements.");
+        self.runtime_backend.load(x, numel)
+    }
+
     /// Store iterator into runtime as tensor
     #[must_use]
     pub fn store<T: Scalar, IT>(&mut self, iter: IT) -> Result<Id, ZyxError>
@@ -136,38 +162,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         Ok(id)
     }
 
-    /// Get shape of tensor x
-    #[must_use]
-    pub fn shape(&self, x: Id) -> &Shape {
-        get_shape(self.nodes.as_slice(), x)
-    }
-
-    /// Get dtype of tensor x
-    #[must_use]
-    pub fn dtype(&self, x: Id) -> DType {
-        get_dtype(self.nodes.as_slice(), x)
-    }
-
-    /// Load tensor x
-    #[must_use]
-    pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
-        // This may need to evaluate, therefore we need to take mutable reference to self
-        if !self.runtime_backend.is_evaluated(x) {
-            // TODO also check if these are only movements ops,
-            // in which case we can directly return iterator with view
-            self.evaluate(BTreeSet::from([x]))?;
-        }
-        let numel = get_shape(self.nodes.as_slice(), x).numel();
-        //std::println!("Reading buffer with {numel} elements.");
-        self.runtime_backend.load(x, numel)
-    }
-
     /// Push new Node into the graph creating new tensor.
     /// This function does ZERO verification that the node is correct, but it optimizes
     /// out useless operations (like reshaping to the same shape)
     #[must_use]
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
-        //std::println!("Pushing {node:?}, len: {}", self.nodes.len());
+        std::println!("Pushing {node:?}, len: {}", self.nodes.len());
         // get rid of noops :)
         match node {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
@@ -200,7 +200,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             id
         };
         self.non_evaluated_nodes_count += 1;
-        if self.non_evaluated_nodes_count > 30000 {
+        if self.non_evaluated_nodes_count > 10 {
             // Approx. 1500 KiB of Nodes
             self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
         }
@@ -211,6 +211,10 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
     /// x and release all of it's predecessors in the graph.
     pub fn release(&mut self, x: Id) -> Result<(), ZyxError> {
+        std::println!("Releasing {x} {:?}", self.rcs);
+        if x.i() == 5 {
+            panic!();
+        }
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(p) = params.pop() {
@@ -230,7 +234,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Evaluate specified nodes.
     pub fn evaluate(&mut self, mut nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
-        //std::println!("Evaluating");
+        //std::println!("Evaluating {nodes:?}");
         // TODO in order to be more efficient, we can optimize the graph
         // by reordering nodes and removing unnecessary nodes
 
@@ -241,12 +245,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         let mut rcs: BTreeMap<Id, u16> = BTreeMap::new();
         while let Some(nid) = params.pop() {
-            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                if !self.runtime_backend.is_evaluated(nid) {
+            if !self.runtime_backend.is_evaluated(nid) {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     params.extend(self.nodes[nid.i()].parameters());
-                }
-                1
-            });
+                    1
+                });
+            }
         }
 
         // Order them using rcs reference counts
@@ -277,7 +281,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in &order {
             if matches!(
                 self.nodes[nid.i()],
-                Node::Leaf(..) | Node::Uniform(..)
+                Node::Detach(..) | Node::Leaf(..) | Node::Uniform(..)
             ) {
                 *rcs.get_mut(nid).unwrap() += 1;
                 nodes.insert(*nid);
@@ -285,29 +289,22 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
 
         /*std::println!("");
-        std::println!("");
         for nid in &order {
             std::println!("{nid} x {}: {:?}", rcs[nid], self.nodes[nid.i()]);
         }
-        std::println!("");
         std::println!("");*/
 
         self.runtime_backend
             .evaluate(nodes, rcs, &order, self.nodes.as_mut())?;
 
-        // Release parts of graph that are not needed for backpropagation
-        /*for leaf in self.leafs.clone() {
-            if self.runtime_backend.is_evaluated(leaf) {
-                self.leafs.remove(&leaf);
-                //std::println!("Releasing leaf {leaf}");
-                let shape = get_shape(self.nodes.as_ref(), leaf).clone();
-                let mut node = Node::Leaf(shape, get_dtype(self.nodes.as_ref(), leaf));
-                core::mem::swap(self.nodes.get_mut(leaf.i()).unwrap(), &mut node);
-                for nid in node.parameters() {
-                    self.release(nid)?;
+        // Delete parameter of evaluated detached nodes
+        for nid in order {
+            if let Node::Detach(x) = self.nodes[nid.i()] {
+                if self.runtime_backend.is_evaluated(nid) {
+                    self.release(x).unwrap()
                 }
             }
-        }*/
+        }
 
         let n = self.nodes.len();
         self.non_evaluated_nodes_count = (n - (0..n).filter(|i| self.runtime_backend.is_evaluated(tensor::id(*i))).count()) as u16;
@@ -370,7 +367,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
             while let Some(nid) = params.pop() {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    if !sources.contains(&nid) {
+                    if !sources.contains(&nid) && !matches!(nodes[nid.i()], Node::Detach(..)) {
                         params.extend(nodes[nid.i()].parameters());
                     }
                     1
@@ -456,7 +453,8 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in topo {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {
-                Node::Leaf(..)
+                Node::Detach(..)
+                | Node::Leaf(..)
                 | Node::Uniform(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) {

@@ -92,6 +92,4 @@ pub trait Backend: Copy {
     fn release(self, x: Id) -> Result<(), ZyxError>;
     /// Increase reference count of tensor
     fn retain(self, x: Id);
-    // Returns tensor detached from gradient tape
-    //fn detach(self, x: Id) -> Tensor<Self>;
 }
