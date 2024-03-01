@@ -36,7 +36,7 @@ pub trait RuntimeBackend {
     fn evaluate(
         &mut self,
         to_eval: BTreeSet<Id>,
-        rcs: BTreeMap<Id, u16>,
+        rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
     ) -> Result<(), ZyxError>;
@@ -46,9 +46,9 @@ pub trait RuntimeBackend {
 /// This runtime uses [Node] enum as representation of tensors.
 pub struct Runtime<R: RuntimeBackend> {
     rng: rand::rngs::SmallRng,
-    rcs: Vec<u16>,
+    rcs: Vec<u32>,
     nodes: Vec<Node>,
-    non_evaluated_nodes_count: u16,
+    non_evaluated_nodes_count: usize,
     runtime_backend: R,
 }
 
@@ -243,7 +243,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<Id> = nodes.iter().copied().collect();
-        let mut rcs: BTreeMap<Id, u16> = BTreeMap::new();
+        let mut rcs: BTreeMap<Id, u32> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             if !self.runtime_backend.is_evaluated(nid) {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
@@ -255,7 +255,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: BTreeMap<Id, u16> = BTreeMap::new();
+        let mut internal_rcs: BTreeMap<Id, u32> = BTreeMap::new();
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(rc) = rcs.get(&nid) {
@@ -307,7 +307,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
 
         let n = self.nodes.len();
-        self.non_evaluated_nodes_count = (n - (0..n).filter(|i| self.runtime_backend.is_evaluated(tensor::id(*i))).count()) as u16;
+        self.non_evaluated_nodes_count = n - (0..n).filter(|i| self.runtime_backend.is_evaluated(tensor::id(*i))).count();
 
         Ok(())
     }

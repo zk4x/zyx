@@ -44,6 +44,11 @@ use proc_macro::{TokenStream};
 use quote::{quote};
 use syn::{Data, DataStruct, DeriveInput, parse_macro_input};
 
+/// # Procedural macro Module
+///
+/// Implements IntoIterator<Item = &Tensor> and IntoIterator<Item = &mut Tensor> for your struct.
+///
+/// This allows saving, loading, backpropagation and updating your modules.
 #[proc_macro_derive(Module)]
 pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
