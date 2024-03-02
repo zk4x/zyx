@@ -1,4 +1,4 @@
-use alloc::{collections::{BTreeMap, BTreeSet, btree_map::Entry}, vec::Vec};
+use alloc::{collections::{BTreeMap, btree_map::Entry}, vec::Vec};
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View, shape::Shape, axes::Axes
 };
@@ -129,6 +129,10 @@ impl RuntimeBackend for Interpreter {
         self.views.contains_key(&x)
     }
 
+    fn is_free_id(&self, x: Id) -> bool {
+        !(self.buffers.contains_key(&x) || self.views.contains_key(&x))
+    }
+
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
         self.views.remove(&x);
         if !self.views.values().any(|(_, id)| *id == x) {
@@ -168,7 +172,6 @@ impl RuntimeBackend for Interpreter {
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
-        _must_eval: &BTreeSet<Id>,
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             match &nodes[nid.i()] {

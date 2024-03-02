@@ -6,7 +6,7 @@ use crate::{
     utils::get_dtype, view::View,
 };
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap},
     vec::Vec,
 };
 
@@ -149,11 +149,17 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         self.kernels.contains_key(&x)
     }
 
+    fn is_free_id(&self, x: Id) -> bool {
+        !(self.buffers.contains_key(&x) || self.kernels.contains_key(&x))
+    }
+
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
+        std::println!("Compiler removing {x}");
         if self.kernels.remove(&x).is_some() {
-            if self.kernels.values().all(|kernel| !kernel.program_args.contains(&x)) {
+            //std::println!("Kernels {:?}", self.kernels);
+            if !self.kernels.values().any(|kernel| kernel.program_args.contains(&x)) {
                 if let Some(mut buffer) = self.buffers.remove(&x) {
-                    //std::println!("Dropping buffer {x}");
+                    std::println!("Dropping buffer {x}");
                     self.compiler.drop_buffer(&mut buffer)?;
                 }
             }
@@ -188,17 +194,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
-        must_eval: &BTreeSet<Id>,
     ) -> Result<(), ZyxError> {
-        //std::println!("Evaluating rcs {:?}, must_eval {must_eval:?}", rcs);
+        //std::println!("Evaluating rcs {:?}", rcs);
         // TODO must_eval are currently new_leafs from runtime, but this may not
         // be the case later and then this won't work, so fix it.
-        for nid in must_eval {
-            self.evaluate_kernel(*nid)?;
-        }
         // TODO calculate flops for kernels :D
         for nid in order.iter().copied() {
-            //std::println!("{nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
+            std::println!("Compiling {nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
             let kernel = match &nodes[nid.i()] {
                 Node::Leaf(sh, dtype) => Kernel::leaf(nid, sh, dtype),
                 Node::Uniform(..) => {
@@ -341,11 +343,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     kernel
                 }
             };
+            std::println!("Inserting kernel {nid}");
             self.kernels.insert(nid, kernel);
 
             if self.kernels[&nid].ops.len() > 200
                 || (rcs[&nid] > 1 && self.kernels[&nid].program_args.len() > 1)
             {
+                //std::println!("Forcing evaluation of {nid}");
                 self.evaluate_kernel(nid)?;
             }
             //std::println!("Kernel {:?}, len of buffers: {}", self.kernels[&nid], self.buffers.len());
@@ -377,8 +381,9 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: Id,
     ) -> Result<&Kernel, ZyxError> {
-        //std::println!("Evaluating kernel {x}");
+        std::println!("Evaluating kernel {x}");
         if self.buffers.contains_key(&x) {
+            //std::println!("Accessing kernel {x}, {:?} {:?}", self.buffers.keys(), self.kernels);
             return Ok(&self.kernels[&x]);
         }
         let Kernel {
@@ -422,9 +427,8 @@ impl<C: Compiler> CompiledBackend<C> {
             .map(|nid| &self.buffers[&nid])
             .collect();
         // Run the program
-        self.buffers
-            .insert(x, self.compiler.launch(program, &program_args, flop)?);
         self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype));
+        self.buffers.insert(x, self.compiler.launch(program, &program_args, flop)?);
         Ok(&self.kernels[&x])
     }
 

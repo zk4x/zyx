@@ -22,12 +22,14 @@ use rand::distributions::Uniform;
 pub trait RuntimeBackend {
     /// Is tensor x evaluated?
     fn is_evaluated(&self, x: Id) -> bool;
+    /// Check if there are no more buffers on id x
+    fn is_free_id(&self, x: Id) -> bool;
     /// Delete all memory used by tensor x.
     fn remove(&mut self, x: Id) -> Result<(), ZyxError>;
     /// Store iterator into runtime backend
     fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
     where
-        IT: IntoIterator<Item=T>,
+        IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator;
     /// Load evaluated tensor x.
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError>;
@@ -38,7 +40,6 @@ pub trait RuntimeBackend {
         rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
-        must_eval: &BTreeSet<Id>,
     ) -> Result<(), ZyxError>;
 }
 
@@ -80,7 +81,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         }?;
         let data = self.push(Node::Reshape(data1, shape))?;
         self.release(data1)?;
-       // change the state of the random seed in rng
+        // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
         }
@@ -96,13 +97,28 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut rng = self.rng.clone();
         use rand::distributions::Standard;
         let data1 = match T::dtype() {
-            DType::F32 => self.store((0..n).map(move |_| { rng.sample(Uniform::new(range.start.clone().into_f32(), range.end.clone().into_f32())) })),
-            DType::F64 => self.store((0..n).map(move |_| { rng.sample(Uniform::new(range.start.clone().into_f64(), range.end.clone().into_f64())) })),
-            DType::I32 => self.store((0..n).map(move |_| { rng.sample(Uniform::new(range.start.clone().into_i32(), range.end.clone().into_i32())) })),
+            DType::F32 => self.store((0..n).map(move |_| {
+                rng.sample(Uniform::new(
+                    range.start.clone().into_f32(),
+                    range.end.clone().into_f32(),
+                ))
+            })),
+            DType::F64 => self.store((0..n).map(move |_| {
+                rng.sample(Uniform::new(
+                    range.start.clone().into_f64(),
+                    range.end.clone().into_f64(),
+                ))
+            })),
+            DType::I32 => self.store((0..n).map(move |_| {
+                rng.sample(Uniform::new(
+                    range.start.clone().into_i32(),
+                    range.end.clone().into_i32(),
+                ))
+            })),
         }?;
         let data = self.push(Node::Reshape(data1, shape))?;
         self.release(data1)?;
-       // change the state of the random seed in rng
+        // change the state of the random seed in rng
         for _ in 0..n {
             self.rng.sample::<f32, _>(Standard);
         }
@@ -144,7 +160,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         let iter = iter.into_iter();
         let len = iter.len();
         let node = Node::Leaf(len.into(), T::dtype());
-        let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
+        let id = if let Some(i) = self
+            .rcs
+            .iter()
+            .enumerate()
+            .position(|(i, rc)| *rc == 0 && self.runtime_backend.is_free_id(tensor::id(i)))
+        {
             let id = tensor::id(i);
             self.rcs[i] = 1;
             self.nodes[i] = node;
@@ -158,7 +179,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         //if id.i() == 1 { panic!("break") }
         self.runtime_backend.store(id, iter)?;
         self.backprop_nodes_count += 1;
-        //std::println!("Stored {id}, {:?}", self.rcs);
+        std::println!("Storing {id}, {:?}", self.rcs);
         Ok(id)
     }
 
@@ -167,7 +188,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// out useless operations (like reshaping to the same shape)
     #[must_use]
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
-        //std::println!("Pushing {node:?}, len: {}", self.nodes.len());
+        std::println!("Pushing {node:?}, len: {}", self.nodes.len());
         // get rid of noops :)
         match node {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
@@ -187,7 +208,12 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in node.parameters() {
             self.retain(nid);
         }
-        let id = if let Some(i) = self.rcs.iter().position(|rc| *rc == 0) {
+        let id = if let Some(i) = self
+            .rcs
+            .iter()
+            .enumerate()
+            .position(|(i, rc)| *rc == 0 && self.runtime_backend.is_free_id(tensor::id(i)))
+        {
             let id = tensor::id(i);
             self.rcs[i] = 1;
             self.nodes[i] = node;
@@ -202,10 +228,10 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.nodes.push(node);
             id
         };
-        //std::println!("Assigned id: {id}");
+        std::println!("Assigned id: {id}");
         self.backprop_nodes_count += 1;
         // This regulates caching, 1000 tensors per batch seems like a good default
-        if self.backprop_nodes_count > 0 {
+        if self.backprop_nodes_count > 1000 {
             // Approx. 50 KiB of Nodes
             self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
         }
@@ -225,6 +251,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 self.runtime_backend.remove(x)?;
             }
         }
+        //std::println!("After release rcs {:?}", self.rcs);
         Ok(())
     }
 
@@ -232,8 +259,11 @@ impl<R: RuntimeBackend> Runtime<R> {
     pub fn retain(&mut self, x: Id) {
         //std::println!("Retaining {x}, rcs: {:?}", self.rcs);
         //panic!();
-        debug_assert!(self.rcs[x.i()] < u32::MAX, "Reference count of tensor {x} has been exceeded,\
-        This is zyx bug. please report it at: https://github.com/zk4x/zyx");
+        debug_assert!(
+            self.rcs[x.i()] < u32::MAX,
+            "Reference count of tensor {x} has been exceeded,\
+        This is zyx bug. please report it at: https://github.com/zk4x/zyx"
+        );
         self.rcs[x.i()] += 1;
     }
 
@@ -262,10 +292,13 @@ impl<R: RuntimeBackend> Runtime<R> {
         params.reserve(100);
         while let Some(nid) = params.pop() {
             if !self.runtime_backend.is_evaluated(nid) {
-                temp_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    params.extend(self.nodes[nid.i()].parameters());
-                    1
-                });
+                temp_rcs
+                    .entry(nid)
+                    .and_modify(|rc| *rc += 1)
+                    .or_insert_with(|| {
+                        params.extend(self.nodes[nid.i()].parameters());
+                        1
+                    });
             }
         }
         // Order them using rcs reference counts.
@@ -293,10 +326,13 @@ impl<R: RuntimeBackend> Runtime<R> {
         params.reserve(100);
         while let Some(nid) = params.pop() {
             if !matches!(self.nodes[nid.i()], Node::Leaf(..)) {
-                temp_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    params.extend(self.nodes[nid.i()].parameters());
-                    1
-                });
+                temp_rcs
+                    .entry(nid)
+                    .and_modify(|rc| *rc += 1)
+                    .or_insert_with(|| {
+                        params.extend(self.nodes[nid.i()].parameters());
+                        1
+                    });
             } else {
                 let rc = temp_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                 if *rc == self.rcs[nid.i()] && !nodes.contains(&nid) {
@@ -319,39 +355,28 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
         new_order.reverse();
 
+        std::println!("RCS: {:?}", self.rcs);
         // This must go over the graph from the previous loop!
         let mut new_leafs = BTreeSet::new();
         for nid in &new_order {
-            if new_rcs[nid] == self.rcs[nid.i()] {
+            if new_rcs[nid] == self.rcs[nid.i()] && !nodes.contains(nid) {
                 for p in self.nodes[nid.i()].parameters() {
                     if drop_nodes.contains(&p) {
                         drop_nodes.insert(*nid);
                     }
                 }
             } else {
-                if self.nodes[nid.i()].parameters().any(|p| drop_nodes.contains(&p)) {
+                if self.nodes[nid.i()]
+                    .parameters()
+                    .any(|p| drop_nodes.contains(&p))
+                {
                     new_leafs.insert(*nid);
                 }
             }
         }
 
-        // Third backward DFS to keep non-detached nodes
-        /*let mut visited = BTreeSet::new();
-        let mut params: Vec<Id> = nodes.iter().copied().collect();
-        while let Some(nid) = params.pop() {
-            if visited.insert(nid) {
-                if rcs.get_mut(&nid).is_some() {
-                    // *rc += 1; // Don't increase refcounts of nodes used only for backpropagation
-                    drop_nodes.remove(&nid);
-                    if !matches!(self.nodes[nid.i()], Node::Detach(..)) {
-                        params.extend(self.nodes[nid.i()].parameters());
-                    }
-                }
-            }
-        }*/
-
-        //std::println!("Drop nodes: {drop_nodes:?}");
-        //std::println!("New leafs {new_leafs:?}");
+        std::println!("Drop nodes: {drop_nodes:?}");
+        std::println!("New leafs {new_leafs:?}");
 
         //self.backprop_nodes_count -= drop_nodes.len();
         //std::println!("Order: {order:?}");
@@ -360,11 +385,14 @@ impl<R: RuntimeBackend> Runtime<R> {
             std::println!("{nid} x {}: {:?}", rcs[nid], self.nodes[nid.i()]);
         }
         std::println!("");*/
-        self.runtime_backend.evaluate(rcs, &order, &self.nodes, &new_leafs)?;
+        self.runtime_backend.evaluate(rcs, &order, &self.nodes)?;
 
         // TODO all evaluated Detach nodes should be renamed to leafs also.
         for nid in new_leafs {
-            self.nodes[nid.i()] = Node::Leaf(get_shape(&self.nodes, nid).clone(), get_dtype(&self.nodes, nid));
+            self.nodes[nid.i()] = Node::Leaf(
+                get_shape(&self.nodes, nid).clone(),
+                get_dtype(&self.nodes, nid),
+            );
         }
         for nid in drop_nodes {
             self.rcs[nid.i()] -= 1;
@@ -523,9 +551,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in topo {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {
-                Node::Detach(..)
-                | Node::Leaf(..)
-                | Node::Uniform(..) => {}
+                Node::Detach(..) | Node::Leaf(..) | Node::Uniform(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) {
                         self.retain(grad);
@@ -615,7 +641,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     }
                 }
                 Node::Cmplt(..) => {
-                    panic!("Compare less than (cmplt, operator <) is not a differentiable operation.");
+                    panic!(
+                        "Compare less than (cmplt, operator <) is not a differentiable operation."
+                    );
                 }
                 Node::Where(x, y, z) => {
                     //return None, \
@@ -712,18 +740,9 @@ impl<R: RuntimeBackend> Runtime<R> {
                     // 1 - tanh^2(x)
                     let shape = get_shape(&self.nodes, x).clone();
                     let (two1, one1) = match get_dtype(&self.nodes, x) {
-                        DType::F32 => (
-                            self.store([2f32])?,
-                            self.store([1f32])?,
-                        ),
-                        DType::F64 => (
-                            self.store([2f64])?,
-                            self.store([1f64])?,
-                        ),
-                        DType::I32 => (
-                            self.store([2i32])?,
-                            self.store([1i32])?,
-                        ),
+                        DType::F32 => (self.store([2f32])?, self.store([1f32])?),
+                        DType::F64 => (self.store([2f64])?, self.store([1f64])?),
+                        DType::I32 => (self.store([2i32])?, self.store([1i32])?),
                     };
                     let two2 = self.push(Node::Expand(two1, shape.clone()))?;
                     self.release(two1)?;

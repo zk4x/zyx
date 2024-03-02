@@ -215,13 +215,15 @@ impl Backend for &OpenCL {
     }
 }
 
-/*#[test]
+#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
-    let x = dev.randn([1024, 1024], DType::F32);
-    let _ = x.exp().to_vec::<f32>()?;
+    let x = dev.tensor([[3, 4, 2], [4, 5, 2]]);
+    let y = x.cast(DType::F32);
+    assert_eq!(y.dtype(), DType::F32);
+    assert_eq!(y, [[3f32, 4., 2.], [4., 5., 2.]]);
     Ok(())
-}*/
+}
 
 /*#[test]
 fn t0() -> Result<(), ZyxError> {

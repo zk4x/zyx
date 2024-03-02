@@ -1,4 +1,4 @@
-use alloc::{collections::{BTreeMap, BTreeSet, btree_map::Entry}, vec::Vec};
+use alloc::{collections::{BTreeMap, btree_map::Entry}, vec::Vec};
 use tch::{Kind, Tensor};
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id,
@@ -20,6 +20,10 @@ impl Interpreter {
 impl RuntimeBackend for Interpreter {
     fn is_evaluated(&self, x: Id) -> bool {
         self.tensors.contains_key(&x)
+    }
+
+    fn is_free_id(&self, x: Id) -> bool {
+        !self.tensors.contains_key(&x)
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
@@ -59,7 +63,6 @@ impl RuntimeBackend for Interpreter {
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
-        _must_eval: &BTreeSet<Id>,
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             //std::println!("Processing: {:?}", nodes[nid.i()]);
