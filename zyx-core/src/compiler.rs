@@ -6,7 +6,7 @@ use crate::{
     utils::get_dtype, view::View,
 };
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec::Vec,
 };
 
@@ -153,6 +153,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         if self.kernels.remove(&x).is_some() {
             if self.kernels.values().all(|kernel| !kernel.program_args.contains(&x)) {
                 if let Some(mut buffer) = self.buffers.remove(&x) {
+                    //std::println!("Dropping buffer {x}");
                     self.compiler.drop_buffer(&mut buffer)?;
                 }
             }
@@ -165,12 +166,21 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         IT: IntoIterator<Item=T>,
         IT::IntoIter: ExactSizeIterator,
     {
+        //std::println!("Storing {x}");
+        let iter = iter.into_iter();
+        self.kernels.insert(x, Kernel::leaf(x, &iter.len().into(), &T::dtype()));
         self.buffers.insert(x, self.compiler.store(iter)?);
         Ok(())
     }
 
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
-        self.compiler.load(&self.buffers[&x], numel)
+        //std::println!("Loading {x}");
+        if let Some(buffer) = self.buffers.get(&x) {
+            self.compiler.load(buffer, numel)
+        } else {
+            self.evaluate_kernel(x)?;
+            self.compiler.load(&self.buffers[&x], numel)
+        }
     }
 
     fn evaluate(
@@ -178,15 +188,18 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
+        must_eval: &BTreeSet<Id>,
     ) -> Result<(), ZyxError> {
+        //std::println!("Evaluating rcs {:?}, must_eval {must_eval:?}", rcs);
+        // TODO must_eval are currently new_leafs from runtime, but this may not
+        // be the case later and then this won't work, so fix it.
+        for nid in must_eval {
+            self.evaluate_kernel(*nid)?;
+        }
         // TODO calculate flops for kernels :D
         for nid in order.iter().copied() {
             //std::println!("{nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
-            /*let buffer = if self.is_evaluated(nid) {
-                Kernel::leaf(nid, crate::utils::get_shape(nodes, nid), &get_dtype(nodes, nid))
-            } else {*/
             let kernel = match &nodes[nid.i()] {
-                Node::Detach(..) => { panic!() }
                 Node::Leaf(sh, dtype) => Kernel::leaf(nid, sh, dtype),
                 Node::Uniform(..) => {
                     todo!()
@@ -198,6 +211,9 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         .push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
                     buffer.dtype = *dtype;
                     buffer
+                }
+                Node::Detach(x) => {
+                    self.kernels[&x].clone()
                 }
                 Node::Neg(x) => {
                     let mut buffer = self.kernels[&x].clone();
@@ -332,6 +348,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             {
                 self.evaluate_kernel(nid)?;
             }
+            //std::println!("Kernel {:?}, len of buffers: {}", self.kernels[&nid], self.buffers.len());
 
             for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
@@ -360,6 +377,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: Id,
     ) -> Result<&Kernel, ZyxError> {
+        //std::println!("Evaluating kernel {x}");
         if self.buffers.contains_key(&x) {
             return Ok(&self.kernels[&x]);
         }

@@ -286,20 +286,15 @@ fn t5() -> Result<(), ZyxError> {
     //let mut x = dev.randn([1024, 1024], DType::F32);
     let mut x = dev.tensor(3);
     //let y = dev.randn([1024, 1024], DType::F32);
-
-    for i in 0..100000000 {
-        std::println!("Scope begin");
-        if i % 1000 == 0 {
-            std::println!("Iter: {}", i/1000);
-        }
-        // TODO rcs is incorrectly calculated when storing 1 as tensor and probably also for x :)
+    /*let x = x + 1;
+    let x = x + 1;
+    let x = x + 1;
+    let x = x + 1;*/
+    for _ in 0..4 {
         x = x + 1;
-        //x = dev.tensor(3) + 1;
-        //x = x - 2;
-        std::println!("Scope end");
     }
 
-    std::println!("{x}");
-    panic!();
+    //std::println!("{x}");
+    //panic!();
     Ok(())
 }

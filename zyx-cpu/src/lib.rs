@@ -229,16 +229,19 @@ fn t0() -> Result<(), ZyxError> {
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {
-    let dev = crate::device()?;
-    let mut x = dev.randn([2, 2], DType::F32);
+    let dev = device()?;
+    //let mut x = dev.randn([1024, 1024], DType::F32);
+    let mut x = dev.tensor(3);
     //let y = dev.randn([1024, 1024], DType::F32);
-
-    for i in 0..100000000 {
-        if i % 1000 == 0 {
-            std::println!("Iter: {}", i/1000);
+    /*let x = x + 1;
+    let x = x + 1;
+    let x = x + 1;
+    let x = x + 1;*/
+    for i in 0..1000000 {
+        if i % 100000 == 0 {
+            std::println!("i: {i}");
         }
-        x = x + 1f32;
-        //x = x - 2;
+        x = x + 1;
     }
 
     std::println!("{x}");

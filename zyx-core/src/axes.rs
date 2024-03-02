@@ -82,7 +82,7 @@ pub trait IntoAxes {
     /// ```
     /// use zyx_core::axes::IntoAxes;
     /// let ax = [2, 3, 1];
-    /// let axes = ax.into_axes(3);
+    /// let axes = ax.into_axes(4);
     /// ```
     fn into_axes(self, rank: usize) -> Axes;
 }

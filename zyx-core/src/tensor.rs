@@ -210,6 +210,7 @@ impl<B: Backend> Clone for Tensor<B> {
 
 impl<B: Backend> Drop for Tensor<B> {
     fn drop(&mut self) {
+        //std::println!("Dropping tensor {}", self.id);
         self.backend.release(self.id).unwrap();
     }
 }

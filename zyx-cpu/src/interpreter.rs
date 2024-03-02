@@ -1,4 +1,4 @@
-use alloc::{collections::{BTreeMap, btree_map::Entry}, vec::Vec};
+use alloc::{collections::{BTreeMap, BTreeSet, btree_map::Entry}, vec::Vec};
 use zyx_core::{
     error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View, shape::Shape, axes::Axes
 };
@@ -168,6 +168,7 @@ impl RuntimeBackend for Interpreter {
         mut rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
+        _must_eval: &BTreeSet<Id>,
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
             match &nodes[nid.i()] {
