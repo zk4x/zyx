@@ -9,9 +9,8 @@ use alloc::{boxed::Box, collections::BTreeSet, vec::Vec};
 use core::{
     cmp::Ordering,
     iter::repeat,
-    ops::{Range, SubAssign},
+    ops::{Range, SubAssign, RangeFull, RangeFrom, RangeTo, RangeInclusive, RangeToInclusive},
 };
-use std::ops::RangeFull;
 use crate::utils::SizedIterator;
 
 /// Id of tensor.
@@ -51,6 +50,30 @@ pub trait IntoRange: Clone {
 impl IntoRange for RangeFull {
     fn into_range(self) -> Range<i64> {
         0..i64::MAX
+    }
+}
+
+impl IntoRange for RangeFrom<i64> {
+    fn into_range(self) -> Range<i64> {
+        self.start..i64::MAX
+    }
+}
+
+impl IntoRange for RangeTo<i64> {
+    fn into_range(self) -> Range<i64> {
+        0..self.end
+    }
+}
+
+impl IntoRange for RangeInclusive<i64> {
+    fn into_range(self) -> Range<i64> {
+        *self.start()..*self.end() + 1
+    }
+}
+
+impl IntoRange for RangeToInclusive<i64> {
+    fn into_range(self) -> Range<i64> {
+        0..self.end + 1
     }
 }
 
@@ -191,6 +214,39 @@ impl<
             self.7.into_range(),
         ]
         .into_iter()
+    }
+}
+
+/// A range of axes that can be used for flattening tensors.
+pub trait FlattenAxes {
+    /// Get flatten axes
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64>;
+}
+
+impl FlattenAxes for RangeFrom<i64> {
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
+        debug_assert!(if self.start > 0 { (self.start as usize) < rank } else { ((-self.start) as usize) <= rank }, "Cannot use {self:?} as flatten axes.");
+        self.start..i64::MAX
+    }
+}
+
+impl FlattenAxes for RangeTo<i64> {
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
+        debug_assert!(if self.end > 0 { (self.end as usize) < rank } else { ((-self.end) as usize) <= rank }, "Cannot use {self:?} as flatten axes.");
+        0..self.end
+    }
+}
+
+impl FlattenAxes for RangeToInclusive<i64> {
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
+        debug_assert!(if self.end > 0 { (self.end as usize) < rank } else { ((-self.end) as usize) <= rank }, "Cannot use {self:?} as flatten axes.");
+        0..self.end + 1
+    }
+}
+
+impl FlattenAxes for RangeFull {
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
+        0..rank as i64
     }
 }
 
@@ -972,15 +1028,28 @@ impl<B: Backend> Tensor<B> {
 
     /// Flatten. Joins axes into one dimension,
     #[must_use]
-    pub fn flatten(&self, axes: Range<i64>) -> Tensor<B> {
+    pub fn flatten(&self, axes: impl FlattenAxes) -> Tensor<B> {
         let sh = self.shape();
+        let n = sh.numel();
+        let rank = sh.rank();
         let mut ld = 1;
-        for a in axes {
-            if (a.abs() as usize) < sh.rank() {
-                ld *= sh[a];
+        let mut first_dims = false;
+        for a in axes.into_flatten_axes(rank) {
+            let a = if a > 0 {
+                a as usize
+            } else {
+                (a + rank as i64) as usize
+            };
+            if a == 0 {
+                first_dims = true;
             }
+            ld *= sh[a];
         }
-        self.reshape([sh.numel() / ld, ld])
+        if first_dims {
+            self.reshape([ld, n / ld])
+        } else {
+            self.reshape([n / ld, ld])
+        }
     }
 
     // Reduce ops
@@ -1083,6 +1152,13 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn product(&self, axes: impl IntoAxes) -> Tensor<B> {
         self.ln().sum(axes).exp()
+    }
+
+    /// Get elements on diagonal of square matrix
+    #[must_use]
+    pub fn diag(&self) -> Tensor<B> {
+        let n: usize = self.shape()[-1];
+        self.flatten(..).pad([(0, n as i64)], 0)
     }
 
     /// Tensor indexing.
