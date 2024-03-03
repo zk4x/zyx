@@ -179,7 +179,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         //if id.i() == 1 { panic!("break") }
         self.runtime_backend.store(id, iter)?;
         self.backprop_nodes_count += 1;
-        std::println!("Storing {id}, {:?}", self.rcs);
+        //std::println!("Storing {id}, {:?}", self.rcs);
         Ok(id)
     }
 
@@ -188,7 +188,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// out useless operations (like reshaping to the same shape)
     #[must_use]
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
-        std::println!("Pushing {node:?}, len: {}", self.nodes.len());
+        //std::println!("Pushing {node:?}, len: {}", self.nodes.len());
         // get rid of noops :)
         match node {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
@@ -228,7 +228,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.nodes.push(node);
             id
         };
-        std::println!("Assigned id: {id}");
+        //std::println!("Assigned id: {id}");
         self.backprop_nodes_count += 1;
         // This regulates caching, 1000 tensors per batch seems like a good default
         if self.backprop_nodes_count > 1000 {
@@ -251,7 +251,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 self.runtime_backend.remove(x)?;
             }
         }
-        //std::println!("After release rcs {:?}", self.rcs);
+        //std::println!("After released {x} rcs {:?}", self.rcs);
         Ok(())
     }
 
@@ -355,7 +355,6 @@ impl<R: RuntimeBackend> Runtime<R> {
         }
         new_order.reverse();
 
-        std::println!("RCS: {:?}", self.rcs);
         // This must go over the graph from the previous loop!
         let mut new_leafs = BTreeSet::new();
         for nid in &new_order {
@@ -375,8 +374,34 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
 
-        std::println!("Drop nodes: {drop_nodes:?}");
-        std::println!("New leafs {new_leafs:?}");
+        //std::println!("RCS: {:?}", self.rcs);
+        // Dealing with Detach nodes
+        let mut user_rc = self.rcs.clone();
+        for (i, node) in self.nodes.iter().enumerate() {
+            if self.rcs[i] != 0 {
+                //std::println!("{i}: {node:?}");
+                for p in node.parameters() {
+                    user_rc[p.i()] -= 1;
+                }
+            }
+        }
+        for nid in &new_order {
+            if let Node::Detach(x) = &self.nodes[nid.i()] {
+                let mut detach_rc = BTreeMap::new();
+                new_leafs.insert(*x);
+                let mut params = Vec::with_capacity(10);
+                params.push(*x);
+                while let Some(x) = params.pop() {
+                    let rc = detach_rc.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                    if *rc == self.rcs[x.i()] {
+                        drop_nodes.insert(x);
+                    }
+                }
+            }
+        }
+
+        //std::println!("Drop nodes: {drop_nodes:?}");
+        //std::println!("New leafs {new_leafs:?}");
 
         //self.backprop_nodes_count -= drop_nodes.len();
         //std::println!("Order: {order:?}");
@@ -395,11 +420,8 @@ impl<R: RuntimeBackend> Runtime<R> {
             );
         }
         for nid in drop_nodes {
-            self.rcs[nid.i()] -= 1;
-            if self.rcs[nid.i()] == 0 {
-                //std::println!("Removing {nid}");
-                self.runtime_backend.remove(nid)?;
-            }
+            self.rcs[nid.i()] = 0;
+            self.runtime_backend.remove(nid)?;
         }
 
         if self.backprop_nodes_count > 2000000000 {

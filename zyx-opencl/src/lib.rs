@@ -215,17 +215,6 @@ impl Backend for &OpenCL {
     }
 }
 
-#[test]
-fn t0() -> Result<(), ZyxError> {
-    let dev = device()?;
-    let x = dev.tensor([[2, 3, 4],
-                        [4, 1, 8]]);
-    let y: i32 = x.get((-1, -3)).item()?;
-    std::println!("{}", y);
-    //panic!();
-    Ok(())
-}
-
 /*#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
@@ -256,20 +245,28 @@ fn test_layer_norm() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
-    let x = dev.tensor(0..150).reshape([10, 15]);
+    /*let x = dev.tensor(0..150).reshape([10, 15]);
     let x = x.transpose().reshape([10, 15]);
 
     let x = dev.tensor(0..150).reshape([10, 15]).transpose();
-    let x = x.reshape([15, 1, 10]).expand([15, 2, 10]);
+    let x = x.reshape([15, 1, 10]).expand([15, 2, 10]);*/
 
-    std::println!("{x}");
+    let x = dev.tensor([2, 3]);
+    let y = &x + &x;
+    let g = y.backward([&x]).pop().unwrap().unwrap();
+    assert_eq!(g, [2, 2]);
+    let z = y.detach();
+    let g = z.backward([&z]).pop().unwrap().unwrap();
+    assert_eq!(g, [1, 1]);
+    let g = z.backward([&x]).pop().unwrap();
+    assert_eq!(g, None);
 
-    panic!();
+    //panic!();
     Ok(())
-}*/
+}
 
 /*#[test]
 fn t0() -> Result<(), ZyxError> {

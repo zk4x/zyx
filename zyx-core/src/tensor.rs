@@ -457,7 +457,7 @@ impl<B: Backend> Tensor<B> {
     /// let dev = zyx_opencl::device()?;
     /// let x = dev.tensor([2, 3]);
     /// let y = &x + &x;
-    /// let g = x.backward([&x]).pop().unwrap().unwrap();
+    /// let g = y.backward([&x]).pop().unwrap().unwrap();
     /// assert_eq!(g, [2, 2]);
     /// let z = y.detach();
     /// let g = z.backward([&z]).pop().unwrap().unwrap();

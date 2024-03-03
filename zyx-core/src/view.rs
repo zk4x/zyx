@@ -262,7 +262,7 @@ impl View {
     pub fn cidx(&self) -> (String, String) {
         // TODO simplify this as much as possible, not for performance (it is cached),
         // just for clarity, because currently it is a mess.
-        std::println!("View: {self:?}");
+        //std::println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
@@ -289,7 +289,7 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
-                std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                //std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
                     0 => idx += "",
                     1 => idx += &f!("idx{i}+"),

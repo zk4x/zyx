@@ -7,6 +7,7 @@
 //! ```rust
 //! use zyx_core::backend::Backend;
 //! use zyx_core::tensor::Tensor;
+//! use zyx_derive::Module;
 //!
 //! #[derive(Module)]
 //! struct MyNet<B: Backend> {
@@ -16,7 +17,7 @@
 //!
 //! impl<B: Backend> MyNet<B> {
 //!     fn forward(&self, x: &Tensor<B>) -> Tensor<B> {
-//!         x.dot(self.w) + self.b
+//!         x.dot(&self.w) + &self.b
 //!     }
 //! }
 //! ```
@@ -89,7 +90,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         impl<'a, B: zyx_core::backend::Backend> IntoIterator for &'a #struct_name<B> {
             type Item = &'a zyx_core::tensor::Tensor<B>;
-            type IntoIter = vec::IntoIter<&'a zyx_core::tensor::Tensor<B>>;
+            type IntoIter = std::vec::IntoIter<&'a zyx_core::tensor::Tensor<B>>;
 
             fn into_iter(self) -> Self::IntoIter {
                 #field_iterators
@@ -135,7 +136,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
 
         impl<'a, B: zyx_core::backend::Backend> IntoIterator for &'a mut #struct_name<B> {
             type Item = &'a mut zyx_core::tensor::Tensor<B>;
-            type IntoIter = vec::IntoIter<&'a mut zyx_core::tensor::Tensor<B>>;
+            type IntoIter = std::vec::IntoIter<&'a mut zyx_core::tensor::Tensor<B>>;
 
             fn into_iter(self) -> Self::IntoIter {
                 #field_iterators

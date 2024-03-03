@@ -154,12 +154,12 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        std::println!("Compiler removing {x}");
+        //std::println!("Compiler removing {x}");
         if self.kernels.remove(&x).is_some() {
             //std::println!("Kernels {:?}", self.kernels);
             if !self.kernels.values().any(|kernel| kernel.program_args.contains(&x)) {
                 if let Some(mut buffer) = self.buffers.remove(&x) {
-                    std::println!("Dropping buffer {x}");
+                    //std::println!("Dropping buffer {x}");
                     self.compiler.drop_buffer(&mut buffer)?;
                 }
             }
@@ -200,7 +200,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         // be the case later and then this won't work, so fix it.
         // TODO calculate flops for kernels :D
         for nid in order.iter().copied() {
-            std::println!("Compiling {nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
+            //std::println!("Compiling {nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
             let kernel = match &nodes[nid.i()] {
                 Node::Leaf(sh, dtype) => Kernel::leaf(nid, sh, dtype),
                 Node::Uniform(..) => {
@@ -343,7 +343,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     kernel
                 }
             };
-            std::println!("Inserting kernel {nid}");
+            //std::println!("Inserting kernel {nid}");
             self.kernels.insert(nid, kernel);
 
             if self.kernels[&nid].ops.len() > 200
@@ -381,7 +381,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: Id,
     ) -> Result<&Kernel, ZyxError> {
-        std::println!("Evaluating kernel {x}");
+        //kstd::println!("Evaluating kernel {x}");
         if self.buffers.contains_key(&x) {
             //std::println!("Accessing kernel {x}, {:?} {:?}", self.buffers.keys(), self.kernels);
             return Ok(&self.kernels[&x]);

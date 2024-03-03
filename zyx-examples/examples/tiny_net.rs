@@ -1,7 +1,6 @@
 use zyx_core::backend::Backend;
 use zyx_derive::Module;
 use zyx_nn::{Linear, prelude::*};
-use std::vec;
 use zyx_core::error::ZyxError;
 
 #[derive(Module)]
