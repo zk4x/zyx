@@ -1156,9 +1156,9 @@ impl<B: Backend> Tensor<B> {
 
     /// Get elements on diagonal of square matrix
     #[must_use]
-    pub fn diag(&self) -> Tensor<B> {
+    pub fn diagonal(&self) -> Tensor<B> {
         let n: usize = self.shape()[-1];
-        self.flatten(..).pad([(0, n as i64)], 0)
+        self.flatten(..).pad([(0, n as i64)], 0).reshape([n, n+1]).get((.., 0))
     }
 
     /// Tensor indexing.
