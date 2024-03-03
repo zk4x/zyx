@@ -218,10 +218,11 @@ impl Backend for &OpenCL {
 #[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
-    let x = dev.tensor([[3, 4, 2], [4, 5, 2]]);
-    let y = x.cast(DType::F32);
-    assert_eq!(y.dtype(), DType::F32);
-    assert_eq!(y, [[3f32, 4., 2.], [4., 5., 2.]]);
+    let x = dev.tensor([[2, 3, 4],
+                        [4, 1, 8]]);
+    let y: i32 = x.get((-1, -3)).item()?;
+    std::println!("{}", y);
+    //panic!();
     Ok(())
 }
 

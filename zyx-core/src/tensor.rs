@@ -1073,6 +1073,18 @@ impl<B: Backend> Tensor<B> {
         self.var(axes).sqrt()
     }
 
+    /// Reduce self by calculating norm along axes
+    #[must_use]
+    pub fn norm(&self, axes: impl IntoAxes, p: impl Scalar) -> Tensor<B> {
+        self.pow(p.clone()).sum(axes).pow(p.reciprocal())
+    }
+
+    /// Reduce self by calculating product of elements along axes
+    #[must_use]
+    pub fn product(&self, axes: impl IntoAxes) -> Tensor<B> {
+        self.ln().sum(axes).exp()
+    }
+
     /// Tensor indexing.
     ///
     /// Tensors can be indexed by tuples of any combination of values or ranges of i64.

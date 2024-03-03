@@ -260,9 +260,9 @@ impl View {
     /// is one, value is drawn from data.
     #[must_use]
     pub fn cidx(&self) -> (String, String) {
-        // TODO is padding correctly applied?
-        // TODO simplify this as much as possible, not for performance (it is cached), just for clarity
-        //std::println!("View: {self:?}");
+        // TODO simplify this as much as possible, not for performance (it is cached),
+        // just for clarity, because currently it is a mess.
+        std::println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
@@ -289,14 +289,14 @@ impl View {
                 .zip(padding.iter())
                 .enumerate()
             {
-                //std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
+                std::println!("i: {i}, d: {d}, st: {st}, lp: {left_p}, rp: {right_p}");
                 match *st {
                     0 => idx += "",
                     1 => idx += &f!("idx{i}+"),
                     _ => idx += &f!("idx{i}*{st}+"),
                 }
                 if *left_p < 0 {
-                    idx += &f!("{}+", -left_p);
+                    idx += &f!("{}+", (-left_p) as usize*st);
                 } else if *left_p > 0 {
                     padding_condition = f!("{padding_condition} && (idx{i}>{})", left_p - 1);
                 }
@@ -305,7 +305,7 @@ impl View {
                         f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
                 }
                 if *left_p > 0 {
-                    idx += &f!("-{}+", left_p);
+                    idx += &f!("-{}+", *left_p as usize*st);
                 }
             }
             if idx.is_empty() {
