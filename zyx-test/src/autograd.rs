@@ -13,7 +13,7 @@ pub fn t0<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
 
 pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([2, 3, 4])?;
-    let z = x.sum(());
+    let z = x.sum(..);
     let x_grad = z.backward([&x]).into_iter().flatten().next().unwrap();
     assert_eq!(x_grad, [1, 1, 1]);
     Ok(())

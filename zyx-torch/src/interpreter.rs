@@ -27,6 +27,7 @@ impl RuntimeBackend for Interpreter {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
+        //std::println!("Torch num tensors: {}", self.tensors.len());
         self.tensors.remove(&x);
         Ok(())
     }

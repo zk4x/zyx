@@ -134,10 +134,17 @@ impl RuntimeBackend for Interpreter {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        self.views.remove(&x);
-        if !self.views.values().any(|(_, id)| *id == x) {
-            self.buffers.remove(&x);
+        //std::println!("Removing {x}");
+        if let Some((_, id)) = self.views.remove(&x) {
+            if !self.views.values().any(|(_, id)| *id == x) {
+                self.buffers.remove(&id);
+            }
         }
+        //else {
+            //let temp: Vec<_> = self.views.iter().map(|(id, x)| (id, x.1)).collect();
+            //std::println!("Not removing {x}, because {temp:?}");
+        //}
+        //std::println!("Num buffers: {}", self.buffers.len());
         Ok(())
     }
 
@@ -157,6 +164,7 @@ impl RuntimeBackend for Interpreter {
         IT: IntoIterator<Item=T>,
         IT::IntoIter: ExactSizeIterator,
     {
+        //std::println!("CPU Storing {x}");
         let iter = iter.into_iter();
         self.views.insert(x, (View::new(iter.len().into()), x));
         self.buffers.insert(x, match T::dtype() {
@@ -174,6 +182,7 @@ impl RuntimeBackend for Interpreter {
         nodes: &[Node],
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied() {
+            //std::println!("Interpreting {nid}: {:?}", nodes[nid.i()]);
             match &nodes[nid.i()] {
                 Node::Leaf(..) => {}
                 Node::Uniform(..) => todo!(),
@@ -278,10 +287,12 @@ impl RuntimeBackend for Interpreter {
             for p in nodes[nid.i()].parameters() {
                 if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
                     if *e.get() == 0 {
+                        //std::println!("Interpreter removing {p}");
                         self.remove(p)?;
                     }
                 }
             }
+            //std::println!("Views {}, buffers {}", self.views.len(), self.buffers.len());
         }
         Ok(())
     }

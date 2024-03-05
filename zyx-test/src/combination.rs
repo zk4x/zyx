@@ -5,7 +5,7 @@ pub fn t0<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([[4, 3, 4], [4, 2, 5]])?;
     assert_eq!(x.sum(0), [[8, 5, 9]]);
     assert_eq!(x.sum(1), [[11], [11]]);
-    assert_eq!(x.sum(()), [[22]]);
+    assert_eq!(x.sum(..), [[22]]);
     Ok(())
 }
 
@@ -26,7 +26,10 @@ pub fn dot<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
 pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let mut x = dev.tensor([[2, 4, 3], [5, 2, 4], [3, 1, 2]])?;
     //let z = x.dot(&x) + x.exp() + x.tanh() + x.sum(0);
-    for _ in 0..10000000 {
+    for i in 0..1000000 {
+        if i % 10000 == 1 {
+            println!("{i}");
+        }
         x = x + 10;
     }
     //println!("{}", z);

@@ -68,7 +68,6 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Create tensor initialized from normal distribution.
-    #[must_use]
     pub fn randn(&mut self, shape: Shape, dtype: DType) -> Result<Id, ZyxError> {
         use rand::Rng;
         let n = shape.numel();
@@ -89,7 +88,6 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Create uniform tensor from range low..high
-    #[must_use]
     pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Result<Id, ZyxError> {
         // TODO for f32 in range 0.0..1.0 switch to Node::UniformF32 for better performance
         use rand::Rng;
@@ -138,7 +136,6 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Load tensor x
-    #[must_use]
     pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
         if !self.runtime_backend.is_evaluated(x) {
             self.evaluate(BTreeSet::from([x]))?;
@@ -149,7 +146,6 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Store iterator into runtime as tensor
-    #[must_use]
     pub fn store<T: Scalar, IT>(&mut self, iter: IT) -> Result<Id, ZyxError>
     where
         IT: IntoIterator<Item = T>,
@@ -178,7 +174,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         };
         //if id.i() == 1 { panic!("break") }
         self.runtime_backend.store(id, iter)?;
-        self.backprop_nodes_count += 1;
+        //self.backprop_nodes_count += 1;
         //std::println!("Storing {id}, {:?}", self.rcs);
         Ok(id)
     }
@@ -186,9 +182,8 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// Push new Node into the graph creating new tensor.
     /// This function does ZERO verification that the node is correct, but it optimizes
     /// out useless operations (like reshaping to the same shape)
-    #[must_use]
     pub fn push(&mut self, node: Node) -> Result<Id, ZyxError> {
-        //std::println!("Pushing {node:?}, len: {}", self.nodes.len());
+        //std::println!("Pushing {node:?}, len: {}, rcs: {:?}", self.nodes.len(), self.rcs);
         // get rid of noops :)
         match node {
             Node::Reshape(x, ref shape) | Node::Expand(x, ref shape) => {
@@ -228,12 +223,12 @@ impl<R: RuntimeBackend> Runtime<R> {
             self.nodes.push(node);
             id
         };
-        //std::println!("Assigned id: {id}");
+        //std::println!("Assigned id: {id}, rcs {:?}", self.rcs);
         self.backprop_nodes_count += 1;
-        // This regulates caching, 1000 tensors per batch seems like a good default
-        if self.backprop_nodes_count > 1000 {
-            // Approx. 50 KiB of Nodes
+        // This regulates caching, 256 tensors per batch seems like a good default
+        if self.backprop_nodes_count > 256 {
             self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
+            //std::println!("Num tensors: {}", self.nodes.len());
         }
         Ok(id)
     }
@@ -241,6 +236,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// Decrease reference count of x. If x's reference count reaches zero, this function will delete
     /// x and release all of it's predecessors in the graph.
     pub fn release(&mut self, x: Id) -> Result<(), ZyxError> {
+        //std::println!("Releasing {x}");
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(x) = params.pop() {
@@ -248,6 +244,9 @@ impl<R: RuntimeBackend> Runtime<R> {
             //std::println!("Releasing {x} {:?}", self.rcs);
             if self.rcs[x.i()] == 0 {
                 params.extend(self.nodes[x.i()].parameters());
+                if !matches!(self.nodes[x.i()], Node::Leaf(..)) {
+                    self.backprop_nodes_count -= 1;
+                }
                 self.runtime_backend.remove(x)?;
             }
         }
@@ -291,6 +290,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut params: Vec<Id> = nodes.iter().copied().collect();
         params.reserve(100);
         while let Some(nid) = params.pop() {
+            //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
             if !self.runtime_backend.is_evaluated(nid) {
                 temp_rcs
                     .entry(nid)
@@ -316,7 +316,6 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
         order.reverse();
-        //std::println!("Order {order:?}");
 
         // Just create another DFS that goes all the way to Node::Leaf and adds branches to drop_nodes
         // if needed.
@@ -335,6 +334,8 @@ impl<R: RuntimeBackend> Runtime<R> {
                     });
             } else {
                 let rc = temp_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                // This does not account for possible existance of user or global graph references
+                // that are not directly on leafs.
                 if *rc == self.rcs[nid.i()] && !nodes.contains(&nid) {
                     drop_nodes.insert(nid);
                 }
@@ -376,6 +377,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         //std::println!("RCS: {:?}", self.rcs);
         // Dealing with Detach nodes
+        // TODO this is a waste, optimize this.
         let mut user_rc = self.rcs.clone();
         for (i, node) in self.nodes.iter().enumerate() {
             if self.rcs[i] != 0 {
@@ -400,10 +402,18 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
 
+
+        // Increase rcs for nodes that we want to keep evaluated.
+        // First it MUST be all new_leafs.
+        for nid in &new_leafs {
+            // Some leafs are already evaluated, so they are not in rcs
+            if let Some(rc) = rcs.get_mut(nid) {
+                *rc += 1;
+            }
+        }
+
         //std::println!("Drop nodes: {drop_nodes:?}");
         //std::println!("New leafs {new_leafs:?}");
-
-        //self.backprop_nodes_count -= drop_nodes.len();
         //std::println!("Order: {order:?}");
         /*std::println!("");
         for nid in &order {
@@ -414,6 +424,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // TODO all evaluated Detach nodes should be renamed to leafs also.
         for nid in new_leafs {
+            self.backprop_nodes_count -= 1;
             self.nodes[nid.i()] = Node::Leaf(
                 get_shape(&self.nodes, nid).clone(),
                 get_dtype(&self.nodes, nid),
@@ -422,6 +433,9 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in drop_nodes {
             self.rcs[nid.i()] = 0;
             self.runtime_backend.remove(nid)?;
+            if !matches!(self.nodes[nid.i()], Node::Leaf(..)) {
+                self.backprop_nodes_count -= 1;
+            }
         }
 
         if self.backprop_nodes_count > 2000000000 {

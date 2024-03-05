@@ -75,7 +75,7 @@ impl<'a> IntoIterator for &'a Axes {
 
 /// # `IntoAxes`
 /// Convert value into axes
-/// () is all axes
+/// RangeFull (..) is all axes
 #[allow(clippy::module_name_repetitions)]
 pub trait IntoAxes {
     /// Convert value into axes
@@ -141,7 +141,7 @@ impl IntoAxes for &RangeInclusive<i64> {
     }
 }
 
-impl IntoAxes for () {
+impl IntoAxes for core::ops::RangeFull {
     fn into_axes(self, rank: usize) -> Axes {
         Axes((0..rank).collect())
     }

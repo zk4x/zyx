@@ -1062,7 +1062,7 @@ impl<B: Backend> Tensor<B> {
     /// assert_eq!(z.shape(), [2, 1]);
     /// let z = x.sum(0);
     /// assert_eq!(z.shape(), [1, 2]);
-    /// let z = x.sum(());
+    /// let z = x.sum(..);
     /// assert_eq!(z.shape(), [1, 1]);
     /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
@@ -1092,7 +1092,7 @@ impl<B: Backend> Tensor<B> {
     /// assert_eq!(z.shape(), [2, 1]);
     /// let z = x.max(0);
     /// assert_eq!(z.shape(), [1, 2]);
-    /// let z = x.max(());
+    /// let z = x.max(..);
     /// assert_eq!(z.shape(), [1, 1]);
     /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
@@ -1160,6 +1160,31 @@ impl<B: Backend> Tensor<B> {
         let n: usize = self.shape()[-1];
         self.flatten(..).pad([(0, n as i64)], 0).reshape([n, n+1]).get((.., 0))
     }
+
+    /*
+    /// QR decompose function
+    #[must_use]
+    fn qr_decompose(&self) -> (Tensor<B>, Tensor<B>) {
+        assert_eq!(self.rank(), 2, "QR decomposition only works for 2d matrices.");
+        let dtype = self.dtype();
+        assert!(dtype.is_floating(), "QR decomposition only works with floating point tensors.");
+        let [n, m] = self.shape().try_into().unwrap();
+        let u_temp = self.get((.., 0));
+        let mut q = Vec::new();
+        q.push(u_temp / u_temp.norm(()));
+        for i in 1..n {
+            let mut u_temp = self.get((.., i));
+            // TODO all those dot operations should be fused into one by using expand and reshape and such.
+            for j in 0..i {
+                let q_temp = q.get((.., j));
+                u_temp = u_temp - self.get((.., i)).dot(&q_temp) * &q_temp;
+            }
+            q.push(u_temp / u_temp.norm(.., 2));
+        }
+        let q = Tensor::cat(q, 0);
+        let r = q.dot(self);
+        return (q, r)
+    }*/
 
     /// Tensor indexing.
     ///
