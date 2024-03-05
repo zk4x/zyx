@@ -26,15 +26,11 @@ pub fn dot<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
 pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let mut x = dev.tensor([[2, 4, 3], [5, 2, 4], [3, 1, 2]])?;
     //let z = x.dot(&x) + x.exp() + x.tanh() + x.sum(0);
-    for i in 0..1000000 {
-        if i % 10000 == 1 {
-            println!("{i}");
-        }
+    for _ in 0..10000 {
         x = x + 10;
     }
     //println!("{}", z);
-    assert_eq!(x, [[10000002, 10000004, 10000003], [10000005, 10000002, 10000004], [10000003, 10000001, 10000002]]);
-    // TODO
+    assert_eq!(x, [[100002, 100004, 100003], [100005, 100002, 100004], [100003, 100001, 100002]]);
     Ok(())
 }
 

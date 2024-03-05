@@ -17,7 +17,10 @@ pub trait Compiler {
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
     /// Store iter into buffer
-    fn store<T: Scalar>(&mut self, iter: impl IntoIterator<Item = T>) -> Result<Self::Buffer, ZyxError>;
+    fn store<T: Scalar>(
+        &mut self,
+        iter: impl IntoIterator<Item = T>,
+    ) -> Result<Self::Buffer, ZyxError>;
     /// Load buffer into vec
     fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError>;
     /// Drop Buffer
@@ -155,12 +158,19 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
         //std::println!("Compiler removing {x}");
-        if self.kernels.remove(&x).is_some() {
+        if let Some(Kernel { program_args, .. }) = self.kernels.remove(&x) {
             //std::println!("Kernels {:?}", self.kernels);
-            if !self.kernels.values().any(|kernel| kernel.program_args.contains(&x)) {
-                if let Some(mut buffer) = self.buffers.remove(&x) {
-                    //std::println!("Dropping buffer {x}");
-                    self.compiler.drop_buffer(&mut buffer)?;
+            for x in program_args.iter().chain([&x]) {
+                if !self
+                    .kernels
+                    .values()
+                    .any(|kernel| kernel.program_args.contains(&x))
+                {
+                    if let Some(mut buffer) = self.buffers.remove(&x) {
+                        //std::println!("Dropping buffer {x}");
+                        self.compiler.drop_buffer(&mut buffer)?;
+                        //std::println!("k: {}, b: {}", self.kernels.len(), self.buffers.len());
+                    }
                 }
             }
         }
@@ -169,12 +179,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
     where
-        IT: IntoIterator<Item=T>,
+        IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
         //std::println!("Storing {x}");
         let iter = iter.into_iter();
-        self.kernels.insert(x, Kernel::leaf(x, &iter.len().into(), &T::dtype()));
+        self.kernels
+            .insert(x, Kernel::leaf(x, &iter.len().into(), &T::dtype()));
         self.buffers.insert(x, self.compiler.store(iter)?);
         Ok(())
     }
@@ -214,9 +225,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     buffer.dtype = *dtype;
                     buffer
                 }
-                Node::Detach(x) => {
-                    self.kernels[&x].clone()
-                }
+                Node::Detach(x) => self.kernels[&x].clone(),
                 Node::Neg(x) => {
                     let mut buffer = self.kernels[&x].clone();
                     buffer.ops.push(Op::Neg(buffer.ops.len() as u8 - 1));
@@ -377,10 +386,7 @@ impl<C: Compiler> CompiledBackend<C> {
         }
     }
 
-    fn evaluate_kernel(
-        &mut self,
-        x: Id,
-    ) -> Result<&Kernel, ZyxError> {
+    fn evaluate_kernel(&mut self, x: Id) -> Result<&Kernel, ZyxError> {
         //kstd::println!("Evaluating kernel {x}");
         if self.buffers.contains_key(&x) {
             //std::println!("Accessing kernel {x}, {:?} {:?}", self.buffers.keys(), self.kernels);
@@ -428,7 +434,8 @@ impl<C: Compiler> CompiledBackend<C> {
             .collect();
         // Run the program
         self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype));
-        self.buffers.insert(x, self.compiler.launch(program, &program_args, flop)?);
+        self.buffers
+            .insert(x, self.compiler.launch(program, &program_args, flop)?);
         Ok(&self.kernels[&x])
     }
 
