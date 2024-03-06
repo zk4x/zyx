@@ -136,7 +136,7 @@ impl RuntimeBackend for Interpreter {
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
         //std::println!("Removing {x}");
         if let Some((_, id)) = self.views.remove(&x) {
-            if !self.views.values().any(|(_, id)| *id == x) {
+            if !self.views.values().any(|(_, x)| *x == id) {
                 self.buffers.remove(&id);
             }
         }

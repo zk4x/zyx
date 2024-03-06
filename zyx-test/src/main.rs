@@ -82,7 +82,7 @@ fn main() {
     assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
     */
 
-    /*println!("\nTesting tensor initialization");
+    println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");
     run_test!(unary::neg);
     run_test!(unary::relu);
@@ -98,17 +98,17 @@ fn main() {
     run_test!(binary::mul);
     run_test!(binary::div);
     //run_test!(binary::pow);
-    run_test!(binary::cmplt);*/
-    /*println!("\nTesting movement ops");
+    run_test!(binary::cmplt);
+    println!("\nTesting movement ops");
     run_test!(movement::reshape);
     run_test!(movement::expand);
     run_test!(movement::permute);
-    run_test!(movement::pad);*/
+    run_test!(movement::pad);
     println!("\nTesting reduce ops");
-    //run_test!(reduce::sum);
-    //run_test!(reduce::max);
+    run_test!(reduce::sum);
+    run_test!(reduce::max);
     println!("\nTesting combinations of ops");
-    //run_test!(combination::t0);
+    run_test!(combination::t0);
     run_test!(combination::t1);
     run_test!(combination::dot);
     //run_test!(combination::cat);
