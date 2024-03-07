@@ -838,7 +838,7 @@ impl zyx_core::compiler::Compiler for Compiler {
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
         //std::println!("{ast:?}");
         let max_lws = 256;
-        let id_t = "int";
+        let id_t = "unsigned int";
 
         //std::println!("Reduce dimensions: {:?}", ast.reduce_axes);
         // TODO permute so that reduce axes are last

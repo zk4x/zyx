@@ -280,6 +280,10 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 }
                 Node::Reshape(x, sh) => {
                     let mut buffer = if self.kernels[&x].reduce_axes.is_some() {
+                        // TODO this should not always evaluate, because dot reshapes
+                        // result and then we should still be able to merge it with unary
+                        // and binary ops.
+                        // TODO reshape can be applied, but no transpose afterwards? Perhaps?
                         self.evaluate_kernel(*x)?.clone()
                     } else {
                         self.kernels[&x].clone()
