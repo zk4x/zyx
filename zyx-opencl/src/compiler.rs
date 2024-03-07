@@ -687,6 +687,7 @@ impl zyx_core::compiler::Compiler for Compiler {
         program: &Self::Program,
         args: &[&Self::Buffer],
         flop: usize,
+        bytes: usize,
     ) -> Result<Self::Buffer, ZyxError> {
         #[cfg(not(feature = "debug1"))]
         let _ = flop;
@@ -823,8 +824,7 @@ impl zyx_core::compiler::Compiler for Compiler {
             }
             let elapsed_nanos = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed_nanos as f64 / 1000000.;
-            let bytes = 0;
-            //std::println!("bytes: {}, flops: {}", bytes, flop);
+            std::println!("bytes: {}, flops: {}", bytes, flop);
             std::println!(
                 "Kernel execution took {elapsed_millis:.3}ms ~ {:.2} GFLOPS, {:.2} GB/s",
                 flop as f64 / elapsed_nanos as f64,
@@ -1183,7 +1183,7 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -1191,7 +1191,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
     Ok(())
-}*/
+}
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {

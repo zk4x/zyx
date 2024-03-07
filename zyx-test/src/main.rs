@@ -99,7 +99,9 @@ fn main() {
     run_test!(binary::div);
     //run_test!(binary::pow);
     run_test!(binary::cmplt);
+    // TODO test where
     println!("\nTesting movement ops");
+    // TODO more detailed movement ops tests
     run_test!(movement::reshape);
     run_test!(movement::expand);
     run_test!(movement::permute);
@@ -108,6 +110,7 @@ fn main() {
     run_test!(reduce::sum);
     run_test!(reduce::max);
     println!("\nTesting combinations of ops");
+    // TODO more detailed combinations of ops tests
     run_test!(combination::t0);
     run_test!(combination::t1);
     run_test!(combination::dot);

@@ -33,6 +33,7 @@ pub trait Compiler {
         program: &Self::Program,
         args: &[&Self::Buffer],
         flop: usize,
+        bytes: usize,
     ) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
     fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError>;
@@ -121,6 +122,7 @@ struct Kernel {
     shape: Shape,
     dtype: DType,
     flop: usize,
+    bytes: usize,
 }
 
 impl Kernel {
@@ -135,6 +137,7 @@ impl Kernel {
             shape: shape.clone(),
             dtype: *dtype,
             flop: 0,
+            bytes: shape.numel() * dtype.byte_size(),
         }
     }
 }
@@ -209,10 +212,9 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         //std::println!("Evaluating rcs {:?}", rcs);
         // TODO must_eval are currently new_leafs from runtime, but this may not
         // be the case later and then this won't work, so fix it.
-        // TODO calculate flops for kernels :D
         for nid in order.iter().copied() {
             //std::println!("Compiling {nid}: {:?} x {}", nodes[nid.i()], rcs[&nid]);
-            let kernel = match &nodes[nid.i()] {
+            let mut kernel = match &nodes[nid.i()] {
                 Node::Leaf(sh, dtype) => Kernel::leaf(nid, sh, dtype),
                 Node::Uniform(..) => {
                     todo!()
@@ -352,6 +354,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     kernel
                 }
             };
+            kernel.flop += nodes[nid.i()].flop(&nodes);
             //std::println!("Inserting kernel {nid}");
             self.kernels.insert(nid, kernel);
 
@@ -402,6 +405,7 @@ impl<C: Compiler> CompiledBackend<C> {
             shape,
             dtype,
             flop,
+            bytes,
         } = self.kernels[&x].clone();
         let r_shape = if let Some(reduce_axes) = &reduce_axes {
             shape.clone().reduce(reduce_axes)
@@ -435,7 +439,7 @@ impl<C: Compiler> CompiledBackend<C> {
         // Run the program
         self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype));
         self.buffers
-            .insert(x, self.compiler.launch(program, &program_args, flop)?);
+            .insert(x, self.compiler.launch(program, &program_args, flop, bytes)?);
         Ok(&self.kernels[&x])
     }
 
@@ -535,6 +539,7 @@ impl<C: Compiler> CompiledBackend<C> {
             shape: x_buffer.shape.clone(),
             dtype: x_buffer.dtype,
             flop: x_buffer.flop + y_buffer.flop,
+            bytes: x_buffer.bytes + y_buffer.bytes,
         })
     }
 }
