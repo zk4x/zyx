@@ -189,7 +189,7 @@ impl Node {
             | Node::Mul(x, _)
             | Node::Div(x, _)
             | Node::Cmplt(x, _)
-            | Node::Pow(x, _) => get_shape(nodes, *x).numel() * 2, // x and y are guaranteed to be same shape
+            | Node::Pow(x, _) => get_shape(nodes, *x).numel(), // x and y are guaranteed to be same shape
             Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
