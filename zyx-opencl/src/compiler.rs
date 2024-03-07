@@ -839,6 +839,8 @@ impl zyx_core::compiler::Compiler for Compiler {
         //std::println!("{ast:?}");
         let max_lws = 256;
         let id_t = "unsigned int";
+        let register_tiling = false;
+        let rts = 4; // register tile size
 
         //std::println!("Reduce dimensions: {:?}", ast.reduce_axes);
         // TODO permute so that reduce axes are last
@@ -847,8 +849,10 @@ impl zyx_core::compiler::Compiler for Compiler {
         // TODO register tiling
         // TODO local memory tiling
 
+        //let mut r_tiles: BTreeMap<u8, > = BTreeMap::new();
+
         // reshape so that there are at most 3 dimensions
-        let (arg_views, shape, reduce_axes) = if let Some(reduce_axes) = &ast.reduce_axes {
+        let (arg_views, shape, reduce_axis) = if let Some(reduce_axes) = &ast.reduce_axes {
             let mut arg_views = ast.arg_views.clone();
             let rank = ast.shape.rank();
             let permute_axes = (0..rank as i64)
@@ -874,12 +878,12 @@ impl zyx_core::compiler::Compiler for Compiler {
                 for view in &mut arg_views {
                     *view = view.permute(&permute_axes).reshape(&shape);
                 }
-                (shape, Some([1].into_axes(2)))
+                (shape, Some(1))
             } else {
                 for view in &mut arg_views {
                     *view = view.permute(&permute_axes);
                 }
-                (ast.shape.permute(&permute_axes), Some([-1].into_axes(rank)))
+                (ast.shape.permute(&permute_axes), Some(rank-1))
             };
             (arg_views, shape, axes)
         } else {
@@ -901,11 +905,7 @@ impl zyx_core::compiler::Compiler for Compiler {
             .iter()
             .enumerate()
             .filter_map(|(i, d)| {
-                if reduce_axes
-                    .as_ref()
-                    .map(|ra| ra.contains(i))
-                    .unwrap_or(false)
-                {
+                if reduce_axis.map(|a| a == i).unwrap_or(false) {
                     None
                 } else {
                     Some(*d)
@@ -961,9 +961,7 @@ impl zyx_core::compiler::Compiler for Compiler {
         let mut endl = f!(";\n  ");
         let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
 
-        let mut reduce_dims_n = 0;
-        if let Some(reduce_axes) = &reduce_axes {
-            reduce_dims_n = reduce_axes.len();
+        if let Some(reduce_axis) = reduce_axis {
             let mut i = if full_reduce {
                 0
             } else {
@@ -979,24 +977,23 @@ impl zyx_core::compiler::Compiler for Compiler {
                 .iter()
                 .position(|op| matches!(op, Op::Sum(..) | Op::Max(..)))
                 .unwrap();
-            if ast.ops.iter().any(|op| matches!(op, Op::Sum(..))) {
+            let acc_init = if ast.ops.iter().any(|op| matches!(op, Op::Sum(..))) {
                 // sum reduce
-                source += &f!(
-                    "{} var{reduce_nid} = {zero}{endl}",
-                    ast.reduce_dtype.unwrap().ocl_str()
-                );
+                zero
             } else {
                 // max reduce
-                source += &f!(
-                    "{} var{reduce_nid} = {}{endl}",
-                    ast.reduce_dtype.unwrap().ocl_str(),
-                    ast.reduce_dtype.unwrap().min_value_str()
-                );
+                ast.reduce_dtype.unwrap().min_value_str()
+            };
+            let rdt = ast.reduce_dtype.unwrap().ocl_str();
+            if register_tiling {
+                source += &f!("{rdt} var{reduce_nid}[{rts}][{rts}] = {{\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}},\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}},\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}},\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}}\n  }}{endl}");
+                /*for _ in 0..4 {
+                    source += &f!("{rdt} var{reduce_nid}[4][4]{endl}");
+                }*/
+            } else {
+                source += &f!("{rdt} var{reduce_nid} = {acc_init}{endl}");
             }
-            for _ in reduce_axes {
-                source += &f!("{id_t} idx{i}{endl}");
-                i += 1;
-            }
+            source += &f!("{id_t} idx{i}{endl}");
             i = if full_reduce {
                 0
             } else {
@@ -1005,11 +1002,17 @@ impl zyx_core::compiler::Compiler for Compiler {
             if full_reduce {
                 i = 0;
             }
-            for a in reduce_axes {
+            if register_tiling {
                 endl = f!("{endl}  ");
                 source += &f!(
                     "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
-                    shape[*a]
+                    shape[reduce_axis] / rts,
+                );
+            } else {
+                endl = f!("{endl}  ");
+                source += &f!(
+                    "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
+                    shape[reduce_axis]
                 );
                 i += 1;
             }
@@ -1025,17 +1028,28 @@ impl zyx_core::compiler::Compiler for Compiler {
             };
             let mut reduce = false;
             let res = match op {
-                // TODO check if this should be tile or data
                 Op::Leaf(x) => {
                     let view = &arg_views[*x as usize];
                     //std::println!("{view:?}");
                     dtype = ast.arg_dtypes[*x as usize].ocl_str();
-                    //bytes += view.original_numel();
                     let (p, i) = view.cidx();
-                    if p.is_empty() {
-                        f!("{dtype} var{nid} = data{x}[{i}]")
+                    if register_tiling {
+                        let strides = view.strides();
+                        f!("{dtype} var{nid}[{rts}][{rts}] = data0[idx0*1024+idx1*0+idx2];")
+                        /*
+
+
+
+
+
+
+                         */
                     } else {
-                        f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
+                        if p.is_empty() {
+                            f!("{dtype} var{nid} = data{x}[{i}]")
+                        } else {
+                            f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
+                        }
                     }
                 }
                 Op::Cast(x, dt) => {
@@ -1108,26 +1122,21 @@ impl zyx_core::compiler::Compiler for Compiler {
             source += &f!("{res}{endl}");
             if reduce {
                 endl = f!(";\n  ");
-                let mut i = if full_reduce {
+                let i = if full_reduce {
                     0
                 } else {
                     global_work_size.len()
                 };
-                for i in 0..reduce_dims_n {
-                    source.pop();
-                    source.pop();
-                    source += &f!("}}\n{}", "  ".repeat(reduce_dims_n - i));
-                }
-                for _ in 0..reduce_dims_n {
-                    source += &f!("idx{i} = 0{endl}");
-                    i += 1;
-                }
+                source.pop();
+                source.pop();
+                source += &f!("}}\nidx{i} = 0{endl}");
             }
             nid += 1;
         }
         //std::println!("shape: {shape}");
-        let shape = if let Some(ra) = reduce_axes.as_ref() {
-            shape.reduce(ra)
+        let shape = if let Some(ra) = reduce_axis {
+            let rank = shape.rank();
+            shape.reduce(&(ra as i64).into_axes(rank))
         } else {
             shape
         };
@@ -1148,7 +1157,7 @@ impl zyx_core::compiler::Compiler for Compiler {
             global_work_size.as_slice(),
             local_work_size.as_slice(),
             shape.numel() * ast.dtype.byte_size(),
-            reduce_axes.is_some(),
+            reduce_axis.is_some(),
         )
     }
 }
@@ -1175,6 +1184,7 @@ fn sum_test() -> Result<(), ZyxError> {
     //let x = dev.randn([10, 12], DType::F32);
     let y = x.sum(-1);
     //std::println!("y shape: {:?}", y.shape());
+    let y = y.exp() + y;
     let y_vec: Vec<i32> = y.to_vec()?;
     assert_eq!(y_vec, [13, 8, 5]);
     //panic!();

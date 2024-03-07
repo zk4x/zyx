@@ -284,6 +284,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         // result and then we should still be able to merge it with unary
                         // and binary ops.
                         // TODO reshape can be applied, but no transpose afterwards? Perhaps?
+                        // TODO it is perhaps easier to just reorder reshape to come later
                         self.evaluate_kernel(*x)?.clone()
                     } else {
                         self.kernels[&x].clone()

@@ -396,6 +396,12 @@ impl View {
         &self.views.first().unwrap().shape
     }
 
+    /// Last strides of self.
+    #[must_use]
+    pub fn strides(&self) -> &Shape {
+        &self.views.first().unwrap().strides
+    }
+
     /// Original (first) shape of self.
     #[must_use]
     pub fn original_shape(&self) -> &Shape {
