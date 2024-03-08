@@ -19,6 +19,7 @@ use zyx_core::{
     scalar::Scalar,
     shape::Shape,
 };
+use zyx_core::view::Index;
 
 fn skip_last<T>(mut iter: impl Iterator<Item=T>) -> impl Iterator<Item=T> {
     let last = iter.next();
@@ -230,12 +231,12 @@ fn get_platform_data(
 }
 
 trait OpenCLDType {
-    fn ocl_str(self) -> &'static str;
+    fn ocl_str(&self) -> &'static str;
     fn from_ocl_str(str: &str) -> DType;
 }
 
 impl OpenCLDType for DType {
-    fn ocl_str(self) -> &'static str {
+    fn ocl_str(&self) -> &'static str {
         match self {
             DType::F32 => "float",
             DType::F64 => "double",
@@ -274,11 +275,9 @@ impl Program {
         global_work_size: &[usize],
         local_work_size: &[usize],
         res_byte_size: usize,
-        reduce: bool,
     ) -> Result<Self, ZyxError> {
         let name = f!(
-            "{}__{}__{}",
-            if reduce { "r" } else { "e" },
+            "k__{}__{}",
             global_work_size
                 .iter()
                 .map(|x| f!("{x}"))
@@ -538,7 +537,7 @@ impl zyx_compiler::Compiler for Compiler {
 
     type Program = Program;
 
-    fn store<T>(&mut self, iter: impl IntoIterator<Item = T>) -> Result<Self::Buffer, ZyxError> {
+    fn store<T>(&mut self, iter: impl IntoIterator<Item=T>) -> Result<Self::Buffer, ZyxError> {
         //std::println!("Storing");
         // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.into_iter().collect();
@@ -697,7 +696,7 @@ impl zyx_compiler::Compiler for Compiler {
         bytes: usize,
     ) -> Result<Self::Buffer, ZyxError> {
         #[cfg(not(feature = "debug1"))]
-        let (_, _) = (flop, bytes);
+            let (_, _) = (flop, bytes);
         let program_name = &CString::new(program.name.clone()).unwrap();
         let mut err = CL_SUCCESS;
         let kernel =
@@ -774,7 +773,7 @@ impl zyx_compiler::Compiler for Compiler {
         }
         let mut event: *mut c_void = ptr::null_mut();
         #[cfg(feature = "debug1")]
-        let begin = std::time::Instant::now();
+            let begin = std::time::Instant::now();
         let err = unsafe {
             clEnqueueNDRangeKernel(
                 self.queue(),
@@ -819,13 +818,13 @@ impl zyx_compiler::Compiler for Compiler {
         {
             let err = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
             if err != CL_SUCCESS {
-                return Err(ZyxError::BackendError( match err {
-                    - 30 => "Unable to finish kernel execution event. ERR -30: CL_INVALID_VALUE",
-                    - 34 => "Unable to finish kernel execution event. ERR -34: CL_INVALID_CONTEXT",
-                    - 58 => "Unable to finish kernel execution event. ERR -58: CL_INVALID_EVENT",
-                    - 14 => "Unable to finish kernel execution event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-                    - 5 => "Unable to finish kernel execution event. ERR -5: CL_OUT_OF_RESOURCES",
-                    - 6 => "Unable to finish kernel execution event. ERR -6: CL_OUT_OF_MEMORY",
+                return Err(ZyxError::BackendError(match err {
+                    -30 => "Unable to finish kernel execution event. ERR -30: CL_INVALID_VALUE",
+                    -34 => "Unable to finish kernel execution event. ERR -34: CL_INVALID_CONTEXT",
+                    -58 => "Unable to finish kernel execution event. ERR -58: CL_INVALID_EVENT",
+                    -14 => "Unable to finish kernel execution event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+                    -5 => "Unable to finish kernel execution event. ERR -5: CL_OUT_OF_RESOURCES",
+                    -6 => "Unable to finish kernel execution event. ERR -6: CL_OUT_OF_MEMORY",
                     _ => "Unable to finish kernel execution event. UNKNOWN ERROR",
                 }));
             }
@@ -842,348 +841,82 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(Buffer { mem, event })
     }
 
-    fn compile(&mut self, ast: &zyx_compiler::AST) -> Result<Self::Program, ZyxError> {
-        //std::println!("{ast:?}");
-        let max_lws = 256;
+    fn compile(&mut self, ir: &zyx_compiler::IR) -> Result<Self::Program, ZyxError> {
         let id_t = "unsigned int";
-        // register tile size, last one is for reduce dimension
-        // set this to None to disable register tiling
-        let mut rts: Option<Vec<usize>> = None; //Some(Vec::new());
-        let max_rts = 4;
+        let mut source = f!("(\n");
 
-        //std::println!("Reduce dimensions: {:?}", ast.reduce_axes);
-        // TODO permute so that reduce axes are last
-        // TODO add padding to max_lws
-        // TODO add wide vectorized loads
-        // TODO register tiling
-        // TODO local memory tiling
+        // Kernel arguments
+        for (i, (dtype, read_only)) in ir.kernel_args.iter().enumerate() {
+            source += &f!("  __global {}{}* gmem{i},\n", if *read_only { "const " } else { "" }, dtype.ocl_str());
+        }
+        source.pop();
+        source.pop();
+        source += &f!("\n) {{\n");
 
-        //let mut r_tiles: BTreeMap<u8, > = BTreeMap::new();
+        let mut indent = String::from("  ");
 
-        // reshape so that there are at most 3 dimensions
-        let (arg_views, shape, reduce_axis) = if let Some(reduce_axes) = &ast.reduce_axes {
-            let mut arg_views = ast.arg_views.clone();
-            let rank = ast.shape.rank();
-            let permute_axes = (0..rank as i64)
-                .filter(|a| !reduce_axes.contains(*a as usize))
-                .chain(reduce_axes.iter().map(|a| *a as i64))
-                .collect::<Box<_>>()
-                .into_axes(rank);
-            let (shape, axes) = if rank > 4 || reduce_axes.len() > 1 {
-                let d1: usize = ast
-                    .shape
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(a, d)| {
-                        if reduce_axes.contains(a) {
-                            Some(*d)
-                        } else {
-                            None
+        // Global and local indices
+        for i in 0..ir.global_work_size.len() {
+            source += &f!("{indent}{id_t} gid{i} = get_group_id({i});\n");
+        }
+        for i in 0..ir.local_work_size.len() {
+            source += &f!("{indent}{id_t} lid{i} = get_local_id({i});\n");
+        }
+
+        for op in &ir.ops {
+            match op {
+                Op::LoadGlobal { res, arg, index } => {
+                    match index {
+                        Index::Normal(idx) => {
+                            source += &f!("{indent}{res} = gmem{arg}[{idx}];\n");
                         }
-                    })
-                    .product();
-                let d0 = ast.shape.numel() / d1;
-                let shape: Shape = [d0, d1].into();
-                for view in &mut arg_views {
-                    *view = view.permute(&permute_axes).reshape(&shape);
-                }
-                (shape, Some(1))
-            } else {
-                for view in &mut arg_views {
-                    *view = view.permute(&permute_axes);
-                }
-                (ast.shape.permute(&permute_axes), Some(rank-1))
-            };
-            (arg_views, shape, axes)
-        } else {
-            let mut arg_views = ast.arg_views.clone();
-            let shape = if ast.shape.rank() > 3 {
-                let n = ast.shape.numel();
-                for view in &mut arg_views {
-                    *view = view.reshape(&[n].into());
-                }
-                [n].into()
-            } else {
-                ast.shape.clone()
-            };
-            (arg_views, shape, None)
-        };
-
-        let mut lws = 1;
-        let rank = shape.rank();
-        let mut global_work_size: Vec<usize> = shape
-            .iter()
-            .enumerate()
-            .filter_map(|(i, d)| {
-                let mut d = *d;
-                if let Some(rts) = rts.as_mut() {
-                    let n = rts.len();
-                    rts.push(1);
-                    while d%2 == 0 && rts[n]*2 <= max_rts {
-                        rts[n] *= 2;
-                        d /= 2;
-                    }
-                }
-                if reduce_axis.is_some() && i == rank - 1 {
-                    None
-                } else {
-                    Some(d)
-                }
-            })
-            .collect();
-        let mut full_reduce = false; // reduce across all axes
-        if global_work_size.len() == 0 {
-            full_reduce = true;
-            global_work_size.push(1);
-        }
-        // OpenCL runtimes are horrible at inferring local work sizes, we just have to give it our
-        let local_work_size: Vec<usize> = global_work_size
-            .iter()
-            .rev()
-            .map(|d| {
-                let mut x = 1;
-                while d % (x * 2) == 0 && x * lws < max_lws {
-                    x *= 2;
-                }
-                lws *= x;
-                x
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-
-        let mut source = f!("(\n  ");
-
-        let mut res_id = 0;
-        for dtype in &ast.arg_dtypes {
-            source = f!(
-                "{source}__global const {}* data{res_id},\n  ",
-                dtype.ocl_str()
-            );
-            res_id += 1;
-        }
-        source = f!(
-            "{source}__global {}* data{res_id}\n) {{\n  ",
-            ast.dtype.ocl_str()
-        );
-
-        if !full_reduce {
-            for i in 0..global_work_size.len() {
-                source = f!(
-                    "{source}{id_t} idx{i} = get_global_id({i}); /* 0..{} */\n  ",
-                    global_work_size[i]
-                );
-            }
-        }
-
-        let mut endl = f!(";\n  ");
-        let mut dtype = ast.arg_dtypes.first().unwrap().ocl_str();
-
-        if let Some(reduce_axis) = reduce_axis {
-            let mut i = if full_reduce {
-                0
-            } else {
-                global_work_size.len()
-            };
-            let zero = match ast.reduce_dtype.unwrap() {
-                DType::F32 => "0.0f",
-                DType::F64 => "0.0",
-                DType::I32 => "0",
-            };
-            let reduce_nid = ast
-                .ops
-                .iter()
-                .position(|op| matches!(op, Op::Sum(..) | Op::Max(..)))
-                .unwrap();
-            let acc_init = if ast.ops.iter().any(|op| matches!(op, Op::Sum(..))) {
-                // sum reduce
-                zero
-            } else {
-                // max reduce
-                ast.reduce_dtype.unwrap().min_value_str()
-            };
-            let rdt = ast.reduce_dtype.unwrap().ocl_str();
-            if let Some(ref rts) = rts {
-                source += &f!("{rdt} var{reduce_nid}{}{endl}", skip_last(rts.iter()).map(|d| f!("[{d}]")).collect::<String>());
-                for i in 0..rts.len() - 1 {
-                    source += &f!("for ({id_t} {0} = 0; {0} < {1}; {0}++) ", &"abc"[i..i+1], rts[i]);
-                }
-                source += &f!("var{reduce_nid}");
-                for i in 0..rts.len() - 1 {
-                    source += &f!("[{}]", &"abc"[i..i+1]);
-                }
-                source += &f!(" = {acc_init};\n  ");
-            } else {
-                source += &f!("{rdt} var{reduce_nid} = {acc_init}{endl}");
-            }
-            source += &f!("{id_t} idx{i}{endl}");
-            i = if full_reduce {
-                0
-            } else {
-                global_work_size.len()
-            };
-            if full_reduce {
-                i = 0;
-            }
-            if let Some(ref rts) = rts {
-                endl = f!("{endl}{}  ", " ".repeat(rts.len()*2));
-                source += &f!(
-                    "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{\n",
-                    shape[reduce_axis] / rts.last().unwrap(),
-                );
-                // TODO all Leafs that go into register tiles should be loaded here before
-                // the last loop
-                for (i, d) in rts.iter().enumerate() {
-                    if i == rts.len() {
-                    } else {
-                        source += &f!("{0}    for ({id_t} ridx{i} = 0; ridx{i} < {d}; ridx{i}++) {{\n{0}      idx{i} = get_global_id({i}) + ridx{i};\n", " ".repeat(2*i));
-                    }
-                }
-                source += &" ".repeat(4+rts.len()*2);
-            } else {
-                endl = f!("{endl}  ");
-                source += &f!(
-                    "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
-                    shape[reduce_axis]
-                );
-            }
-        }
-
-        let mut nid = 0;
-        for op in ast.ops.iter() {
-            //let fdt = DType::from_ocl_str(dtype).is_floating();
-            let zero = match DType::from_ocl_str(dtype) {
-                DType::F32 => "0.0f",
-                DType::F64 => "0.0",
-                DType::I32 => "0",
-            };
-            let mut reduce = false;
-            let res = match op {
-                Op::Leaf(x) => {
-                    let view = &arg_views[*x as usize];
-                    //std::println!("{view:?}");
-                    dtype = ast.arg_dtypes[*x as usize].ocl_str();
-                    let (p, i) = view.cidx();
-                    if p.is_empty() {
-                        f!("{dtype} var{nid} = data{x}[{i}]")
-                    } else {
-                        f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
-                    }
-                }
-                Op::Cast(x, dt) => {
-                    dtype = dt.ocl_str();
-                    f!("{dtype} var{nid} = ({dtype})var{x}")
-                }
-                Op::Neg(x) => f!("{dtype} var{nid} = -var{x}"),
-                Op::ReLU(x) => f!("{dtype} var{nid} = max(var{x}, {zero})"),
-                Op::Sin(x) => f!("{dtype} var{nid} = sin({}var{x})",
-                    if DType::from_ocl_str(dtype).is_floating() {
-                        ""
-                    } else {
-                        "(double)"
-                    }
-                ),
-                Op::Cos(x) => f!("{dtype} var{nid} = cos({}var{x})",
-                    if DType::from_ocl_str(dtype).is_floating() {
-                        ""
-                    } else {
-                        "(double)"
-                    }
-                ),
-                Op::Ln(x) => f!("{dtype} var{nid} = log({}var{x})",
-                    if DType::from_ocl_str(dtype).is_floating() {
-                        ""
-                    } else {
-                        "(double)"
-                    }
-                ),
-                Op::Exp(x) => f!("{dtype} var{nid} = exp({}var{x})",
-                    if DType::from_ocl_str(dtype).is_floating() {
-                        ""
-                    } else {
-                        "(double)"
-                    }
-                ),
-                Op::Tanh(x) => f!("{dtype} var{nid} = tanh({}var{x})",
-                    if DType::from_ocl_str(dtype).is_floating() {
-                        ""
-                    } else {
-                        "(double)"
-                    }
-                ),
-                Op::Sqrt(x) => f!("{dtype} var{nid} = sqrt(var{x})"),
-                Op::Add(x, y) => f!("{dtype} var{nid} = var{x} + var{y}"),
-                Op::Sub(x, y) => f!("{dtype} var{nid} = var{x} - var{y}"),
-                Op::Mul(x, y) => f!("{dtype} var{nid} = var{x} * var{y}"),
-                Op::Div(x, y) => f!("{dtype} var{nid} = var{x} / var{y}"),
-                Op::Pow(x, y) => {
-                    f!(
-                        "{dtype} var{nid} = pow{}var{x}, var{y})",
-                        if DType::from_ocl_str(dtype).is_floating() {
-                            "("
-                        } else {
-                            "n((double)"
+                        Index::Padded(padding, idx) => {
+                            source += &f!("{indent}{res} = {padding} ? gmem{arg}[{idx}] : 0;\n");
                         }
-                    )
-                }
-                Op::Cmplt(x, y) => f!("{dtype} var{nid} = ({dtype})(var{x} < var{y})"),
-                Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
-                Op::Sum(x) => {
-                    reduce = true;
-                    f!("var{nid} += var{x}")
-                }
-                Op::Max(x) => {
-                    reduce = true;
-                    f!("var{nid} = max(var{x}, var{nid})")
-                }
-            };
-            source += &f!("{res}{endl}");
-            if reduce {
-                endl = f!(";\n  ");
-                source.pop();
-                source.pop();
-                if let Some(ref rts) = rts {
-                    for i in (0..rts.len()).rev() {
-                        source += &f!("}}\n  {}", " ".repeat(2*i));
                     }
-                    source.pop();
-                    source.pop();
                 }
-                let i = if full_reduce {
-                    0
-                } else {
-                    global_work_size.len()
-                };
-                source += &f!("  }}\n  idx{i} = 0{endl}");
+                Op::StoreGlobal { res, index, arg } => {
+                    match index {
+                        Index::Normal(idx) => {
+                            source += &f!("{indent}gmem{res}[{idx}] = {arg};\n");
+                        }
+                        Index::Padded(padding, idx) => {
+                            source += &f!("if ({padding}) {{ {indent}gmem{res}[{idx}] = {arg}; }}\n");
+                        }
+                    }
+                }
+                Op::DeclareVar { dtype, id, len } => {
+                    if let Some(len) = len {
+                        source += &f!("{indent}{} rmem{id}[{len}];\n", dtype.ocl_str());
+                    } else {
+                        source += &f!("{indent}{} rmem{id};\n", dtype.ocl_str());
+                    }
+                }
+                Op::Exp { .. } => {}
+                Op::Add { .. } => {}
+                Op::Max { .. } => {}
+                Op::AddIdx { .. } => {}
+                Op::MulIdx { .. } => {}
+                Op::Loop { id, upper_bound, step } => {
+                    source += &f!("{indent}for ({id_t} rid{id}; rid{id} < {upper_bound}; rid{id} += {step}) {{\n");
+                    indent += "  ";
+                }
+                Op::EndLoop => {
+                    indent = indent[..indent.len()-2].into();
+                    source += &f!("{indent}}}\n");
+                }
             }
-            nid += 1;
         }
-        //std::println!("shape: {shape}");
-        let shape = if let Some(ra) = reduce_axis {
-            let rank = shape.rank();
-            shape.reduce(&(ra as i64).into_axes(rank))
-        } else {
-            shape
-        };
-        //std::println!("Reduce axes {reduce_axes:?}");
-        //std::println!("Shape {shape}");
-        let view = zyx_core::view::View::new(shape.clone());
-        //std::println!("{shape}\n{view:?}\n{}", view.cidx().1);
-        source = f!(
-            "{source}data{res_id}[{}] = var{};\n}}",
-            view.cidx().1,
-            nid - 1
-        );
+
+        source += &f!("}}");
 
         Program::compile(
             source.as_str(),
             self.context,
             &self.devices,
-            global_work_size.as_slice(),
-            local_work_size.as_slice(),
-            shape.numel() * ast.dtype.byte_size(),
-            reduce_axis.is_some(),
+            ir.global_work_size.as_slice(),
+            ir.local_work_size.as_slice(),
+            ir.res_byte_size,
         )
     }
 }
@@ -1226,6 +959,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let y = dev.randn([1024, 1024], DType::F32);
     let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
+    panic!();
     Ok(())
 }
 

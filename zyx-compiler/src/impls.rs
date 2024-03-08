@@ -12,14 +12,14 @@ use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
 use zyx_core::utils::get_dtype;
 use zyx_core::view::View;
-use crate::{AST, CompiledBackend, Compiler, Op};
+use crate::{AST, CompiledBackend, Compiler, ASTOp};
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub(super) struct Kernel {
     program_args: Vec<Id>,
     arg_views: Vec<View>,
     arg_dtypes: Vec<DType>,
-    ops: Vec<Op>,
+    ops: Vec<ASTOp>,
     reduce_axes: Option<Axes>,
     reduce_dtype: Option<DType>,
     shape: Shape,
@@ -34,7 +34,7 @@ impl Kernel {
             program_args: alloc::vec![x],
             arg_views: alloc::vec![View::new(shape.clone())],
             arg_dtypes: alloc::vec![dtype.clone()],
-            ops: alloc::vec![Op::Leaf(0)],
+            ops: alloc::vec![ASTOp::Leaf(0)],
             reduce_axes: None,
             reduce_dtype: None,
             shape: shape.clone(),
@@ -118,57 +118,57 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     let mut buffer = self.kernels[&x].clone();
                     buffer
                         .ops
-                        .push(Op::Cast(buffer.ops.len() as u8 - 1, *dtype));
+                        .push(ASTOp::Cast(buffer.ops.len() as u8 - 1, *dtype));
                     buffer.dtype = *dtype;
                     buffer
                 }
                 Node::Detach(x) => self.kernels[&x].clone(),
                 Node::Neg(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::Neg(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::Neg(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::ReLU(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::ReLU(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::ReLU(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Exp(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::Exp(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::Exp(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Ln(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::Ln(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::Ln(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Sin(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::Sin(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::Sin(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Cos(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::Cos(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::Cos(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Sqrt(x) => {
                     let mut buffer = self.kernels[&x].clone();
-                    buffer.ops.push(Op::Sqrt(buffer.ops.len() as u8 - 1));
+                    buffer.ops.push(ASTOp::Sqrt(buffer.ops.len() as u8 - 1));
                     buffer
                 }
                 Node::Tanh(x) => {
                     let mut kernel = self.kernels[&x].clone();
-                    kernel.ops.push(Op::Tanh(kernel.ops.len() as u8 - 1));
+                    kernel.ops.push(ASTOp::Tanh(kernel.ops.len() as u8 - 1));
                     kernel
                 }
-                Node::Add(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Add(x, y))?,
-                Node::Sub(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Sub(x, y))?,
-                Node::Mul(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Mul(x, y))?,
-                Node::Div(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Div(x, y))?,
-                Node::Pow(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Pow(x, y))?,
-                Node::Cmplt(x, y) => self.binary_kernel(*x, *y, |x, y| Op::Cmplt(x, y))?,
+                Node::Add(x, y) => self.binary_kernel(*x, *y, |x, y| ASTOp::Add(x, y))?,
+                Node::Sub(x, y) => self.binary_kernel(*x, *y, |x, y| ASTOp::Sub(x, y))?,
+                Node::Mul(x, y) => self.binary_kernel(*x, *y, |x, y| ASTOp::Mul(x, y))?,
+                Node::Div(x, y) => self.binary_kernel(*x, *y, |x, y| ASTOp::Div(x, y))?,
+                Node::Pow(x, y) => self.binary_kernel(*x, *y, |x, y| ASTOp::Pow(x, y))?,
+                Node::Cmplt(x, y) => self.binary_kernel(*x, *y, |x, y| ASTOp::Cmplt(x, y))?,
                 Node::Where(..) => {
                     // TODO fix this for x == y == z or any combination of those
                     todo!()
@@ -231,11 +231,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         kernel = self.evaluate_kernel(*x)?.clone();
                         kernel.reduce_axes = Some(ax.clone());
                         kernel.reduce_dtype = Some(get_dtype(nodes, nid));
-                        kernel.ops.push(Op::Sum(0));
+                        kernel.ops.push(ASTOp::Sum(0));
                     } else {
                         kernel.reduce_axes = Some(ax.clone());
                         kernel.reduce_dtype = Some(get_dtype(nodes, nid));
-                        kernel.ops.push(Op::Sum(kernel.ops.len() as u8 - 1));
+                        kernel.ops.push(ASTOp::Sum(kernel.ops.len() as u8 - 1));
                     }
                     kernel
                 }
@@ -245,11 +245,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         kernel = self.evaluate_kernel(*x)?.clone();
                         kernel.reduce_axes = Some(ax.clone());
                         kernel.reduce_dtype = Some(get_dtype(nodes, nid));
-                        kernel.ops.push(Op::Max(0));
+                        kernel.ops.push(ASTOp::Max(0));
                     } else {
                         kernel.reduce_axes = Some(ax.clone());
                         kernel.reduce_dtype = Some(get_dtype(nodes, nid));
-                        kernel.ops.push(Op::Max(kernel.ops.len() as u8 - 1));
+                        kernel.ops.push(ASTOp::Max(kernel.ops.len() as u8 - 1));
                     }
                     kernel
                 }
@@ -329,7 +329,8 @@ impl<C: Compiler> CompiledBackend<C> {
         } else {
             // TODO optimize ast as much as possible here
             // for example deduplicate args
-            let program = self.compiler.compile(&ast)?;
+            let ir = crate::ir::ast_to_ir(&ast, 256, 4, 2);
+            let program = self.compiler.compile(&ir)?;
             self.programs.entry(ast).or_insert(program)
         };
         let program_args: Vec<&C::Buffer> = program_args
@@ -347,7 +348,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: Id,
         y: Id,
-        op: impl Fn(u8, u8) -> Op,
+        op: impl Fn(u8, u8) -> ASTOp,
     ) -> Result<Kernel, ZyxError> {
         let (reduce_axes, reduce_dtype) = if x != y {
             match (
@@ -403,28 +404,28 @@ impl<C: Compiler> CompiledBackend<C> {
                 .cloned()
                 .chain(y_buffer.ops.iter().cloned().map(|mut op| {
                     match &mut op {
-                        Op::Leaf(x) => *x += x_buffer.arg_views.len() as u8,
-                        Op::Cast(x, ..)
-                        | Op::Neg(x)
-                        | Op::ReLU(x)
-                        | Op::Exp(x)
-                        | Op::Ln(x)
-                        | Op::Tanh(x)
-                        | Op::Sin(x)
-                        | Op::Cos(x)
-                        | Op::Sqrt(x)
-                        | Op::Sum(x)
-                        | Op::Max(x) => *x += n,
-                        Op::Add(x, y)
-                        | Op::Sub(x, y)
-                        | Op::Mul(x, y)
-                        | Op::Div(x, y)
-                        | Op::Pow(x, y)
-                        | Op::Cmplt(x, y) => {
+                        ASTOp::Leaf(x) => *x += x_buffer.arg_views.len() as u8,
+                        ASTOp::Cast(x, ..)
+                        | ASTOp::Neg(x)
+                        | ASTOp::ReLU(x)
+                        | ASTOp::Exp(x)
+                        | ASTOp::Ln(x)
+                        | ASTOp::Tanh(x)
+                        | ASTOp::Sin(x)
+                        | ASTOp::Cos(x)
+                        | ASTOp::Sqrt(x)
+                        | ASTOp::Sum(x)
+                        | ASTOp::Max(x) => *x += n,
+                        ASTOp::Add(x, y)
+                        | ASTOp::Sub(x, y)
+                        | ASTOp::Mul(x, y)
+                        | ASTOp::Div(x, y)
+                        | ASTOp::Pow(x, y)
+                        | ASTOp::Cmplt(x, y) => {
                             *x += n;
                             *y += n;
                         }
-                        Op::Where(x, y, z) => {
+                        ASTOp::Where(x, y, z) => {
                             *x += n;
                             *y += n;
                             *z += n;

@@ -17,6 +17,15 @@ pub enum ViewType {
     Padded,
 }
 
+/// Compiler index
+#[derive(Clone, Debug)]
+pub enum Index {
+    /// Index without padding
+    Normal(String),
+    /// Padded index
+    Padded(String, String),
+}
+
 /// View holds shape of the tensor and allows for arbitrary number of movement ops
 /// (reshape, expand, pad, permute) to be executed as noops (without accessing the
 /// actual data).
@@ -35,13 +44,18 @@ struct InnerView {
 
 impl InnerView {
     #[must_use]
-    fn contiguous(&self) -> bool {
-        self.shape.strides() == self.strides && !self.padded()
+    fn is_contiguous(&self) -> bool {
+        self.shape.strides() == self.strides && !self.is_padded()
     }
 
     #[must_use]
-    fn padded(&self) -> bool {
+    fn is_padded(&self) -> bool {
         self.padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0)
+    }
+
+    #[must_use]
+    fn is_expanded_axis(&self, axis: usize) -> bool {
+        self.strides[axis] == 0
     }
 }
 
@@ -178,22 +192,28 @@ impl View {
     /// Is this view contiguous?
     /// i. e. no padding, expands or permutes, only reshapes are allowed
     #[must_use]
-    pub fn contiguous(&self) -> bool {
-        self.views.iter().all(InnerView::contiguous)
+    pub fn is_contiguous(&self) -> bool {
+        self.views.iter().all(InnerView::is_contiguous)
     }
 
     /// Is this view padded?
     #[must_use]
-    pub fn padded(&self) -> bool {
-        self.views.iter().any(InnerView::padded)
+    pub fn is_padded(&self) -> bool {
+        self.views.iter().any(InnerView::is_padded)
+    }
+
+    /// Is this view expanded at given dim?
+    #[must_use]
+    pub fn is_expanded_axis(&self, axis: usize) -> bool {
+        self.views.first().unwrap().is_expanded_axis(axis)
     }
 
     /// For cpu backend
     #[must_use]
     pub fn view_type(&self) -> ViewType {
-        if self.contiguous() {
+        if self.is_contiguous() {
             ViewType::Contiguous
-        } else if self.padded() {
+        } else if self.is_padded() {
             ViewType::Padded
         } else if self.views.len() > 1 {
             ViewType::Reshaped
@@ -259,14 +279,14 @@ impl View {
     /// If padding condition == 0, padding value is applied, if padding condition
     /// is one, value is drawn from data.
     #[must_use]
-    pub fn cidx(&self) -> (String, String) {
+    pub fn cidx(&self) -> Index {
         // TODO simplify this as much as possible, not for performance (it is cached),
         // just for clarity, because currently it is a mess.
         //std::println!("View: {self:?}");
         use alloc::format as f;
         let mut idx = String::new();
         let mut padding_condition = String::new();
-        if self.contiguous() {
+        if self.is_contiguous() {
             for (i, st) in self.views[0].strides.iter().enumerate() {
                 if *st == 1 {
                     idx += &f!("+idx{i}");
@@ -275,7 +295,7 @@ impl View {
                 }
             }
             idx.remove(0);
-            return (padding_condition, idx);
+            return Index::Normal(idx);
         }
         if let Some(InnerView {
             shape,
@@ -312,14 +332,16 @@ impl View {
                 idx = f!("0+");
             }
         } else {
-            return (padding_condition, "0".into());
+            return Index::Normal("0".into());
         }
         idx.remove(idx.len() - 1);
         if self.views.len() == 1 {
-            if !padding_condition.is_empty() {
+            if padding_condition.is_empty() {
+                return Index::Normal(idx);
+            } else {
                 padding_condition = f!("{}", &padding_condition[4..]);
+                return Index::Padded(padding_condition, idx);
             }
-            return (padding_condition, idx);
         }
         for InnerView {
             shape,
@@ -378,10 +400,12 @@ impl View {
                 idx.remove(idx.len() - 1);
             }
         }
-        if !padding_condition.is_empty() {
+        if padding_condition.is_empty() {
+            Index::Normal(idx)
+        } else {
             padding_condition = f!("{}", &padding_condition[4..]);
+            Index::Padded(padding_condition, idx)
         }
-        (padding_condition, idx)
     }
 
     /// Number of elements in view with self.shape()
@@ -495,7 +519,7 @@ impl View {
         );
         let mut views = self.views.clone();
         // If we are reshaping InnerView that is contiguous, we just delete the last reshape
-        if views.first().unwrap().contiguous() {
+        if views.first().unwrap().is_contiguous() {
             views[0] = InnerView {
                 shape: n_shape.clone(),
                 strides: n_shape.strides(),

@@ -1,9 +1,14 @@
 use zyx_core::error::ZyxError;
 
 mod impls;
+mod ir;
+
 use impls::Kernel;
+pub use ir::{IR, Op};
 
 extern crate alloc;
+extern crate core;
+
 use alloc::collections::BTreeMap;
 use zyx_core::axes::Axes;
 use zyx_core::dtype::DType;
@@ -46,13 +51,13 @@ pub trait Compiler {
         bytes: usize,
     ) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
-    fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError>;
+    fn compile(&mut self, ir: &IR) -> Result<Self::Program, ZyxError>;
 }
 
 /// Op executable on device with compiled backend
 /// usize are all IDs into ops, leafs have IDs into args
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Op {
+enum ASTOp {
     // We are not gonna have so gigantic kernels with more than 256 arguments or ops.
     // OpenCL does not support more than 255 args.
     /// Leaf (holds data, id to kernel arg)
@@ -110,7 +115,7 @@ pub struct AST {
     /// AST argument dtypes
     pub arg_dtypes: Vec<DType>,
     /// AST ops
-    pub ops: Vec<Op>,
+    pub ops: Vec<ASTOp>,
     /// Shape of the result, this is before any reduce ops
     pub shape: Shape,
     /// DType of the result

@@ -323,7 +323,7 @@ fn reduce_op<T: Scalar + Sync + Send>(
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly
     // updating it (adding in case of sum) with new indices as new max/min are found
-    if view.contiguous() {
+    if view.is_contiguous() {
         for i in 0..view.shape().numel() {
             // calculate index in result
             let mut j = 0;
