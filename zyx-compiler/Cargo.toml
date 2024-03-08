@@ -1,5 +1,5 @@
 [package]
-name = "zyx-opencl"
+name = "zyx-compiler"
 version = "0.1.0"
 edition = "2021"
 authors = ["zk4x"]
@@ -17,13 +17,7 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx-core = { version = "0.1.0", path = "../zyx-core", default-features = false }
-zyx-compiler = { version = "0.1.0", path = "../zyx-compiler", default-features = false }
-opencl-sys = { version = "0.2.8", default-features = false }
 
 [features]
-default = ["std"] #, "CL_VERSION_1_1", "CL_VERSION_1_2", "debug1"]
-debug1 = []
+default = ["std"]
 std = ["zyx-core/std"]
-CL_VERSION_1_1 = ["opencl-sys/CL_VERSION_1_1"]
-CL_VERSION_1_2 = ["opencl-sys/CL_VERSION_1_2"]
-CL_VERSION_2_1 = ["opencl-sys/CL_VERSION_2_1"]

@@ -32,8 +32,6 @@ extern crate std;
 pub mod axes;
 /// See [Backend](backend::Backend)
 pub mod backend;
-/// See [Compiler](compiler::Compiler)
-pub mod compiler;
 /// See [DType](dtype::DType)
 pub mod dtype;
 /// See [ZyxError](error::ZyxError)

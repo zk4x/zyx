@@ -11,14 +11,21 @@ use opencl_sys::{
     CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING,
     CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
+use zyx_compiler::Op;
 use zyx_core::{
     axes::IntoAxes,
-    compiler::{Op, AST},
     dtype::DType,
     error::ZyxError,
     scalar::Scalar,
     shape::Shape,
 };
+
+fn skip_last<T>(mut iter: impl Iterator<Item=T>) -> impl Iterator<Item=T> {
+    let last = iter.next();
+    iter.scan(last, |state, item| {
+        std::mem::replace(state, Some(item))
+    })
+}
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
 
@@ -526,7 +533,7 @@ impl Compiler {
     }
 }
 
-impl zyx_core::compiler::Compiler for Compiler {
+impl zyx_compiler::Compiler for Compiler {
     type Buffer = Buffer;
 
     type Program = Program;
@@ -690,7 +697,7 @@ impl zyx_core::compiler::Compiler for Compiler {
         bytes: usize,
     ) -> Result<Self::Buffer, ZyxError> {
         #[cfg(not(feature = "debug1"))]
-        let _ = flop;
+        let (_, _) = (flop, bytes);
         let program_name = &CString::new(program.name.clone()).unwrap();
         let mut err = CL_SUCCESS;
         let kernel =
@@ -835,12 +842,14 @@ impl zyx_core::compiler::Compiler for Compiler {
         Ok(Buffer { mem, event })
     }
 
-    fn compile(&mut self, ast: &AST) -> Result<Self::Program, ZyxError> {
+    fn compile(&mut self, ast: &zyx_compiler::AST) -> Result<Self::Program, ZyxError> {
         //std::println!("{ast:?}");
         let max_lws = 256;
         let id_t = "unsigned int";
-        let register_tiling = false;
-        let rts = 4; // register tile size
+        // register tile size, last one is for reduce dimension
+        // set this to None to disable register tiling
+        let mut rts: Option<Vec<usize>> = None; //Some(Vec::new());
+        let max_rts = 4;
 
         //std::println!("Reduce dimensions: {:?}", ast.reduce_axes);
         // TODO permute so that reduce axes are last
@@ -901,14 +910,24 @@ impl zyx_core::compiler::Compiler for Compiler {
         };
 
         let mut lws = 1;
+        let rank = shape.rank();
         let mut global_work_size: Vec<usize> = shape
             .iter()
             .enumerate()
             .filter_map(|(i, d)| {
-                if reduce_axis.map(|a| a == i).unwrap_or(false) {
+                let mut d = *d;
+                if let Some(rts) = rts.as_mut() {
+                    let n = rts.len();
+                    rts.push(1);
+                    while d%2 == 0 && rts[n]*2 <= max_rts {
+                        rts[n] *= 2;
+                        d /= 2;
+                    }
+                }
+                if reduce_axis.is_some() && i == rank - 1 {
                     None
                 } else {
-                    Some(*d)
+                    Some(d)
                 }
             })
             .collect();
@@ -985,11 +1004,16 @@ impl zyx_core::compiler::Compiler for Compiler {
                 ast.reduce_dtype.unwrap().min_value_str()
             };
             let rdt = ast.reduce_dtype.unwrap().ocl_str();
-            if register_tiling {
-                source += &f!("{rdt} var{reduce_nid}[{rts}][{rts}] = {{\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}},\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}},\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}},\n    {{{acc_init}, {acc_init}, {acc_init}, {acc_init}}}\n  }}{endl}");
-                /*for _ in 0..4 {
-                    source += &f!("{rdt} var{reduce_nid}[4][4]{endl}");
-                }*/
+            if let Some(ref rts) = rts {
+                source += &f!("{rdt} var{reduce_nid}{}{endl}", skip_last(rts.iter()).map(|d| f!("[{d}]")).collect::<String>());
+                for i in 0..rts.len() - 1 {
+                    source += &f!("for ({id_t} {0} = 0; {0} < {1}; {0}++) ", &"abc"[i..i+1], rts[i]);
+                }
+                source += &f!("var{reduce_nid}");
+                for i in 0..rts.len() - 1 {
+                    source += &f!("[{}]", &"abc"[i..i+1]);
+                }
+                source += &f!(" = {acc_init};\n  ");
             } else {
                 source += &f!("{rdt} var{reduce_nid} = {acc_init}{endl}");
             }
@@ -1002,19 +1026,27 @@ impl zyx_core::compiler::Compiler for Compiler {
             if full_reduce {
                 i = 0;
             }
-            if register_tiling {
-                endl = f!("{endl}  ");
+            if let Some(ref rts) = rts {
+                endl = f!("{endl}{}  ", " ".repeat(rts.len()*2));
                 source += &f!(
-                    "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
-                    shape[reduce_axis] / rts,
+                    "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{\n",
+                    shape[reduce_axis] / rts.last().unwrap(),
                 );
+                // TODO all Leafs that go into register tiles should be loaded here before
+                // the last loop
+                for (i, d) in rts.iter().enumerate() {
+                    if i == rts.len() {
+                    } else {
+                        source += &f!("{0}    for ({id_t} ridx{i} = 0; ridx{i} < {d}; ridx{i}++) {{\n{0}      idx{i} = get_global_id({i}) + ridx{i};\n", " ".repeat(2*i));
+                    }
+                }
+                source += &" ".repeat(4+rts.len()*2);
             } else {
                 endl = f!("{endl}  ");
                 source += &f!(
                     "for (idx{i} = 0; idx{i} < {}; idx{i}++) {{{endl}",
                     shape[reduce_axis]
                 );
-                i += 1;
             }
         }
 
@@ -1033,23 +1065,10 @@ impl zyx_core::compiler::Compiler for Compiler {
                     //std::println!("{view:?}");
                     dtype = ast.arg_dtypes[*x as usize].ocl_str();
                     let (p, i) = view.cidx();
-                    if register_tiling {
-                        let strides = view.strides();
-                        f!("{dtype} var{nid}[{rts}][{rts}] = data0[idx0*1024+idx1*0+idx2];")
-                        /*
-
-
-
-
-
-
-                         */
+                    if p.is_empty() {
+                        f!("{dtype} var{nid} = data{x}[{i}]")
                     } else {
-                        if p.is_empty() {
-                            f!("{dtype} var{nid} = data{x}[{i}]")
-                        } else {
-                            f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
-                        }
+                        f!("{dtype} var{nid} = {p} ? data{x}[{i}] : {zero}")
                     }
                 }
                 Op::Cast(x, dt) => {
@@ -1112,7 +1131,7 @@ impl zyx_core::compiler::Compiler for Compiler {
                 Op::Where(x, y, z) => f!("{dtype} var{nid} = var{x} ? var{y} : var{z}"),
                 Op::Sum(x) => {
                     reduce = true;
-                    f!("var{nid} = var{x} + var{nid}")
+                    f!("var{nid} += var{x}")
                 }
                 Op::Max(x) => {
                     reduce = true;
@@ -1122,14 +1141,21 @@ impl zyx_core::compiler::Compiler for Compiler {
             source += &f!("{res}{endl}");
             if reduce {
                 endl = f!(";\n  ");
+                source.pop();
+                source.pop();
+                if let Some(ref rts) = rts {
+                    for i in (0..rts.len()).rev() {
+                        source += &f!("}}\n  {}", " ".repeat(2*i));
+                    }
+                    source.pop();
+                    source.pop();
+                }
                 let i = if full_reduce {
                     0
                 } else {
                     global_work_size.len()
                 };
-                source.pop();
-                source.pop();
-                source += &f!("}}\nidx{i} = 0{endl}");
+                source += &f!("  }}\n  idx{i} = 0{endl}");
             }
             nid += 1;
         }

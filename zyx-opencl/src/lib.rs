@@ -38,7 +38,6 @@ use alloc::{
 };
 use core::ops::Range;
 use core::cell::RefCell;
-use zyx_core::compiler::CompiledBackend;
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
 use zyx_core::{
@@ -53,12 +52,12 @@ use zyx_core::{
 pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 
 /// OpenCL backend
-pub struct OpenCL(RefCell<Runtime<CompiledBackend<Compiler>>>);
+pub struct OpenCL(RefCell<Runtime<zyx_compiler::CompiledBackend<Compiler>>>);
 
 /// Create new OpenCL backend using first OpenCL platform
 /// and all hardware devices in that platform.
 pub fn device() -> Result<OpenCL, ZyxError> {
-    Ok(OpenCL(RefCell::new(Runtime::new(CompiledBackend::new(
+    Ok(OpenCL(RefCell::new(Runtime::new(zyx_compiler::CompiledBackend::new(
         Compiler::new(0, 8)?,
     )))))
 }
@@ -93,7 +92,7 @@ impl OpenCLBuilder {
 
     /// Build
     pub fn build(self) -> Result<OpenCL, ZyxError> {
-        Ok(OpenCL(RefCell::new(Runtime::new(CompiledBackend::new(
+        Ok(OpenCL(RefCell::new(Runtime::new(zyx_compiler::CompiledBackend::new(
             Compiler::new(self.platform_id, self.queues_per_device)?,
         )))))
     }
