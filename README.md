@@ -48,7 +48,7 @@ Optimizer updates model's parameters with gradients.
 
 ## Performance 🚀
 
-Thanks to its execution model, Zyx always uses minimum amount of RAM.
+Thanks to its execution model, Zyx should use minimum amount of RAM.
 As for the backends, OpenCL backend automatically fuses operations and create custom kernels.
 In case of hardware where these backends seem slow you can always use libtorch backend.
 Native rust CPU backend is slow and should not be used. It currently serves only as reference backend.
@@ -78,9 +78,6 @@ let z = x.get((.., 2, 1..-2, ..-1));
 let v: f32 = x.get((1, 2, .., -1)).item().unwrap();
 ```
 IO operations.
-```shell
-cargo add zyx-io
-```
 ```rust
 model.save("model.safetensors");
 model.load("model.safetensors");

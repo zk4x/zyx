@@ -27,11 +27,11 @@ export LIBTORCH_USE_PYTORCH=1
 
 If neither of those options works for you, zyx-torch can install libtorch automatically, by enabling download-libtorch feature.
 
-For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
+For README and source code, please visit [github](https://www.github.com/zk4x/zyx).
 
 For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
 
 # Cargo features
 
-std - enables zyx-core/std
-download-libtorch - installs libtorch
+- std - enables zyx-core/std
+- download-libtorch - installs libtorch
