@@ -1,7 +1,7 @@
 [package]
 name = "zyx-compiler"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx OpenCL backend"
 documentation = "https://docs.rs/zyx-opencl"
@@ -16,7 +16,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "0.1.0", default-features = false }
+zyx-core = { workspace = true }
 
 [features]
 default = ["std"]

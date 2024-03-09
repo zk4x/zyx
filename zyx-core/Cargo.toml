@@ -1,7 +1,7 @@
 [package]
 name = "zyx-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx core utilities"
 documentation = "https://docs.rs/zyx-core"
@@ -19,7 +19,7 @@ maintenance = { status = "experimental" }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 
 [dev-dependencies]
-#zyx-opencl = { workspace = true }
+zyx-opencl = { workspace = true }
 
 [features]
 default = ["std"]

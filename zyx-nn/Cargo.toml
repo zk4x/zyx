@@ -1,6 +1,6 @@
 [package]
 name = "zyx-nn"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx nn modules"
@@ -16,7 +16,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "0.1.0" }
+zyx-core = { workspace = true }
 
 [features]
 default = ["std"]

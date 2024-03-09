@@ -1,7 +1,7 @@
 [package]
 name = "zyx-examples"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx examples"
 documentation = "https://docs.rs/zyx-torch"
@@ -15,10 +15,10 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "0.1.0" }
-zyx-nn = { version = "0.1.0" }
-zyx-optim = { version = "0.1.0" }
-zyx-derive = { version = "0.1.0" }
-zyx-opencl = { version = "0.1.0" }
-zyx-cpu = { version = "0.1.0" }
-zyx-torch = { version = "0.1.0" }
+zyx-core = { workspace = true }
+zyx-nn = { workspace = true }
+zyx-optim = { workspace = true }
+zyx-derive = { workspace = true }
+zyx-opencl = { workspace = true }
+zyx-cpu = { workspace = true }
+zyx-torch = { workspace = true }
