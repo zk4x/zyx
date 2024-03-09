@@ -15,10 +15,10 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "0.1.0", path = "../zyx-core" }
-zyx-nn = { version = "0.1.0", path = "../zyx-nn" }
-zyx-optim = { version = "0.1.0", path = "../zyx-optim" }
-zyx-derive = { version = "0.1.0", path = "../zyx-derive" }
-zyx-opencl = { version = "0.1.0", path = "../zyx-opencl" }
-zyx-cpu = { version = "0.1.0", path = "../zyx-cpu" }
-zyx-torch = { version = "0.1.0", path = "../zyx-torch" }
+zyx-core = { version = "0.1.0" }
+zyx-nn = { version = "0.1.0" }
+zyx-optim = { version = "0.1.0" }
+zyx-derive = { version = "0.1.0" }
+zyx-opencl = { version = "0.1.0" }
+zyx-cpu = { version = "0.1.0" }
+zyx-torch = { version = "0.1.0" }
