@@ -13,20 +13,11 @@ use opencl_sys::{
 };
 use zyx_compiler::Op;
 use zyx_core::{
-    axes::IntoAxes,
     dtype::DType,
     error::ZyxError,
     scalar::Scalar,
-    shape::Shape,
 };
 use zyx_core::view::Index;
-
-fn skip_last<T>(mut iter: impl Iterator<Item=T>) -> impl Iterator<Item=T> {
-    let last = iter.next();
-    iter.scan(last, |state, item| {
-        std::mem::replace(state, Some(item))
-    })
-}
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
 
@@ -830,9 +821,8 @@ impl zyx_compiler::Compiler for Compiler {
             }
             let elapsed_nanos = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed_nanos as f64 / 1000000.;
-            std::println!("bytes: {}, flops: {}", bytes, flop);
             std::println!(
-                "Kernel execution took {elapsed_millis:.3}ms ~ {:.2} GFLOPS, {:.2} GB/s",
+                "Kernel took {elapsed_millis:.3}ms for {bytes} B, {flop} FLOP ~ {:.2} GFLOPS, {:.2} GB/s",
                 flop as f64 / elapsed_nanos as f64,
                 bytes as f64 / elapsed_nanos as f64,
             );
@@ -856,11 +846,9 @@ impl zyx_compiler::Compiler for Compiler {
         let mut indent = String::from("  ");
 
         // Global and local indices
-        for i in 0..ir.global_work_size.len() {
-            source += &f!("{indent}{id_t} gid{i} = get_group_id({i});\n");
-        }
-        for i in 0..ir.local_work_size.len() {
-            source += &f!("{indent}{id_t} lid{i} = get_local_id({i});\n");
+        for (i, (gwd, lwd)) in ir.global_work_size.iter().zip(ir.local_work_size.iter()).enumerate() {
+            source += &f!("{indent}{id_t} gid{i} = get_group_id({i}); /* {} */\n", gwd/lwd);
+            source += &f!("{indent}{id_t} lid{i} = get_local_id({i}); /* {lwd} */\n");
         }
 
         for op in &ir.ops {
@@ -892,13 +880,66 @@ impl zyx_compiler::Compiler for Compiler {
                         source += &f!("{indent}{} rmem{id};\n", dtype.ocl_str());
                     }
                 }
-                Op::Exp { .. } => {}
-                Op::Add { .. } => {}
-                Op::Max { .. } => {}
-                Op::AddIdx { .. } => {}
-                Op::MulIdx { .. } => {}
+                Op::InitIndex { id, value } => {
+                    source += &f!("{indent}{id_t} idx{id} = {value};\n");
+                }
+                Op::InitAccumulator { id, dtype, is_sum_reduce, len } => {
+                    if let Some(len) = len {
+                        source += &f!("{indent}{} rmem{id}[{len}] = {{ {} }};\n", dtype.ocl_str(), if *is_sum_reduce { dtype.zero_value_str() } else { dtype.min_value_str() });
+                    } else {
+                        source += &f!("{indent}{} rmem{id} = {};\n", dtype.ocl_str(), if *is_sum_reduce { dtype.zero_value_str() } else { dtype.min_value_str() });
+                    }
+                }
+                Op::Cast { res_dtype: _, res, x } => {
+                    source += &f!("{indent}{res} = {x};\n");
+                }
+                Op::Neg { res, x } => {
+                    source += &f!("{indent}{res} = -{x};\n");
+                }
+                Op::Sin { res, x } => {
+                    source += &f!("{indent}{res} = sin({x});\n");
+                }
+                Op::Cos { res, x } => {
+                    source += &f!("{indent}{res} = cos({x});\n");
+                }
+                Op::Exp { res, x } => {
+                    source += &f!("{indent}{res} = exp({x});\n");
+                }
+                Op::Ln { res, x } => {
+                    source += &f!("{indent}{res} = log({x});\n");
+                }
+                Op::Tanh { res, x } => {
+                    source += &f!("{indent}{res} = tanh({x});\n");
+                }
+                Op::Sqrt { res, x } => {
+                    source += &f!("{indent}{res} = sqrt({x});\n");
+                }
+                Op::Add { res, x, y } => {
+                    source += &f!("{indent}{res} = {x} + {y};\n");
+                }
+                Op::Sub { res, x, y } => {
+                    source += &f!("{indent}{res} = {x} - {y};\n");
+                }
+                Op::Mul { res, x, y } => {
+                    source += &f!("{indent}{res} = {x} * {y};\n");
+                }
+                Op::Div { res, x, y } => {
+                    source += &f!("{indent}{res} = {x} / {y};\n");
+                }
+                Op::Pow { res, x, y } => {
+                    source += &f!("{indent}{res} = pow({x}, {y});\n");
+                }
+                Op::Cmplt { res, x, y } => {
+                    source += &f!("{indent}{res} = {x} < {y};\n");
+                }
+                Op::Max { res, x, y } => {
+                    source += &f!("{indent}{res} = max({x}, {y});\n");
+                }
+                Op::Where { res, x, y , z} => {
+                    source += &f!("{indent}{res} = {x} ? {y} : {z};\n");
+                }
                 Op::Loop { id, upper_bound, step } => {
-                    source += &f!("{indent}for ({id_t} rid{id}; rid{id} < {upper_bound}; rid{id} += {step}) {{\n");
+                    source += &f!("{indent}for ({id_t} rid{id} = 0; rid{id} < {upper_bound}; rid{id} += {step}) {{\n");
                     indent += "  ";
                 }
                 Op::EndLoop => {
@@ -924,7 +965,7 @@ impl zyx_compiler::Compiler for Compiler {
 /*#[test]
 fn exp_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
-    let x = dev.randn([1024, 1024, 1024], DType::F32);
+    let x = dev.randn([1024], DType::F32);
     //let x = dev.uniform([4, 3], 0f32..1f32);
     //let x = dev.randn([4, 5], DType::F32);
     let y = x.exp();
@@ -952,7 +993,7 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -961,7 +1002,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let _: Vec<f32> = z.to_vec()?;
     panic!();
     Ok(())
-}
+}*/
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {

@@ -26,6 +26,15 @@ impl DType {
         }
     }
 
+    /// Zero value as string
+    pub fn zero_value_str(self) -> &'static str {
+        match self {
+            Self::F32 => "0.0f",
+            Self::F64 => "0.0",
+            Self::I32 => "0",
+        }
+    }
+
     /// Min value as string
     pub fn min_value_str(self) -> &'static str {
         match self {

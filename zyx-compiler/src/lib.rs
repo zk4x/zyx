@@ -1,3 +1,20 @@
+//! Zyx compiler to IR
+
+#![no_std]
+#![forbid(unsafe_code)]
+#![forbid(rustdoc::broken_intra_doc_links)]
+#![forbid(rustdoc::private_intra_doc_links)]
+//#![forbid(missing_docs)]
+#![forbid(rustdoc::missing_crate_level_docs)]
+//#![forbid(rustdoc::missing_doc_code_examples)]
+#![forbid(rustdoc::private_doc_tests)]
+#![forbid(rustdoc::invalid_codeblock_attributes)]
+#![forbid(rustdoc::invalid_html_tags)]
+#![forbid(rustdoc::invalid_rust_codeblocks)]
+#![forbid(rustdoc::bare_urls)]
+#![forbid(rustdoc::unescaped_backticks)]
+#![forbid(rustdoc::redundant_explicit_links)]
+
 use zyx_core::error::ZyxError;
 
 mod impls;
@@ -6,10 +23,15 @@ mod ir;
 use impls::Kernel;
 pub use ir::{IR, Op};
 
-extern crate alloc;
-extern crate core;
+#[cfg(feature = "std")]
+extern crate std;
 
-use alloc::collections::BTreeMap;
+extern crate alloc;
+
+use alloc::{
+    vec::Vec,
+    collections::BTreeMap
+};
 use zyx_core::axes::Axes;
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
@@ -97,6 +119,7 @@ enum ASTOp {
     /// Compare less than binary op
     Cmplt(u8, u8),
     /// Where op
+    #[allow(dead_code)] // TODO where op
     Where(u8, u8, u8),
     /// Sum reduce op
     Sum(u8),
@@ -109,7 +132,7 @@ enum ASTOp {
 /// and elementwise ops after reduce.
 /// This struct is immutable.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AST {
+struct AST {
     /// AST argument views
     pub arg_views: Vec<View>,
     /// AST argument dtypes

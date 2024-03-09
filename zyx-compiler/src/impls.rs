@@ -329,7 +329,7 @@ impl<C: Compiler> CompiledBackend<C> {
         } else {
             // TODO optimize ast as much as possible here
             // for example deduplicate args
-            let ir = crate::ir::ast_to_ir(&ast, 256, 4, 2);
+            let ir = crate::ir::ast_to_ir(&ast, 256, 64);
             let program = self.compiler.compile(&ir)?;
             self.programs.entry(ast).or_insert(program)
         };

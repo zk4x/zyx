@@ -37,7 +37,7 @@ pub fn pad<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([[4, 3, 2, 1], [4, 2, 3, 8]])?;
     let y = x.pad([(1, 0), (0, 1)], 0);
     assert_eq!(y.shape(), [3, 5]);
-    println!("{y}");
+    //println!("{y}");
     assert_eq!(y, [[0, 4, 3, 2, 1], [0, 4, 2, 3, 8], [0, 0, 0, 0, 0]]);
     Ok(())
 }
