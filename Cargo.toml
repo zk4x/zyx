@@ -14,11 +14,6 @@ members = [
   "zyx-compiler",
 ]
 
-[workspace.dependencies]
-zyx-core = { path = "./zyx-core", version = "0.1.0", default-features = false }
-zyx-compiler = { path = "./zyx-compiler", version = "0.1.0", default-features = false }
-zyx-opencl = { path = "./zyx-opencl", version = "0.1.0" }
-
 [profile.release]
 opt-level = "z"
 lto = true
