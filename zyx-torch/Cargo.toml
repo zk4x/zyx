@@ -16,7 +16,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "0.1.0", path = "../zyx-core", default-features = false }
+zyx-core = { version = "0.1.0", default-features = false }
 tch = { version = "0.15.0", default-features = false }
 
 [features]
