@@ -19,7 +19,7 @@ maintenance = { status = "experimental" }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 
 [dev-dependencies]
-zyx-opencl = { version = "0.1.0" }
+zyx-opencl = { workspace = true, path = "../zyx-opencl" }
 
 [features]
 default = ["std"]

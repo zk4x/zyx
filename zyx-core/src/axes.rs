@@ -124,8 +124,16 @@ impl IntoAxes for Range<usize> {
 
 impl IntoAxes for Range<i64> {
     fn into_axes(mut self, rank: usize) -> Axes {
-        debug_assert!(self.all(|a| if a > 0 { (a as usize) < rank } else { ((-a) as usize) <= rank }));
-        Axes((((self.start + i64::try_from(rank).unwrap()) as usize % rank)..((self.end + i64::try_from(rank).unwrap()) as usize % rank)).collect())
+        debug_assert!(self.all(|a| if a > 0 {
+            (a as usize) < rank
+        } else {
+            ((-a) as usize) <= rank
+        }));
+        Axes(
+            (((self.start + i64::try_from(rank).unwrap()) as usize % rank)
+                ..((self.end + i64::try_from(rank).unwrap()) as usize % rank))
+                .collect(),
+        )
     }
 }
 
@@ -149,7 +157,11 @@ impl IntoAxes for core::ops::RangeFull {
 
 impl IntoAxes for &[i64] {
     fn into_axes(self, rank: usize) -> Axes {
-        debug_assert!(self.iter().all(|a| if *a > 0 { (*a as usize) < rank } else { ((-*a) as usize) <= rank }));
+        debug_assert!(self.iter().all(|a| if *a > 0 {
+            (*a as usize) < rank
+        } else {
+            ((-*a) as usize) <= rank
+        }));
         Axes(
             self.iter()
                 .map(|x| (x + i64::try_from(rank).unwrap()) as usize % rank)
@@ -160,7 +172,11 @@ impl IntoAxes for &[i64] {
 
 impl IntoAxes for i64 {
     fn into_axes(self, rank: usize) -> Axes {
-        debug_assert!(if self > 0 { (self as usize) < rank } else { ((-self) as usize) <= rank });
+        debug_assert!(if self > 0 {
+            (self as usize) < rank
+        } else {
+            ((-self) as usize) <= rank
+        });
         [self].into_axes(rank)
     }
 }
@@ -175,7 +191,11 @@ impl<const N: usize> IntoAxes for [i64; N] {
 impl core::ops::Index<i64> for Axes {
     type Output = usize;
     fn index(&self, index: i64) -> &Self::Output {
-        debug_assert!(if index > 0 { (index as usize) < self.len() } else { (-index) as usize <= self.len() });
+        debug_assert!(if index > 0 {
+            (index as usize) < self.len()
+        } else {
+            (-index) as usize <= self.len()
+        });
         let rank = self.len();
         self.0.get((index + rank as i64) as usize % rank).unwrap()
     }

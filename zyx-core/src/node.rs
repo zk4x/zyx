@@ -1,9 +1,9 @@
 extern crate alloc;
+use crate::dtype::DType;
 use crate::utils::get_shape;
 use crate::{axes::Axes, shape::Shape, tensor::Id};
 use alloc::boxed::Box;
 use core::fmt::Formatter;
-use crate::dtype::DType;
 
 /// Node representing different possible tensors
 pub enum Node {
@@ -102,7 +102,7 @@ impl Iterator for NodeParametersIterator {
     type Item = Id;
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx == self.len {
-            return None
+            return None;
         }
         let idx = self.idx;
         self.idx += 1;
@@ -114,8 +114,7 @@ impl Node {
     /// Get number of parameters of self. This method does not allocate.
     pub const fn num_parameters(&self) -> u8 {
         match self {
-            Node::Leaf(..)
-            | Node::Uniform(..) => 0,
+            Node::Leaf(..) | Node::Uniform(..) => 0,
             Node::Detach(..)
             | Node::Cast(..)
             | Node::Neg(..)
@@ -145,8 +144,11 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = Id> {
         match self {
-            Node::Leaf(..)
-            | Node::Uniform(..) => NodeParametersIterator { parameters: [crate::tensor::id(0); 3], idx: 0, len: 0 },
+            Node::Leaf(..) | Node::Uniform(..) => NodeParametersIterator {
+                parameters: [crate::tensor::id(0); 3],
+                idx: 0,
+                len: 0,
+            },
             Node::Cast(x, ..)
             | Node::Detach(x)
             | Node::Neg(x)
@@ -162,14 +164,26 @@ impl Node {
             | Node::Permute(x, ..)
             | Node::Pad(x, ..)
             | Node::Sum(x, ..)
-            | Node::Max(x, ..) => NodeParametersIterator { parameters: [*x, crate::tensor::id(0), crate::tensor::id(0)], idx: 0, len: 1 },
+            | Node::Max(x, ..) => NodeParametersIterator {
+                parameters: [*x, crate::tensor::id(0), crate::tensor::id(0)],
+                idx: 0,
+                len: 1,
+            },
             Node::Add(x, y)
             | Node::Sub(x, y)
             | Node::Mul(x, y)
             | Node::Div(x, y)
             | Node::Cmplt(x, y)
-            | Node::Pow(x, y) => NodeParametersIterator { parameters: [*x, *y, crate::tensor::id(0)], idx: 0, len: 2 },
-            Node::Where(x, y, z) => NodeParametersIterator { parameters: [*x, *y, *z], idx: 0, len: 3 },
+            | Node::Pow(x, y) => NodeParametersIterator {
+                parameters: [*x, *y, crate::tensor::id(0)],
+                idx: 0,
+                len: 2,
+            },
+            Node::Where(x, y, z) => NodeParametersIterator {
+                parameters: [*x, *y, *z],
+                idx: 0,
+                len: 3,
+            },
         }
     }
 
@@ -210,8 +224,7 @@ impl Node {
     /// Check if parameters of self contains nid.
     pub fn parameters_contain(&self, nid: Id) -> bool {
         match self {
-            Node::Leaf(..)
-            | Node::Uniform(..) => false,
+            Node::Leaf(..) | Node::Uniform(..) => false,
             Node::Detach(x)
             | Node::Cast(x, ..)
             | Node::Neg(x)

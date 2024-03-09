@@ -1,3 +1,4 @@
+use crate::{ASTOp, CompiledBackend, Compiler, AST};
 use alloc::{
     collections::{btree_map::Entry, BTreeMap},
     vec::Vec,
@@ -12,7 +13,6 @@ use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
 use zyx_core::utils::get_dtype;
 use zyx_core::view::View;
-use crate::{AST, CompiledBackend, Compiler, ASTOp};
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub(super) struct Kernel {
@@ -339,8 +339,10 @@ impl<C: Compiler> CompiledBackend<C> {
             .collect();
         // Run the program
         self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype));
-        self.buffers
-            .insert(x, self.compiler.launch(program, &program_args, flop, bytes)?);
+        self.buffers.insert(
+            x,
+            self.compiler.launch(program, &program_args, flop, bytes)?,
+        );
         Ok(&self.kernels[&x])
     }
 

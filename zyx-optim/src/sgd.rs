@@ -38,14 +38,21 @@ impl<B: Backend> SGD<B> {
     /// Updates parameters with gradients.
     /// Number of parameters must be the same as number of gradients.
     /// Gradients can be None, those are simply skipped.
-    pub fn update<'a>(&mut self, parameters: impl IntoIterator<Item = &'a mut Tensor<B>>, gradients: impl IntoIterator<Item = Option<Tensor<B>>>)
-    where
-        B: 'a
+    pub fn update<'a>(
+        &mut self,
+        parameters: impl IntoIterator<Item = &'a mut Tensor<B>>,
+        gradients: impl IntoIterator<Item = Option<Tensor<B>>>,
+    ) where
+        B: 'a,
     {
         let params: Vec<&mut Tensor<B>> = parameters.into_iter().collect();
         let grads: Vec<Option<Tensor<B>>> = gradients.into_iter().collect();
 
-        assert_eq!(params.len(), grads.len(), "Number of parameters != number of gradients.");
+        assert_eq!(
+            params.len(),
+            grads.len(),
+            "Number of parameters != number of gradients."
+        );
 
         for (i, (param, grad)) in params.into_iter().zip(grads).enumerate() {
             if let Some(mut grad) = grad {

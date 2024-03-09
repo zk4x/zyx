@@ -1,17 +1,14 @@
-use std::collections::BTreeSet;
 use crate::dtype::DType;
 use crate::node::Node;
 use crate::shape::Shape;
 use crate::tensor::Id;
+use std::collections::BTreeSet;
 
 /// Sized iterator
 pub trait SizedIterator: Iterator + Sized {
     /// Manually add exact size to any iterator
     fn make_sized(self, len: usize) -> SizedIter<Self::Item, Self> {
-        SizedIter {
-            iter: self,
-            len,
-        }
+        SizedIter { iter: self, len }
     }
 }
 
@@ -127,9 +124,7 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u32]) -> alloc:
             Node::Pad(x, padding, ..) => add_node(id, &format!("Pad({x}, {padding:?})"), "oval"),
             Node::Cast(x, dtype) => add_node(id, &format!("CastI32({x}, {dtype})"), "oval"),
             Node::Reshape(x, ..) => add_node(id, &format!("Reshape({x})"), "oval"),
-            Node::Permute(x, axes, ..) => {
-                add_node(id, &format!("Permute({x}, {axes:?})"), "oval")
-            }
+            Node::Permute(x, axes, ..) => add_node(id, &format!("Permute({x}, {axes:?})"), "oval"),
             Node::Sum(x, axes, ..) => add_node(id, &format!("Sum({x}, {axes:?})"), "oval"),
             Node::Max(x, axes, ..) => add_node(id, &format!("Max({x}, {axes:?})"), "oval"),
         }
@@ -141,4 +136,3 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u32]) -> alloc:
     write!(res, "{edges}}}").unwrap();
     res
 }
-

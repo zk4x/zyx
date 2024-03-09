@@ -1,7 +1,7 @@
 use zyx_core::backend::Backend;
-use zyx_derive::Module;
-use zyx_nn::{Linear, prelude::*};
 use zyx_core::error::ZyxError;
+use zyx_derive::Module;
+use zyx_nn::{prelude::*, Linear};
 
 #[derive(Module)]
 struct TinyNet<B: Backend> {

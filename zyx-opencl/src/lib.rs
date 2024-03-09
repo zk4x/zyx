@@ -36,8 +36,8 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::ops::Range;
 use core::cell::RefCell;
+use core::ops::Range;
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
 use zyx_core::{
@@ -57,9 +57,9 @@ pub struct OpenCL(RefCell<Runtime<zyx_compiler::CompiledBackend<Compiler>>>);
 /// Create new OpenCL backend using first OpenCL platform
 /// and all hardware devices in that platform.
 pub fn device() -> Result<OpenCL, ZyxError> {
-    Ok(OpenCL(RefCell::new(Runtime::new(zyx_compiler::CompiledBackend::new(
-        Compiler::new(0, 8)?,
-    )))))
+    Ok(OpenCL(RefCell::new(Runtime::new(
+        zyx_compiler::CompiledBackend::new(Compiler::new(0, 8)?),
+    ))))
 }
 
 /// Create new OpenCL backend using builder.
@@ -92,9 +92,12 @@ impl OpenCLBuilder {
 
     /// Build
     pub fn build(self) -> Result<OpenCL, ZyxError> {
-        Ok(OpenCL(RefCell::new(Runtime::new(zyx_compiler::CompiledBackend::new(
-            Compiler::new(self.platform_id, self.queues_per_device)?,
-        )))))
+        Ok(OpenCL(RefCell::new(Runtime::new(
+            zyx_compiler::CompiledBackend::new(Compiler::new(
+                self.platform_id,
+                self.queues_per_device,
+            )?),
+        ))))
     }
 }
 
@@ -170,11 +173,21 @@ impl Backend for &OpenCL {
     }
 
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
+        Ok(tensor(
+            self.0.borrow_mut().randn(shape.into(), dtype)?,
+            self,
+        ))
     }
 
-    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
+    fn uniform(
+        self,
+        shape: impl Into<Shape>,
+        range: Range<impl Scalar>,
+    ) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(
+            self.0.borrow_mut().uniform(shape.into(), range)?,
+            self,
+        ))
     }
 
     fn shape(self, x: Id) -> Shape {

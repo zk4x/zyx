@@ -128,11 +128,21 @@ impl Backend for &CPU {
     }
 
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
+        Ok(tensor(
+            self.0.borrow_mut().randn(shape.into(), dtype)?,
+            self,
+        ))
     }
 
-    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
+    fn uniform(
+        self,
+        shape: impl Into<Shape>,
+        range: Range<impl Scalar>,
+    ) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(
+            self.0.borrow_mut().uniform(shape.into(), range)?,
+            self,
+        ))
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -153,7 +163,7 @@ impl Backend for &CPU {
 
     fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
     where
-        IT: IntoIterator<Item=T>,
+        IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
         self.0.borrow_mut().store(iter)

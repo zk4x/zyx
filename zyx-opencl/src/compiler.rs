@@ -12,12 +12,8 @@ use opencl_sys::{
     CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
 use zyx_compiler::Op;
-use zyx_core::{
-    dtype::DType,
-    error::ZyxError,
-    scalar::Scalar,
-};
 use zyx_core::view::Index;
+use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
 
@@ -528,7 +524,7 @@ impl zyx_compiler::Compiler for Compiler {
 
     type Program = Program;
 
-    fn store<T>(&mut self, iter: impl IntoIterator<Item=T>) -> Result<Self::Buffer, ZyxError> {
+    fn store<T>(&mut self, iter: impl IntoIterator<Item = T>) -> Result<Self::Buffer, ZyxError> {
         //std::println!("Storing");
         // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.into_iter().collect();
@@ -687,7 +683,7 @@ impl zyx_compiler::Compiler for Compiler {
         bytes: usize,
     ) -> Result<Self::Buffer, ZyxError> {
         #[cfg(not(feature = "debug1"))]
-            let (_, _) = (flop, bytes);
+        let (_, _) = (flop, bytes);
         let program_name = &CString::new(program.name.clone()).unwrap();
         let mut err = CL_SUCCESS;
         let kernel =
@@ -764,7 +760,7 @@ impl zyx_compiler::Compiler for Compiler {
         }
         let mut event: *mut c_void = ptr::null_mut();
         #[cfg(feature = "debug1")]
-            let begin = std::time::Instant::now();
+        let begin = std::time::Instant::now();
         let err = unsafe {
             clEnqueueNDRangeKernel(
                 self.queue(),
@@ -837,7 +833,11 @@ impl zyx_compiler::Compiler for Compiler {
 
         // Kernel arguments
         for (i, (dtype, read_only)) in ir.kernel_args.iter().enumerate() {
-            source += &f!("  __global {}{}* gmem{i},\n", if *read_only { "const " } else { "" }, dtype.ocl_str());
+            source += &f!(
+                "  __global {}{}* gmem{i},\n",
+                if *read_only { "const " } else { "" },
+                dtype.ocl_str()
+            );
         }
         source.pop();
         source.pop();
@@ -846,33 +846,37 @@ impl zyx_compiler::Compiler for Compiler {
         let mut indent = String::from("  ");
 
         // Global and local indices
-        for (i, (gwd, lwd)) in ir.global_work_size.iter().zip(ir.local_work_size.iter()).enumerate() {
-            source += &f!("{indent}{id_t} gid{i} = get_group_id({i}); /* {} */\n", gwd/lwd);
+        for (i, (gwd, lwd)) in ir
+            .global_work_size
+            .iter()
+            .zip(ir.local_work_size.iter())
+            .enumerate()
+        {
+            source += &f!(
+                "{indent}{id_t} gid{i} = get_group_id({i}); /* {} */\n",
+                gwd / lwd
+            );
             source += &f!("{indent}{id_t} lid{i} = get_local_id({i}); /* {lwd} */\n");
         }
 
         for op in &ir.ops {
             match op {
-                Op::LoadGlobal { res, arg, index } => {
-                    match index {
-                        Index::Normal(idx) => {
-                            source += &f!("{indent}{res} = gmem{arg}[{idx}];\n");
-                        }
-                        Index::Padded(padding, idx) => {
-                            source += &f!("{indent}{res} = {padding} ? gmem{arg}[{idx}] : 0;\n");
-                        }
+                Op::LoadGlobal { res, arg, index } => match index {
+                    Index::Normal(idx) => {
+                        source += &f!("{indent}{res} = gmem{arg}[{idx}];\n");
                     }
-                }
-                Op::StoreGlobal { res, index, arg } => {
-                    match index {
-                        Index::Normal(idx) => {
-                            source += &f!("{indent}gmem{res}[{idx}] = {arg};\n");
-                        }
-                        Index::Padded(padding, idx) => {
-                            source += &f!("if ({padding}) {{ {indent}gmem{res}[{idx}] = {arg}; }}\n");
-                        }
+                    Index::Padded(padding, idx) => {
+                        source += &f!("{indent}{res} = {padding} ? gmem{arg}[{idx}] : 0;\n");
                     }
-                }
+                },
+                Op::StoreGlobal { res, index, arg } => match index {
+                    Index::Normal(idx) => {
+                        source += &f!("{indent}gmem{res}[{idx}] = {arg};\n");
+                    }
+                    Index::Padded(padding, idx) => {
+                        source += &f!("if ({padding}) {{ {indent}gmem{res}[{idx}] = {arg}; }}\n");
+                    }
+                },
                 Op::DeclareVar { dtype, id, len } => {
                     if let Some(len) = len {
                         source += &f!("{indent}{} rmem{id}[{len}];\n", dtype.ocl_str());
@@ -883,14 +887,39 @@ impl zyx_compiler::Compiler for Compiler {
                 Op::InitIndex { id, value } => {
                     source += &f!("{indent}{id_t} idx{id} = {value};\n");
                 }
-                Op::InitAccumulator { id, dtype, is_sum_reduce, len } => {
+                Op::InitAccumulator {
+                    id,
+                    dtype,
+                    is_sum_reduce,
+                    len,
+                } => {
                     if let Some(len) = len {
-                        source += &f!("{indent}{} rmem{id}[{len}] = {{ {} }};\n", dtype.ocl_str(), if *is_sum_reduce { dtype.zero_value_str() } else { dtype.min_value_str() });
+                        source += &f!(
+                            "{indent}{} rmem{id}[{len}] = {{ {} }};\n",
+                            dtype.ocl_str(),
+                            if *is_sum_reduce {
+                                dtype.zero_value_str()
+                            } else {
+                                dtype.min_value_str()
+                            }
+                        );
                     } else {
-                        source += &f!("{indent}{} rmem{id} = {};\n", dtype.ocl_str(), if *is_sum_reduce { dtype.zero_value_str() } else { dtype.min_value_str() });
+                        source += &f!(
+                            "{indent}{} rmem{id} = {};\n",
+                            dtype.ocl_str(),
+                            if *is_sum_reduce {
+                                dtype.zero_value_str()
+                            } else {
+                                dtype.min_value_str()
+                            }
+                        );
                     }
                 }
-                Op::Cast { res_dtype: _, res, x } => {
+                Op::Cast {
+                    res_dtype: _,
+                    res,
+                    x,
+                } => {
                     source += &f!("{indent}{res} = {x};\n");
                 }
                 Op::Neg { res, x } => {
@@ -935,15 +964,19 @@ impl zyx_compiler::Compiler for Compiler {
                 Op::Max { res, x, y } => {
                     source += &f!("{indent}{res} = max({x}, {y});\n");
                 }
-                Op::Where { res, x, y , z} => {
+                Op::Where { res, x, y, z } => {
                     source += &f!("{indent}{res} = {x} ? {y} : {z};\n");
                 }
-                Op::Loop { id, upper_bound, step } => {
+                Op::Loop {
+                    id,
+                    upper_bound,
+                    step,
+                } => {
                     source += &f!("{indent}for ({id_t} rid{id} = 0; rid{id} < {upper_bound}; rid{id} += {step}) {{\n");
                     indent += "  ";
                 }
                 Op::EndLoop => {
-                    indent = indent[..indent.len()-2].into();
+                    indent = indent[..indent.len() - 2].into();
                     source += &f!("{indent}}}\n");
                 }
             }

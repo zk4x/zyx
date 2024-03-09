@@ -1,5 +1,5 @@
-use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar};
 use itertools::Itertools;
+use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar};
 
 pub fn t0<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([[4, 3, 4], [4, 2, 5]])?;
@@ -15,7 +15,12 @@ pub fn dot<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let z = x.dot(&y);
     assert_eq!(z, [[17, 24, 18], [24, 30, 30]]);
 
-    let (x_grad, y_grad) = z.backward([&x, &y]).into_iter().flatten().collect_tuple().unwrap();
+    let (x_grad, y_grad) = z
+        .backward([&x, &y])
+        .into_iter()
+        .flatten()
+        .collect_tuple()
+        .unwrap();
 
     assert_eq!(x_grad, [[8, 4, 9], [8, 4, 9]]);
     //println!("{y_grad}");
@@ -30,7 +35,14 @@ pub fn t1<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         x = x + 10;
     }
     //println!("{}", z);
-    assert_eq!(x, [[100002, 100004, 100003], [100005, 100002, 100004], [100003, 100001, 100002]]);
+    assert_eq!(
+        x,
+        [
+            [100002, 100004, 100003],
+            [100005, 100002, 100004],
+            [100003, 100001, 100002]
+        ]
+    );
     Ok(())
 }
 

@@ -60,13 +60,13 @@ impl<B: Backend> LayerNorm<B> {
     /// Forward function for layer_norm.
     pub fn forward(&self, x: &Tensor<B>) -> Tensor<B> {
         let axes = -(self.d_dims as i64)..=-1;
-        let mut x = (x - x.mean(&axes))/(x.var(axes) + self.eps).sqrt();
+        let mut x = (x - x.mean(&axes)) / (x.var(axes) + self.eps).sqrt();
         if let Some(w) = &self.weight {
             x = x * w;
         }
         if let Some(b) = &self.bias {
             x = x + b;
         }
-        return x
+        return x;
     }
 }

@@ -316,7 +316,7 @@ impl View {
                     _ => idx += &f!("idx{i}*{st}+"),
                 }
                 if *left_p < 0 {
-                    idx += &f!("{}+", (-left_p) as usize*st);
+                    idx += &f!("{}+", (-left_p) as usize * st);
                 } else if *left_p > 0 {
                     padding_condition = f!("{padding_condition} && (idx{i}>{})", left_p - 1);
                 }
@@ -325,7 +325,7 @@ impl View {
                         f!("{padding_condition} && (idx{i}<{})", d - *right_p as usize);
                 }
                 if *left_p > 0 {
-                    idx += &f!("-{}+", *left_p as usize*st);
+                    idx += &f!("-{}+", *left_p as usize * st);
                 }
             }
             if idx.is_empty() {
@@ -527,11 +527,12 @@ impl View {
             };
         } else {
             let shape = self.shape();
-            if n_shape.rank() > shape.rank() && n_shape
-                .iter()
-                .filter(|d| **d != 1)
-                .zip(shape.iter())
-                .all(|(nd, d)| nd == d)
+            if n_shape.rank() > shape.rank()
+                && n_shape
+                    .iter()
+                    .filter(|d| **d != 1)
+                    .zip(shape.iter())
+                    .all(|(nd, d)| nd == d)
             {
                 // If not  contiguous, then merge, this merges if reshape is unsqueeze
                 //std::println!("Ok to merge {n_shape} with {}", self.shape());

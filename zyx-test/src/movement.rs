@@ -1,5 +1,5 @@
 use super::assert_eq;
-use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape, axes::Axes};
+use zyx_core::{axes::Axes, backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape};
 
 pub fn reshape<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.randn([2, 4, 1, 5], T::dtype())?;
@@ -47,17 +47,30 @@ fn _permute<T: Scalar>(data: &[T], shape: Shape, axes: Axes) -> Vec<T> {
     let ndim = shape.rank();
     let strides = shape.strides().permute(&axes);
     let mut acc_var = 1;
-    let acc = Shape::from(shape.into_iter().rev().map(|x| { acc_var *= x; acc_var }).collect::<Vec<usize>>().into_iter().rev().collect::<Vec<usize>>()).permute(&axes);
+    let acc = Shape::from(
+        shape
+            .into_iter()
+            .rev()
+            .map(|x| {
+                acc_var *= x;
+                acc_var
+            })
+            .collect::<Vec<usize>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<usize>>(),
+    )
+    .permute(&axes);
     let n = shape.numel();
     // temp is in reverse order
     let mut temp = vec![(0, 0); ndim]; // strides, acc_shape
     let mut begins = vec![0; ndim];
     for k in 0..ndim {
-        temp[ndim-k-1] = (strides[k], acc[k]);
+        temp[ndim - k - 1] = (strides[k], acc[k]);
     }
     let mut r_data: Vec<T> = Vec::with_capacity(n);
     let mut i = 0;
-    for _ in  0..n {
+    for _ in 0..n {
         r_data.push(data[i].clone());
         for (j, (st, acc)) in temp.iter().enumerate() {
             begins[j] += st;
@@ -93,7 +106,7 @@ fn _expand<T: Scalar>(mut data: Vec<T>, shape: Shape, res_shape: Shape) -> Vec<T
         for i in (0..n).step_by(width) {
             // copy this part of vec
             for _ in 0..times {
-                res_data.extend_from_slice(&data[i..i+width]);
+                res_data.extend_from_slice(&data[i..i + width]);
             }
         }
         res_data
@@ -101,14 +114,21 @@ fn _expand<T: Scalar>(mut data: Vec<T>, shape: Shape, res_shape: Shape) -> Vec<T
 
     let mut i = ndims;
     let mut width = 1;
-    for (d, r) in shape.clone().into_iter().zip(res_shape.clone().into_iter()).rev() {
+    for (d, r) in shape
+        .clone()
+        .into_iter()
+        .zip(res_shape.clone().into_iter())
+        .rev()
+    {
         i -= 1;
         if d != r {
             if d == 1 {
-                data = copy_dim(data, width, r/d);
+                data = copy_dim(data, width, r / d);
             } else {
-                panic!("Incompatible input: {:?} and expand shape: {:?} on dim {:?}",
-                    shape, res_shape, i);
+                panic!(
+                    "Incompatible input: {:?} and expand shape: {:?} on dim {:?}",
+                    shape, res_shape, i
+                );
             }
         }
         width *= res_shape[i];

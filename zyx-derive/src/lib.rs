@@ -41,9 +41,9 @@
 #![forbid(rustdoc::redundant_explicit_links)]
 
 extern crate proc_macro;
-use proc_macro::{TokenStream};
-use quote::{quote};
-use syn::{Data, DataStruct, DeriveInput, parse_macro_input};
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
 
 /// # Procedural macro Module
 ///

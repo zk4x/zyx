@@ -36,7 +36,7 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::{ops::Range, cell::RefCell};
+use core::{cell::RefCell, ops::Range};
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
 use zyx_core::{
@@ -108,23 +108,39 @@ impl Torch {
 
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
-    pub fn plot_graph<'a, B: Backend + 'a>(&self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+    pub fn plot_graph<'a, B: Backend + 'a>(
+        &self,
+        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> alloc::string::String {
         <&Self as Backend>::plot_graph(self, tensors)
     }
 }
 
 impl Backend for &Torch {
-    fn plot_graph<'a, B: Backend + 'a>(self, tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> alloc::string::String {
+    fn plot_graph<'a, B: Backend + 'a>(
+        self,
+        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
+    ) -> alloc::string::String {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
         self.0.borrow().plot_graph_dot(&ids)
     }
 
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
+        Ok(tensor(
+            self.0.borrow_mut().randn(shape.into(), dtype)?,
+            self,
+        ))
     }
 
-    fn uniform(self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
+    fn uniform(
+        self,
+        shape: impl Into<Shape>,
+        range: Range<impl Scalar>,
+    ) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(
+            self.0.borrow_mut().uniform(shape.into(), range)?,
+            self,
+        ))
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -145,7 +161,7 @@ impl Backend for &Torch {
 
     fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
     where
-        IT: IntoIterator<Item=T>,
+        IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
         self.0.borrow_mut().store(iter)

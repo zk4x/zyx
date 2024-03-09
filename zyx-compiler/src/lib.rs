@@ -21,17 +21,14 @@ mod impls;
 mod ir;
 
 use impls::Kernel;
-pub use ir::{IR, Op};
+pub use ir::{Op, IR};
 
 #[cfg(feature = "std")]
 extern crate std;
 
 extern crate alloc;
 
-use alloc::{
-    vec::Vec,
-    collections::BTreeMap
-};
+use alloc::{collections::BTreeMap, vec::Vec};
 use zyx_core::axes::Axes;
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;

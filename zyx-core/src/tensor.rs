@@ -4,14 +4,14 @@ use crate::dtype::DType;
 use crate::error::ZyxError;
 use crate::scalar::Scalar;
 use crate::shape::Shape;
+use crate::utils::SizedIterator;
 use crate::{backend::Backend, node::Node};
 use alloc::{boxed::Box, collections::BTreeSet, vec::Vec};
 use core::{
     cmp::Ordering,
     iter::repeat,
-    ops::{Range, SubAssign, RangeFull, RangeFrom, RangeTo, RangeInclusive, RangeToInclusive},
+    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, SubAssign},
 };
-use crate::utils::SizedIterator;
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
@@ -224,28 +224,49 @@ pub trait FlattenAxes {
 }
 
 impl FlattenAxes for RangeFrom<i64> {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
-        debug_assert!(if self.start > 0 { (self.start as usize) < rank } else { ((-self.start) as usize) <= rank }, "Cannot use {self:?} as flatten axes.");
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
+        debug_assert!(
+            if self.start > 0 {
+                (self.start as usize) < rank
+            } else {
+                ((-self.start) as usize) <= rank
+            },
+            "Cannot use {self:?} as flatten axes."
+        );
         self.start..i64::MAX
     }
 }
 
 impl FlattenAxes for RangeTo<i64> {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
-        debug_assert!(if self.end > 0 { (self.end as usize) < rank } else { ((-self.end) as usize) <= rank }, "Cannot use {self:?} as flatten axes.");
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
+        debug_assert!(
+            if self.end > 0 {
+                (self.end as usize) < rank
+            } else {
+                ((-self.end) as usize) <= rank
+            },
+            "Cannot use {self:?} as flatten axes."
+        );
         0..self.end
     }
 }
 
 impl FlattenAxes for RangeToInclusive<i64> {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
-        debug_assert!(if self.end > 0 { (self.end as usize) < rank } else { ((-self.end) as usize) <= rank }, "Cannot use {self:?} as flatten axes.");
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
+        debug_assert!(
+            if self.end > 0 {
+                (self.end as usize) < rank
+            } else {
+                ((-self.end) as usize) <= rank
+            },
+            "Cannot use {self:?} as flatten axes."
+        );
         0..self.end + 1
     }
 }
 
 impl FlattenAxes for RangeFull {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item=i64> {
+    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
         0..rank as i64
     }
 }
@@ -309,7 +330,11 @@ impl<B: Backend> core::fmt::Display for Tensor<B> {
                 }
             }
         };
-        f.write_fmt(format_args!("Tensor {} {}\n{res}", self.shape(), self.dtype()))
+        f.write_fmt(format_args!(
+            "Tensor {} {}\n{res}",
+            self.shape(),
+            self.dtype()
+        ))
     }
 }
 
@@ -469,7 +494,10 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn detach(&self) -> Tensor<B> {
         // It should be possible to just be optimize this away.
-        tensor(self.backend.push(Node::Detach(self.id)).unwrap(), self.backend)
+        tensor(
+            self.backend.push(Node::Detach(self.id)).unwrap(),
+            self.backend,
+        )
     }
 
     /*
@@ -562,13 +590,19 @@ impl<B: Backend> Tensor<B> {
     /// ```
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor<B> {
-        tensor(self.backend.push(Node::Cast(self.id, dtype)).unwrap(), self.backend)
+        tensor(
+            self.backend.push(Node::Cast(self.id, dtype)).unwrap(),
+            self.backend,
+        )
     }
 
     /// Returns a new tensor with the rectified linear unit function applied to the elements of self.
     #[must_use]
     pub fn relu(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::ReLU(self.id)).unwrap(), self.backend)
+        tensor(
+            self.backend.push(Node::ReLU(self.id)).unwrap(),
+            self.backend,
+        )
     }
 
     /// Returns a new tensor with the sine of the elements of self.
@@ -601,7 +635,10 @@ impl<B: Backend> Tensor<B> {
     /// Returns a new tensor with the hyperbolic tangent of the elements of self.
     #[must_use]
     pub fn tanh(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::Tanh(self.id)).unwrap(), self.backend)
+        tensor(
+            self.backend.push(Node::Tanh(self.id)).unwrap(),
+            self.backend,
+        )
     }
 
     /// Returns a new tensor with the square root of the elements of self.
@@ -610,7 +647,10 @@ impl<B: Backend> Tensor<B> {
     /// defined (when x < 0).
     #[must_use]
     pub fn sqrt(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::Sqrt(self.id)).unwrap(), self.backend)
+        tensor(
+            self.backend.push(Node::Sqrt(self.id)).unwrap(),
+            self.backend,
+        )
     }
 
     /// Returns 1/self
@@ -629,7 +669,8 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor<B> {
         self.backend()
-            .tensor(probability).unwrap()
+            .tensor(probability)
+            .unwrap()
             .cmplt(self.backend().uniform(self.shape(), 0.0..1.0).unwrap())
             * self
     }
@@ -699,7 +740,8 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn celu(&self, alpha: impl Scalar) -> Tensor<B> {
         self.relu()
-            - ((self.backend.ones(1, self.dtype()).unwrap() - (self / alpha.clone()).exp()) * alpha).relu()
+            - ((self.backend.ones(1, self.dtype()).unwrap() - (self / alpha.clone()).exp()) * alpha)
+                .relu()
     }
 
     /// Returns a new tensor with the gelu of the elements of self.
@@ -763,14 +805,14 @@ impl<B: Backend> Tensor<B> {
             if !dtype.is_floating() {
                 // TODO other int dtypes
                 if exponent.item::<i32>().unwrap() == 2i32 {
-                    return self * self
+                    return self * self;
                 } else if exponent.item::<i32>().unwrap() == 3i32 {
-                    return self * self * self
+                    return self * self * self;
                 }
             }
         }
         if self.dtype().is_floating() {
-            return (exponent * self.ln()).exp()
+            return (exponent * self.ln()).exp();
         }
         self.clone().binary_op(exponent, BOp::Pow)
     }
@@ -949,17 +991,15 @@ impl<B: Backend> Tensor<B> {
                 && padding
                     .iter()
                     .zip(sh.iter().rev())
-                    .all(|((lp, rp), d)|
-                         if *lp < 0 {
-                             ((-*lp) as usize) <= *d
-                         } else {
-                             true
-                         } &&
-                         if *rp < 0 {
-                             ((-*rp) as usize) <= *d
-                         } else {
-                             true
-                         }),
+                    .all(|((lp, rp), d)| if *lp < 0 {
+                        ((-*lp) as usize) <= *d
+                    } else {
+                        true
+                    } && if *rp < 0 {
+                        ((-*rp) as usize) <= *d
+                    } else {
+                        true
+                    }),
             "Cannot pad tensor with shape {sh} with padding {padding:?}"
         );
         let psh = sh.clone().pad(&padding);
@@ -988,7 +1028,10 @@ impl<B: Backend> Tensor<B> {
                     .unwrap(),
                 self.backend,
             )
-            .where_(self.backend.zeros(self.shape(), self.dtype()).unwrap(), value)
+            .where_(
+                self.backend.zeros(self.shape(), self.dtype()).unwrap(),
+                value,
+            )
         }
     }
 
@@ -1158,7 +1201,10 @@ impl<B: Backend> Tensor<B> {
     #[must_use]
     pub fn diagonal(&self) -> Tensor<B> {
         let n: usize = self.shape()[-1];
-        self.flatten(..).pad([(0, n as i64)], 0).reshape([n, n+1]).get((.., 0))
+        self.flatten(..)
+            .pad([(0, n as i64)], 0)
+            .reshape([n, n + 1])
+            .get((.., 0))
     }
 
     /*
@@ -1268,7 +1314,8 @@ impl<B: Backend> Tensor<B> {
         let mut offset = 0i64;
         let mut res = tensors[0]
             .backend
-            .zeros(tensors[0].shape(), tensors[0].dtype()).unwrap();
+            .zeros(tensors[0].shape(), tensors[0].dtype())
+            .unwrap();
         for tensor in tensors {
             res = res
                 + tensor.pad(
@@ -1588,57 +1635,43 @@ where
     Range<T>: Iterator<Item = T> + ExactSizeIterator,
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend.store(self).unwrap(),
-            backend,
-        )
+        tensor(backend.store(self).unwrap(), backend)
     }
 }
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend.store(self).unwrap(),
-            backend,
-        )
+        tensor(backend.store(self).unwrap(), backend)
     }
 }
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend.store(self.iter().cloned()).unwrap(),
-            backend,
-        )
+        tensor(backend.store(self.iter().cloned()).unwrap(), backend)
     }
 }
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for T {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend
-                .store( [self])
-                .unwrap(),
-            backend,
-        )
+        tensor(backend.store([self]).unwrap(), backend)
     }
 }
 
 impl<B: Backend, T: Scalar, const D0: usize> IntoTensor<B> for [T; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend.store(self).unwrap(),
-            backend,
-        )
+        tensor(backend.store(self).unwrap(), backend)
     }
 }
 
 impl<B: Backend, T: Scalar, const D0: usize, const D1: usize> IntoTensor<B> for [[T; D1]; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
-            backend.store(self.into_iter().flatten().make_sized(D0*D1)).unwrap(),
+            backend
+                .store(self.into_iter().flatten().make_sized(D0 * D1))
+                .unwrap(),
             backend,
-        ).reshape([D0, D1])
+        )
+        .reshape([D0, D1])
     }
 }
 
@@ -1647,9 +1680,17 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
         tensor(
-            backend.store(self.into_iter().flatten().flatten().make_sized(D0*D1*D2)).unwrap(),
+            backend
+                .store(
+                    self.into_iter()
+                        .flatten()
+                        .flatten()
+                        .make_sized(D0 * D1 * D2),
+                )
+                .unwrap(),
             backend,
-        ).reshape([D0, D1, D2])
+        )
+        .reshape([D0, D1, D2])
     }
 }
 

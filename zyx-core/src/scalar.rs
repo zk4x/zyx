@@ -81,14 +81,16 @@ impl Scalar for f32 {
         self
     }
 
-    fn into_f64(self) -> f64 { self as f64 }
+    fn into_f64(self) -> f64 {
+        self as f64
+    }
 
     fn into_i32(self) -> i32 {
         self as i32
     }
 
     fn reciprocal(self) -> Self {
-        1.0/self
+        1.0 / self
     }
 
     fn neg(self) -> Self {
@@ -197,14 +199,16 @@ impl Scalar for f64 {
         self as f32
     }
 
-    fn into_f64(self) -> f64 { self }
+    fn into_f64(self) -> f64 {
+        self
+    }
 
     fn into_i32(self) -> i32 {
         self as i32
     }
 
     fn reciprocal(self) -> Self {
-        1.0/self
+        1.0 / self
     }
 
     fn neg(self) -> Self {
@@ -317,7 +321,7 @@ impl Scalar for i32 {
     }
 
     fn reciprocal(self) -> Self {
-        1/self
+        1 / self
     }
 
     fn neg(self) -> Self {

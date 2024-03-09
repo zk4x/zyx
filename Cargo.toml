@@ -1,9 +1,21 @@
 [workspace]
 resolver = "2"
-
 members = [
-  "zyx-core", "zyx-cpu", "zyx-torch", "zyx-nn", "zyx-opencl", "zyx-test", "zyx-optim", "zyx", "zyx-derive", "zyx-examples", "zyx-compiler",
+  "zyx-core",
+  "zyx-cpu",
+  "zyx-torch",
+  "zyx-nn",
+  "zyx-opencl",
+  "zyx-test",
+  "zyx-optim",
+  "zyx",
+  "zyx-derive",
+  "zyx-examples",
+  "zyx-compiler",
 ]
+
+[workspace.dependencies]
+zyx-opencl = { path = "./zyx-opencl", version = "0.1.0" }
 
 [profile.release]
 opt-level = "z"

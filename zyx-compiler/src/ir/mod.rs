@@ -5,7 +5,7 @@ use zyx_core::{
     axes::{Axes, IntoAxes},
     dtype::DType,
     shape::Shape,
-    view::{Index, View}
+    view::{Index, View},
 };
 
 /// Variable in IR
@@ -29,18 +29,10 @@ impl Display for Var {
                     f.write_fmt(format_args!("rmem{id}"))
                 }
             }
-            Var::ConstF32(value) => {
-                f.write_fmt(format_args!("{value:.8}f"))
-            }
-            Var::ConstF64(value) => {
-                f.write_fmt(format_args!("{value:.16}"))
-            }
-            Var::ConstI32(value) => {
-                f.write_fmt(format_args!("{value}"))
-            }
-            Var::ConstI64(value) => {
-                f.write_fmt(format_args!("{value}"))
-            }
+            Var::ConstF32(value) => f.write_fmt(format_args!("{value:.8}f")),
+            Var::ConstF64(value) => f.write_fmt(format_args!("{value:.16}")),
+            Var::ConstI32(value) => f.write_fmt(format_args!("{value}")),
+            Var::ConstI64(value) => f.write_fmt(format_args!("{value}")),
         }
     }
 }
@@ -48,17 +40,9 @@ impl Display for Var {
 /// Op for the compilers
 pub enum Op {
     /// Load into res from arg at index
-    LoadGlobal {
-        res: Var,
-        arg: u8,
-        index: Index,
-    },
+    LoadGlobal { res: Var, arg: u8, index: Index },
     /// Store arg into res at index
-    StoreGlobal {
-        res: u8,
-        index: Index,
-        arg: Var,
-    },
+    StoreGlobal { res: u8, index: Index, arg: Var },
     /// Declare register variable id with dtype and optionally
     /// with given length (as a vector)
     DeclareVar {
@@ -67,10 +51,7 @@ pub enum Op {
         len: Option<u8>,
     },
     /// Initialize index id with value
-    InitIndex {
-        id: u8,
-        value: String,
-    },
+    InitIndex { id: u8, value: String },
     /// Initialize accumulator, if sum_reduce is true,
     /// then initilize to zero, otherwise initilize to minimum
     /// of dtype.
@@ -81,95 +62,37 @@ pub enum Op {
         len: Option<u8>,
     },
     /// Cast x to res_dtype
-    Cast {
-        res_dtype: DType,
-        res: Var,
-        x: Var,
-    },
+    Cast { res_dtype: DType, res: Var, x: Var },
     /// Neg
-    Neg {
-        res: Var,
-        x: Var,
-    },
+    Neg { res: Var, x: Var },
     /// Sin
-    Sin {
-        res: Var,
-        x: Var,
-    },
+    Sin { res: Var, x: Var },
     /// Cos
-    Cos {
-        res: Var,
-        x: Var,
-    },
+    Cos { res: Var, x: Var },
     /// Ln
-    Ln {
-        res: Var,
-        x: Var,
-    },
+    Ln { res: Var, x: Var },
     /// Exp
-    Exp {
-        res: Var,
-        x: Var,
-    },
+    Exp { res: Var, x: Var },
     /// Tanh
-    Tanh {
-        res: Var,
-        x: Var,
-    },
+    Tanh { res: Var, x: Var },
     /// Sqrt
-    Sqrt {
-        res: Var,
-        x: Var,
-    },
+    Sqrt { res: Var, x: Var },
     /// Add
-    Add {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Add { res: Var, x: Var, y: Var },
     /// Sub
-    Sub {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Sub { res: Var, x: Var, y: Var },
     /// Mul
-    Mul {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Mul { res: Var, x: Var, y: Var },
     /// Div
-    Div {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Div { res: Var, x: Var, y: Var },
     /// Pow
-    Pow {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Pow { res: Var, x: Var, y: Var },
     /// Cmplt
-    Cmplt {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Cmplt { res: Var, x: Var, y: Var },
     /// Max
-    Max {
-        res: Var,
-        x: Var,
-        y: Var,
-    },
+    Max { res: Var, x: Var, y: Var },
     /// Where, x is condition, y is if true, otherwise z
-    Where {
-        res: Var,
-        x: Var,
-        y: Var,
-        z: Var,
-    },
+    Where { res: Var, x: Var, y: Var, z: Var },
     // Loop inside kernel (register/private)
     Loop {
         id: u8,
@@ -197,7 +120,14 @@ fn calculate_work_sizes(
     ast_arg_views: Vec<View>,
     max_local_work_size: usize,
     _max_num_registers: usize,
-) -> (Vec<View>, Shape, Option<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
+) -> (
+    Vec<View>,
+    Shape,
+    Option<usize>,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<usize>,
+) {
     let (arg_views, shape, reduce_dim) = if let Some(reduce_axes) = &ast_reduce_axes {
         let mut arg_views = ast_arg_views.clone();
         let rank = ast_shape.rank();
@@ -341,7 +271,13 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
     }
 }
 
-fn compile_reduce_kernel(ast: &AST, reduce_dim: usize, local_work_size: &[usize], arg_views: Vec<View>, res_shape: Shape) -> Vec<Op> {
+fn compile_reduce_kernel(
+    ast: &AST,
+    reduce_dim: usize,
+    local_work_size: &[usize],
+    arg_views: Vec<View>,
+    res_shape: Shape,
+) -> Vec<Op> {
     let mut ops = Vec::new();
 
     // Add indexes for ops after reduce
@@ -358,12 +294,12 @@ fn compile_reduce_kernel(ast: &AST, reduce_dim: usize, local_work_size: &[usize]
         match op {
             ASTOp::Sum(_) => {
                 reduce_op_i = i;
-                break
+                break;
             }
             ASTOp::Max(_) => {
                 is_sum_reduce = false;
                 reduce_op_i = i;
-                break
+                break;
             }
             _ => {}
         }
@@ -384,7 +320,10 @@ fn compile_reduce_kernel(ast: &AST, reduce_dim: usize, local_work_size: &[usize]
     });
 
     // Indices in reduce loop
-    ops.push(Op::InitIndex { id: local_work_size.len() as u8, value: f!("rid0") });
+    ops.push(Op::InitIndex {
+        id: local_work_size.len() as u8,
+        value: f!("rid0"),
+    });
 
     // Apply AST ops before reduce
     let mut res_dtype = DType::F32;
@@ -419,15 +358,33 @@ fn compile_reduce_kernel(ast: &AST, reduce_dim: usize, local_work_size: &[usize]
     // Apply reduce op
     if is_sum_reduce {
         ops.push(Op::Add {
-            res: Var::Register { id: reduce_op_i as u8, index: None },
-            x: Var::Register { id: res_id - 1, index: None },
-            y: Var::Register { id: reduce_op_i as u8, index: None },
+            res: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
+            x: Var::Register {
+                id: res_id - 1,
+                index: None,
+            },
+            y: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
         });
     } else {
         ops.push(Op::Max {
-            res: Var::Register { id: reduce_op_i as u8, index: None },
-            x: Var::Register { id: res_id - 1, index: None },
-            y: Var::Register { id: reduce_op_i as u8, index: None },
+            res: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
+            x: Var::Register {
+                id: res_id - 1,
+                index: None,
+            },
+            y: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
         });
     }
     res_id += 1;
@@ -466,12 +423,20 @@ fn compile_reduce_kernel(ast: &AST, reduce_dim: usize, local_work_size: &[usize]
     ops.push(Op::StoreGlobal {
         res: ast.arg_dtypes.len() as u8,
         index: View::new(res_shape[0..-1].into()).cidx(),
-        arg: Var::Register { id: res_id-1, index: None },
+        arg: Var::Register {
+            id: res_id - 1,
+            index: None,
+        },
     });
     ops
 }
 
-fn compile_elementwise_kernel(ast: &AST, local_work_size: &[usize], arg_views: Vec<View>, res_shape: Shape) -> Vec<Op> {
+fn compile_elementwise_kernel(
+    ast: &AST,
+    local_work_size: &[usize],
+    arg_views: Vec<View>,
+    res_shape: Shape,
+) -> Vec<Op> {
     let mut ops = Vec::new();
     // Add indexes
     for (a, d) in local_work_size.iter().enumerate() {
@@ -512,7 +477,10 @@ fn compile_elementwise_kernel(ast: &AST, local_work_size: &[usize], arg_views: V
     ops.push(Op::StoreGlobal {
         res: ast.arg_dtypes.len() as u8,
         index: View::new(res_shape.clone()).cidx(),
-        arg: Var::Register { id: res_id - 1, index: None },
+        arg: Var::Register {
+            id: res_id - 1,
+            index: None,
+        },
     });
     ops
 }
@@ -577,7 +545,7 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                     DType::F32 => Var::ConstF32(0.0),
                     DType::F64 => Var::ConstF64(0.0),
                     DType::I32 => Var::ConstI32(0),
-                }
+                },
             });
         }
         ASTOp::Sin(x) => {

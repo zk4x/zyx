@@ -402,7 +402,6 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
 
-
         // Increase rcs for nodes that we want to keep evaluated.
         // First it MUST be all new_leafs.
         for nid in &new_leafs {

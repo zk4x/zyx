@@ -1,6 +1,13 @@
-use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape, axes::{Axes, IntoAxes}, dtype::DType};
-use rand::{thread_rng, Rng, prelude::SliceRandom};
 use super::assert_eq;
+use rand::{prelude::SliceRandom, thread_rng, Rng};
+use zyx_core::{
+    axes::{Axes, IntoAxes},
+    backend::Backend,
+    dtype::DType,
+    error::ZyxError,
+    scalar::Scalar,
+    shape::Shape,
+};
 
 pub fn sum<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let mut rng = thread_rng();
@@ -24,19 +31,26 @@ pub fn sum<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     for shape in shapes {
         let a = rng.gen_range(0..shape.rank());
         //std::println!("Axes to choose from: {vec:?}, rank {}", shape.rank());
-        let axes = (0..shape.rank()).collect::<Vec<usize>>().choose_multiple(&mut rng, a).copied().collect::<Vec<usize>>();
+        let axes = (0..shape.rank())
+            .collect::<Vec<usize>>()
+            .choose_multiple(&mut rng, a)
+            .copied()
+            .collect::<Vec<usize>>();
         if axes.is_empty() {
-            continue
+            continue;
         }
         //std::println!("Shape: {shape}, reduce axes: {axes:?}");
         let axes = axes.into_axes(shape.rank());
         let x = match T::dtype() {
             DType::F32 | DType::F64 => dev.randn(&shape, T::dtype()),
-            DType::I32 => dev.uniform(&shape, i32::MIN/1024/1024..i32::MAX/1024/1024),
+            DType::I32 => dev.uniform(&shape, i32::MIN / 1024 / 1024..i32::MAX / 1024 / 1024),
         }?;
         let v: Vec<T> = x.to_vec()?;
         let rv = x.sum(&axes).to_vec()?;
-        assert_eq(rv, reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), true));
+        assert_eq(
+            rv,
+            reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), true),
+        );
     }
     Ok(())
 }
@@ -63,14 +77,21 @@ pub fn max<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     }
     for shape in shapes {
         let a = rng.gen_range(0..shape.rank());
-        let axes = (0..shape.rank()).collect::<Vec<usize>>().choose_multiple(&mut rng, a).copied().collect::<Vec<usize>>();
+        let axes = (0..shape.rank())
+            .collect::<Vec<usize>>()
+            .choose_multiple(&mut rng, a)
+            .copied()
+            .collect::<Vec<usize>>();
         if axes.is_empty() {
-            continue
+            continue;
         }
         let axes = axes.into_axes(shape.rank());
         //println!("{shape}, {axes}");
         let two = T::one().add(T::one());
-        let x = dev.uniform(&shape, T::min_value().div(two.clone())..T::max_value().div(two))?;
+        let x = dev.uniform(
+            &shape,
+            T::min_value().div(two.clone())..T::max_value().div(two),
+        )?;
         let v: Vec<T> = x.to_vec()?;
         let rv = x.max(&axes).to_vec()?;
         let rv_org = reduce_op(&shape, &v, &axes, &shape.clone().reduce(&axes), false);
@@ -85,7 +106,7 @@ fn reduce_op<T: Scalar>(
     data: &[T],
     axes: &Axes,
     res_shape: &Shape,
-    sum_reduce: bool // sum or max?
+    sum_reduce: bool, // sum or max?
 ) -> Vec<T> {
     /*if axes.len() == 0 {
         return data.iter().cloned().collect()
@@ -100,7 +121,9 @@ fn reduce_op<T: Scalar>(
         core::iter::repeat(T::zero())
     } else {
         core::iter::repeat(T::min_value())
-    }.take(res_shape.numel()).collect();
+    }
+    .take(res_shape.numel())
+    .collect();
 
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly

@@ -1,9 +1,9 @@
 use crate::{backend::Backend, dtype::DType, error::ZyxError, shape::Shape, tensor::Tensor};
-use alloc::{vec::Vec, string::String};
-use std::fs::File;
-use std::path::Path;
-use std::io::{Read, Write};
+use alloc::{string::String, vec::Vec};
 use core::fmt::Write as CoreFmtWrite;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
 
 /// This trait is implemented automatically for all modules that implement
 /// IntoIterator<Item = &mut Tensor>
@@ -95,10 +95,7 @@ pub fn save<'a, B: Backend + 'a>(
 /// Load all parameters from file
 /// # Errors
 /// Returns io error if there was io erorr or parsing error.
-pub fn load<B: Backend>(
-    dev: B,
-    path: impl AsRef<Path>,
-) -> Result<Vec<Tensor<B>>, ZyxError> {
+pub fn load<B: Backend>(dev: B, path: impl AsRef<Path>) -> Result<Vec<Tensor<B>>, ZyxError> {
     let mut f = File::open(path)?;
     let mut header_len = [0u8; 8];
     f.read_exact(&mut header_len)?;
@@ -154,7 +151,11 @@ pub fn load<B: Backend>(
                         DType::F64 => {
                             let vec: Vec<f64> = buf
                                 .chunks_exact(dtype.byte_size())
-                                .map(|x| f64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
+                                .map(|x| {
+                                    f64::from_le_bytes([
+                                        x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7],
+                                    ])
+                                })
                                 .collect();
                             dev.tensor(vec)?.reshape(&shape)
                         }

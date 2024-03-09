@@ -27,7 +27,10 @@ macro_rules! binary_test {
             // Since overflow is implementation/hardware defined, we need to limit integers
             // appropriatelly
             let (x, y) = if T::dtype().is_floating() {
-                ($dev.randn(shape, T::dtype())?, $dev.randn(shape, T::dtype())?)
+                (
+                    $dev.randn(shape, T::dtype())?,
+                    $dev.randn(shape, T::dtype())?,
+                )
             } else {
                 (
                     $dev.uniform(shape, T::min_value().sqrt()..T::max_value().sqrt())?,

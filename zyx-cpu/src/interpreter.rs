@@ -1,28 +1,33 @@
-use alloc::{collections::{BTreeMap, btree_map::Entry}, vec::Vec};
-use zyx_core::{
-    error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, tensor::Id, view::View, shape::Shape, axes::Axes
+use alloc::{
+    collections::{btree_map::Entry, BTreeMap},
+    vec::Vec,
 };
 #[cfg(feature = "std")]
 use rayon::prelude::*;
 use zyx_core::dtype::DType;
 use zyx_core::view::ViewType;
+use zyx_core::{
+    axes::Axes, error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, shape::Shape,
+    tensor::Id, view::View,
+};
 
 macro_rules! unary_op {
-    ($ctx: expr, $x: expr, $nid: expr, $op: expr) => {
-        {
-            let (view, data) = $ctx.get($x);
-            let data = match data {
-                Data::F32(data) => Data::F32(unary(data, $op)),
-                Data::F64(data) => Data::F64(unary(data, $op)),
-                Data::I32(data) => Data::I32(unary(data, $op)),
-            };
-            $ctx.views.insert($nid, (view.clone(), $nid));
-            $ctx.buffers.insert($nid, data);
-        }
-    }
+    ($ctx: expr, $x: expr, $nid: expr, $op: expr) => {{
+        let (view, data) = $ctx.get($x);
+        let data = match data {
+            Data::F32(data) => Data::F32(unary(data, $op)),
+            Data::F64(data) => Data::F64(unary(data, $op)),
+            Data::I32(data) => Data::I32(unary(data, $op)),
+        };
+        $ctx.views.insert($nid, (view.clone(), $nid));
+        $ctx.buffers.insert($nid, data);
+    }};
 }
 
-fn unary<T: Scalar + Sync + Send, T2: Scalar + Send>(data: &[T], op: impl Fn(T) -> T2 + Sync + Send) -> Vec<T2> {
+fn unary<T: Scalar + Sync + Send, T2: Scalar + Send>(
+    data: &[T],
+    op: impl Fn(T) -> T2 + Sync + Send,
+) -> Vec<T2> {
     #[cfg(not(feature = "std"))]
     {
         data.iter().cloned().map(op).collect()
@@ -34,31 +39,36 @@ fn unary<T: Scalar + Sync + Send, T2: Scalar + Send>(data: &[T], op: impl Fn(T) 
 }
 
 macro_rules! binary_op {
-    ($ctx: expr, $x: expr, $y: expr, $nid: expr, $op: expr) => {
-        {
-            let (xview, xdata) = $ctx.get($x);
-            let (yview, ydata) = $ctx.get($y);
-            let data = match xdata {
-                Data::F32(xdata) => {
-                    let Data::F32(ydata) = ydata else { panic!() };
-                    Data::F32(binary(xview, xdata, yview, ydata, $op))
-                }
-                Data::F64(xdata) => {
-                    let Data::F64(ydata) = ydata else { panic!() };
-                    Data::F64(binary(xview, xdata, yview, ydata, $op))
-                }
-                Data::I32(xdata) => {
-                    let Data::I32(ydata) = ydata else { panic!() };
-                    Data::I32(binary(xview, xdata, yview, ydata, $op))
-                }
-            };
-            $ctx.views.insert($nid, (View::new(xview.shape().clone()), $nid));
-            $ctx.buffers.insert($nid, data);
-        }
-    }
+    ($ctx: expr, $x: expr, $y: expr, $nid: expr, $op: expr) => {{
+        let (xview, xdata) = $ctx.get($x);
+        let (yview, ydata) = $ctx.get($y);
+        let data = match xdata {
+            Data::F32(xdata) => {
+                let Data::F32(ydata) = ydata else { panic!() };
+                Data::F32(binary(xview, xdata, yview, ydata, $op))
+            }
+            Data::F64(xdata) => {
+                let Data::F64(ydata) = ydata else { panic!() };
+                Data::F64(binary(xview, xdata, yview, ydata, $op))
+            }
+            Data::I32(xdata) => {
+                let Data::I32(ydata) = ydata else { panic!() };
+                Data::I32(binary(xview, xdata, yview, ydata, $op))
+            }
+        };
+        $ctx.views
+            .insert($nid, (View::new(xview.shape().clone()), $nid));
+        $ctx.buffers.insert($nid, data);
+    }};
 }
 
-fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>(xview: &View, xdata: &[XT], yview: &View, ydata: &[YT], op: impl Fn((XT, YT)) -> T2 + Sync + Send) -> Vec<T2> {
+fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>(
+    xview: &View,
+    xdata: &[XT],
+    yview: &View,
+    ydata: &[YT],
+    op: impl Fn((XT, YT)) -> T2 + Sync + Send,
+) -> Vec<T2> {
     /*Ok(match view.view_type() {
         ViewType::Contiguous => view.iterate_contiguous(data).collect(),
         ViewType::Strided => view.iterate_strided(data).collect(),
@@ -68,23 +78,46 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
     //#[cfg(not(feature = "std"))]
     //{
     // TODO parallel iterator and match on view_type()
-    xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).map(op).collect()
+    xview
+        .iterate_padded(xdata)
+        .zip(yview.iterate_padded(ydata))
+        .map(op)
+        .collect()
     //}
     //#[cfg(feature = "std")]
     //{
-        //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).into_par_iter().map(op).collect()
+    //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).into_par_iter().map(op).collect()
     //}
 }
 
-fn terciary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, ZT: Scalar + Sync + Send, T2: Scalar + Send>(xview: &View, xdata: &[XT], yview: &View, ydata: &[YT], zview: &View, zdata: &[ZT], op: impl Fn((XT, YT, ZT)) -> T2 + Sync + Send) -> Vec<T2> {
+fn terciary<
+    XT: Scalar + Sync + Send,
+    YT: Scalar + Sync + Send,
+    ZT: Scalar + Sync + Send,
+    T2: Scalar + Send,
+>(
+    xview: &View,
+    xdata: &[XT],
+    yview: &View,
+    ydata: &[YT],
+    zview: &View,
+    zdata: &[ZT],
+    op: impl Fn((XT, YT, ZT)) -> T2 + Sync + Send,
+) -> Vec<T2> {
     // TODO parallel iterator and match on view_type()
     //#[cfg(not(feature = "std"))]
     //{
-        //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).zip(zview.iterate_padded(zdata)).map(|((x, y), z)| (x, y, z)).map(op).collect()
+    //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).zip(zview.iterate_padded(zdata)).map(|((x, y), z)| (x, y, z)).map(op).collect()
     //}
     //#[cfg(feature = "std")]
     //{
-    xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).zip(zview.iterate_padded(zdata)).map(|((x, y), z)| (x, y, z)).map(op).collect()
+    xview
+        .iterate_padded(xdata)
+        .zip(yview.iterate_padded(ydata))
+        .zip(zview.iterate_padded(zdata))
+        .map(|((x, y), z)| (x, y, z))
+        .map(op)
+        .collect()
     //}
 }
 
@@ -141,8 +174,8 @@ impl RuntimeBackend for Interpreter {
             }
         }
         //else {
-            //let temp: Vec<_> = self.views.iter().map(|(id, x)| (id, x.1)).collect();
-            //std::println!("Not removing {x}, because {temp:?}");
+        //let temp: Vec<_> = self.views.iter().map(|(id, x)| (id, x.1)).collect();
+        //std::println!("Not removing {x}, because {temp:?}");
         //}
         //std::println!("Num buffers: {}", self.buffers.len());
         Ok(())
@@ -161,17 +194,20 @@ impl RuntimeBackend for Interpreter {
 
     fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
     where
-        IT: IntoIterator<Item=T>,
+        IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
         //std::println!("CPU Storing {x}");
         let iter = iter.into_iter();
         self.views.insert(x, (View::new(iter.len().into()), x));
-        self.buffers.insert(x, match T::dtype() {
-            DType::F32 => Data::F32(iter.map(|x| x.into_f32()).collect()),
-            DType::F64 => Data::F64(iter.map(|x| x.into_f64()).collect()),
-            DType::I32 => Data::I32(iter.map(|x| x.into_i32()).collect()),
-        });
+        self.buffers.insert(
+            x,
+            match T::dtype() {
+                DType::F32 => Data::F32(iter.map(|x| x.into_f32()).collect()),
+                DType::F64 => Data::F64(iter.map(|x| x.into_f64()).collect()),
+                DType::I32 => Data::I32(iter.map(|x| x.into_i32()).collect()),
+            },
+        );
         Ok(())
     }
 
@@ -193,17 +229,17 @@ impl RuntimeBackend for Interpreter {
                             DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
                             DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
                             DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
-                        }
+                        },
                         Data::F64(data) => match dtype {
                             DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
                             DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
                             DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
-                        }
+                        },
                         Data::I32(data) => match dtype {
                             DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
                             DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
                             DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
-                        }
+                        },
                     };
                     self.views.insert(nid, (view.clone(), nid));
                     self.buffers.insert(nid, data);
@@ -231,20 +267,45 @@ impl RuntimeBackend for Interpreter {
                         Data::F32(xdata) => {
                             let Data::F32(ydata) = ydata else { panic!() };
                             let Data::F32(zdata) = zdata else { panic!() };
-                            Data::F32(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0.0 { y } else { z }))
+                            Data::F32(terciary(
+                                xview,
+                                xdata,
+                                yview,
+                                ydata,
+                                zview,
+                                zdata,
+                                |(x, y, z)| if x != 0.0 { y } else { z },
+                            ))
                         }
                         Data::F64(xdata) => {
                             let Data::F64(ydata) = ydata else { panic!() };
                             let Data::F64(zdata) = zdata else { panic!() };
-                            Data::F64(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0.0 { y } else { z }))
+                            Data::F64(terciary(
+                                xview,
+                                xdata,
+                                yview,
+                                ydata,
+                                zview,
+                                zdata,
+                                |(x, y, z)| if x != 0.0 { y } else { z },
+                            ))
                         }
                         Data::I32(xdata) => {
                             let Data::I32(ydata) = ydata else { panic!() };
                             let Data::I32(zdata) = zdata else { panic!() };
-                            Data::I32(terciary(xview, xdata, yview, ydata, zview, zdata, |(x, y, z)| if x != 0 { y } else { z }))
+                            Data::I32(terciary(
+                                xview,
+                                xdata,
+                                yview,
+                                ydata,
+                                zview,
+                                zdata,
+                                |(x, y, z)| if x != 0 { y } else { z },
+                            ))
                         }
                     };
-                    self.views.insert(nid, (View::new(xview.shape().clone()), nid));
+                    self.views
+                        .insert(nid, (View::new(xview.shape().clone()), nid));
                     self.buffers.insert(nid, data);
                 }
                 Node::Reshape(x, sh) => {
@@ -303,7 +364,7 @@ fn reduce_op<T: Scalar + Sync + Send>(
     data: &[T],
     axes: &Axes,
     res_shape: &Shape,
-    sum_reduce: bool
+    sum_reduce: bool,
 ) -> Vec<T> {
     // TODO parallelize this
     use alloc::boxed::Box;
@@ -318,7 +379,9 @@ fn reduce_op<T: Scalar + Sync + Send>(
         core::iter::repeat(T::zero())
     } else {
         core::iter::repeat(T::min_value())
-    }.take(res_shape.numel()).collect();
+    }
+    .take(res_shape.numel())
+    .collect();
 
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly
