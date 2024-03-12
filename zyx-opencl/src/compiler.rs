@@ -1026,7 +1026,7 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -1035,7 +1035,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let _: Vec<f32> = z.to_vec()?;
     panic!();
     Ok(())
-}*/
+}
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {

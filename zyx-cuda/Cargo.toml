@@ -1,0 +1,7 @@
+[package]
+name = "zyx-cuda"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cudarc = { version = "0.10.0", default-features = false, features = ["driver", "nvrtc"] }

@@ -17,10 +17,10 @@
 
 use zyx_core::error::ZyxError;
 
-mod impls;
+mod ast;
 mod ir;
 
-use impls::Kernel;
+use ast::Kernel;
 pub use ir::{Op, IR};
 
 #[cfg(feature = "std")]
