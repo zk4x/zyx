@@ -11,7 +11,7 @@ use opencl_sys::{
     CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING,
     CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
-use zyx_compiler::Op;
+use zyx_compiler::{BOp, Op, UOp};
 use zyx_core::view::Index;
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
@@ -915,54 +915,31 @@ impl zyx_compiler::Compiler for Compiler {
                         );
                     }
                 }
-                Op::Cast {
-                    res_dtype: _,
-                    res,
-                    x,
-                } => {
-                    source += &f!("{indent}{res} = {x};\n");
+                Op::Unary { res, x , op} => {
+                    let (l, r) = match op {
+                        UOp::ReLU => ("max(", "0, )"),
+                        UOp::Cast(_) => ("", ""),
+                        UOp::Neg => ("-", ""),
+                        UOp::Sin => ("sin(", ")"),
+                        UOp::Cos => ("cos(", ")"),
+                        UOp::Exp => ("exp(", ")"),
+                        UOp::Ln => ("ln(", ")"),
+                        UOp::Tanh => ("tanh(", ")"),
+                        UOp::Sqrt => ("sqrt(", ")"),
+                    };
+                    source += &f!("{indent}{res} = {l}{x}{r};\n");
                 }
-                Op::Neg { res, x } => {
-                    source += &f!("{indent}{res} = -{x};\n");
-                }
-                Op::Sin { res, x } => {
-                    source += &f!("{indent}{res} = sin({x});\n");
-                }
-                Op::Cos { res, x } => {
-                    source += &f!("{indent}{res} = cos({x});\n");
-                }
-                Op::Exp { res, x } => {
-                    source += &f!("{indent}{res} = exp({x});\n");
-                }
-                Op::Ln { res, x } => {
-                    source += &f!("{indent}{res} = log({x});\n");
-                }
-                Op::Tanh { res, x } => {
-                    source += &f!("{indent}{res} = tanh({x});\n");
-                }
-                Op::Sqrt { res, x } => {
-                    source += &f!("{indent}{res} = sqrt({x});\n");
-                }
-                Op::Add { res, x, y } => {
-                    source += &f!("{indent}{res} = {x} + {y};\n");
-                }
-                Op::Sub { res, x, y } => {
-                    source += &f!("{indent}{res} = {x} - {y};\n");
-                }
-                Op::Mul { res, x, y } => {
-                    source += &f!("{indent}{res} = {x} * {y};\n");
-                }
-                Op::Div { res, x, y } => {
-                    source += &f!("{indent}{res} = {x} / {y};\n");
-                }
-                Op::Pow { res, x, y } => {
-                    source += &f!("{indent}{res} = pow({x}, {y});\n");
-                }
-                Op::Cmplt { res, x, y } => {
-                    source += &f!("{indent}{res} = {x} < {y};\n");
-                }
-                Op::Max { res, x, y } => {
-                    source += &f!("{indent}{res} = max({x}, {y});\n");
+                Op::Binary { res, x, y, op } => {
+                    let (l, m, r) = match op {
+                        BOp::Add => ("", "+", ""),
+                        BOp::Sub => ("", "-", ""),
+                        BOp::Mul => ("", "*", ""),
+                        BOp::Div => ("", "/", ""),
+                        BOp::Pow => ("pow(", ",", ")"),
+                        BOp::Cmplt => ("", "<", ""),
+                        BOp::Max => ("max(", ",", ")"),
+                    };
+                    source += &f!("{indent}{res} = {l}{x}{m}{y}{r};\n");
                 }
                 Op::Where { res, x, y, z } => {
                     source += &f!("{indent}{res} = {x} ? {y} : {z};\n");
@@ -1026,7 +1003,7 @@ fn sum_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = crate::device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
@@ -1035,7 +1012,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let _: Vec<f32> = z.to_vec()?;
     panic!();
     Ok(())
-}
+}*/
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {

@@ -1,4 +1,4 @@
-use crate::{ASTOp, AST};
+use crate::{ASTOp, AST, ASTROp, ASTUOp, ASTBOp};
 use alloc::{boxed::Box, format as f, string::String, vec::Vec};
 use core::fmt::{Display, Formatter};
 use zyx_core::{
@@ -37,6 +37,30 @@ impl Display for Var {
     }
 }
 
+/// Unary op
+pub enum UOp {
+    ReLU,
+    Cast(DType),
+    Neg,
+    Sin,
+    Cos,
+    Exp,
+    Ln,
+    Tanh,
+    Sqrt,
+}
+
+/// Binary op
+pub enum BOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Cmplt,
+    Max,
+}
+
 /// Op for the compilers
 pub enum Op {
     /// Load into res from arg at index
@@ -61,36 +85,14 @@ pub enum Op {
         is_sum_reduce: bool,
         len: Option<u8>,
     },
-    /// Cast x to res_dtype
-    Cast { res_dtype: DType, res: Var, x: Var },
-    /// Neg
-    Neg { res: Var, x: Var },
-    /// Sin
-    Sin { res: Var, x: Var },
-    /// Cos
-    Cos { res: Var, x: Var },
-    /// Ln
-    Ln { res: Var, x: Var },
-    /// Exp
-    Exp { res: Var, x: Var },
-    /// Tanh
-    Tanh { res: Var, x: Var },
-    /// Sqrt
-    Sqrt { res: Var, x: Var },
-    /// Add
-    Add { res: Var, x: Var, y: Var },
-    /// Sub
-    Sub { res: Var, x: Var, y: Var },
-    /// Mul
-    Mul { res: Var, x: Var, y: Var },
-    /// Div
-    Div { res: Var, x: Var, y: Var },
-    /// Pow
-    Pow { res: Var, x: Var, y: Var },
-    /// Cmplt
-    Cmplt { res: Var, x: Var, y: Var },
-    /// Max
-    Max { res: Var, x: Var, y: Var },
+    /// Unary op
+    Unary {
+        res: Var,
+        x: Var,
+        op: UOp,
+    },
+    /// Binary op
+    Binary { res: Var, x: Var, y: Var, op: BOp },
     /// Where, x is condition, y is if true, otherwise z
     Where { res: Var, x: Var, y: Var, z: Var },
     // Loop inside kernel (register/private)
@@ -288,22 +290,17 @@ fn compile_reduce_kernel(
         });
     }
 
-    let mut reduce_op_i = 0;
-    let mut is_sum_reduce = true;
-    for (i, op) in ast.ops.iter().enumerate() {
-        match op {
-            ASTOp::Sum(_) => {
-                reduce_op_i = i;
-                break;
+    let (reduce_op_i, is_sum_reduce) = ast.ops.iter().enumerate().find(|(_, op)| matches!(op, ASTOp::Reduce(..))).map(|(i, op)| {
+        if let ASTOp::Reduce(_, rop) = op {
+            if *rop == ASTROp::Sum {
+                (i, true)
+            } else {
+                (i, false)
             }
-            ASTOp::Max(_) => {
-                is_sum_reduce = false;
-                reduce_op_i = i;
-                break;
-            }
-            _ => {}
+        } else {
+            panic!()
         }
-    }
+    }).unwrap();
 
     // Initiliaze accumulator
     ops.push(Op::InitAccumulator {
@@ -357,7 +354,7 @@ fn compile_reduce_kernel(
 
     // Apply reduce op
     if is_sum_reduce {
-        ops.push(Op::Add {
+        ops.push(Op::Binary {
             res: Var::Register {
                 id: reduce_op_i as u8,
                 index: None,
@@ -370,9 +367,10 @@ fn compile_reduce_kernel(
                 id: reduce_op_i as u8,
                 index: None,
             },
+            op: BOp::Add,
         });
     } else {
-        ops.push(Op::Max {
+        ops.push(Op::Binary {
             res: Var::Register {
                 id: reduce_op_i as u8,
                 index: None,
@@ -385,6 +383,7 @@ fn compile_reduce_kernel(
                 id: reduce_op_i as u8,
                 index: None,
             },
+            op: BOp::Max,
         });
     }
     res_id += 1;
@@ -490,15 +489,27 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
     let mut ops = Vec::new();
     // TODO put all unary ops into single function or probably macro
     match ast_op {
-        ASTOp::Cast(x, dtype) => {
-            *res_dtype = *dtype;
+        ASTOp::Unary(x, op) => {
+            let op = match op {
+                ASTUOp::Cast(dtype) => {
+                    *res_dtype = *dtype;
+                    UOp::Cast(*dtype)
+                }
+                ASTUOp::Neg => UOp::Neg,
+                ASTUOp::ReLU => UOp::ReLU,
+                ASTUOp::Sin => UOp::Sin,
+                ASTUOp::Cos => UOp::Cos,
+                ASTUOp::Exp => UOp::Exp,
+                ASTUOp::Ln => UOp::Ln,
+                ASTUOp::Tanh => UOp::Tanh,
+                ASTUOp::Sqrt => UOp::Sqrt,
+            };
             ops.push(Op::DeclareVar {
                 dtype: *res_dtype,
                 id: res_id,
                 len: None,
             });
-            ops.push(Op::Cast {
-                res_dtype: *res_dtype,
+            ops.push(Op::Unary {
                 res: Var::Register {
                     id: res_id,
                     index: None,
@@ -507,162 +518,16 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                     id: *x,
                     index: None,
                 },
+                op,
             });
         }
-        ASTOp::Neg(x) => {
+        ASTOp::Binary(x, y, op) => {
             ops.push(Op::DeclareVar {
                 dtype: *res_dtype,
                 id: res_id,
                 len: None,
             });
-            ops.push(Op::Neg {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::ReLU(x) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Max {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                y: match res_dtype {
-                    DType::F32 => Var::ConstF32(0.0),
-                    DType::F64 => Var::ConstF64(0.0),
-                    DType::I32 => Var::ConstI32(0),
-                },
-            });
-        }
-        ASTOp::Sin(x) => {
-            // TODO use Log2 as IR op instead of ln
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Sin {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Cos(x) => {
-            // TODO use Log2 as IR op instead of ln
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Cos {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Ln(x) => {
-            // TODO use Log2 as IR op instead of ln
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Ln {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Exp(x) => {
-            // TODO use Exp2 as IR op instead of Exp
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Exp {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Tanh(x) => {
-            // TODO optimize this
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Tanh {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Sqrt(x) => {
-            // TODO optimize this, small precision loss is ok
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Sqrt {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Add(x, y) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Add {
+            ops.push(Op::Binary {
                 res: Var::Register {
                     id: res_id,
                     index: None,
@@ -675,111 +540,14 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                     id: *y,
                     index: None,
                 },
-            });
-        }
-        ASTOp::Sub(x, y) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Sub {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                y: Var::Register {
-                    id: *y,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Mul(x, y) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Mul {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                y: Var::Register {
-                    id: *y,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Div(x, y) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Div {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                y: Var::Register {
-                    id: *y,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Pow(x, y) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Pow {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                y: Var::Register {
-                    id: *y,
-                    index: None,
-                },
-            });
-        }
-        ASTOp::Cmplt(x, y) => {
-            ops.push(Op::DeclareVar {
-                dtype: *res_dtype,
-                id: res_id,
-                len: None,
-            });
-            ops.push(Op::Cmplt {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                y: Var::Register {
-                    id: *y,
-                    index: None,
-                },
+                op: match op {
+                    ASTBOp::Add => BOp::Add,
+                    ASTBOp::Sub => BOp::Sub,
+                    ASTBOp::Mul => BOp::Mul,
+                    ASTBOp::Div => BOp::Div,
+                    ASTBOp::Pow => BOp::Pow,
+                    ASTBOp::Cmplt => BOp::Cmplt,
+                }
             });
         }
         ASTOp::Where(x, y, z) => {
@@ -807,7 +575,7 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                 },
             });
         }
-        ASTOp::Leaf(_) | ASTOp::Sum(_) | ASTOp::Max(_) => {
+        ASTOp::Leaf(..) | ASTOp::Reduce(..) => {
             panic!()
         }
     }

@@ -21,7 +21,7 @@ mod ast;
 mod ir;
 
 use ast::Kernel;
-pub use ir::{Op, IR};
+pub use ir::{Op, IR, UOp, BOp};
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -73,55 +73,43 @@ pub trait Compiler {
     fn compile(&mut self, ir: &IR) -> Result<Self::Program, ZyxError>;
 }
 
-/// Op executable on device with compiled backend
-/// usize are all IDs into ops, leafs have IDs into args
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ASTUOp {
+    Cast(DType),
+    Neg,
+    ReLU,
+    Sin,
+    Cos,
+    Exp,
+    Ln,
+    Tanh,
+    Sqrt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ASTBOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Cmplt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ASTROp {
+    Sum,
+    Max
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ASTOp {
-    // We are not gonna have so gigantic kernels with more than 256 arguments or ops.
-    // OpenCL does not support more than 255 args.
-    /// Leaf (holds data, id to kernel arg)
     Leaf(u8),
-    // TODO uniform generators should also take shape into consideration
-    // and repeat the same random number if this shape is expanded.
-    // Shaped uniform generator of numbers from 0. to 1.
-    //Uniform(View, DType),
-    /// Cast into dtype unary op
-    Cast(u8, DType),
-    /// Neg unary op
-    Neg(u8),
-    /// ReLU unary op
-    ReLU(u8),
-    /// Sin unary op
-    Sin(u8),
-    /// Cos unary op
-    Cos(u8),
-    /// Ln unary op
-    Ln(u8),
-    /// Exp unary op
-    Exp(u8),
-    /// Tanh unary op
-    Tanh(u8),
-    /// Sqrt unary op
-    Sqrt(u8),
-    /// Addition binary op
-    Add(u8, u8),
-    /// Substitution binary op
-    Sub(u8, u8),
-    /// Multiplication binary op
-    Mul(u8, u8),
-    /// Division binary op
-    Div(u8, u8),
-    /// Exponentiation binary op
-    Pow(u8, u8),
-    /// Compare less than binary op
-    Cmplt(u8, u8),
-    /// Where op
-    #[allow(dead_code)] // TODO where op
+    Unary(u8, ASTUOp),
+    Binary(u8, u8, ASTBOp),
+    #[allow(dead_code)]
     Where(u8, u8, u8),
-    /// Sum reduce op
-    Sum(u8),
-    /// Max reduce op
-    Max(u8),
+    Reduce(u8, ASTROp),
 }
 
 /// Abstract syntax tree that can be compiled into program.
