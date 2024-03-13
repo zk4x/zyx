@@ -1,26 +1,10 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec::Vec, collections::BTreeSet};
 use zyx_core::axes::{Axes, IntoAxes};
 use zyx_core::shape::Shape;
 use zyx_core::view::View;
 
-/// Calculates arg_views, reduce dim size, global, local and register work sizes,
-/// each across three dimensions
-pub(super) fn calculate_work_sizes(
-    ast_reduce_axes: &Option<Axes>,
-    ast_shape: &Shape,
-    ast_arg_views: Vec<View>,
-    max_local_work_size: usize,
-    _max_num_registers: usize,
-) -> (
-    Vec<View>,
-    Shape,
-    Option<usize>,
-    Vec<usize>,
-    Vec<usize>,
-    Vec<usize>,
-) {
-    let (arg_views, shape, reduce_dim) = if let Some(reduce_axes) = &ast_reduce_axes {
-        let mut arg_views = ast_arg_views.clone();
+fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Shape, ast_reduce_axes: &Option<Axes>) -> (Vec<View>, Shape, Option<usize>) {
+    if let Some(reduce_axes) = ast_reduce_axes {
         let rank = ast_shape.rank();
         let permute_axes = (0..rank as i64)
             .filter(|a| !reduce_axes.contains(*a as usize))
@@ -41,18 +25,18 @@ pub(super) fn calculate_work_sizes(
                 .product();
             let d0 = ast_shape.numel() / d1;
             let shape: Shape = [d0, d1].into();
-            for view in &mut arg_views {
+            for view in &mut ast_arg_views {
                 *view = view.permute(&permute_axes).reshape(&shape);
             }
             shape
         } else {
-            for view in &mut arg_views {
+            for view in &mut ast_arg_views {
                 *view = view.permute(&permute_axes);
             }
             ast_shape.permute(&permute_axes)
         };
         let reduce_dim = shape[-1];
-        (arg_views, shape, Some(reduce_dim))
+        (ast_arg_views, shape, Some(reduce_dim))
     } else {
         let mut arg_views = ast_arg_views.clone();
         let shape = if ast_shape.rank() > 3 {
@@ -65,7 +49,27 @@ pub(super) fn calculate_work_sizes(
             ast_shape.clone()
         };
         (arg_views, shape, None)
-    };
+    }
+}
+
+/// Calculates arg_views, reduce dim size, global, local and register work sizes,
+/// each across three dimensions
+pub(super) fn calculate_work_sizes(
+    ast_reduce_axes: &Option<Axes>,
+    ast_shape: &Shape,
+    ast_arg_views: Vec<View>,
+    max_local_work_size: usize,
+    _max_num_registers: usize,
+) -> (
+    Vec<View>,
+    Shape,
+    Option<usize>,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<usize>,
+) {
+    let (arg_views, shape, reduce_dim) = reshape_and_permute_kernel_args(ast_arg_views, ast_shape, ast_reduce_axes);
+
     let mut lws = 1;
     let rank = shape.rank();
     let mut _register_work_size = Vec::new();
@@ -115,4 +119,9 @@ pub(super) fn calculate_work_sizes(
         local_work_size,
         _register_work_size,
     )
+}
+
+/// Which buffers should be tiled in the reduce kernel?
+fn choose_tiled_buffers(arg_views: &[View]) -> BTreeSet<u8> {
+    todo!()
 }

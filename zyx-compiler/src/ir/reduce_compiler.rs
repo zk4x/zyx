@@ -1,4 +1,4 @@
-use std::prelude::rust_2015::Vec;
+use alloc::{vec::Vec, collections::BTreeSet};
 use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
 use zyx_core::view::View;
