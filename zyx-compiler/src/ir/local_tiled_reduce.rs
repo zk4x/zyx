@@ -27,7 +27,7 @@ pub(super) fn compile_tiled_reduce_kernel(
     // Declare local memory tiles
     for id in &tiled_buffers {
         let view = &arg_views[*id as usize];
-        let len: usize = (0..view.shape().rank()).filter_map(|a| if !view.is_expanded_axis(a) { Some(local_work_size[a] + 1) } else { None }).product();
+        let len: usize = (0..view.shape().rank()).filter_map(|a| if !view.is_expanded_axis(a) { Some(local_work_size[a]) } else { None }).product();
         ops.push(Op::DeclareLocalVar {
             id: *id,
             dtype: arg_dtypes[*id as usize],
@@ -74,33 +74,31 @@ pub(super) fn compile_tiled_reduce_kernel(
     }
 
     // Load tiled_buffers into local memory tiles
-    ops.push(Op::Loop {
-        id: 4,
-        upper_bound: local_work_size[2],
-        step: 1,
-    });
-    ops.push(Op::InitIndex {
-        id: 2,
-        value: format!("rid3*{}+rid4", local_work_size[2]),
+    ops.push(Op::DeclareIndex {
+        id: (rank - 1) as u8
     });
     for id in &tiled_buffers {
         let mut res_index = String::new();
         let view = &arg_views[*id as usize];
         for a in 0..rank-1 {
-            if !view.is_expanded_axis(a) {
-                // I think adding 1 here gets rid of local memory bank conflicts.
-                res_index += &format!("lid{a}*{}+", local_work_size[a]+1);
+            if view.is_expanded_axis(a) {
+                ops.push(Op::SetIndex {
+                    id: (rank - 1) as u8,
+                    value: format!("idx{a}"),
+                });
+                res_index += &format!("lid{a}+");
+            } else {
+                res_index += &format!("lid{a}*{}+", local_work_size[a]);
             }
         }
-        res_index += &format!("rid4");
+        res_index.pop();
         ops.push(Op::LoadGlobalIntoLocal {
             res: *id,
-            res_index,
+            res_index: res_index,
             arg: *id,
             arg_index: arg_views[*id as usize].cidx(),
         });
     }
-    ops.push(Op::EndLoop);
 
     // Synchronize local memory after loading tiled buffers
     ops.push(Op::LocalBarrier);
@@ -140,7 +138,7 @@ pub(super) fn compile_tiled_reduce_kernel(
                     for a in 0..rank-1 {
                         if !view.is_expanded_axis(a) {
                             // I think adding 1 here gets rid of local memory bank conflicts.
-                            index += &format!("lid{a}*{}+", local_work_size[a]+1);
+                            index += &format!("lid{a}*{}+", local_work_size[a]);
                         }
                     }
                     index += &format!("rid4");

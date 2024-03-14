@@ -898,8 +898,14 @@ impl zyx_compiler::Compiler for Compiler {
                 Op::LoadLocal { res, arg, index } => {
                     source += &f!("{indent}{res} = lmem{arg}[{index}];\n");
                 }
+                Op::DeclareIndex { id } => {
+                    source += &f!("{indent}{id_t} idx{id};\n");
+                }
                 Op::InitIndex { id, value } => {
                     source += &f!("{indent}{id_t} idx{id} = {value};\n");
+                }
+                Op::SetIndex { id, value } => {
+                    source += &f!("{indent}idx{id} = {value};\n");
                 }
                 Op::InitAccumulator {
                     id,

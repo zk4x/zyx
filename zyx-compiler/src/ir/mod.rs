@@ -87,6 +87,10 @@ pub enum Op {
     LoadLocal { res: Var, arg: u8, index: String },
     /// Initialize index id with value
     InitIndex { id: u8, value: String },
+    /// Declare index
+    DeclareIndex { id: u8 },
+    /// Set index to value
+    SetIndex { id: u8, value: String },
     /// Initialize accumulator, if sum_reduce is true,
     /// then initilize to zero, otherwise initilize to minimum
     /// of dtype.
