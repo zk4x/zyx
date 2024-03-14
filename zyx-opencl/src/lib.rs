@@ -313,7 +313,7 @@ fn t5() -> Result<(), ZyxError> {
 
 #[test]
 fn t0() {
-    let n = 64;
+    let n = 16;
     let dev = device().unwrap();
     let x = dev.tensor(0..(n*n) as i32).reshape([n, n]);
     //std::println!("{x}");

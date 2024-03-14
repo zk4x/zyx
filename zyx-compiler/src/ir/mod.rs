@@ -1,11 +1,9 @@
 mod elementwise;
 mod reduce;
 mod tiled_reduce;
+mod local_and_register_tiled_reduce;
 mod work_size;
 
-use crate::ir::elementwise::compile_elementwise_kernel;
-use crate::ir::reduce::compile_reduce_kernel;
-use crate::ir::tiled_reduce::compile_tiled_reduce_kernel;
 use crate::ir::work_size::calculate_work_sizes;
 use crate::{ASTBOp, ASTOp, ASTUOp, AST};
 use alloc::{string::String, vec::Vec};
@@ -164,7 +162,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
     // Compile ops
     let ops = if let Some(reduce_dim) = reduce_dim {
         if tiled_buffers.is_empty() {
-            compile_reduce_kernel(
+            reduce::compile_reduce_kernel(
                 &ast.ops,
                 arg_views,
                 ast.arg_dtypes.clone(),
@@ -174,7 +172,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
                 res_shape,
             )
         } else {
-            compile_tiled_reduce_kernel(
+            local_and_register_tiled_reduce::compile_tiled_reduce_kernel(
                 &ast.ops,
                 arg_views,
                 ast.arg_dtypes.clone(),
@@ -188,7 +186,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
         }
         // TODO add two step reduce for full reduce and potentially some other reduces
     } else {
-        compile_elementwise_kernel(ast, &local_work_size, arg_views, res_shape)
+        elementwise::compile_elementwise_kernel(ast, &local_work_size, arg_views, res_shape)
     };
 
     IR {
