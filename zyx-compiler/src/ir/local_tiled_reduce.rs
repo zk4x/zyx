@@ -6,6 +6,7 @@ use crate::{ASTOp, ASTROp, BOp, Op};
 use crate::ir::{apply_elementwise_op, Var};
 use alloc::format;
 
+#[allow(dead_code)]
 pub(super) fn compile_tiled_reduce_kernel(
     ast_ops: &[ASTOp],
     arg_views: Vec<View>,
@@ -16,6 +17,7 @@ pub(super) fn compile_tiled_reduce_kernel(
     res_shape: Shape,
     reduce_dtype: DType,
     tiled_buffers: BTreeSet<u8>,
+    _tiling_axes: BTreeSet<usize>,
 ) -> Vec<Op> {
     let mut ops = Vec::new();
     let rank = register_work_size.len();

@@ -68,14 +68,14 @@ pub(super) fn calculate_work_sizes(
     Vec<usize>, // global work size
     Vec<usize>, // local work size
     Vec<usize>, // register work size
-    BTreeSet<u8> // tiled buffers
+    BTreeSet<u8>, // tiled buffers
+    BTreeSet<usize> // tiling axes
 ) {
-    let (arg_views, shape, reduce_dim) = reshape_and_permute_kernel_args(ast_arg_views, ast_shape, ast_reduce_axes);
-
-    let (tiled_buffers, tiling_axes) = select_tiled_buffers_and_tiling_axes(&arg_views, shape.rank());
-
     let max_local_work_size_dim = (max_local_work_size as f64).sqrt() as usize;
-    let max_register_work_size_dim = if reduce_dim.is_some() { 1 } else { 1 };
+    let max_register_work_size_dim = if ast_reduce_axes.is_some() { 1 } else { 1 };
+
+    let (arg_views, shape, reduce_dim) = reshape_and_permute_kernel_args(ast_arg_views, ast_shape, ast_reduce_axes);
+    let (tiled_buffers, tiling_axes) = select_tiled_buffers_and_tiling_axes(&arg_views, shape.rank());
 
     let mut lws = 1;
     let mut register_work_size = Vec::new();
@@ -102,15 +102,16 @@ pub(super) fn calculate_work_sizes(
     // Runtimes are horrible at inferring local work sizes, we just have to give it our
     let local_work_size: Vec<usize> = global_work_size
         .iter()
+        .zip(register_work_size.iter())
         .rev()
-        .map(|d| {
+        .map(|(gd, rd)| {
             let mut x = 1;
             if tiling_axes.len() < 2 {
-                while d % (x * 2) == 0 && x * lws < max_local_work_size {
+                while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
                     x *= 2;
                 }
             } else {
-                while d % (x * 2) == 0 && x < max_local_work_size_dim {
+                while gd % (x * rd * 2) == 0 && x < max_local_work_size_dim {
                     x *= 2;
                 }
             }
@@ -128,7 +129,8 @@ pub(super) fn calculate_work_sizes(
         global_work_size,
         local_work_size,
         register_work_size,
-        tiled_buffers
+        tiled_buffers,
+        tiling_axes
     )
 }
 
@@ -163,6 +165,6 @@ fn select_tiled_buffers_and_tiling_axes(arg_views: &[View], rank: usize) -> (BTr
     // TODO here we add reduce axis to tiling axes, but is it always the best thing to do?
     tiling_axes.insert(rank-1);
 
-    std::println!("Tiled buffers: {tiled_buffers:?}, tiling axes: {tiling_axes:?}");
+    //std::println!("Tiled buffers: {tiled_buffers:?}, tiling axes: {tiling_axes:?}");
     (tiled_buffers, tiling_axes)
 }

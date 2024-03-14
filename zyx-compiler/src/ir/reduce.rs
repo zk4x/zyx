@@ -15,13 +15,16 @@ pub(super) fn compile_reduce_kernel(
     res_shape: Shape,
 ) -> Vec<Op> {
     let mut ops = Vec::new();
+    let rank = res_shape.rank();
 
     // Add indexes for ops after reduce
     for (a, d) in local_work_size.iter().enumerate() {
-        ops.push(Op::InitIndex {
-            id: a as u8,
-            value: alloc::format!("gid{a}*{d}+lid{a}"),
-        });
+        if a != rank - 1 {
+            ops.push(Op::InitIndex {
+                id: a as u8,
+                value: alloc::format!("gid{a}*{d}+lid{a}"),
+            });
+        }
     }
 
     let (reduce_op_i, is_sum_reduce) = ast_ops.iter().enumerate().find(|(_, op)| matches!(op, ASTOp::Reduce(..))).map(|(i, op)| {
@@ -53,7 +56,7 @@ pub(super) fn compile_reduce_kernel(
 
     // Indices in reduce loop
     ops.push(Op::InitIndex {
-        id: local_work_size.len() as u8,
+        id: (rank - 1) as u8,
         value: alloc::string::String::from("rid0"),
     });
 

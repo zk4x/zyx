@@ -1,6 +1,6 @@
 mod elementwise;
 mod reduce;
-mod tiled_reduce;
+mod local_tiled_reduce;
 mod local_and_register_tiled_reduce;
 mod work_size;
 
@@ -145,6 +145,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
         local_work_size,
         register_work_size,
         tiled_buffers,
+        tiling_axes,
     ) = calculate_work_sizes(
         &ast.reduce_axes,
         &ast.shape,
@@ -172,7 +173,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
                 res_shape,
             )
         } else {
-            local_and_register_tiled_reduce::compile_tiled_reduce_kernel(
+            local_tiled_reduce::compile_tiled_reduce_kernel(
                 &ast.ops,
                 arg_views,
                 ast.arg_dtypes.clone(),
@@ -182,6 +183,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
                 res_shape,
                 ast.reduce_dtype.unwrap(),
                 tiled_buffers,
+                tiling_axes,
             )
         }
         // TODO add two step reduce for full reduce and potentially some other reduces
