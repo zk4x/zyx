@@ -884,6 +884,20 @@ impl zyx_compiler::Compiler for Compiler {
                         source += &f!("{indent}{} rmem{id};\n", dtype.ocl_str());
                     }
                 }
+                Op::DeclareLocalVar { id, dtype, len } => {
+                    source += &f!("{indent}__local {} lmem{id}[{len}];\n", dtype.ocl_str());
+                }
+                Op::LoadGlobalIntoLocal { res, res_index, arg, arg_index } => match arg_index {
+                    Index::Normal(idx) => {
+                        source += &f!("{indent}lmem{res}[{res_index}] = gmem{arg}[{idx}];\n");
+                    }
+                    Index::Padded(padding, idx) => {
+                        source += &f!("{indent}lmem{res}[{res_index}] = {padding} ? gmem{arg}[{idx}] : 0;\n");
+                    }
+                }
+                Op::LoadLocal { res, arg, index } => {
+                    source += &f!("{indent}{res} = lmem{arg}[{index}];\n");
+                }
                 Op::InitIndex { id, value } => {
                     source += &f!("{indent}{id_t} idx{id} = {value};\n");
                 }
@@ -956,6 +970,9 @@ impl zyx_compiler::Compiler for Compiler {
                     indent = indent[..indent.len() - 2].into();
                     source += &f!("{indent}}}\n");
                 }
+                Op::LocalBarrier => {
+                    source += &f!("{indent}barrier(CLK_LOCAL_MEM_FENCE);\n");
+                }
             }
         }
 
@@ -1000,17 +1017,6 @@ fn sum_test() -> Result<(), ZyxError> {
     //panic!();
     //panic!("{y_vec:?}");
     // res [[9], [7]]
-    Ok(())
-}*/
-
-/*#[test]
-fn dot_test() -> Result<(), ZyxError> {
-    let dev = crate::device_builder().platform_id(0).build()?;
-    let x = dev.randn([1024, 1024], DType::F32);
-    let y = dev.randn([1024, 1024], DType::F32);
-    let z = x.dot(&y).tanh() + x;
-    let _: Vec<f32> = z.to_vec()?;
-    panic!();
     Ok(())
 }*/
 

@@ -1,15 +1,17 @@
-use alloc::{vec::Vec, collections::BTreeSet};
+use alloc::vec::Vec;
 use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
 use zyx_core::view::View;
-use crate::{AST, ASTOp, ASTROp, BOp, Op};
+use crate::{ASTOp, ASTROp, BOp, Op};
 use crate::ir::{apply_elementwise_op, Var};
 
 pub(super) fn compile_reduce_kernel(
-    ast: &AST,
+    ast_ops: &[ASTOp],
+    arg_views: Vec<View>,
+    arg_dtypes: Vec<DType>,
+    reduce_dtype: DType,
     reduce_dim: usize,
     local_work_size: &[usize],
-    arg_views: Vec<View>,
     res_shape: Shape,
 ) -> Vec<Op> {
     let mut ops = Vec::new();
@@ -22,7 +24,7 @@ pub(super) fn compile_reduce_kernel(
         });
     }
 
-    let (reduce_op_i, is_sum_reduce) = ast.ops.iter().enumerate().find(|(_, op)| matches!(op, ASTOp::Reduce(..))).map(|(i, op)| {
+    let (reduce_op_i, is_sum_reduce) = ast_ops.iter().enumerate().find(|(_, op)| matches!(op, ASTOp::Reduce(..))).map(|(i, op)| {
         if let ASTOp::Reduce(_, rop) = op {
             if *rop == ASTROp::Sum {
                 (i, true)
@@ -37,11 +39,12 @@ pub(super) fn compile_reduce_kernel(
     // Initiliaze accumulator
     ops.push(Op::InitAccumulator {
         id: reduce_op_i as u8,
-        dtype: ast.reduce_dtype.unwrap(),
+        dtype: reduce_dtype,
         is_sum_reduce,
         len: None,
     });
 
+    // Reduce loop
     ops.push(Op::Loop {
         id: 0,
         upper_bound: reduce_dim,
@@ -58,10 +61,10 @@ pub(super) fn compile_reduce_kernel(
     let mut res_dtype = DType::F32;
     let mut res_id = 0;
     while res_id < reduce_op_i as u8 {
-        let op = &ast.ops[res_id as usize];
+        let op = &ast_ops[res_id as usize];
         match op {
             ASTOp::Leaf(id) => {
-                res_dtype = ast.arg_dtypes[*id as usize];
+                res_dtype = arg_dtypes[*id as usize];
                 ops.push(Op::DeclareVar {
                     dtype: res_dtype,
                     id: res_id,
@@ -124,11 +127,11 @@ pub(super) fn compile_reduce_kernel(
     ops.push(Op::EndLoop);
 
     // Apply ops after reduce
-    while res_id < ast.ops.len() as u8 {
-        let op = &ast.ops[res_id as usize];
+    while res_id < ast_ops.len() as u8 {
+        let op = &ast_ops[res_id as usize];
         match op {
             ASTOp::Leaf(id) => {
-                res_dtype = ast.arg_dtypes[*id as usize];
+                res_dtype = arg_dtypes[*id as usize];
                 ops.push(Op::DeclareVar {
                     dtype: res_dtype,
                     id: res_id,
@@ -152,7 +155,7 @@ pub(super) fn compile_reduce_kernel(
 
     // Store result
     ops.push(Op::StoreGlobal {
-        res: ast.arg_dtypes.len() as u8,
+        res: arg_dtypes.len() as u8,
         index: View::new(res_shape[0..-1].into()).cidx(),
         arg: Var::Register {
             id: res_id - 1,

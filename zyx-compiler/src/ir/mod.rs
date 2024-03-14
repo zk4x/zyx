@@ -1,19 +1,19 @@
-mod reduce_compiler;
-mod elementwise_compiler;
+mod elementwise;
+mod reduce;
+mod tiled_reduce;
 mod work_size;
 
-use crate::{ASTOp, AST, ASTUOp, ASTBOp};
-use alloc::{boxed::Box, string::String, vec::Vec};
+use crate::ir::elementwise::compile_elementwise_kernel;
+use crate::ir::reduce::compile_reduce_kernel;
+use crate::ir::tiled_reduce::compile_tiled_reduce_kernel;
+use crate::ir::work_size::calculate_work_sizes;
+use crate::{ASTBOp, ASTOp, ASTUOp, AST};
+use alloc::{string::String, vec::Vec};
 use core::fmt::{Display, Formatter};
 use zyx_core::{
-    axes::{Axes, IntoAxes},
     dtype::DType,
-    shape::Shape,
-    view::{Index, View},
+    view::Index,
 };
-use crate::ir::elementwise_compiler::compile_elementwise_kernel;
-use crate::ir::reduce_compiler::compile_reduce_kernel;
-use crate::ir::work_size::calculate_work_sizes;
 
 /// Variable in IR
 pub enum Var {
@@ -81,6 +81,12 @@ pub enum Op {
         id: u8,
         len: Option<u8>,
     },
+    /// Declare local memory variable with id, dtype and given length
+    DeclareLocalVar { id: u8, dtype: DType, len: usize },
+    /// Store global arg into local memory res at index
+    LoadGlobalIntoLocal { res: u8, res_index: String, arg: u8, arg_index: Index },
+    /// Load local memory into register from arg at index
+    LoadLocal { res: Var, arg: u8, index: String },
     /// Initialize index id with value
     InitIndex { id: u8, value: String },
     /// Initialize accumulator, if sum_reduce is true,
@@ -93,11 +99,7 @@ pub enum Op {
         len: Option<u8>,
     },
     /// Unary op
-    Unary {
-        res: Var,
-        x: Var,
-        op: UOp,
-    },
+    Unary { res: Var, x: Var, op: UOp },
     /// Binary op
     Binary { res: Var, x: Var, y: Var, op: BOp },
     /// Where, x is condition, y is if true, otherwise z
@@ -110,6 +112,8 @@ pub enum Op {
     },
     /// End of loop
     EndLoop,
+    /// Local memory synchronization
+    LocalBarrier,
 }
 
 /// Intermediate representation for compilers
@@ -135,14 +139,21 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
     // TODO Local memory tiling
     // TODO Register memory tiling
     // TODO Repeat these functions with different parameters (autotuning)
-    let (arg_views, res_shape, reduce_dim, global_work_size, local_work_size, _register_work_size) =
-        calculate_work_sizes(
-            &ast.reduce_axes,
-            &ast.shape,
-            ast.arg_views.clone(),
-            max_local_work_size,
-            max_num_registers,
-        );
+    let (
+        arg_views,
+        res_shape,
+        reduce_dim,
+        global_work_size,
+        local_work_size,
+        register_work_size,
+        tiled_buffers,
+    ) = calculate_work_sizes(
+        &ast.reduce_axes,
+        &ast.shape,
+        ast.arg_views.clone(),
+        max_local_work_size,
+        max_num_registers,
+    );
     let mut kernel_args = Vec::new();
     for dtype in &ast.arg_dtypes {
         kernel_args.push((*dtype, true));
@@ -152,14 +163,37 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
 
     // Compile ops
     let ops = if let Some(reduce_dim) = reduce_dim {
-        compile_reduce_kernel(ast, reduce_dim, &local_work_size, arg_views, res_shape)
+        if tiled_buffers.is_empty() {
+            compile_reduce_kernel(
+                &ast.ops,
+                arg_views,
+                ast.arg_dtypes.clone(),
+                ast.reduce_dtype.unwrap(),
+                reduce_dim,
+                &local_work_size,
+                res_shape,
+            )
+        } else {
+            compile_tiled_reduce_kernel(
+                &ast.ops,
+                arg_views,
+                ast.arg_dtypes.clone(),
+                reduce_dim,
+                &local_work_size,
+                &register_work_size,
+                res_shape,
+                ast.reduce_dtype.unwrap(),
+                tiled_buffers,
+            )
+        }
+        // TODO add two step reduce for full reduce and potentially some other reduces
     } else {
         compile_elementwise_kernel(ast, &local_work_size, arg_views, res_shape)
     };
 
     IR {
-        global_work_size,
-        local_work_size,
+        global_work_size: if reduce_dim.is_some() { global_work_size[..global_work_size.len()-1].to_vec() } else { global_work_size },
+        local_work_size: if reduce_dim.is_some() { local_work_size[..local_work_size.len()-1].to_vec() } else { local_work_size },
         kernel_args,
         ops,
         res_byte_size,
@@ -229,7 +263,7 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                     ASTBOp::Div => BOp::Div,
                     ASTBOp::Pow => BOp::Pow,
                     ASTBOp::Cmplt => BOp::Cmplt,
-                }
+                },
             });
         }
         ASTOp::Where(x, y, z) => {

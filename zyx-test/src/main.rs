@@ -8,6 +8,7 @@ mod nn;
 mod optimizer;
 mod reduce;
 mod unary;
+mod custom;
 
 use zyx_core::backend::Backend;
 use zyx_core::error::ZyxError;
@@ -22,6 +23,24 @@ fn assert_eq<T: Scalar>(x: impl IntoIterator<Item = T>, y: impl IntoIterator<Ite
             panic!("Elements {ex:?} and {ey:?} at index {i} are not equal.");
         }
     }
+}
+
+fn run_custom_test<F: Fn() -> Result<(), ZyxError>>(test_fn: F) {
+    let name: String = std::any::type_name::<F>().into();
+    /*for _ in 0..4 {
+        if let Some(index) = name.find(':') {
+            name = name[index + 1..].into();
+        }
+    }*/
+    //name.replace_range(name.find('&').unwrap() + 1..name.find(':').unwrap() + 2, "");
+    print!("Running test {name} ... ");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let begin = std::time::Instant::now();
+    let res = test_fn();
+    let elapsed = begin.elapsed().as_nanos();
+    res.unwrap_or_else(|err| panic!("Test {name} failed with error {err}"));
+    println!("OK, time taken: {:.3} ms", elapsed as f32 / 1000000.);
 }
 
 fn run_test_fn<T: Scalar, F: Fn(B, T) -> Result<(), ZyxError>, B: Backend>(
@@ -65,22 +84,8 @@ macro_rules! run_test {
 }
 
 fn main() {
-    /*
-    let n = 128;
-
-    let dev = zyx_opencl::device().unwrap();
-    let x = dev.randn([n, n], zyx_opencl::DType::F32);
-    let y_ocl = dev.randn([n, n], zyx_opencl::DType::F32);
-    let z_ocl = x.dot(&y_ocl);
-
-    let dev = zyx_cpu::device().unwrap();
-    let x = dev.randn([n, n], zyx_opencl::DType::F32);
-    let y = dev.randn([n, n], zyx_opencl::DType::F32);
-    assert_eq(y_ocl.to_vec::<f32>().unwrap().into_iter(), y.to_vec::<f32>().unwrap().into_iter());
-    let z_cpu = x.dot(y);
-
-    assert_eq(z_ocl.to_vec::<f32>().unwrap().into_iter(), z_cpu.to_vec::<f32>().unwrap().into_iter());
-    */
+    println!("\nTesting custom ops");
+    run_custom_test(custom::small_tiled_dot);
 
     println!("\nTesting tensor initialization");
     println!("\nTesting unary ops");

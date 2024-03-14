@@ -257,7 +257,7 @@ fn test_layer_norm() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     /*let x = dev.tensor(0..150).reshape([10, 15]);
@@ -278,7 +278,7 @@ fn t0() -> Result<(), ZyxError> {
 
     //panic!();
     Ok(())
-}
+}*/
 
 /*#[test]
 fn t0() -> Result<(), ZyxError> {
@@ -292,7 +292,7 @@ fn t0() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn t5() -> Result<(), ZyxError> {
     let dev = device()?;
     //let mut x = dev.randn([1024, 1024], DType::F32);
@@ -308,5 +308,28 @@ fn t5() -> Result<(), ZyxError> {
 
     //std::println!("{x}");
     //panic!();
+    Ok(())
+}*/
+
+#[test]
+fn t0() {
+    let n = 64;
+    let dev = device().unwrap();
+    let x = dev.tensor(0..(n*n) as i32).reshape([n, n]);
+    //std::println!("{x}");
+    let z = x.dot(&x);
+    let _: Vec<i32> = z.to_vec().unwrap();
+    //std::println!("{z}");
+    panic!();
+}
+
+#[test]
+fn dot_test() -> Result<(), ZyxError> {
+    let dev = crate::device_builder().platform_id(0).build()?;
+    let x = dev.randn([1024, 1024], DType::F32);
+    let y = dev.randn([1024, 1024], DType::F32);
+    let z = x.dot(&y).tanh() + x;
+    let _: Vec<f32> = z.to_vec()?;
+    panic!();
     Ok(())
 }

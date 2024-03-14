@@ -11,7 +11,7 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
             .chain(reduce_axes.iter().map(|a| *a as i64))
             .collect::<Box<_>>()
             .into_axes(rank);
-        let shape = if rank > 4 || reduce_axes.len() > 1 {
+        let shape = if rank > 3 || reduce_axes.len() > 1 {
             let d1: usize = ast_shape
                 .iter()
                 .enumerate()
@@ -53,7 +53,8 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
 }
 
 /// Calculates arg_views, reduce dim size, global, local and register work sizes,
-/// each across three dimensions
+/// each across three dimensions.
+/// Last work size is in reduce dimension if it is reduced kernel.
 pub(super) fn calculate_work_sizes(
     ast_reduce_axes: &Option<Axes>,
     ast_shape: &Shape,
@@ -64,45 +65,54 @@ pub(super) fn calculate_work_sizes(
     Vec<View>,
     Shape,
     Option<usize>,
-    Vec<usize>,
-    Vec<usize>,
-    Vec<usize>,
+    Vec<usize>, // global work size
+    Vec<usize>, // local work size
+    Vec<usize>, // register work size
+    BTreeSet<u8> // tiled buffers
 ) {
     let (arg_views, shape, reduce_dim) = reshape_and_permute_kernel_args(ast_arg_views, ast_shape, ast_reduce_axes);
 
+    let (tiled_buffers, tiling_axes) = select_tiled_buffers_and_tiling_axes(&arg_views, shape.rank());
+
+    let max_local_work_size_dim = (max_local_work_size as f64).sqrt() as usize;
+    let max_register_work_size_dim = if reduce_dim.is_some() { 1 } else { 1 };
+
     let mut lws = 1;
-    let rank = shape.rank();
-    let mut _register_work_size = Vec::new();
+    let mut register_work_size = Vec::new();
     let mut global_work_size: Vec<usize> = shape
         .iter()
         .enumerate()
-        .filter_map(|(i, d)| {
-            if reduce_dim.is_some() && i == rank - 1 {
-                None
-            } else {
-                let d = *d;
-                /*register_work_size.push(1);
-                while d % 2 == 0 && register_work_size[i] * 2 <= max_register_work_size {
+        .map(|(i, d)| {
+            let mut d = *d;
+            register_work_size.push(1);
+            if tiling_axes.contains(&i) {
+                while d % 2 == 0 && register_work_size[i] * 2 <= max_register_work_size_dim {
                     register_work_size[i] *= 2;
                     d /= 2;
-                }*/
-                Some(d)
+                }
             }
+            d
         })
         .collect();
-    //let mut full_reduce = false; // reduce across all axes
+
     if global_work_size.len() == 0 {
-        //full_reduce = true;
         global_work_size.push(1);
     }
+
     // Runtimes are horrible at inferring local work sizes, we just have to give it our
     let local_work_size: Vec<usize> = global_work_size
         .iter()
         .rev()
         .map(|d| {
             let mut x = 1;
-            while d % (x * 2) == 0 && x * lws < max_local_work_size {
-                x *= 2;
+            if tiling_axes.len() < 2 {
+                while d % (x * 2) == 0 && x * lws < max_local_work_size {
+                    x *= 2;
+                }
+            } else {
+                while d % (x * 2) == 0 && x < max_local_work_size_dim {
+                    x *= 2;
+                }
             }
             lws *= x;
             x
@@ -117,11 +127,42 @@ pub(super) fn calculate_work_sizes(
         reduce_dim,
         global_work_size,
         local_work_size,
-        _register_work_size,
+        register_work_size,
+        tiled_buffers
     )
 }
 
 /// Which buffers should be tiled in the reduce kernel?
-fn choose_tiled_buffers(arg_views: &[View]) -> BTreeSet<u8> {
-    todo!()
+fn select_tiled_buffers_and_tiling_axes(arg_views: &[View], rank: usize) -> (BTreeSet<u8>, BTreeSet<usize>) {
+    // All expanded buffers are tiled
+    let mut tiled_buffers = BTreeSet::new();
+    for (id, view) in arg_views.iter().enumerate() {
+        if (0..rank).any(|a| view.is_expanded_axis(a)) {
+            tiled_buffers.insert(id as u8);
+        }
+    }
+    // Tiling axes are all axes where at least one of tiled_buffers is expanded
+    // and also one common axis where none of tiled buffers is expanded.
+    // TODO if all buffers are expanded in one axis, then this axis should be removed
+    // from the kernel alltogether
+    let mut tiling_axes = BTreeSet::new();
+    for a in 0..rank {
+        let mut expanded_axis = false;
+        for (id, view) in arg_views.iter().enumerate() {
+            if tiled_buffers.contains(&(id as u8)) {
+                if view.is_expanded_axis(a) {
+                    expanded_axis = true;
+                }
+            }
+        }
+        // If exists at least one buffer expanded in this axis
+        if expanded_axis {
+            tiling_axes.insert(a);
+        }
+    }
+    // TODO here we add reduce axis to tiling axes, but is it always the best thing to do?
+    tiling_axes.insert(rank-1);
+
+    std::println!("Tiled buffers: {tiled_buffers:?}, tiling axes: {tiling_axes:?}");
+    (tiled_buffers, tiling_axes)
 }

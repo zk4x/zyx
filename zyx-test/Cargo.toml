@@ -16,11 +16,11 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "*" }
-zyx-optim = { version = "*"}
-zyx-nn = { version = "*"}
-zyx-opencl = { version = "*"}
-zyx-cpu = { version = "*" }
-zyx-torch = { version = "*" }
+zyx-core = { version = "*", path = "../zyx-core" }
+zyx-optim = { version = "*", path = "../zyx-optim" }
+zyx-nn = { version = "*", path = "../zyx-nn" }
+zyx-opencl = { version = "*", path = "../zyx-opencl" }
+zyx-cpu = { version = "*", path = "../zyx-cpu" }
+zyx-torch = { version = "*", path = "../zyx-torch" }
 itertools = { version = "0.12.1" }
 rand = { version = "0.8.5" }
