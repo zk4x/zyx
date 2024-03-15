@@ -6,6 +6,10 @@ use zyx_core::view::View;
 
 fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Shape, ast_reduce_axes: &Option<Axes>) -> (Vec<View>, Shape, Option<usize>) {
     if let Some(reduce_axes) = ast_reduce_axes {
+        // TODO pad sum reduce kernels with zeros and max reduce kernels with min_value
+        // if they have dimensions that are not multiples of 16.
+        // Although max reduce kernels may be padded with zeros in other dimensions,
+        // so it may be little more complicated.
         let rank = ast_shape.rank();
         let permute_axes = (0..rank as i64)
             .filter(|a| !reduce_axes.contains(*a as usize))
@@ -45,19 +49,23 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
         let reduce_dim = shape[-1];
         (ast_arg_views, shape, Some(reduce_dim))
     } else {
-        let mut arg_views = ast_arg_views.clone();
         let shape = if ast_shape.rank() > 3 {
             let n = ast_shape.numel();
-            for view in &mut arg_views {
+            for view in &mut ast_arg_views {
                 *view = view.reshape(&[1, 1, n].into());
             }
             // TODO make these dimensions more reasonable, not just 1, 1, n
             // this is important when working with expanded buffers
             [1, 1, n].into()
         } else {
+            for view in &mut ast_arg_views {
+                let shape = view.shape();
+                let shape = repeat(1).take(3-shape.rank()).chain(shape.iter().copied()).collect::<Vec<usize>>().into();
+                *view = view.reshape(&shape);
+            }
             repeat(1).take(3-ast_shape.rank()).chain(ast_shape.iter().copied()).collect::<Vec<usize>>().into()
         };
-        (arg_views, shape, None)
+        (ast_arg_views, shape, None)
     }
 }
 
@@ -77,14 +85,19 @@ pub(super) fn calculate_work_sizes(
     Vec<usize>, // global work size
     Vec<usize>, // local work size
     Vec<usize>, // register work size
-    BTreeSet<u8>, // tiled buffers
-    BTreeSet<usize> // tiling axes
+    BTreeSet<u8> // tiling axes
 ) {
     let max_local_work_size_dim = (max_local_work_size as f64).sqrt() as usize;
+    // Register tiling can be disabled by setting max_register_work_size_dim to 1
     let max_register_work_size_dim = if ast_reduce_axes.is_some() { 1 } else { 1 };
 
     let (arg_views, shape, reduce_dim) = reshape_and_permute_kernel_args(ast_arg_views, ast_shape, ast_reduce_axes);
-    let (tiled_buffers, tiling_axes) = select_tiled_buffers_and_tiling_axes(&arg_views, shape.rank());
+    let mut tiling_axes = select_tiling_axes(&arg_views, shape.rank());
+    // Reduce dimension is always tiled
+    if reduce_dim.is_some() && !tiling_axes.is_empty() {
+        tiling_axes.insert(3);
+    }
+    // To disable tiling, just set empty tiling_axes here.
 
     let mut lws = 1;
     let mut register_work_size = Vec::new();
@@ -94,7 +107,7 @@ pub(super) fn calculate_work_sizes(
         .map(|(i, d)| {
             let mut d = *d;
             register_work_size.push(1);
-            if tiling_axes.contains(&i) {
+            if tiling_axes.contains(&(i as u8)) {
                 while d % 2 == 0 && register_work_size[i] * 2 <= max_register_work_size_dim {
                     register_work_size[i] *= 2;
                     d /= 2;
@@ -112,9 +125,27 @@ pub(super) fn calculate_work_sizes(
         .enumerate()
         .map(|(i, (gd, rd))| {
             if reduce_dim.is_some() && i == 0 {
-                1
+                let mut x = 1;
+                let mut tiling_axes = tiling_axes.clone();
+                if reduce_dim.is_some() {
+                    tiling_axes.pop_last();
+                }
+                if tiling_axes.len() < 2 {
+                    while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
+                        x *= 2;
+                    }
+                } else {
+                    while gd % (x * rd * 2) == 0 && x < max_local_work_size_dim {
+                        x *= 2;
+                    }
+                }
+                x
             } else {
                 let mut x = 1;
+                let mut tiling_axes = tiling_axes.clone();
+                if reduce_dim.is_some() {
+                    tiling_axes.pop_last();
+                }
                 if tiling_axes.len() < 2 {
                     while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
                         x *= 2;
@@ -132,6 +163,9 @@ pub(super) fn calculate_work_sizes(
         .into_iter()
         .rev()
         .collect();
+    std::println!("global: {global_work_size:?}");
+    std::println!("local: {local_work_size:?}");
+    std::println!("register: {register_work_size:?}");
     (
         arg_views,
         shape,
@@ -139,42 +173,26 @@ pub(super) fn calculate_work_sizes(
         global_work_size,
         local_work_size,
         register_work_size,
-        tiled_buffers,
         tiling_axes
     )
 }
 
-/// Which buffers should be tiled in the reduce kernel?
-fn select_tiled_buffers_and_tiling_axes(arg_views: &[View], rank: usize) -> (BTreeSet<u8>, BTreeSet<usize>) {
-    // All expanded buffers are tiled
-    let mut tiled_buffers = BTreeSet::new();
-    for (id, view) in arg_views.iter().enumerate() {
-        if (0..rank).any(|a| view.is_expanded_axis(a)) {
-            tiled_buffers.insert(id as u8);
-        }
-    }
-    // Tiling axes are all axes where at least one of tiled_buffers is expanded
-    // and also one common axis where none of tiled buffers is expanded.
-    // TODO if all buffers are expanded in one axis, then this axis should be removed
-    // from the kernel alltogether
+/// Selects tiling axes so that we know which global (and possibly local) work dimensions
+/// should be reduce by register tiling dimension.
+/// Rank includes reduce dimension.
+fn select_tiling_axes(arg_views: &[View], rank: usize) -> BTreeSet<u8> {
     let mut tiling_axes = BTreeSet::new();
-    for a in 0..rank {
-        let mut expanded_axis = false;
-        for (id, view) in arg_views.iter().enumerate() {
-            if tiled_buffers.contains(&(id as u8)) {
-                if view.is_expanded_axis(a) {
-                    expanded_axis = true;
-                }
+    for view in arg_views {
+        let strides = view.strides();
+        let shape = view.shape();
+        //std::println!("{shape}, {strides}, {rank}");
+        let mut buffer_tiled_axes_count = 0;
+        for a in (0..rank).rev() {
+            if strides[a] == 0 && shape[a] > 1 && buffer_tiled_axes_count < 2 {
+                buffer_tiled_axes_count += 1;
+                tiling_axes.insert(a as u8);
             }
         }
-        // If exists at least one buffer expanded in this axis
-        if expanded_axis {
-            tiling_axes.insert(a);
-        }
     }
-    // TODO here we add reduce axis to tiling axes, but is it always the best thing to do?
-    tiling_axes.insert(rank-1);
-
-    //std::println!("Tiled buffers: {tiled_buffers:?}, tiling axes: {tiling_axes:?}");
-    (tiled_buffers, tiling_axes)
+    tiling_axes
 }

@@ -5,7 +5,8 @@ use zyx_core::view::View;
 use crate::{ASTOp, ASTROp, BOp, Op};
 use crate::ir::{apply_elementwise_op, Var};
 
-pub mod two_step_reduce;
+pub (super) mod two_step_reduce;
+pub (super) mod tiled_reduce;
 
 pub(super) fn compile_reduce_kernel(
     ast_ops: &[ASTOp],

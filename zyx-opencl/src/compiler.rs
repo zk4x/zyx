@@ -926,13 +926,12 @@ impl zyx_compiler::Compiler for Compiler {
                 }
                 Op::Unary { res, x , op} => {
                     let (l, r) = match op {
-                        UOp::ReLU => ("max(", "0, )"),
                         UOp::Cast(_) => ("", ""),
                         UOp::Neg => ("-", ""),
                         UOp::Sin => ("sin(", ")"),
                         UOp::Cos => ("cos(", ")"),
                         UOp::Exp => ("exp(", ")"),
-                        UOp::Ln => ("ln(", ")"),
+                        UOp::Ln => ("log(", ")"),
                         UOp::Tanh => ("tanh(", ")"),
                         UOp::Sqrt => ("sqrt(", ")"),
                         UOp::Noop => ("", ""),

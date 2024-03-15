@@ -52,15 +52,6 @@ impl InnerView {
     fn is_padded(&self) -> bool {
         self.padding.iter().any(|(lp, rp)| *lp != 0 || *rp != 0)
     }
-
-    #[must_use]
-    fn is_expanded_axis(&self, axis: usize) -> bool {
-        if axis > self.strides.rank() - 1 {
-            false
-        } else {
-            self.strides[axis] == 0
-        }
-    }
 }
 
 /// CPU iterator
@@ -204,12 +195,6 @@ impl View {
     #[must_use]
     pub fn is_padded(&self) -> bool {
         self.views.iter().any(InnerView::is_padded)
-    }
-
-    /// Is this view expanded at given dim?
-    #[must_use]
-    pub fn is_expanded_axis(&self, axis: usize) -> bool {
-        self.views.first().unwrap().is_expanded_axis(axis)
     }
 
     /// For cpu backend

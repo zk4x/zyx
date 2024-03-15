@@ -43,7 +43,6 @@ impl Display for Var {
 /// Unary op
 pub enum UOp {
     Noop, // Just assign
-    ReLU,
     Cast(DType),
     Neg,
     Sin,
@@ -131,7 +130,7 @@ pub struct IR {
 // Single most important function and one of the most difficult
 // functions to write. All of this is cached, so take your time to optimize
 // these kernels.
-pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers: usize) -> IR {
+pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_size: usize, max_num_registers: usize) -> IR {
     // Byte size of the resulting buffer
     let res_byte_size = if let Some(reduce_axes) = &ast.reduce_axes {
         ast.shape.clone().reduce(reduce_axes).numel() * ast.dtype.byte_size()
@@ -149,7 +148,6 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
         mut global_work_size,
         mut local_work_size,
         register_work_size,
-        tiled_buffers,
         tiling_axes,
     ) = calculate_work_sizes(
         &ast.reduce_axes,
@@ -170,51 +168,52 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
         // Whether it is 1d, 2d or 3d kernel, it can always
         // have expanded buffers, batches (optionally spread across multiple GPUs)
         // and multi-step reduces.
-        if global_work_size.iter().product::<usize>() == reduce_dim {
-            // Full reduce
-            // Apply two step reduce
-            let mut d = 1;
-            while global_work_size[3] % (d * 2) == 0 && d < max_local_work_size {
-                d *= 2;
+
+        // TODO tiled kernel currently does not work if local work size in dimension 1 and 2 are different
+        if tiling_axes.is_empty() || local_work_size[1] != local_work_size[2] {
+            if global_work_size.iter().product::<usize>() == reduce_dim {
+                // Full reduce
+                // Apply two step reduce
+                let mut d = 1;
+                while global_work_size[3] % (d * 2) == 0 && d < max_local_work_size {
+                    d *= 2;
+                }
+                global_work_size[2] = d;
+                local_work_size[2] = d;
+                reduce::two_step_reduce::compile_two_step_reduce_kernel(
+                    &ast.ops,
+                    arg_views,
+                    ast.arg_dtypes.clone(),
+                    ast.reduce_dtype.unwrap(),
+                    reduce_dim,
+                    &local_work_size,
+                    res_shape,
+                )
+            } else {
+                reduce::compile_reduce_kernel(
+                    &ast.ops,
+                    arg_views,
+                    ast.arg_dtypes.clone(),
+                    ast.reduce_dtype.unwrap(),
+                    reduce_dim,
+                    &local_work_size,
+                    res_shape,
+                )
             }
-            global_work_size[2] = d;
-            local_work_size[2] = d;
-            reduce::two_step_reduce::compile_two_step_reduce_kernel(
+        } else {
+            reduce::tiled_reduce::compile_tiled_reduce(
                 &ast.ops,
                 arg_views,
                 ast.arg_dtypes.clone(),
                 ast.reduce_dtype.unwrap(),
-                reduce_dim,
-                &local_work_size,
-                res_shape,
-            )
-        } else {
-            reduce::compile_reduce_kernel(
-                &ast.ops,
-                arg_views,
-                ast.arg_dtypes.clone(),
-                ast.reduce_dtype.unwrap(),
-                reduce_dim,
-                &local_work_size,
-                res_shape,
-            )
-        }
-        /*if tiled_buffers.is_empty() {
-        } else {
-            local_tiled_reduce::compile_tiled_reduce_kernel(
-                &ast.ops,
-                arg_views,
-                ast.arg_dtypes.clone(),
                 reduce_dim,
                 &local_work_size,
                 &register_work_size,
                 res_shape,
-                ast.reduce_dtype.unwrap(),
-                tiled_buffers,
                 tiling_axes,
+                max_local_memory_size,
             )
-        }*/
-        // TODO add two step reduce for full reduce and potentially some other reduces
+        }
     } else {
         elementwise::compile_elementwise_kernel(ast, &local_work_size, arg_views, res_shape)
     };
@@ -234,13 +233,17 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
     // TODO put all unary ops into single function or probably macro
     match ast_op {
         ASTOp::Unary(x, op) => {
+            let mut relu = false;
             let op = match op {
                 ASTUOp::Cast(dtype) => {
                     *res_dtype = *dtype;
                     UOp::Cast(*dtype)
                 }
                 ASTUOp::Neg => UOp::Neg,
-                ASTUOp::ReLU => UOp::ReLU,
+                ASTUOp::ReLU => {
+                    relu = true;
+                    UOp::Neg
+                }
                 ASTUOp::Sin => UOp::Sin,
                 ASTUOp::Cos => UOp::Cos,
                 ASTUOp::Exp => UOp::Exp,
@@ -253,17 +256,36 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                 id: res_id,
                 len: None,
             });
-            ops.push(Op::Unary {
-                res: Var::Register {
-                    id: res_id,
-                    index: None,
-                },
-                x: Var::Register {
-                    id: *x,
-                    index: None,
-                },
-                op,
-            });
+            if relu {
+                ops.push(Op::Binary {
+                    res: Var::Register {
+                        id: res_id,
+                        index: None,
+                    },
+                    x: Var::Register {
+                        id: *x,
+                        index: None,
+                    },
+                    y: match res_dtype {
+                        DType::F32 => Var::ConstF32(0.0),
+                        DType::F64 => Var::ConstF64(0.0),
+                        DType::I32 => Var::ConstI32(0),
+                    },
+                    op: BOp::Max,
+                });
+            } else {
+                ops.push(Op::Unary {
+                    res: Var::Register {
+                        id: res_id,
+                        index: None,
+                    },
+                    x: Var::Register {
+                        id: *x,
+                        index: None,
+                    },
+                    op,
+                });
+            }
         }
         ASTOp::Binary(x, y, op) => {
             ops.push(Op::DeclareVar {

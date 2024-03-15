@@ -39,3 +39,5 @@ pub(super) fn large_tiled_dot() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+// TODO write tests for all variations of tiled reduce kernels
