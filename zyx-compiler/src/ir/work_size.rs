@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, vec::Vec, collections::BTreeSet};
+use core::iter::repeat;
 use zyx_core::axes::{Axes, IntoAxes};
 use zyx_core::shape::Shape;
 use zyx_core::view::View;
@@ -11,7 +12,7 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
             .chain(reduce_axes.iter().map(|a| *a as i64))
             .collect::<Box<_>>()
             .into_axes(rank);
-        let shape = if rank > 3 || reduce_axes.len() > 1 {
+        let shape = if rank > 4 || reduce_axes.len() > 1 {
             let d1: usize = ast_shape
                 .iter()
                 .enumerate()
@@ -24,7 +25,8 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
                 })
                 .product();
             let d0 = ast_shape.numel() / d1;
-            let shape: Shape = [d0, d1].into();
+            // TODO make these dimensions more reasonable, not just 1, 1, d0, d1
+            let shape: Shape = [1, 1, d0, d1].into();
             for view in &mut ast_arg_views {
                 *view = view.permute(&permute_axes).reshape(&shape);
             }
@@ -32,8 +34,13 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
         } else {
             for view in &mut ast_arg_views {
                 *view = view.permute(&permute_axes);
+                let shape = view.shape();
+                let shape = repeat(1).take(4-shape.rank()).chain(shape.iter().copied()).collect::<Vec<usize>>().into();
+                *view = view.reshape(&shape);
             }
-            ast_shape.permute(&permute_axes)
+            let shape = ast_shape.permute(&permute_axes);
+            let shape = repeat(1).take(4-shape.rank()).chain(shape.iter().copied()).collect::<Vec<usize>>().into();
+            shape
         };
         let reduce_dim = shape[-1];
         (ast_arg_views, shape, Some(reduce_dim))
@@ -42,11 +49,13 @@ fn reshape_and_permute_kernel_args(mut ast_arg_views: Vec<View>, ast_shape: &Sha
         let shape = if ast_shape.rank() > 3 {
             let n = ast_shape.numel();
             for view in &mut arg_views {
-                *view = view.reshape(&[n].into());
+                *view = view.reshape(&[1, 1, n].into());
             }
-            [n].into()
+            // TODO make these dimensions more reasonable, not just 1, 1, n
+            // this is important when working with expanded buffers
+            [1, 1, n].into()
         } else {
-            ast_shape.clone()
+            repeat(1).take(3-ast_shape.rank()).chain(ast_shape.iter().copied()).collect::<Vec<usize>>().into()
         };
         (arg_views, shape, None)
     }
@@ -95,28 +104,29 @@ pub(super) fn calculate_work_sizes(
         })
         .collect();
 
-    if global_work_size.len() == 0 {
-        global_work_size.push(1);
-    }
-
     // Runtimes are horrible at inferring local work sizes, we just have to give it our
     let local_work_size: Vec<usize> = global_work_size
         .iter()
         .zip(register_work_size.iter())
         .rev()
-        .map(|(gd, rd)| {
-            let mut x = 1;
-            if tiling_axes.len() < 2 {
-                while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
-                    x *= 2;
-                }
+        .enumerate()
+        .map(|(i, (gd, rd))| {
+            if reduce_dim.is_some() && i == 0 {
+                1
             } else {
-                while gd % (x * rd * 2) == 0 && x < max_local_work_size_dim {
-                    x *= 2;
+                let mut x = 1;
+                if tiling_axes.len() < 2 {
+                    while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
+                        x *= 2;
+                    }
+                } else {
+                    while gd % (x * rd * 2) == 0 && x < max_local_work_size_dim {
+                        x *= 2;
+                    }
                 }
+                lws *= x;
+                x
             }
-            lws *= x;
-            x
         })
         .collect::<Vec<_>>()
         .into_iter()

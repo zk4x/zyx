@@ -55,7 +55,11 @@ impl InnerView {
 
     #[must_use]
     fn is_expanded_axis(&self, axis: usize) -> bool {
-        self.strides[axis] == 0
+        if axis > self.strides.rank() - 1 {
+            false
+        } else {
+            self.strides[axis] == 0
+        }
     }
 }
 

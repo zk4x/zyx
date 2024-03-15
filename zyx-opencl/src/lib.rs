@@ -325,11 +325,20 @@ fn t0() {
 
 #[test]
 fn dot_test() -> Result<(), ZyxError> {
-    let dev = crate::device_builder().platform_id(0).build()?;
+    let dev = device_builder().platform_id(0).build()?;
     let x = dev.randn([1024, 1024], DType::F32);
     let y = dev.randn([1024, 1024], DType::F32);
     let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
     panic!();
     Ok(())
+}
+
+#[test]
+fn t6() {
+    let dev = device_builder().platform_id(0).build().unwrap();
+    let x = dev.randn([1024, 1024], DType::F32);
+    let z = x.sum(..);
+    let _: Vec<f32> = z.to_vec().unwrap();
+    panic!()
 }

@@ -1,7 +1,5 @@
 mod elementwise;
 mod reduce;
-mod local_tiled_reduce;
-mod local_and_register_tiled_reduce;
 mod work_size;
 
 use crate::ir::work_size::calculate_work_sizes;
@@ -44,6 +42,7 @@ impl Display for Var {
 
 /// Unary op
 pub enum UOp {
+    Noop, // Just assign
     ReLU,
     Cast(DType),
     Neg,
@@ -81,10 +80,6 @@ pub enum Op {
     },
     /// Declare local memory variable with id, dtype and given length
     DeclareLocalVar { id: u8, dtype: DType, len: usize },
-    /// Store global arg into local memory res at index
-    LoadGlobalIntoLocal { res: u8, res_index: String, arg: u8, arg_index: Index },
-    /// Load local memory into register from arg at index
-    LoadLocal { res: Var, arg: u8, index: String },
     /// Initialize index id with value
     InitIndex { id: u8, value: String },
     /// Declare index
@@ -106,12 +101,18 @@ pub enum Op {
     Binary { res: Var, x: Var, y: Var, op: BOp },
     /// Where, x is condition, y is if true, otherwise z
     Where { res: Var, x: Var, y: Var, z: Var },
-    // Loop inside kernel (register/private)
+    /// Loop in kernel (register/private)
     Loop {
         id: u8,
         upper_bound: usize,
         step: usize,
     },
+    /// If condition
+    IfBlock {
+        condition: String,
+    },
+    /// End of if condition
+    EndIf,
     /// End of loop
     EndLoop,
     /// Local memory synchronization
@@ -145,8 +146,8 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
         arg_views,
         res_shape,
         reduce_dim,
-        global_work_size,
-        local_work_size,
+        mut global_work_size,
+        mut local_work_size,
         register_work_size,
         tiled_buffers,
         tiling_axes,
@@ -166,7 +167,28 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
 
     // Compile ops
     let ops = if let Some(reduce_dim) = reduce_dim {
-        if tiled_buffers.is_empty() {
+        // Whether it is 1d, 2d or 3d kernel, it can always
+        // have expanded buffers, batches (optionally spread across multiple GPUs)
+        // and multi-step reduces.
+        if global_work_size.iter().product::<usize>() == reduce_dim {
+            // Full reduce
+            // Apply two step reduce
+            let mut d = 1;
+            while global_work_size[3] % (d * 2) == 0 && d < max_local_work_size {
+                d *= 2;
+            }
+            global_work_size[2] = d;
+            local_work_size[2] = d;
+            reduce::two_step_reduce::compile_two_step_reduce_kernel(
+                &ast.ops,
+                arg_views,
+                ast.arg_dtypes.clone(),
+                ast.reduce_dtype.unwrap(),
+                reduce_dim,
+                &local_work_size,
+                res_shape,
+            )
+        } else {
             reduce::compile_reduce_kernel(
                 &ast.ops,
                 arg_views,
@@ -176,6 +198,8 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
                 &local_work_size,
                 res_shape,
             )
+        }
+        /*if tiled_buffers.is_empty() {
         } else {
             local_tiled_reduce::compile_tiled_reduce_kernel(
                 &ast.ops,
@@ -189,7 +213,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_num_registers
                 tiled_buffers,
                 tiling_axes,
             )
-        }
+        }*/
         // TODO add two step reduce for full reduce and potentially some other reduces
     } else {
         elementwise::compile_elementwise_kernel(ast, &local_work_size, arg_views, res_shape)

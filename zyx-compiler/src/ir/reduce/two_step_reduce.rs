@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
 use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
-use zyx_core::view::View;
-use crate::{ASTOp, ASTROp, BOp, Op};
+use zyx_core::view::{Index, View};
+use crate::{ASTOp, ASTROp, BOp, Op, UOp};
 use crate::ir::{apply_elementwise_op, Var};
 
-pub(super) fn compile_reduce_kernel(
+pub(in crate::ir) fn compile_two_step_reduce_kernel(
     ast_ops: &[ASTOp],
     arg_views: Vec<View>,
     arg_dtypes: Vec<DType>,
@@ -16,16 +16,6 @@ pub(super) fn compile_reduce_kernel(
 ) -> Vec<Op> {
     let mut ops = Vec::new();
     let rank = res_shape.rank();
-
-    // Add indexes for ops after reduce
-    for (a, d) in local_work_size.iter().enumerate() {
-        if a != rank - 1 {
-            ops.push(Op::InitIndex {
-                id: a as u8,
-                value: alloc::format!("gid{a}*{d}+lid{a}"),
-            });
-        }
-    }
 
     let (reduce_op_i, is_sum_reduce) = ast_ops.iter().enumerate().find(|(_, op)| matches!(op, ASTOp::Reduce(..))).map(|(i, op)| {
         if let ASTOp::Reduce(_, rop) = op {
@@ -39,6 +29,23 @@ pub(super) fn compile_reduce_kernel(
         }
     }).unwrap();
 
+    // Declare local memory tiles
+    ops.push(Op::DeclareLocalVar {
+        id: reduce_op_i as u8,
+        dtype: reduce_dtype,
+        len: local_work_size[2],
+    });
+
+    // Add indexes for ops after reduce
+    for (a, d) in local_work_size.iter().enumerate() {
+        if a != rank - 1 {
+            ops.push(Op::InitIndex {
+                id: a as u8,
+                value: alloc::format!("gid{a}*{d}+lid{a}"),
+            });
+        }
+    }
+
     // Initiliaze accumulator
     ops.push(Op::InitAccumulator {
         id: reduce_op_i as u8,
@@ -47,10 +54,10 @@ pub(super) fn compile_reduce_kernel(
         len: None,
     });
 
-    // Reduce loop
+    // First reduce loop
     ops.push(Op::Loop {
         id: 0,
-        upper_bound: reduce_dim,
+        upper_bound: reduce_dim/local_work_size[2],
         step: 1,
     });
 
@@ -129,6 +136,66 @@ pub(super) fn compile_reduce_kernel(
     // End reduce loop after reduce op was applied
     ops.push(Op::EndLoop);
 
+    ops.push(Op::Unary {
+        res: Var::Local {
+            id: reduce_op_i as u8,
+            index: "lid2".into(),
+        },
+        x: Var::Register {
+            id: reduce_op_i as u8,
+            index: None,
+        },
+        op: UOp::Noop,
+    });
+
+    ops.push(Op::LocalBarrier);
+
+    ops.push(Op::IfBlock { condition: "lid2 < 1".into() });
+
+    // Second reduce loop
+    ops.push(Op::Loop {
+        id: 0,
+        upper_bound: local_work_size[2]-1,
+        step: 1,
+    });
+
+    // Apply reduce op
+    if is_sum_reduce {
+        ops.push(Op::Binary {
+            res: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
+            x: Var::Local {
+                id: res_id - 1,
+                index: "rid0+1".into(),
+            },
+            y: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
+            op: BOp::Add,
+        });
+    } else {
+        ops.push(Op::Binary {
+            res: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
+            x: Var::Local {
+                id: res_id - 1,
+                index: "rid0".into(),
+            },
+            y: Var::Register {
+                id: reduce_op_i as u8,
+                index: None,
+            },
+            op: BOp::Max,
+        });
+    }
+
+    ops.push(Op::EndLoop);
+
     // Apply ops after reduce
     while res_id < ast_ops.len() as u8 {
         let op = &ast_ops[res_id as usize];
@@ -159,11 +226,14 @@ pub(super) fn compile_reduce_kernel(
     // Store result
     ops.push(Op::StoreGlobal {
         res: arg_dtypes.len() as u8,
-        index: View::new(res_shape[0..-1].into()).cidx(),
+        index: Index::Normal("0".into()),
         arg: Var::Register {
             id: res_id - 1,
             index: None,
         },
     });
+
+    ops.push(Op::EndIf);
+
     ops
 }

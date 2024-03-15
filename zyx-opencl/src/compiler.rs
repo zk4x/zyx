@@ -887,17 +887,6 @@ impl zyx_compiler::Compiler for Compiler {
                 Op::DeclareLocalVar { id, dtype, len } => {
                     source += &f!("{indent}__local {} lmem{id}[{len}];\n", dtype.ocl_str());
                 }
-                Op::LoadGlobalIntoLocal { res, res_index, arg, arg_index } => match arg_index {
-                    Index::Normal(idx) => {
-                        source += &f!("{indent}lmem{res}[{res_index}] = gmem{arg}[{idx}];\n");
-                    }
-                    Index::Padded(padding, idx) => {
-                        source += &f!("{indent}lmem{res}[{res_index}] = {padding} ? gmem{arg}[{idx}] : 0;\n");
-                    }
-                }
-                Op::LoadLocal { res, arg, index } => {
-                    source += &f!("{indent}{res} = lmem{arg}[{index}];\n");
-                }
                 Op::DeclareIndex { id } => {
                     source += &f!("{indent}{id_t} idx{id};\n");
                 }
@@ -946,6 +935,7 @@ impl zyx_compiler::Compiler for Compiler {
                         UOp::Ln => ("ln(", ")"),
                         UOp::Tanh => ("tanh(", ")"),
                         UOp::Sqrt => ("sqrt(", ")"),
+                        UOp::Noop => ("", ""),
                     };
                     source += &f!("{indent}{res} = {l}{x}{r};\n");
                 }
@@ -971,6 +961,14 @@ impl zyx_compiler::Compiler for Compiler {
                 } => {
                     source += &f!("{indent}for ({id_t} rid{id} = 0; rid{id} < {upper_bound}; rid{id} += {step}) {{\n");
                     indent += "  ";
+                }
+                Op::IfBlock { condition } => {
+                    source += &f!("{indent}if ({condition}) {{\n");
+                    indent += "  ";
+                }
+                Op::EndIf => {
+                    indent = indent[..indent.len() - 2].into();
+                    source += &f!("{indent}}}\n");
                 }
                 Op::EndLoop => {
                     indent = indent[..indent.len() - 2].into();
