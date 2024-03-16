@@ -300,7 +300,6 @@ pub(crate) fn compile_tiled_reduce(
         }
     }
 
-    // TODO lol, fix this, it can not go simply form 1..3, but it should go over register tiled axes
     for (id, axes) in &local_tiles {
         for a in axes.keys() {
             if *a != 3 {
@@ -312,7 +311,7 @@ pub(crate) fn compile_tiled_reduce(
                     },
                     x: Var::Local {
                         id: *id,
-                        index: format!("(lid{a}*{}+rid{a})*{}+lid{}*{}+rid{}", register_work_size[a], local_work_size[a], if a == 1 { 2 } else { 1 }, register_work_size[if a == 1 { 2 } else { 1 }], if a == 1 { 2 } else { 1 }),
+                        index: format!("(lid{a}*{}+rid{a})*{}+rid9*{}+rid{}", register_work_size[a], local_work_size[a]*register_work_size[a], register_work_size[if a == 1 { 2 } else { 1 }], if a == 1 { 2 } else { 1 }),
                     },
                     op: UOp::Noop,
                 });
