@@ -130,16 +130,6 @@ pub(crate) fn compile_tiled_reduce(
     // TODO make sure we do not overuse local memory
     //let used_local_memory = 0;
 
-    // Add indexes for ops after reduce
-    for (a, d) in local_work_size.iter().enumerate() {
-        if a != rank - 1 {
-            ops.push(Op::InitIndex {
-                id: a as u8,
-                value: alloc::format!("gid{a}*{d}+lid{a}"),
-            });
-        }
-    }
-
     let (reduce_op_i, is_sum_reduce) = ast_ops.iter().enumerate().find(|(_, op)| matches!(op, ASTOp::Reduce(..))).map(|(i, op)| {
         if let ASTOp::Reduce(_, rop) = op {
             if *rop == ASTROp::Sum {
@@ -217,12 +207,18 @@ pub(crate) fn compile_tiled_reduce(
         }
     }
 
+    // Initialize batch index
+    ops.push(Op::InitIndex {
+        id: 0,
+        value: format!("gid0*{}+lid0", local_work_size[0]),
+    });
+
     // Initiliaze accumulator
     ops.push(Op::InitAccumulator {
         id: reduce_op_i as u8,
         dtype: reduce_dtype,
         is_sum_reduce,
-        len: None,
+        len: Some((register_work_size[1]*register_work_size[2]) as u8),
     });
 
     // Main reduce loop over all local memory tiles
@@ -232,39 +228,103 @@ pub(crate) fn compile_tiled_reduce(
         step: 1,
     });
 
-    // Indices in reduce loop
-    ops.push(Op::DeclareIndex {
-        id: (rank - 1) as u8,
-    });
-
     // Load local memory tiles that are not expanded in reduce dimension
     for (id, axes) in &local_tiles {
         if axes.len() != 1 || !axes.contains_key(&3) {
             let mut axes = axes.clone();
             axes.remove(&3);
             let a = axes.pop_last().unwrap().0 as usize;
-            ops.push(Op::SetIndex {
+            // Register loops, TODO make them work for general case
+            ops.push(Op::Loop {
+                id: a as u8,
+                upper_bound: register_work_size[a],
+                step: 1,
+            });
+            ops.push(Op::InitIndex {
+                id: a as u8,
+                value: format!("gid{a}*{}+lid{a}*{}+rid{a}", local_work_size[a]*register_work_size[a], register_work_size[a]),
+            });
+            ops.push(Op::Loop {
                 id: 3,
-                value: format!("rid10*{}+lid{}", local_work_size[3], if a == 1 { 2 } else { 1 }),
+                upper_bound: register_work_size[3],
+                step: 1,
+            });
+            ops.push(Op::InitIndex {
+                id: 3,
+                value: format!("rid10*{0}*{2}+lid{1}*{2}+rid3", local_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3]),
             });
             ops.push(Op::LoadGlobal {
                 res: Var::Local {
                     id: *id,
-                    index: format!("lid{a}*{}+lid{}", local_work_size[a], if a == 1 { 2 } else { 1 }),
+                    index: format!("(lid{a}*{}+rid{a})*{}+lid{}*{}+rid3", register_work_size[a], local_work_size[a], if a == 1 { 2 } else { 1 }, register_work_size[3]),
                 },
                 arg: *id,
                 index: arg_views[*id as usize].cidx(),
             });
+            // End of register loops
+            ops.push(Op::EndLoop);
+            ops.push(Op::EndLoop);
         }
     }
 
     // Synchronize after local memory loads
     ops.push(Op::LocalBarrier);
 
-    // Inner loop to do the rest of reduce
+    // Inner loop for reduce in local tile
     ops.push(Op::Loop {
         id: 9,
-        upper_bound: local_work_size[3]*register_work_size[3],
+        upper_bound: register_work_size[3],
+        step: 1,
+    });
+
+    // Register indices
+    let mut register_indices = BTreeMap::new();
+
+    // Laod from local memory into register tiles
+    for (id, axes) in &local_tiles {
+        ops.push(Op::DeclareVar {
+            id: *id,
+            dtype: arg_dtypes[*id as usize],
+            len: Some(axes.keys().map(|a| register_work_size[*a as usize]).product::<usize>() as u8),
+        });
+    }
+
+    // Register loops
+    for (a, d) in register_work_size.iter().enumerate() {
+        if *d != 1 && a != 3 {
+            ops.push(Op::Loop {
+                id: a as u8,
+                upper_bound: *d,
+                step: 1,
+            });
+        }
+    }
+
+    // TODO lol, fix this, it can not go simply form 1..3, but it should go over register tiled axes
+    for (id, axes) in &local_tiles {
+        for a in axes.keys() {
+            if *a != 3 {
+                let a = *a as usize;
+                ops.push(Op::Unary {
+                    res: Var::Register {
+                        id: *id,
+                        index: Some(format!("rid{a}*{}+rid{}", register_work_size[a], if a == 1 { 2 } else { 1 })),
+                    },
+                    x: Var::Local {
+                        id: *id,
+                        index: format!("(lid{a}*{}+rid{a})*{}+lid{}*{}+rid{}", register_work_size[a], local_work_size[a], if a == 1 { 2 } else { 1 }, register_work_size[if a == 1 { 2 } else { 1 }], if a == 1 { 2 } else { 1 }),
+                    },
+                    op: UOp::Noop,
+                });
+                register_indices.insert(*id, format!("rid{a}*{}+rid3", register_work_size[a]));
+            }
+        }
+    }
+
+    // Register reduce loop
+    ops.push(Op::Loop {
+        id: 3,
+        upper_bound: register_work_size[3],
         step: 1,
     });
 
@@ -275,28 +335,13 @@ pub(crate) fn compile_tiled_reduce(
         let op = &ast_ops[res_id as usize];
         match op {
             ASTOp::Leaf(id) => {
-                res_dtype = arg_dtypes[*id as usize];
-                ops.push(Op::DeclareVar {
-                    dtype: res_dtype,
-                    id: res_id,
-                    len: None,
-                });
-                if let Some(axes) = local_tiles.get(id) {
-                    let mut axes = axes.clone();
-                    axes.remove(&3);
-                    let a = axes.pop_last().unwrap().0 as usize;
-                    ops.push(Op::Unary {
-                        res: Var::Register {
-                            id: res_id,
-                            index: None,
-                        },
-                        x: Var::Local {
-                            id: *id,
-                            index: format!("lid{a}*{}+rid9", local_work_size[a]),
-                        },
-                        op: UOp::Noop,
+                if !local_tiles.contains_key(id) {
+                    res_dtype = arg_dtypes[*id as usize];
+                    ops.push(Op::DeclareVar {
+                        dtype: res_dtype,
+                        id: res_id,
+                        len: None,
                     });
-                } else {
                     let view = &arg_views[*id as usize];
                     ops.push(Op::LoadGlobal {
                         res: Var::Register {
@@ -309,7 +354,7 @@ pub(crate) fn compile_tiled_reduce(
                 }
             }
             _ => {
-                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op));
+                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op, &register_indices));
             }
         }
         res_id += 1;
@@ -320,7 +365,7 @@ pub(crate) fn compile_tiled_reduce(
         ops.push(Op::Binary {
             res: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: Some(format!("rid1*{}+rid2", register_work_size[2])),
             },
             x: Var::Register {
                 id: res_id - 1,
@@ -328,7 +373,7 @@ pub(crate) fn compile_tiled_reduce(
             },
             y: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: Some(format!("rid1*{}+rid2", register_work_size[2])),
             },
             op: BOp::Add,
         });
@@ -336,7 +381,7 @@ pub(crate) fn compile_tiled_reduce(
         ops.push(Op::Binary {
             res: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: Some(format!("rid1*{}+rid2", register_work_size[2])),
             },
             x: Var::Register {
                 id: res_id - 1,
@@ -344,12 +389,22 @@ pub(crate) fn compile_tiled_reduce(
             },
             y: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: Some(format!("rid1*{}+rid2", register_work_size[2])),
             },
             op: BOp::Max,
         });
     }
     res_id += 1;
+
+    // End register loops
+    for (a, d) in register_work_size.iter().enumerate() {
+        if *d != 1 && a != 3 {
+            ops.push(Op::EndLoop);
+        }
+    }
+
+    // End register reduce loop
+    ops.push(Op::EndLoop);
 
     // End inner reduce loop
     ops.push(Op::EndLoop);
@@ -357,8 +412,28 @@ pub(crate) fn compile_tiled_reduce(
     // Synchronize before loading next local tiles in reduce loop
     ops.push(Op::LocalBarrier);
 
-    // End reduce loop after reduce op was applied
+    // End locally tiled reduce loop
     ops.push(Op::EndLoop);
+
+    // Register loops (without reduce)
+    for (a, d) in register_work_size.iter().enumerate() {
+        if *d != 1 && a != 3 {
+            ops.push(Op::Loop {
+                id: a as u8,
+                upper_bound: *d,
+                step: 1,
+            });
+            // Add indexes for ops after reduce
+            ops.push(Op::InitIndex {
+                id: a as u8,
+                value: if register_work_size[a] != 1 {
+                    format!("gid{a}*{}+lid{a}*{}+rid{a}", d*register_work_size[a], register_work_size[a])
+                } else {
+                    format!("gid{a}*{d}+lid{a}")
+                },
+            });
+        }
+    }
 
     // Apply ops after reduce
     while res_id < ast_ops.len() as u8 {
@@ -381,7 +456,7 @@ pub(crate) fn compile_tiled_reduce(
                 })
             }
             _ => {
-                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op));
+                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op, &BTreeMap::new()));
             }
         }
         res_id += 1;
@@ -393,8 +468,16 @@ pub(crate) fn compile_tiled_reduce(
         index: View::new(res_shape[0..-1].into()).cidx(),
         arg: Var::Register {
             id: res_id - 1,
-            index: None,
+            index: Some(format!("rid1*{}+rid2", register_work_size[2])),
         },
     });
+
+    // End register loops
+    for (a, d) in register_work_size.iter().enumerate() {
+        if *d != 1 && a != 3 {
+            ops.push(Op::EndLoop);
+        }
+    }
+
     ops
 }

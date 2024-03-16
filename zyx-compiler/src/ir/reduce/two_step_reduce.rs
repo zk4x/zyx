@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use std::collections::BTreeMap;
 use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
 use zyx_core::view::{Index, View};
@@ -91,7 +92,7 @@ pub(in crate::ir) fn compile_two_step_reduce_kernel(
                 })
             }
             _ => {
-                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op));
+                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op, &BTreeMap::new()));
             }
         }
         res_id += 1;
@@ -217,7 +218,7 @@ pub(in crate::ir) fn compile_two_step_reduce_kernel(
                 })
             }
             _ => {
-                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op));
+                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op, &BTreeMap::new()));
             }
         }
         res_id += 1;

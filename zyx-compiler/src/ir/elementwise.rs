@@ -5,6 +5,7 @@ use zyx_core::view::View;
 use crate::{AST, ASTOp, Op};
 use crate::ir::{apply_elementwise_op, Var};
 use alloc::format as f;
+use std::collections::BTreeMap;
 
 pub(super) fn compile_elementwise_kernel(
     ast: &AST,
@@ -43,7 +44,7 @@ pub(super) fn compile_elementwise_kernel(
                 })
             }
             _ => {
-                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op));
+                ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op, &BTreeMap::new()));
             }
         }
         res_id += 1;

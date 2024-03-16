@@ -4,7 +4,7 @@ mod work_size;
 
 use crate::ir::work_size::calculate_work_sizes;
 use crate::{ASTBOp, ASTOp, ASTUOp, AST};
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, vec::Vec, collections::BTreeMap};
 use core::fmt::{Display, Formatter};
 use zyx_core::{
     dtype::DType,
@@ -228,7 +228,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_
 }
 
 // Same op can be applied multiple times with different register_index
-fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Vec<Op> {
+fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp, register_indices: &BTreeMap<u8, String>) -> Vec<Op> {
     let mut ops = Vec::new();
     // TODO put all unary ops into single function or probably macro
     match ast_op {
@@ -264,7 +264,7 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                     },
                     x: Var::Register {
                         id: *x,
-                        index: None,
+                        index: register_indices.get(x).cloned(),
                     },
                     y: match res_dtype {
                         DType::F32 => Var::ConstF32(0.0),
@@ -281,7 +281,7 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                     },
                     x: Var::Register {
                         id: *x,
-                        index: None,
+                        index: register_indices.get(x).cloned(),
                     },
                     op,
                 });
@@ -300,11 +300,11 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                 },
                 x: Var::Register {
                     id: *x,
-                    index: None,
+                    index: register_indices.get(x).cloned(),
                 },
                 y: Var::Register {
                     id: *y,
-                    index: None,
+                    index: register_indices.get(y).cloned(),
                 },
                 op: match op {
                     ASTBOp::Add => BOp::Add,
@@ -329,15 +329,15 @@ fn apply_elementwise_op(res_id: u8, res_dtype: &mut DType, ast_op: &ASTOp) -> Ve
                 },
                 x: Var::Register {
                     id: *x,
-                    index: None,
+                    index: register_indices.get(x).cloned(),
                 },
                 y: Var::Register {
                     id: *y,
-                    index: None,
+                    index: register_indices.get(y).cloned(),
                 },
                 z: Var::Register {
                     id: *z,
-                    index: None,
+                    index: register_indices.get(z).cloned(),
                 },
             });
         }
