@@ -131,11 +131,11 @@ pub(super) fn calculate_work_sizes(
                     tiling_axes.pop_last();
                 }
                 if tiling_axes.len() < 2 {
-                    while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
+                    while gd % (x * 2) == 0 && x * lws < max_local_work_size {
                         x *= 2;
                     }
                 } else {
-                    while gd % (x * rd * 2) == 0 && x < max_local_work_size_dim {
+                    while gd % (x * 2) == 0 && x < max_local_work_size_dim {
                         x *= 2;
                     }
                 }
@@ -147,11 +147,11 @@ pub(super) fn calculate_work_sizes(
                     tiling_axes.pop_last();
                 }
                 if tiling_axes.len() < 2 {
-                    while gd % (x * rd * 2) == 0 && x * lws < max_local_work_size {
+                    while gd % (x * 2) == 0 && x * lws < max_local_work_size {
                         x *= 2;
                     }
                 } else {
-                    while gd % (x * rd * 2) == 0 && x < max_local_work_size_dim {
+                    while gd % (x * 2) == 0 && x < max_local_work_size_dim {
                         x *= 2;
                     }
                 }

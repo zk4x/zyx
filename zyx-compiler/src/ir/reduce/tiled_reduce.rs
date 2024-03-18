@@ -251,12 +251,12 @@ pub(crate) fn compile_tiled_reduce(
             });
             ops.push(Op::InitIndex {
                 id: 3,
-                value: format!("rid10*{0}*{2}+lid{1}*{2}+rid3", local_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3]),
+                value: format!("rid10*{}+lid{}*{}+rid3", local_work_size[3]*register_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3]),
             });
             ops.push(Op::LoadGlobal {
                 res: Var::Local {
                     id: *id,
-                    index: format!("(lid{a}*{}+rid{a})*{}+lid{}*{}+rid3", register_work_size[a], local_work_size[a], if a == 1 { 2 } else { 1 }, register_work_size[3]),
+                    index: format!("lid{a}*{}+rid{a}*{}+lid{}*{}+rid3", register_work_size[a]*local_work_size[3]*register_work_size[3], local_work_size[3]*register_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3]),
                 },
                 arg: *id,
                 index: arg_views[*id as usize].cidx(),
@@ -273,7 +273,7 @@ pub(crate) fn compile_tiled_reduce(
     // Inner loop for reduce in local tile
     ops.push(Op::Loop {
         id: 9,
-        upper_bound: register_work_size[3],
+        upper_bound: local_work_size[3],
         step: 1,
     });
 
@@ -289,6 +289,38 @@ pub(crate) fn compile_tiled_reduce(
         });
     }
 
+    for (id, axes) in &local_tiles {
+        for (a, d) in axes.iter() {
+            if *a != 3 {
+                ops.push(Op::Loop {
+                    id: *a,
+                    upper_bound: register_work_size[*a as usize],
+                    step: 1,
+                });
+                let a = *a as usize;
+                ops.push(Op::Loop {
+                    id: 3,
+                    upper_bound: register_work_size[3],
+                    step: 1,
+                });
+                ops.push(Op::Unary {
+                    res: Var::Register {
+                        id: *id,
+                        index: Some(format!("rid{a}*{}+rid3", register_work_size[a])),
+                    },
+                    x: Var::Local {
+                        id: *id,
+                        index: format!("(lid{a}*{}+rid{a})*{}+rid9*{}+rid3", register_work_size[a], local_work_size[3]*register_work_size[3], register_work_size[3]),
+                    },
+                    op: UOp::Noop,
+                });
+                register_indices.insert(*id, format!("rid{a}*{}+rid3", register_work_size[a]));
+                ops.push(Op::EndLoop);
+                ops.push(Op::EndLoop);
+            }
+        }
+    }
+
     // Register loops
     for (a, d) in register_work_size.iter().enumerate() {
         if *d != 1 && a != 3 {
@@ -297,26 +329,6 @@ pub(crate) fn compile_tiled_reduce(
                 upper_bound: *d,
                 step: 1,
             });
-        }
-    }
-
-    for (id, axes) in &local_tiles {
-        for a in axes.keys() {
-            if *a != 3 {
-                let a = *a as usize;
-                ops.push(Op::Unary {
-                    res: Var::Register {
-                        id: *id,
-                        index: Some(format!("rid{a}*{}+rid{}", register_work_size[a], if a == 1 { 2 } else { 1 })),
-                    },
-                    x: Var::Local {
-                        id: *id,
-                        index: format!("(lid{a}*{}+rid{a})*{}+rid9*{}+rid{}", register_work_size[a], local_work_size[a]*register_work_size[a], register_work_size[if a == 1 { 2 } else { 1 }], if a == 1 { 2 } else { 1 }),
-                    },
-                    op: UOp::Noop,
-                });
-                register_indices.insert(*id, format!("rid{a}*{}+rid3", register_work_size[a]));
-            }
         }
     }
 
@@ -426,7 +438,7 @@ pub(crate) fn compile_tiled_reduce(
             ops.push(Op::InitIndex {
                 id: a as u8,
                 value: if register_work_size[a] != 1 {
-                    format!("gid{a}*{}+lid{a}*{}+rid{a}", d*register_work_size[a], register_work_size[a])
+                    format!("gid{a}*{}+lid{a}*{}+rid{a}", local_work_size[a]*register_work_size[a], register_work_size[a])
                 } else {
                     format!("gid{a}*{d}+lid{a}")
                 },

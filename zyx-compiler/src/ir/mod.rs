@@ -215,6 +215,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_
             )
         }
     } else {
+        // TODO make sure that local_work_size is always bigger than register_work_size
         elementwise::compile_elementwise_kernel(ast, &local_work_size, arg_views, res_shape)
     };
 
