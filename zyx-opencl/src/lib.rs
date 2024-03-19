@@ -326,13 +326,29 @@ fn t0() {
 #[test]
 fn dot_test() -> Result<(), ZyxError> {
     let dev = device_builder().platform_id(0).build()?;
-    let x = dev.randn([1024, 1024], DType::F32);
-    let y = dev.randn([1024, 1024], DType::F32);
-    let z = x.dot(&y).tanh() + x;
+    let n = 1024;
+    let x = dev.randn([n, n], DType::F32);
+    let y = dev.randn([n, n], DType::F32);
+    let z = (x.reshape([1, n, 1, n]) * x.reshape([1, 1, n, n])).sum(-1);
+    //let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
     panic!();
     Ok(())
 }
+
+/*#[test]
+fn dot_test2() -> Result<(), ZyxError> {
+    let dev = device_builder().platform_id(0).build()?;
+    let mut x = dev.randn([1024, 1024], DType::F32);
+    let begin = std::time::Instant::now();
+    for _ in 0..1000 {
+        x = x.dot(x.detach());
+    }
+    let _ = x.to_vec::<f32>();
+    let elapsed = begin.elapsed().as_millis();
+    std::println!("{elapsed}ms");
+    Ok(())
+}*/
 
 #[test]
 fn t6() {

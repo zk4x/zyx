@@ -101,7 +101,7 @@ pub(super) fn calculate_work_sizes(
 
     let mut lws = 1;
     let mut register_work_size = Vec::new();
-    let mut global_work_size: Vec<usize> = shape
+    let global_work_size: Vec<usize> = shape
         .iter()
         .enumerate()
         .map(|(i, d)| {
@@ -123,7 +123,7 @@ pub(super) fn calculate_work_sizes(
         .zip(register_work_size.iter())
         .rev()
         .enumerate()
-        .map(|(i, (gd, rd))| {
+        .map(|(i, (gd, _rd))| {
             if reduce_dim.is_some() && i == 0 {
                 let mut x = 1;
                 let mut tiling_axes = tiling_axes.clone();

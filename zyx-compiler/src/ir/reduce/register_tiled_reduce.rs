@@ -80,17 +80,19 @@ For those buffers that are expanded in reduce loop, we can laod them before the 
  */
 
 
-// Transpose for wide loads seems only like a marginal performance improvement
-// Returs contiguous stride to enable us to have wide loads of global memory buffers
-/*fn contiguous_load_stride(view: &View) -> usize {
-    let strides = view.strides();
-    for st in strides.iter().rev() {
-        if *st != 0 {
-            return *st;
+/// Returs vector of contiguous strides to enable us to have wide loads of global memory buffers
+fn contiguous_load_stride(arg_views: &[View]) -> Vec<usize> {
+    let mut arg_strides = Vec::new();
+    for view in arg_views {
+        let strides = view.strides();
+        for st in strides.iter().rev() {
+            if *st != 0 {
+                arg_strides.push(*st);
+                break;
+            }
         }
     }
-    // if it is not expanded
-    return strides[-1]
+    arg_strides
 }
 
 fn buffer_expand_axesj(arg_views: &[View]) -> Vec<[bool; 4]> {
@@ -105,7 +107,7 @@ fn buffer_expand_axesj(arg_views: &[View]) -> Vec<[bool; 4]> {
         }
     }
     expand_axes
-}*/
+}
 
 pub(crate) fn compile_tiled_reduce(
     ast_ops: &[ASTOp],
@@ -162,11 +164,6 @@ pub(crate) fn compile_tiled_reduce(
                 a -= 1;
             }
             local_tiles.insert(id as u8, dims);
-            ops.push(Op::DeclareLocalVar {
-                id: id as u8,
-                dtype: arg_dtypes[id],
-                len,
-            });
         } else if (strides[2] == 0usize && shape[1] > 1usize) || (strides[1] == 0usize && shape[1] > 1usize) {
             let mut a = (rank-1) as u8;
             let mut dims = BTreeMap::new();
@@ -183,27 +180,16 @@ pub(crate) fn compile_tiled_reduce(
                 a -= 1;
             }
             local_tiles.insert(id as u8, dims);
-            ops.push(Op::DeclareLocalVar {
+            ops.push(Op::DeclareVar {
                 id: id as u8,
                 dtype: arg_dtypes[id],
-                len,
+                len: Some(len as u8),
             });
         }
         // We currently do not tile buffers expanded only in batch dimension
     }
 
     std::println!("tiles: {local_tiles:?}");
-
-    // Load local vectors for those buffers that are expanded in reduce dimension.
-    for (id, axes) in &local_tiles {
-        if axes.len() == 1 && axes.contains_key(&3) {
-            ops.push(Op::LoadGlobal {
-                res: Var::Local { id: *id, index: "lid2".into() },
-                arg: 0,
-                index: arg_views[*id as usize].cidx(),
-            });
-        }
-    }
 
     // Initialize batch index
     ops.push(Op::InitIndex {
@@ -219,7 +205,7 @@ pub(crate) fn compile_tiled_reduce(
         len: Some((register_work_size[1]*register_work_size[2]) as u8),
     });
 
-    // Main reduce loop over all local memory tiles
+    // Main reduce loop over all memory tiles
     ops.push(Op::Loop {
         id: 10,
         upper_bound: reduce_dim/local_work_size[3]/register_work_size[3],
@@ -252,9 +238,9 @@ pub(crate) fn compile_tiled_reduce(
                 value: format!("rid10*{}+lid{}*{}+rid3", local_work_size[3]*register_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3]),
             });
             ops.push(Op::LoadGlobal {
-                res: Var::Local {
+                res: Var::Register {
                     id: *id,
-                    index: format!("lid{a}*{}+rid{a}*{}+lid{}*{}+rid3", register_work_size[a]*local_work_size[3]*register_work_size[3], local_work_size[3]*register_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3]),
+                    index: Some(format!("lid{a}*{}+rid{a}*{}+lid{}*{}+rid3", register_work_size[a]*local_work_size[3]*register_work_size[3], local_work_size[3]*register_work_size[3], if a == 1 { 2 } else { 1 }, register_work_size[3])),
                 },
                 arg: *id,
                 index: arg_views[*id as usize].cidx(),
@@ -264,16 +250,6 @@ pub(crate) fn compile_tiled_reduce(
             ops.push(Op::EndLoop);
         }
     }
-
-    // Synchronize after local memory loads
-    ops.push(Op::LocalBarrier);
-
-    // Inner loop for reduce in local tile
-    ops.push(Op::Loop {
-        id: 9,
-        upper_bound: local_work_size[3],
-        step: 1,
-    });
 
     // Register indices
     let mut register_indices = BTreeMap::new();
@@ -288,7 +264,7 @@ pub(crate) fn compile_tiled_reduce(
     }
 
     for (id, axes) in &local_tiles {
-        for (a, _) in axes.iter() {
+        for (a, d) in axes.iter() {
             if *a != 3 {
                 ops.push(Op::Loop {
                     id: *a,
@@ -416,12 +392,6 @@ pub(crate) fn compile_tiled_reduce(
     ops.push(Op::EndLoop);
 
     // End inner reduce loop
-    ops.push(Op::EndLoop);
-
-    // Synchronize before loading next local tiles in reduce loop
-    ops.push(Op::LocalBarrier);
-
-    // End locally tiled reduce loop
     ops.push(Op::EndLoop);
 
     // Register loops (without reduce)
