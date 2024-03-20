@@ -87,9 +87,9 @@ pub(crate) fn compile_reduce_kernel(
                 ops.push(Op::DeclareLocalVar {
                     id: id as u8,
                     dtype: arg_dtypes[id],
-                    len: local_work_size[2]*register_work_size[2]*local_work_size[3],
+                    len: local_work_size[2]*register_work_size[2]*(local_work_size[3]+1),
                 });
-                local_tiles.insert(id as u8, [1, 1, local_work_size[2]*register_work_size[2], local_work_size[3]]);
+                local_tiles.insert(id as u8, [1, 1, local_work_size[2]*register_work_size[2], local_work_size[3]+1]);
                 // Declare appropriate register tile
                 ops.push(Op::DeclareVar {
                     dtype: arg_dtypes[id],
@@ -125,23 +125,33 @@ pub(crate) fn compile_reduce_kernel(
     // Load local memory tiles
     for (id, axes) in &local_tiles {
         let mut lid = String::new();
-        for a in 1..=2 {
-            if axes[a as usize] > 1 {
-                ops.push(Op::Loop {
-                    name: f!("rid{a}"),
-                    upper_bound: register_work_size[a as usize],
-                    step: 1,
-                });
-                ops.push(Op::InitIndex {
-                    id: a,
-                    value: f!("gid{a}*{}+lid{a}*{}+rid{a}", local_work_size[a as usize]*register_work_size[a as usize], register_work_size[a as usize]),
-                });
-                lid += &f!("lid{a}*{}+rid{a}*{}+", register_work_size[a as usize]*local_work_size[3], local_work_size[3]);
-            }
+        if axes[1] > 1 {
+            ops.push(Op::Loop {
+                name: f!("rid1"),
+                upper_bound: register_work_size[1],
+                step: 1,
+            });
+            ops.push(Op::InitIndex {
+                id: 1,
+                value: f!("gid1*{}+lid1*{}+rid1", local_work_size[1]*register_work_size[1], register_work_size[1]),
+            });
+            lid += &f!("lid1*{}+rid1*{}+", register_work_size[1]*local_work_size[3], local_work_size[3]);
+        }
+        if axes[2] > 1 {
+            ops.push(Op::Loop {
+                name: f!("rid2"),
+                upper_bound: register_work_size[2],
+                step: 1,
+            });
+            ops.push(Op::InitIndex {
+                id: 2,
+                value: f!("gid2*{}+lid2*{}+rid2", local_work_size[2]*register_work_size[2], register_work_size[2]),
+            });
+            lid += &f!("lid2*{}+rid2*{}+", register_work_size[2]*(local_work_size[3]+1), local_work_size[3]+1);
         }
         // This is a trick, since assuption of this kernel is that local_work_size[1] == local_work_size[3]
         // && local_work_size[2] == local_work_size[3], we can use those local work sizes to load
-        // reduce dimension local tile
+        // reduce dimension of local tiles
         let local_reduce_substitute_id = if axes[1] > 1 { 2 } else { 1 };
         ops.push(Op::InitIndex {
             id: 3,
@@ -179,7 +189,7 @@ pub(crate) fn compile_reduce_kernel(
         if axes[2] > 1 {
             ops.push(Op::Unary {
                 res: Var::Register { id: *id, index: Some("rid2".into()) },
-                x: Var::Local { id: *id, index: f!("lid2*{}+rid2*{}+lid1", local_work_size[3]*register_work_size[2], local_work_size[3]) },
+                x: Var::Local { id: *id, index: f!("lid2*{}+rid2*{}+lid1", register_work_size[2]*(local_work_size[3]+1), (local_work_size[3]+1)) },
                 op: UOp::Noop,
             });
             register_indices.insert(*id, "rid2".into());
