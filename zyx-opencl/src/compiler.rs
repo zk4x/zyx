@@ -955,11 +955,11 @@ impl zyx_compiler::Compiler for Compiler {
                     source += &f!("{indent}{res} = {x} ? {y} : {z};\n");
                 }
                 Op::Loop {
-                    id,
+                    name,
                     upper_bound,
                     step,
                 } => {
-                    source += &f!("{indent}for ({id_t} rid{id} = 0; rid{id} < {upper_bound}; rid{id} += {step}) {{\n");
+                    source += &f!("{indent}for ({id_t} {name} = 0; {name} < {upper_bound}; {name} += {step}) {{\n");
                     indent += "  ";
                 }
                 Op::IfBlock { condition } => {

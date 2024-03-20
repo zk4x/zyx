@@ -6,7 +6,7 @@ use zyx_core::view::{Index, View};
 use crate::{ASTOp, ASTROp, BOp, Op, UOp};
 use crate::ir::{apply_elementwise_op, Var};
 
-pub(in crate::ir) fn compile_two_step_reduce_kernel(
+pub(in crate::ir) fn compile_reduce_kernel(
     ast_ops: &[ASTOp],
     arg_views: Vec<View>,
     arg_dtypes: Vec<DType>,
@@ -57,7 +57,7 @@ pub(in crate::ir) fn compile_two_step_reduce_kernel(
 
     // First reduce loop
     ops.push(Op::Loop {
-        id: 0,
+        name: "0".into(),
         upper_bound: reduce_dim/local_work_size[2],
         step: 1,
     });
@@ -155,7 +155,7 @@ pub(in crate::ir) fn compile_two_step_reduce_kernel(
 
     // Second reduce loop
     ops.push(Op::Loop {
-        id: 0,
+        name: "rid0".into(),
         upper_bound: local_work_size[2]-1,
         step: 1,
     });

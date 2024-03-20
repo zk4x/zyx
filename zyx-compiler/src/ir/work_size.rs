@@ -89,7 +89,7 @@ pub(super) fn calculate_work_sizes(
 ) {
     let max_local_work_size_dim = (max_local_work_size as f64).sqrt() as usize;
     // Register tiling can be disabled by setting max_register_work_size_dim to 1
-    let max_register_work_size_dim = if ast_reduce_axes.is_some() { 4 } else { 1 };
+    let max_register_work_size_dim = if ast_reduce_axes.is_some() { 8 } else { 1 };
 
     let (arg_views, shape, reduce_dim) = reshape_and_permute_kernel_args(ast_arg_views, ast_shape, ast_reduce_axes);
     let mut tiling_axes = select_tiling_axes(&arg_views, shape.rank());

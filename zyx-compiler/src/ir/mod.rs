@@ -102,7 +102,7 @@ pub enum Op {
     Where { res: Var, x: Var, y: Var, z: Var },
     /// Loop in kernel (register/private)
     Loop {
-        id: u8,
+        name: String,
         upper_bound: usize,
         step: usize,
     },
@@ -170,7 +170,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_
         // and multi-step reduces.
 
         // TODO tiled kernel currently does not work if local work size in dimension 1 and 2 are different
-        if tiling_axes.is_empty() || local_work_size[1] != local_work_size[2] {
+        if tiling_axes.is_empty() || local_work_size[1] != local_work_size[3] || local_work_size[2] != local_work_size[3] {
             if global_work_size.iter().product::<usize>() == reduce_dim {
                 // Full reduce
                 // Apply two step reduce
@@ -180,7 +180,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_
                 }
                 global_work_size[2] = d;
                 local_work_size[2] = d;
-                reduce::two_step_reduce::compile_two_step_reduce_kernel(
+                reduce::two_step_reduce::compile_reduce_kernel(
                     &ast.ops,
                     arg_views,
                     ast.arg_dtypes.clone(),
@@ -201,7 +201,7 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_
                 )
             }
         } else {
-            reduce::tiled_reduce::compile_tiled_reduce(
+            reduce::tiled_reduce2::compile_reduce_kernel(
                 &ast.ops,
                 arg_views,
                 ast.arg_dtypes.clone(),

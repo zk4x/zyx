@@ -107,7 +107,7 @@ fn buffer_expand_axesj(arg_views: &[View]) -> Vec<[bool; 4]> {
     expand_axes
 }*/
 
-pub(crate) fn compile_tiled_reduce(
+pub(crate) fn compile_reduce_kernel(
     ast_ops: &[ASTOp],
     arg_views: Vec<View>,
     arg_dtypes: Vec<DType>,
@@ -221,7 +221,7 @@ pub(crate) fn compile_tiled_reduce(
 
     // Main reduce loop over all local memory tiles
     ops.push(Op::Loop {
-        id: 10,
+        name: "10".into(),
         upper_bound: reduce_dim/local_work_size[3]/register_work_size[3],
         step: 1,
     });
@@ -234,7 +234,7 @@ pub(crate) fn compile_tiled_reduce(
             let a = axes.pop_last().unwrap().0 as usize;
             // Register loops, TODO make them work for general case
             ops.push(Op::Loop {
-                id: a as u8,
+                name: format!("{a}"),
                 upper_bound: register_work_size[a],
                 step: 1,
             });
@@ -243,7 +243,7 @@ pub(crate) fn compile_tiled_reduce(
                 value: format!("gid{a}*{}+lid{a}*{}+rid{a}", local_work_size[a]*register_work_size[a], register_work_size[a]),
             });
             ops.push(Op::Loop {
-                id: 3,
+                name: "3".into(),
                 upper_bound: register_work_size[3],
                 step: 1,
             });
@@ -270,7 +270,7 @@ pub(crate) fn compile_tiled_reduce(
 
     // Inner loop for reduce in local tile
     ops.push(Op::Loop {
-        id: 9,
+        name: "9".into(),
         upper_bound: local_work_size[3],
         step: 1,
     });
@@ -291,13 +291,13 @@ pub(crate) fn compile_tiled_reduce(
         for (a, _) in axes.iter() {
             if *a != 3 {
                 ops.push(Op::Loop {
-                    id: *a,
+                    name: format!("{a}"),
                     upper_bound: register_work_size[*a as usize],
                     step: 1,
                 });
                 let a = *a as usize;
                 ops.push(Op::Loop {
-                    id: 3,
+                    name: "3".into(),
                     upper_bound: register_work_size[3],
                     step: 1,
                 });
@@ -323,7 +323,7 @@ pub(crate) fn compile_tiled_reduce(
     for (a, d) in register_work_size.iter().enumerate() {
         if *d != 1 && a != 3 {
             ops.push(Op::Loop {
-                id: a as u8,
+                name: format!("{a}"),
                 upper_bound: *d,
                 step: 1,
             });
@@ -332,7 +332,7 @@ pub(crate) fn compile_tiled_reduce(
 
     // Register reduce loop
     ops.push(Op::Loop {
-        id: 3,
+        name: "3".into(),
         upper_bound: register_work_size[3],
         step: 1,
     });
@@ -428,7 +428,7 @@ pub(crate) fn compile_tiled_reduce(
     for (a, d) in register_work_size.iter().enumerate() {
         if *d != 1 && a != 3 {
             ops.push(Op::Loop {
-                id: a as u8,
+                name: format!("{a}"),
                 upper_bound: *d,
                 step: 1,
             });

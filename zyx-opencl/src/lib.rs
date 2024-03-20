@@ -328,7 +328,7 @@ fn dot_test() -> Result<(), ZyxError> {
     let dev = device_builder().platform_id(0).build()?;
     let n = 1024;
     let x = dev.randn([n, n], DType::F32);
-    let y = dev.randn([n, n], DType::F32);
+    //let y = dev.randn([n, n], DType::F32);
     let z = (x.reshape([1, n, 1, n]) * x.reshape([1, 1, n, n])).sum(-1);
     //let z = x.dot(&y).tanh() + x;
     let _: Vec<f32> = z.to_vec()?;
