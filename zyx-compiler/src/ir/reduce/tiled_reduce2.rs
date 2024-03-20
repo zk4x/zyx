@@ -169,19 +169,20 @@ pub(crate) fn compile_reduce_kernel(
         step: 1,
     });
 
-    // Load all local tiles tiled in dimension 1 into registers
+    // Load all local tiles tiled in dimension 2 into registers
     ops.push(Op::Loop {
-        name: "rid1".into(),
-        upper_bound: register_work_size[1],
+        name: "rid2".into(),
+        upper_bound: register_work_size[2],
         step: 1,
     });
     for (id, axes) in &local_tiles {
-        if axes[1] > 1 {
+        if axes[2] > 1 {
             ops.push(Op::Unary {
-                res: Var::Register { id: *id, index: Some("rid1".into()) },
-                x: Var::Local { id: *id, index: "".into() },
+                res: Var::Register { id: *id, index: Some("rid2".into()) },
+                x: Var::Local { id: *id, index: f!("lid2*{}+rid2*{}+lid1", local_work_size[3]*register_work_size[2], local_work_size[3]) },
                 op: UOp::Noop,
             });
+            register_indices.insert(*id, "rid2".into());
         }
     }
     ops.push(Op::EndLoop);
@@ -192,6 +193,18 @@ pub(crate) fn compile_reduce_kernel(
         upper_bound: register_work_size[1],
         step: 1,
     });
+
+    // Load all tiles tiled in dimension 1
+    for (id, axes) in &local_tiles {
+        if axes[1] > 1 {
+            ops.push(Op::Unary {
+                res: Var::Register { id: *id, index: None },
+                x: Var::Local { id: *id, index: f!("lid1*{}+rid1*{}+lid2", local_work_size[3]*register_work_size[1], local_work_size[3]) },
+                op: UOp::Noop,
+            });
+        }
+    }
+
     ops.push(Op::Loop {
         name: "rid2".into(),
         upper_bound: register_work_size[2],
@@ -205,21 +218,23 @@ pub(crate) fn compile_reduce_kernel(
         let op = &ast_ops[res_id as usize];
         match op {
             ASTOp::Leaf(id) => {
-                res_dtype = arg_dtypes[*id as usize];
-                ops.push(Op::DeclareVar {
-                    dtype: res_dtype,
-                    id: res_id,
-                    len: None,
-                });
-                let view = &arg_views[*id as usize];
-                ops.push(Op::LoadGlobal {
-                    res: Var::Register {
+                if !local_tiles.contains_key(id) {
+                    res_dtype = arg_dtypes[*id as usize];
+                    ops.push(Op::DeclareVar {
+                        dtype: res_dtype,
                         id: res_id,
-                        index: None,
-                    },
-                    arg: *id,
-                    index: view.cidx(),
-                })
+                        len: None,
+                    });
+                    let view = &arg_views[*id as usize];
+                    ops.push(Op::LoadGlobal {
+                        res: Var::Register {
+                            id: res_id,
+                            index: None,
+                        },
+                        arg: *id,
+                        index: view.cidx(),
+                    })
+                }
             }
             _ => {
                 ops.extend(apply_elementwise_op(res_id, &mut res_dtype, op, &register_indices));
@@ -233,15 +248,15 @@ pub(crate) fn compile_reduce_kernel(
         ops.push(Op::Binary {
             res: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: register_indices.get(&(reduce_op_i as u8)).cloned(),
             },
             x: Var::Register {
                 id: res_id - 1,
-                index: None,
+                index: register_indices.get(&(res_id-1)).cloned(),
             },
             y: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: register_indices.get(&(reduce_op_i as u8)).cloned(),
             },
             op: BOp::Add,
         });
@@ -249,15 +264,15 @@ pub(crate) fn compile_reduce_kernel(
         ops.push(Op::Binary {
             res: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: register_indices.get(&(reduce_op_i as u8)).cloned(),
             },
             x: Var::Register {
                 id: res_id - 1,
-                index: None,
+                index: register_indices.get(&(res_id-1)).cloned(),
             },
             y: Var::Register {
                 id: reduce_op_i as u8,
-                index: None,
+                index: register_indices.get(&(reduce_op_i as u8)).cloned(),
             },
             op: BOp::Max,
         });
