@@ -63,17 +63,17 @@ impl<'a, B: Backend> IntoIterator for &'a mut RNNCell<B> {
 }
 
 impl<B: Backend> RNNCell<B> {
-    /// Forward function for linear.
-    /// Calculates x.dot(&self.weight) + self.bias
-    pub fn forward(&self, x: impl IntoTensor<B>) -> Tensor<B> {
-        let mut x = self.weight_ih.dot(x);
-        if let Some(b) = &self.bias_ih {
-            x = x + b
-        }
-        x = &x + self.weight_hh.dot(&x);
-        if let Some(b) = &self.bias_hh {
-            x = x + b
-        }
-        return x;
+    /// Forward function for RNNCell.
+    /// Takes x (input) and hidden layer. Outputs output and new hidden layer.
+    /// returns (x, self.weight_ih.dot(x) + self.bias_ih + self.weight_hh.dot(hidden) + self.bias_hh)
+    ///
+    /// This function does not apply nonlinearity and it does not change x
+    pub fn forward(&self, x: impl IntoTensor<B>, hidden: impl IntoTensor<B>) -> (Tensor<B>, Tensor<B>) {
+        let x = self.weight_ih.backend().tensor(x).unwrap();
+        let mut hx = self.weight_hh.dot(hidden);
+        if let Some(b) = &self.bias_hh { hx = hx + b }
+        let mut out = self.weight_ih.dot(x);
+        if let Some(b) = &self.bias_ih { out = out + b }
+        return (x, x + &hx);
     }
 }

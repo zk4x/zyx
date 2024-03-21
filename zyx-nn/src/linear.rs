@@ -1,5 +1,4 @@
 use zyx_core::backend::Backend;
-use zyx_core::dtype::DType;
 use zyx_core::tensor::{IntoTensor, Tensor};
 
 /// Linear layer
@@ -14,9 +13,11 @@ pub struct Linear<B: Backend> {
 pub trait LinearInit: Backend {
     /// Initilize linear layer in device self
     fn linear(self, in_features: usize, out_features: usize) -> Linear<Self> {
+        let l = -(1.0/(in_features as f32)).sqrt();
+        let l = (1.0/(in_features as f32)).sqrt();
         Linear {
-            weight: self.randn([in_features, out_features], DType::F32).unwrap(),
-            bias: Some(self.randn([out_features], DType::F32).unwrap()),
+            weight: self.uniform([in_features, out_features], l..u).unwrap(),
+            bias: Some(self.uniform([out_features], l..u).unwrap()),
         }
     }
 }
