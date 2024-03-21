@@ -6,3 +6,4 @@ src = "src"
 
 [build]
 build-dir = "../docs"
+

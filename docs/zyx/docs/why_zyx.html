@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Creating Modules</title>
+        <title>Why zyx?</title>
 
 
         <!-- Custom HTML head -->
@@ -12,21 +12,21 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="highlight.css">
-        <link rel="stylesheet" href="tomorrow-night.css">
-        <link rel="stylesheet" href="ayu-highlight.css">
+        <link rel="stylesheet" href="../../highlight.css">
+        <link rel="stylesheet" href="../../tomorrow-night.css">
+        <link rel="stylesheet" href="../../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
@@ -35,7 +35,7 @@
     <div id="body-container">
         <!-- Provide site root to javascript -->
         <script>
-            var path_to_root = "";
+            var path_to_root = "../../";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
         </script>
 
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html" class="active"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../../zyx/docs/intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/why_zyx.html" class="active"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -144,7 +144,7 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -173,110 +173,30 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="creating-modules"><a class="header" href="#creating-modules">Creating Modules</a></h1>
-<pre><code class="language-shell">cargo add zyx-nn
-</code></pre>
-<p>Zyx only has statefull modules. That is all modules must store one or more tensors. One of the simplest modules
-is <a href="https://docs.rs/zyx-nn/latest/zyx-nn/struct.Linear.html">linear layer</a>.</p>
-<p>In order to initialize modules, you need a device. Modules have traits implemented for all backends to allow for more ergonomic API:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let l0 = dev.linear(1024, 128);
-<span class="boring">}</span></code></pre></pre>
-<h2 id="custom-modules"><a class="header" href="#custom-modules">Custom Modules</a></h2>
-<p>Custom modules are easy to create, you only need to import Backend trait from core.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx_core::backend::Backend;
-struct MyModule&lt;B: Backend&gt; {
-    l0: Linear&lt;B&gt;,
-    l1: Linear&lt;B&gt;,
-}
-<span class="boring">}</span></code></pre></pre>
-<p>For modules to be useful, they need forward function.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx_core::tensor::IntoTensor;
-impl&lt;B: Backend&gt; MyModule&lt;B&gt; {
-    fn forward(&amp;self, x: impl IntoTensor&lt;B&gt;) -&gt; Tensor&lt;B&gt; {
-        let x = self.l0.forward(x).relu();
-        self.l1.forward(x).sigmoid()
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Since relu is stateless, it is not a module, it is just a function on tensor.</p>
-<p>Modules can be initialized with any device.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let dev = zyx_cpu::device()?;
-
-let my_module = MyModule {
-    l0: dev.linear(1024, 512),
-    l1: dev.linear(512, 128),
-};
-<span class="boring">}</span></code></pre></pre>
-<p>Also you need to implement IntoIterator&lt;Item = &amp;Tensor&gt; to be able to easily save and IntoIterator&lt;Item = &amp;mut Tensor&gt;
-to backpropagate over parameters of the module and to load these parameters into the model.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl&lt;'a, B: Backend&gt; IntoIterator for &amp;'a MyModule&lt;B&gt; {
-    type Item = &amp;'a Tensor&lt;B&gt;;
-    type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
-    fn into_iter(self) -&gt; Self::IntoIter {
-        self.l0.into_iter().chain(self.l1)
-    }
-}
-
-impl&lt;'a, B: Backend&gt; IntoIterator for &amp;'a mut MyModule&lt;B&gt; {
-    type Item = &amp;'a mut Tensor&lt;B&gt;;
-    type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
-    fn into_iter(self) -&gt; Self::IntoIter {
-        self.l0.into_iter().chain(self.l1)
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Both implementations of IntoIterator could be done using procedural macro Module.
-So you can choose this simpler method if you prefer.</p>
-<pre><code class="language-shell">cargo add zyx_derive
-</code></pre>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>#[derive(Module)]
-struct MyModule&lt;B: Backend&gt; {
-    l0: Linear&lt;B&gt;,
-    l1: Linear&lt;B&gt;,
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Forward function is used for inference.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let input = dev.randn([8, 1024], DType::F32);
-
-let out = my_module.forward(&amp;input);
-<span class="boring">}</span></code></pre></pre>
-<p>Backpropagation is provided automatically.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let input = dev.randn([8, 1024], DType::F32);
-let label = dev.randn([8, 128], DType::F32);
-
-let epochs = 100;
-for _ in 0..epochs {
-    let out = my_module.forward(&amp;input);
-    let loss = (out - label).pow(2);
-    loss.backward(&amp;my_module);
-}
-<span class="boring">}</span></code></pre></pre>
+                        <h1 id="why-create-zyx"><a class="header" href="#why-create-zyx">Why create zyx?</a></h1>
+<p>Zyx was created as a learning exercise to understand machine learning from low level, close to the metal perspective.
+As the time went on, I saw the lack of good ML libraries in Rust ecosystem which meant that if zyx got completed,
+other people could use it too.</p>
+<p>When researching architecture of other ML libraries, in particular the most popular ones - pytorch and tensorflow,
+I found that their creators made certain compromises in order to simplify the development and reach the widest
+possible audience.</p>
+<p>These days we have a pretty good perspective on what a good ML library should look like. It should run on all hardware
+with solid performance, it should not take too much disk space or memory and it should be easy to use.
+Crucially it does not need to support many operations, just a few unary, binary, movement and reduce operations
+are plenty, as shown by tinygrad.</p>
+<p>In zyx, core operations are rarely added, but adding backends is very simple. Zyx automatically optimizes
+for backpropagation and uses as little memory as possible during both training and inference.</p>
+<p>And as for the ease of use? I want you to be the judge of that.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="optimizers.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../zyx/docs/intro.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="disk_io.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../zyx/docs/first_tensors.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -286,11 +206,11 @@ for _ in 0..epochs {
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="optimizers.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../zyx/docs/intro.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="disk_io.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../zyx/docs/first_tensors.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -305,13 +225,13 @@ for _ in 0..epochs {
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
 
         <!-- Custom JS scripts -->
 
