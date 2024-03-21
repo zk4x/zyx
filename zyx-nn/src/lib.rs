@@ -27,3 +27,6 @@ pub use layer_norm::LayerNorm;
 
 mod batch_norm;
 pub use batch_norm::BatchNorm;
+
+mod rnn_cell;
+pub use rnn_cell::RNNCell;

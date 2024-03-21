@@ -79,7 +79,6 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
-            // TODO check if field is tensor, or implement IntoIterator<Item = &Tensor> for &Tensor
             field_iterators = quote! {
                 #field_iterators
                 __MarkerStructRef::<&#field_ty>::__iterate_by_ref(&__MarkerStructRef(&self.#field_name), &mut res);
