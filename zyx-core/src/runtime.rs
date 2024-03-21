@@ -49,7 +49,7 @@ pub struct Runtime<R: RuntimeBackend> {
     rng: rand::rngs::SmallRng,
     rcs: Vec<u32>,
     nodes: Vec<Node>,
-    backprop_nodes_count: usize,
+    unrealized_nodes_count: usize,
     runtime_backend: R,
 }
 
@@ -62,7 +62,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
             rcs: Vec::new(),
             nodes: Vec::new(),
-            backprop_nodes_count: 0,
+            unrealized_nodes_count: 0,
             runtime_backend,
         }
     }
@@ -174,7 +174,6 @@ impl<R: RuntimeBackend> Runtime<R> {
         };
         //if id.i() == 1 { panic!("break") }
         self.runtime_backend.store(id, iter)?;
-        //self.backprop_nodes_count += 1;
         //std::println!("Storing {id}, {:?}", self.rcs);
         Ok(id)
     }
@@ -224,9 +223,9 @@ impl<R: RuntimeBackend> Runtime<R> {
             id
         };
         //std::println!("Assigned id: {id}, rcs {:?}", self.rcs);
-        self.backprop_nodes_count += 1;
+        self.unrealized_nodes_count += 1;
         // This regulates caching, 256 tensors per batch seems like a good default
-        if self.backprop_nodes_count > 256 {
+        if self.unrealized_nodes_count > 10000 {
             self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
             //std::println!("Num tensors: {}", self.nodes.len());
         }
@@ -244,10 +243,11 @@ impl<R: RuntimeBackend> Runtime<R> {
             //std::println!("Releasing {x} {:?}", self.rcs);
             if self.rcs[x.i()] == 0 {
                 params.extend(self.nodes[x.i()].parameters());
-                if !matches!(self.nodes[x.i()], Node::Leaf(..)) {
-                    self.backprop_nodes_count -= 1;
-                }
                 self.runtime_backend.remove(x)?;
+                // We count only non leaf nodes
+                if !matches!(self.nodes[x.i()], Node::Leaf(..) | Node::Uniform(..)) {
+                    self.unrealized_nodes_count -= 1;
+                }
             }
         }
         //std::println!("After released {x} rcs {:?}", self.rcs);
@@ -264,6 +264,13 @@ impl<R: RuntimeBackend> Runtime<R> {
         This is zyx bug. please report it at: https://github.com/zk4x/zyx"
         );
         self.rcs[x.i()] += 1;
+    }
+
+    /// Debug print all nodes
+    pub fn debug_graph(&self) {
+        for (id, node) in self.nodes.iter().enumerate() {
+            std::println!("{id:>5} x{:>3} -> {node:?}", self.rcs[id]);
+        }
     }
 
     /// Evaluate specified nodes.
@@ -291,15 +298,15 @@ impl<R: RuntimeBackend> Runtime<R> {
         params.reserve(100);
         while let Some(nid) = params.pop() {
             //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
-            if !self.runtime_backend.is_evaluated(nid) {
-                temp_rcs
-                    .entry(nid)
-                    .and_modify(|rc| *rc += 1)
-                    .or_insert_with(|| {
+            temp_rcs
+                .entry(nid)
+                .and_modify(|rc| *rc += 1)
+                .or_insert_with(|| {
+                    if !self.runtime_backend.is_evaluated(nid) {
                         params.extend(self.nodes[nid.i()].parameters());
-                        1
-                    });
-            }
+                    }
+                    1
+                });
         }
         // Order them using rcs reference counts.
         let mut order = Vec::new();
@@ -388,17 +395,35 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
         for nid in &new_order {
-            if let Node::Detach(x) = &self.nodes[nid.i()] {
-                let mut detach_rc = BTreeMap::new();
-                new_leafs.insert(*x);
-                let mut params = Vec::with_capacity(10);
-                params.push(*x);
-                while let Some(x) = params.pop() {
-                    let rc = detach_rc.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                    if *rc == self.rcs[x.i()] {
-                        drop_nodes.insert(x);
+            // TODO also add Cmplt, as it is not differentiable
+            match &self.nodes[nid.i()] {
+                Node::Cmplt(x, y) => {
+                    let mut detach_rc = BTreeMap::new();
+                    new_leafs.insert(*x);
+                    new_leafs.insert(*y);
+                    let mut params = Vec::with_capacity(10);
+                    params.push(*x);
+                    params.push(*y);
+                    while let Some(x) = params.pop() {
+                        let rc = detach_rc.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                        if *rc == self.rcs[x.i()] {
+                            drop_nodes.insert(x);
+                        }
                     }
                 }
+                Node::Detach(x) => {
+                    let mut detach_rc = BTreeMap::new();
+                    new_leafs.insert(*x);
+                    let mut params = Vec::with_capacity(10);
+                    params.push(*x);
+                    while let Some(x) = params.pop() {
+                        let rc = detach_rc.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                        if *rc == self.rcs[x.i()] {
+                            drop_nodes.insert(x);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -411,19 +436,20 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
 
-        //std::println!("Drop nodes: {drop_nodes:?}");
-        //std::println!("New leafs {new_leafs:?}");
-        //std::println!("Order: {order:?}");
-        /*std::println!("");
-        for nid in &order {
-            std::println!("{nid} x {}: {:?}", rcs[nid], self.nodes[nid.i()]);
+        /*std::println!("Non-evaluated nodes count before: {}", self.unrealized_nodes_count);
+        //self.debug_graph();
+        for i in &order {
+            std::println!("{i} x {} -> {:?}", rcs[i], self.nodes[i.i()]);
         }
-        std::println!("");*/
+        std::println!("Drop nodes: {drop_nodes:?}");
+        std::println!("New leafs {new_leafs:?}");
+        std::println!("Order: {order:?}");
+        std::println!();*/
+
         self.runtime_backend.evaluate(rcs, &order, &self.nodes)?;
 
-        // TODO all evaluated Detach nodes should be renamed to leafs also.
         for nid in new_leafs {
-            self.backprop_nodes_count -= 1;
+            self.unrealized_nodes_count -= 1;
             self.nodes[nid.i()] = Node::Leaf(
                 get_shape(&self.nodes, nid).clone(),
                 get_dtype(&self.nodes, nid),
@@ -432,10 +458,11 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in drop_nodes {
             self.rcs[nid.i()] = 0;
             self.runtime_backend.remove(nid)?;
-            if !matches!(self.nodes[nid.i()], Node::Leaf(..)) {
-                self.backprop_nodes_count -= 1;
+            if !matches!(self.nodes[nid.i()], Node::Leaf(..) | Node::Uniform(..)) {
+                self.unrealized_nodes_count -= 1;
             }
         }
+        std::println!("Non-evaluated nodes count after: {}", self.unrealized_nodes_count);
 
         // TODO fix this
         /*if self.backprop_nodes_count > 2000000000 {
@@ -501,7 +528,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             let mut rcs: BTreeMap<Id, u8> = BTreeMap::new();
             while let Some(nid) = params.pop() {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    if !sources.contains(&nid) && !matches!(nodes[nid.i()], Node::Detach(..)) {
+                    if !sources.contains(&nid) && !matches!(nodes[nid.i()], Node::Detach(..) | Node::Cmplt(..)) {
                         params.extend(nodes[nid.i()].parameters());
                     }
                     1

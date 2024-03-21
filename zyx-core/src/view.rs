@@ -276,10 +276,11 @@ impl View {
         let mut idx = String::new();
         let mut padding_condition = String::new();
         if self.is_contiguous() {
+            let numel = self.numel();
             for (i, st) in self.views[0].strides.iter().enumerate() {
                 if *st == 1 {
                     idx += &f!("+idx{i}");
-                } else {
+                } else if *st != numel {
                     idx += &f!("+idx{i}*{st}");
                 }
             }

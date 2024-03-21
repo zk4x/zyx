@@ -163,9 +163,9 @@ pub(super) fn calculate_work_sizes(
         .into_iter()
         .rev()
         .collect();
-    std::println!("global: {global_work_size:?}");
-    std::println!("local: {local_work_size:?}");
-    std::println!("register: {register_work_size:?}");
+    //std::println!("global: {global_work_size:?}");
+    //std::println!("local: {local_work_size:?}");
+    //std::println!("register: {register_work_size:?}");
     (
         arg_views,
         shape,

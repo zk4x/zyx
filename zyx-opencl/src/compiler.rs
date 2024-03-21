@@ -2,15 +2,7 @@ use alloc::{
     boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::String, vec::Vec,
 };
 use core::{ffi::c_void, ptr};
-use opencl_sys::{
-    clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
-    clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
-    clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject,
-    clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int,
-    cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
-    CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING,
-    CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
-};
+use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish};
 use zyx_compiler::{BOp, Op, UOp};
 use zyx_core::view::Index;
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
@@ -362,6 +354,7 @@ pub(crate) struct Compiler {
     context: *mut c_void,
     devices: BTreeSet<*mut c_void>,
     queues: Box<[*mut c_void]>,
+    queue_size: Box<[u8]>,
     queue_id: usize,
 }
 
@@ -507,15 +500,31 @@ impl Compiler {
         Ok(Self {
             context,
             devices,
+            queue_size: alloc::vec![0; queues.len()].into_boxed_slice(),
             queues: queues.into_boxed_slice(),
             queue_id: 0,
         })
     }
 
-    fn queue(&mut self) -> *mut c_void {
+    fn queue(&mut self) -> Result<*mut c_void, ZyxError> {
         let res = self.queues[self.queue_id];
-        self.queue_id = (self.queue_id + 1) % self.queues.len();
-        res
+        self.queue_size[self.queue_id] += 1;
+        // Up to two event per queue, before opencl 2.0 we can't do
+        // much better than that.
+        if self.queue_size[self.queue_id] == 2 {
+            let err = unsafe { clFinish(res) };
+            if err != CL_SUCCESS {
+                return Err(ZyxError::BackendError(match err {
+                    -36 => "Unable to finish command queue. ERR -36: CL_INVALID_COMMAND_QUEUE",
+                    -5 => "Unable to finish command queue. ERR -5: CL_OUT_OF_RESOURCES",
+                    -6 => "Unable to finish command queue. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                    _ => "Unable to finish command queue. UNKNOWN ERROR",
+                }));
+            }
+            self.queue_size[self.queue_id] = 0;
+        }
+        self.queue_id = (self.queue_id+1)%self.queues.len();
+        Ok(res)
     }
 }
 
@@ -554,7 +563,7 @@ impl zyx_compiler::Compiler for Compiler {
         let mut event: *mut c_void = ptr::null_mut();
         let err = unsafe {
             clEnqueueWriteBuffer(
-                self.queue(),
+                self.queue()?,
                 mem,
                 CL_NON_BLOCKING,
                 0,
@@ -604,7 +613,7 @@ impl zyx_compiler::Compiler for Compiler {
         cl_wait_for_events(&[buffer.event])?;
         let err = unsafe {
             clEnqueueReadBuffer(
-                self.queue(),
+                self.queue()?,
                 buffer.mem,
                 CL_NON_BLOCKING,
                 0,
@@ -641,7 +650,6 @@ impl zyx_compiler::Compiler for Compiler {
     }
 
     fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError> {
-        //std::println!("Dropping buffer");
         let err = unsafe { clReleaseMemObject(buffer.mem) };
         if err != CL_SUCCESS {
             return Err(ZyxError::BackendError(match err {
@@ -764,7 +772,7 @@ impl zyx_compiler::Compiler for Compiler {
         let begin = std::time::Instant::now();
         let err = unsafe {
             clEnqueueNDRangeKernel(
-                self.queue(),
+                self.queue()?,
                 kernel,
                 u32::try_from(program.global_work_size.len()).unwrap(),
                 ptr::null(),

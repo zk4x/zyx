@@ -671,7 +671,7 @@ impl<B: Backend> Tensor<B> {
         self.backend()
             .tensor(probability)
             .unwrap()
-            .cmplt(self.backend().uniform(self.shape(), 0.0..1.0).unwrap())
+            .cmplt(self.backend().uniform(self.shape(), 0.0..1.0).unwrap()).cast(self.dtype())
             * self
     }
 

@@ -57,7 +57,7 @@ pub(in crate::ir) fn compile_reduce_kernel(
 
     // First reduce loop
     ops.push(Op::Loop {
-        name: "0".into(),
+        name: "rid0".into(),
         upper_bound: reduce_dim/local_work_size[2],
         step: 1,
     });

@@ -55,19 +55,16 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        //std::println!("Compiler removing {x}");
         if let Some(Kernel { program_args, .. }) = self.kernels.remove(&x) {
-            //std::println!("Kernels {:?}", self.kernels);
-            for x in program_args.iter().chain([&x]) {
+            for p in program_args.iter().chain([&x]) {
                 if !self
                     .kernels
                     .values()
-                    .any(|kernel| kernel.program_args.contains(&x))
+                    .any(|k| k.program_args.contains(&p))
                 {
-                    if let Some(mut buffer) = self.buffers.remove(&x) {
-                        //std::println!("Dropping buffer {x}");
+                    if let Some(mut buffer) = self.buffers.remove(&p) {
+                        //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
                         self.compiler.drop_buffer(&mut buffer)?;
-                        //std::println!("k: {}, b: {}", self.kernels.len(), self.buffers.len());
                     }
                 }
             }
@@ -338,11 +335,26 @@ impl<C: Compiler> CompiledBackend<C> {
             .map(|nid| &self.buffers[&nid])
             .collect();
         // Run the program
-        self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype));
         self.buffers.insert(
             x,
             self.compiler.launch(program, &program_args, flop, bytes)?,
         );
+
+        // We need to remove unused kernel and possibly drop its args!
+        if let Some(kernel) = self.kernels.insert(x, Kernel::leaf(x, &r_shape, &dtype)) {
+            for p in kernel.program_args {
+                if !self
+                    .kernels
+                    .values()
+                    .any(|k| k.program_args.contains(&p))
+                {
+                    if let Some(mut buffer) = self.buffers.remove(&p) {
+                        //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
+                        self.compiler.drop_buffer(&mut buffer)?;
+                    }
+                }
+            }
+        }
         Ok(&self.kernels[&x])
     }
 

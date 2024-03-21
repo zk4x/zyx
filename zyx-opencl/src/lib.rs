@@ -161,6 +161,11 @@ impl OpenCL {
     ) -> alloc::string::String {
         <&Self as Backend>::plot_graph(self, tensors)
     }
+
+    #[allow(dead_code)]
+    fn debug_graph(&self) {
+        self.0.borrow_mut().debug_graph();
+    }
 }
 
 impl Backend for &OpenCL {
@@ -311,7 +316,7 @@ fn t5() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn t0() {
     let n = 6;
     let dev = device_builder().platform_id(0).build().unwrap();
@@ -334,19 +339,20 @@ fn dot_test() -> Result<(), ZyxError> {
     let _: Vec<f32> = z.to_vec()?;
     panic!();
     Ok(())
-}
+}*/
 
 #[test]
 fn dot_test2() -> Result<(), ZyxError> {
     let dev = device_builder().platform_id(0).build()?;
     let mut x = dev.randn([1024, 1024], DType::F32);
     let begin = std::time::Instant::now();
-    for _ in 0..100 {
-        x = x.dot(x.detach());
+    for _ in 0..1000 {
+        x = x.dot(&x);
     }
     let _ = x.to_vec::<f32>();
     let elapsed = begin.elapsed().as_millis();
     std::println!("{elapsed}ms");
+    panic!();
     Ok(())
 }
 
@@ -356,5 +362,5 @@ fn t6() {
     let x = dev.randn([1024, 1024], DType::F32);
     let z = x.sum(..);
     let _: Vec<f32> = z.to_vec().unwrap();
-    panic!()
+    //panic!()
 }

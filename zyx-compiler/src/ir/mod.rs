@@ -201,12 +201,13 @@ pub(super) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_
                 )
             }
         } else {
-            reduce::tiled_reduce2::compile_reduce_kernel(
+            reduce::tiled_reduce::compile_reduce_kernel(
                 &ast.ops,
                 arg_views,
                 ast.arg_dtypes.clone(),
                 ast.reduce_dtype.unwrap(),
                 reduce_dim,
+                &global_work_size,
                 &local_work_size,
                 &register_work_size,
                 res_shape,
