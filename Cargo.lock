@@ -962,7 +962,6 @@ name = "zyx-core"
 version = "0.1.1"
 dependencies = [
  "rand",
- "zyx-opencl",
 ]
 
 [[package]]
