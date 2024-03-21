@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Debugging - zyx-book</title>
+        <title>Automatic differentiation</title>
 
 
         <!-- Custom HTML head -->
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html" class="active"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html" class="active"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -141,7 +141,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">zyx-book</h1>
+                    <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -173,46 +173,52 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
-<p>Zyx removes a number of PyTorch errors. Zyx tensors are immutable, so there is no:</p>
-<ul>
-<li>RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: ... , which is output 0 of TBackward, is at version 2; expected version 1 instead. Hint: the backtrace further above shows the operation that failed to compute its gradient. The variable in question was changed in there or anywhere later. Good luck!</li>
-</ul>
-<p>Zyx technically allows mutability of tensors using set method, setting values of tensor A to tensor B, but tensors are just pointers, so this means merely that tensor B will now point to values previously pointed to be tensor A and tensor A will not exist anymore.</p>
-<p>Another error that cannot occur:</p>
-<ul>
-<li>RuntimeError: Trying to backward through the graph a second time, but the saved intermediate results have already been freed. Specify retain_graph=True when calling backward the first time.</li>
-</ul>
-<p>Zyx does not store intermediate tensors, so they cannot be freed :)</p>
-<h1 id="visualization"><a class="header" href="#visualization">Visualization</a></h1>
-<p>One aspect of debugging which is often overlooked is visual representation of graph. Programmers often like reading code more than looking at visualizatinos, but in particular if you are using complex modules defined somewhere outside of your code, it may be beneficial to be able to look at any part of the graph visually.</p>
-<p>Zyx asks you to give it any number of tensors and then plots all relations between them into picture. Let x, y and z be tensors.</p>
+                        <h1 id="automatic-differentiation"><a class="header" href="#automatic-differentiation">Automatic differentiation</a></h1>
+<p>Everything that is differentiable in math is differentiable in zyx (sometimes even functions that are not differentiable in math, like ReLU at 0).</p>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<p>You can just do any operations with your tensors.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let dot_graph = dev.plot_graph([&amp;x, &amp;y, &amp;z]);
-fs::write(&quot;graph.dot&quot;, dot_graph).unwrap();
+</span><span class="boring">use zyx_opencl;
+</span><span class="boring">let dev = zyx_opencl::device()?;
+</span>let x = dev.randn([1024, 1024], DType::F32);
+let y = dev.tensor([2, 3, 1]);
+let z = (x + y.pad([(1000, 21)], 8)) * x;
 <span class="boring">}</span></code></pre></pre>
-<p>If you want to see just forward part of graph, you can do for example this:</p>
+<p>At any point in time, you can differentiate any tensor w.r.t. any other tensor or set of tensors. This example differentiates
+z w.r.t. x and y.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let dot_graph = dev.plot_graph(model.into_iter().chain([&amp;x, &amp;loss]));
+</span>let grads = z.backward([&amp;x, &amp;y]);
 <span class="boring">}</span></code></pre></pre>
-<p>Where model is your model, x is your input and loss is your loss/error.</p>
-<p>If you want to only look at the backward part of graph, that is also simple:</p>
+<p>Backward function return Vec&lt;Option<Tensor>&gt;. Grads can contain some None values, if there is no direct connection
+between dependent and independent variables.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let dot_graph = dev.plot_graph(grads.chain([&amp;loss]));
+</span>let x = dev.randn([2, 3], DType::F32);
+let y = dev.randn([2, 3], DType::F32);
+let z = y.exp();
+let grads = z.backward([&amp;x]);
+assert_eq!(grads, vec![None]);
 <span class="boring">}</span></code></pre></pre>
-<p>Zyx will order nodes automatically, so there is no difference in the order in which tensors are stored in the iterator.</p>
+<h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
+<p>Some other ML libraries require users to provide additional information in order to make backpropagation efficient. This
+is needed, because they store intermediate tensors in memory in order to be able to backpropagate. Zyx does not store
+anything in memory. Instead, zyx stores a graph of operations, which takes just a few MB even for millions of tensors
+and calculation is done only when user accessses the data, for example when saving to the disk. During backpropagation
+the graph is traversed and new tensors are added to the graph.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="execution_model.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="tensor_ops.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
+                            <a rel="next prefetch" href="optimizers.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -220,30 +226,17 @@ fs::write(&quot;graph.dot&quot;, dot_graph).unwrap();
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="execution_model.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="tensor_ops.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
+                    <a rel="next prefetch" href="optimizers.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
 

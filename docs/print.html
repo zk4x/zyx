@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>zyx-book</title>
+        <title></title>
         <meta name="robots" content="noindex">
 
 
@@ -142,7 +142,7 @@
                         </button>
                     </div>
 
-                    <h1 class="menu-title">zyx-book</h1>
+                    <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
@@ -406,7 +406,7 @@ for _ in 0..epochs {
 </span><span class="boring">fn main() {
 </span>let model = dev.linear(1024, 128);
 
-model.save(&quot;model.safetensors&quot;)?;
+model.save("model.safetensors")?;
 <span class="boring">}</span></code></pre></pre>
 <p>Zyx uses safetensors format for saving tensors.</p>
 <p>Loading is similar.</p>
@@ -414,13 +414,13 @@ model.save(&quot;model.safetensors&quot;)?;
 </span><span class="boring">fn main() {
 </span>let mut model = dev.linear(1024, 128);
 
-model.load(&quot;model.safetensors&quot;)?;
+model.load("model.safetensors")?;
 <span class="boring">}</span></code></pre></pre>
 <p>If you don't know the structure of tensors saved on disks, you can load them like this.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let dev = zyx_opencl::device();
-let tensors = dev.load(&quot;my_tensors.safetensors&quot;)?;
+let tensors = dev.load("my_tensors.safetensors")?;
 <span class="boring">}</span></code></pre></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="library-vs-framework"><a class="header" href="#library-vs-framework">Library vs. Framework</a></h1>
 <p>Zyx aspires to be just a library, not a framework. The difference is that libraries plug into your workflow, while frameworks impose a certain workflow on you.</p>
@@ -446,7 +446,7 @@ let tensors = dev.load(&quot;my_tensors.safetensors&quot;)?;
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let dot_graph = dev.plot_graph([&amp;x, &amp;y, &amp;z]);
-fs::write(&quot;graph.dot&quot;, dot_graph).unwrap();
+fs::write("graph.dot", dot_graph).unwrap();
 <span class="boring">}</span></code></pre></pre>
 <p>If you want to see just forward part of graph, you can do for example this:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -478,22 +478,6 @@ fs::write(&quot;graph.dot&quot;, dot_graph).unwrap();
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
 
