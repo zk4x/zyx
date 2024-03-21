@@ -1,6 +1,11 @@
 # Zyx
 
-Zyx is machine learning library written in Rust.
+Zyx is machine learning library written in Rust. This README is a quick tutorial for people
+already familiar with tensors and other machine learning concepts. 
+For more comprehensive documentation please see our [book](https://zk4x.github.io/zyx).
+
+## Overview
+
 Most ML models can be created with just tensors and operations on them.
 Tensors must be stored somewhere. Zyx can use both RAM and VRAM (on the gpu) to store tensors.
 
@@ -110,15 +115,19 @@ impl<B: Backend> MyModel<B> {
 
 ## Notes 🤔
 
-Unlike other libraries, Zyx does not require identifying which tensors will be differentiated beforehand,
+Unlike other libraries, zyx does not require identifying which tensors will be differentiated beforehand,
 that means there is no traced() or requires_grad. Everything is automatically handled with performance in mind.
-Behind the scenes Zyx actually waits with execution of the graph until it knows if it needs to store intermediate
+Behind the scenes zyx actually waits with execution of the graph until it knows if it needs to store intermediate
 tensors for backpropagation or not, and so it does not unnecessarily allocate memory.
 
 ## Contributing
 
-See [CONTRIBUTING.md]
+See [CONTRIBUTING.md](https://github.com/zk4x/zyx/blob/main/CONTRIBUTING.md)
 
 ## Thanks ❤️
 
 For contributing to Zyx, finding bugs and using it in your ML models.
+
+## Licensing
+
+Dual licensed with MIT and Apache 2.0

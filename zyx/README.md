@@ -38,4 +38,4 @@ for _ in 0..train_steps {
 l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors");
 ```
 
-For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
+For more details, there is a [book](https://zk4x.github.io/zyx).

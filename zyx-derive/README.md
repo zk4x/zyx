@@ -23,7 +23,7 @@ impl<B: Backend> MyNet<B> {
 
 For README and source code, please visit [github](https://www.github.com/zk4x/zyx).
 
-For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
+For more details, there is a [book](https://zk4x.github.io/zyx).
 
 # Features
 
