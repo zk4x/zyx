@@ -7,7 +7,7 @@ use crate::{ASTOp, ASTROp, BOp, Op};
 use crate::ir::{apply_elementwise_op, Var};
 
 pub (super) mod two_step_reduce;
-pub (super) mod tiled_reduce;
+//pub (super) mod tiled_reduce;
 pub (super) mod tiled_reduce2;
 // Perhaps it makes sence to do register tiled reduce without local memory tiling but not yet
 //pub (super) mod register_tiled_reduce;

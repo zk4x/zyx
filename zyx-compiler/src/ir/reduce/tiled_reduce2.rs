@@ -24,7 +24,6 @@ pub(crate) fn compile_reduce_kernel(
     _max_local_memory_size: usize,
 ) -> Vec<Op> {
     let mut ops = Vec::new();
-    let rank = res_shape.rank();
 
     // Add index for batch dimension
     ops.push(Op::InitIndex {

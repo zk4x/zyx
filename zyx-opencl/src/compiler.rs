@@ -641,7 +641,7 @@ impl zyx_compiler::Compiler for Compiler {
     }
 
     fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError> {
-        std::println!("Dropping buffer");
+        //std::println!("Dropping buffer");
         let err = unsafe { clReleaseMemObject(buffer.mem) };
         if err != CL_SUCCESS {
             return Err(ZyxError::BackendError(match err {

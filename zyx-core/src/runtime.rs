@@ -437,11 +437,12 @@ impl<R: RuntimeBackend> Runtime<R> {
             }
         }
 
-        if self.backprop_nodes_count > 2000000000 {
+        // TODO fix this
+        /*if self.backprop_nodes_count > 2000000000 {
             panic!("Maximum number of tensors in gradient tape has been reached. Zyx supports up to 2 billion tensors on the tape.\
             This error can be raised for example in RNNs. Please detach gradient tape (Tensor::detach) from some tensors.\
             If you really need to use more tensors, please raise an issue: https://github.com/zk4x/zyx");
-        }
+        }*/
         Ok(())
     }
 
