@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Library vs. Framework</title>
+        <title>Debugging</title>
 
 
         <!-- Custom HTML head -->
@@ -12,21 +12,21 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="../../favicon.svg">
-        <link rel="shortcut icon" href="../../favicon.png">
-        <link rel="stylesheet" href="../../css/variables.css">
-        <link rel="stylesheet" href="../../css/general.css">
-        <link rel="stylesheet" href="../../css/chrome.css">
-        <link rel="stylesheet" href="../../css/print.css" media="print">
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="../../fonts/fonts.css">
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="../../highlight.css">
-        <link rel="stylesheet" href="../../tomorrow-night.css">
-        <link rel="stylesheet" href="../../ayu-highlight.css">
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
@@ -35,7 +35,7 @@
     <div id="body-container">
         <!-- Provide site root to javascript -->
         <script>
-            var path_to_root = "../../";
+            var path_to_root = "";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
         </script>
 
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../../zyx/docs/intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/library_vs_framework.html" class="active"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="../../zyx/docs/debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html" class="active"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -144,7 +144,7 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
 
@@ -173,22 +173,46 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="library-vs-framework"><a class="header" href="#library-vs-framework">Library vs. Framework</a></h1>
-<p>Zyx aspires to be just a library, not a framework. The difference is that libraries plug into your workflow, while frameworks impose a certain workflow on you.</p>
-<p>Some ML libraries force you to do the training loop in their way, sometimes forcing you to statically define the whole graph beforehand and then just call .train() or .fit() to run the whole training loop. This method discourages debugging and makes trial and error development difficult. Because of this, dynamic PyTorch is the most used ML library these days.</p>
-<p>Zyx aspires to be even more dynamic than PyTorch, because it does not require you to specify which tensors require gradient beforehand. Instead, you specify which gradients you want to calculate when you call backward function.</p>
+                        <h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
+<p>Zyx removes a number of PyTorch errors. Zyx tensors are immutable, so there is no:</p>
+<ul>
+<li>RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: ... , which is output 0 of TBackward, is at version 2; expected version 1 instead. Hint: the backtrace further above shows the operation that failed to compute its gradient. The variable in question was changed in there or anywhere later. Good luck!</li>
+</ul>
+<p>Zyx technically allows mutability of tensors using set method, setting values of tensor A to tensor B, but tensors are just pointers, so this means merely that tensor B will now point to values previously pointed to be tensor A and tensor A will not exist anymore.</p>
+<p>Another error that cannot occur:</p>
+<ul>
+<li>RuntimeError: Trying to backward through the graph a second time, but the saved intermediate results have already been freed. Specify retain_graph=True when calling backward the first time.</li>
+</ul>
+<p>Zyx does not store intermediate tensors, so they cannot be freed :)</p>
+<h1 id="visualization"><a class="header" href="#visualization">Visualization</a></h1>
+<p>One aspect of debugging which is often overlooked is visual representation of graph. Programmers often like reading code more than looking at visualizatinos, but in particular if you are using complex modules defined somewhere outside of your code, it may be beneficial to be able to look at any part of the graph visually.</p>
+<p>Zyx asks you to give it any number of tensors and then plots all relations between them into picture. Let x, y and z be tensors.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dot_graph = dev.plot_graph([&amp;x, &amp;y, &amp;z]);
+fs::write("graph.dot", dot_graph).unwrap();
+<span class="boring">}</span></code></pre></pre>
+<p>If you want to see just forward part of graph, you can do for example this:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dot_graph = dev.plot_graph(model.into_iter().chain([&amp;x, &amp;loss]));
+<span class="boring">}</span></code></pre></pre>
+<p>Where model is your model, x is your input and loss is your loss/error.</p>
+<p>If you want to only look at the backward part of graph, that is also simple:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dot_graph = dev.plot_graph(grads.chain([&amp;loss]));
+<span class="boring">}</span></code></pre></pre>
+<p>Zyx will order nodes automatically, so there is no difference in the order in which tensors are stored in the iterator.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../zyx/docs/disk_io.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="execution_model.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../../zyx/docs/execution_model.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
-                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -196,13 +220,10 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../zyx/docs/disk_io.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="execution_model.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../../zyx/docs/execution_model.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
-                    </a>
             </nav>
 
         </div>
@@ -215,13 +236,13 @@
         </script>
 
 
-        <script src="../../elasticlunr.min.js"></script>
-        <script src="../../mark.min.js"></script>
-        <script src="../../searcher.js"></script>
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
 
-        <script src="../../clipboard.min.js"></script>
-        <script src="../../highlight.js"></script>
-        <script src="../../book.js"></script>
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
 
