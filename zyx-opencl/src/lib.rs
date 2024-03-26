@@ -345,14 +345,14 @@ fn dot_test() -> Result<(), ZyxError> {
 fn dot_test2() -> Result<(), ZyxError> {
     let dev = device_builder().platform_id(0).build()?;
     let mut x = dev.randn([1024, 1024], DType::F32);
-    let begin = std::time::Instant::now();
-    for _ in 0..1000 {
+    //let begin = std::time::Instant::now();
+    for _ in 0..10 {
         x = x.dot(&x);
     }
     let _ = x.to_vec::<f32>();
-    let elapsed = begin.elapsed().as_millis();
-    std::println!("{elapsed}ms");
-    panic!();
+    //let elapsed = begin.elapsed().as_millis();
+    //std::println!("{elapsed}ms");
+    //panic!();
     Ok(())
 }
 

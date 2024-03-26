@@ -72,8 +72,8 @@ impl<B: Backend> RNNCell<B> {
         let x = self.weight_ih.backend().tensor(x).unwrap();
         let mut hx = self.weight_hh.dot(hidden);
         if let Some(b) = &self.bias_hh { hx = hx + b }
-        let mut out = self.weight_ih.dot(x);
-        if let Some(b) = &self.bias_ih { out = out + b }
-        return (x, x + &hx);
+        hx = hx + self.weight_ih.dot(&x);
+        if let Some(b) = &self.bias_ih { hx = hx + b }
+        return (x, hx);
     }
 }

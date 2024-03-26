@@ -1,7 +1,7 @@
 [package]
 name = "zyx-derive"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx procedural macros"
 documentation = "https://docs.rs/zyx-derive"

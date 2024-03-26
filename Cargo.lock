@@ -952,21 +952,22 @@ version = "0.12.1"
 
 [[package]]
 name = "zyx-compiler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "zyx-core",
 ]
 
 [[package]]
 name = "zyx-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rand",
+ "zyx-opencl",
 ]
 
 [[package]]
 name = "zyx-cpu"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rayon",
  "zyx-core",
@@ -974,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "zyx-derive"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "quote",
  "syn",
@@ -983,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "zyx-examples"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "zyx-core",
  "zyx-cpu",
@@ -996,14 +997,14 @@ dependencies = [
 
 [[package]]
 name = "zyx-nn"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "zyx-core",
 ]
 
 [[package]]
 name = "zyx-opencl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "opencl-sys",
  "zyx-compiler",
@@ -1012,14 +1013,14 @@ dependencies = [
 
 [[package]]
 name = "zyx-optim"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "zyx-core",
 ]
 
 [[package]]
 name = "zyx-test"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "itertools",
  "rand",
@@ -1033,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "zyx-torch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "tch",
  "zyx-core",

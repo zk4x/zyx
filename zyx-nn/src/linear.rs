@@ -14,7 +14,7 @@ pub trait LinearInit: Backend {
     /// Initilize linear layer in device self
     fn linear(self, in_features: usize, out_features: usize) -> Linear<Self> {
         let l = -(1.0/(in_features as f32)).sqrt();
-        let l = (1.0/(in_features as f32)).sqrt();
+        let u = (1.0/(in_features as f32)).sqrt();
         Linear {
             weight: self.uniform([in_features, out_features], l..u).unwrap(),
             bias: Some(self.uniform([out_features], l..u).unwrap()),
