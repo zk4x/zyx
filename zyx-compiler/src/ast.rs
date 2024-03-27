@@ -1,18 +1,14 @@
-use crate::{ASTOp, CompiledBackend, Compiler, AST, ASTUOp, ASTBOp, ASTROp};
+use crate::{CompiledBackend, Compiler};
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::BTreeMap,
     vec::Vec,
 };
-use zyx_core::axes::Axes;
 use zyx_core::dtype::DType;
 use zyx_core::error::ZyxError;
 use zyx_core::node::Node;
 use zyx_core::runtime::RuntimeBackend;
 use zyx_core::scalar::Scalar;
-use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
-use zyx_core::utils::get_dtype;
-use zyx_core::view::View;
 
 impl<C: Compiler> CompiledBackend<C> {
     /// Initialize new compiled backend using provided compiler
@@ -31,8 +27,9 @@ impl<C: Compiler> CompiledBackend<C> {
 // different number of tiles then the original graph has number of nodes.
 // AST has optimization passes to give us better data locality.
 
-struct AST {
-    tiles: Vec<Tile>,
+pub(crate) struct AST {
+    tiles: Vec<ASTTile>,
+    ops: Vec<ASTOp>,
 }
 
 struct Dimension {
@@ -45,14 +42,19 @@ struct Dimension {
     right_pad: usize,
 }
 
-struct Tile {
+struct ASTTile {
     shape: Vec<Dimension>,
     dtype: DType, // not as important, but still useful
 }
 
+enum ASTOp {
+    Unary(),
+    Binary(),
+}
+
 impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn is_evaluated(&self, x: Id) -> bool {
-        self.kernels.contains_key(&x)
+        self.buffers.contains_key(&x)
     }
 
     fn is_free_id(&self, x: Id) -> bool {
@@ -60,7 +62,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        if let Some(mut buffer) = self.buffers.remove(&p) {
+        if let Some(mut buffer) = self.buffers.remove(&x) {
             //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
             self.compiler.drop_buffer(&mut buffer)?;
         }
@@ -88,11 +90,12 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn evaluate(
         &mut self,
-        mut rcs: BTreeMap<Id, u32>,
+        rcs: BTreeMap<Id, u32>,
         order: &[Id],
         nodes: &[Node],
     ) -> Result<(), ZyxError> {
         for nid in order.iter().copied().rev() {
+            std::println!("{nid:>3}x{}  {:?}", rcs[&nid], nodes[nid.i()]);
         }
         Ok(())
     }

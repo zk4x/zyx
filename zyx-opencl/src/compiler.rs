@@ -3,7 +3,7 @@ use alloc::{
 };
 use core::{ffi::c_void, ptr};
 use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish};
-use zyx_compiler::{BOp, Op, UOp};
+use zyx_compiler::{BOp, IROp, UOp};
 use zyx_core::view::Index;
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
@@ -243,7 +243,6 @@ pub struct Program {
     program: *mut c_void,
     global_work_size: Box<[usize]>,
     local_work_size: Box<[usize]>,
-    res_byte_size: usize,
 }
 
 impl Program {
@@ -253,7 +252,6 @@ impl Program {
         devices: &BTreeSet<*mut c_void>,
         global_work_size: &[usize],
         local_work_size: &[usize],
-        res_byte_size: usize,
     ) -> Result<Self, ZyxError> {
         let name = f!(
             "k__{}__{}",
@@ -345,7 +343,6 @@ impl Program {
             program,
             global_work_size: global_work_size.iter().copied().collect(),
             local_work_size: local_work_size.iter().copied().collect(),
-            res_byte_size,
         })
     }
 }
@@ -740,11 +737,12 @@ impl zyx_compiler::Compiler for Compiler {
             }
             i += 1;
         }
+        // TODO our kernels can have more than one output
         let mem = unsafe {
             clCreateBuffer(
                 self.context,
                 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY,
-                program.res_byte_size,
+                100,
                 ptr::null_mut(),
                 &mut err,
             )
@@ -836,12 +834,12 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(Buffer { mem, event })
     }
 
-    fn compile(&mut self, ir: &zyx_compiler::IR) -> Result<Self::Program, ZyxError> {
+    fn compile(&mut self, ir: &zyx_compiler::IRKernel) -> Result<Self::Program, ZyxError> {
         let id_t = "unsigned int";
         let mut source = f!("(\n");
 
         // Kernel arguments
-        for (i, (dtype, read_only)) in ir.kernel_args.iter().enumerate() {
+        for (i, (dtype, read_only, byte_size)) in ir.kernel_args.iter().enumerate() {
             source += &f!(
                 "  __global {}{}* gmem{i},\n",
                 if *read_only { "const " } else { "" },
@@ -870,7 +868,7 @@ impl zyx_compiler::Compiler for Compiler {
 
         for op in &ir.ops {
             match op {
-                Op::LoadGlobal { res, arg, index } => match index {
+                /*Op::LoadGlobal { res, arg, index } => match index {
                     Index::Normal(idx) => {
                         source += &f!("{indent}{res} = gmem{arg}[{idx}];\n");
                     }
@@ -984,7 +982,9 @@ impl zyx_compiler::Compiler for Compiler {
                 }
                 Op::LocalBarrier => {
                     source += &f!("{indent}barrier(CLK_LOCAL_MEM_FENCE);\n");
-                }
+                }*/
+                IROp::Loop => {}
+                IROp::EndLoop => {}
             }
         }
 
@@ -996,7 +996,6 @@ impl zyx_compiler::Compiler for Compiler {
             &self.devices,
             ir.global_work_size.as_slice(),
             ir.local_work_size.as_slice(),
-            ir.res_byte_size,
         )
     }
 }

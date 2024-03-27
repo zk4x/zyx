@@ -20,8 +20,7 @@ use zyx_core::error::ZyxError;
 mod ast;
 mod ir;
 
-use ast::Kernel;
-pub use ir::{Op, IR, UOp, BOp};
+pub use ir::{UOp, BOp};
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -29,12 +28,11 @@ extern crate std;
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use zyx_core::axes::Axes;
-use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
-use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
-use zyx_core::view::View;
+use crate::ast::AST;
+pub use crate::ir::IRKernel;
+pub use crate::ir::IROp;
 
 /// Compiled backend that holds compiler, buffers and programs
 pub struct CompiledBackend<C: Compiler> {
@@ -69,6 +67,5 @@ pub trait Compiler {
         bytes: usize,
     ) -> Result<Self::Buffer, ZyxError>;
     /// Compile ast into program
-    fn compile(&mut self, ir: &IR) -> Result<Self::Program, ZyxError>;
+    fn compile(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError>;
 }
-
