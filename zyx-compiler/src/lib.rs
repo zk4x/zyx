@@ -39,7 +39,6 @@ use zyx_core::view::View;
 /// Compiled backend that holds compiler, buffers and programs
 pub struct CompiledBackend<C: Compiler> {
     compiler: C,
-    kernels: BTreeMap<Id, Kernel>,
     buffers: BTreeMap<Id, C::Buffer>,
     programs: BTreeMap<AST, C::Program>,
 }
@@ -73,63 +72,3 @@ pub trait Compiler {
     fn compile(&mut self, ir: &IR) -> Result<Self::Program, ZyxError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ASTUOp {
-    Cast(DType),
-    Neg,
-    ReLU,
-    Sin,
-    Cos,
-    Exp,
-    Ln,
-    Tanh,
-    Sqrt,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ASTBOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Pow,
-    Cmplt,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ASTROp {
-    Sum,
-    Max
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ASTOp {
-    Leaf(u8),
-    Unary(u8, ASTUOp),
-    Binary(u8, u8, ASTBOp),
-    #[allow(dead_code)]
-    Where(u8, u8, u8),
-    Reduce(u8, ASTROp),
-}
-
-/// Abstract syntax tree that can be compiled into program.
-/// Consists of kernel arguments, elementwise ops, optional reduce op
-/// and elementwise ops after reduce.
-/// This struct is immutable.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct AST {
-    /// AST argument views
-    pub arg_views: Vec<View>,
-    /// AST argument dtypes
-    pub arg_dtypes: Vec<DType>,
-    /// AST ops
-    pub ops: Vec<ASTOp>,
-    /// Shape of the result, this is before any reduce ops
-    pub shape: Shape,
-    /// DType of the result
-    pub dtype: DType,
-    /// Reduce axes, if any
-    pub reduce_axes: Option<Axes>,
-    /// DType of accumulated elements, if any
-    pub reduce_dtype: Option<DType>,
-}
