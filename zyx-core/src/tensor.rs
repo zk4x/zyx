@@ -14,7 +14,7 @@ use core::{
 };
 
 /// Id of tensor.
-#[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug)]
+#[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug, Hash)]
 pub struct Id(usize);
 
 /// Create new id.

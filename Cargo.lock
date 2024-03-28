@@ -961,7 +961,6 @@ dependencies = [
 name = "zyx-core"
 version = "0.1.2"
 dependencies = [
- "rand",
  "zyx-opencl",
 ]
 
@@ -987,12 +986,10 @@ name = "zyx-examples"
 version = "0.1.2"
 dependencies = [
  "zyx-core",
- "zyx-cpu",
  "zyx-derive",
  "zyx-nn",
  "zyx-opencl",
  "zyx-optim",
- "zyx-torch",
 ]
 
 [[package]]

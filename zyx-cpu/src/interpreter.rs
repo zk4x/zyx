@@ -10,6 +10,7 @@ use zyx_core::{
     axes::Axes, error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, shape::Shape,
     tensor::Id, view::View,
 };
+use zyx_core::runtime::Graph;
 
 macro_rules! unary_op {
     ($ctx: expr, $x: expr, $nid: expr, $op: expr) => {{
@@ -211,12 +212,7 @@ impl RuntimeBackend for Interpreter {
         Ok(())
     }
 
-    fn evaluate(
-        &mut self,
-        mut rcs: BTreeMap<Id, u32>,
-        order: &[Id],
-        nodes: &[Node],
-    ) -> Result<(), ZyxError> {
+    fn compile_graph(graph: &Graph) -> Result<Self::CompiledGraph, ZyxError> {
         for nid in order.iter().copied() {
             //std::println!("Interpreting {nid}: {:?}", nodes[nid.i()]);
             match &nodes[nid.i()] {

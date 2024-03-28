@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 
 /// Axes used in reduce and permute operations.
 /// Just Box<[usize]>.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Axes(pub(crate) Box<[usize]>);
 
 impl Axes {

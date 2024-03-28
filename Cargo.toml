@@ -4,8 +4,9 @@ members = [
   "zyx-core",
   "zyx-compiler",
   "zyx-opencl",
-  "zyx-cpu",
-  "zyx-torch",
+  #"zyx-cuda",
+  #"zyx-cpu",
+  #"zyx-torch",
   "zyx-nn",
   "zyx-optim",
   "zyx-derive",
@@ -13,7 +14,6 @@ members = [
   "zyx-test",
   "zyx",
 ]
-#exclude = [ "zyx-cuda" ]
 
 [workspace.package]
 version = "0.1.2"
@@ -24,8 +24,8 @@ zyx-core = { version = "0.1.2", path = "./zyx-core", default-features = false }
 zyx-compiler = { version = "0.1.2", path = "./zyx-compiler", default-features = false }
 zyx-opencl = { version = "0.1.2", path = "./zyx-opencl", default-features = false }
 #zyx-cuda = { version = "0.1.0", path = "./zyx-cuda", default-features = false }
-zyx-cpu = { version = "0.1.2", path = "./zyx-cpu", default-features = false }
-zyx-torch = { version = "0.1.2", path = "./zyx-torch", default-features = false }
+#zyx-cpu = { version = "0.1.2", path = "./zyx-cpu", default-features = false }
+#zyx-torch = { version = "0.1.2", path = "./zyx-torch", default-features = false }
 zyx-nn = { version = "0.1.2", path = "./zyx-nn", default-features = false }
 zyx-optim = { version = "0.1.2", path = "./zyx-optim", default-features = false }
 zyx-derive = { version = "0.1.2", path = "./zyx-derive", default-features = false }

@@ -49,21 +49,22 @@ pub trait Compiler {
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
     /// Allocate space for new buffer
-    fn allocate(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError>;
+    fn allocate_mem(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError>;
     /// Store iter into existing buffer
-    fn store<T: Scalar>(
+    // TODO perhaps this should be async store
+    fn store_mem<T: Scalar>(
         &mut self,
         buffer: &mut Self::Buffer,
         iter: impl IntoIterator<Item = T>,
     ) -> Result<(), ZyxError>;
     /// Load buffer into vec
-    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, ZyxError>;
+    fn load_mem<T: Scalar>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, ZyxError>;
     /// Drop Buffer
-    fn deallocate(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError>;
+    fn deallocate_mem(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError>;
     /// Compile ast into program
-    fn compile(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError>;
+    fn compile_program(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError>;
     /// Launch program with args
-    fn launch(
+    fn launch_program(
         &mut self,
         program: &Self::Program,
         args: &[&Self::Buffer],

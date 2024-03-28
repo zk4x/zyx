@@ -56,7 +56,8 @@ pub fn get_dtype(nodes: &[Node], mut x: Id) -> DType {
     loop {
         let node = &nodes[x.i()];
         match node {
-            Node::Leaf(_, dtype) | Node::Uniform(_, dtype) | Node::Cast(_, dtype) => return *dtype,
+            Node::Leaf(_, dtype) | Node::Cast(_, dtype) => return *dtype,
+            Node::Uniform(_, _, end) => return end.dtype(),
             _ => x = node.parameters().next().unwrap(),
         }
     }
@@ -102,8 +103,10 @@ pub fn plot_graph_dot(ids: &BTreeSet<Id>, nodes: &[Node], rcs: &[u32]) -> alloc:
         let id = id.i();
         let node = &nodes[id];
         match node {
+            Node::Const(x) => add_node(id, &format!("Const({x:?})"), "box"),
             Node::Leaf(sh, dtype) => add_node(id, &format!("Leaf({sh}, {dtype})"), "box"),
-            Node::Uniform(sh, dtype) => add_node(id, &format!("Uniform({sh}, {dtype})"), "box"),
+            Node::Normal(sh, dtype) => add_node(id, &format!("Normal({sh}, {dtype})"), "box"),
+            Node::Uniform(sh, start, end) => add_node(id, &format!("Uniform({sh}, {start:?}..{end:?})"), "box"),
             Node::Add(x, y) => add_node(id, &format!("Add({x}, {y})"), "oval"),
             Node::Sub(x, y) => add_node(id, &format!("Sub({x}, {y})"), "oval"),
             Node::Mul(x, y) => add_node(id, &format!("Mul({x}, {y})"), "oval"),

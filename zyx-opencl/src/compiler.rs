@@ -530,7 +530,7 @@ impl zyx_compiler::Compiler for Compiler {
 
     type Program = Program;
 
-    fn allocate(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError> {
+    fn allocate_mem(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError> {
         let mut err = CL_SUCCESS;
         let mem = unsafe {
             clCreateBuffer(
@@ -559,9 +559,9 @@ impl zyx_compiler::Compiler for Compiler {
         })
     }
 
-    fn store<T>(&mut self, buffer: &mut Self::Buffer, iter: impl IntoIterator<Item = T>) -> Result<(), ZyxError> {
+    fn store_mem<T>(&mut self, buffer: &mut Self::Buffer, iter: impl IntoIterator<Item = T>) -> Result<(), ZyxError> {
         //std::println!("Storing");
-        // TODO we can do buffered load, with buffer of say 1 MB size in RAM and offset write buffer
+        // TODO we can do batched load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.into_iter().collect();
         let size = data.len() * core::mem::size_of::<T>();
         let mut event: *mut c_void = ptr::null_mut();
@@ -611,7 +611,7 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(())
     }
 
-    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError> {
+    fn load_mem<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError> {
         let mut data: Vec<T> = Vec::with_capacity(numel);
         let mut event: *mut c_void = ptr::null_mut();
         cl_wait_for_events(&[buffer.event])?;
@@ -653,7 +653,7 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(data)
     }
 
-    fn deallocate(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError> {
+    fn deallocate_mem(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError> {
         let err = unsafe { clReleaseMemObject(buffer.mem) };
         if err != CL_SUCCESS {
             return Err(ZyxError::BackendError(match err {
@@ -675,7 +675,7 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(())
     }
 
-    fn compile(&mut self, ir: &zyx_compiler::IRKernel) -> Result<Self::Program, ZyxError> {
+    fn compile_program(&mut self, ir: &zyx_compiler::IRKernel) -> Result<Self::Program, ZyxError> {
         let id_t = "unsigned int";
         let mut source = f!("(\n");
 
@@ -840,7 +840,7 @@ impl zyx_compiler::Compiler for Compiler {
         )
     }
 
-    fn launch(
+    fn launch_program(
         &mut self,
         program: &Self::Program,
         args: &[&Self::Buffer],

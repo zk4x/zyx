@@ -12,20 +12,19 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
-use core::ops::Range;
-use rand::distributions::Uniform;
+use std::hash::Hash;
 
 /// RuntimeBackend is a good plug in point for backend developers.
 /// Use Runtime::new(YourOwnStructThatImplementsRuntimeBackend::new()) to write your
 /// own backend which needs to implement only evaluation of graph.
 /// Used by torch and native backends.
 pub trait RuntimeBackend {
-    /// Is tensor x evaluated?
-    fn is_evaluated(&self, x: Id) -> bool;
-    /// Check if there are no more buffers on id x
+    /// Compiled graph of nodes
+    type CompiledGraph;
+    /// Can this id be used by new nodes?
     fn is_free_id(&self, x: Id) -> bool;
-    /// Delete all memory used by tensor x.
-    fn remove(&mut self, x: Id) -> Result<(), ZyxError>;
+    /// Returns all evaluated node ids
+    fn evaluated_nodes(&self) -> BTreeSet<Id>;
     /// Store iterator into runtime backend
     fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
     where
@@ -33,94 +32,35 @@ pub trait RuntimeBackend {
         IT::IntoIter: ExactSizeIterator;
     /// Load evaluated tensor x.
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError>;
-    /// Evaluate tensors to_eval with given graph of nodes and recommended
-    /// order of evaluation.
-    fn evaluate(
-        &mut self,
-        rcs: BTreeMap<Id, u32>,
-        order: &[Id],
-        nodes: &[Node],
-    ) -> Result<(), ZyxError>;
+    /// Delete all memory used by tensor x.
+    fn remove(&mut self, x: Id) -> Result<(), ZyxError>;
+    /// Compile graph of nodes into CompiledGraph, apply all optimizations
+    fn compile_graph(&mut self, rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError>;
+    /// Launch compiled graph
+    fn launch_graph(&mut self, graph: &Self::CompiledGraph) -> Result<(), ZyxError>;
 }
 
 /// Runtime with autograd engine.
 /// This runtime uses [Node] enum as representation of tensors.
 pub struct Runtime<R: RuntimeBackend> {
-    rng: rand::rngs::SmallRng,
     rcs: Vec<u32>,
     nodes: Vec<Node>,
     unrealized_nodes_count: usize,
     runtime_backend: R,
+    compiled_graphs: BTreeMap<u64, R::CompiledGraph>,
 }
 
 impl<R: RuntimeBackend> Runtime<R> {
     /// Initialize new runtime.
     #[must_use]
     pub fn new(runtime_backend: R) -> Self {
-        use rand::SeedableRng;
         Self {
-            rng: rand::rngs::SmallRng::seed_from_u64(420_694_206_942_069),
             rcs: Vec::new(),
             nodes: Vec::new(),
             unrealized_nodes_count: 0,
             runtime_backend,
+            compiled_graphs: BTreeMap::new(),
         }
-    }
-
-    /// Create tensor initialized from normal distribution.
-    pub fn randn(&mut self, shape: Shape, dtype: DType) -> Result<Id, ZyxError> {
-        use rand::Rng;
-        let n = shape.numel();
-        let mut rng = self.rng.clone();
-        use rand::distributions::Standard;
-        let data1 = match dtype {
-            DType::F32 => self.store::<f32, _>((0..n).map(move |_| rng.sample(Standard))),
-            DType::F64 => self.store::<f64, _>((0..n).map(move |_| rng.sample(Standard))),
-            DType::I32 => self.store::<i32, _>((0..n).map(move |_| rng.sample(Standard))),
-        }?;
-        let data = self.push(Node::Reshape(data1, shape))?;
-        self.release(data1)?;
-        // change the state of the random seed in rng
-        for _ in 0..n {
-            self.rng.sample::<f32, _>(Standard);
-        }
-        Ok(data)
-    }
-
-    /// Create uniform tensor from range low..high
-    pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Result<Id, ZyxError> {
-        // TODO for f32 in range 0.0..1.0 switch to Node::UniformF32 for better performance
-        use rand::Rng;
-        let n = shape.numel();
-        let mut rng = self.rng.clone();
-        use rand::distributions::Standard;
-        let data1 = match T::dtype() {
-            DType::F32 => self.store((0..n).map(move |_| {
-                rng.sample(Uniform::new(
-                    range.start.clone().into_f32(),
-                    range.end.clone().into_f32(),
-                ))
-            })),
-            DType::F64 => self.store((0..n).map(move |_| {
-                rng.sample(Uniform::new(
-                    range.start.clone().into_f64(),
-                    range.end.clone().into_f64(),
-                ))
-            })),
-            DType::I32 => self.store((0..n).map(move |_| {
-                rng.sample(Uniform::new(
-                    range.start.clone().into_i32(),
-                    range.end.clone().into_i32(),
-                ))
-            })),
-        }?;
-        let data = self.push(Node::Reshape(data1, shape))?;
-        self.release(data1)?;
-        // change the state of the random seed in rng
-        for _ in 0..n {
-            self.rng.sample::<f32, _>(Standard);
-        }
-        Ok(data)
     }
 
     /// Get shape of tensor x
@@ -137,7 +77,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Load tensor x
     pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
-        if !self.runtime_backend.is_evaluated(x) {
+        if self.runtime_backend.is_free_id(x) {
             self.evaluate(BTreeSet::from([x]))?;
         }
         let numel = get_shape(self.nodes.as_slice(), x).numel();
@@ -275,201 +215,39 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Evaluate specified nodes.
     pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
-        // This whole function is needed so that we can batch ops together.
-        // This aleviates the cost of keeping intermediate buffers for backpropagation,
-        // as this function runs independently from backpropagation and if some tensors
-        // are dropped after backpropagation, this function optimizes those away.
-        // Basically the difference between immediate and lazy execution with caching.
-        // We simply wait to get more information about the graph structure before
-        // we push it to the device.
-
-        //std::println!("Evaluating {nodes:?}, rcs: {:?}", self.rcs);
-
-        // TODO in order to be more efficient, we can optimize the graph
-        // by reordering nodes and removing unnecessary nodes
-        // TODO should we decrease refcount of some other nodes to drop them from memory?
-        // This memory <=> performance tradeoff should be decided by the user, with some setting.
-        // TODO simplify this function if possible
-
-        // Creation of graph (DFS) runs in linear time, max once per node in self.nodes.
-        // Make a list of visited nodes and their reference counts.
-        let mut temp_rcs: BTreeMap<Id, u32> = BTreeMap::new();
+        use core::hash::Hasher;
+        // TODO currently two different graphs can be hashed into the same hash,
+        // so make sure that does not happen,
+        // We can just clone hashed nodes into Vec, combine it with to_eval BTreeSet
+        // and uses that as a key into compiled_graphs, but is it worth the space taken?
+        // TODO replace this with our own no-std hasher
+        let mut hash_state = core::hash::SipHasher::new();
+        // Depth first search hashing all nodes required to evaluate subgraph
+        let mut visited = BTreeSet::new();
         let mut params: Vec<Id> = nodes.iter().copied().collect();
-        params.reserve(100);
-        while let Some(nid) = params.pop() {
-            //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
-            temp_rcs
-                .entry(nid)
-                .and_modify(|rc| *rc += 1)
-                .or_insert_with(|| {
-                    if !self.runtime_backend.is_evaluated(nid) {
-                        params.extend(self.nodes[nid.i()].parameters());
-                    }
-                    1
-                });
-        }
-        // Order them using rcs reference counts.
-        let mut order = Vec::new();
-        let mut rcs: BTreeMap<Id, u32> = BTreeMap::new();
-        let mut params: Vec<Id> = nodes.iter().copied().collect();
-        params.reserve(100);
-        while let Some(nid) = params.pop() {
-            if let Some(temp_rc) = temp_rcs.get(&nid) {
-                let rc = rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                if *temp_rc == *rc {
-                    order.push(nid);
-                    params.extend(self.nodes[nid.i()].parameters());
-                }
+        while let Some(param) = params.pop() {
+            if visited.insert(param) {
+                let node = &self.nodes[param.i()];
+                node.hash(&mut hash_state);
+                params.extend(node.parameters());
             }
         }
-        order.reverse();
+        for nid in nodes {
+            nid.hash(&mut hash_state);
+        }
+        let graph_hash = hash_state.finish();
 
-        // Just create another DFS that goes all the way to Node::Leaf and adds branches to drop_nodes
-        // if needed.
-        let mut drop_nodes = BTreeSet::new();
-        let mut temp_rcs: BTreeMap<Id, u32> = BTreeMap::new();
-        let mut params: Vec<Id> = nodes.iter().copied().collect();
-        params.reserve(100);
-        while let Some(nid) = params.pop() {
-            if !matches!(self.nodes[nid.i()], Node::Leaf(..)) {
-                temp_rcs
-                    .entry(nid)
-                    .and_modify(|rc| *rc += 1)
-                    .or_insert_with(|| {
-                        params.extend(self.nodes[nid.i()].parameters());
-                        1
-                    });
-            } else {
-                let rc = temp_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                // This does not account for possible existance of user or global graph references
-                // that are not directly on leafs.
-                if *rc == self.rcs[nid.i()] && !nodes.contains(&nid) {
-                    drop_nodes.insert(nid);
-                }
-            }
-        }
-        let mut new_order = Vec::new();
-        let mut new_rcs: BTreeMap<Id, u32> = BTreeMap::new();
-        let mut params: Vec<Id> = nodes.iter().copied().collect();
-        params.reserve(100);
-        while let Some(nid) = params.pop() {
-            if let Some(temp_rc) = temp_rcs.get(&nid) {
-                let rc = new_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                if *temp_rc == *rc {
-                    new_order.push(nid);
-                    params.extend(self.nodes[nid.i()].parameters());
-                }
-            }
-        }
-        new_order.reverse();
+        // If this graph was already compiled, use compiled graph
+        let compiled_graph = if let Some(compiled_graph) = self.compiled_graphs.get(&graph_hash) {
+            compiled_graph
+        } else {
+            let compiled_graph = self.runtime_backend.compile_graph(&self.rcs, &self.nodes, &nodes)?;
+            self.compiled_graphs.entry(graph_hash).or_insert(compiled_graph)
+        };
+        self.runtime_backend.launch_graph(compiled_graph)?;
 
-        // This must go over the graph from the previous loop!
-        let mut new_leafs = BTreeSet::new();
-        for nid in &new_order {
-            if new_rcs[nid] == self.rcs[nid.i()] && !nodes.contains(nid) {
-                for p in self.nodes[nid.i()].parameters() {
-                    if drop_nodes.contains(&p) {
-                        drop_nodes.insert(*nid);
-                    }
-                }
-            } else {
-                if self.nodes[nid.i()]
-                    .parameters()
-                    .any(|p| drop_nodes.contains(&p))
-                {
-                    new_leafs.insert(*nid);
-                }
-            }
-        }
+        // TODO delete nodes that are not needed for backpropagation anymore
 
-        //std::println!("RCS: {:?}", self.rcs);
-        // Dealing with Detach nodes
-        // TODO this is a waste, optimize this.
-        let mut user_rc = self.rcs.clone();
-        for (i, node) in self.nodes.iter().enumerate() {
-            if self.rcs[i] != 0 {
-                //std::println!("{i}: {node:?}");
-                for p in node.parameters() {
-                    user_rc[p.i()] -= 1;
-                }
-            }
-        }
-        for nid in &new_order {
-            // TODO also add Cmplt, as it is not differentiable
-            match &self.nodes[nid.i()] {
-                Node::Cmplt(x, y) => {
-                    let mut detach_rc = BTreeMap::new();
-                    new_leafs.insert(*x);
-                    new_leafs.insert(*y);
-                    let mut params = Vec::with_capacity(10);
-                    params.push(*x);
-                    params.push(*y);
-                    while let Some(x) = params.pop() {
-                        let rc = detach_rc.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                        if *rc == self.rcs[x.i()] {
-                            drop_nodes.insert(x);
-                        }
-                    }
-                }
-                Node::Detach(x) => {
-                    let mut detach_rc = BTreeMap::new();
-                    new_leafs.insert(*x);
-                    let mut params = Vec::with_capacity(10);
-                    params.push(*x);
-                    while let Some(x) = params.pop() {
-                        let rc = detach_rc.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                        if *rc == self.rcs[x.i()] {
-                            drop_nodes.insert(x);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Increase rcs for nodes that we want to keep evaluated.
-        // First it MUST be all new_leafs.
-        for nid in &new_leafs {
-            // Some leafs are already evaluated, so they are not in rcs
-            if let Some(rc) = rcs.get_mut(nid) {
-                *rc += 1;
-            }
-        }
-
-        /*std::println!("Non-evaluated nodes count before: {}", self.unrealized_nodes_count);
-        //self.debug_graph();
-        for i in &order {
-            std::println!("{i} x {} -> {:?}", rcs[i], self.nodes[i.i()]);
-        }
-        std::println!("Drop nodes: {drop_nodes:?}");
-        std::println!("New leafs {new_leafs:?}");
-        std::println!("Order: {order:?}");
-        std::println!();*/
-
-        self.runtime_backend.evaluate(rcs, &order, &self.nodes)?;
-
-        for nid in new_leafs {
-            self.unrealized_nodes_count -= 1;
-            self.nodes[nid.i()] = Node::Leaf(
-                get_shape(&self.nodes, nid).clone(),
-                get_dtype(&self.nodes, nid),
-            );
-        }
-        for nid in drop_nodes {
-            self.rcs[nid.i()] = 0;
-            self.runtime_backend.remove(nid)?;
-            if !matches!(self.nodes[nid.i()], Node::Leaf(..) | Node::Uniform(..)) {
-                self.unrealized_nodes_count -= 1;
-            }
-        }
-        std::println!("Non-evaluated nodes count after: {}", self.unrealized_nodes_count);
-
-        // TODO fix this
-        /*if self.backprop_nodes_count > 2000000000 {
-            panic!("Maximum number of tensors in gradient tape has been reached. Zyx supports up to 2 billion tensors on the tape.\
-            This error can be raised for example in RNNs. Please detach gradient tape (Tensor::detach) from some tensors.\
-            If you really need to use more tensors, please raise an issue: https://github.com/zk4x/zyx");
-        }*/
         Ok(())
     }
 
@@ -614,7 +392,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in topo {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {
-                Node::Detach(..) | Node::Leaf(..) | Node::Uniform(..) => {}
+                Node::Const(..) | Node::Detach(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) {
                         self.retain(grad);

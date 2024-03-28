@@ -13,7 +13,7 @@ fn to_usize_idx(index: i64, rank: usize) -> usize {
 }
 
 /// Shape of tensor
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shape(Box<[usize]>);
 
 impl core::fmt::Display for Shape {

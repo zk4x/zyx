@@ -1,7 +1,7 @@
 use crate::dtype::DType;
 
 /// Scalar trait is implemented for all [dtypes](DType)
-pub trait Scalar: Clone + core::fmt::Debug + 'static {
+pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
     /// Get dtype of Self
     fn dtype() -> DType;
     /// Get zero of Self

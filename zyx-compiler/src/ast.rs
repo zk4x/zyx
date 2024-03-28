@@ -6,7 +6,7 @@ use alloc::{
 use zyx_core::dtype::DType;
 use zyx_core::error::ZyxError;
 use zyx_core::node::Node;
-use zyx_core::runtime::RuntimeBackend;
+use zyx_core::runtime::{Graph, RuntimeBackend};
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
 use zyx_core::utils::{get_shape, get_dtype};
@@ -100,11 +100,6 @@ enum ASTOp {
 }
 
 impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
-    // TODO remove one of these functions, they feel redundant
-    fn is_evaluated(&self, x: Id) -> bool {
-        self.buffers.contains_key(&x)
-    }
-
     fn is_free_id(&self, x: Id) -> bool {
         !self.buffers.contains_key(&x)
     }
@@ -112,7 +107,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
         if let Some(mut buffer) = self.buffers.remove(&x) {
             //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
-            self.compiler.deallocate(&mut buffer)?;
+            self.compiler.deallocate_mem(&mut buffer)?;
         }
         Ok(())
     }
@@ -124,8 +119,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     {
         //std::println!("Storing {x}");
         let data = iter.into_iter();
-        let mut buffer = self.compiler.allocate(data.len(), T::dtype())?;
-        self.compiler.store(&mut buffer, data)?;
+        let mut buffer = self.compiler.allocate_mem(data.len(), T::dtype())?;
+        self.compiler.store_mem(&mut buffer, data)?;
         self.buffers.insert(x, buffer);
         Ok(())
     }
@@ -133,18 +128,14 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
         //std::println!("Loading {x}");
         if let Some(buffer) = self.buffers.get(&x) {
-            self.compiler.load(buffer, numel)
+            self.compiler.load_mem(buffer, numel)
         } else {
             panic!("Buffer not evaluated");
         }
     }
 
-    fn evaluate(
-        &mut self,
-        mut rcs: BTreeMap<Id, u32>,
-        order: &[Id],
-        nodes: &[Node],
-    ) -> Result<(), ZyxError> {
+    fn compile_graph(&mut self, rcs: &[u32], nodes: &[Node]) -> Result<Self::CompiledGraph, ZyxError> {
+        let mut rcs = graph.rcs.clone();
         // Calculate correct work size for the graph,
         // reshape so that it is always 3d kernel,
         // where first dimension is batch.
@@ -156,11 +147,11 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         let mut tiles = Vec::new();
         let mut ops = Vec::new();
         // Create input nodes
-        for nid in order.iter().copied() {
-            for p in nodes[nid.i()].parameters() {
+        for nid in graph.order.iter().copied() {
+            for p in graph.nodes[nid].parameters() {
                 *rcs.get_mut(&p).unwrap() -= 1;
             }
-            if let Node::Leaf(sh, dtype) = &nodes[nid.i()] {
+            if let Node::Leaf(sh, dtype) = &graph.nodes[nid] {
                 idmap.insert(nid, tiles.len());
                 ops.push(ASTOp::Leaf(tiles.len() as u32));
                 let mut shape = Vec::new();
@@ -218,12 +209,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         // Possible optimization passes, like fusing mul and add into madd
         
         // Send AST to IR compiler and compile it, if it is not cached
+        // TODO currently we are caching AST, be we really should be caching the whole graph
         let ast = AST { tiles, ops };
         let program = if let Some(program) = self.programs.get(&ast) {
             program
         } else {
             let ir = ast_to_ir(&ast, 256, 256*1024, 80);
-            let program = self.compiler.compile(&ir)?;
+            let program = self.compiler.compile_program(&ir)?;
             self.programs.entry(ast).or_insert(program)
         };
 

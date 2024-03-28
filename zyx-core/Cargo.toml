@@ -15,9 +15,6 @@ categories = ["computer-vision", "science"]
 [badges]
 maintenance = { status = "experimental" }
 
-[dependencies]
-rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
-
 [dev-dependencies]
 zyx-opencl = { workspace = true }
 

@@ -20,5 +20,5 @@ zyx-nn = { workspace = true }
 zyx-optim = { workspace = true }
 zyx-derive = { workspace = true }
 zyx-opencl = { workspace = true }
-zyx-cpu = { workspace = true }
-zyx-torch = { workspace = true }
+#zyx-cpu = { workspace = true }
+#zyx-torch = { workspace = true }

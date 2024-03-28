@@ -2,17 +2,56 @@ extern crate alloc;
 use crate::dtype::DType;
 use crate::utils::get_shape;
 use crate::{axes::Axes, shape::Shape, tensor::Id};
+use crate::scalar::Scalar;
 use alloc::boxed::Box;
 use core::fmt::Formatter;
+use std::hash::Hasher;
+
+/// Constant value
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub enum Constant {
+    /// f32 constant
+    F32(f32),
+    /// f64 constant
+    F64(f64),
+    /// i32 constant
+    I32(i32),
+}
+
+impl core::hash::Hash for Constant {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Constant::F32(x) => state.write(&x.to_le_bytes()),
+            Constant::F64(x) => state.write(&x.to_le_bytes()),
+            Constant::I32(x) => state.write_i32(*x),
+        }
+    }
+}
+
+impl Constant {
+    /// Get dtype of this constant
+    pub fn dtype(&self) -> DType {
+        match self {
+            Constant::F32(..) => DType::F32,
+            Constant::F64(..) => DType::F64,
+            Constant::I32(..) => DType::I32,
+        }
+    }
+}
 
 /// Node representing different possible tensors
+#[derive(PartialEq, PartialOrd, Hash)]
 pub enum Node {
+    /// Constant node that can be compiled into kernels
+    Const(Constant),
     /// Detach tensor from tape
     Detach(Id),
     /// Leaf that is guaranteed to be evaluated
     Leaf(Shape, DType),
-    /// Uniform initializer for range 0..1
-    Uniform(Shape, DType),
+    /// Random normal distribution tensor
+    Normal(Shape, DType),
+    /// Random uniform distribution tensor
+    Uniform(Shape, Constant, Constant),
     /// Cast to dtype unary op
     Cast(Id, DType),
     /// Neg unary op
@@ -64,8 +103,10 @@ impl core::fmt::Debug for Node {
         match self {
             Node::Detach(x) => f.write_fmt(format_args!("Detach({x})")),
             Node::Leaf(sh, dtype) => f.write_fmt(format_args!("Leaf({sh}, {dtype})")),
+            Node::Const(x) => f.write_fmt(format_args!("Const({x:.2?})")),
+            Node::Normal(sh, dtype) => f.write_fmt(format_args!("Normal({sh}, {dtype})")),
+            Node::Uniform(sh, start, end) => f.write_fmt(format_args!("Uniform({sh}, {start:?}..{end:?})")),
             Node::Cast(x, dtype) => f.write_fmt(format_args!("Cast({x}, {dtype})")),
-            Node::Uniform(sh, dtype) => f.write_fmt(format_args!("Uniform({sh}, {dtype})")),
             Node::Neg(x) => f.write_fmt(format_args!("Neg({x})")),
             Node::ReLU(x) => f.write_fmt(format_args!("ReLU({x})")),
             Node::Sin(x) => f.write_fmt(format_args!("Sin({x})")),
@@ -114,7 +155,7 @@ impl Node {
     /// Get number of parameters of self. This method does not allocate.
     pub const fn num_parameters(&self) -> u8 {
         match self {
-            Node::Leaf(..) | Node::Uniform(..) => 0,
+            Node::Const(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => 0,
             Node::Detach(..)
             | Node::Cast(..)
             | Node::Neg(..)
@@ -144,7 +185,7 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = Id> {
         match self {
-            Node::Leaf(..) | Node::Uniform(..) => NodeParametersIterator {
+            Node::Const(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => NodeParametersIterator {
                 parameters: [crate::tensor::id(0); 3],
                 idx: 0,
                 len: 0,
@@ -191,12 +232,14 @@ impl Node {
     pub fn flop(&self, nodes: &[Node]) -> usize {
         match self {
             Node::Detach(..)
+            | Node::Const(..)
             | Node::Leaf(..)
-            | Node::Uniform(..)
             | Node::Reshape(..)
             | Node::Expand(..)
             | Node::Permute(..)
             | Node::Pad(..) => 0,
+            Node::Normal(sh, ..)
+            | Node::Uniform(sh, ..) => sh.numel(),
             Node::Where(x, ..)
             | Node::Add(x, _)
             | Node::Sub(x, _)
@@ -224,7 +267,7 @@ impl Node {
     /// Check if parameters of self contains nid.
     pub fn parameters_contain(&self, nid: Id) -> bool {
         match self {
-            Node::Leaf(..) | Node::Uniform(..) => false,
+            Node::Const(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => false,
             Node::Detach(x)
             | Node::Cast(x, ..)
             | Node::Neg(x)
