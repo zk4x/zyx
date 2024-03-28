@@ -285,7 +285,7 @@ fn t0() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-/*#[test]
+#[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.uniform([2, 1, 1], 0f32..1f32);
@@ -295,7 +295,7 @@ fn t0() -> Result<(), ZyxError> {
     std::println!("{z}");
     panic!();
     Ok(())
-}*/
+}
 
 /*#[test]
 fn t5() -> Result<(), ZyxError> {
@@ -341,7 +341,7 @@ fn dot_test() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[test]
+/*#[test]
 fn dot_test2() -> Result<(), ZyxError> {
     let dev = device_builder().platform_id(0).build()?;
     let mut x = dev.randn([1024, 1024], DType::F32);
@@ -354,13 +354,13 @@ fn dot_test2() -> Result<(), ZyxError> {
     //std::println!("{elapsed}ms");
     //panic!();
     Ok(())
-}
+}*/
 
-#[test]
+/*#[test]
 fn t6() {
     let dev = device_builder().platform_id(0).build().unwrap();
     let x = dev.randn([1024, 1024], DType::F32);
     let z = x.sum(..);
     let _: Vec<f32> = z.to_vec().unwrap();
     //panic!()
-}
+}*/

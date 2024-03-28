@@ -28,6 +28,7 @@ extern crate std;
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec::Vec};
+use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
 use crate::ast::AST;
@@ -47,17 +48,20 @@ pub trait Compiler {
     type Buffer;
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
-    /// Store iter into buffer
+    /// Allocate space for new buffer
+    fn allocate(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError>;
+    /// Store iter into existing buffer
     fn store<T: Scalar>(
         &mut self,
+        buffer: &mut Self::Buffer,
         iter: impl IntoIterator<Item = T>,
-    ) -> Result<Self::Buffer, ZyxError>;
+    ) -> Result<(), ZyxError>;
     /// Load buffer into vec
-    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, numel: usize) -> Result<Vec<T>, ZyxError>;
+    fn load<T: Scalar>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, ZyxError>;
     /// Drop Buffer
-    fn drop_buffer(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError>;
-    /// Drop Program
-    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError>;
+    fn deallocate(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError>;
+    /// Compile ast into program
+    fn compile(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError>;
     /// Launch program with args
     fn launch(
         &mut self,
@@ -66,6 +70,6 @@ pub trait Compiler {
         flop: usize,
         bytes: usize,
     ) -> Result<Self::Buffer, ZyxError>;
-    /// Compile ast into program
-    fn compile(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError>;
+    /// Drop Program
+    fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError>;
 }
