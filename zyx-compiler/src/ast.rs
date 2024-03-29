@@ -3,11 +3,13 @@ use alloc::{
     collections::BTreeMap,
     vec::Vec,
 };
+use std::collections::BTreeSet;
 use zyx_core::dtype::DType;
 use zyx_core::error::ZyxError;
-use zyx_core::node::Node;
-use zyx_core::runtime::{Graph, RuntimeBackend};
+use zyx_core::node::{Constant, Node};
+use zyx_core::runtime::RuntimeBackend;
 use zyx_core::scalar::Scalar;
+use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
 use zyx_core::utils::{get_shape, get_dtype};
 
@@ -17,7 +19,6 @@ impl<C: Compiler> CompiledBackend<C> {
         Self {
             compiler,
             buffers: BTreeMap::new(),
-            programs: BTreeMap::new(),
         }
     }
 }
@@ -27,12 +28,6 @@ impl<C: Compiler> CompiledBackend<C> {
 // AST uses custom IDs, so that it can be used for caching and so that it can use
 // different number of tiles then the original graph has number of nodes.
 // AST has optimization passes to give us better data locality.
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct AST {
-    tiles: Vec<ASTTile>,
-    ops: Vec<ASTOp>,
-}
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Dimension {
@@ -60,7 +55,7 @@ struct ASTTile {
     read_only: bool,
 }
 
-type ASTId = u32;
+type ASTId = usize;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum ASTUOp {
@@ -86,8 +81,15 @@ struct Padding {
     right_padding: Vec<usize>,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum ASTOp {
+#[derive(PartialEq, PartialOrd)]
+enum RandomDist {
+    Normal(DType),
+    Uniform(Constant, Constant),
+}
+
+#[derive(PartialEq, PartialOrd)]
+pub(crate) enum ASTOp {
+    Random(Shape, RandomDist),
     Leaf(ASTId),
     Unary(ASTId, ASTUOp),
     Binary(ASTId, ASTId, ASTBOp),
@@ -99,9 +101,23 @@ enum ASTOp {
     //Reduce(ASTId, Axes, ASTROp),
 }
 
+/// Compiled graph
+pub struct CompiledGraph<Program> {
+    args: Vec<Id>,
+    program: Program,
+    flop: usize,
+    bytes: usize,
+}
+
 impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
-    fn is_free_id(&self, x: Id) -> bool {
+    type CompiledGraph = CompiledGraph<C::Program>;
+
+    fn is_empty(&self, x: Id) -> bool {
         !self.buffers.contains_key(&x)
+    }
+
+    fn evaluated_nodes(&self) -> BTreeSet<Id> {
+        self.buffers.keys().copied().collect()
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
@@ -134,8 +150,41 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         }
     }
 
-    fn compile_graph(&mut self, rcs: &[u32], nodes: &[Node]) -> Result<Self::CompiledGraph, ZyxError> {
-        let mut rcs = graph.rcs.clone();
+    fn compile_graph(&mut self, _rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
+        // Find the best order of execution of nodes
+        let mut temp_rcs: BTreeMap<Id, u32> = BTreeMap::new();
+        let mut params: Vec<Id> = to_eval.iter().copied().collect();
+        params.reserve(100);
+        while let Some(nid) = params.pop() {
+            //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
+            temp_rcs
+                .entry(nid)
+                .and_modify(|rc| *rc += 1)
+                .or_insert_with(|| {
+                    if self.is_empty(nid) {
+                        params.extend(nodes[nid.i()].parameters());
+                    }
+                    1
+                });
+        }
+        // Order them using rcs reference counts.
+        let mut order = Vec::new();
+        let mut rcs: BTreeMap<Id, u32> = BTreeMap::new();
+        let mut params: Vec<Id> = to_eval.iter().copied().collect();
+        params.reserve(100);
+        while let Some(nid) = params.pop() {
+            if let Some(temp_rc) = temp_rcs.get(&nid) {
+                let rc = rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                if *temp_rc == *rc {
+                    order.push(nid);
+                    params.extend(nodes[nid.i()].parameters());
+                }
+            }
+        }
+        order.reverse();
+
+        // TODO Reorder movement ops as to be late as possible (before reduce ops)
+
         // Calculate correct work size for the graph,
         // reshape so that it is always 3d kernel,
         // where first dimension is batch.
@@ -147,13 +196,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         let mut tiles = Vec::new();
         let mut ops = Vec::new();
         // Create input nodes
-        for nid in graph.order.iter().copied() {
-            for p in graph.nodes[nid].parameters() {
-                *rcs.get_mut(&p).unwrap() -= 1;
+        for nid in order.iter().copied() {
+            for p in nodes[nid.i()].parameters() {
+                *temp_rcs.get_mut(&p).unwrap() -= 1;
             }
-            if let Node::Leaf(sh, dtype) = &graph.nodes[nid] {
+            if let Node::Leaf(sh, dtype) = &nodes[nid.i()] {
                 idmap.insert(nid, tiles.len());
-                ops.push(ASTOp::Leaf(tiles.len() as u32));
+                ops.push(ASTOp::Leaf(tiles.len()));
                 let mut shape = Vec::new();
                 let mut stride = 1;
                 for d in sh {
@@ -175,10 +224,10 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             }
         }
         // Create output nodes
-        for (id, rc) in rcs.iter() {
+        for (id, rc) in temp_rcs.iter() {
             if *rc > 0 {
                 idmap.insert(*id, tiles.len());
-                ops.push(ASTOp::Leaf(tiles.len() as u32));
+                ops.push(ASTOp::Leaf(tiles.len()));
                 let mut shape = Vec::new();
                 let mut stride = 1;
                 for d in get_shape(nodes, *id) {
@@ -201,26 +250,43 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         }
 
         // Process graph in backward direction
-        for nid in order.iter().copied().rev() {
-            std::println!("{nid:>3}x{}  {:?}", rcs[&nid], nodes[nid.i()]);
-            //ops.push();
+        for nid in order.iter() {
+            std::println!("{nid:>3}x{}  {:?}", rcs[nid], nodes[nid.i()]);
+            match &nodes[nid.i()] {
+                Node::Uniform(sh, start, end) => {
+                    idmap.insert(*nid, ops.len());
+                    ops.push(ASTOp::Random(sh.clone(), RandomDist::Uniform(start.clone(), end.clone())));
+                }
+                Node::Exp(x) => {
+                    idmap.insert(*nid, ops.len());
+                    ops.push(ASTOp::Unary(idmap[x], ASTUOp::Exp));
+                }
+                Node::Add(x, y) => {
+                    idmap.insert(*nid, ops.len());
+                    ops.push(ASTOp::Binary(idmap[x], idmap[y], ASTBOp::Add));
+                }
+                Node::Expand(x, sh) => {
+                    todo!()
+                }
+                _ => {}
+            }
         }
 
         // Possible optimization passes, like fusing mul and add into madd
         
-        // Send AST to IR compiler and compile it, if it is not cached
-        // TODO currently we are caching AST, be we really should be caching the whole graph
-        let ast = AST { tiles, ops };
-        let program = if let Some(program) = self.programs.get(&ast) {
-            program
-        } else {
-            let ir = ast_to_ir(&ast, 256, 256*1024, 80);
-            let program = self.compiler.compile_program(&ir)?;
-            self.programs.entry(ast).or_insert(program)
-        };
+        let ir = ast_to_ir(&ops, 256, 256*1024, 80);
+        let program = self.compiler.compile_program(&ir)?;
 
-        //self.compiler.launch();
+        Ok(Self::CompiledGraph {
+            args: Vec::new(),
+            program,
+            flop: 0,
+            bytes: 0,
+        })
+    }
 
-        Ok(())
+    fn launch_graph(&mut self, graph: &Self::CompiledGraph) -> Result<(), ZyxError> {
+        let buffers: Vec<&C::Buffer> = graph.args.iter().map(|id| self.buffers.get(id).unwrap()).collect();
+        self.compiler.launch_program(&graph.program, &buffers, graph.flop, graph.bytes)
     }
 }

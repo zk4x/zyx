@@ -2,7 +2,6 @@ extern crate alloc;
 use crate::dtype::DType;
 use crate::utils::get_shape;
 use crate::{axes::Axes, shape::Shape, tensor::Id};
-use crate::scalar::Scalar;
 use alloc::boxed::Box;
 use core::fmt::Formatter;
 use std::hash::Hasher;

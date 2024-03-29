@@ -10,7 +10,6 @@ use zyx_core::{
     axes::Axes, error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, shape::Shape,
     tensor::Id, view::View,
 };
-use zyx_core::runtime::Graph;
 
 macro_rules! unary_op {
     ($ctx: expr, $x: expr, $nid: expr, $op: expr) => {{
@@ -159,11 +158,7 @@ impl Interpreter {
 }
 
 impl RuntimeBackend for Interpreter {
-    fn is_evaluated(&self, x: Id) -> bool {
-        self.views.contains_key(&x)
-    }
-
-    fn is_free_id(&self, x: Id) -> bool {
+    fn is_empty(&self, x: Id) -> bool {
         !(self.buffers.contains_key(&x) || self.views.contains_key(&x))
     }
 

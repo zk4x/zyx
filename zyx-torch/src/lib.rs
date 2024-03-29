@@ -132,10 +132,10 @@ impl Backend for &Torch {
         ))
     }
 
-    fn uniform(
+    fn uniform<T: Scalar>(
         self,
         shape: impl Into<Shape>,
-        range: Range<impl Scalar>,
+        range: Range<T>,
     ) -> Result<Tensor<Self>, ZyxError> {
         Ok(tensor(
             self.0.borrow_mut().uniform(shape.into(), range)?,

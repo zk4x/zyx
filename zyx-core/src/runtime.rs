@@ -22,7 +22,7 @@ pub trait RuntimeBackend {
     /// Compiled graph of nodes
     type CompiledGraph;
     /// Can this id be used by new nodes?
-    fn is_free_id(&self, x: Id) -> bool;
+    fn is_empty(&self, x: Id) -> bool;
     /// Returns all evaluated node ids
     fn evaluated_nodes(&self) -> BTreeSet<Id>;
     /// Store iterator into runtime backend
@@ -77,7 +77,7 @@ impl<R: RuntimeBackend> Runtime<R> {
 
     /// Load tensor x
     pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
-        if self.runtime_backend.is_free_id(x) {
+        if self.runtime_backend.is_empty(x) {
             self.evaluate(BTreeSet::from([x]))?;
         }
         let numel = get_shape(self.nodes.as_slice(), x).numel();
@@ -100,7 +100,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             .rcs
             .iter()
             .enumerate()
-            .position(|(i, rc)| *rc == 0 && self.runtime_backend.is_free_id(tensor::id(i)))
+            .position(|(i, rc)| *rc == 0 && self.runtime_backend.is_empty(tensor::id(i)))
         {
             let id = tensor::id(i);
             self.rcs[i] = 1;
@@ -146,7 +146,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             .rcs
             .iter()
             .enumerate()
-            .position(|(i, rc)| *rc == 0 && self.runtime_backend.is_free_id(tensor::id(i)))
+            .position(|(i, rc)| *rc == 0 && self.runtime_backend.is_empty(tensor::id(i)))
         {
             let id = tensor::id(i);
             self.rcs[i] = 1;
@@ -229,10 +229,12 @@ impl<R: RuntimeBackend> Runtime<R> {
             if visited.insert(param) {
                 let node = &self.nodes[param.i()];
                 node.hash(&mut hash_state);
-                params.extend(node.parameters());
+                if self.runtime_backend.is_empty(param) {
+                    params.extend(node.parameters());
+                }
             }
         }
-        for nid in nodes {
+        for nid in &nodes {
             nid.hash(&mut hash_state);
         }
         let graph_hash = hash_state.finish();

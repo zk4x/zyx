@@ -31,7 +31,6 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
-use crate::ast::AST;
 pub use crate::ir::IRKernel;
 pub use crate::ir::IROp;
 
@@ -39,7 +38,6 @@ pub use crate::ir::IROp;
 pub struct CompiledBackend<C: Compiler> {
     compiler: C,
     buffers: BTreeMap<Id, C::Buffer>,
-    programs: BTreeMap<AST, C::Program>,
 }
 
 /// Implement this trait for compiled backends
@@ -70,7 +68,7 @@ pub trait Compiler {
         args: &[&Self::Buffer],
         flop: usize,
         bytes: usize,
-    ) -> Result<Self::Buffer, ZyxError>;
+    ) -> Result<(), ZyxError>;
     /// Drop Program
     fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError>;
 }

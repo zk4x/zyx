@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use zyx_core::dtype::DType;
-use crate::ast::AST;
+use crate::ast::ASTOp;
 
 /// Unary op
 pub enum UOp {
@@ -46,8 +46,13 @@ pub enum IROp {
 // Single most important function and one of the most difficult
 // functions to write. All of this is cached, so take your time to optimize
 // these kernels.
-pub(crate) fn ast_to_ir(ast: &AST, max_local_work_size: usize, max_local_memory_size: usize, max_num_registers: usize) -> IRKernel {
+pub(crate) fn ast_to_ir(ops: &[ASTOp], max_local_work_size: usize, max_local_memory_size: usize, max_num_registers: usize) -> IRKernel {
     // Compile ops
+    for op in ops {
+        match op {
+            _ => {}
+        }
+    }
 
     IRKernel {
         global_work_size: Vec::new(),

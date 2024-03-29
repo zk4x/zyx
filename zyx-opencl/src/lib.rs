@@ -177,24 +177,6 @@ impl Backend for &OpenCL {
         self.0.borrow().plot_graph_dot(&ids)
     }
 
-    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(
-            self.0.borrow_mut().randn(shape.into(), dtype)?,
-            self,
-        ))
-    }
-
-    fn uniform(
-        self,
-        shape: impl Into<Shape>,
-        range: Range<impl Scalar>,
-    ) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(
-            self.0.borrow_mut().uniform(shape.into(), range)?,
-            self,
-        ))
-    }
-
     fn shape(self, x: Id) -> Shape {
         self.0.borrow().shape(x).clone()
     }
@@ -289,9 +271,9 @@ fn t0() -> Result<(), ZyxError> {
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     let x = dev.uniform([2, 1, 1], 0f32..1f32);
-    let y = &x + x.exp();
-    let x = x.expand([2, 1, 5]);
-    let z = x.expand([2, 3, 5]) + y.reshape([2, 1, 1]);
+    let z = &x + x.exp();
+    //let x = x.expand([2, 1, 5]);
+    //let z = x.expand([2, 3, 5]) + y.reshape([2, 1, 1]);
     std::println!("{z}");
     panic!();
     Ok(())

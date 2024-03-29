@@ -846,7 +846,10 @@ impl zyx_compiler::Compiler for Compiler {
         args: &[&Self::Buffer],
         flop: usize,
         bytes: usize,
-    ) -> Result<Self::Buffer, ZyxError> {
+    ) -> Result<(), ZyxError> {
+        // TODO when random_seed is true, just pass in a hash of current time (just a variable
+        // increased every time kernel is launched) and addresses of buffers.
+        // That should be random enough for neural networks.
         #[cfg(not(feature = "debug1"))]
         let (_, _) = (flop, bytes);
         let program_name = &CString::new(program.name.clone()).unwrap();
@@ -990,7 +993,7 @@ impl zyx_compiler::Compiler for Compiler {
             );
             //std::println!("Output: {:?}", self.load::<f32>(&Buffer { mem, event }, 6));
         }
-        Ok(Buffer { mem, event })
+        Ok(())
     }
 
     fn drop_program(&mut self, program: &mut Self::Program) -> Result<(), ZyxError> {
