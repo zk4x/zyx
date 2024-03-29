@@ -13,23 +13,13 @@ use zyx_core::scalar::Scalar;
 use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
 use zyx_core::utils::{get_shape, get_dtype};
+use crate::view::View;
 
 // From the graph, we first abstract into AST, where ops are applied on tiles.
 // AST is then compiled into IR.
 // AST uses custom IDs, so that it can be used for caching and so that it can use
 // different number of tiles then the original graph has number of nodes.
 // AST has optimization passes to give us better data locality.
-
-#[derive(Debug)]
-pub(crate) struct Dimension {
-    size: usize,
-    stride: usize,
-    // if left_mask < size, its indexing, else it's padding
-    // left_mask goes in reverse direction, from biggest to smallest value
-    left_mask: usize,
-    // if right_mask < size, its indexing, else it's padding
-    right_mask: usize,
-}
 
 #[derive(Debug)]
 pub(crate) enum Scope {
@@ -71,7 +61,7 @@ enum MOp {
 pub(crate) enum ASTOp {
     Leaf {
         id: Id, // Id into self.buffers
-        shape: Vec<Vec<Dimension>>, // Vec of InnerView essentially
+        view: View,
         dtype: DType,
         scope: Scope,
     },
@@ -87,14 +77,14 @@ impl ASTOp {
             ASTOp::Leaf { .. } => {
                 Vec::new().into_iter()
             }
-            ASTOp::Unary(x, _) => {
-                alloc::vec![x].into_iter()
+            ASTOp::Unary(x, _) | ASTOp::Reduce(x, _) => {
+                alloc::vec![*x].into_iter()
             }
             ASTOp::Binary(x, y, _) => {
-                alloc::vec![x, y].into_iter()
+                alloc::vec![*x, *y].into_iter()
             }
             ASTOp::Where(x, y, z) => {
-                alloc::vec![x, y, z].into_iter()
+                alloc::vec![*x, *y, *z].into_iter()
             }
         }
     }
@@ -211,7 +201,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                 let shape = Vec::with_capacity(sh.rank());
                 ops.push(ASTOp::Leaf {
                     id: *nid,
-                    shape,
+                    view: View(shape),
                     dtype: get_dtype(nodes, *nid),
                     scope: Scope::Global,
                 });
@@ -229,10 +219,10 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     ops.push(ASTOp::Binary(idmap[x], idmap[y], ASTBOp::Add));
                 }
                 Node::Expand(x, sh) => {
-                    apply_movement_op(&mut ops, *nid, MOp::Expand(sh.clone()));
+                    apply_movement_op(&mut ops, idmap[x], MOp::Expand(sh.clone()));
                 }
                 Node::Reshape(x, sh) => {
-                    todo!()
+                    apply_movement_op(&mut ops, idmap[x], MOp::Reshape(sh.clone()));
                 }
                 Node::Sum(x, axes, shape) => {
                     todo!()
@@ -264,16 +254,27 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     }
 }
 
-fn apply_movement_op(ops: &mut [ASTOp], nid: Id, mop: MOp) {
+fn apply_movement_op(ops: &mut Vec<ASTOp>, nid: ASTId, mop: MOp) {
     // DFS search and apply movement op to all AST leafs
     let mut params = alloc::vec![nid];
     let mut visited = BTreeSet::new();
     while let Some(param) = params.pop() {
         if visited.insert(param) {
-            if let ASTOp::Leaf { id, shape, dtype, scope } = &ops[param.i()] {
-                shape.apply(mop);
-            } else {
-                params.extend(ops[param.i()].parameters());
+            match &mut ops[param] {
+                ASTOp::Leaf { view, .. } => {
+                    match &mop {
+                        MOp::Expand(sh) => view.expand(sh),
+                        MOp::Pad(padding) => view.pad(padding),
+                        MOp::Reshape(sh) => view.reshape(sh),
+                        MOp::Permute(ax) => view.permute(ax),
+                    }
+                }
+                ASTOp::Reduce(x, rop) => {
+                    // If this is a movement op applied to a reduce op,
+                    // we need to create a new Leaf in ops
+                    todo!()
+                }
+                _ => params.extend(ops[param].parameters()),
             }
         }
     }

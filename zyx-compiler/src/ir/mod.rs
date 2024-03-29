@@ -59,13 +59,14 @@ pub(crate) fn ast_to_ir(ops: &[ASTOp], max_local_work_size: usize, max_local_mem
     // Compile ops
     for op in ops {
         match op {
-            ASTOp::Leaf { id, shape, dtype, scope } => {
+            ASTOp::Leaf { id, view: shape, dtype, scope } => {
                 //shape, dtype
                 kernel_args.push(IRKernelArg { dtype: *dtype, read_only: false });
             }
             ASTOp::Unary(_, _) => {}
             ASTOp::Binary(_, _, _) => {}
             ASTOp::Where(_, _, _) => {}
+            ASTOp::Reduce(_, _) => {}
         }
     }
 
