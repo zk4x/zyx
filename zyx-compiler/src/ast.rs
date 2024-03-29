@@ -4,6 +4,7 @@ use alloc::{
     vec::Vec,
 };
 use std::collections::BTreeSet;
+use zyx_core::axes::Axes;
 use zyx_core::dtype::DType;
 use zyx_core::error::ZyxError;
 use zyx_core::node::{Constant, Node};
@@ -13,22 +14,13 @@ use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
 use zyx_core::utils::{get_shape, get_dtype};
 
-impl<C: Compiler> CompiledBackend<C> {
-    /// Initialize new compiled backend using provided compiler
-    pub fn new(compiler: C) -> Self {
-        Self {
-            compiler,
-            buffers: BTreeMap::new(),
-        }
-    }
-}
-
 // From the graph, we first abstract into AST, where ops are applied on tiles.
 // AST is then compiled into IR.
 // AST uses custom IDs, so that it can be used for caching and so that it can use
 // different number of tiles then the original graph has number of nodes.
 // AST has optimization passes to give us better data locality.
 
+#[derive(Debug)]
 pub(crate) struct Dimension {
     size: usize,
     stride: usize,
@@ -39,6 +31,7 @@ pub(crate) struct Dimension {
     right_mask: usize,
 }
 
+#[derive(Debug)]
 pub(crate) enum Scope {
     Global,
     Local,
@@ -47,38 +40,64 @@ pub(crate) enum Scope {
 
 pub(crate) type ASTId = usize;
 
+#[derive(Debug)]
 pub(crate) enum ASTUOp {
     Noop, // Just a copy for moving between local, global and registers
     Exp,
     Tanh,
 }
 
+#[derive(Debug)]
 pub(crate) enum ASTBOp {
     Add,
     Sub,
 }
 
+#[derive(Debug)]
 pub(crate) enum ASTROp {
     Sum,
     Max,
 }
 
-struct Padding {
-    left_padding: Vec<usize>,
-    right_padding: Vec<usize>,
+#[derive(Debug)]
+enum MOp {
+    Expand(Shape),
+    Pad(Vec<(usize, usize)>),
+    Permute(Axes),
+    Reshape(Shape),
 }
 
+#[derive(Debug)]
 pub(crate) enum ASTOp {
     Leaf {
         id: Id, // Id into self.buffers
-        shape: Vec<Dimension>,
+        shape: Vec<Vec<Dimension>>, // Vec of InnerView essentially
         dtype: DType,
         scope: Scope,
-        read_only: bool,
     },
     Unary(ASTId, ASTUOp),
     Binary(ASTId, ASTId, ASTBOp),
     Where(ASTId, ASTId, ASTId),
+    Reduce(ASTId, ASTROp),
+}
+
+impl ASTOp {
+    fn parameters(&self) -> impl Iterator<Item = ASTId> {
+        match self {
+            ASTOp::Leaf { .. } => {
+                Vec::new().into_iter()
+            }
+            ASTOp::Unary(x, _) => {
+                alloc::vec![x].into_iter()
+            }
+            ASTOp::Binary(x, y, _) => {
+                alloc::vec![x, y].into_iter()
+            }
+            ASTOp::Where(x, y, z) => {
+                alloc::vec![x, y, z].into_iter()
+            }
+        }
+    }
 }
 
 /// Compiled graph
@@ -130,7 +149,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         Ok(())
     }
 
-    fn compile_graph(&mut self, _rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
+    fn compile_graph(&mut self, global_rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
         // Find the best order of execution of nodes
         let mut temp_rcs: BTreeMap<Id, u32> = BTreeMap::new();
         let mut params: Vec<Id> = to_eval.iter().copied().collect();
@@ -169,27 +188,38 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         // Calculate correct work size for the graph,
         // reshape so that it is always 3d kernel,
         // where first dimension is batch.
-        let mut global_work_size: Vec<usize> = Vec::new();
+        // Work size should be maximum of output buffers dimensions
+        let mut max_shape: Shape = 1.into();
+        for nid in to_eval {
+            let shape = get_shape(nodes, *nid);
+            if shape.numel() > max_shape.numel() {
+                max_shape = shape.clone();
+            }
+        }
+        let mut global_work_size: Vec<usize> = alloc::vec![1, 1, 1];
 
         // Map from Id into ASTId
         let mut idmap = BTreeMap::new();
         let mut ops = Vec::new();
 
         // Process graph
-        for nid in order.iter() {
+        for nid in &order {
             std::println!("{nid:>3}x{}  {:?}", rcs[nid], nodes[nid.i()]);
+            if self.buffers.contains_key(nid) {
+                idmap.insert(*nid, ops.len());
+                let sh = get_shape(nodes, *nid);
+                let shape = Vec::with_capacity(sh.rank());
+                ops.push(ASTOp::Leaf {
+                    id: *nid,
+                    shape,
+                    dtype: get_dtype(nodes, *nid),
+                    scope: Scope::Global,
+                });
+                continue;
+            }
+            std::println!("{ops:?}");
             match &nodes[nid.i()] {
-                Node::Leaf(sh, dtype) => {
-                    idmap.insert(*nid, ops.len());
-                    let shape = Vec::with_capacity(sh.rank());
-                    ops.push(ASTOp::Leaf {
-                        id: *nid,
-                        shape,
-                        dtype: DType::F32,
-                        scope: Scope::Global,
-                        read_only: true,
-                    });
-                }
+                Node::Leaf(sh, dtype) => {}
                 Node::Exp(x) => {
                     idmap.insert(*nid, ops.len());
                     ops.push(ASTOp::Unary(idmap[x], ASTUOp::Exp));
@@ -199,9 +229,17 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     ops.push(ASTOp::Binary(idmap[x], idmap[y], ASTBOp::Add));
                 }
                 Node::Expand(x, sh) => {
+                    apply_movement_op(&mut ops, *nid, MOp::Expand(sh.clone()));
+                }
+                Node::Reshape(x, sh) => {
                     todo!()
                 }
-                _ => {}
+                Node::Sum(x, axes, shape) => {
+                    todo!()
+                }
+                _ => {
+                    todo!()
+                }
             }
         }
 
@@ -223,5 +261,20 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     fn launch_graph(&mut self, graph: &Self::CompiledGraph) -> Result<(), ZyxError> {
         let buffers: Vec<&C::Buffer> = graph.args.iter().map(|id| self.buffers.get(id).unwrap()).collect();
         self.compiler.launch_program(&graph.program, &buffers, graph.flop, graph.bytes)
+    }
+}
+
+fn apply_movement_op(ops: &mut [ASTOp], nid: Id, mop: MOp) {
+    // DFS search and apply movement op to all AST leafs
+    let mut params = alloc::vec![nid];
+    let mut visited = BTreeSet::new();
+    while let Some(param) = params.pop() {
+        if visited.insert(param) {
+            if let ASTOp::Leaf { id, shape, dtype, scope } = &ops[param.i()] {
+                shape.apply(mop);
+            } else {
+                params.extend(ops[param.i()].parameters());
+            }
+        }
     }
 }

@@ -561,10 +561,11 @@ impl zyx_compiler::Compiler for Compiler {
 
     fn store_mem<T>(&mut self, buffer: &mut Self::Buffer, iter: impl IntoIterator<Item = T>) -> Result<(), ZyxError> {
         //std::println!("Storing");
+        // TODO we can also do async stores with iter being &[T], in then we need a way of making
+        // sure that the reference stays valid for the whole duration of the copy.
         // TODO we can do batched load, with buffer of say 1 MB size in RAM and offset write buffer
         let data: Vec<T> = iter.into_iter().collect();
         let size = data.len() * core::mem::size_of::<T>();
-        let mut event: *mut c_void = ptr::null_mut();
         let err = unsafe {
             clEnqueueWriteBuffer(
                 self.queue()?,
@@ -575,7 +576,7 @@ impl zyx_compiler::Compiler for Compiler {
                 data.as_ptr().cast(),
                 0,
                 ptr::null(),
-                &mut event,
+                &mut buffer.event,
             )
         };
         if err != CL_SUCCESS {
@@ -596,7 +597,7 @@ impl zyx_compiler::Compiler for Compiler {
                 _ => "Unable to write buffer. UNKNOWN ERROR",
             }));
         }
-        let err = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
+        let err = unsafe { clWaitForEvents(1, (&[buffer.event]).as_ptr().cast()) };
         if err != CL_SUCCESS {
             return Err(ZyxError::BackendError(match err {
                 -30 => "Unable to finish buffer write event. ERR -30: CL_INVALID_VALUE",

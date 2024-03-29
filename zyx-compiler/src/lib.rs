@@ -19,6 +19,7 @@ use zyx_core::error::ZyxError;
 
 mod ast;
 mod ir;
+mod view;
 
 pub use ir::{UOp, BOp};
 
@@ -39,6 +40,16 @@ pub use crate::ir::IROp;
 pub struct CompiledBackend<C: Compiler> {
     compiler: C,
     buffers: BTreeMap<Id, C::Buffer>,
+}
+
+impl<C: Compiler> CompiledBackend<C> {
+    /// Initialize new compiled backend using provided compiler
+    pub fn new(compiler: C) -> Self {
+        Self {
+            compiler,
+            buffers: BTreeMap::new(),
+        }
+    }
 }
 
 /// Implement this trait for compiled backends

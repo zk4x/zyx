@@ -278,7 +278,8 @@ fn t0() -> Result<(), ZyxError> {
 #[test]
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
-    let x = dev.uniform([2, 1, 1], 0f32..1f32);
+    //let x = dev.uniform([2, 1, 1], 0f32..1f32);
+    let x = dev.tensor([[[1f32]], [[4.]]]);
     let z = &x + x.exp();
     //let x = x.expand([2, 1, 5]);
     //let z = x.expand([2, 3, 5]) + y.reshape([2, 1, 1]);
