@@ -3,7 +3,7 @@ use alloc::{
 };
 use core::{ffi::c_void, ptr};
 use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish};
-use zyx_compiler::{BOp, IROp, UOp};
+use zyx_compiler::{BOp, IROp, IRKernelArg, UOp};
 use zyx_core::view::Index;
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
@@ -680,7 +680,7 @@ impl zyx_compiler::Compiler for Compiler {
         let mut source = f!("(\n");
 
         // Kernel arguments
-        for (i, (dtype, read_only, byte_size)) in ir.kernel_args.iter().enumerate() {
+        for (i, IRKernelArg { dtype, read_only }) in ir.kernel_args.iter().enumerate() {
             source += &f!(
                 "  __global {}{}* gmem{i},\n",
                 if *read_only { "const " } else { "" },

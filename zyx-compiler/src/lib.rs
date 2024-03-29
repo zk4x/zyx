@@ -32,6 +32,7 @@ use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
 pub use crate::ir::IRKernel;
+pub use crate::ir::IRKernelArg;
 pub use crate::ir::IROp;
 
 /// Compiled backend that holds compiler, buffers and programs

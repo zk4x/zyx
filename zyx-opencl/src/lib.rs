@@ -177,6 +177,14 @@ impl Backend for &OpenCL {
         self.0.borrow().plot_graph_dot(&ids)
     }
 
+    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
+    }
+
+    fn uniform<T: Scalar>(self, shape: impl Into<Shape>, range: Range<T>) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
+    }
+
     fn shape(self, x: Id) -> Shape {
         self.0.borrow().shape(x).clone()
     }

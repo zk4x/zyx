@@ -47,10 +47,6 @@ pub enum Node {
     Detach(Id),
     /// Leaf that is guaranteed to be evaluated
     Leaf(Shape, DType),
-    /// Random normal distribution tensor
-    Normal(Shape, DType),
-    /// Random uniform distribution tensor
-    Uniform(Shape, Constant, Constant),
     /// Cast to dtype unary op
     Cast(Id, DType),
     /// Neg unary op
@@ -103,8 +99,6 @@ impl core::fmt::Debug for Node {
             Node::Detach(x) => f.write_fmt(format_args!("Detach({x})")),
             Node::Leaf(sh, dtype) => f.write_fmt(format_args!("Leaf({sh}, {dtype})")),
             Node::Const(x) => f.write_fmt(format_args!("Const({x:.2?})")),
-            Node::Normal(sh, dtype) => f.write_fmt(format_args!("Normal({sh}, {dtype})")),
-            Node::Uniform(sh, start, end) => f.write_fmt(format_args!("Uniform({sh}, {start:?}..{end:?})")),
             Node::Cast(x, dtype) => f.write_fmt(format_args!("Cast({x}, {dtype})")),
             Node::Neg(x) => f.write_fmt(format_args!("Neg({x})")),
             Node::ReLU(x) => f.write_fmt(format_args!("ReLU({x})")),
@@ -154,7 +148,7 @@ impl Node {
     /// Get number of parameters of self. This method does not allocate.
     pub const fn num_parameters(&self) -> u8 {
         match self {
-            Node::Const(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => 0,
+            Node::Const(..) | Node::Leaf(..) => 0,
             Node::Detach(..)
             | Node::Cast(..)
             | Node::Neg(..)
@@ -184,13 +178,13 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = Id> {
         match self {
-            Node::Const(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => NodeParametersIterator {
+            Node::Const(..) | Node::Leaf(..) => NodeParametersIterator {
                 parameters: [crate::tensor::id(0); 3],
                 idx: 0,
                 len: 0,
             },
-            Node::Cast(x, ..)
-            | Node::Detach(x)
+            Node::Detach(x)
+            | Node::Cast(x, ..)
             | Node::Neg(x)
             | Node::ReLU(x)
             | Node::Exp(x)
@@ -237,8 +231,6 @@ impl Node {
             | Node::Expand(..)
             | Node::Permute(..)
             | Node::Pad(..) => 0,
-            Node::Normal(sh, ..)
-            | Node::Uniform(sh, ..) => sh.numel(),
             Node::Where(x, ..)
             | Node::Add(x, _)
             | Node::Sub(x, _)
@@ -266,7 +258,7 @@ impl Node {
     /// Check if parameters of self contains nid.
     pub fn parameters_contain(&self, nid: Id) -> bool {
         match self {
-            Node::Const(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => false,
+            Node::Const(..) | Node::Leaf(..) => false,
             Node::Detach(x)
             | Node::Cast(x, ..)
             | Node::Neg(x)

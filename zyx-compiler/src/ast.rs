@@ -29,8 +29,7 @@ impl<C: Compiler> CompiledBackend<C> {
 // different number of tiles then the original graph has number of nodes.
 // AST has optimization passes to give us better data locality.
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct Dimension {
+pub(crate) struct Dimension {
     size: usize,
     stride: usize,
     // if left_mask < size, its indexing, else it's padding
@@ -40,65 +39,46 @@ struct Dimension {
     right_mask: usize,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum Scope {
+pub(crate) enum Scope {
     Global,
     Local,
     Private,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct ASTTile {
-    shape: Vec<Dimension>,
-    dtype: DType, // not as important, but still useful
-    scope: Scope,
-    read_only: bool,
-}
+pub(crate) type ASTId = usize;
 
-type ASTId = usize;
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum ASTUOp {
+pub(crate) enum ASTUOp {
+    Noop, // Just a copy for moving between local, global and registers
     Exp,
     Tanh,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum ASTBOp {
+pub(crate) enum ASTBOp {
     Add,
     Sub,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum ASTROp {
+pub(crate) enum ASTROp {
     Sum,
     Max,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Padding {
     left_padding: Vec<usize>,
     right_padding: Vec<usize>,
 }
 
-#[derive(PartialEq, PartialOrd)]
-enum RandomDist {
-    Normal(DType),
-    Uniform(Constant, Constant),
-}
-
-#[derive(PartialEq, PartialOrd)]
 pub(crate) enum ASTOp {
-    Random(Shape, RandomDist),
-    Leaf(ASTId),
+    Leaf {
+        id: Id, // Id into self.buffers
+        shape: Vec<Dimension>,
+        dtype: DType,
+        scope: Scope,
+        read_only: bool,
+    },
     Unary(ASTId, ASTUOp),
     Binary(ASTId, ASTId, ASTBOp),
     Where(ASTId, ASTId, ASTId),
-    //Reshape(ASTId, Shape),
-    //Expand(ASTId, Shape),
-    //Pad(ASTId, Padding),
-    //Permute(ASTId, Axes),
-    //Reduce(ASTId, Axes, ASTROp),
 }
 
 /// Compiled graph
@@ -118,14 +98,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
     fn evaluated_nodes(&self) -> BTreeSet<Id> {
         self.buffers.keys().copied().collect()
-    }
-
-    fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
-        if let Some(mut buffer) = self.buffers.remove(&x) {
-            //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
-            self.compiler.deallocate_mem(&mut buffer)?;
-        }
-        Ok(())
     }
 
     fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
@@ -148,6 +120,14 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         } else {
             panic!("Buffer not evaluated");
         }
+    }
+
+    fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
+        if let Some(mut buffer) = self.buffers.remove(&x) {
+            //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
+            self.compiler.deallocate_mem(&mut buffer)?;
+        }
+        Ok(())
     }
 
     fn compile_graph(&mut self, _rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
@@ -184,6 +164,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         order.reverse();
 
         // TODO Reorder movement ops as to be late as possible (before reduce ops)
+        // movement ops must be grouped together!
 
         // Calculate correct work size for the graph,
         // reshape so that it is always 3d kernel,
@@ -192,70 +173,22 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
         // Map from Id into ASTId
         let mut idmap = BTreeMap::new();
-        // AST tiles
-        let mut tiles = Vec::new();
         let mut ops = Vec::new();
-        // Create input nodes
-        for nid in order.iter().copied() {
-            for p in nodes[nid.i()].parameters() {
-                *temp_rcs.get_mut(&p).unwrap() -= 1;
-            }
-            if let Node::Leaf(sh, dtype) = &nodes[nid.i()] {
-                idmap.insert(nid, tiles.len());
-                ops.push(ASTOp::Leaf(tiles.len()));
-                let mut shape = Vec::new();
-                let mut stride = 1;
-                for d in sh {
-                    shape.push(Dimension {
-                        size: *d,
-                        stride,
-                        left_mask: *d,
-                        right_mask: *d,
-                    });
-                    stride *= d;
-                }
-                shape.reverse();
-                tiles.push(ASTTile {
-                    shape,
-                    dtype: *dtype,
-                    scope: Scope::Global,
-                    read_only: true,
-                });
-            }
-        }
-        // Create output nodes
-        for (id, rc) in temp_rcs.iter() {
-            if *rc > 0 {
-                idmap.insert(*id, tiles.len());
-                ops.push(ASTOp::Leaf(tiles.len()));
-                let mut shape = Vec::new();
-                let mut stride = 1;
-                for d in get_shape(nodes, *id) {
-                    shape.push(Dimension {
-                        size: *d,
-                        stride,
-                        left_mask: *d,
-                        right_mask: *d,
-                    });
-                    stride *= d;
-                }
-                shape.reverse();
-                tiles.push(ASTTile {
-                    shape,
-                    dtype: get_dtype(nodes, *id),
-                    scope: Scope::Global,
-                    read_only: true,
-                });
-            }
-        }
 
-        // Process graph in backward direction
+        // Process graph
         for nid in order.iter() {
             std::println!("{nid:>3}x{}  {:?}", rcs[nid], nodes[nid.i()]);
             match &nodes[nid.i()] {
-                Node::Uniform(sh, start, end) => {
+                Node::Leaf(sh, dtype) => {
                     idmap.insert(*nid, ops.len());
-                    ops.push(ASTOp::Random(sh.clone(), RandomDist::Uniform(start.clone(), end.clone())));
+                    let shape = Vec::with_capacity(sh.rank());
+                    ops.push(ASTOp::Leaf {
+                        id: *nid,
+                        shape,
+                        dtype: DType::F32,
+                        scope: Scope::Global,
+                        read_only: true,
+                    });
                 }
                 Node::Exp(x) => {
                     idmap.insert(*nid, ops.len());
@@ -272,7 +205,9 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             }
         }
 
-        // Possible optimization passes, like fusing mul and add into madd
+        // TODO Second pass for memory tiling
+
+        // TODO Possible optimization passes, like fusing mul and add into madd
         
         let ir = ast_to_ir(&ops, 256, 256*1024, 80);
         let program = self.compiler.compile_program(&ir)?;

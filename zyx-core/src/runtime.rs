@@ -13,6 +13,7 @@ use alloc::{
     vec::Vec,
 };
 use std::hash::Hash;
+use std::ops::Range;
 
 /// RuntimeBackend is a good plug in point for backend developers.
 /// Use Runtime::new(YourOwnStructThatImplementsRuntimeBackend::new()) to write your
@@ -48,9 +49,20 @@ pub struct Runtime<R: RuntimeBackend> {
     unrealized_nodes_count: usize,
     runtime_backend: R,
     compiled_graphs: BTreeMap<u64, R::CompiledGraph>,
+    rng_seed: u128,
 }
 
 impl<R: RuntimeBackend> Runtime<R> {
+    /// Random uniform tensor from range
+    pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Result<Id, ZyxError> {
+        todo!()
+    }
+
+    /// Random normal tensor
+    pub fn randn(&mut self, shape: Shape, dtype: DType) -> Result<Id, ZyxError> {
+        todo!()
+    }
+
     /// Initialize new runtime.
     #[must_use]
     pub fn new(runtime_backend: R) -> Self {
@@ -60,6 +72,7 @@ impl<R: RuntimeBackend> Runtime<R> {
             unrealized_nodes_count: 0,
             runtime_backend,
             compiled_graphs: BTreeMap::new(),
+            rng_seed: 42069,
         }
     }
 
@@ -185,7 +198,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 params.extend(self.nodes[x.i()].parameters());
                 self.runtime_backend.remove(x)?;
                 // We count only non leaf nodes
-                if !matches!(self.nodes[x.i()], Node::Leaf(..) | Node::Uniform(..)) {
+                if !matches!(self.nodes[x.i()], Node::Leaf(..)) {
                     self.unrealized_nodes_count -= 1;
                 }
             }
@@ -394,7 +407,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         for nid in topo {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {
-                Node::Const(..) | Node::Detach(..) | Node::Leaf(..) | Node::Normal(..) | Node::Uniform(..) => {}
+                Node::Const(..) | Node::Detach(..) | Node::Leaf(..) => {}
                 Node::Add(x, y) => {
                     if req_grad.contains(&x) {
                         self.retain(grad);

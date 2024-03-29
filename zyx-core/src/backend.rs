@@ -9,7 +9,6 @@ use alloc::{
     vec::Vec,
 };
 use core::ops::Range;
-use crate::node::Constant;
 
 /// Backend for [tensors](Tensor).
 /// Tensor requires that all backends implement this trait and only this trait.
@@ -29,9 +28,7 @@ pub trait Backend: Copy {
 
     /// Create new tensor using values from standard normal distribution
     #[must_use]
-    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.push(Node::Normal(shape.into(), dtype))?, self))
-    }
+    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError>;
 
     /// Create new tensor using values from uniform distribution
     #[must_use]
@@ -39,13 +36,7 @@ pub trait Backend: Copy {
         self,
         shape: impl Into<Shape>,
         range: Range<T>,
-    ) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.push(match T::dtype() {
-            DType::F32 => Node::Uniform(shape.into(), Constant::F32(range.start.into_f32()), Constant::F32(range.end.into_f32())),
-            DType::F64 => Node::Uniform(shape.into(), Constant::F64(range.start.into_f64()), Constant::F64(range.end.into_f64())),
-            DType::I32 => Node::Uniform(shape.into(), Constant::I32(range.start.into_i32()), Constant::I32(range.end.into_i32())),
-        })?, self))
-    }
+    ) -> Result<Tensor<Self>, ZyxError>;
 
     /// Create new tensor by repeating single value
     #[must_use]
