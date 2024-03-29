@@ -40,7 +40,65 @@ impl View {
         assert_eq!(self.numel(), sh.numel());
         // TODO perhaps we can merge more shapes with the previous shape
 
-        // TODO Merge unsqueeze and squeeze
+        // Merge unsqueeze
+        if sh.rank() > self.0[0].len() {
+            let mut merge_possible = true;
+            let mut new_shape = Vec::new();
+            let mut i = self.0[0].len();
+            for sh_dim in sh.iter().rev() {
+                if *sh_dim != 1 {
+                    if *sh_dim != self.0[0][i].size {
+                        merge_possible = false;
+                        break;
+                    } else {
+                        new_shape.insert(0, self.0[0][i]);
+                        i -= 1;
+                    }
+                } else {
+                    if *sh_dim != self.0[0][i].size {
+                        new_shape.insert(0, Dimension {
+                            size: 1,
+                            stride: self.0[0][i].stride,
+                            left_mask: 0,
+                            right_mask: 0,
+                        });
+                    } else {
+                        i -= 1;
+                    }
+                }
+            }
+            if merge_possible {
+                self.0[0] = new_shape;
+                return
+            }
+        }
+
+        // Merge squeeze
+        if sh.rank() < self.0[0].len() {
+            let mut merge_possible = true;
+            let mut new_shape = Vec::new();
+            let mut i = sh.rank();
+            for dim in self.0[0].iter().rev() {
+                if dim.size != 1 {
+                    if dim.size != sh[i] {
+                        merge_possible = false;
+                        break;
+                    } else {
+                        new_shape.insert(0, *dim);
+                        i -= 1;
+                    }
+                } else {
+                    if dim.size == sh[i] {
+                        new_shape.insert(0, *dim);
+                        i -= 1;
+                    }
+                }
+            }
+            if merge_possible {
+                self.0[0] = new_shape;
+                return
+            }
+        }
 
         let mut new_stride = 1;
         let mut new_shape: Vec<Dimension> = sh.iter().copied().rev().map(|size| {
@@ -55,7 +113,7 @@ impl View {
         }).collect();
         new_shape.reverse();
         if self.is_last_shape_contiguous() {
-            // Merge contigous shape
+            // Merge contiguous shape
             self.0[0] = new_shape;
         } else {
             self.0.insert(0, new_shape);

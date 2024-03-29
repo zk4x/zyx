@@ -271,7 +271,7 @@ fn apply_movement_op(ops: &mut Vec<ASTOp>, nid: ASTId, mop: MOp) {
                 }
                 ASTOp::Reduce(x, rop) => {
                     // If this is a movement op applied to a reduce op,
-                    // we need to create a new Leaf in ops
+                    // we need to create a new global Leaf in ops
                     todo!()
                 }
                 _ => params.extend(ops[param].parameters()),
