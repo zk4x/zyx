@@ -17,11 +17,7 @@
 
 use zyx_core::error::ZyxError;
 
-mod ast;
-mod ir;
-mod r#virtual;
-
-pub use ir::{UOp, BOp};
+mod virt;
 
 #[cfg(feature = "std")]
 extern crate std;
