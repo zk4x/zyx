@@ -26,10 +26,6 @@ pub trait Backend: Copy {
         Ok(data.into_tensor(self))
     }
 
-    /// Create new tensor using values from standard normal distribution
-    #[must_use]
-    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError>;
-
     /// Create new tensor using values from uniform distribution
     #[must_use]
     fn uniform<T: Scalar>(
@@ -63,14 +59,19 @@ pub trait Backend: Copy {
     /// Realize tensors
     fn realize(self, tensors: BTreeSet<Id>) -> Result<(), ZyxError>;
 
+    /// Create new tensor using values from standard normal distribution
+    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
+        // Box Muller transform
+        let src = self.uniform(2, 0f32..1f32)?;
+        Ok(((src.get(0) * (2f32*core::f32::consts::PI)).cos() * (self.ones(1, DType::F32)? - src.get(1)).ln() * -2f32).sqrt().cast(dtype).reshape(shape))
+    }
+
     /// Create new tensor by repeating single value
-    #[must_use]
     fn full(self, shape: impl Into<Shape>, value: impl Scalar) -> Result<Tensor<Self>, ZyxError> {
         Ok(self.store([value])?.expand(shape))
     }
 
     /// Create new tensor by repeating zeroes
-    #[must_use]
     fn zeros(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         match dtype {
             DType::F32 => self.full(shape, 0f32),
@@ -80,7 +81,6 @@ pub trait Backend: Copy {
     }
 
     /// Create new tensor by repeating ones
-    #[must_use]
     fn ones(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         match dtype {
             DType::F32 => self.full(shape, 1f32),
@@ -90,7 +90,6 @@ pub trait Backend: Copy {
     }
 
     /// Create eye tensor
-    #[must_use]
     fn eye(self, n: usize, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         Ok(
             match dtype {

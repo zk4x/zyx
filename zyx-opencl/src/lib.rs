@@ -177,13 +177,9 @@ impl Backend for &OpenCL {
         self.0.borrow().plot_graph_dot(&ids)
     }
 
-    fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        todo!()
-    }
-
     fn uniform<T: Scalar>(self, shape: impl Into<Shape>, range: Range<T>) -> Result<Tensor<Self>, ZyxError> {
         // Random number generation on the gpu, with some scalar cpu copy for the seed
-        // Should be fast enough. If not, we can
+        // Should be fast enough. If not, we can add AddIndex node and then it will be fast.
         let shape: Shape = shape.into();
         let n = (shape.numel() as f64).sqrt().sqrt().ceil();
         let x = self.tensor(0..8);
