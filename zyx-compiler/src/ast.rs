@@ -13,7 +13,7 @@ use zyx_core::scalar::Scalar;
 use zyx_core::shape::Shape;
 use zyx_core::tensor::Id;
 use zyx_core::utils::{get_shape, get_dtype};
-use crate::view::View;
+use zyx_core::view::View;
 
 // From the graph, we first abstract into AST, where ops are applied on tiles.
 // AST is then compiled into IR.

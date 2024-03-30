@@ -19,7 +19,6 @@ use zyx_core::error::ZyxError;
 
 mod ast;
 mod ir;
-mod view;
 mod r#virtual;
 
 pub use ir::{UOp, BOp};
