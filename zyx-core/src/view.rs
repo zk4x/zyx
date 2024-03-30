@@ -15,9 +15,10 @@ struct Dimension {
 
 /// View represents movement ops applied on tensors
 #[derive(Debug)]
-pub struct View(pub Vec<Vec<Dimension>>);
+pub struct View(Vec<Vec<Dimension>>);
 
 impl View {
+    /// Create new View from given shape
     #[must_use]
     pub fn from(shape: &Shape) -> Self {
         let mut stride = 1;

@@ -13,7 +13,6 @@ use alloc::{
     vec::Vec,
 };
 use std::hash::Hash;
-use std::ops::Range;
 
 /// RuntimeBackend is a good plug in point for backend developers.
 /// Use Runtime::new(YourOwnStructThatImplementsRuntimeBackend::new()) to write your
@@ -49,20 +48,11 @@ pub struct Runtime<R: RuntimeBackend> {
     unrealized_nodes_count: usize,
     runtime_backend: R,
     compiled_graphs: BTreeMap<u64, R::CompiledGraph>,
-    rng_seed: u128,
+    /// Rng seed for use by backends
+    pub rng_seed: u128,
 }
 
 impl<R: RuntimeBackend> Runtime<R> {
-    /// Random uniform tensor from range
-    pub fn uniform<T: Scalar>(&mut self, shape: Shape, range: Range<T>) -> Result<Id, ZyxError> {
-        todo!()
-    }
-
-    /// Random normal tensor
-    pub fn randn(&mut self, shape: Shape, dtype: DType) -> Result<Id, ZyxError> {
-        todo!()
-    }
-
     /// Initialize new runtime.
     #[must_use]
     pub fn new(runtime_backend: R) -> Self {
@@ -91,7 +81,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     /// Load tensor x
     pub fn load<T: Scalar>(&mut self, x: Id) -> Result<Vec<T>, ZyxError> {
         if self.runtime_backend.is_empty(x) {
-            self.evaluate(BTreeSet::from([x]))?;
+            self.realize(BTreeSet::from([x]))?;
         }
         let numel = get_shape(self.nodes.as_slice(), x).numel();
         //std::println!("Reading buffer with {numel} elements.");
@@ -179,7 +169,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         self.unrealized_nodes_count += 1;
         // This regulates caching, 256 tensors per batch seems like a good default
         if self.unrealized_nodes_count > 10000 {
-            self.evaluate([id].into_iter().collect::<BTreeSet<Id>>())?;
+            self.realize([id].into_iter().collect::<BTreeSet<Id>>())?;
             //std::println!("Num tensors: {}", self.nodes.len());
         }
         Ok(id)
@@ -227,7 +217,7 @@ impl<R: RuntimeBackend> Runtime<R> {
     }
 
     /// Evaluate specified nodes.
-    pub fn evaluate(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
+    pub fn realize(&mut self, nodes: BTreeSet<Id>) -> Result<(), ZyxError> {
         use core::hash::Hasher;
         // TODO currently two different graphs can be hashed into the same hash,
         // so make sure that does not happen,
@@ -404,6 +394,10 @@ impl<R: RuntimeBackend> Runtime<R> {
 
         // backpropagate
         // TODO this is not very clean code. Can we make it cleaner?
+        // Should we just use Tensors here directly instead of Ids?
+        // It will make it cleaner, because we do not have to put in all release calls,
+        // but it is NOT worth the overhead, since we still need to do
+        // all the req_grad.contains checks and such.
         for nid in topo {
             let grad = grads[&nid];
             match self.nodes[nid.i()] {

@@ -69,6 +69,7 @@ let torch = zyx_torch::default();
 Initialize tensors.
 ```rust
 let x = dev.tensor([[2, 3, 1], [5, 2, 8]]);
+let x = dev.tensor(0..100).reshape([10, 10]);
 let x = dev.randn([3, 2, 1], DType::F32);
 let x = dev.uniform([3, 2, 1], -1..27);
 let x = dev.zeros([3, 2, 1], DType::F32);

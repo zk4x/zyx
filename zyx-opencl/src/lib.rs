@@ -178,11 +178,16 @@ impl Backend for &OpenCL {
     }
 
     fn randn(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().randn(shape.into(), dtype)?, self))
+        todo!()
     }
 
     fn uniform<T: Scalar>(self, shape: impl Into<Shape>, range: Range<T>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().uniform(shape.into(), range)?, self))
+        // Random number generation on the gpu, with some scalar cpu copy for the seed
+        // Should be fast enough. If not, we can
+        let shape: Shape = shape.into();
+        let n = (shape.numel() as f64).sqrt().sqrt().ceil();
+        let x = self.tensor(0..8);
+        Ok(x)
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -201,16 +206,16 @@ impl Backend for &OpenCL {
         self.0.borrow_mut().load(x)
     }
 
-    fn store<T: Scalar, IT>(self, iter: IT) -> Result<Id, ZyxError>
+    fn store<T: Scalar, IT>(self, iter: IT) -> Result<Tensor<Self>, ZyxError>
     where
         IT: IntoIterator<Item = T>,
         IT::IntoIter: ExactSizeIterator,
     {
-        self.0.borrow_mut().store(iter)
+        Ok(tensor(self.0.borrow_mut().store(iter)?, self))
     }
 
-    fn push(self, node: Node) -> Result<Id, ZyxError> {
-        self.0.borrow_mut().push(node)
+    fn push(self, node: Node) -> Result<Tensor<Self>, ZyxError> {
+        Ok(tensor(self.0.borrow_mut().push(node)?, self))
     }
 
     fn release(self, x: Id) -> Result<(), ZyxError> {
@@ -219,6 +224,10 @@ impl Backend for &OpenCL {
 
     fn retain(self, x: Id) {
         self.0.borrow_mut().retain(x);
+    }
+
+    fn realize(self, tensors: BTreeSet<Id>) -> Result<(), ZyxError> {
+        self.0.borrow_mut().realize(tensors)
     }
 }
 

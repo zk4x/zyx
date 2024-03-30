@@ -66,7 +66,7 @@ enum Instruction {
 }
 
 /// Virtual kernel representation, this gets send to device for compilation
-pub(crate) struct VirtKernel {
+pub struct VirtKernel {
     indices: Vec<u8>, // reference counts for indices
     // variables with 3 levels of caching, 0 is global, 1 is local, 2 is register
     mems: [Vec<Mem>; 3],

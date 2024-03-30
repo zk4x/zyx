@@ -3,8 +3,6 @@ use alloc::{
 };
 use core::{ffi::c_void, ptr};
 use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish};
-use zyx_compiler::{BOp, IROp, IRKernelArg, UOp};
-use zyx_core::view::Index;
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
@@ -676,8 +674,8 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(())
     }
 
-    fn compile_program(&mut self, ir: &zyx_compiler::IRKernel) -> Result<Self::Program, ZyxError> {
-        let id_t = "unsigned int";
+    fn compile_program(&mut self, ir: &zyx_compiler::VirtKernel) -> Result<Self::Program, ZyxError> {
+        /*let id_t = "unsigned int";
         let mut source = f!("(\n");
 
         // Kernel arguments
@@ -838,7 +836,8 @@ impl zyx_compiler::Compiler for Compiler {
             &self.devices,
             ir.global_work_size.as_slice(),
             ir.local_work_size.as_slice(),
-        )
+        )*/
+        todo!()
     }
 
     fn launch_program(

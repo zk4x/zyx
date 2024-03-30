@@ -493,21 +493,21 @@ impl<B: Backend> Tensor<B> {
     /// ```
     #[must_use]
     pub fn detach(&self) -> Tensor<B> {
-        // It should be possible to just be optimize this away.
-        tensor(
-            self.backend.push(Node::Detach(self.id)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Detach(self.id)).unwrap()
     }
 
-    /*
-    /// Probably just add no_grad, that is all tensors coming from no_grad tensor
-    /// are not differentiable, unless some other parameter in those ops is differentiable.
-    #[must_use]
-    pub fn no_grad(&self) {
-        // TODO
-        //self.backend.no_grad(self.id);
-    }*/
+    /// Realize all tensors on the device. Realization means evaluation of all tensors
+    /// and storing them into global memory on the device.
+    ///
+    /// This will not be necessary in future versions with more advanced graph repetition
+    /// recognition. Currently it is called automatically by optimizers after updating parameters.
+    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor<B>>) -> Result<(), ZyxError>
+    where
+        B: 'a
+    {
+        let tensors: Vec<&Tensor<B>> = tensors.into_iter().collect();
+        tensors[0].backend.realize(tensors.iter().map(|t| t.id).collect())
+    }
 
     // Access methods
     /// Load tensor from backend into vector
@@ -590,31 +590,25 @@ impl<B: Backend> Tensor<B> {
     /// ```
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor<B> {
-        tensor(
-            self.backend.push(Node::Cast(self.id, dtype)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Cast(self.id, dtype)).unwrap()
     }
 
     /// Returns a new tensor with the rectified linear unit function applied to the elements of self.
     #[must_use]
     pub fn relu(&self) -> Tensor<B> {
-        tensor(
-            self.backend.push(Node::ReLU(self.id)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::ReLU(self.id)).unwrap()
     }
 
     /// Returns a new tensor with the sine of the elements of self.
     #[must_use]
     pub fn sin(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::Sin(self.id)).unwrap(), self.backend)
+        self.backend.push(Node::Sin(self.id)).unwrap()
     }
 
     /// Returns a new tensor with the cosine of the elements of self.
     #[must_use]
     pub fn cos(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::Cos(self.id)).unwrap(), self.backend)
+        self.backend.push(Node::Cos(self.id)).unwrap()
     }
 
     /// Returns a new tensor with the natural logarithm of the elements of self.
@@ -623,22 +617,19 @@ impl<B: Backend> Tensor<B> {
     /// defined (when x <= 0).
     #[must_use]
     pub fn ln(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::Ln(self.id)).unwrap(), self.backend)
+        self.backend.push(Node::Ln(self.id)).unwrap()
     }
 
     /// Returns a new tensor with the exponential of the elements of self.
     #[must_use]
     pub fn exp(&self) -> Tensor<B> {
-        tensor(self.backend.push(Node::Exp(self.id)).unwrap(), self.backend)
+        self.backend.push(Node::Exp(self.id)).unwrap()
     }
 
     /// Returns a new tensor with the hyperbolic tangent of the elements of self.
     #[must_use]
     pub fn tanh(&self) -> Tensor<B> {
-        tensor(
-            self.backend.push(Node::Tanh(self.id)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Tanh(self.id)).unwrap()
     }
 
     /// Returns a new tensor with the square root of the elements of self.
@@ -647,10 +638,7 @@ impl<B: Backend> Tensor<B> {
     /// defined (when x < 0).
     #[must_use]
     pub fn sqrt(&self) -> Tensor<B> {
-        tensor(
-            self.backend.push(Node::Sqrt(self.id)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Sqrt(self.id)).unwrap()
     }
 
     /// Returns 1/self
@@ -832,10 +820,7 @@ impl<B: Backend> Tensor<B> {
         let (x, y) = Tensor::broadcast(x, y);
         let (x, z) = Tensor::broadcast(x, z);
         let (y, z) = Tensor::broadcast(y, z);
-        tensor(
-            self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Where(x.id, y.id, z.id)).unwrap()
     }
 
     /// Returns cosine_similarity between self and rhs, computed along axes.
@@ -906,10 +891,7 @@ impl<B: Backend> Tensor<B> {
             "Cannot reshape tensor with shape {} to {shape}",
             self.shape()
         );
-        tensor(
-            self.backend.push(Node::Reshape(self.id, shape)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Reshape(self.id, shape)).unwrap()
     }
 
     /// Expand self into bigger shape
@@ -929,10 +911,7 @@ impl<B: Backend> Tensor<B> {
                 }),
             "Can't expand tensor with shape {sh} to {shape}"
         );
-        tensor(
-            self.backend.push(Node::Expand(self.id, shape)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Expand(self.id, shape)).unwrap()
     }
 
     /// Constant padding
@@ -1003,12 +982,9 @@ impl<B: Backend> Tensor<B> {
             "Cannot pad tensor with shape {sh} with padding {padding:?}"
         );
         let psh = sh.clone().pad(&padding);
-        let t0 = tensor(
-            self.backend
+        let t0 = self.backend
                 .push(Node::Pad(self.id, padding.clone(), psh.clone()))
-                .unwrap(),
-            self.backend,
-        );
+                .unwrap();
         if value.numel() == 1
             && match dtype {
                 DType::F32 => value.item::<f32>().unwrap().is_equal(0f32),
@@ -1018,20 +994,13 @@ impl<B: Backend> Tensor<B> {
         {
             t0
         } else {
-            t0 + tensor(
-                self.backend
+            t0 + self.backend
                     .push(Node::Pad(
                         self.backend.ones(sh, dtype).unwrap().id,
                         padding,
                         psh.clone(),
                     ))
-                    .unwrap(),
-                self.backend,
-            )
-            .where_(
-                self.backend.zeros(self.shape(), self.dtype()).unwrap(),
-                value,
-            )
+                    .unwrap().where_(self.backend.zeros(self.shape(), self.dtype()).unwrap(), value)
         }
     }
 
@@ -1044,12 +1013,9 @@ impl<B: Backend> Tensor<B> {
             axes.len() == shape.rank(),
             "Cannot permute tensor with shape {shape} with axes {axes}"
         );
-        tensor(
-            self.backend
-                .push(Node::Permute(self.id, axes, shape))
-                .unwrap(),
-            self.backend,
-        )
+        self.backend
+            .push(Node::Permute(self.id, axes, shape))
+            .unwrap()
     }
 
     /// Swap last two axes of self.
@@ -1120,10 +1086,7 @@ impl<B: Backend> Tensor<B> {
             self.shape(),
             axes
         );
-        tensor(
-            self.backend.push(Node::Sum(self.id, axes, shape)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Sum(self.id, axes, shape)).unwrap()
     }
 
     /// Reduce self by maximizing along axes. Shape is not squeezed.
@@ -1158,10 +1121,7 @@ impl<B: Backend> Tensor<B> {
                 axes
             );
         }
-        tensor(
-            self.backend.push(Node::Max(self.id, axes, shape)).unwrap(),
-            self.backend,
-        )
+        self.backend.push(Node::Max(self.id, axes, shape)).unwrap()
     }
 
     /// Reduce self by calculating mean along axes
@@ -1372,19 +1332,16 @@ impl<B: Backend> Tensor<B> {
     fn binary_op(self, rhs: impl IntoTensor<B>, op: BOp) -> Tensor<B> {
         let rhs = rhs.into_tensor(self.backend);
         let (x, y) = Tensor::broadcast(self, rhs);
-        tensor(
-            x.backend
-                .push(match op {
-                    BOp::Add => Node::Add(x.id, y.id),
-                    BOp::Sub => Node::Sub(x.id, y.id),
-                    BOp::Mul => Node::Mul(x.id, y.id),
-                    BOp::Div => Node::Div(x.id, y.id),
-                    BOp::Pow => Node::Pow(x.id, y.id),
-                    BOp::Cmplt => Node::Cmplt(x.id, y.id),
-                })
-                .unwrap(),
-            x.backend,
-        )
+        x.backend
+            .push(match op {
+                BOp::Add => Node::Add(x.id, y.id),
+                BOp::Sub => Node::Sub(x.id, y.id),
+                BOp::Mul => Node::Mul(x.id, y.id),
+                BOp::Div => Node::Div(x.id, y.id),
+                BOp::Pow => Node::Pow(x.id, y.id),
+                BOp::Cmplt => Node::Cmplt(x.id, y.id),
+            })
+            .unwrap()
     }
 
     /// Braodcasts to synchronize shapes and casts to synchronize dtypss
@@ -1459,14 +1416,14 @@ impl<B: Backend> Tensor<B> {
 impl<B: Backend> core::ops::Neg for Tensor<B> {
     type Output = Tensor<B>;
     fn neg(self) -> Self::Output {
-        tensor(self.backend.push(Node::Neg(self.id)).unwrap(), self.backend)
+        self.backend.push(Node::Neg(self.id)).unwrap()
     }
 }
 
 impl<B: Backend> core::ops::Neg for &Tensor<B> {
     type Output = Tensor<B>;
     fn neg(self) -> Self::Output {
-        tensor(self.backend.push(Node::Neg(self.id)).unwrap(), self.backend)
+        self.backend.push(Node::Neg(self.id)).unwrap()
     }
 }
 
@@ -1635,43 +1592,39 @@ where
     Range<T>: Iterator<Item = T> + ExactSizeIterator,
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.store(self).unwrap(), backend)
+        backend.store(self).unwrap()
     }
 }
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for Vec<T> {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.store(self).unwrap(), backend)
+        backend.store(self).unwrap()
     }
 }
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for &'static [T] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.store(self.iter().cloned()).unwrap(), backend)
+        backend.store(self.iter().cloned()).unwrap()
     }
 }
 
 impl<B: Backend, T: Scalar> IntoTensor<B> for T {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.store([self]).unwrap(), backend)
+        backend.store([self]).unwrap()
     }
 }
 
 impl<B: Backend, T: Scalar, const D0: usize> IntoTensor<B> for [T; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(backend.store(self).unwrap(), backend)
+        backend.store(self).unwrap()
     }
 }
 
 impl<B: Backend, T: Scalar, const D0: usize, const D1: usize> IntoTensor<B> for [[T; D1]; D0] {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend
-                .store(self.into_iter().flatten().make_sized(D0 * D1))
-                .unwrap(),
-            backend,
-        )
-        .reshape([D0, D1])
+        backend
+            .store(self.into_iter().flatten().make_sized(D0 * D1))
+            .unwrap().reshape([D0, D1])
     }
 }
 
@@ -1679,18 +1632,14 @@ impl<B: Backend, T: Scalar, const D0: usize, const D1: usize, const D2: usize> I
     for [[[T; D2]; D1]; D0]
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        tensor(
-            backend
-                .store(
-                    self.into_iter()
-                        .flatten()
-                        .flatten()
-                        .make_sized(D0 * D1 * D2),
-                )
-                .unwrap(),
-            backend,
-        )
-        .reshape([D0, D1, D2])
+        backend
+            .store(
+                self.into_iter()
+                    .flatten()
+                    .flatten()
+                    .make_sized(D0 * D1 * D2),
+            )
+            .unwrap().reshape([D0, D1, D2])
     }
 }
 

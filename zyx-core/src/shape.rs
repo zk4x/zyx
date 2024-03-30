@@ -93,7 +93,7 @@ impl Shape {
         )
     }
 
-    pub(crate) fn expand_strides(&self, shape: &Shape, mut old_strides: Shape) -> Shape {
+    /*pub(crate) fn expand_strides(&self, shape: &Shape, mut old_strides: Shape) -> Shape {
         let mut vec = self.0.to_vec();
         while vec.len() < shape.rank() {
             vec.insert(0, 1);
@@ -111,7 +111,7 @@ impl Shape {
                 .map(|((od, nd), st)| if od == nd { *st } else { 0 })
                 .collect(),
         )
-    }
+    }*/
 
     #[cfg(feature = "std")]
     pub(crate) fn safetensors(&self) -> alloc::string::String {

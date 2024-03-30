@@ -6,6 +6,8 @@ use zyx_core::runtime::RuntimeBackend;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
 use crate::{CompiledBackend, Compiler};
+use crate::virt::VirtKernel;
+use alloc::vec;
 
 /// Compiled graph
 pub struct CompiledGraph<Program> {
@@ -49,6 +51,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     }
 
     fn remove(&mut self, x: Id) -> Result<(), ZyxError> {
+        // TODO we can later optimize this by not deallocating memory if it can be reused later
         if let Some(mut buffer) = self.buffers.remove(&x) {
             //std::println!("Dropping buffer {p} out of total {} buffers", self.buffers.len());
             self.compiler.deallocate_mem(&mut buffer)?;
@@ -88,6 +91,20 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             }
         }
         order.reverse();
+
+        // Kernel
+        let mut kernel = VirtKernel {
+            indices: vec![],
+            mems: [vec![], vec![], vec![]],
+            instructions: vec![],
+        };
+
+        Ok(CompiledGraph {
+            args: vec![],
+            program: self.compiler.compile_program(&kernel)?,
+            flop: 0,
+            bytes: 0,
+        })
     }
 
     fn launch_graph(&mut self, graph: &Self::CompiledGraph) -> Result<(), ZyxError> {
