@@ -2,6 +2,14 @@ use crate::dtype::DType;
 
 /// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
+    /// From f32
+    fn from_f32(t: f32) -> Self;
+    /// From f64
+    fn from_f64(t: f64) -> Self;
+    /// From i32
+    fn from_i32(t: i32) -> Self;
+    /// From little endian bytes
+    fn from_le_bytes(bytes: &[u8]) -> Self;
     /// Get dtype of Self
     fn dtype() -> DType;
     /// Get zero of Self
@@ -61,6 +69,22 @@ pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
 }
 
 impl Scalar for f32 {
+    fn from_f32(t: f32) -> Self {
+        t
+    }
+
+    fn from_f64(t: f64) -> Self {
+        t as f32
+    }
+
+    fn from_i32(t: i32) -> Self {
+        t as f32
+    }
+
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
     fn dtype() -> DType {
         DType::F32
     }
@@ -179,6 +203,22 @@ impl Scalar for f32 {
 }
 
 impl Scalar for f64 {
+    fn from_f32(t: f32) -> Self {
+        t as f64
+    }
+
+    fn from_f64(t: f64) -> Self {
+        t
+    }
+
+    fn from_i32(t: i32) -> Self {
+        t as f64
+    }
+
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])
+    }
+
     fn dtype() -> DType {
         DType::F64
     }
@@ -292,6 +332,22 @@ impl Scalar for f64 {
 }
 
 impl Scalar for i32 {
+    fn from_f32(t: f32) -> Self {
+        t as i32
+    }
+
+    fn from_f64(t: f64) -> Self {
+        t as i32
+    }
+
+    fn from_i32(t: i32) -> Self {
+        t
+    }
+
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
     fn dtype() -> DType {
         DType::I32
     }

@@ -1592,7 +1592,19 @@ where
     Range<T>: Iterator<Item = T> + ExactSizeIterator,
 {
     fn into_tensor(self, backend: B) -> Tensor<B> {
-        backend.store(self).unwrap()
+        // Generating it on the gpu
+        let numel = self.end.clone().sub(self.start.clone()).into_i32() as usize;
+        if numel < 16 {
+            return backend.store(self).unwrap()
+        }
+        let n = self.end.clone().sub(self.start.clone()).into_f32().sqrt().sqrt().ceil() as i32;
+        let x = backend.store(1..n+1).unwrap();
+        let x = &x * n + x.reshape([n as usize, 1]) - n;
+        let n = n * n;
+        let x = &x * n + x.reshape([n as usize, 1]) - n - 1;
+        let x = x.reshape(numel);
+        let x = x.cast(T::dtype()) + self.start;
+        x
     }
 }
 

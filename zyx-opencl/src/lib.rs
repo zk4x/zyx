@@ -102,48 +102,6 @@ impl OpenCLBuilder {
 }
 
 impl OpenCL {
-    /// Create new tensor
-    #[must_use]
-    pub fn tensor<'a>(&'a self, data: impl IntoTensor<&'a Self>) -> Tensor<&'a Self> {
-        <&Self as Backend>::tensor(self, data).unwrap()
-    }
-
-    /// Create new tensor using values from standard normal distribution
-    #[must_use]
-    pub fn randn(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::randn(self, shape, dtype).unwrap()
-    }
-
-    /// Create new tensor using values from uniform distribution
-    #[must_use]
-    pub fn uniform(&self, shape: impl Into<Shape>, range: Range<impl Scalar>) -> Tensor<&Self> {
-        <&Self as Backend>::uniform(self, shape, range).unwrap()
-    }
-
-    /// Create new tensor by repeating single value
-    #[must_use]
-    pub fn full(&self, shape: impl Into<Shape>, value: impl Scalar) -> Tensor<&Self> {
-        <&Self as Backend>::full(self, shape, value).unwrap()
-    }
-
-    /// Create new tensor by repeating zeroes
-    #[must_use]
-    pub fn zeros(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::zeros(self, shape, dtype).unwrap()
-    }
-
-    /// Create new tensor by repeating ones
-    #[must_use]
-    pub fn ones(&self, shape: impl Into<Shape>, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::ones(self, shape, dtype).unwrap()
-    }
-
-    /// Create eye tensor
-    #[must_use]
-    pub fn eye(&self, n: usize, dtype: DType) -> Tensor<&Self> {
-        <&Self as Backend>::eye(self, n, dtype).unwrap()
-    }
-
     /// Load tensors from disk.
     #[cfg(feature = "std")]
     pub fn load(
@@ -151,15 +109,6 @@ impl OpenCL {
         path: impl AsRef<std::path::Path>,
     ) -> Result<Vec<Tensor<&OpenCL>>, ZyxError> {
         zyx_core::io::load(self, path)
-    }
-
-    /// Create graph of operations between tensors in dot format for visualization
-    #[must_use]
-    pub fn plot_graph<'a, B: Backend + 'a>(
-        &self,
-        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
-    ) -> alloc::string::String {
-        <&Self as Backend>::plot_graph(self, tensors)
     }
 
     #[allow(dead_code)]
@@ -180,9 +129,12 @@ impl Backend for &OpenCL {
     fn uniform<T: Scalar>(self, shape: impl Into<Shape>, range: Range<T>) -> Result<Tensor<Self>, ZyxError> {
         // Random number generation on the gpu, with some scalar cpu copy for the seed
         // Should be fast enough. If not, we can add AddIndex node and then it will be fast.
-        let shape: Shape = shape.into();
-        let n = (shape.numel() as f64).sqrt().sqrt().ceil();
-        let x = self.tensor(0..8);
+
+        let seed = T::from_le_bytes(&self.0.borrow().rng_seed.to_le_bytes()[0..T::byte_size()]);
+        self.0.borrow_mut().rng_seed += 1;
+        // Java random
+        let x = (x + seed) * 25214903917 + 11; // & 281474976710655;
+        let x = x.cast(T::dtype()) * (range.end.sub(range.start.clone()) / T::from_i32((n*n*n*n) as i32)) + range.start;
         Ok(x)
     }
 
