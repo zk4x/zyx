@@ -19,6 +19,7 @@ struct Dimension {
 #[derive(Debug)]
 pub struct View {
     shapes: Vec<Vec<Dimension>>,
+    // TODO perhaps binds for each shape in shapes? But probably not.
     binds: Vec<usize>,
 }
 
@@ -105,7 +106,7 @@ impl View {
         if sh.rank() < self.shapes[0].len() {
             let mut merge_possible = true;
             let mut new_shape = Vec::new();
-            let mut new_binds = Vec::new();
+            let mut new_binds = self.binds.clone();
             let mut i = sh.rank();
             for dim in self.shapes[0].iter().rev() {
                 if dim.size != 1 {
@@ -120,6 +121,8 @@ impl View {
                     if dim.size == sh[i] {
                         new_shape.insert(0, *dim);
                         i -= 1;
+                    } else {
+                        new_binds.remove(i);
                     }
                 }
             }
@@ -188,6 +191,9 @@ impl View {
     }
 }
 
+// With this representation of index, we can find repeating
+// multipliers and extract them out.
+
 /// Virtual representation of index into
 pub enum Index {
     /// Expanded and/or padded
@@ -204,12 +210,10 @@ pub enum Index {
         dims: BTreeMap<usize, usize>,
         padding_condition: String,
     },
-    /// Expanded, permuted and/or reshaped
-    Reshaped {
-        padding_condition: String,
-    },
     /// Expanded, permuted, reshaped and/or padded
-    ReshapedAndPadded {
+    /// Only if reshape could not be merged.
+    Reshaped {
+        dims: Vec<BTreeMap<usize, usize>>,
         padding_condition: String,
     },
 }

@@ -2,6 +2,8 @@ mod impls;
 
 use alloc::vec::Vec;
 use zyx_core::dtype::DType;
+use zyx_core::node::Constant;
+use zyx_core::view::View;
 
 enum Either<L, R> {
     Left(L),
@@ -34,20 +36,20 @@ pub enum BOp {
 
 struct IndexRef {
     // to which id in indices this points
-    id: u8,
+    id: usize,
 }
 
 struct MemRef {
     // which id in mems
-    id: u8,
-    // 0 for global, 1 for local, 2 for register
-    scope: u8,
+    id: Either<usize, Constant>,
 }
 
 struct Mem {
     rc: u32,
-    len: u8,
     dtype: DType,
+    // variables with 3 levels of caching, 0 is global, 1 is local, 2 is register
+    scope: u8,
+    view: View,
 }
 
 enum Instruction {
@@ -61,14 +63,12 @@ enum Instruction {
     },
     EndLoop,
     Unary(MemRef, UOp),
-    Binary(MemRef, MemRef, UOp),
-    Where(MemRef, MemRef, MemRef),
+    Binary(MemRef, MemRef, BOp),
 }
 
 /// Virtual kernel representation, this gets send to device for compilation
 pub struct VirtKernel {
     indices: Vec<u8>, // reference counts for indices
-    // variables with 3 levels of caching, 0 is global, 1 is local, 2 is register
-    mems: [Vec<Mem>; 3],
+    mems: Vec<Mem>,
     instructions: Vec<Instruction>,
 }
