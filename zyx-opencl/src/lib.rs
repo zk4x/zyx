@@ -130,12 +130,13 @@ impl Backend for &OpenCL {
         // Random number generation on the gpu, with some scalar cpu copy for the seed
         // Should be fast enough. If not, we can add AddIndex node and then it will be fast.
 
-        let seed = T::from_le_bytes(&self.0.borrow().rng_seed.to_le_bytes()[0..T::byte_size()]);
-        self.0.borrow_mut().rng_seed += 1;
+        //let seed = T::from_le_bytes(&self.0.borrow().rng_seed.to_le_bytes()[0..T::byte_size()]);
+        //self.0.borrow_mut().rng_seed += 1;
         // Java random
-        let x = (x + seed) * 25214903917 + 11; // & 281474976710655;
-        let x = x.cast(T::dtype()) * (range.end.sub(range.start.clone()) / T::from_i32((n*n*n*n) as i32)) + range.start;
-        Ok(x)
+        //let x = (x + seed) * 25214903917 + 11; // & 281474976710655;
+        //let x = x.cast(T::dtype()) * (range.end.sub(range.start.clone()) / T::from_i32((n*n*n*n) as i32)) + range.start;
+        //Ok(x)
+        todo!()
     }
 
     fn shape(self, x: Id) -> Shape {
@@ -236,7 +237,8 @@ fn t0() -> Result<(), ZyxError> {
 fn t0() -> Result<(), ZyxError> {
     let dev = device()?;
     //let x = dev.uniform([2, 1, 1], 0f32..1f32);
-    let x = dev.tensor([[[1f32]], [[4.]]]);
+    let x = dev.tensor([[[1f32]], [[4.]]])?;
+    //let z = x.exp();
     let z = &x + x.exp();
     //let x = x.expand([2, 1, 5]);
     //let z = x.expand([2, 3, 5]) + y.reshape([2, 1, 1]);

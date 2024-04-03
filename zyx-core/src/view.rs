@@ -16,7 +16,7 @@ struct Dimension {
 }
 
 /// View represents movement ops applied on tensors
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct View {
     shapes: Vec<Vec<Dimension>>,
     // TODO perhaps binds for each shape in shapes? But probably not.
@@ -35,8 +35,8 @@ impl View {
         }).collect();
         first_shape.reverse();
         Self {
-            shapes: alloc::vec![first_shape],
             binds: alloc::vec![0; first_shape.len()],
+            shapes: alloc::vec![first_shape],
         }
     }
 
@@ -67,7 +67,7 @@ impl View {
         // TODO merge split and join dimension reshapes
 
         // Merge unsqueeze
-        if sh.rank() > self.shapes[0].len() {
+        /*if sh.rank() > self.shapes[0].len() {
             let mut merge_possible = true;
             let mut new_shape = Vec::new();
             let mut new_binds = Vec::new();
@@ -130,7 +130,7 @@ impl View {
                 self.shapes[0] = new_shape;
                 return
             }
-        }
+        }*/
 
         let mut new_stride = 1;
         let mut new_shape: Vec<Dimension> = sh.iter().copied().rev().map(|size| {
@@ -200,20 +200,26 @@ pub enum Index {
     /// Pairs of index id and multiplier.
     /// Can use wide loads directly with pointer casts.
     Contiguous {
+        /// Dimension and multiplier
         dims: BTreeMap<usize, usize>,
+        /// When should the padding get applied?
         padding_condition: String,
     },
     /// Expanded and/or permuted
     /// Pairs of index id and multiplier.
     /// Wide loads are possible only if we can transpose it in the kernel
     Strided {
+        /// Dimension and multiplier
         dims: BTreeMap<usize, usize>,
+        /// When should the padding get applied?
         padding_condition: String,
     },
     /// Expanded, permuted, reshaped and/or padded
     /// Only if reshape could not be merged.
     Reshaped {
+        /// Multiple dimension and multipliers
         dims: Vec<BTreeMap<usize, usize>>,
+        /// When should the padding get applied?
         padding_condition: String,
     },
 }

@@ -674,7 +674,7 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(())
     }
 
-    fn compile_program(&mut self, ir: &zyx_compiler::VirtKernel) -> Result<Self::Program, ZyxError> {
+    fn compile_program(&mut self, ir: &zyx_compiler::IRKernel) -> Result<Self::Program, ZyxError> {
         /*let id_t = "unsigned int";
         let mut source = f!("(\n");
 

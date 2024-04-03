@@ -17,7 +17,7 @@
 
 use zyx_core::error::ZyxError;
 
-mod virt;
+mod impls;
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -28,8 +28,6 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
-
-pub use virt::VirtKernel;
 
 /// Compiled backend that holds compiler, buffers and programs
 pub struct CompiledBackend<C: Compiler> {
@@ -46,6 +44,8 @@ impl<C: Compiler> CompiledBackend<C> {
         }
     }
 }
+
+pub struct IRKernel {}
 
 /// Implement this trait for compiled backends
 pub trait Compiler {
@@ -67,7 +67,7 @@ pub trait Compiler {
     /// Drop Buffer
     fn deallocate_mem(&mut self, buffer: &mut Self::Buffer) -> Result<(), ZyxError>;
     /// Compile ast into program
-    fn compile_program(&mut self, ir: &VirtKernel) -> Result<Self::Program, ZyxError>;
+    fn compile_program(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError>;
     /// Launch program with args
     fn launch_program(
         &mut self,

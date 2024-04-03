@@ -2,6 +2,7 @@ use alloc::{
     collections::{btree_map::Entry, BTreeMap},
     vec::Vec,
 };
+use std::collections::BTreeSet;
 #[cfg(feature = "std")]
 use rayon::prelude::*;
 use zyx_core::dtype::DType;
@@ -158,6 +159,10 @@ impl Interpreter {
 }
 
 impl RuntimeBackend for Interpreter {
+    fn evaluated_nodes(&self) -> BTreeSet<Id> {
+        self.buffers.keys().collect()
+    }
+
     fn is_empty(&self, x: Id) -> bool {
         !(self.buffers.contains_key(&x) || self.views.contains_key(&x))
     }

@@ -1,13 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::prelude::rust_2015::Vec;
 use zyx_core::error::ZyxError;
-use zyx_core::node::Node;
+use zyx_core::node::{Constant, Node};
 use zyx_core::runtime::RuntimeBackend;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
 use crate::{CompiledBackend, Compiler};
-use crate::virt::VirtKernel;
 use alloc::vec;
+use zyx_core::axes::Axes;
+use zyx_core::dtype::DType;
+use zyx_core::shape::Shape;
+use zyx_core::utils::{get_dtype, get_shape};
+use zyx_core::view::View;
 
 /// Compiled graph
 pub struct CompiledGraph<Program> {
@@ -59,7 +63,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         Ok(())
     }
 
-    fn compile_graph(&mut self, global_rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
+    fn compile_graph(&mut self, _global_rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
         // Find the best order of execution of nodes
         let (order, rcs) = {
             let mut temp_rcs: BTreeMap<Id, u32> = BTreeMap::new();
@@ -99,10 +103,97 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
         // Permutes after reduce ops can be also moved before reduce ops!
 
+        // Global work sizes are known as the shapes of the reduce kernels!
+
+        let mut tiles = BTreeMap::new();
+
+        for nid in order.iter().copied() {
+            //std::println!("{:?}", nodes[nid.i()]);
+            if self.buffers.contains_key(&nid) {
+                let dtype = get_dtype(nodes, nid);
+                tiles.insert(nid, Tile {
+                    view: View::from(get_shape(nodes, nid)),
+                    dtype,
+                    scope: 2,
+                    first_op: FirstOp::Load { x: nid, dtype },
+                    ops: Vec::new(),
+                });
+                continue;
+            }
+            match &nodes[nid.i()] {
+                Node::Const(_) => {}
+                Node::Detach(_) => {}
+                Node::Leaf(_, _) => {}
+                Node::Cast(_, _) => {}
+                Node::Exp(x) => {
+                    std::println!("{x}");
+                    let mut tile = tiles[x].clone();
+                    tile.ops.push(UOp::Exp);
+                    tiles.insert(nid, tile);
+                }
+                Node::Add(x, y) => {
+                    let tile = Tile {
+                        view: View::from(get_shape(nodes, nid)),
+                        dtype: get_dtype(nodes, nid),
+                        scope: 2,
+                        first_op: FirstOp::Binary {
+                            x: *x,
+                            y: *y,
+                            op: BOp::Add,
+                        },
+                        ops: vec![],
+                    };
+                    tiles.insert(nid, tile);
+                }
+                Node::Reshape(x, sh) => {
+                    let mut tile = tiles[x].clone();
+                    tile.view.reshape(sh);
+                    tiles.insert(nid, tile);
+                }
+                Node::Expand(x, sh) => {
+                    let tile = Tile {
+                        view: View::from(sh),
+                        dtype: get_dtype(nodes, nid),
+                        scope: 2,
+                        first_op: FirstOp::Expand { x: *x },
+                        ops: vec![],
+                    };
+                    tiles.insert(nid, tile);
+                }
+                Node::Permute(_, _, _) => {}
+                Node::Pad(_, _, _) => {}
+                Node::Sum(x, axes, sh) => {
+                    let tile = Tile {
+                        view: View::from(sh),
+                        dtype: get_dtype(nodes, nid),
+                        scope: 2,
+                        first_op: FirstOp::Reduce { x: *x, axes: axes.clone(), op: ROp::Sum },
+                        ops: vec![],
+                    };
+                    tiles.insert(nid, tile);
+                }
+                _ => {
+                    todo!()
+                }
+            }
+        }
+
+        // Print AST
+
+        for tile in &tiles {
+            std::println!("{tile:?}");
+        }
+        panic!();
+
+        // Check work sizes (view.shapes) of tiles and add appropriate loops.
+        // Global (and local) work size is maximum shape of input and output (to_eval) tiles.
+        // Any tile expanded beyond this maximum size starts a reduce loops,
+        // that is closed by reduce tile (i.e. we know that there is a reduce tile)
+
         // Kernel
-        let mut kernel = VirtKernel {
+        /*let mut kernel = VirtKernel {
             indices: vec![],
-            mems: [vec![], vec![], vec![]],
+            mems: vec![],
             instructions: vec![],
         };
 
@@ -111,12 +202,71 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             program: self.compiler.compile_program(&kernel)?,
             flop: 0,
             bytes: 0,
-        })
+        })*/
     }
 
     fn launch_graph(&mut self, graph: &Self::CompiledGraph) -> Result<(), ZyxError> {
         let buffers: Vec<&C::Buffer> = graph.args.iter().map(|id| self.buffers.get(id).unwrap()).collect();
         self.compiler.launch_program(&graph.program, &buffers, graph.flop, graph.bytes)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Tile {
+    view: View,
+    dtype: DType,
+    scope: u8,
+    first_op: FirstOp,
+    // Note that order of these ops does not matter for correctness,
+    // but may matter for performance
+    ops: Vec<UOp>,
+}
+
+#[derive(Debug, Clone)]
+enum ROp {
+    Sum,
+    Max,
+}
+
+#[derive(Debug, Clone)]
+enum UOp {
+    Exp,
+    Neg,
+    Tanh,
+}
+
+#[derive(Debug, Clone)]
+enum BOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Cmplt,
+}
+
+// It is better if these ops represent breaks between tiles,
+// from performance perspective, for example we do not want to run
+// expanded tensorj in a million threads if it was a tensor with just 10 scalars.
+#[derive(Debug, Clone)]
+enum FirstOp {
+    // Load existing buffer from memory
+    Load {
+        x: Id,
+        dtype: DType,
+    },
+    Binary {
+        x: Id,
+        y: Id,
+        op: BOp,
+    },
+    Reduce {
+        x: Id,
+        axes: Axes,
+        op: ROp,
+    },
+    Expand {
+        x: Id,
     }
 }
 
@@ -152,4 +302,33 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 //   -> mark reduce start before first movement op on any of the leafs
 //   -> create reduce loop
 //   -> apply
+//
+
+// As opencl kernel
+//
+// let x = dev.randn([1024, 2048], DType::F32)?;
+// let z = (&x + x.exp()).sum(-1);
+//
+// AST (simple version, no optimizations):
+//  0 loop global 1024
+//  1 loop global 2048
+//  2 move global to register from id 0, view contiguous
+//  3 exp 2
+//  4 add 2, 3
+//  5 loop
+//  this seems very complicated
+//  4
+//  3 move global to register from id 0, view contiguous, bind existing ids
+//  2 add 4, 3
+//  1 sum (end loop) mark bind idx1 to 1, redefine id 1
+//  0 move register to global, view contiguous (mark bind idx0 to dimension 0, idx1 to 1)
+//
+//
+// float rmem0 = data0[];
+// float rmem1 = exp(rmem0);
+// // x has the same view on both sides of binary, so no need for second load
+// float rmem2 = rmem0 + rmem1;
+//
+
+// Perhaps just do standard ASTs as in 0.12.1 and just join them together?
 //
