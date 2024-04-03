@@ -17,7 +17,9 @@
 
 use zyx_core::error::ZyxError;
 
-mod impls;
+mod tiled;
+mod looped;
+mod ir;
 
 #[cfg(feature = "std")]
 extern crate std;
