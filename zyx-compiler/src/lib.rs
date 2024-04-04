@@ -49,12 +49,43 @@ impl<C: Compiler> CompiledBackend<C> {
 
 pub struct IRKernel {}
 
+/// Hardware information needed for applying optimizations
+#[derive(Debug)]
+pub struct HWInfo {
+    /// Biggest kernel dimensions
+    pub max_work_item_sizes: Vec<usize>,
+    /// Maximum local work size threads
+    pub max_work_group_size: usize,
+    /// Preferred vector size in bytes
+    pub preferred_vector_size: usize,
+    /// Is half supported?
+    pub f16_support: bool,
+    /// Is double supported?
+    pub f64_support: bool,
+    /// Is fused multiply add supported?
+    pub fmadd: bool,
+    /// Global (VRAM, RAM) memory size in bytes
+    pub global_mem_size: usize,
+    /// Maximum memory allocation for single buffer in bytes
+    pub max_mem_alloc: usize,
+    /// Alignment for data types in bytes
+    pub mem_align: usize,
+    /// Page size (base address alignment) in bytes
+    pub page_size: usize,
+    /// Local memory size in bytes
+    pub local_mem_size: usize,
+    /// Number of registers per thread
+    pub num_registers: usize,
+}
+
 /// Implement this trait for compiled backends
 pub trait Compiler {
     /// Buffer holds actual values in memory
     type Buffer;
     /// Program is kernel executable on the device, can be compiled at runtime
     type Program;
+    /// Hardware information
+    fn hardware_info(&mut self) -> HWInfo;
     /// Allocate space for new buffer
     fn allocate_mem(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError>;
     /// Store iter into existing buffer

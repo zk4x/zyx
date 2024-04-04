@@ -1,6 +1,6 @@
 // Here tiles get rewritten into tiles and loops, dimensions get bound
 // and optimizations applied. At this stage, all movement and reduce ops are removed.
-// Also there will be special instructions for applying optimizations on like 4x4x4
+// Also, there will be special instructions for applying optimizations on like 4x4x4
 // matmuls (like strassen or tensor cores) or 16x16x16 matmul (wmma).
 // These optimizations are hardware dependent.
 

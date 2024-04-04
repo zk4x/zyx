@@ -2,7 +2,8 @@ use alloc::{
     boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::String, vec::Vec,
 };
 use core::{ffi::c_void, ptr};
-use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish};
+use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish, cl_device_info, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES};
+use zyx_compiler::HWInfo;
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
@@ -77,7 +78,6 @@ fn get_program_build_data(
     get_vector(program, device, param_name, size)
 }
 
-#[cfg(feature = "debug1")]
 pub fn get_device_data(
     device: cl_device_id,
     param_name: opencl_sys::cl_device_info,
@@ -527,6 +527,29 @@ impl zyx_compiler::Compiler for Compiler {
     type Buffer = Buffer;
 
     type Program = Program;
+
+    fn hardware_info(&mut self) -> HWInfo {
+        let dev = *self.devices.first().unwrap();
+        let max_work_item_dims = u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS).unwrap().try_into().unwrap()) as usize;
+        let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES).unwrap();
+        //let ptr: *const usize = unsafe { core::mem::transmute([mwis[0], mwis[1], mwis[2], mwis[3], mwis[4], mwis[5], mwis[6], mwis[7]]) };
+        //let max_work_item_sizes = unsafe { core::slice::from_raw_parts::<usize>(ptr, max_work_item_dims) }.to_vec();
+        let max_work_item_sizes = alloc::vec![256, 256, 256];
+        HWInfo {
+            max_work_item_sizes,
+            max_work_group_size: usize::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE).unwrap().try_into().unwrap()),
+            preferred_vector_size: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT).unwrap().try_into().unwrap()) as usize * 4,
+            f16_support: true,
+            f64_support: true,
+            fmadd: true,
+            global_mem_size: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE).unwrap().try_into().unwrap()) as usize,
+            max_mem_alloc: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_MEM_ALLOC_SIZE).unwrap().try_into().unwrap()) as usize,
+            mem_align: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE).unwrap().try_into().unwrap()) as usize / 8,
+            page_size: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MEM_BASE_ADDR_ALIGN).unwrap().try_into().unwrap()) as usize / 8,
+            local_mem_size: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE).unwrap().try_into().unwrap()) as usize,
+            num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
+        }
+    }
 
     fn allocate_mem(&mut self, length: usize, dtype: DType) -> Result<Self::Buffer, ZyxError> {
         let mut err = CL_SUCCESS;

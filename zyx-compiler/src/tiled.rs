@@ -64,6 +64,8 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
     }
 
     fn compile_graph(&mut self, _global_rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
+        let hw_info = self.compiler.hardware_info();
+        std::println!("{hw_info:?}");
         // Find the best order of execution of nodes
         let (order, rcs) = {
             let mut temp_rcs: BTreeMap<Id, u32> = BTreeMap::new();
