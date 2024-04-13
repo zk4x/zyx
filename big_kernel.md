@@ -3,8 +3,10 @@
 
 (softmax, but in a dumb way :D)
 
+```rust
 let x = dev.randn(1024);
 let y = x.exp()/x.exp().sum(..);
+```
 
 
 ## AST
@@ -39,6 +41,8 @@ let y = x.exp()/x.exp().sum(..);
 
 ## OpenCL
 
+
+```c
 unsigned int rid0 = get_group_size(0); /* 0..1024 */
 if (rid0 < 1) {
     float rmem0 = 0.0f;
@@ -51,8 +55,9 @@ if (rid0 < 1) {
 }
 barrier(GLOBAL_MEM_FENCE);
 float rmem0 = gmem1[rid0];
-float rmem1 = gmem0[0]:
-float rmem2 = rmem0 / rmem1;
+float rmem1 = exp(rmem0);
+rmem0 = gmem0[0]:
+float rmem2 = rmem1 / rmem0;
 gmem2[rid0] = rmem2;
-
+```
 

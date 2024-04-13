@@ -86,7 +86,7 @@ pub enum Node {
     /// Permute movement op
     Permute(Id, Axes, Shape),
     /// Pad movement op
-    Pad(Id, Box<[(i64, i64)]>, Shape),
+    Pad(Id, Box<[(usize, usize)]>, Shape),
     /// Sum reduce op
     Sum(Id, Axes, Shape),
     /// Max reduce op

@@ -40,8 +40,21 @@ impl View {
         }
     }
 
+    /// Shape
     #[must_use]
-    fn numel(&self) -> usize {
+    pub fn shape(&self) -> Shape {
+        Shape::from(self.shapes[0].iter().map(|dim| dim.size).collect::<alloc::boxed::Box<[usize]>>())
+    }
+
+    /// Rank
+    #[must_use]
+    pub fn rank(&self) -> usize {
+        self.shapes[0].len()
+    }
+
+    /// Numel
+    #[must_use]
+    pub fn numel(&self) -> usize {
         self.shapes[0].iter().map(|Dimension { size, .. }| size).product()
     }
 

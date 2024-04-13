@@ -626,7 +626,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::Pad(x, ref padding, _) => {
                     let sh = get_shape(&self.nodes, x).clone();
-                    let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
+                    let inv_padding = padding.iter().zip(sh.iter()).map(|((lp, rp), d)| (2*d-lp, 2*d-rp)).collect();
                     let grad = self.push(Node::Pad(grad, inv_padding, sh))?;
                     insert_or_add_grad(self, &mut grads, x, grad)?;
                 }

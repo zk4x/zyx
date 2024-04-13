@@ -1,11 +1,14 @@
+//! Here work size and number of kernels is determined by creating tiles.
+//! Tiles with the same work size get fused together.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::prelude::rust_2015::Vec;
 use zyx_core::error::ZyxError;
-use zyx_core::node::{Constant, Node};
+use zyx_core::node::Node;
 use zyx_core::runtime::RuntimeBackend;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
-use crate::{CompiledBackend, Compiler};
+use crate::{CompiledBackend, Compiler, looped};
 use alloc::vec;
 use zyx_core::axes::Axes;
 use zyx_core::dtype::DType;
@@ -117,7 +120,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     view: View::from(get_shape(nodes, nid)),
                     dtype,
                     scope: 2,
-                    first_op: FirstOp::Load { x: nid, dtype },
+                    first_op: FirstOp::Load { dtype },
                     ops: Vec::new(),
                 });
                 continue;
@@ -148,28 +151,70 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     tiles.insert(nid, tile);
                 }
                 Node::Reshape(x, sh) => {
-                    let mut tile = tiles[x].clone();
-                    tile.view.reshape(sh);
-                    tiles.insert(nid, tile);
+                    match &tiles[x].first_op {
+                        FirstOp::Reduce { .. } => {
+                            let tile = Tile {
+                                view: View::from(sh),
+                                dtype: get_dtype(nodes, nid),
+                                scope: 2,
+                                first_op: FirstOp::Movement { x: *x },
+                                ops: vec![],
+                            };
+                            tiles.insert(nid, tile);
+                        }
+                        _ => {
+                            let mut tile = tiles[x].clone();
+                            tile.view.reshape(sh);
+                            tiles.insert(nid, tile);
+                        }
+                    }
                 }
                 Node::Expand(x, sh) => {
                     let tile = Tile {
                         view: View::from(sh),
                         dtype: get_dtype(nodes, nid),
                         scope: 2,
-                        first_op: FirstOp::Expand { x: *x },
+                        first_op: FirstOp::Movement { x: *x },
                         ops: vec![],
                     };
                     tiles.insert(nid, tile);
                 }
-                Node::Permute(_, _, _) => {}
-                Node::Pad(_, _, _) => {}
+                Node::Permute(_, _, _) => {
+                    // Permute permutes all views.
+                    // In case of reduce kernel, permute also axes and shape before reduce.
+                }
+                Node::Pad(x, padding, _) => {
+                    match &tiles[x].first_op {
+                        FirstOp::Reduce { .. } => {
+                            let mut view = View::from(get_shape(nodes, *x));
+                            view.pad(padding);
+                            let tile = Tile {
+                                view,
+                                dtype: get_dtype(nodes, nid),
+                                scope: 2,
+                                first_op: FirstOp::Movement { x: *x },
+                                ops: vec![],
+                            };
+                            tiles.insert(nid, tile);
+                        }
+                        _ => {
+                            let mut tile = tiles[x].clone();
+                            tile.view.pad(padding);
+                            tiles.insert(nid, tile);
+                        }
+                    }
+                }
                 Node::Sum(x, axes, sh) => {
                     let tile = Tile {
                         view: View::from(sh),
                         dtype: get_dtype(nodes, nid),
                         scope: 2,
-                        first_op: FirstOp::Reduce { x: *x, axes: axes.clone(), op: ROp::Sum },
+                        first_op: FirstOp::Reduce {
+                            x: *x,
+                            shape: get_shape(nodes, *x).clone(),
+                            axes: axes.clone(),
+                            op: ROp::Sum
+                        },
                         ops: vec![],
                     };
                     tiles.insert(nid, tile);
@@ -185,6 +230,57 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         for tile in &tiles {
             std::println!("{tile:?}");
         }
+
+        // Reshape and permute tiles to use exactly work 3 dimensions
+        // and at most single reduce loop over the last dimension>
+
+        for (id, tile) in &mut tiles {
+            match tile.view.rank() {
+                1 => match &tile.first_op {
+                    FirstOp::Reduce { x, shape, axes, op } => {
+                        // permute to join reduce axes together in last dimension
+                        // reshape to 4d, last dim reduce
+
+                    }
+                    _ => {
+                        // reshape to 3d
+                        tile.view.reshape(&[1, 1, tile.view.numel()].into());
+                    }
+                }
+                2 => match &tile.first_op {
+                    FirstOp::Reduce { x, shape, axes, op } => {
+                        // permute to join reduce axes together in last dimension
+                        // reshape to 4d, last dim reduce
+
+                    }
+                    _ => {
+                        // reshape to 3d
+                        let sh = tile.view.shape();
+                        tile.view.reshape(&[1, sh[0], sh[1]].into());
+                    }
+                }
+                3 => {}
+                _ => match &tile.first_op {
+                    FirstOp::Reduce { x, shape, axes, op } => {
+                        // permute to join reduce axes together in last dimension
+                        // reshape to 4d, last dim reduce
+
+                    }
+                    _ => {
+                        // reshape to 3d
+                        let sh = tile.view.shape();
+                        tile.view.reshape(&[tile.view.numel()].into());
+                    }
+                }
+            }
+        }
+
+
+        // Rewrite tiled representation to looped representation
+        let looped = looped::tiled_to_looped(tiles, &order);
+
+
+
         panic!();
 
         // Check work sizes (view.shapes) of tiles and add appropriate loops.
@@ -214,14 +310,20 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 }
 
 #[derive(Debug, Clone)]
-struct Tile {
-    view: View,
+pub(crate) struct Tile {
+    pub(crate) view: View,
     dtype: DType,
     scope: u8,
-    first_op: FirstOp,
+    pub(crate) first_op: FirstOp,
     // Note that order of these ops does not matter for correctness,
     // but may matter for performance
-    ops: Vec<UOp>,
+    pub(crate) ops: Vec<UOp>,
+}
+
+impl Tile {
+    fn is_reduce(&self) -> bool {
+       matches!(self.first_op, FirstOp::Reduce { .. })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -249,12 +351,12 @@ enum BOp {
 
 // It is better if these ops represent breaks between tiles,
 // from performance perspective, for example we do not want to run
-// expanded tensorj in a million threads if it was a tensor with just 10 scalars.
+// expanded tensor in a million threads if it was a tensor with just 10 scalars.
+// But these are also fused (if possible) later when converted to looped representation.
 #[derive(Debug, Clone)]
-enum FirstOp {
+pub(crate) enum FirstOp {
     // Load existing buffer from memory
     Load {
-        x: Id,
         dtype: DType,
     },
     Binary {
@@ -264,12 +366,19 @@ enum FirstOp {
     },
     Reduce {
         x: Id,
+        shape: Shape, // Shape before reduce
         axes: Axes,
         op: ROp,
     },
-    Expand {
+    // Some movement ops can not be fused into existing kernel
+    // Permute can always be fused.
+    // Expand can never be fused.
+    // Reshape and pad can not be fused with reduce kernel.
+    // Technically reshaped and pad could be fused with some reduce kernels,
+    // but we can keep this simple here and fuse them in looped kernel.
+    Movement {
         x: Id,
-    }
+    },
 }
 
 // Higher level abstraction, basically with tiles, views, bound dimensions and loops

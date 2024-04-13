@@ -982,8 +982,9 @@ impl<B: Backend> Tensor<B> {
             "Cannot pad tensor with shape {sh} with padding {padding:?}"
         );
         let psh = sh.clone().pad(&padding);
+        let internal_padding: Box<_> = padding.iter().copied().chain(repeat((0, 0))).zip(sh.iter().rev().copied()).collect::<Vec<_>>().into_iter().map(|((lp, rp), d)| ((d as i64 + lp) as usize, (d as i64 + rp) as usize)).collect::<Vec<_>>().into_iter().rev().collect();
         let t0 = self.backend
-                .push(Node::Pad(self.id, padding.clone(), psh.clone()))
+                .push(Node::Pad(self.id, internal_padding.clone(), psh.clone()))
                 .unwrap();
         if value.numel() == 1
             && match dtype {
@@ -997,7 +998,7 @@ impl<B: Backend> Tensor<B> {
             t0 + self.backend
                     .push(Node::Pad(
                         self.backend.ones(sh, dtype).unwrap().id,
-                        padding,
+                        internal_padding,
                         psh.clone(),
                     ))
                     .unwrap().where_(self.backend.zeros(self.shape(), self.dtype()).unwrap(), value)
