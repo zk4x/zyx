@@ -6,13 +6,24 @@ use crate::shape::Shape;
 
 #[derive(Debug, Clone, Copy)]
 struct Dimension {
+    // size of the dimension in shape
     size: usize,
     stride: usize,
-    // if left_mask < size, its indexing, else it's padding
-    // left_mask goes in reverse direction, from biggest to smallest value
-    left_mask: usize,
-    // if right_mask < size, its indexing, else it's padding
-    right_mask: usize,
+    // len is the actual length of this buffer without padding
+    len: usize,
+    // shift of size and len
+    // shift=0 => no element from actual buffer is taken, it's all just padding
+    // buffer with shape of 10, 2 elements, padding of (-2, 10)
+    // size 10:    xxxxxxxxxx
+    // len 2:    xx
+    // shift 0
+    // buffer with shape of 8, 3 elements, padding of (4, 1)
+    // size 8:  xxxxxxxx
+    // len 3:       xxx
+    // shift 7
+    // shift is essentially the position of the last element of the buffer
+    // with respect to first element of the shape
+    shift: usize,
 }
 
 /// View represents movement ops applied on tensors
@@ -29,7 +40,7 @@ impl View {
     pub fn from(shape: &Shape) -> Self {
         let mut stride = 1;
         let mut first_shape: Vec<Dimension> = shape.iter().rev().map(|size| {
-            let temp = Dimension { size: *size, stride, left_mask: 0, right_mask: 0 };
+            let temp = Dimension { size: *size, stride, len: *size, shift: *size };
             stride *= size;
             temp
         }).collect();
@@ -55,7 +66,7 @@ impl View {
     /// Numel
     #[must_use]
     pub fn numel(&self) -> usize {
-        self.shapes[0].iter().map(|Dimension { size, .. }| size).product()
+        self.shapes[0].iter().map(|dim| dim.size).product()
     }
 
     #[must_use]
@@ -63,7 +74,7 @@ impl View {
         let mut stride = 1;
         let mut temp = true;
         for dim in self.shapes[0].iter().rev() {
-            if stride != dim.stride {
+            if stride != dim.stride || dim.size != dim.len || dim.size != dim.shift {
                 temp = false;
                 break;
             }
@@ -152,8 +163,8 @@ impl View {
             Dimension {
                 size,
                 stride,
-                left_mask: 0,
-                right_mask: 0
+                len: size,
+                shift: size
             }
         }).collect();
         new_shape.reverse();
@@ -165,12 +176,13 @@ impl View {
         }
     }
 
-    /// Pad view with padding
-    pub fn pad(&mut self, padding: &[(usize, usize)]) {
-        debug_assert_eq!(self.shapes[0].len(), padding.len());
-        for (dim, (lp, rp)) in self.shapes[0].iter_mut().zip(padding) {
-            dim.left_mask = *lp;
-            dim.right_mask = *rp;
+    /// Pad view with padding.
+    /// This function assumes standard padding beginning at last dimension.
+    pub fn pad(&mut self, padding: &[(i64, i64)]) {
+        debug_assert!(self.shapes[0].len() >= padding.len());
+        for (dim, (lp, rp)) in self.shapes[0].iter_mut().rev().zip(padding) {
+            dim.size = (dim.size as i64 + lp + rp) as usize;
+            dim.shift = (dim.shift as i64 + lp) as usize;
         }
     }
 
@@ -179,6 +191,7 @@ impl View {
         debug_assert_eq!(self.shapes[0].len(), sh.rank());
         for (dim, sh_dim) in self.shapes[0].iter_mut().zip(sh) {
             if dim.size != *sh_dim {
+                debug_assert_eq!(dim.size, 1);
                 dim.size = *sh_dim;
                 dim.stride = 0;
             }
