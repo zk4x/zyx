@@ -17,6 +17,7 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx-core = { workspace = true }
+half = { workspace = true }
 rayon = { version = "1.8.1", default-features = false, optional = true }
 
 [features]

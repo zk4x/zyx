@@ -16,16 +16,11 @@ use half::f16;
 pub trait Backend: Copy {
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
-    fn plot_graph<'a, B: Backend + 'a>(
+    fn plot_graph<'a>(
         self,
-        tensors: impl IntoIterator<Item = &'a Tensor<B>>,
-    ) -> String;
-
-    /// Create new tensor
-    #[must_use]
-    fn tensor(self, data: impl IntoTensor<Self>) -> Result<Tensor<Self>, ZyxError> {
-        Ok(data.into_tensor(self))
-    }
+        tensors: impl IntoIterator<Item = &'a Tensor<Self>>,
+    ) -> String
+    where Self: 'a;
 
     /// Create new tensor using values from uniform distribution
     #[must_use]
@@ -34,6 +29,12 @@ pub trait Backend: Copy {
         shape: impl Into<Shape>,
         range: Range<T>,
     ) -> Result<Tensor<Self>, ZyxError>;
+
+    /// Create new tensor
+    #[must_use]
+    fn tensor(self, data: impl IntoTensor<Self>) -> Result<Tensor<Self>, ZyxError> {
+        Ok(data.into_tensor(self))
+    }
 
     /// Get shape if tensor x
     #[must_use]

@@ -1,8 +1,9 @@
 use alloc::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::BTreeMap,
     vec::Vec,
 };
 use std::collections::BTreeSet;
+use half::f16;
 #[cfg(feature = "std")]
 use rayon::prelude::*;
 use zyx_core::dtype::DType;
@@ -78,16 +79,17 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
     //#[cfg(not(feature = "std"))]
     //{
     // TODO parallel iterator and match on view_type()
-    xview
+    /*xview
         .iterate_padded(xdata)
         .zip(yview.iterate_padded(ydata))
         .map(op)
-        .collect()
+        .collect()*/
     //}
     //#[cfg(feature = "std")]
     //{
     //xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).into_par_iter().map(op).collect()
     //}
+    todo!()
 }
 
 fn terciary<
@@ -111,18 +113,20 @@ fn terciary<
     //}
     //#[cfg(feature = "std")]
     //{
-    xview
+    /*xview
         .iterate_padded(xdata)
         .zip(yview.iterate_padded(ydata))
         .zip(zview.iterate_padded(zdata))
         .map(|((x, y), z)| (x, y, z))
         .map(op)
-        .collect()
+        .collect()*/
     //}
+    todo!()
 }
 
 #[derive(Debug)]
 enum Data {
+    F16(Vec<f16>),
     F32(Vec<f32>),
     F64(Vec<f64>),
     I32(Vec<i32>),
@@ -131,6 +135,7 @@ enum Data {
 impl Data {
     unsafe fn as_type<T: Scalar>(&self) -> &[T] {
         match self {
+            Data::F16(data) => core::mem::transmute(data.as_slice()),
             Data::F32(data) => core::mem::transmute(data.as_slice()),
             Data::F64(data) => core::mem::transmute(data.as_slice()),
             Data::I32(data) => core::mem::transmute(data.as_slice()),
@@ -158,8 +163,10 @@ impl Interpreter {
 }
 
 impl RuntimeBackend for Interpreter {
+    type CompiledGraph = ();
+
     fn evaluated_nodes(&self) -> BTreeSet<Id> {
-        self.buffers.keys().collect()
+        self.buffers.keys().copied().collect()
     }
 
     fn is_empty(&self, x: Id) -> bool {
@@ -182,14 +189,15 @@ impl RuntimeBackend for Interpreter {
     }
 
     fn load<T: Scalar>(&mut self, x: Id, numel: usize) -> Result<Vec<T>, ZyxError> {
-        let (view, id) = &self.views[&x];
+        /*let (view, id) = &self.views[&x];
         let data = unsafe { self.buffers[&id].as_type::<T>() };
         Ok(match view.view_type() {
             ViewType::Contiguous => view.iterate_contiguous(data).take(numel).collect(),
             ViewType::Strided => view.iterate_strided(data).take(numel).collect(),
             ViewType::Reshaped => view.iterate_reshaped(data).take(numel).collect(),
             ViewType::Padded => view.iterate_padded(data).take(numel).collect(),
-        })
+        })*/
+        todo!()
     }
 
     fn store<T: Scalar, IT>(&mut self, x: Id, iter: IT) -> Result<(), ZyxError>
@@ -198,159 +206,26 @@ impl RuntimeBackend for Interpreter {
         IT::IntoIter: ExactSizeIterator,
     {
         //std::println!("CPU Storing {x}");
-        let iter = iter.into_iter();
+        /*let iter = iter.into_iter();
         self.views.insert(x, (View::new(iter.len().into()), x));
         self.buffers.insert(
             x,
             match T::dtype() {
+                DType::F16 => Data::F16(iter.map(|x| x.into_f16()).collect()),
                 DType::F32 => Data::F32(iter.map(|x| x.into_f32()).collect()),
                 DType::F64 => Data::F64(iter.map(|x| x.into_f64()).collect()),
                 DType::I32 => Data::I32(iter.map(|x| x.into_i32()).collect()),
             },
-        );
+        );*/
         Ok(())
     }
 
-    fn compile_graph(graph: &Graph) -> Result<Self::CompiledGraph, ZyxError> {
-        for nid in order.iter().copied() {
-            //std::println!("Interpreting {nid}: {:?}", nodes[nid.i()]);
-            match &nodes[nid.i()] {
-                Node::Leaf(..) => {}
-                Node::Uniform(..) => todo!(),
-                Node::Cast(x, dtype) => {
-                    let (view, data) = self.get(x);
-                    let data = match data {
-                        Data::F32(data) => match dtype {
-                            DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
-                            DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
-                            DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
-                        },
-                        Data::F64(data) => match dtype {
-                            DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
-                            DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
-                            DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
-                        },
-                        Data::I32(data) => match dtype {
-                            DType::F32 => Data::F32(unary(data, Scalar::into_f32)),
-                            DType::F64 => Data::F64(unary(data, Scalar::into_f64)),
-                            DType::I32 => Data::I32(unary(data, Scalar::into_i32)),
-                        },
-                    };
-                    self.views.insert(nid, (view.clone(), nid));
-                    self.buffers.insert(nid, data);
-                }
-                Node::Detach(x) => unary_op!(self, x, nid, core::convert::identity),
-                Node::Neg(x) => unary_op!(self, x, nid, Scalar::neg),
-                Node::ReLU(x) => unary_op!(self, x, nid, Scalar::relu),
-                Node::Sin(x) => unary_op!(self, x, nid, Scalar::sin),
-                Node::Cos(x) => unary_op!(self, x, nid, Scalar::cos),
-                Node::Ln(x) => unary_op!(self, x, nid, Scalar::ln),
-                Node::Exp(x) => unary_op!(self, x, nid, Scalar::exp),
-                Node::Tanh(x) => unary_op!(self, x, nid, Scalar::tanh),
-                Node::Sqrt(x) => unary_op!(self, x, nid, Scalar::sqrt),
-                Node::Add(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::add(x, y)),
-                Node::Sub(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::sub(x, y)),
-                Node::Mul(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::mul(x, y)),
-                Node::Div(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::div(x, y)),
-                Node::Pow(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::pow(x, y)),
-                Node::Cmplt(x, y) => binary_op!(self, x, y, nid, |(x, y)| Scalar::cmplt(x, y)),
-                Node::Where(x, y, z) => {
-                    let (xview, xdata) = self.get(x);
-                    let (yview, ydata) = self.get(y);
-                    let (zview, zdata) = self.get(z);
-                    let data = match xdata {
-                        Data::F32(xdata) => {
-                            let Data::F32(ydata) = ydata else { panic!() };
-                            let Data::F32(zdata) = zdata else { panic!() };
-                            Data::F32(terciary(
-                                xview,
-                                xdata,
-                                yview,
-                                ydata,
-                                zview,
-                                zdata,
-                                |(x, y, z)| if x != 0.0 { y } else { z },
-                            ))
-                        }
-                        Data::F64(xdata) => {
-                            let Data::F64(ydata) = ydata else { panic!() };
-                            let Data::F64(zdata) = zdata else { panic!() };
-                            Data::F64(terciary(
-                                xview,
-                                xdata,
-                                yview,
-                                ydata,
-                                zview,
-                                zdata,
-                                |(x, y, z)| if x != 0.0 { y } else { z },
-                            ))
-                        }
-                        Data::I32(xdata) => {
-                            let Data::I32(ydata) = ydata else { panic!() };
-                            let Data::I32(zdata) = zdata else { panic!() };
-                            Data::I32(terciary(
-                                xview,
-                                xdata,
-                                yview,
-                                ydata,
-                                zview,
-                                zdata,
-                                |(x, y, z)| if x != 0 { y } else { z },
-                            ))
-                        }
-                    };
-                    self.views
-                        .insert(nid, (View::new(xview.shape().clone()), nid));
-                    self.buffers.insert(nid, data);
-                }
-                Node::Reshape(x, sh) => {
-                    let (view, id) = &self.views[x];
-                    self.views.insert(nid, (view.reshape(sh), *id));
-                }
-                Node::Expand(x, sh) => {
-                    let (view, id) = &self.views[x];
-                    self.views.insert(nid, (view.expand(sh), *id));
-                }
-                Node::Permute(x, ax, ..) => {
-                    let (view, id) = &self.views[x];
-                    self.views.insert(nid, (view.permute(ax), *id));
-                }
-                Node::Pad(x, padding, ..) => {
-                    let (view, id) = &self.views[x];
-                    self.views.insert(nid, (view.pad(padding), *id));
-                }
-                Node::Sum(x, ax, sh) => {
-                    let (view, data) = self.get(x);
-                    let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, true)),
-                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, true)),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, true)),
-                    };
-                    self.views.insert(nid, (View::new(sh.clone()), nid));
-                    self.buffers.insert(nid, data);
-                }
-                Node::Max(x, ax, sh) => {
-                    let (view, data) = self.get(x);
-                    let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, false)),
-                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, false)),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, false)),
-                    };
-                    self.views.insert(nid, (View::new(sh.clone()), nid));
-                    self.buffers.insert(nid, data);
-                }
-            }
-            for p in nodes[nid.i()].parameters() {
-                if let Entry::Occupied(e) = rcs.entry(p).and_modify(|rc| *rc -= 1) {
-                    if *e.get() == 0 {
-                        //std::println!("Interpreter removing {p}");
-                        self.remove(p)?;
-                    }
-                }
-            }
-            //std::println!("Views {}, buffers {}", self.views.len(), self.buffers.len());
-        }
-        Ok(())
+    fn compile_graph(&mut self, rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
+        todo!()
+    }
+
+    fn launch_graph(&mut self, graph: &Self::CompiledGraph) -> Result<(), ZyxError> {
+        todo!()
     }
 }
 
@@ -381,7 +256,7 @@ fn reduce_op<T: Scalar + Sync + Send>(
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly
     // updating it (adding in case of sum) with new indices as new max/min are found
-    if view.is_contiguous() {
+    /*if view.is_contiguous() {
         for i in 0..view.shape().numel() {
             // calculate index in result
             let mut j = 0;
@@ -409,6 +284,6 @@ fn reduce_op<T: Scalar + Sync + Send>(
                 res[j] = Scalar::max(res[j].clone(), x);
             }
         }
-    }
+    }*/
     res
 }
