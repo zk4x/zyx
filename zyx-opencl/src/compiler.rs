@@ -224,6 +224,7 @@ impl OpenCLDType for DType {
 
     fn from_ocl_str(str: &str) -> DType {
         match str {
+            "half" => DType::F32,
             "float" => DType::F32,
             "double" => DType::F64,
             "int" => DType::I32,
