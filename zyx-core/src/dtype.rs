@@ -1,6 +1,8 @@
 /// DType of tensor
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DType {
+    /// 16 bit floating point type
+    F16,
     /// 32 bit floating point type
     F32,
     /// 64 bit floating point type
@@ -13,6 +15,7 @@ impl DType {
     /// Get the size of DType in bytes
     pub fn byte_size(self) -> usize {
         match self {
+            Self::F16 => 2,
             Self::I32 | Self::F32 => 4,
             Self::F64 => 8,
         }
@@ -21,7 +24,7 @@ impl DType {
     /// Check if self is floating point dtype
     pub fn is_floating(self) -> bool {
         match self {
-            Self::F32 | Self::F64 => true,
+            Self::F16 | Self::F32 | Self::F64 => true,
             Self::I32 => false,
         }
     }
@@ -29,6 +32,7 @@ impl DType {
     /// Zero value as string
     pub fn zero_value_str(self) -> &'static str {
         match self {
+            Self::F16 => "0", // TODO
             Self::F32 => "0.0f",
             Self::F64 => "0.0",
             Self::I32 => "0",
@@ -38,6 +42,7 @@ impl DType {
     /// Min value as string
     pub fn min_value_str(self) -> &'static str {
         match self {
+            Self::F16 => "-1.024819114181267E+19",
             Self::F32 => "-3.40282347E+38f",
             Self::F64 => "-1.7976931348623157E+308",
             Self::I32 => "-2147483648",
@@ -47,6 +52,7 @@ impl DType {
     #[cfg(feature = "std")]
     pub(crate) fn safetensors(self) -> &'static str {
         match self {
+            Self::F16 => "F16",
             Self::F32 => "F32",
             Self::F64 => "F64",
             Self::I32 => "I32",
@@ -56,6 +62,7 @@ impl DType {
     #[cfg(feature = "std")]
     pub(crate) fn from_safetensors(dtype: &str) -> Result<Self, crate::error::ZyxError> {
         match dtype {
+            "F16" => Ok(Self::F16),
             "F32" => Ok(Self::F32),
             "F64" => Ok(Self::F64),
             "I32" => Ok(Self::I32),

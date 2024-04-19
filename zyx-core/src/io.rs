@@ -4,6 +4,7 @@ use core::fmt::Write as CoreFmtWrite;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use half::f16;
 
 /// This trait is implemented automatically for all modules that implement
 /// IntoIterator<Item = &mut Tensor>
@@ -63,6 +64,14 @@ pub fn save<'a, B: Backend + 'a>(
     f.write_all(header_bytes)?;
     for tensor in tensors {
         match tensor.dtype() {
+            DType::F16 => {
+                let vec = tensor.to_vec::<f16>()?;
+                let mut bytes: Vec<u8> = Vec::with_capacity(vec.len() * 2);
+                for x in vec {
+                    bytes.extend(x.to_le_bytes());
+                }
+                f.write_all(&bytes)?;
+            }
             DType::F32 => {
                 let vec = tensor.to_vec::<f32>()?;
                 let mut bytes: Vec<u8> = Vec::with_capacity(vec.len() * 4);
@@ -141,6 +150,13 @@ pub fn load<B: Backend>(dev: B, path: impl AsRef<Path>) -> Result<Vec<Tensor<B>>
                     let mut buf = alloc::vec![0u8; shape.numel()*dtype.byte_size()];
                     f.read_exact(&mut buf)?;
                     tensors.push(match dtype {
+                        DType::F16 => {
+                            let vec: Vec<f16> = buf
+                                .chunks_exact(dtype.byte_size())
+                                .map(|x| f16::from_le_bytes([x[0], x[1]]))
+                                .collect();
+                            dev.tensor(vec)?.reshape(&shape)
+                        }
                         DType::F32 => {
                             let vec: Vec<f32> = buf
                                 .chunks_exact(dtype.byte_size())

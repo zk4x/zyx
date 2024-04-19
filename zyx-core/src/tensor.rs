@@ -12,6 +12,7 @@ use core::{
     iter::repeat,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, SubAssign},
 };
+use half::f16;
 
 /// Id of tensor.
 #[derive(Clone, Copy, PartialOrd, PartialEq, Ord, Eq, Debug, Hash)]
@@ -308,6 +309,13 @@ impl<B: Backend> core::fmt::Display for Tensor<B> {
             3
         };
         let res = match self.dtype() {
+            DType::F16 => {
+                if let Ok(data) = &self.to_vec::<f16>() {
+                    tensor_to_string(data, &self.shape(), precision, f.width())
+                } else {
+                    "f32 tensor failed to realize".into()
+                }
+            }
             DType::F32 => {
                 if let Ok(data) = &self.to_vec::<f32>() {
                     tensor_to_string(data, &self.shape(), precision, f.width())
@@ -987,6 +995,7 @@ impl<B: Backend> Tensor<B> {
                 .unwrap();
         if value.numel() == 1
             && match dtype {
+                DType::F16 => value.item::<f16>().unwrap().is_equal(f16::ZERO),
                 DType::F32 => value.item::<f32>().unwrap().is_equal(0f32),
                 DType::F64 => value.item::<f64>().unwrap().is_equal(0f64),
                 DType::I32 => value.item::<i32>().unwrap().is_equal(0i32),
@@ -1662,6 +1671,12 @@ impl<B: Backend, IT: IntoTensor<B> + Clone> PartialEq<IT> for Tensor<B> {
         self.shape() == other.shape()
             && dtype == other.dtype()
             && match dtype {
+                DType::F16 => self
+                    .to_vec::<f16>()
+                    .unwrap()
+                    .into_iter()
+                    .zip(other.to_vec::<f16>().unwrap())
+                    .all(|(x, y)| x.is_equal(y)),
                 DType::F32 => self
                     .to_vec::<f32>()
                     .unwrap()

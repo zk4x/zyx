@@ -9,6 +9,7 @@ use alloc::{
     vec::Vec,
 };
 use core::ops::Range;
+use half::f16;
 
 /// Backend for [tensors](Tensor).
 /// Tensor requires that all backends implement this trait and only this trait.
@@ -74,6 +75,7 @@ pub trait Backend: Copy {
     /// Create new tensor by repeating zeroes
     fn zeros(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         match dtype {
+            DType::F16 => self.full(shape, f16::ZERO),
             DType::F32 => self.full(shape, 0f32),
             DType::F64 => self.full(shape, 0f64),
             DType::I32 => self.full(shape, 0),
@@ -83,6 +85,7 @@ pub trait Backend: Copy {
     /// Create new tensor by repeating ones
     fn ones(self, shape: impl Into<Shape>, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         match dtype {
+            DType::F16 => self.full(shape, f16::ONE),
             DType::F32 => self.full(shape, 1f32),
             DType::F64 => self.full(shape, 1f64),
             DType::I32 => self.full(shape, 1),
@@ -93,6 +96,11 @@ pub trait Backend: Copy {
     fn eye(self, n: usize, dtype: DType) -> Result<Tensor<Self>, ZyxError> {
         Ok(
             match dtype {
+                DType::F16 => self.store(
+                    (0..n)
+                        .flat_map(move |i| (0..n).map(move |j| if j == i { f16::ONE } else { f16::ZERO }))
+                        .make_sized(n * n),
+                )?,
                 DType::F32 => self.store(
                     (0..n)
                         .flat_map(move |i| (0..n).map(move |j| if j == i { 1f32 } else { 0. }))

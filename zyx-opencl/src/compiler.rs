@@ -215,6 +215,7 @@ trait OpenCLDType {
 impl OpenCLDType for DType {
     fn ocl_str(&self) -> &'static str {
         match self {
+            DType::F16 => "half",
             DType::F32 => "float",
             DType::F64 => "double",
             DType::I32 => "int",

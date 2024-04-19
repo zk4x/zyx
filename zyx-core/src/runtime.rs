@@ -13,6 +13,7 @@ use alloc::{
     vec::Vec,
 };
 use std::hash::Hash;
+use half::f16;
 
 /// RuntimeBackend is a good plug in point for backend developers.
 /// Use Runtime::new(YourOwnStructThatImplementsRuntimeBackend::new()) to write your
@@ -363,6 +364,7 @@ impl<R: RuntimeBackend> Runtime<R> {
         let mut grads: BTreeMap<Id, Id> = BTreeMap::new();
         // Initial gradient of ones
         let grad1 = match get_dtype(&self.nodes, x) {
+            DType::F16 => self.store([f16::from_f32(1.0)]),
             DType::F32 => self.store([1f32]),
             DType::F64 => self.store([1f64]),
             DType::I32 => self.store([1i32]),
@@ -440,6 +442,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     if req_grad.contains(&y) {
                         // -grad*x/(y^2)
                         let two = match get_dtype(&self.nodes, y) {
+                            DType::F16 => self.store([f16::ONE + f16::ONE]),
                             DType::F32 => self.store([2f32]),
                             DType::F64 => self.store([2f64]),
                             DType::I32 => self.store([2i32]),
@@ -463,6 +466,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     if req_grad.contains(&x) {
                         // grad * y * x.pow(y-1)
                         let one = match get_dtype(&self.nodes, y) {
+                            DType::F16 => self.store([f16::ONE]),
                             DType::F32 => self.store([1f32]),
                             DType::F64 => self.store([1f64]),
                             DType::I32 => self.store([1i32]),
@@ -501,6 +505,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
                     if req_grad.contains(&y) {
                         let zero = match get_dtype(&self.nodes, x) {
+                            DType::F16 => self.store([f16::ZERO]),
                             DType::F32 => self.store([0f32]),
                             DType::F64 => self.store([0f64]),
                             DType::I32 => self.store([0i32]),
@@ -514,6 +519,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     }
                     if req_grad.contains(&z) {
                         let zero = match get_dtype(&self.nodes, x) {
+                            DType::F16 => self.store([f16::ZERO]),
                             DType::F32 => self.store([0f32]),
                             DType::F64 => self.store([0f64]),
                             DType::I32 => self.store([0i32]),
@@ -528,6 +534,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                 }
                 Node::ReLU(x) => {
                     let zero = match get_dtype(&self.nodes, x) {
+                        DType::F16 => self.store([f16::ZERO]),
                         DType::F32 => self.store([0f32]),
                         DType::F64 => self.store([0f64]),
                         DType::I32 => self.store([0i32]),
@@ -566,6 +573,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     // x_grad = grad/(2*sqrt(x))
                     let x_shape = get_shape(&self.nodes, x).clone();
                     let two1 = match get_dtype(&self.nodes, x) {
+                        DType::F16 => self.store([f16::ONE + f16::ONE]),
                         DType::F32 => self.store([2f32]),
                         DType::F64 => self.store([2f64]),
                         DType::I32 => self.store([2i32]),
@@ -590,6 +598,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     // 1 - tanh^2(x)
                     let shape = get_shape(&self.nodes, x).clone();
                     let (two1, one1) = match get_dtype(&self.nodes, x) {
+                        DType::F16 => (self.store([f16::ONE+f16::ONE])?, self.store([f16::ONE])?),
                         DType::F32 => (self.store([2f32])?, self.store([1f32])?),
                         DType::F64 => (self.store([2f64])?, self.store([1f64])?),
                         DType::I32 => (self.store([2i32])?, self.store([1i32])?),
@@ -641,6 +650,7 @@ impl<R: RuntimeBackend> Runtime<R> {
                     let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
                     self.release(z_temp)?;
                     let one1 = match get_dtype(&self.nodes, x) {
+                        DType::F16 => self.store([f16::ONE]),
                         DType::F32 => self.store([1f32]),
                         DType::F64 => self.store([1f64]),
                         DType::I32 => self.store([1i32]),

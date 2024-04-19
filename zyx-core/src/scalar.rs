@@ -1,3 +1,4 @@
+use half::f16;
 use crate::dtype::DType;
 
 /// Scalar trait is implemented for all [dtypes](DType)
@@ -66,6 +67,136 @@ pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
     /// Comparison for scalars,
     /// if they are floats, this checks for diffs > Self::epsilon()
     fn is_equal(self, rhs: Self) -> bool;
+}
+
+impl Scalar for f16 {
+    fn from_f32(t: f32) -> Self {
+        f16::from_f32(t)
+    }
+
+    fn from_f64(t: f64) -> Self {
+        f16::from_f64(t)
+    }
+
+    fn from_i32(t: i32) -> Self {
+        f16::from_i32(t)
+    }
+
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f16::from_le_bytes([bytes[0], bytes[1]])
+    }
+
+    fn dtype() -> DType {
+        DType::F32
+    }
+
+    fn zero() -> Self {
+        f16::ZERO
+    }
+
+    fn one() -> Self {
+        f16::ONE
+    }
+
+    fn byte_size() -> usize {
+        2
+    }
+
+    fn into_f32(self) -> f32 {
+        self.into_f32()
+    }
+
+    fn into_f64(self) -> f64 {
+        self.into_f64()
+    }
+
+    fn into_i32(self) -> i32 {
+        self.into_i32()
+    }
+
+    fn reciprocal(self) -> Self {
+        f16::ONE / self
+    }
+
+    fn neg(self) -> Self {
+        -self
+    }
+
+    fn relu(self) -> Self {
+        self.max(f16::ZERO)
+    }
+
+    fn sin(self) -> Self {
+        f16::sin(self)
+    }
+
+    fn cos(self) -> Self {
+        f16::cos(self)
+    }
+
+    fn exp(self) -> Self {
+        f16::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        f16::ln(self)
+    }
+
+    fn tanh(self) -> Self {
+        f16::tanh(self)
+    }
+
+    fn sqrt(self) -> Self {
+        f16::sqrt(self)
+    }
+
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
+
+    fn pow(self, rhs: Self) -> Self {
+        todo!()
+    }
+
+    fn cmplt(self, rhs: Self) -> Self {
+        f16::from_f32((self < rhs) as i32 as f32)
+    }
+
+    fn max(self, rhs: Self) -> Self {
+        f16::max(self, rhs)
+    }
+
+    fn max_value() -> Self {
+        f16::MAX
+    }
+
+    fn min_value() -> Self {
+        f16::MIN
+    }
+
+    fn epsilon() -> Self {
+        f16::from_f32(0.00001)
+    }
+
+    fn is_equal(self, rhs: Self) -> bool {
+        todo!()
+        // Less than 1% error is OK
+        //(self == -f16::INFINITY && rhs == -f16::INFINITY)
+            //|| (self - rhs).abs() < self.abs() * 0.01
+            //|| (self - rhs).abs() < Self::epsilon()
+    }
 }
 
 impl Scalar for f32 {
