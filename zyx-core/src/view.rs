@@ -86,6 +86,7 @@ impl View {
     /// Reshape view into different shape
     pub fn reshape(&mut self, sh: &Shape) {
         assert_eq!(self.numel(), sh.numel());
+        if self.shape() == *sh { return }
         // TODO perhaps we can merge more shapes with the previous shape
 
         // TODO merge split and join dimension reshapes

@@ -10,7 +10,7 @@ use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
 use crate::{CompiledBackend, Compiler, looped};
 use alloc::vec;
-use zyx_core::axes::Axes;
+use zyx_core::axes::{Axes, IntoAxes};
 use zyx_core::dtype::DType;
 use zyx_core::shape::Shape;
 use zyx_core::utils::{get_dtype, get_shape};
@@ -226,7 +226,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         }
 
         // Print AST
-
         for tile in &tiles {
             std::println!("{tile:?}");
         }
@@ -236,11 +235,13 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
 
         for (id, tile) in &mut tiles {
             match tile.view.rank() {
-                1 => match &tile.first_op {
-                    FirstOp::Reduce { x, shape, axes, op } => {
+                1 => match &mut tile.first_op {
+                    FirstOp::Reduce { axes, .. } => {
                         // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
-
+                        debug_assert_eq!(axes.len(), 1);
+                        *axes = 3i64.into_axes(tile.view.rank());
+                        tile.view.reshape(&[1, 1, 1, tile.view.numel()].into());
                     }
                     _ => {
                         // reshape to 3d
@@ -251,7 +252,19 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     FirstOp::Reduce { x, shape, axes, op } => {
                         // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
-
+                        let sh = tile.view.shape();
+                        let d0 = sh[0];
+                        let d1 = sh[1];
+                        if axes.contains(0) {
+                            if axes.contains(1) {
+                                tile.view.reshape(&[1, 1, 1, d0*d1].into());
+                            } else {
+                                tile.view.permute(&[1, 0].into_axes(2));
+                                tile.view.reshape(&[1, 1, d1, d0].into());
+                            }
+                        } else if axes.contains(1) {
+                            tile.view.reshape(&[1, 1, d0, d1].into());
+                        }
                     }
                     _ => {
                         // reshape to 3d
@@ -259,20 +272,42 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         tile.view.reshape(&[1, sh[0], sh[1]].into());
                     }
                 }
-                3 => {}
+                3 => match &mut tile.first_op {
+                    FirstOp::Reduce { x, shape, axes, op } => {
+                        // permute to join reduce axes together in last dimension
+                        // and possibly reshape to 4d, last dim reduce
+                        todo!()
+                    }
+                    _ => {}
+                }
                 _ => match &tile.first_op {
                     FirstOp::Reduce { x, shape, axes, op } => {
                         // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
-
+                        let all_axes: Vec<usize> = (0..tile.view.rank()).filter(|a| !axes.contains(*a)).chain(axes.iter().copied()).collect();
+                        tile.view.permute(&all_axes.into_axes(tile.view.rank()));
+                        let sh = tile.view.shape();
+                        let r = sh.rank();
+                        let d1 = if r - axes.len() > 2 { sh[r-axes.len()-2] } else { 1 };
+                        let d2 = if r - axes.len() > 1 { sh[r-axes.len()-1] } else { 1 };
+                        let d3 = sh[(r-axes.len()) as i64..r as i64].iter().product();
+                        let d0 = sh.numel()/(d1*d2*d3);
+                        tile.view.reshape(&[d0, d1, d2, d3].into());
                     }
                     _ => {
                         // reshape to 3d
                         let sh = tile.view.shape();
-                        tile.view.reshape(&[tile.view.numel()].into());
+                        let d1 = sh[-2];
+                        let d2 = sh[-1];
+                        tile.view.reshape(&[tile.view.numel()/(d1*d2), d1, d2].into());
                     }
                 }
             }
+        }
+
+        // Print AST
+        for tile in &tiles {
+            std::println!("{tile:?}");
         }
 
 

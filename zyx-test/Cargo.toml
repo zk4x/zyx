@@ -21,6 +21,5 @@ zyx-optim = { version = "*", path = "../zyx-optim" }
 zyx-nn = { version = "*", path = "../zyx-nn" }
 zyx-opencl = { version = "*", path = "../zyx-opencl" }
 zyx-cpu = { version = "*", path = "../zyx-cpu" }
-zyx-torch = { version = "*", path = "../zyx-torch" }
 itertools = { version = "0.12.1" }
 rand = { version = "0.8.5" }

@@ -55,7 +55,6 @@ Optimizer updates model's parameters with gradients.
 
 Thanks to its execution model, Zyx should use minimum amount of RAM.
 As for the backends, compiled backends (such as zyx-opencl) automatically fuse operations and create custom kernels.
-In case of hardware where these backends seem slow you can always use zyx-torch backend.
 Native rust CPU backend is slow and should not be used. It currently serves only as reference backend.
 
 ## Syntax
@@ -64,7 +63,6 @@ Initialize devices (you need to add appropriate crate to you project).
 ```rust
 let opencl = zyx_opencl::default();
 let cpu = zyx_cpu::default();
-let torch = zyx_torch::default();
 ```
 Initialize tensors.
 ```rust
