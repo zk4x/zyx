@@ -1,11 +1,38 @@
-use pyo3::pyclass;
+use pyo3::{pyclass, pymethods, PyResult};
 use zyx_core::backend::Backend;
+use zyx_core::dtype::DType;
 use zyx_core::tensor::Id;
-use zyx_cpu::CPU;
-use zyx_opencl::OpenCL;
+use crate::device::PyDevice;
 
-#[pyclass]
-pub struct Tensor {
-    id: Id,
-    //backend,
+#[derive(Clone)]
+#[pyclass(name = "DType")]
+pub enum PyDType {
+    F16,
+    F32,
+    F64,
+    I32,
+}
+
+impl PyDType {
+    pub(crate) fn dtype(&self) -> DType {
+        match self {
+            PyDType::F16 => DType::F16,
+            PyDType::F32 => DType::F32,
+            PyDType::F64 => DType::F64,
+            PyDType::I32 => DType::I32,
+        }
+    }
+}
+
+#[pyclass(name = "Tensor")]
+pub struct PyTensor {
+    pub(crate) id: Id,
+    pub(crate) device: PyDevice,
+}
+
+#[pymethods]
+impl PyTensor {
+    fn ln(&self) -> PyResult<Self> {
+        todo!()
+    }
 }

@@ -38,6 +38,7 @@ use alloc::{
 };
 use core::ops::Range;
 use std::cell::RefCell;
+use std::sync::RwLock;
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
 use zyx_core::{
@@ -52,11 +53,11 @@ use zyx_core::{
 pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 
 /// CPU backend
-pub struct CPU(RefCell<Runtime<Interpreter>>);
+pub struct CPU(RwLock<Runtime<Interpreter>>);
 
 /// Create new CPU backend
 pub fn device() -> Result<CPU, ZyxError> {
-    Ok(CPU(RefCell::new(Runtime::new(Interpreter::new()))))
+    Ok(CPU(RwLock::new(Runtime::new(Interpreter::new()))))
 }
 
 impl Backend for &CPU {
@@ -68,7 +69,7 @@ impl Backend for &CPU {
         Self: 'a,
     {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
-        self.0.borrow().plot_graph_dot(&ids)
+        self.0.read().unwrap().plot_graph_dot(&ids)
     }
 
     fn uniform<T: Scalar>(self, shape: impl Into<Shape>, range: Range<T>) -> Result<Tensor<Self>, ZyxError> {
@@ -80,39 +81,39 @@ impl Backend for &CPU {
     }
 
     fn store<T: Scalar, IT>(self, iter: IT) -> Result<Tensor<Self>, ZyxError> where IT: IntoIterator<Item=T>, IT::IntoIter: ExactSizeIterator {
-        Ok(tensor(self.0.borrow_mut().store(iter)?, self))
+        Ok(tensor(self.0.write().unwrap().store(iter)?, self))
     }
 
     fn realize(self, tensors: BTreeSet<Id>) -> Result<(), ZyxError> {
-        self.0.borrow_mut().realize(tensors)
+        self.0.write().unwrap().realize(tensors)
     }
 
     fn shape(self, x: Id) -> Shape {
-        self.0.borrow().shape(x).clone()
+        self.0.read().unwrap().shape(x).clone()
     }
 
     fn dtype(self, x: Id) -> DType {
-        self.0.borrow().dtype(x)
+        self.0.read().unwrap().dtype(x)
     }
 
     fn backward(self, x: Id, sources: &BTreeSet<Id>) -> Result<BTreeMap<Id, Id>, ZyxError> {
-        self.0.borrow_mut().backward(x, sources)
+        self.0.write().unwrap().backward(x, sources)
     }
 
     fn load<T: Scalar>(self, x: Id) -> Result<Vec<T>, ZyxError> {
-        self.0.borrow_mut().load(x)
+        self.0.write().unwrap().load(x)
     }
 
     fn push(self, node: Node) -> Result<Tensor<Self>, ZyxError> {
-        Ok(tensor(self.0.borrow_mut().push(node)?, self))
+        Ok(tensor(self.0.write().unwrap().push(node)?, self))
     }
 
     fn release(self, x: Id) -> Result<(), ZyxError> {
-        self.0.borrow_mut().release(x)
+        self.0.write().unwrap().release(x)
     }
 
     fn retain(self, x: Id) {
-        self.0.borrow_mut().retain(x);
+        self.0.write().unwrap().retain(x);
     }
 }
 
