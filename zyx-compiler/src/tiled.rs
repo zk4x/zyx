@@ -237,7 +237,6 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             match tile.view.rank() {
                 1 => match &mut tile.first_op {
                     FirstOp::Reduce { axes, .. } => {
-                        // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
                         debug_assert_eq!(axes.len(), 1);
                         *axes = 3i64.into_axes(tile.view.rank());
@@ -276,7 +275,15 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     FirstOp::Reduce { x, shape, axes, op } => {
                         // permute to join reduce axes together in last dimension
                         // and possibly reshape to 4d, last dim reduce
-                        todo!()
+                        let all_axes: Vec<usize> = (0..tile.view.rank()).filter(|a| !axes.contains(*a)).chain(axes.iter().copied()).collect();
+                        tile.view.permute(&all_axes.into_axes(tile.view.rank()));
+                        let sh = tile.view.shape();
+                        let r = sh.rank();
+                        let d1 = if r - axes.len() > 2 { sh[r-axes.len()-2] } else { 1 };
+                        let d2 = if r - axes.len() > 1 { sh[r-axes.len()-1] } else { 1 };
+                        let d3 = sh[(r-axes.len()) as i64..r as i64].iter().product();
+                        let d0 = sh.numel()/(d1*d2*d3);
+                        tile.view.reshape(&[d0, d1, d2, d3].into());
                     }
                     _ => {}
                 }

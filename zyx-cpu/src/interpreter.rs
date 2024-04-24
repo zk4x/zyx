@@ -287,3 +287,14 @@ fn reduce_op<T: Scalar + Sync + Send>(
     }*/
     res
 }
+
+
+/*
+
+In iterpreted mode, we can have a search over graph joining ops together and launching it in predetermined
+kernels, like matmul being movement, binary and reduce combination, or special kernels for softmax
+and some other most common types of kernels. For best performance, there will be compiled
+kernel, which however requires compiler to be present on the system where the program is deployed
+or deploying "static" (basically like jitted pytorch models) graphs.
+
+ */
