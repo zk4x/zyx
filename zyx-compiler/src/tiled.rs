@@ -66,7 +66,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         Ok(())
     }
 
-    fn compile_graph(&mut self, _global_rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
+    fn compile_graph(&mut self, global_rcs: &[u32], nodes: &[Node], to_eval: &BTreeSet<Id>) -> Result<Self::CompiledGraph, ZyxError> {
         let hw_info = self.compiler.hardware_info();
         std::println!("{hw_info:?}");
         // Find the best order of execution of nodes
@@ -122,6 +122,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                     scope: 2,
                     first_op: FirstOp::Load { dtype },
                     ops: Vec::new(),
+                    can_be_fused: global_rcs[nid.i()] > 1,
                 });
                 continue;
             }
@@ -147,6 +148,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             op: BOp::Add,
                         },
                         ops: vec![],
+                        can_be_fused: global_rcs[nid.i()] > 1,
                     };
                     tiles.insert(nid, tile);
                 }
@@ -159,6 +161,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                                 scope: 2,
                                 first_op: FirstOp::Movement { x: *x },
                                 ops: vec![],
+                                can_be_fused: global_rcs[nid.i()] > 1,
                             };
                             tiles.insert(nid, tile);
                         }
@@ -176,6 +179,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                         scope: 2,
                         first_op: FirstOp::Movement { x: *x },
                         ops: vec![],
+                        can_be_fused: global_rcs[nid.i()] > 1,
                     };
                     tiles.insert(nid, tile);
                 }
@@ -194,6 +198,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                                 scope: 2,
                                 first_op: FirstOp::Movement { x: *x },
                                 ops: vec![],
+                                can_be_fused: global_rcs[nid.i()] > 1,
                             };
                             tiles.insert(nid, tile);
                         }
@@ -216,6 +221,7 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
                             op: ROp::Sum
                         },
                         ops: vec![],
+                        can_be_fused: global_rcs[nid.i()] > 1,
                     };
                     tiles.insert(nid, tile);
                 }
@@ -226,9 +232,9 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
         }
 
         // Print AST
-        for tile in &tiles {
+        /*for tile in &tiles {
             std::println!("{tile:?}");
-        }
+        }*/
 
         // Reshape and permute tiles to use exactly work 3 dimensions
         // and at most single reduce loop over the last dimension>
@@ -312,16 +318,26 @@ impl<C: Compiler> RuntimeBackend for CompiledBackend<C> {
             }
         }
 
-        // Print AST
-        for tile in &tiles {
-            std::println!("{tile:?}");
-        }
+        //std::println!();
+        //std::println!();
 
+        // Print AST
+        /*for tile in &tiles {
+            std::println!("{tile:?}");
+        }*/
 
         // Rewrite tiled representation to looped representation
-        let looped = looped::tiled_to_looped(tiles, &order);
+        let looped = looped::tiled_to_ir(tiles, &order);
+        //std::println!("{looped:#?}");
 
-
+        let mut to_compile = to_eval.clone();
+        let mut programs = Vec::new();
+        while let Some(id) = to_compile.pop_last() {
+            // Go backward from to_eval, compile those kernels and then compile all kernels
+            // that are used as arguments to those kernels.
+            // Search over
+            programs.push(self.compiler.compile_program(&looped[&id]));
+        }
 
         panic!();
 
@@ -360,6 +376,7 @@ pub(crate) struct Tile {
     // Note that order of these ops does not matter for correctness,
     // but may matter for performance
     pub(crate) ops: Vec<UOp>,
+    can_be_fused: bool, // true by default, false if this tile is used by more than one tile (rc>1)
 }
 
 impl Tile {
@@ -369,26 +386,34 @@ impl Tile {
 }
 
 #[derive(Debug, Clone)]
-enum ROp {
+pub(crate) enum ROp {
     Sum,
     Max,
 }
 
-#[derive(Debug, Clone)]
-enum UOp {
-    Exp,
+// Includes Noop for copying between tiles of various scopes
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UOp {
+    Noop,
     Neg,
+    Sin,
+    Cos,
+    Exp,
+    Ln,
     Tanh,
+    Sqrt,
+    Cast(DType),
 }
 
-#[derive(Debug, Clone)]
-enum BOp {
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BOp {
     Add,
     Sub,
     Mul,
     Div,
     Pow,
     Cmplt,
+    Max, // for ReLU and max reduce
 }
 
 // It is better if these ops represent breaks between tiles,

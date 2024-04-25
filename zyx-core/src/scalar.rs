@@ -79,7 +79,7 @@ impl Scalar for f16 {
     }
 
     fn from_i32(t: i32) -> Self {
-        f16::from_i32(t)
+        f16::from_f32(t as f32)
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -103,15 +103,15 @@ impl Scalar for f16 {
     }
 
     fn into_f32(self) -> f32 {
-        self.into_f32()
+        self.to_f32()
     }
 
     fn into_f64(self) -> f64 {
-        self.into_f64()
+        self.to_f64()
     }
 
     fn into_i32(self) -> i32 {
-        self.into_i32()
+        self.to_f32() as i32
     }
 
     fn reciprocal(self) -> Self {
@@ -127,27 +127,27 @@ impl Scalar for f16 {
     }
 
     fn sin(self) -> Self {
-        f16::sin(self)
+        f16::from_f32(self.to_f32().sin())
     }
 
     fn cos(self) -> Self {
-        f16::cos(self)
+        f16::from_f32(self.to_f32().cos())
     }
 
     fn exp(self) -> Self {
-        f16::exp(self)
+        f16::from_f32(self.to_f32().exp())
     }
 
     fn ln(self) -> Self {
-        f16::ln(self)
+        f16::from_f32(self.to_f32().ln())
     }
 
     fn tanh(self) -> Self {
-        f16::tanh(self)
+        f16::from_f32(self.to_f32().tanh())
     }
 
     fn sqrt(self) -> Self {
-        f16::sqrt(self)
+        f16::from_f32(self.to_f32().sqrt())
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -167,7 +167,7 @@ impl Scalar for f16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        todo!()
+        f16::from_f32(self.to_f32().pow(rhs.to_f32()))
     }
 
     fn cmplt(self, rhs: Self) -> Self {
@@ -191,11 +191,7 @@ impl Scalar for f16 {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        todo!()
-        // Less than 1% error is OK
-        //(self == -f16::INFINITY && rhs == -f16::INFINITY)
-            //|| (self - rhs).abs() < self.abs() * 0.01
-            //|| (self - rhs).abs() < Self::epsilon()
+        self.to_f32() == rhs.to_f32()
     }
 }
 

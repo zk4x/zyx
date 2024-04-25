@@ -3,7 +3,7 @@ use alloc::{
 };
 use core::{ffi::c_void, ptr};
 use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish, cl_device_info, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES};
-use zyx_compiler::HWInfo;
+use zyx_compiler::{HWInfo, IRKernel};
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
@@ -699,12 +699,12 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(())
     }
 
-    fn compile_program(&mut self, ir: &zyx_compiler::IRKernel) -> Result<Self::Program, ZyxError> {
-        /*let id_t = "unsigned int";
+    fn compile_program(&mut self, ir: &IRKernel) -> Result<Self::Program, ZyxError> {
+        let id_t = "unsigned int";
         let mut source = f!("(\n");
 
         // Kernel arguments
-        for (i, IRKernelArg { dtype, read_only }) in ir.kernel_args.iter().enumerate() {
+        /*for (i, IRKernelArg { dtype, read_only }) in ir.kernel_args.iter().enumerate() {
             source += &f!(
                 "  __global {}{}* gmem{i},\n",
                 if *read_only { "const " } else { "" },

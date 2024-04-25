@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use alloc::vec;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use crate::axes::Axes;
@@ -169,6 +170,8 @@ impl View {
             }
         }).collect();
         new_shape.reverse();
+        // TODO fix binds
+        let binds = vec![0; new_shape.len()];
         if self.is_last_shape_contiguous() {
             // Merge contiguous shape
             self.shapes[0] = new_shape;

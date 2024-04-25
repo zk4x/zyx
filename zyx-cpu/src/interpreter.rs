@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use half::f16;
 #[cfg(feature = "std")]
 use rayon::prelude::*;
-use zyx_core::dtype::DType;
 use zyx_core::{
     axes::Axes, error::ZyxError, node::Node, runtime::RuntimeBackend, scalar::Scalar, shape::Shape,
     tensor::Id, view::View,

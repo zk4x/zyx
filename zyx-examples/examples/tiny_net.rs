@@ -23,7 +23,7 @@ fn main() -> Result<(), ZyxError> {
         println!("{}", t.id());
     }
 
-    let x = dev.uniform([2, 3], 0..2);
+    let x = dev.uniform([2, 3], 0..2)?;
 
     let _grads = x.backward(&tiny_net);
 

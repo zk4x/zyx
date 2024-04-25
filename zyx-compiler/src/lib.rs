@@ -30,6 +30,8 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use zyx_core::dtype::DType;
 use zyx_core::scalar::Scalar;
 use zyx_core::tensor::Id;
+use zyx_core::view::View;
+use crate::tiled::{BOp, UOp};
 
 /// Compiled backend that holds compiler, buffers and programs
 pub struct CompiledBackend<C: Compiler> {
@@ -47,7 +49,41 @@ impl<C: Compiler> CompiledBackend<C> {
     }
 }
 
-pub struct IRKernel {}
+#[derive(Debug, Clone)]
+enum Op {
+    // Argument outside of kernel (appears in function arguments)
+    Arg {
+        id: Id,
+        dtype: DType,
+    },
+    // Movement op, simply changes the view of this buffer. This means moving things around in memory
+    // and thus is extremely expensive. We should use memory caching here if possible.
+    Movement {
+        x: usize,
+        view: View,
+    },
+    // Cheap op
+    Unary {
+        x: usize,
+        op: UOp,
+    },
+    // Even binary ops are cheap
+    Binary {
+        x: usize,
+        y: usize,
+        op: BOp,
+    },
+    Loop {
+        iters: usize,
+        scope: u8,
+    },
+    EndLoop,
+}
+
+#[derive(Debug)]
+pub struct IRKernel {
+    ops: Vec<Op>,
+}
 
 /// Hardware information needed for applying optimizations
 #[derive(Debug)]
