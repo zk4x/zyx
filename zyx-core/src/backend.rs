@@ -16,11 +16,13 @@ use half::f16;
 pub trait Backend: Copy {
     /// Create graph of operations between tensors in dot format for visualization
     #[must_use]
-    fn plot_graph<'a>(
+    fn plot_graph<'a, TI>(
         self,
-        tensors: impl IntoIterator<Item = &'a Tensor<Self>>,
+        tensors: TI,
     ) -> String
-    where Self: 'a;
+    where
+        Self: 'a,
+        TI: IntoIterator<Item = &'a Tensor<Self>>;
 
     /// Create new tensor using values from uniform distribution
     #[must_use]

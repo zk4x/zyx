@@ -1,9 +1,9 @@
 use alloc::{
-    boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::String, vec::Vec,
+    boxed::Box, collections::{BTreeMap, BTreeSet}, ffi::CString, format as f, string::String, vec::Vec,
 };
 use core::{ffi::c_void, ptr};
 use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish, cl_device_info, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES};
-use zyx_compiler::{HWInfo, IRKernel};
+use zyx_compiler::{HWInfo, IRKernel, Op};
 use zyx_core::{dtype::DType, error::ZyxError, scalar::Scalar};
 
 //const VECTOR_SYMBOLS: [&str; 16] = [".s0", ".s1", ".s2", ".s3", ".s4", ".s5", ".s6", ".s7", ".s8", ".s9", ".sa", ".sb", ".sc", ".sd", ".se", ".sf"];
@@ -704,10 +704,19 @@ impl zyx_compiler::Compiler for Compiler {
         let mut source = f!("(\n");
 
         // Kernel arguments
-        /*for (i, IRKernelArg { dtype, read_only }) in ir.kernel_args.iter().enumerate() {
+        let mut args = BTreeMap::new();
+        for (i, op) in ir.ops.iter().enumerate() {
+            if let Op::Load { id, dtype } = op {
+                args.entry(id).or_insert((dtype, true));
+            }
+            if let Op::Store { id, dtype } = op {
+                args.insert(id, (dtype, false));
+            }
+        }
+        for (id, (dtype, read_only)) in args {
             source += &f!(
-                "  __global {}{}* gmem{i},\n",
-                if *read_only { "const " } else { "" },
+                "  __global {}{}* gmem{id},\n",
+                if read_only { "const " } else { "" },
                 dtype.ocl_str()
             );
         }
@@ -718,7 +727,7 @@ impl zyx_compiler::Compiler for Compiler {
         let mut indent = String::from("  ");
 
         // Global and local indices
-        for (i, (gwd, lwd)) in ir
+        /*for (i, (gwd, lwd)) in ir
             .global_work_size
             .iter()
             .zip(ir.local_work_size.iter())
@@ -1034,45 +1043,3 @@ impl zyx_compiler::Compiler for Compiler {
         Ok(())
     }
 }
-
-/*#[test]
-fn exp_test() -> Result<(), ZyxError> {
-    let dev = crate::device_builder().platform_id(0).build()?;
-    let x = dev.randn([1024], DType::F32);
-    //let x = dev.uniform([4, 3], 0f32..1f32);
-    //let x = dev.randn([4, 5], DType::F32);
-    let y = x.exp();
-    //let x_vec: Vec<f32> = x.to_vec()?;
-    let _y_vec: Vec<f32> = y.to_vec()?;
-    //panic!();
-    //panic!("{y_vec:?}");
-    Ok(())
-}*/
-
-/*#[test]
-fn sum_test() -> Result<(), ZyxError> {
-    let dev = crate::device()?;
-    let x = dev.tensor([[8, 4, 3], [5, 4, 2]]).transpose();
-    //let x = dev.randn([1024, 1024], DType::I32);
-    //let x = dev.randn([10, 12], DType::F32);
-    let y = x.sum(-1);
-    //std::println!("y shape: {:?}", y.shape());
-    let y = y.exp() + y;
-    let y_vec: Vec<i32> = y.to_vec()?;
-    assert_eq!(y_vec, [13, 8, 5]);
-    //panic!();
-    //panic!("{y_vec:?}");
-    // res [[9], [7]]
-    Ok(())
-}*/
-
-/*#[test]
-fn t5() -> Result<(), ZyxError> {
-    let dev = crate::device_builder().platform_id(0).build()?;
-    let x = dev.uniform([1, 1, 1, 7, 9], 0f32..100f32);
-    std::println!("{x:6.2}");
-    let z = x.sum(-2);
-    std::println!("{z:6.2}");
-    panic!();
-    Ok(())
-}*/

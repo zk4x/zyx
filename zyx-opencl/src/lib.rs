@@ -118,12 +118,13 @@ impl OpenCL {
 }
 
 impl Backend for &OpenCL {
-    fn plot_graph<'a>(
+    fn plot_graph<'a, TI>(
         self,
-        tensors: impl IntoIterator<Item = &'a Tensor<Self>>,
+        tensors: TI,
     ) -> alloc::string::String
     where
-        Self: 'a
+        Self: 'a,
+        TI: IntoIterator<Item = &'a Tensor<Self>>,
     {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
         self.0.borrow().plot_graph_dot(&ids)

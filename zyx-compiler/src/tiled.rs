@@ -393,7 +393,7 @@ pub(crate) enum ROp {
 
 // Includes Noop for copying between tiles of various scopes
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum UOp {
+pub enum UOp {
     Noop,
     Neg,
     Sin,
@@ -406,7 +406,7 @@ pub(crate) enum UOp {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum BOp {
+pub enum BOp {
     Add,
     Sub,
     Mul,

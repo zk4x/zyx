@@ -50,18 +50,26 @@ impl<C: Compiler> CompiledBackend<C> {
 }
 
 #[derive(Debug, Clone)]
-enum Op {
-    // Argument outside of kernel (appears in function arguments)
-    Arg {
+pub enum Op {
+    // Global kernel argument load
+    Load {
+        id: Id,
+        dtype: DType,
+    },
+    // Global kerneL argument store
+    Store {
         id: Id,
         dtype: DType,
     },
     // Movement op, simply changes the view of this buffer. This means moving things around in memory
     // and thus is extremely expensive. We should use memory caching here if possible.
+    // Things can be also moved between different memory scopes.
     Movement {
         x: usize,
+        scope: u8,
         view: View,
     },
+    // Unary and binary ops always take and return variables in registers
     // Cheap op
     Unary {
         x: usize,
@@ -73,16 +81,24 @@ enum Op {
         y: usize,
         op: BOp,
     },
+    // TODO we also need
+    // Loop, global, local, register ...
     Loop {
         iters: usize,
         scope: u8,
     },
     EndLoop,
+    // Optimation instructions, implementation is hardware specific and thus is up to the compiler
+    // Matmul of two 16x16 tiles, result is also 16x16 tile stored in local memory
+    NativeMM16x16 {
+        x: usize,
+        y: usize,
+    },
 }
 
 #[derive(Debug)]
 pub struct IRKernel {
-    ops: Vec<Op>,
+    pub ops: Vec<Op>,
 }
 
 /// Hardware information needed for applying optimizations

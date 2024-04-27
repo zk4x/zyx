@@ -26,8 +26,8 @@ pub(crate) fn tiled_to_ir(tiles: BTreeMap<Id, Tile>, order: &[Id]) -> BTreeMap<I
                     Op::Loop { iters: sh[0], scope: 0 },
                     Op::Loop { iters: sh[1], scope: 0 },
                     Op::Loop { iters: sh[2], scope: 0 },
-                    Op::Arg { id: *nid, dtype },
-                    Op::Movement { x: 3, view: tile.view.clone() },
+                    Op::Load { id: *nid, dtype },
+                    Op::Movement { x: 3, scope: 0, view: tile.view.clone() },
                 ];
                 for op in &tile.ops {
                     ops.push(Op::Unary { x: ops.len() - 1, op: *op });
@@ -52,9 +52,10 @@ pub(crate) fn tiled_to_ir(tiles: BTreeMap<Id, Tile>, order: &[Id]) -> BTreeMap<I
                 // Reindex ops from tile_y
                 for op in &kernel_y.ops {
                     match op {
-                        Op::Movement { x, view } => {
+                        Op::Movement { x, scope, view } => {
                             ops.push(Op::Movement {
                                 x: x + n,
+                                scope: *scope,
                                 view: view.clone(),
                             });
                         }

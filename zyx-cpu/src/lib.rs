@@ -33,11 +33,9 @@ use crate::interpreter::Interpreter;
 
 extern crate alloc;
 use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
+    collections::{BTreeMap, BTreeSet}, string::String, vec::Vec
 };
 use core::ops::Range;
-use std::cell::RefCell;
 use std::sync::RwLock;
 #[cfg(feature = "std")]
 pub use zyx_core::io::save;
@@ -48,7 +46,7 @@ use zyx_core::{
     scalar::Scalar,
     shape::Shape,
     tensor::Id,
-    tensor::{tensor, IntoTensor},
+    tensor::tensor,
 };
 pub use zyx_core::{dtype::DType, error::ZyxError, tensor::Tensor};
 
@@ -61,12 +59,13 @@ pub fn device() -> Result<CPU, ZyxError> {
 }
 
 impl Backend for &CPU {
-    fn plot_graph<'a>(
+    fn plot_graph<'a, TI>(
         self,
-        tensors: impl IntoIterator<Item = &'a Tensor<Self>>,
-    ) -> alloc::string::String
+        tensors: TI,
+    ) -> String
     where
         Self: 'a,
+        TI: IntoIterator<Item = &'a Tensor<Self>>,
     {
         let ids: Vec<Id> = tensors.into_iter().map(|t| t.id()).collect();
         self.0.read().unwrap().plot_graph_dot(&ids)
