@@ -14,3 +14,7 @@ categories = ["computer-vision", "science"]
 
 [badges]
 maintenance = { status = "experimental" }
+
+[dependencies]
+half = { version = "2.4.1", default-features = false }
+spin = { version = "0.9.8", default-features = false, features = ["mutex", "spin_mutex"] }
