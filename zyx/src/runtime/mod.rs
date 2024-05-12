@@ -15,6 +15,8 @@ mod node;
 mod compiler;
 mod interpreter;
 
+type TensorId = u32;
+
 enum RuntimeError {
     CompilerError(CompilerError),
     InterpreterError(InterpreterError),
@@ -113,63 +115,63 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn retain(&mut self, x: Tensor) {
+    pub(crate) fn retain(&mut self, x: TensorId) {
         self.rcs[x.id()] += 1;
     }
 
-    pub(crate) fn release(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn release(&mut self, x: TensorId) {
         todo!()
     }
 
-    pub(crate) fn shape(&self, x: Tensor) -> Vec<usize> {
+    pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {
         todo!()
     }
 
-    pub(crate) fn dtype(&self, x: Tensor) -> DType {
+    pub(crate) fn dtype(&self, x: TensorId) -> DType {
         todo!()
     }
 
-    pub(crate) fn device(&self, x: Tensor) -> Device {
+    pub(crate) fn device(&self, x: TensorId) -> Device {
         todo!()
     }
 
-    pub(crate) fn relu(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn relu(&mut self, x: TensorId) -> Tensor {
         self.push(Node::ReLU(x))
     }
 
-    pub(crate) fn exp(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn exp(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Exp(x))
     }
 
-    pub(crate) fn ln(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn ln(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Ln(x))
     }
 
-    pub(crate) fn sin(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn sin(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Sin(x))
     }
 
-    pub(crate) fn cos(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn cos(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Cos(x))
     }
 
-    pub(crate) fn sqrt(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn sqrt(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Sqrt(x))
     }
 
-    pub(crate) fn tanh(&mut self, x: Tensor) -> Tensor {
+    pub(crate) fn tanh(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Cos(x))
     }
 }
 
 impl Runtime {
-    fn is_empty(&self, x: Tensor) -> bool {
+    fn is_empty(&self, x: TensorId) -> bool {
         self.rcs[x.id()] == 0
     }
 
     fn store<T: Scalar>(&mut self, data: &[T], dev: Device) -> Result<Tensor, RuntimeError> {
         let node = Node::Leaf(data.len());
-        let tensor = if let Some(i) = (0..self.rcs.len()).into_iter().skip_while(|i| !self.is_empty(Tensor::new(*i))).next() {
+        let tensor = if let Some(i) = (0..self.rcs.len()).into_iter().skip_while(|i| !self.is_empty(*i as u32)).next() {
             let tensor = Tensor::new(i);
             self.rcs[i] = 1;
             self.nodes[i] = node;

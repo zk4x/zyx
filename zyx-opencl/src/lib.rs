@@ -7,7 +7,7 @@
 //! # Ok::<(), zyx_opencl::ZyxError>(())
 //! ```
 //!
-//! For README, quick tutorial and source code, please visit [https://www.github.com/zk4x/zyx].
+//! For README, quick tutorial and source code, please visit `<https://www.github.com/zk4x/zyx>`.
 //!
 //! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
 
