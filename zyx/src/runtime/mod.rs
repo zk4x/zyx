@@ -132,7 +132,20 @@ impl Runtime {
     }
 
     pub(crate) fn release(&mut self, x: TensorId) {
-        todo!()
+        let mut params = Vec::with_capacity(10);
+        params.push(x);
+        while let Some(x) = params.pop() {
+            self.rcs[x as usize] -= 1;
+            if self.rcs[x as usize] == 0 {
+                params.extend(self.nodes[x as usize].parameters());
+                match self.devices[x as usize] {
+                    Device::CUDA => self.cuda.as_mut().unwrap().remove(x),
+                    Device::OpenCL => self.opencl.as_mut().unwrap().remove(x),
+                    Device::WGPU => self.wgpu.as_mut().unwrap().remove(x),
+                    Device::CPU => todo!(), //self.cpu.as_mut().unwrap().remove(x),
+                }
+            }
+        }
     }
 
     pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {

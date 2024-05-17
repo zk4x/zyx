@@ -1,3 +1,4 @@
+use alloc::collections::BTreeMap;
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
 
@@ -5,8 +6,11 @@ pub(super) mod opencl;
 pub(super) mod cuda;
 pub(super) mod wgpu;
 
+type TensorId = u32;
+
 pub(super) struct CompiledBackend<C: Compiler> {
-    comiler: C,
+    compiler: C,
+    buffers: BTreeMap<TensorId, C::Buffer>,
 }
 
 pub(crate) enum CompilerError {
@@ -67,11 +71,18 @@ pub struct HWInfo {
 impl<C: Compiler> CompiledBackend<C> {
     pub(super) fn initialize() -> Result<Self, CompilerError> {
         Ok(Self {
-            comiler: C::initialize()?,
+            compiler: C::initialize()?,
+            buffers: BTreeMap::new(),
         })
     }
 
     pub(super) fn store<T: Scalar>(&mut self, data: &[T]) -> Result<(), CompilerError> {
         todo!()
+    }
+
+    pub(super) fn remove(&mut self, x: TensorId) {
+        if let Some(buffer) = self.buffers.remove(&x) {
+            self.compiler.deallocate_memory(buffer);
+        }
     }
 }
