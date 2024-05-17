@@ -157,7 +157,7 @@ impl Runtime {
     }
 
     pub(crate) fn device(&self, x: TensorId) -> Device {
-        todo!()
+        self.devices[x as usize]
     }
 
     pub(crate) fn relu(&mut self, x: TensorId) -> Tensor {
