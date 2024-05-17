@@ -47,6 +47,7 @@ pub(crate) struct Runtime {
     wgpu: Option<CompiledBackend<WGPU>>,
     cpu: Option<InterpretedBackend<CPU>>,
     pub(crate) default_device: Device,
+    pub(crate) default_device_set_by_user: bool,
 }
 
 impl Runtime {
@@ -64,10 +65,21 @@ impl Runtime {
             wgpu: None,
             cpu: None,
             default_device: Device::CPU,
+            default_device_set_by_user: false,
         }
     }
 
+    /// Tries to initialize all devices and set the first
+    /// successfully initialized device as the default_device in this order:
+    /// 1. CUDA
+    /// 2. OpenCL
+    /// 3. WGPU
+    /// If they all fail to initialize, then default_device
+    /// is set to CPU.
     pub(crate) fn set_default_device_best(&mut self) {
+        if self.default_device_set_by_user {
+            return
+        }
         if self.initialize_device(Device::CUDA) {
             self.default_device = Device::CUDA;
             return
@@ -116,7 +128,7 @@ impl Runtime {
     }
 
     pub(crate) fn retain(&mut self, x: TensorId) {
-        self.rcs[x.id()] += 1;
+        self.rcs[x as usize] += 1;
     }
 
     pub(crate) fn release(&mut self, x: TensorId) {
@@ -166,19 +178,19 @@ impl Runtime {
 
 impl Runtime {
     fn is_empty(&self, x: TensorId) -> bool {
-        self.rcs[x.id()] == 0
+        self.rcs[x as usize] == 0
     }
 
     fn store<T: Scalar>(&mut self, data: &[T], dev: Device) -> Result<Tensor, RuntimeError> {
         let node = Node::Leaf(data.len());
         let tensor = if let Some(i) = (0..self.rcs.len()).into_iter().skip_while(|i| !self.is_empty(*i as u32)).next() {
-            let tensor = Tensor::new(i);
+            let tensor = Tensor::from_raw(i);
             self.rcs[i] = 1;
             self.nodes[i] = node;
             self.dtypes[i] = T::dtype();
             tensor
         } else {
-            let tensor = Tensor::new(self.rcs.len());
+            let tensor = Tensor::from_raw(self.rcs.len());
             self.rcs.push(1);
             self.nodes.push(node);
             self.dtypes.push(T::dtype());

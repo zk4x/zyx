@@ -1,13 +1,13 @@
 use zyx_core::backend::Backend;
 use zyx_core::error::ZyxError;
 use zyx_derive::Module;
-use zyx_nn::{prelude::*, Linear};
+use zyx_nn::Linear;
 
 #[derive(Module)]
-struct TinyNet<B: Backend> {
-    l0: Linear<B>,
+struct TinyNet {
+    l0: Linear,
     lr: f32,
-    l1: Linear<B>,
+    l1: Linear,
 }
 
 fn main() -> Result<(), ZyxError> {

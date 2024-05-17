@@ -1,4 +1,4 @@
-use core::ops::{Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use core::ops::{Div, Mul, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::RT;
@@ -27,7 +27,7 @@ impl Drop for Tensor {
 }
 
 impl Tensor {
-    pub(crate) fn new(id: usize) -> Tensor {
+    pub(crate) fn from_raw(id: usize) -> Tensor {
         Tensor {
             id: id as u32,
         }
@@ -47,18 +47,8 @@ impl Tensor {
     pub fn set_default_device(device: Device) -> bool {
         let mut g = RT.lock();
         g.default_device = device;
+        g.default_device_set_by_user = true;
         g.initialize_device(device)
-    }
-
-    /// Tries to initialize all devices and set the first
-    /// successfully initialized device as the default_device in this order:
-    /// 1. CUDA
-    /// 2. OpenCL
-    /// 3. WGPU
-    /// If they all fail to initialize, then default_device
-    /// is set to CPU.
-    pub fn set_default_device_best() {
-        RT.lock().set_default_device_best();
     }
 
     #[must_use]
@@ -91,38 +81,51 @@ impl Tensor {
         todo!()
     }
 
+    // Initializers
+    #[must_use]
+    pub fn from_parts(data: &[impl Scalar], shape: impl IntoShape) -> Tensor {
+        todo!()
+    }
+
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
+        RT.lock().set_default_device_best();
         todo!()
     }
 
@@ -244,7 +247,7 @@ impl Tensor {
 
     // movement
     #[must_use]
-    pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
+    pub fn expand(&self, shape: impl IntoShape) -> Tensor {
         todo!()
     }
 
@@ -254,12 +257,12 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
+    pub fn pad(&self, padding: impl IntoPadding, value: impl Scalar) -> Tensor {
         todo!()
     }
 
     #[must_use]
-    pub fn max(&self, axes: impl IntoAxes) -> Tensor {
+    pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
         todo!()
     }
 
@@ -268,11 +271,167 @@ impl Tensor {
         todo!()
     }
 
+    // reduce
+    #[must_use]
+    pub fn ln_softmax(&self, axes: impl IntoAxes) -> Tensor {
+        let m = self - self.max(axes.clone());
+        &m - m.exp().sum(axes).ln()
+    }
+
+    #[must_use]
+    pub fn max(&self, axes: impl IntoAxes) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn norm(&self, axes: impl IntoAxes, p: impl Scalar) -> Tensor {
+        self.pow(p.clone()).sum(axes).pow(p.reciprocal())
+    }
+
+    #[must_use]
+    pub fn product(&self, axes: impl IntoAxes) -> Tensor {
+        self.ln().sum(axes).exp()
+    }
+
+    #[must_use]
+    pub fn std(&self, axes: impl IntoAxes) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
+        let e = (self - self.max(axes.clone())).exp();
+        &e / e.sum(axes)
+    }
+
+    #[must_use]
+    pub fn var(&self, axes: impl IntoAxes) -> Tensor {
+        todo!()
+    }
+
+    // index
     #[must_use]
     pub fn get(&self, index: impl IntoIndex) -> Tensor {
         todo!()
     }
+
+    #[must_use]
+    pub fn diagonal(&self) -> Tensor {
+        let n = *self.shape().last().unwrap();
+        self.flatten(..)
+            .pad([(0, n as i64)], 0)
+            .reshape([n, n + 1])
+            .get((.., 0))
+    }
+
+    // binary
+    #[must_use]
+    pub fn cmplt(&self, other: impl Into<Tensor>) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn dot(&self, other: impl Into<Tensor>) -> Tensor {
+        todo!()
+    }
+
+    pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
+        todo!()
+    }
+
+    // ternary
+    pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Tensor {
+        todo!()
+    }
+
+    // loss functions
+    #[must_use]
+    pub fn cross_entropy_loss(&self, target: impl Into<Tensor>, axes: impl IntoAxes) -> Tensor {
+        self.ln_softmax(axes) * target
+    }
+
+    #[must_use]
+    pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
+        (self - target).abs()
+    }
+
+    #[must_use]
+    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Tensor {
+        (self - target).pow(2)
+    }
+
+    #[must_use]
+    pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Tensor {
+        let rhs: Tensor = rhs.into();
+        let eps: Tensor = eps.into();
+        let x = self.pow(2).sqrt() * rhs.pow(2).sqrt();
+        self * rhs / x.cmplt(&eps).where_(eps, x)
+    }
+
+    // misc
+    /// Flatten. Joins axes into one dimension,
+    #[must_use]
+    pub fn flatten(&self, axes: impl FlattenAxes) -> Tensor {
+        let sh = self.shape();
+        let n: usize = sh.iter().product();
+        let rank = sh.len();
+        let mut ld = 1;
+        let mut first_dims = false;
+        for a in axes.into_flatten_axes(rank) {
+            let a = if a > 0 {
+                a as usize
+            } else {
+                (a + rank as i64) as usize
+            };
+            if a == 0 {
+                first_dims = true;
+            }
+            ld *= sh[a];
+        }
+        if first_dims {
+            self.reshape([ld, n / ld])
+        } else {
+            self.reshape([n / ld, ld])
+        }
+    }
+
+    #[must_use]
+    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: i64) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: i64) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn split(&self, sizes: &[usize], dim: i64) -> Vec<Tensor> {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn pool(&self) -> Tensor {
+        todo!()
+    }
+
+    #[must_use]
+    pub fn conv(&self) -> Tensor {
+        todo!()
+    }
 }
+
+// impl neg, add, sub, mul, div, eq for Tensor
 
 /*impl<T: Scalar> TryInto<T> for Tensor {
     type Error = ();
@@ -281,9 +440,16 @@ impl Tensor {
     }
 }*/
 
-impl<T: Scalar> TryInto<Vec<T>> for Tensor {
+/*impl<T: Scalar> TryInto<Vec<T>> for Tensor {
     type Error = ();
     fn try_into(self) -> Result<Vec<T>, Self::Error> {
+        todo!()
+    }
+}*/
+
+impl<T: Scalar> TryFrom<&Tensor> for Vec<T> {
+    type Error = ();
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
         todo!()
     }
 }
@@ -305,29 +471,33 @@ impl core::fmt::Display for Tensor {
         };
         let res = match self.dtype() {
             DType::F16 => {
-                if let Ok(data) = &self.to_vec::<f16>() {
-                    tensor_to_string(data, &self.shape(), precision, f.width())
+                let data: Result<Vec<f16>, _> = self.try_into();
+                if let Ok(data) = data {
+                    tensor_to_string(&data, &self.shape(), precision, f.width())
                 } else {
-                    "f32 tensor failed to realize".into()
+                    "f16 tensor failed to realize".into()
                 }
             }
             DType::F32 => {
-                if let Ok(data) = &self.to_vec::<f32>() {
-                    tensor_to_string(data, &self.shape(), precision, f.width())
+                let data: Result<Vec<f32>, _> = self.try_into();
+                if let Ok(data) = data {
+                    tensor_to_string(&data, &self.shape(), precision, f.width())
                 } else {
                     "f32 tensor failed to realize".into()
                 }
             }
             DType::F64 => {
-                if let Ok(data) = &self.to_vec::<f64>() {
-                    tensor_to_string(data, &self.shape(), precision, f.width())
+                let data: Result<Vec<f64>, _> = self.try_into();
+                if let Ok(data) = data {
+                    tensor_to_string(&data, &self.shape(), precision, f.width())
                 } else {
                     "f64 tensor failed to realize".into()
                 }
             }
             DType::I32 => {
-                if let Ok(data) = &self.to_vec::<i32>() {
-                    tensor_to_string(data, &self.shape(), precision, f.width())
+                let data: Result<Vec<i32>, _> = self.try_into();
+                if let Ok(data) = data {
+                    tensor_to_string(&data, &self.shape(), precision, f.width())
                 } else {
                     "i32 tensor failed to realize".into()
                 }
@@ -349,8 +519,8 @@ fn tensor_to_string<T: core::fmt::Display>(
     width: Option<usize>,
 ) -> alloc::string::String {
     use core::fmt::Write;
-    let n = shape.numel();
-    let ndim = shape.rank();
+    let n: usize = shape.iter().product();
+    let rank = shape.len();
     let mut res = alloc::string::String::new();
     if data.is_empty() {
         return "[]".into();
@@ -367,17 +537,17 @@ fn tensor_to_string<T: core::fmt::Display>(
             }
         }
     }
-    let d0 = shape[-1];
+    let d0 = shape[rank-1];
     for (i, x) in data.iter().enumerate() {
         {
             let mut var = 1;
-            let mut r = ndim;
+            let mut r = rank;
             while r > 0 {
                 if i % (n / var) == 0 {
-                    res += &(" ".repeat(ndim - r) + "[".repeat(r - 1).as_str());
+                    res += &(" ".repeat(rank - r) + "[".repeat(r - 1).as_str());
                     break;
                 }
-                var *= shape[ndim - r];
+                var *= shape[rank - r];
                 r -= 1;
             }
         }
@@ -387,13 +557,13 @@ fn tensor_to_string<T: core::fmt::Display>(
         }
         {
             let mut var = 1;
-            let mut r = ndim;
+            let mut r = rank;
             while r > 0 {
                 if (i + 1) % (n / var) == 0 {
                     res += &"]".repeat(r - 1);
                     break;
                 }
-                var *= shape[ndim - r];
+                var *= shape[rank - r];
                 r -= 1;
             }
         }
@@ -631,5 +801,99 @@ impl FlattenAxes for RangeToInclusive<i64> {
 impl FlattenAxes for RangeFull {
     fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
         0..rank as i64
+    }
+}
+
+pub trait IntoPadding {
+    fn into_padding(self) -> Vec<(i64, i64)>;
+}
+
+impl<const N: usize> IntoPadding for [(i64, i64); N] {
+    fn into_padding(self) -> Vec<(i64, i64)> {
+        self.into()
+    }
+}
+
+impl From<&Tensor> for Tensor {
+    fn from(value: &Tensor) -> Self {
+        value.clone()
+    }
+}
+
+impl<T: Scalar> From<T> for Tensor {
+    fn from(value: T) -> Self {
+        todo!()
+    }
+}
+
+impl<T: Scalar> From<Vec<T>> for Tensor {
+    fn from(value: Vec<T>) -> Self {
+        todo!()
+    }
+}
+
+impl<T: Scalar> From<&[T]> for Tensor {
+    fn from(value: &[T]) -> Self {
+        todo!()
+    }
+}
+
+impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
+    fn from(value: [T; D0]) -> Self {
+        todo!()
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
+    fn from(value: [[T; D1]; D0]) -> Self {
+        todo!()
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]> for Tensor {
+    fn from(value: [[[T; D2]; D1]; D0]) -> Self {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Sub<IT> for Tensor {
+    type Output = Tensor;
+    fn sub(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
+    type Output = Tensor;
+    fn sub(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Mul<IT> for Tensor {
+    type Output = Tensor;
+    fn mul(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
+    type Output = Tensor;
+    fn mul(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Div<IT> for Tensor {
+    type Output = Tensor;
+    fn div(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Div<IT> for &Tensor {
+    type Output = Tensor;
+    fn div(self, rhs: IT) -> Self::Output {
+        todo!()
     }
 }

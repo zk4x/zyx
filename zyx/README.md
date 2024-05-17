@@ -30,9 +30,9 @@ let x = x.to(Device::CUDA);
 ## Backends
 
 Zyx runs on different devices, current backends are CUDA, OpenCL, WGPU and CPU.
-To select the best device:
+Zyx automatically tries to select the best available device, but you can also manually change it.
 ```rust
-Tensor::set_default_device_best();
+Tensor::set_default_device(Device::CPU);
 ```
 
 ## Simple neural network

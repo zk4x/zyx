@@ -433,6 +433,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "zyx"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd1c42c0f4589efa23078b6c1083bce292d4d7c1104d733a67080152f92215e6"
+
+[[package]]
 name = "zyx-compiler"
 version = "0.1.2"
 dependencies = [
@@ -480,7 +486,7 @@ dependencies = [
 name = "zyx-nn"
 version = "0.1.2"
 dependencies = [
- "zyx-core",
+ "zyx 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
