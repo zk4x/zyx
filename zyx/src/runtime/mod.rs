@@ -153,7 +153,7 @@ impl Runtime {
     }
 
     pub(crate) fn dtype(&self, x: TensorId) -> DType {
-        todo!()
+        self.dtypes[x as usize]
     }
 
     pub(crate) fn device(&self, x: TensorId) -> Device {

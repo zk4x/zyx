@@ -1,3 +1,4 @@
+#[derive(Debug, Clone, Copy)]
 pub enum DType {
     BF16,
     F16,
