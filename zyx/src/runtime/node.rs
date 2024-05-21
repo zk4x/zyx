@@ -1,4 +1,4 @@
-use crate::DType;
+use crate::{DType, Tensor};
 
 type TensorId = u32;
 
@@ -25,32 +25,106 @@ impl Constant {
 }
 
 #[derive(PartialEq, PartialOrd)]
+pub(super) struct Slice {
+    pub(super) index: u32,
+    pub(super) len: u32,
+}
+
+#[derive(PartialEq, PartialOrd)]
 pub(super) enum Node {
-    Const(),
-    Leaf(usize),
-    Cast(TensorId),
-    ReLU(TensorId),
-    Neg(TensorId),
-    Inv(TensorId),
-    Cos(TensorId),
-    Sin(TensorId),
-    Exp(TensorId),
-    Ln(TensorId),
-    Sqrt(TensorId),
-    Tanh(TensorId),
-    Add(TensorId, TensorId),
-    Sub(TensorId, TensorId),
-    Mul(TensorId, TensorId),
-    Div(TensorId, TensorId),
-    Pow(TensorId, TensorId),
-    Cmplt(TensorId, TensorId),
-    Where(TensorId, TensorId, TensorId),
-    Reshape(TensorId),
-    Expand(TensorId),
-    Permute(TensorId),
-    Pad(TensorId),
-    Sum(TensorId),
-    Max(TensorId),
+    Const {
+        value: Constant,
+    },
+    Leaf {
+        len: usize,
+    },
+    Cast {
+        x: TensorId,
+    },
+    ReLU {
+        x: TensorId,
+    },
+    Neg {
+        x: TensorId,
+    },
+    Inv {
+        x: TensorId,
+    },
+    Cos {
+        x: TensorId,
+    },
+    Sin {
+        x: TensorId,
+    },
+    Exp {
+        x: TensorId,
+    },
+    Ln {
+        x: TensorId,
+    },
+    Sqrt {
+        x: TensorId,
+    },
+    Tanh {
+        x: TensorId,
+    },
+    Add {
+        x: TensorId,
+        y: TensorId,
+    },
+    Sub {
+        x: TensorId,
+        y: TensorId,
+    },
+    Mul {
+        x: TensorId,
+        y: TensorId,
+    },
+    Div {
+        x: TensorId,
+        y: TensorId,
+    },
+    Pow {
+        x: TensorId,
+        y: TensorId,
+    },
+    Cmplt {
+        x: TensorId,
+        y: TensorId,
+    },
+    Where {
+        x: TensorId,
+        y: TensorId,
+        z: TensorId,
+    },
+    Reshape {
+        x: TensorId,
+        shape: u32,
+    },
+    Expand {
+        x: TensorId,
+        shape: u32,
+    },
+    Permute {
+        x: TensorId,
+        axes: u32,
+        shape: u32,
+    },
+    Pad {
+        x: TensorId,
+        padding: u32,
+        shape: u32,
+    },
+    Sum {
+        x: TensorId,
+        axes: u32,
+        shape: u32,
+    },
+    Max {
+        x: TensorId,
+        axes: u32,
+        shape: u32,
+    },
 }
 
 /// Iterator over parameters of node which does not allocate on heap.
@@ -76,42 +150,42 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         match self {
-            Node::Const(..) | Node::Leaf(..) => NodeParametersIterator {
+            Node::Const {..} | Node::Leaf {..} => NodeParametersIterator {
                 parameters: [0; 3],
                 idx: 0,
                 len: 0,
             },
-            Node::Cast(x, ..)
-            | Node::Inv(x)
-            | Node::Neg(x)
-            | Node::ReLU(x)
-            | Node::Exp(x)
-            | Node::Ln(x)
-            | Node::Sin(x)
-            | Node::Cos(x)
-            | Node::Sqrt(x)
-            | Node::Tanh(x)
-            | Node::Reshape(x, ..)
-            | Node::Expand(x, ..)
-            | Node::Permute(x, ..)
-            | Node::Pad(x, ..)
-            | Node::Sum(x, ..)
-            | Node::Max(x, ..) => NodeParametersIterator {
+            Node::Cast {x, ..}
+            | Node::Inv {x}
+            | Node::Neg {x}
+            | Node::ReLU {x}
+            | Node::Exp {x}
+            | Node::Ln {x}
+            | Node::Sin {x}
+            | Node::Cos {x}
+            | Node::Sqrt {x}
+            | Node::Tanh {x}
+            | Node::Reshape {x, ..}
+            | Node::Expand {x, ..}
+            | Node::Permute {x, ..}
+            | Node::Pad {x, ..}
+            | Node::Sum {x, ..}
+            | Node::Max {x, ..} => NodeParametersIterator {
                 parameters: [*x, 0, 0],
                 idx: 0,
                 len: 1,
             },
-            Node::Add(x, y)
-            | Node::Sub(x, y)
-            | Node::Mul(x, y)
-            | Node::Div(x, y)
-            | Node::Cmplt(x, y)
-            | Node::Pow(x, y) => NodeParametersIterator {
+            Node::Add {x, y}
+            | Node::Sub {x, y}
+            | Node::Mul {x, y}
+            | Node::Div {x, y}
+            | Node::Cmplt {x, y}
+            | Node::Pow {x, y} => NodeParametersIterator {
                 parameters: [*x, *y, 0],
                 idx: 0,
                 len: 2,
             },
-            Node::Where(x, y, z) => NodeParametersIterator {
+            Node::Where {x, y, z} => NodeParametersIterator {
                 parameters: [*x, *y, *z],
                 idx: 0,
                 len: 3,

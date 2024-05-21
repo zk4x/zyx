@@ -39,7 +39,7 @@ pub(crate) struct Runtime {
     nodes: Vec<Node>,
     shapes: Vec<usize>,
     axes: Vec<usize>,
-    paddings: Vec<usize>,
+    paddings: Vec<isize>,
     dtypes: Vec<DType>,
     devices: Vec<Device>,
     opencl: Option<CompiledBackend<OpenCL>>,
@@ -149,7 +149,23 @@ impl Runtime {
     }
 
     pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {
-        todo!()
+        let mut x = x;
+        let mut i = 0;
+        while i < 10000 {
+            let node = &self.nodes[x as usize];
+            match node {
+                Node::Const {..} => return alloc::vec![1],
+                Node::Leaf {len} => return alloc::vec![*len],
+                Node::Reshape { shape, .. }
+                | Node::Pad { shape, .. }
+                | Node::Permute { shape, .. }
+                | Node::Sum { shape, .. }
+                | Node::Max { shape, .. }
+                | Node::Expand { shape, .. } => return self.shapes[(*shape as usize) + 1..(*shape as usize) + self.shapes[*shape as usize]].into(),
+                _ => x = node.parameters().next().unwrap(),
+            }
+        }
+        panic!("Shape of {x} could not be found. This is internal bug.")
     }
 
     pub(crate) fn dtype(&self, x: TensorId) -> DType {
@@ -161,31 +177,31 @@ impl Runtime {
     }
 
     pub(crate) fn relu(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::ReLU(x))
+        self.push(Node::ReLU { x })
     }
 
     pub(crate) fn exp(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::Exp(x))
+        self.push(Node::Exp { x })
     }
 
     pub(crate) fn ln(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::Ln(x))
+        self.push(Node::Ln { x })
     }
 
     pub(crate) fn sin(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::Sin(x))
+        self.push(Node::Sin { x })
     }
 
     pub(crate) fn cos(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::Cos(x))
+        self.push(Node::Cos { x })
     }
 
     pub(crate) fn sqrt(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::Sqrt(x))
+        self.push(Node::Sqrt { x })
     }
 
     pub(crate) fn tanh(&mut self, x: TensorId) -> Tensor {
-        self.push(Node::Cos(x))
+        self.push(Node::Cos { x })
     }
 }
 
@@ -195,7 +211,7 @@ impl Runtime {
     }
 
     fn store<T: Scalar>(&mut self, data: &[T], dev: Device) -> Result<Tensor, RuntimeError> {
-        let node = Node::Leaf(data.len());
+        let node = Node::Leaf { len: data.len() };
         let tensor = if let Some(i) = (0..self.rcs.len()).into_iter().skip_while(|i| !self.is_empty(*i as u32)).next() {
             let tensor = Tensor::from_raw(i);
             self.rcs[i] = 1;
