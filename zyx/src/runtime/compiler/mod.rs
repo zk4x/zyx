@@ -13,6 +13,7 @@ pub(super) struct CompiledBackend<C: Compiler> {
     buffers: BTreeMap<TensorId, C::Buffer>,
 }
 
+#[derive(Debug)]
 pub(crate) enum CompilerError {
     InitializationFailure,
     DeviceOutOfMemory,

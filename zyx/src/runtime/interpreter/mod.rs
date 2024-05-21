@@ -6,6 +6,7 @@ pub(super) struct InterpretedBackend<I> {
     interpreter: I,
 }
 
+#[derive(Debug)]
 pub(crate) enum InterpreterError {
     InitializationFailure,
     MemoryAllocationFailure,

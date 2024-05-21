@@ -1,36 +1,43 @@
+use half::{bf16, f16};
 use crate::{DType, Tensor};
 
 type TensorId = u32;
 
 /// Constant value
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum Constant {
+    BF16(bf16),
+    F16(f16),
     /// f32 constant
     F32(f32),
     /// f64 constant
     F64(f64),
+    U8(u8),
+    I8(i8),
+    I16(i16),
     /// i32 constant
     I32(i32),
+    I64(i64),
 }
 
 impl Constant {
     /// Get dtype of this constant
     pub fn dtype(&self) -> DType {
-        match self {
+        return match self {
+            Constant::BF16(..) => DType::BF16,
+            Constant::F16(..) => DType::F16,
             Constant::F32(..) => DType::F32,
             Constant::F64(..) => DType::F64,
+            Constant::U8(..) => DType::U8,
+            Constant::I8(..) => DType::I8,
+            Constant::I16(..) => DType::I16,
             Constant::I32(..) => DType::I32,
+            Constant::I64(..) => DType::I64,
         }
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
-pub(super) struct Slice {
-    pub(super) index: u32,
-    pub(super) len: u32,
-}
-
-#[derive(PartialEq, PartialOrd)]
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub(super) enum Node {
     Const {
         value: Constant,
@@ -142,14 +149,14 @@ impl Iterator for NodeParametersIterator {
         }
         let idx = self.idx;
         self.idx += 1;
-        Some(self.parameters[idx as usize])
+        return Some(self.parameters[idx as usize])
     }
 }
 
 impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
-        match self {
+        return match self {
             Node::Const {..} | Node::Leaf {..} => NodeParametersIterator {
                 parameters: [0; 3],
                 idx: 0,

@@ -1,23 +1,27 @@
-use node::Node;
 use crate::device::Device;
+use crate::dtype::DType;
 use crate::runtime::compiler::cuda::CUDA;
 use crate::runtime::compiler::opencl::OpenCL;
 use crate::runtime::compiler::wgpu::WGPU;
+use crate::runtime::compiler::{CompiledBackend, CompilerError};
 use crate::runtime::interpreter::cpu::CPU;
-use crate::dtype::DType;
+use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
 use crate::tensor::Tensor;
-use crate::runtime::compiler::{CompiledBackend, CompilerError};
-use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::cell::OnceCell;
+use node::Node;
+use rand::rngs::SmallRng;
 
-mod node;
 mod compiler;
 mod interpreter;
+mod node;
 
 type TensorId = u32;
 
-enum RuntimeError {
+#[derive(Debug)]
+pub(crate) enum RuntimeError {
     CompilerError(CompilerError),
     InterpreterError(InterpreterError),
 }
@@ -37,6 +41,7 @@ impl From<InterpreterError> for RuntimeError {
 pub(crate) struct Runtime {
     rcs: Vec<u32>,
     nodes: Vec<Node>,
+    // First value in each shape is rank, other values are shapes
     shapes: Vec<usize>,
     axes: Vec<usize>,
     paddings: Vec<isize>,
@@ -48,10 +53,12 @@ pub(crate) struct Runtime {
     cpu: Option<InterpretedBackend<CPU>>,
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
+    pub(crate) rng: OnceCell<SmallRng>,
 }
 
 impl Runtime {
     pub(crate) const fn new() -> Self {
+        use rand::SeedableRng;
         Runtime {
             rcs: Vec::new(),
             nodes: Vec::new(),
@@ -66,6 +73,7 @@ impl Runtime {
             cpu: None,
             default_device: Device::CPU,
             default_device_set_by_user: false,
+            rng: OnceCell::new(),
         }
     }
 
@@ -78,51 +86,59 @@ impl Runtime {
     /// is set to CPU.
     pub(crate) fn set_default_device_best(&mut self) {
         if self.default_device_set_by_user {
-            return
+            return;
         }
         if self.initialize_device(Device::CUDA) {
             self.default_device = Device::CUDA;
-            return
+            return;
         }
         if self.initialize_device(Device::OpenCL) {
             self.default_device = Device::OpenCL;
-            return
+            return;
         }
         if self.initialize_device(Device::WGPU) {
             self.default_device = Device::WGPU;
-            return
+            return;
         }
         if self.initialize_device(Device::CPU) {
             self.default_device = Device::CPU;
-            return
+            return;
         }
     }
 
     pub(crate) fn initialize_device(&mut self, device: Device) -> bool {
         match device {
-            Device::CUDA => if let Ok(cuda) = CompiledBackend::initialize() {
-                self.cuda = Some(cuda);
-                true
-            } else {
-                false
+            Device::CUDA => {
+                if let Ok(cuda) = CompiledBackend::initialize() {
+                    self.cuda = Some(cuda);
+                    true
+                } else {
+                    false
+                }
             }
-            Device::OpenCL => if let Ok(opencl) = CompiledBackend::initialize() {
-                self.opencl = Some(opencl);
-                true
-            } else {
-                false
+            Device::OpenCL => {
+                if let Ok(opencl) = CompiledBackend::initialize() {
+                    self.opencl = Some(opencl);
+                    true
+                } else {
+                    false
+                }
             }
-            Device::WGPU => if let Ok(wgpu) = CompiledBackend::initialize() {
-                self.wgpu = Some(wgpu);
-                true
-            } else {
-                false
+            Device::WGPU => {
+                if let Ok(wgpu) = CompiledBackend::initialize() {
+                    self.wgpu = Some(wgpu);
+                    true
+                } else {
+                    false
+                }
             }
-            Device::CPU => if let Ok(cpu) = InterpretedBackend::initialize() {
-                self.cpu = Some(cpu);
-                true
-            } else {
-                false
+            Device::CPU => {
+                if let Ok(cpu) = InterpretedBackend::initialize() {
+                    self.cpu = Some(cpu);
+                    true
+                } else {
+                    false
+                }
             }
         }
     }
@@ -135,10 +151,11 @@ impl Runtime {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(x) = params.pop() {
-            self.rcs[x as usize] -= 1;
-            if self.rcs[x as usize] == 0 {
-                params.extend(self.nodes[x as usize].parameters());
-                match self.devices[x as usize] {
+            let i = <u32 as TryInto<usize>>::try_into(x).unwrap();
+            self.rcs[i] -= 1;
+            if self.rcs[i] == 0 {
+                params.extend(self.nodes[i].parameters());
+                match self.devices[i] {
                     Device::CUDA => self.cuda.as_mut().unwrap().remove(x),
                     Device::OpenCL => self.opencl.as_mut().unwrap().remove(x),
                     Device::WGPU => self.wgpu.as_mut().unwrap().remove(x),
@@ -154,14 +171,14 @@ impl Runtime {
         while i < 10000 {
             let node = &self.nodes[x as usize];
             match node {
-                Node::Const {..} => return alloc::vec![1],
-                Node::Leaf {len} => return alloc::vec![*len],
+                Node::Const { .. } => return alloc::vec![1],
+                Node::Leaf { len } => return alloc::vec![*len],
                 Node::Reshape { shape, .. }
                 | Node::Pad { shape, .. }
                 | Node::Permute { shape, .. }
                 | Node::Sum { shape, .. }
                 | Node::Max { shape, .. }
-                | Node::Expand { shape, .. } => return self.shapes[(*shape as usize) + 1..(*shape as usize) + self.shapes[*shape as usize]].into(),
+                | Node::Expand { shape, .. } => return self._shape(*shape).into(),
                 _ => x = node.parameters().next().unwrap(),
             }
         }
@@ -203,6 +220,13 @@ impl Runtime {
     pub(crate) fn tanh(&mut self, x: TensorId) -> Tensor {
         self.push(Node::Cos { x })
     }
+
+    pub(crate) fn reshape(&mut self, x: TensorId, shape: &[usize]) -> Tensor {
+        let shape_id = self.shapes.len().try_into().unwrap();
+        self.shapes.push(shape.len());
+        self.shapes.extend(shape);
+        self.push(Node::Reshape { x, shape: shape_id })
+    }
 }
 
 impl Runtime {
@@ -210,9 +234,24 @@ impl Runtime {
         self.rcs[x as usize] == 0
     }
 
-    fn store<T: Scalar>(&mut self, data: &[T], dev: Device) -> Result<Tensor, RuntimeError> {
+    fn _shape(&self, shape_id: u32) -> &[usize] {
+        &self.shapes[<u32 as TryInto<usize>>::try_into(shape_id + 1).unwrap()
+            ..<u32 as TryInto<usize>>::try_into(shape_id).unwrap()
+                + 1
+                + self.shapes[<u32 as TryInto<usize>>::try_into(shape_id).unwrap()]]
+    }
+
+    pub(crate) fn store<T: Scalar>(
+        &mut self,
+        data: &[T],
+        dev: Device,
+    ) -> Result<Tensor, RuntimeError> {
         let node = Node::Leaf { len: data.len() };
-        let tensor = if let Some(i) = (0..self.rcs.len()).into_iter().skip_while(|i| !self.is_empty(*i as u32)).next() {
+        let tensor = if let Some(i) = (0..self.rcs.len())
+            .into_iter()
+            .skip_while(|i| !self.is_empty(<usize as TryInto<u32>>::try_into(*i).unwrap()))
+            .next()
+        {
             let tensor = Tensor::from_raw(i);
             self.rcs[i] = 1;
             self.nodes[i] = node;
@@ -259,6 +298,47 @@ impl Runtime {
     }
 
     fn push(&mut self, node: Node) -> Tensor {
-        todo!()
+        for nid in node.parameters() {
+            self.retain(nid);
+        }
+        let tensor = if let Some(i) = (0..self.rcs.len())
+            .into_iter()
+            .skip_while(|i| !self.is_empty(<usize as TryInto<u32>>::try_into(*i).unwrap()))
+            .next()
+        {
+            let tensor = Tensor::from_raw(i);
+            self.rcs[i] = 1;
+            self.dtypes[i] = self.dtypes[<u32 as TryInto<usize>>::try_into(node.parameters().next().unwrap()).unwrap()];
+            self.nodes[i] = node;
+            tensor
+        } else {
+            let tensor = Tensor::from_raw(self.rcs.len());
+            self.rcs.push(1);
+            self.dtypes
+                .push(self.dtypes[<u32 as TryInto<usize>>::try_into(node.parameters().next().unwrap()).unwrap()]);
+            self.nodes.push(node);
+            tensor
+        };
+        //std::println!("Assigned id: {id}, rcs {:?}", self.rcs);
+        /*self.unrealized_nodes_count += 1;
+        // This regulates caching, 256 tensors per batch seems like a good default
+        if self.unrealized_nodes_count > 10000 {
+            self.realize([id].into_iter().collect::<BTreeSet<Id>>())?;
+            //std::println!("Num tensors: {}", self.nodes.len());
+        }*/
+        tensor
+    }
+
+    fn realize(&mut self, tensors: BTreeSet<Tensor>) -> Result<(), RuntimeError> {
+        // topo search
+        let mut params: Vec<TensorId> = tensors.iter().map(|tensor| tensor.id()).collect();
+        let mut visited = BTreeSet::new();
+        while let Some(param) = params.pop() {
+            if visited.insert(param) {
+                params.extend(self.nodes[param as usize].parameters());
+            }
+        }
+
+        Ok(())
     }
 }

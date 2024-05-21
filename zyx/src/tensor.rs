@@ -1,11 +1,16 @@
-use core::ops::{Div, Mul, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
 use crate::device::Device;
 use crate::dtype::DType;
-use crate::RT;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
+use crate::RT;
 use alloc::vec::Vec;
+use core::ops::{
+    Div, Mul, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
+    Sub,
+};
 use half::f16;
+use rand::Rng;
+use rand::rngs::SmallRng;
 
 pub struct Tensor {
     id: u32,
@@ -14,9 +19,7 @@ pub struct Tensor {
 impl Clone for Tensor {
     fn clone(&self) -> Self {
         RT.lock().retain(self.id);
-        Tensor {
-            id: self.id
-        }
+        Tensor { id: self.id }
     }
 }
 
@@ -28,9 +31,11 @@ impl Drop for Tensor {
 
 impl Tensor {
     pub(crate) fn from_raw(id: usize) -> Tensor {
-        Tensor {
-            id: id as u32,
-        }
+        Tensor { id: id as u32 }
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.id
     }
 }
 
@@ -84,13 +89,53 @@ impl Tensor {
     // Initializers
     #[must_use]
     pub fn from_parts(data: &[impl Scalar], shape: impl IntoShape) -> Tensor {
-        todo!()
+        let shape: Vec<usize> = shape.into_shape().collect();
+        debug_assert_eq!(shape.iter().product::<usize>(), data.len());
+        let mut rt = RT.lock();
+        let default_device = rt.default_device;
+        let tensor = rt.store(data, default_device).unwrap();
+        if shape.len() > 1 {
+            return rt.reshape(tensor.id, &shape)
+        }
+        return tensor
     }
 
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
-        RT.lock().set_default_device_best();
-        todo!()
+        use rand::SeedableRng;
+        use rand::distributions::Standard;
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let shape: Vec<usize> = shape.into_shape().collect();
+        let n = shape.iter().product();
+        let default_device = rt.default_device;
+        rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
+        let rng = rt.rng.get_mut().unwrap();
+        let tensor = match dtype {
+            DType::BF16 => todo!(),
+            DType::F16 => todo!(),
+            DType::F32 => {
+                let data = &(0..n)
+                    .map(move |_| rng.sample(Standard))
+                    .collect::<Vec<f32>>();
+                rt.store(data, default_device).unwrap()
+            }
+            DType::F64 => {
+                let data = &(0..n)
+                    .map(move |_| rng.sample(Standard))
+                    .collect::<Vec<f64>>();
+                rt.store(data, default_device).unwrap()
+            }
+            DType::U8 => todo!(),
+            DType::I8 => todo!(),
+            DType::I16 => todo!(),
+            DType::I32 => todo!(),
+            DType::I64 => todo!(),
+        };
+        if shape.len() > 1 {
+            return rt.reshape(tensor.id(), &shape)
+        }
+        return tensor
     }
 
     #[must_use]
@@ -502,7 +547,7 @@ impl core::fmt::Display for Tensor {
                     "i32 tensor failed to realize".into()
                 }
             }
-            _ => todo!()
+            _ => todo!(),
         };
         f.write_fmt(format_args!(
             "Tensor {:?} {}\n{res}",
@@ -537,7 +582,7 @@ fn tensor_to_string<T: core::fmt::Display>(
             }
         }
     }
-    let d0 = shape[rank-1];
+    let d0 = shape[rank - 1];
     for (i, x) in data.iter().enumerate() {
         {
             let mut var = 1;
@@ -653,7 +698,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange> IntoIndex for (I0, I1, I2) {
             self.1.into_range(),
             self.2.into_range(),
         ]
-            .into_iter()
+        .into_iter()
     }
 }
 
@@ -665,12 +710,12 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (
             self.2.into_range(),
             self.3.into_range(),
         ]
-            .into_iter()
+        .into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> IntoIndex
-for (I0, I1, I2, I3, I4)
+    for (I0, I1, I2, I3, I4)
 {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         [
@@ -680,12 +725,12 @@ for (I0, I1, I2, I3, I4)
             self.3.into_range(),
             self.4.into_range(),
         ]
-            .into_iter()
+        .into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange>
-IntoIndex for (I0, I1, I2, I3, I4, I5)
+    IntoIndex for (I0, I1, I2, I3, I4, I5)
 {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         [
@@ -696,19 +741,19 @@ IntoIndex for (I0, I1, I2, I3, I4, I5)
             self.4.into_range(),
             self.5.into_range(),
         ]
-            .into_iter()
+        .into_iter()
     }
 }
 
 impl<
-    I0: IntoRange,
-    I1: IntoRange,
-    I2: IntoRange,
-    I3: IntoRange,
-    I4: IntoRange,
-    I5: IntoRange,
-    I6: IntoRange,
-> IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
+        I0: IntoRange,
+        I1: IntoRange,
+        I2: IntoRange,
+        I3: IntoRange,
+        I4: IntoRange,
+        I5: IntoRange,
+        I6: IntoRange,
+    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
 {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         [
@@ -720,20 +765,20 @@ impl<
             self.5.into_range(),
             self.6.into_range(),
         ]
-            .into_iter()
+        .into_iter()
     }
 }
 
 impl<
-    I0: IntoRange,
-    I1: IntoRange,
-    I2: IntoRange,
-    I3: IntoRange,
-    I4: IntoRange,
-    I5: IntoRange,
-    I6: IntoRange,
-    I7: IntoRange,
-> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
+        I0: IntoRange,
+        I1: IntoRange,
+        I2: IntoRange,
+        I3: IntoRange,
+        I4: IntoRange,
+        I5: IntoRange,
+        I6: IntoRange,
+        I7: IntoRange,
+    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
 {
     fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
         [
@@ -746,7 +791,7 @@ impl<
             self.6.into_range(),
             self.7.into_range(),
         ]
-            .into_iter()
+        .into_iter()
     }
 }
 
@@ -850,7 +895,9 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
     }
 }
 
-impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]> for Tensor {
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]>
+    for Tensor
+{
     fn from(value: [[[T; D2]; D1]; D0]) -> Self {
         todo!()
     }

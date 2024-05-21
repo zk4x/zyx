@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+use rand::prelude::SmallRng;
 use crate::runtime::Runtime;
 
 mod tensor;
@@ -14,6 +15,8 @@ mod shape;
 pub use tensor::Tensor;
 pub use dtype::DType;
 pub use device::Device;
+
+const SEED: u64 = 69420;
 
 static RT: spin::Mutex<Runtime> = spin::Mutex::new(Runtime::new());
 
