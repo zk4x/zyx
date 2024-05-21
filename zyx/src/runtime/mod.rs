@@ -332,6 +332,7 @@ impl Runtime {
     fn realize(&mut self, tensors: BTreeSet<Tensor>) -> Result<(), RuntimeError> {
         // topo search
         let mut params: Vec<TensorId> = tensors.iter().map(|tensor| tensor.id()).collect();
+        let device = self.devices[params[0] as usize];
         let mut visited = BTreeSet::new();
         while let Some(param) = params.pop() {
             if visited.insert(param) {
@@ -339,6 +340,21 @@ impl Runtime {
             }
         }
 
-        Ok(())
+        match device {
+            Device::OpenCL => {
+                self.opencl.as_mut().unwrap().compile_program(visited.into_iter().map(|id| (id, self.nodes[id as usize])).collect())?;
+            }
+            Device::CUDA => {
+                todo!()
+            }
+            Device::WGPU => {
+                todo!()
+            }
+            Device::CPU => {
+                todo!()
+            }
+        }
+
+        return Ok(())
     }
 }

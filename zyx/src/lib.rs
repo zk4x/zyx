@@ -2,7 +2,6 @@
 
 extern crate alloc;
 
-use rand::prelude::SmallRng;
 use crate::runtime::Runtime;
 
 mod tensor;

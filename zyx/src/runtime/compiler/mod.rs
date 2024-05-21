@@ -1,6 +1,7 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
+use crate::runtime::node::Node;
 
 pub(super) mod opencl;
 pub(super) mod cuda;
@@ -11,7 +12,10 @@ type TensorId = u32;
 pub(super) struct CompiledBackend<C: Compiler> {
     compiler: C,
     buffers: BTreeMap<TensorId, C::Buffer>,
+    compiled_graphs: BTreeMap<Vec<Node>, Graph>,
 }
+
+struct Graph {}
 
 #[derive(Debug)]
 pub(crate) enum CompilerError {
@@ -74,6 +78,7 @@ impl<C: Compiler> CompiledBackend<C> {
         Ok(Self {
             compiler: C::initialize()?,
             buffers: BTreeMap::new(),
+            compiled_graphs: BTreeMap::new(),
         })
     }
 
@@ -85,5 +90,10 @@ impl<C: Compiler> CompiledBackend<C> {
         if let Some(buffer) = self.buffers.remove(&x) {
             self.compiler.deallocate_memory(buffer);
         }
+    }
+
+    /// Compiles and caches program
+    pub(super) fn compile_program(&mut self, graph: BTreeMap<TensorId, Node>) -> Result<(), CompilerError> {
+        todo!()
     }
 }
