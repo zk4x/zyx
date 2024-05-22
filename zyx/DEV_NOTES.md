@@ -15,3 +15,7 @@ Then we need to write ir/looped representation
 Then we need to write ir to opencl compiler
 
 Then we need to optimize looped representation
+
+# 2024-05-22
+
+Move tiled from zyx-compiler to zyx.
