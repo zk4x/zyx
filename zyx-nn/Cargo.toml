@@ -16,4 +16,4 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { version = "*" }
+zyx = { version = "0.13.0", path = "/home/x/Lib/rust/zyx/zyx" }

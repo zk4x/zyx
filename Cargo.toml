@@ -38,6 +38,3 @@ panic = 'abort'
 strip = true
 overflow-checks = false
 debug = 0
-
-[build]
-target-dir = "~/.cache/cargo"

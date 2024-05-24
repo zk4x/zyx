@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx machine learning library"
@@ -20,10 +20,7 @@ half = { version = "2.4.1", default-features = false }
 spin = { version = "0.9.8", default-features = false, features = ["mutex", "spin_mutex"] }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 itertools = { version = "0.13.0", default-features = false }
-num-complex = { version = "*", default-features = false }
+num-complex = { version = "*", default-features = false, features = [] }
 
 [dev-dependencies]
 libc-print = { version = "0.1.23" }
-
-[build]
-target-dir = "~/.cache/cargo"

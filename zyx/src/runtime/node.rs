@@ -13,6 +13,10 @@ pub enum Constant {
     F32(u32),
     /// f64 constant
     F64(u64),
+    /// complex f32 constant
+    CF32(u32),
+    /// complex f64 constant
+    CF64(u64),
     /// u8 constant
     U8(u8),
     /// i8 constant
@@ -33,6 +37,8 @@ impl Constant {
             Constant::F16(..) => DType::F16,
             Constant::F32(..) => DType::F32,
             Constant::F64(..) => DType::F64,
+            Constant::CF32(..) => DType::CF32,
+            Constant::CF64(..) => DType::CF64,
             Constant::U8(..) => DType::U8,
             Constant::I8(..) => DType::I8,
             Constant::I16(..) => DType::I16,

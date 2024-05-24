@@ -126,6 +126,8 @@ impl Tensor {
                     .collect::<Vec<f64>>();
                 rt.store(data, default_device).unwrap()
             }
+            DType::CF32 => todo!(),
+            DType::CF64 => todo!(),
             DType::U8 => todo!(),
             DType::I8 => todo!(),
             DType::I16 => todo!(),
