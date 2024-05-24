@@ -2,8 +2,6 @@ use alloc::vec::Vec;
 use alloc::vec;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use crate::axes::Axes;
-use crate::shape::Shape;
 
 #[derive(Debug, Clone, Copy)]
 struct Dimension {
@@ -38,7 +36,7 @@ pub struct View {
 impl View {
     /// Create new View from given shape
     #[must_use]
-    pub fn from(shape: &Shape) -> Self {
+    pub fn from(shape: &[usize]) -> Self {
         let mut stride = 1;
         let mut first_shape: Vec<Dimension> = shape.iter().rev().map(|size| {
             let temp = Dimension { size: *size, stride, len: *size, shift: *size };
@@ -54,8 +52,8 @@ impl View {
 
     /// Shape
     #[must_use]
-    pub fn shape(&self) -> Shape {
-        Shape::from(self.shapes[0].iter().map(|dim| dim.size).collect::<alloc::boxed::Box<[usize]>>())
+    pub fn shape(&self) -> Vec<usize> {
+        self.shapes[0].iter().map(|dim| dim.size).collect()
     }
 
     /// Rank
@@ -85,9 +83,9 @@ impl View {
     }
 
     /// Reshape view into different shape
-    pub fn reshape(&mut self, sh: &Shape) {
-        assert_eq!(self.numel(), sh.numel());
-        if self.shape() == *sh { return }
+    pub fn reshape(&mut self, shape: &[usize]) {
+        assert_eq!(self.numel(), shape.iter().product());
+        if self.shape() == *shape { return }
         // TODO perhaps we can merge more shapes with the previous shape
 
         // TODO merge split and join dimension reshapes
@@ -159,7 +157,7 @@ impl View {
         }*/
 
         let mut new_stride = 1;
-        let mut new_shape: Vec<Dimension> = sh.iter().copied().rev().map(|size| {
+        let mut new_shape: Vec<Dimension> = shape.iter().copied().rev().map(|size| {
             let stride = new_stride;
             new_stride *= size;
             Dimension {
@@ -182,18 +180,19 @@ impl View {
 
     /// Pad view with padding.
     /// This function assumes standard padding beginning at last dimension.
-    pub fn pad(&mut self, padding: &[(i64, i64)]) {
+    pub fn pad(&mut self, padding: &[isize]) {
+        use itertools::Itertools;
         debug_assert!(self.shapes[0].len() >= padding.len());
-        for (dim, (lp, rp)) in self.shapes[0].iter_mut().rev().zip(padding) {
-            dim.size = (dim.size as i64 + lp + rp) as usize;
-            dim.shift = (dim.shift as i64 + lp) as usize;
+        for (dim, (lp, rp)) in self.shapes[0].iter_mut().rev().zip(padding.into_iter().tuples()) {
+            dim.size = (<usize as TryInto<isize>>::try_into(dim.size).unwrap() + lp + rp).try_into().unwrap();
+            dim.shift = (<usize as TryInto<isize>>::try_into(dim.shift).unwrap() + lp) as usize;
         }
     }
 
     /// Expand view into different shape
-    pub fn expand(&mut self, sh: &Shape) {
-        debug_assert_eq!(self.shapes[0].len(), sh.rank());
-        for (dim, sh_dim) in self.shapes[0].iter_mut().zip(sh) {
+    pub fn expand(&mut self, shape: &[usize]) {
+        debug_assert_eq!(self.shapes[0].len(), shape.iter().product());
+        for (dim, sh_dim) in self.shapes[0].iter_mut().zip(shape) {
             if dim.size != *sh_dim {
                 debug_assert_eq!(dim.size, 1);
                 dim.size = *sh_dim;
@@ -203,7 +202,7 @@ impl View {
     }
 
     /// Permute view with axes
-    pub fn permute(&mut self, axes: &Axes) {
+    pub fn permute(&mut self, axes: &[usize]) {
         debug_assert_eq!(self.shapes[0].len(), axes.len());
         self.shapes[0] = axes.iter().map(|axis| self.shapes[0][*axis]).collect();
     }

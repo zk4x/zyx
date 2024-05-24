@@ -1,5 +1,6 @@
-use crate::runtime::compiler::{Compiler, CompilerError, HWInfo, IRKernel};
+use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
 use alloc::vec::Vec;
+use crate::runtime::compiler::ir::IRKernel;
 
 pub(crate) struct WGPU {}
 
@@ -31,7 +32,7 @@ impl Compiler for WGPU {
         todo!()
     }
 
-    fn compile_program(&mut self, kernel: IRKernel) -> Result<Self::Program, CompilerError> {
+    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
         todo!()
     }
 

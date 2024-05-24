@@ -22,3 +22,9 @@ longer than five lines should have comments. In general it is a good ratio of 1 
 that is ~20% percent should be comments, but more like 50% in complex code and algorithms.
 
 Always use explicit return keyword, just to make code more readable.
+
+Try to not get slowed down by the inferiority of your language. For example Rust does not implement Hash or Eq, Ord
+for floats. Just use ordered float crate and accept everything bad about it (horrible syntax, slower performance).
+Another example is lifetimes. Try to use lifetimes very rarely, do not go into complex lifetime annotations, just
+use global variables or Rc/Arc. Another example is orphan rule, just do to not use traits if possible. Use procedural
+programming like if you are writing c.

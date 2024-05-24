@@ -1,22 +1,27 @@
-use half::{bf16, f16};
-use crate::{DType, Tensor};
-
-type TensorId = u32;
+use crate::DType;
+use crate::runtime::TensorId;
 
 /// Constant value
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// Floats must be bitcasted in order to implement Ord and Eq.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Constant {
-    BF16(bf16),
-    F16(f16),
+    /// bf16 constant
+    BF16(u16),
+    /// f16 constant
+    F16(u16),
     /// f32 constant
-    F32(f32),
+    F32(u32),
     /// f64 constant
-    F64(f64),
+    F64(u64),
+    /// u8 constant
     U8(u8),
+    /// i8 constant
     I8(i8),
+    /// i16 constant
     I16(i16),
     /// i32 constant
     I32(i32),
+    /// i64 constant
     I64(i64),
 }
 
@@ -37,16 +42,18 @@ impl Constant {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Node {
     Const {
         value: Constant,
     },
     Leaf {
         len: usize,
+        dtype: DType,
     },
     Cast {
         x: TensorId,
+        dtype: DType,
     },
     ReLU {
         x: TensorId,
@@ -106,31 +113,31 @@ pub(super) enum Node {
     },
     Reshape {
         x: TensorId,
-        shape: u32,
+        shape_id: u32,
     },
     Expand {
         x: TensorId,
-        shape: u32,
+        shape_id: u32,
     },
     Permute {
         x: TensorId,
-        axes: u32,
-        shape: u32,
+        axes_id: u32,
+        shape_id: u32,
     },
     Pad {
         x: TensorId,
-        padding: u32,
-        shape: u32,
+        padding_id: u32,
+        shape_id: u32,
     },
     Sum {
         x: TensorId,
-        axes: u32,
-        shape: u32,
+        axes_id: u32,
+        shape_id: u32,
     },
     Max {
         x: TensorId,
-        axes: u32,
-        shape: u32,
+        axes_id: u32,
+        shape_id: u32,
     },
 }
 
