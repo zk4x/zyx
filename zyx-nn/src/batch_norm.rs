@@ -1,12 +1,10 @@
-use zyx_core::backend::Backend;
-use zyx_core::dtype::DType;
-use zyx_core::tensor::Tensor;
+use zyx::{DType, Tensor};
 
 /// Batch norm
 ///
 /// By default this module has learnable affine parameters,
 /// set weight and bias to None to remove them.
-pub struct BatchNorm<B: Backend> {
+pub struct BatchNorm {
     /// a value added to the denominator for numerical stability. Default: 1e-5
     pub eps: f32,
     /// the value used for the running_mean and running_var computation. Can be set to None for cumulative moving average (i.e. simple average). Default: 0.1
@@ -16,40 +14,20 @@ pub struct BatchNorm<B: Backend> {
     /// Is it training or inference? (for running mean and var)
     pub training: bool,
     /// weight
-    pub weight: Option<Tensor<B>>,
+    pub weight: Option<Tensor>,
     /// bias
-    pub bias: Option<Tensor<B>>,
+    pub bias: Option<Tensor>,
     /// weight
-    pub running_mean: Tensor<B>,
+    pub running_mean: Tensor,
     /// bias
-    pub running_var: Tensor<B>,
+    pub running_var: Tensor,
     /// Number of tracked batches
-    pub num_batches_tracked: Tensor<B>,
+    pub num_batches_tracked: Tensor,
 }
 
-/// Initilization trait for batch_norm layer
-pub trait BatchNormInit: Backend {
-    /// Initilize layer_norm layer in device self
-    fn batch_norm(self, num_features: usize) -> BatchNorm<Self> {
-        BatchNorm {
-            eps: 1e-5,
-            momentum: 0.1,
-            track_running_stats: true,
-            weight: Some(self.ones(num_features, DType::F32).unwrap()),
-            bias: Some(self.zeros(num_features, DType::F32).unwrap()),
-            running_mean: self.zeros(num_features, DType::F32).unwrap(),
-            running_var: self.ones(num_features, DType::F32).unwrap(),
-            training: true,
-            num_batches_tracked: self.zeros(1, DType::F32).unwrap(),
-        }
-    }
-}
-
-impl<B: Backend> BatchNormInit for B {}
-
-impl<'a, B: Backend> IntoIterator for &'a BatchNorm<B> {
-    type Item = &'a Tensor<B>;
-    type IntoIter = alloc::vec::IntoIter<&'a Tensor<B>>;
+impl<'a> IntoIterator for &'a BatchNorm {
+    type Item = &'a Tensor;
+    type IntoIter = alloc::vec::IntoIter<&'a Tensor>;
     fn into_iter(self) -> Self::IntoIter {
         match (&self.weight, &self.bias) {
             (Some(w), Some(b)) => alloc::vec![w, b].into_iter(),
@@ -60,8 +38,8 @@ impl<'a, B: Backend> IntoIterator for &'a BatchNorm<B> {
     }
 }
 
-impl<'a, B: Backend> IntoIterator for &'a mut BatchNorm<B> {
-    type Item = &'a mut Tensor<B>;
+impl<'a> IntoIterator for &'a mut BatchNorm {
+    type Item = &'a mut Tensor;
     type IntoIter = alloc::vec::IntoIter<Self::Item>;
     fn into_iter(self) -> Self::IntoIter {
         match (&mut self.weight, &mut self.bias) {
@@ -73,9 +51,24 @@ impl<'a, B: Backend> IntoIterator for &'a mut BatchNorm<B> {
     }
 }
 
-impl<B: Backend> BatchNorm<B> {
+impl BatchNorm {
+    /// Initilize layer_norm layer in device self
+    fn new(self, num_features: usize) -> BatchNorm {
+        BatchNorm {
+            eps: 1e-5,
+            momentum: 0.1,
+            track_running_stats: true,
+            weight: Some(Tensor::ones(num_features, DType::F32)),
+            bias: Some(Tensor::zeros(num_features, DType::F32)),
+            running_mean: Tensor::zeros(num_features, DType::F32),
+            running_var: Tensor::ones(num_features, DType::F32),
+            training: true,
+            num_batches_tracked: Tensor::zeros(1, DType::F32),
+        }
+    }
+
     /// Forward function for layer_norm.
-    pub fn forward(&mut self, x: &Tensor<B>) -> Tensor<B> {
+    pub fn forward(&mut self, x: &Tensor) -> Tensor {
         let batch_mean;
         let batch_invstd;
 

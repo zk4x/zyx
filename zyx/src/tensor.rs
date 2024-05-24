@@ -4,10 +4,7 @@ use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
 use crate::RT;
 use alloc::vec::Vec;
-use core::ops::{
-    Div, Mul, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
-    Sub,
-};
+use core::ops::{Add, Div, Mul, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
 use half::f16;
 use rand::Rng;
 use rand::rngs::SmallRng;
@@ -901,6 +898,20 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
     for Tensor
 {
     fn from(value: [[[T; D2]; D1]; D0]) -> Self {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Add<IT> for Tensor {
+    type Output = Tensor;
+    fn add(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl<IT: Into<Tensor>> Add<IT> for &Tensor {
+    type Output = Tensor;
+    fn add(self, rhs: IT) -> Self::Output {
         todo!()
     }
 }

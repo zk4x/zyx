@@ -55,14 +55,14 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
     let mut field_iterators = quote! {
-        trait __MarkerTraitRef<'a, B: zyx_core::backend::Backend + 'a> {
-            fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx_core::tensor::Tensor<B>>) {}
+        trait __MarkerTraitRef<'a> {
+            fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx::Tensor>) {}
         }
 
         struct __MarkerStructRef<T: Copy>(T);
 
-        impl<'a, B: zyx_core::backend::Backend + 'a, T: IntoIterator<Item = &'a zyx_core::tensor::Tensor<B>> + Copy> __MarkerStructRef<T> {
-            fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx_core::tensor::Tensor<B>>) {
+        impl<'a, B: zyx_core::backend::Backend + 'a, T: IntoIterator<Item = &'a zyx::Tensor> + Copy> __MarkerStructRef<T> {
+            fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx::Tensor>) {
                 res.extend(self.0.into_iter());
             }
         }

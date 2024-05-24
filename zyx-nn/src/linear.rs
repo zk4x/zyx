@@ -14,16 +14,15 @@ impl Linear {
         let l = -(1.0/(in_features as f32)).sqrt();
         let u = (1.0/(in_features as f32)).sqrt();
         Linear {
-            weight: self.uniform([in_features, out_features], l..u).unwrap(),
-            bias: Some(self.uniform([out_features], l..u).unwrap()),
+            weight: Tensor::uniform([in_features, out_features], l..u),
+            bias: Some(Tensor::uniform([out_features], l..u)),
         }
     }
 
     /// Forward function for linear.
     /// Calculates x.dot(&self.weight) + self.bias
     pub fn forward(&self, x: impl Into<Tensor>) -> Tensor {
-        let x = self.weight.backend().tensor(x).unwrap();
-        let x = x.dot(&self.weight);
+        let x = x.into().dot(&self.weight);
         if let Some(bias) = &self.bias {
             return x + bias;
         }

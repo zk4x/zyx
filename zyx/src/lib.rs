@@ -14,6 +14,8 @@ mod shape;
 pub use tensor::Tensor;
 pub use dtype::DType;
 pub use device::Device;
+pub use shape::IntoShape;
+pub use shape::IntoAxes;
 
 const SEED: u64 = 69420;
 

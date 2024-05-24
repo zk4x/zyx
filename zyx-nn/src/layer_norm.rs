@@ -1,3 +1,5 @@
+use zyx::{DType, IntoShape, Tensor};
+
 /// Lyaer norm layer
 pub struct LayerNorm {
     /// weight
@@ -22,8 +24,8 @@ impl<'a> IntoIterator for &'a LayerNorm {
     }
 }
 
-impl<'a, B: Backend> IntoIterator for &'a mut LayerNorm<B> {
-    type Item = &'a mut Tensor<B>;
+impl<'a> IntoIterator for &'a mut LayerNorm {
+    type Item = &'a mut Tensor;
     type IntoIter = alloc::vec::IntoIter<Self::Item>;
     fn into_iter(self) -> Self::IntoIter {
         match (&mut self.weight, &mut self.bias) {
@@ -37,20 +39,19 @@ impl<'a, B: Backend> IntoIterator for &'a mut LayerNorm<B> {
 
 impl LayerNorm {
     /// Initialize layer_norm layer in device self
-    fn new(self, normalized_shape: impl Into<Shape>) -> LayerNorm<Self> {
-        let normalized_shape = normalized_shape.into();
+    fn new(self, normalized_shape: impl IntoShape) -> LayerNorm {
         LayerNorm {
             d_dims: normalized_shape.rank(),
-            weight: Some(self.randn(normalized_shape.clone(), DType::F32).unwrap()),
-            bias: Some(self.randn(normalized_shape, DType::F32).unwrap()),
+            weight: Some(Tensor::randn(normalized_shape.clone(), DType::F32)),
+            bias: Some(Tensor::randn(normalized_shape, DType::F32)),
             eps: 1e-5,
         }
     }
 
     /// Forward function for layer_norm.
-    pub fn forward(&self, x: &Tensor<B>) -> Tensor<B> {
-        let axes = -(self.d_dims as i64)..=-1;
-        let mut x = (x - x.mean(&axes)) / (x.var(axes) + self.eps).sqrt();
+    pub fn forward(&self, x: &Tensor) -> Tensor {
+        let axes = -(self.d_dims as isize)..=-1;
+        let mut x = (x - x.mean(axes.clone())) / (x.var(axes) + self.eps).sqrt();
         if let Some(w) = &self.weight {
             x = x * w;
         }
