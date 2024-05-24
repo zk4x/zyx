@@ -1,7 +1,4 @@
 use pyo3::{pyclass, pymethods, PyResult};
-use zyx_core::backend::Backend;
-use zyx_core::dtype::DType;
-use zyx_core::tensor::Id;
 use crate::device::PyDevice;
 
 #[derive(Clone)]

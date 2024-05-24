@@ -4,7 +4,7 @@ use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
 use crate::RT;
 use alloc::vec::Vec;
-use core::ops::{Add, Div, Mul, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
+use core::ops::{Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
 use half::f16;
 use rand::Rng;
 use rand::rngs::SmallRng;
@@ -954,6 +954,20 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
 impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
+        todo!()
+    }
+}
+
+impl Neg for Tensor {
+    type Output = Tensor;
+    fn neg(self) -> Self::Output {
+        todo!()
+    }
+}
+
+impl Neg for &Tensor {
+    type Output = Tensor;
+    fn neg(self) -> Self::Output {
         todo!()
     }
 }

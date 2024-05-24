@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
+use zyx::Tensor;
 
 /// # Stochastic gradient descent optimizer
-pub struct SGD<B: Backend> {
+pub struct SGD {
     /// learning rate (default: 0.001)
     pub learning_rate: f32,
     /// momentum factor (default: 0.0)
@@ -15,10 +16,10 @@ pub struct SGD<B: Backend> {
     /// maximize the objective with respect to the params, instead of minimizing (default: false)
     pub maximize: bool,
     /// stores momentum, starts empty and will be initialized on demand
-    pub bias: Vec<Tensor<B>>,
+    pub bias: Vec<Tensor>,
 }
 
-impl<B: Backend> Default for SGD<B> {
+impl Default for SGD {
     fn default() -> Self {
         Self {
             learning_rate: 0.001,
@@ -32,19 +33,17 @@ impl<B: Backend> Default for SGD<B> {
     }
 }
 
-impl<B: Backend> SGD<B> {
+impl SGD {
     /// Updates parameters with gradients.
     /// Number of parameters must be the same as number of gradients.
     /// Gradients can be None, those are simply skipped.
     pub fn update<'a>(
         &mut self,
-        parameters: impl IntoIterator<Item = &'a mut Tensor<B>>,
-        gradients: impl IntoIterator<Item = Option<Tensor<B>>>,
-    ) where
-        B: 'a,
-    {
-        let params: Vec<&mut Tensor<B>> = parameters.into_iter().collect();
-        let grads: Vec<Option<Tensor<B>>> = gradients.into_iter().collect();
+        parameters: impl IntoIterator<Item = &'a mut Tensor>,
+        gradients: impl IntoIterator<Item = Option<Tensor>>,
+    ) {
+        let params: Vec<&mut Tensor> = parameters.into_iter().collect();
+        let grads: Vec<Option<Tensor>> = gradients.into_iter().collect();
 
         assert_eq!(
             params.len(),

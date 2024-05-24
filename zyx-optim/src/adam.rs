@@ -1,9 +1,8 @@
 use alloc::vec::Vec;
-use zyx_core::backend::Backend;
-use zyx_core::tensor::Tensor;
+use zyx::Tensor;
 
 /// # Adaptive momentum estimation optimizer
-pub struct Adam<B: Backend> {
+pub struct Adam {
     /// learning rate (default: 1e-3)
     pub learning_rate: f32,
     /// coefficients used for computing running averages of gradient and its square (default: (0.9, 0.999))
@@ -17,16 +16,16 @@ pub struct Adam<B: Backend> {
     /// maximize the objective with respect to the params, instead of minimizing (default: false)
     pub maximize: bool,
     /// m
-    pub m: Vec<Tensor<B>>,
+    pub m: Vec<Tensor>,
     /// v
-    pub v: Vec<Tensor<B>>,
+    pub v: Vec<Tensor>,
     /// vm
-    pub vm: Vec<Tensor<B>>,
+    pub vm: Vec<Tensor>,
     /// t
     pub t: usize,
 }
 
-impl<B: Backend> Default for Adam<B> {
+impl Default for Adam {
     fn default() -> Self {
         Self {
             learning_rate: 0.001,
@@ -43,19 +42,17 @@ impl<B: Backend> Default for Adam<B> {
     }
 }
 
-impl<B: Backend> Adam<B> {
+impl Adam {
     /// Updates parameters with gradients.
     /// Number of parameters must be the same as number of gradients.
     /// Gradients can be None, those are simply skipped.
     pub fn update<'a>(
         &mut self,
-        parameters: impl IntoIterator<Item = &'a mut Tensor<B>>,
-        gradients: impl IntoIterator<Item = Option<Tensor<B>>>,
-    ) where
-        B: 'a,
-    {
-        let params: Vec<&mut Tensor<B>> = parameters.into_iter().collect();
-        let grads: Vec<Option<Tensor<B>>> = gradients.into_iter().collect();
+        parameters: impl IntoIterator<Item = &'a mut Tensor>,
+        gradients: impl IntoIterator<Item = Option<Tensor>>,
+    ) {
+        let params: Vec<&mut Tensor> = parameters.into_iter().collect();
+        let grads: Vec<Option<Tensor>> = gradients.into_iter().collect();
 
         assert_eq!(
             params.len(),
