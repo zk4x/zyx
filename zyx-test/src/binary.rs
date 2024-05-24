@@ -1,7 +1,6 @@
 use super::assert_eq;
 use core::ops::{Add, Mul, Sub};
 use rand::{thread_rng, Rng};
-use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape};
 
 macro_rules! binary_test {
     ( $dev:expr, $x:tt ) => {{

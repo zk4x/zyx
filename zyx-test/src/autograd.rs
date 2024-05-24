@@ -1,6 +1,3 @@
-use zyx_core::dtype::DType;
-use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar};
-
 pub fn t0<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.randn([2, 3, 4], DType::I32)?;
     let z = &x + &x;

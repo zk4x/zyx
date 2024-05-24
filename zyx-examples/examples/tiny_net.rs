@@ -1,5 +1,4 @@
-use zyx_core::backend::Backend;
-use zyx_core::error::ZyxError;
+use zyx::{DType, Tensor};
 use zyx_derive::Module;
 use zyx_nn::Linear;
 
@@ -10,20 +9,18 @@ struct TinyNet {
     l1: Linear,
 }
 
-fn main() -> Result<(), ZyxError> {
-    let dev = zyx_opencl::device()?;
-
+fn main() {
     let tiny_net = TinyNet {
-        l0: dev.linear(128, 128),
+        l0: Linear::new(128, 128, DType::F32),
         lr: 0.0,
-        l1: dev.linear(128, 128),
+        l1: Linear::new(128, 128, DType::F32),
     };
 
     for t in tiny_net.into_iter() {
         println!("{}", t.id());
     }
 
-    let x = dev.uniform([2, 3], 0..2)?;
+    let x = Tensor::uniform([2, 3], 0..2);
 
     let _grads = x.backward(&tiny_net);
 

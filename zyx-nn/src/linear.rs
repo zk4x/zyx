@@ -1,4 +1,4 @@
-use zyx::Tensor;
+use zyx::{DType, Tensor};
 
 /// Linear layer
 pub struct Linear {
@@ -10,12 +10,12 @@ pub struct Linear {
 
 impl Linear {
     /// Initilize linear layer in device self
-    fn new(self, in_features: usize, out_features: usize) -> Linear {
+    pub fn new(in_features: usize, out_features: usize, dtype: DType) -> Linear {
         let l = -(1.0/(in_features as f32)).sqrt();
         let u = (1.0/(in_features as f32)).sqrt();
         Linear {
-            weight: Tensor::uniform([in_features, out_features], l..u),
-            bias: Some(Tensor::uniform([out_features], l..u)),
+            weight: Tensor::uniform([in_features, out_features], l..u).cast(dtype),
+            bias: Some(Tensor::uniform([out_features], l..u).cast(dtype)),
         }
     }
 

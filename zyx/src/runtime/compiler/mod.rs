@@ -5,9 +5,8 @@ use alloc::vec::Vec;
 use crate::DType;
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::node::Node;
-use crate::runtime::{Graph, Runtime, TensorId};
+use crate::runtime::{Graph, TensorId};
 use crate::runtime::view::View;
-use crate::shape::IntoAxes;
 
 pub(super) mod opencl;
 pub(super) mod cuda;
