@@ -1,6 +1,6 @@
 [package]
 name = "zyx-nn"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx nn modules"
@@ -16,4 +16,4 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { version = "0.13.0", path = "/home/x/Lib/rust/zyx/zyx" }
+zyx = { workspace = true }

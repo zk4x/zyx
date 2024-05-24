@@ -1,6 +1,4 @@
 use alloc::vec::Vec;
-use zyx_core::backend::Backend;
-use zyx_core::tensor::Tensor;
 
 /// # Stochastic gradient descent optimizer
 pub struct SGD<B: Backend> {

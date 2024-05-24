@@ -21,31 +21,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
-name = "crossbeam-deque"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613f8cc01fe9cf1a3eb3d7f488fd2fa8388403e97039e2f73692932e291a770d"
-dependencies = [
- "crossbeam-epoch",
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-epoch"
-version = "0.9.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-utils"
-version = "0.8.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
-
-[[package]]
 name = "crunchy"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,15 +64,6 @@ name = "indoc"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b248f5224d1d606005e02c97f5aa4e88eeb230488bcc03bc9ca4d7991399f2b5"
-
-[[package]]
-name = "itertools"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
-dependencies = [
- "either",
-]
 
 [[package]]
 name = "itertools"
@@ -165,15 +131,6 @@ name = "once_cell"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
-
-[[package]]
-name = "opencl-sys"
-version = "0.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c18b75202f7354563065f0202ae77ec903261370bf7a0bb9a0c3fd11b5a39a2"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "parking_lot"
@@ -322,26 +279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rayon"
-version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4963ed1bc86e4f3ee217022bd855b297cef07fb9eac5dfa1f788b220b49b3bd"
-dependencies = [
- "either",
- "rayon-core",
-]
-
-[[package]]
-name = "rayon-core"
-version = "1.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1465873a3dfdaa8ae7cb14b4383657caab0b3e8a0aa9ae8e04b044854c8dfce2"
-dependencies = [
- "crossbeam-deque",
- "crossbeam-utils",
-]
-
-[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -465,7 +402,7 @@ name = "zyx"
 version = "0.13.0"
 dependencies = [
  "half",
- "itertools 0.13.0",
+ "itertools",
  "libc-print",
  "num-complex",
  "rand",
@@ -473,70 +410,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "zyx-compiler"
-version = "0.1.2"
-dependencies = [
- "zyx-core",
-]
-
-[[package]]
-name = "zyx-core"
-version = "0.1.2"
-dependencies = [
- "half",
- "zyx-opencl",
-]
-
-[[package]]
-name = "zyx-cpu"
-version = "0.1.2"
-dependencies = [
- "half",
- "rayon",
- "zyx-core",
-]
-
-[[package]]
 name = "zyx-derive"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "quote",
  "syn",
- "zyx-core",
+ "zyx",
 ]
 
 [[package]]
 name = "zyx-examples"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
- "zyx-core",
+ "zyx",
  "zyx-derive",
  "zyx-nn",
- "zyx-opencl",
  "zyx-optim",
 ]
 
 [[package]]
 name = "zyx-nn"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "zyx",
 ]
 
 [[package]]
-name = "zyx-opencl"
-version = "0.1.2"
-dependencies = [
- "opencl-sys",
- "zyx-compiler",
- "zyx-core",
-]
-
-[[package]]
 name = "zyx-optim"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
- "zyx-core",
+ "zyx",
 ]
 
 [[package]]
@@ -544,20 +447,16 @@ name = "zyx-py"
 version = "0.1.0"
 dependencies = [
  "pyo3",
- "zyx-core",
- "zyx-cpu",
- "zyx-opencl",
+ "zyx",
 ]
 
 [[package]]
 name = "zyx-test"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
- "itertools 0.12.1",
+ "itertools",
  "rand",
- "zyx-core",
- "zyx-cpu",
+ "zyx",
  "zyx-nn",
- "zyx-opencl",
  "zyx-optim",
 ]

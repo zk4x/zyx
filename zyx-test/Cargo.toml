@@ -1,6 +1,6 @@
 [package]
 name = "zyx-test"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx testing binary"
@@ -16,10 +16,11 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { version = "*", path = "../zyx-core" }
-zyx-optim = { version = "*", path = "../zyx-optim" }
-zyx-nn = { version = "*", path = "../zyx-nn" }
-zyx-opencl = { version = "*", path = "../zyx-opencl" }
-zyx-cpu = { version = "*", path = "../zyx-cpu" }
-itertools = { version = "0.12.1" }
+zyx = { workspace = true}
+#zyx = { version = "0.13.0", path = "../zyx" }
+zyx-optim = { workspace = true}
+#zyx-optim = { version = "0.2.0", path = "../zyx-optim" }
+zyx-nn = { workspace = true}
+#zyx-nn = { version = "0.2.0", path = "../zyx-nn" }
+itertools = { version = "0.13.0" }
 rand = { version = "0.8.5" }

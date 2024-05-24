@@ -1,6 +1,6 @@
 [package]
 name = "zyx-optim"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx optimizers"
@@ -16,8 +16,4 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { workspace = true }
-
-[features]
-default = ["std"]
-std = ["zyx-core/std"]
+zyx = { workspace = true }

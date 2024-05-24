@@ -1,37 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-  "zyx-core",
-  "zyx-compiler",
-  "zyx-opencl",
-  #"zyx-cuda",
-  "zyx-cpu",
+  "zyx",
   "zyx-nn",
   "zyx-optim",
   "zyx-derive",
   "zyx-examples",
   "zyx-test",
-  "zyx", "zyx-py",
+  "zyx-py",
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.13.0"
 edition = "2021"
 
 [workspace.dependencies]
-half = { version = "2.4.1", default-features = false }
-
-zyx-core = { version = "0.1.2", path = "./zyx-core", default-features = false }
-zyx-compiler = { version = "0.1.2", path = "./zyx-compiler", default-features = false }
-zyx-opencl = { version = "0.1.2", path = "./zyx-opencl", default-features = false }
-#zyx-cuda = { version = "0.1.0", path = "./zyx-cuda", default-features = false }
-zyx-cpu = { version = "0.1.2", path = "./zyx-cpu", default-features = false }
-zyx-nn = { version = "0.1.2", path = "./zyx-nn", default-features = false }
-zyx-optim = { version = "0.1.2", path = "./zyx-optim", default-features = false }
-zyx-derive = { version = "0.1.2", path = "./zyx-derive", default-features = false }
+zyx = { version = "0.13.0", path = "./zyx", default-features = false }
+zyx-nn = { version = "0.2.0", path = "./zyx-nn", default-features = false }
+zyx-optim = { version = "0.2.0", path = "./zyx-optim", default-features = false }
+zyx-derive = { version = "0.2.0", path = "./zyx-derive", default-features = false }
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = 'abort'

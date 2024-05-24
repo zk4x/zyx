@@ -10,6 +10,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = "0.21.2"
-zyx-core = { workspace = true }
-zyx-opencl = { workspace = true }
-zyx-cpu = { workspace = true }
+zyx = { workspace = true }

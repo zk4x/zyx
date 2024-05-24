@@ -1,6 +1,6 @@
 [package]
 name = "zyx-examples"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx examples"
@@ -15,10 +15,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx-core = { workspace = true }
+zyx = { workspace = true }
 zyx-nn = { workspace = true }
 zyx-optim = { workspace = true }
 zyx-derive = { workspace = true }
-zyx-opencl = { workspace = true }
-#zyx-cpu = { workspace = true }
-#zyx-torch = { workspace = true }
