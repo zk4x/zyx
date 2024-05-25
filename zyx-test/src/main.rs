@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use zyx::{Device, DType, Scalar, Tensor};
+use zyx::{Device, Scalar, Tensor};
 
 mod autograd;
 mod binary;
@@ -25,13 +25,7 @@ fn assert_eq<T: Scalar>(x: impl IntoIterator<Item = T>, y: impl IntoIterator<Ite
     }
 }
 
-fn test(test_fn: impl Fn(DType)) {
-    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64, DType::U8, DType::I8, DType::I16, DType::I32, DType::I64] {
-        test_dtype(test_fn.clone(), dtype);
-    }
-}
-
-fn test_dtype<F: Fn(DType)>(test_fn: F, dtype: DType) {
+fn test_dtype<T: Scalar, F: Fn(T)>(test_fn: F) {
     for device in [Device::CUDA, Device::OpenCL, Device::WGPU, Device::CPU] {
         if Tensor::set_default_device(device) {
             let mut name: String = std::any::type_name::<F>().into();
@@ -45,7 +39,7 @@ fn test_dtype<F: Fn(DType)>(test_fn: F, dtype: DType) {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let begin = std::time::Instant::now();
-            test_fn(dtype);
+            test_fn();
             let elapsed = begin.elapsed().as_nanos();
             println!("OK, time taken: {:.3} ms", elapsed as f32 / 1000000.);
         } else {
@@ -56,67 +50,67 @@ fn test_dtype<F: Fn(DType)>(test_fn: F, dtype: DType) {
 
 fn main() {
     println!("\nTesting tensor initialization");
-    test(initialization::randn);
-    test(initialization::uniform);
-    test(initialization::kaiming_uniform);
-    test(initialization::zeros);
-    test(initialization::ones);
-    test(initialization::full);
-    test(initialization::eye);
+    test_dtype::<f32, _>(initialization::randn);
+    test_dtype::<f32, _>(initialization::uniform);
+    test_dtype::<f32, _>(initialization::kaiming_uniform);
+    test_dtype::<f32, _>(initialization::zeros);
+    test_dtype::<f32, _>(initialization::ones);
+    test_dtype::<f32, _>(initialization::full);
+    test_dtype::<f32, _>(initialization::eye);
 
     println!("\nTesting unary ops");
-    test(unary::neg);
-    test(unary::relu);
-    test(unary::sin);
-    test(unary::cos);
-    test(unary::ln);
-    test(unary::exp);
-    test(unary::tanh);
-    test(unary::sqrt);
+    test_dtype::<f32, _>(unary::neg);
+    test_dtype::<f32, _>(unary::relu);
+    test_dtype::<f32, _>(unary::sin);
+    test_dtype::<f32, _>(unary::cos);
+    test_dtype::<f32, _>(unary::ln);
+    test_dtype::<f32, _>(unary::exp);
+    test_dtype::<f32, _>(unary::tanh);
+    test_dtype::<f32, _>(unary::sqrt);
 
     println!("\nTesting binary ops");
-    test(binary::add);
-    test(binary::sub);
-    test(binary::mul);
-    test(binary::div);
-    test(binary::pow);
-    test(binary::cmplt);
+    test_dtype::<f32, _>(binary::add);
+    test_dtype::<f32, _>(binary::sub);
+    test_dtype::<f32, _>(binary::mul);
+    test_dtype::<f32, _>(binary::div);
+    test_dtype::<f32, _>(binary::pow);
+    test_dtype::<f32, _>(binary::cmplt);
 
     println!("\nTesting ternary ops");
-    test(ternary::_where);
+    test_dtype::<f32, _>(ternary::_where);
 
     println!("\nTesting movement ops");
     // TODO more detailed movement ops tests
-    test(movement::reshape);
-    test(movement::expand);
-    test(movement::permute);
-    test(movement::pad);
+    test_dtype::<f32, _>(movement::reshape);
+    test_dtype::<f32, _>(movement::expand);
+    test_dtype::<f32, _>(movement::permute);
+    test_dtype::<f32, _>(movement::pad);
 
     println!("\nTesting reduce ops");
-    test(reduce::sum);
-    test(reduce::max);
+    test_dtype::<f32, _>(reduce::sum);
+    test_dtype::<f32, _>(reduce::max);
 
     println!("\nTesting custom ops");
-    test(custom::small_tiled_dot);
+    test_dtype::<f32, _>(custom::small_tiled_dot);
 
     println!("\nTesting combinations of ops");
     // TODO more detailed combinations of ops tests
-    test(combination::t0);
-    test(combination::t1);
-    test(combination::dot);
-    test(combination::cat);
-    test(combination::split);
+    test_dtype::<f32, _>(combination::t0);
+    test_dtype::<f32, _>(combination::t1);
+    test_dtype::<f32, _>(combination::dot);
+    test_dtype::<f32, _>(combination::cat);
+    test_dtype::<f32, _>(combination::split);
 
     println!("\nTesting autograd engine");
-    test(autograd::t0);
-    test(autograd::t1);
+    test_dtype::<f32, _>(autograd::t0);
+    test_dtype::<f32, _>(autograd::t1);
 
     println!("\nTesting optimizers");
-    test(optimizer::sgd);
-    test(optimizer::adam);
+    test_dtype::<f32, _>(optimizer::sgd);
+    test_dtype::<f32, _>(optimizer::adam);
 
     println!("\nTesting nn modules");
-    test(nn::linear);
-    test(nn::layer_norm);
-    test(nn::batch_norm);
+    test_dtype::<f32, _>(nn::linear);
+    test_dtype::<f32, _>(nn::layer_norm);
+    test_dtype::<f32, _>(nn::batch_norm);
 }

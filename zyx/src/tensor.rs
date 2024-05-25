@@ -144,19 +144,6 @@ impl Tensor {
 
     // Initializers
     #[must_use]
-    pub fn from_parts(data: &[impl Scalar], shape: impl IntoShape) -> Tensor {
-        let shape: Vec<usize> = shape.into_shape().collect();
-        debug_assert_eq!(shape.iter().product::<usize>(), data.len());
-        let mut rt = RT.lock();
-        let default_device = rt.default_device;
-        let tensor = rt.store(data, default_device).unwrap();
-        if shape.len() > 1 {
-            return rt.reshape(tensor.id, &shape)
-        }
-        return tensor
-    }
-
-    #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
         use rand::SeedableRng;
         use rand::distributions::Standard;

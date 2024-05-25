@@ -1,11 +1,12 @@
 use super::assert_eq;
 use core::ops::Neg;
 use rand::{thread_rng, Rng};
+use zyx::Scalar;
 
 macro_rules! unary_test {
-    ( $dev:expr, $x:tt ) => {{
+    ( $x:tt ) => {{
         let mut rng = thread_rng();
-        let mut shapes: Vec<Shape> = Vec::new();
+        let mut shapes: Vec<Vec<usize>> = Vec::new();
         for _ in 0..10 {
             let mut shape = Vec::new();
             for i in 0..rng.gen_range(1..20) {
@@ -31,12 +32,12 @@ macro_rules! unary_test {
     }};
 }
 
-pub fn neg<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    unary_test!(dev, neg)
+pub fn neg<T: Scalar>(_: T) {
+    unary_test!(neg)
 }
 
-pub fn relu<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    unary_test!(dev, relu)
+pub fn relu<T: Scalar>(_: T) {
+    unary_test!(relu)
 }
 
 pub fn sin<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {

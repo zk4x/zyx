@@ -1,4 +1,7 @@
-pub fn linear<T: Scalar>(_: T) -> Result<(), ZyxError> {
+use zyx::{Scalar, Tensor};
+use zyx_nn::Linear;
+
+pub fn linear<T: Scalar>(_: T) {
     let l0 = Linear::new(4, 7, T::dtype());
     let x = Tensor::uniform([2, 3, 4], 0f32..1f32)?;
     let z = l0.forward(&x);
@@ -6,10 +9,10 @@ pub fn linear<T: Scalar>(_: T) -> Result<(), ZyxError> {
     Ok(())
 }
 
-pub fn layer_norm<T: Scalar>(_: T) -> Result<(), ZyxError> {
+pub fn layer_norm<T: Scalar>(_: T) {
     todo!()
 }
 
-pub fn batch_norm<T: Scalar>(_: T) -> Result<(), ZyxError> {
+pub fn batch_norm<T: Scalar>(_: T) {
     todo!()
 }

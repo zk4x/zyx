@@ -1,7 +1,12 @@
-pub fn sgd<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    let mut p0 = dev.tensor([[2f32, 3., 4.], [4., 3., 2.]])?;
-    let mut p1 = dev.tensor([[2f32, 3., 4.], [4., 3., 2.], [5., 4., 3.]])?;
-    let l0 = dev.tensor([[2f32, 3., 4.], [4., 3., 2.]])?;
+use zyx::{DType, Scalar, Tensor};
+
+use crate::assert_eq;
+
+pub fn sgd<T: Scalar>(_: T) {
+    assert_eq(T::dtype(), DType::F32);
+    let mut p0 = Tensor::from([[2f32, 3., 4.], [4., 3., 2.]]);
+    let mut p1 = Tensor::from([[2f32, 3., 4.], [4., 3., 2.], [5., 4., 3.]]);
+    let l0 = Tensor::from([[2f32, 3., 4.], [4., 3., 2.]]);
 
     //let p00 = p0.clone();
     //let p10 = p1.clone();
@@ -42,10 +47,11 @@ pub fn sgd<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     Ok(())
 }
 
-pub fn adam<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    let mut p0 = dev.tensor([[2, 3, 4], [4, 3, 2]])?;
-    let mut p1 = dev.tensor([[2, 3, 4], [4, 3, 2], [5, 4, 3]])?;
-    let l0 = dev.tensor([[2, 3, 4], [4, 3, 2]])?;
+pub fn adam<T: Scalar>(_: T) {
+    assert_eq!(T::dtype(), DType::I32);
+    let mut p0 = Tensor::from([[2, 3, 4], [4, 3, 2]]);
+    let mut p1 = Tensor::from([[2, 3, 4], [4, 3, 2], [5, 4, 3]]);
+    let l0 = Tensor::from([[2, 3, 4], [4, 3, 2]]);
 
     //println!("{p0}\n{p1}");
 
