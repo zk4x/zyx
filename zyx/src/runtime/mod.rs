@@ -336,12 +336,15 @@ impl Runtime {
         return Ok(tensor)
     }
 
-    pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Tensor, RuntimeError> {
+    pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, RuntimeError> {
+        if !self.is_realized(x) {
+            self.realize(BTreeSet::from_iter([x]))?;
+        }
         match self.device(x) {
             Device::CUDA => self.cuda.load(x),
-            Device::OpenCL => {}
-            Device::WGPU => {}
-            Device::CPU => {}
+            Device::OpenCL => self.opencl.load(x),
+            Device::WGPU => self.wgpu.load(x),
+            Device::CPU => self.cpu.load(x),
         }
     }
 
@@ -354,6 +357,19 @@ impl Runtime {
             //std::println!("Num tensors: {}", self.nodes.len());
         }*/
         return self.graph.push(node)
+    }
+
+    fn is_realized(&self, x: TensorId) -> bool {
+        return match self.device(x) {
+            Device::CUDA => if let Some(cuda) = self.cuda.as_ref() {
+                cuda.is_realized(x)
+            } else {
+                false
+            }
+            Device::OpenCL => {}
+            Device::WGPU => {}
+            Device::CPU => {}
+        }
     }
 
     fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), RuntimeError> {
