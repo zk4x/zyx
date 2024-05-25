@@ -47,6 +47,7 @@ impl<'a> IntoIterator for &'a mut RNNCell {
 impl RNNCell {
     /// Initilize linear layer in device self
     pub fn new(self, input_size: usize, hidden_size: usize) -> RNNCell {
+        use zyx::Scalar;
         let l = -(1./(hidden_size as f32)).sqrt();
         let u = (1./(hidden_size as f32)).sqrt();
         RNNCell {

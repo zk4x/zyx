@@ -51,6 +51,7 @@ impl Adam {
         parameters: impl IntoIterator<Item = &'a mut Tensor>,
         gradients: impl IntoIterator<Item = Option<Tensor>>,
     ) {
+        use zyx::Scalar;
         let params: Vec<&mut Tensor> = parameters.into_iter().collect();
         let grads: Vec<Option<Tensor>> = gradients.into_iter().collect();
 
@@ -78,8 +79,8 @@ impl Adam {
                 } else {
                     self.v.push(&grad * &grad * (1.0 - self.betas.1));
                 }
-                let mh = &self.m[i] / (1.0 - self.betas.0.powi(self.t as i32));
-                let vh = &self.v[i] / (1.0 - self.betas.1.powi(self.t as i32));
+                let mh = &self.m[i] / (1.0 - self.betas.0.pow(self.t as f32));
+                let vh = &self.v[i] / (1.0 - self.betas.1.pow(self.t as f32));
                 if self.amsgrad {
                     if let Some(vm) = self.vm.get_mut(i) {
                         *vm = vm.cmplt(&vh).where_(vh, &*vm);

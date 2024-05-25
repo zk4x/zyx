@@ -27,7 +27,7 @@ static RT: spin::Mutex<Runtime> = spin::Mutex::new(Runtime::new());
 
 #[test]
 fn t0() {
-    let x = Tensor::randn([1024usize, 1024], DType::F16);
+    let _ = Tensor::randn([1024usize, 1024], DType::F16);
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
 }

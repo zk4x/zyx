@@ -1,5 +1,4 @@
 use zyx::{DType, Tensor};
-use crate::assert_eq;
 
 pub fn t0(dtype: DType) {
     assert_eq!(dtype, DType::I32);
