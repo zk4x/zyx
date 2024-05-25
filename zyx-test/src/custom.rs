@@ -1,6 +1,3 @@
-use zyx_core::backend::Backend;
-use zyx_core::dtype::DType;
-use zyx_core::error::ZyxError;
 use crate::assert_eq;
 
 pub(super) fn small_tiled_dot() -> Result<(), ZyxError> {

@@ -341,10 +341,10 @@ impl Runtime {
             self.realize(BTreeSet::from_iter([x]))?;
         }
         match self.device(x) {
-            Device::CUDA => self.cuda.load(x),
-            Device::OpenCL => self.opencl.load(x),
-            Device::WGPU => self.wgpu.load(x),
-            Device::CPU => self.cpu.load(x),
+            Device::CUDA => Ok(self.cuda.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
+            Device::OpenCL => Ok(self.opencl.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
+            Device::WGPU => Ok(self.wgpu.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
+            Device::CPU => Ok(self.cpu.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
         }
     }
 
@@ -366,9 +366,21 @@ impl Runtime {
             } else {
                 false
             }
-            Device::OpenCL => {}
-            Device::WGPU => {}
-            Device::CPU => {}
+            Device::OpenCL => if let Some(opencl) = self.opencl.as_ref() {
+                opencl.is_realized(x)
+            } else {
+                false
+            }
+            Device::WGPU => if let Some(wgpu) = self.wgpu.as_ref() {
+                wgpu.is_realized(x)
+            } else {
+                false
+            }
+            Device::CPU => if let Some(cpu) = self.cpu.as_ref() {
+                cpu.is_realized(x)
+            } else {
+                false
+            }
         }
     }
 

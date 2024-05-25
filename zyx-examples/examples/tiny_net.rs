@@ -16,13 +16,7 @@ fn main() {
         l1: Linear::new(128, 128, DType::F32),
     };
 
-    for t in tiny_net.into_iter() {
-        println!("{}", t.id());
-    }
-
     let x = Tensor::uniform([2, 3], 0..2);
 
     let _grads = x.backward(&tiny_net);
-
-    Ok(())
 }

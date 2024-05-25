@@ -132,7 +132,7 @@ impl Scalar for f32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        f32::powf(self, rhs)
+        powf(self, rhs)
     }
 
     fn cmplt(self, rhs: Self) -> Self {

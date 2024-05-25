@@ -1,5 +1,4 @@
 use super::assert_eq;
-use zyx_core::{axes::Axes, backend::Backend, error::ZyxError, scalar::Scalar, shape::Shape};
 
 pub fn reshape<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.randn([2, 4, 1, 5], T::dtype())?;
@@ -11,7 +10,6 @@ pub fn reshape<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
 }
 
 pub fn permute<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    use zyx_core::axes::IntoAxes;
     let sh = [2, 4, 1, 5].into();
     let ax = [-3, 3, 0, 2].into_axes(4);
     let x = dev.randn(&sh, T::dtype())?;

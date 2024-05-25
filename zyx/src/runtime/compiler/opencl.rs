@@ -24,7 +24,7 @@ impl Compiler for OpenCL {
         todo!()
     }
 
-    fn load_mem<T>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
+    fn load_mem<T>(&self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
         todo!()
     }
 

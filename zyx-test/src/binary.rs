@@ -1,11 +1,12 @@
 use super::assert_eq;
 use core::ops::{Add, Mul, Sub};
 use rand::{thread_rng, Rng};
+use zyx::{DType, Tensor};
 
 macro_rules! binary_test {
     ( $dev:expr, $x:tt ) => {{
         let mut rng = thread_rng();
-        let mut shapes: Vec<Shape> = Vec::new();
+        let mut shapes: Vec<Vec<usize>> = Vec::new();
         for _ in 0..10 {
             let mut shape = Vec::new();
             for i in 0..rng.gen_range(1..20) {
@@ -47,21 +48,20 @@ macro_rules! binary_test {
     }};
 }
 
-pub fn add<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    binary_test!(dev, add)
+pub fn add(dtype: DType) {
+    binary_test!(dtype, add)
 }
 
-pub fn sub<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    binary_test!(dev, sub)
+pub fn sub(dtype: DType) {
+    binary_test!(dtype, sub)
 }
 
-pub fn mul<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    binary_test!(dev, mul)
+pub fn mul(dtype: DType) {
+    binary_test!(dtype, mul)
 }
 
-pub fn div<T: Scalar>(_dev: impl Backend, _: T) -> Result<(), ZyxError> {
+pub fn div(dtype: DType) {
     // TODO why does this not work???
-    return Ok(());
     /*let mut rng = thread_rng();
     let mut shapes: Vec<Shape> = Vec::new();
     for _ in 0..10 {
@@ -102,9 +102,9 @@ pub fn div<T: Scalar>(_dev: impl Backend, _: T) -> Result<(), ZyxError> {
     Ok(())*/
 }
 
-pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
+pub fn pow(dtype: DType) {
     let mut rng = thread_rng();
-    let mut shapes: Vec<Shape> = Vec::new();
+    let mut shapes: Vec<Vec<usize>> = Vec::new();
     for _ in 0..10 {
         let mut shape = Vec::new();
         for i in 0..rng.gen_range(1..20) {
@@ -125,7 +125,7 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
         // Since overflow is implementation/hardware defined, we need to limit integers
         // appropriatelly
         let (x, y) = if T::dtype().is_floating() {
-            (dev.randn(shape, T::dtype())?, dev.randn(shape, T::dtype())?)
+            (Tensor::randn(shape, dtype)?, Tensor::randn(shape, dtype)?)
         } else {
             let six = T::one()
                 .add(T::one())
@@ -134,8 +134,8 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
                 .add(T::one())
                 .add(T::one());
             (
-                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six.clone())?,
-                dev.uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six)?,
+                Tensor::uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six.clone())?,
+                Tensor::uniform(shape, T::min_value().sqrt().sqrt().sqrt()..six)?,
             )
         };
         let vx = x.to_vec()?;
@@ -148,6 +148,6 @@ pub fn pow<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     Ok(())
 }
 
-pub fn cmplt<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
-    binary_test!(dev, cmplt)
+pub fn cmplt(dtype: DType) {
+    binary_test!(dtype, cmplt)
 }

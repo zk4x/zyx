@@ -1,7 +1,3 @@
-use zyx_core::backend::Backend;
-use zyx_core::error::ZyxError;
-use zyx_core::scalar::Scalar;
-
 pub fn linear<T: Scalar>(_: T) -> Result<(), ZyxError> {
     let l0 = Linear::new(4, 7, T::dtype());
     let x = Tensor::uniform([2, 3, 4], 0f32..1f32)?;

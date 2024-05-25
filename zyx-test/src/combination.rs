@@ -1,5 +1,4 @@
 use itertools::Itertools;
-use zyx_core::{backend::Backend, error::ZyxError, scalar::Scalar};
 
 pub fn t0<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let x = dev.tensor([[4, 3, 4], [4, 2, 5]])?;

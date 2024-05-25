@@ -20,7 +20,7 @@ trait Compiler: Sized {
     fn hwinfo(&mut self) -> Result<HWInfo, CompilerError>;
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError>;
     fn store_memory<T>(&mut self, buffer: &mut Self::Buffer, data: &[T]) -> Result<(), CompilerError>;
-    fn load_mem<T>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError>;
+    fn load_mem<T>(&self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError>;
     fn deallocate_memory(&mut self, buffer: Self::Buffer);
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError>;
     fn launch_program(&mut self, program: &Self::Program, args: &[&mut Self::Buffer]) -> Result<(), CompilerError>;
@@ -89,12 +89,16 @@ impl<C: Compiler> CompiledBackend<C> {
         })
     }
 
+    pub(super) fn is_realized(&self, x: TensorId) -> bool {
+        self.buffers.contains_key(&x)
+    }
+
     pub(super) fn store<T: Scalar>(&mut self, data: &[T]) -> Result<(), CompilerError> {
         todo!()
     }
 
     // Load values at x, if x is not evaluated, it will return error
-    pub(super) fn load<T: Scalar>(&mut self, x: TensorId, length: usize) -> Result<Vec<T>, CompilerError> {
+    pub(super) fn load<T: Scalar>(&self, x: TensorId, length: usize) -> Result<Vec<T>, CompilerError> {
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_mem(buffer, length)
         }

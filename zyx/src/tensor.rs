@@ -2,13 +2,14 @@ use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
-use crate::RT;
 use alloc::vec::Vec;
 use core::ops::{Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
 use half::{bf16, f16};
 use num_complex::Complex;
 use rand::Rng;
 use rand::rngs::SmallRng;
+
+use crate::RT;
 
 pub struct Tensor {
     id: u32,
@@ -54,6 +55,11 @@ impl Tensor {
         g.initialize_device(device)
     }
 
+    #[must_use]
+    pub fn backward<'a>(&self, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
+        todo!()
+    }
+
     #[cfg(feature = "std")]
     #[must_use]
     pub fn load(&self, path: impl AsRef<std::path::Path>) -> Vec<Tensor> {
@@ -89,17 +95,50 @@ impl Tensor {
     pub fn to(self, device: Device) -> Tensor {
         let mut rt = RT.lock();
         match self.dtype() {
-            DType::BF16 => return rt.store(&rt.load::<bf16>(self.id).unwrap(), device).unwrap(),
-            DType::F16 => return rt.store(&rt.load::<f16>(self.id).unwrap(), device).unwrap(),
-            DType::F32 => return rt.store(&rt.load::<f32>(self.id).unwrap(), device).unwrap(),
-            DType::F64 => return rt.store(&rt.load::<f64>(self.id).unwrap(), device).unwrap(),
-            DType::CF32 => return rt.store(&rt.load::<Complex<f32>>(self.id).unwrap(), device).unwrap(),
-            DType::CF64 => return rt.store(&rt.load::<Complex<f64>>(self.id).unwrap(), device).unwrap(),
-            DType::U8 => return rt.store(&rt.load::<u8>(self.id).unwrap(), device).unwrap(),
-            DType::I8 => return rt.store(&rt.load::<i8>(self.id).unwrap(), device).unwrap(),
-            DType::I16 => return rt.store(&rt.load::<i16>(self.id).unwrap(), device).unwrap(),
-            DType::I32 => return rt.store(&rt.load::<i32>(self.id).unwrap(), device).unwrap(),
-            DType::I64 => return rt.store(&rt.load::<i64>(self.id).unwrap(), device).unwrap(),
+            DType::BF16 => {
+                let data = rt.load::<bf16>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::F16 => {
+                let data = rt.load::<f16>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::F32 => {
+                let data = rt.load::<f32>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::F64 => {
+                let data = rt.load::<f64>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::CF32 => {
+                let data = rt.load::<Complex<f32>>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::CF64 => {
+                let data = rt.load::<Complex<f64>>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::U8 => {
+                let data = rt.load::<u8>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::I8 => {
+                let data = rt.load::<i8>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::I16 => {
+                let data = rt.load::<i16>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::I32 => {
+                let data = rt.load::<i32>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
+            DType::I64 => {
+                let data = rt.load::<i64>(self.id).unwrap();
+                return rt.store(&data, device).unwrap()
+            }
         }
     }
 

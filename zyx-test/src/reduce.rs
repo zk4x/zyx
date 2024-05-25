@@ -1,13 +1,5 @@
 use super::assert_eq;
 use rand::{prelude::SliceRandom, thread_rng, Rng};
-use zyx_core::{
-    axes::{Axes, IntoAxes},
-    backend::Backend,
-    dtype::DType,
-    error::ZyxError,
-    scalar::Scalar,
-    shape::Shape,
-};
 
 pub fn sum<T: Scalar>(dev: impl Backend, _: T) -> Result<(), ZyxError> {
     let mut rng = thread_rng();

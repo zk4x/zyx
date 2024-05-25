@@ -5,18 +5,17 @@
 //! Macro Module automatically implements IntoIterator<Item = &Tensor>
 //! for your module, so that you can use it in backpropagation and save it to disk.
 //! ```rust
-//! use zyx_core::backend::Backend;
-//! use zyx_core::tensor::Tensor;
+//! use zyx::Tensor;
 //! use zyx_derive::Module;
 //!
 //! #[derive(Module)]
-//! struct MyNet<B: Backend> {
-//!     b: Tensor<B>,
-//!     w: Tensor<B>,
+//! struct MyNet {
+//!     b: Tensor,
+//!     w: Tensor,
 //! }
 //!
-//! impl<B: Backend> MyNet<B> {
-//!     fn forward(&self, x: &Tensor<B>) -> Tensor<B> {
+//! impl MyNet {
+//!     fn forward(&self, x: &Tensor) -> Tensor {
 //!         x.dot(&self.w) + &self.b
 //!     }
 //! }
@@ -61,15 +60,15 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
 
         struct __MarkerStructRef<T: Copy>(T);
 
-        impl<'a, B: zyx_core::backend::Backend + 'a, T: IntoIterator<Item = &'a zyx::Tensor> + Copy> __MarkerStructRef<T> {
+        impl<'a, T: IntoIterator<Item = &'a zyx::Tensor> + Copy> __MarkerStructRef<T> {
             fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx::Tensor>) {
                 res.extend(self.0.into_iter());
             }
         }
 
-        impl<'a, B: zyx_core::backend::Backend + 'a, T: Copy> __MarkerTraitRef<'a, B> for __MarkerStructRef<T>{}
+        impl<'a, T: Copy> __MarkerTraitRef<'a> for __MarkerStructRef<T>{}
 
-        let mut res = Vec::<&zyx_core::tensor::Tensor<_>>::new();
+        let mut res = Vec::<&zyx::Tensor>::new();
     };
 
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {
@@ -87,9 +86,9 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
-        impl<'a, B: zyx_core::backend::Backend> IntoIterator for &'a #struct_name<B> {
-            type Item = &'a zyx_core::tensor::Tensor<B>;
-            type IntoIter = std::vec::IntoIter<&'a zyx_core::tensor::Tensor<B>>;
+        impl<'a> IntoIterator for &'a #struct_name {
+            type Item = &'a zyx::Tensor;
+            type IntoIter = std::vec::IntoIter<&'a zyx::Tensor>;
 
             fn into_iter(self) -> Self::IntoIter {
                 #field_iterators
@@ -99,21 +98,21 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     };
 
     let mut field_iterators = quote! {
-        trait __MarkerTraitMut<'a, B: zyx_core::backend::Backend + 'a>: Sized {
-            fn __iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx_core::tensor::Tensor<B>>) {}
+        trait __MarkerTraitMut<'a>: Sized {
+            fn __iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx::Tensor>) {}
         }
 
         struct __MarkerStructMut<T>(T);
 
-        impl<'a, B: zyx_core::backend::Backend + 'a, T: IntoIterator<Item = &'a mut zyx_core::tensor::Tensor<B>>> __MarkerStructMut<T> {
-            fn __iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx_core::tensor::Tensor<B>>) {
+        impl<'a, T: IntoIterator<Item = &'a mut zyx::Tensor>> __MarkerStructMut<T> {
+            fn __iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx::Tensor>) {
                 res.extend(self.0.into_iter());
             }
         }
 
-        impl<'a, B: zyx_core::backend::Backend + 'a, T> __MarkerTraitMut<'a, B> for __MarkerStructMut<T>{}
+        impl<'a, T> __MarkerTraitMut<'a> for __MarkerStructMut<T>{}
 
-        let mut res = Vec::<&mut zyx_core::tensor::Tensor<_>>::new();
+        let mut res = Vec::<&mut zyx::Tensor>::new();
     };
 
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {
@@ -133,9 +132,9 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #expanded
 
-        impl<'a, B: zyx_core::backend::Backend> IntoIterator for &'a mut #struct_name<B> {
-            type Item = &'a mut zyx_core::tensor::Tensor<B>;
-            type IntoIter = std::vec::IntoIter<&'a mut zyx_core::tensor::Tensor<B>>;
+        impl<'a> IntoIterator for &'a mut #struct_name {
+            type Item = &'a mut zyx::Tensor;
+            type IntoIter = std::vec::IntoIter<&'a mut zyx::Tensor>;
 
             fn into_iter(self) -> Self::IntoIter {
                 #field_iterators

@@ -1,29 +1,29 @@
 use zyx::DType;
 
-fn randn(dtype: DType) {
+pub fn randn(dtype: DType) {
     // TODO
 }
 
-fn uniform(dtype: DType) {
+pub fn uniform(dtype: DType) {
     // TODO
 }
 
-fn kaiming_uniform(dtype: DType) {
+pub fn kaiming_uniform(dtype: DType) {
     // TODO
 }
 
-fn zeros(dtype: DType) {
+pub fn zeros(dtype: DType) {
     // TODO
 }
 
-fn ones(dtype: DType) {
+pub fn ones(dtype: DType) {
     // TODO
 }
 
-fn full(dtype: DType) {
+pub fn full(dtype: DType) {
     // TODO
 }
 
-fn eye(dtype: DType) {
+pub fn eye(dtype: DType) {
     // TODO
 }

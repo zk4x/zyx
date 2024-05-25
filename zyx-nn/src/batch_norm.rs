@@ -53,7 +53,7 @@ impl<'a> IntoIterator for &'a mut BatchNorm {
 
 impl BatchNorm {
     /// Initilize layer_norm layer in device self
-    fn new(self, num_features: usize) -> BatchNorm {
+    pub fn new(self, num_features: usize) -> BatchNorm {
         BatchNorm {
             eps: 1e-5,
             momentum: 0.1,
