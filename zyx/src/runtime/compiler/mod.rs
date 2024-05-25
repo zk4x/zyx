@@ -46,6 +46,7 @@ pub(crate) enum CompilerError {
     InitializationFailure,
     DeviceOutOfMemory,
     HostOutOfMemory,
+    BufferDoesNotExist,
     // For all unknown errors
     GeneralExecutionError,
 }
@@ -90,6 +91,14 @@ impl<C: Compiler> CompiledBackend<C> {
 
     pub(super) fn store<T: Scalar>(&mut self, data: &[T]) -> Result<(), CompilerError> {
         todo!()
+    }
+
+    // Load values at x, if x is not evaluated, it will return error
+    pub(super) fn load<T: Scalar>(&mut self, x: TensorId, length: usize) -> Result<Vec<T>, CompilerError> {
+        if let Some(buffer) = self.buffers.get(&x) {
+            return self.compiler.load_mem(buffer, length)
+        }
+        return Err(CompilerError::BufferDoesNotExist)
     }
 
     pub(super) fn remove(&mut self, x: TensorId) {

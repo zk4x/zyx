@@ -20,6 +20,9 @@ pub use shape::IntoAxes;
 
 const SEED: u64 = 69420;
 
+#[cfg(feature = "std")]
+extern crate std;
+
 static RT: spin::Mutex<Runtime> = spin::Mutex::new(Runtime::new());
 
 #[test]

@@ -53,6 +53,12 @@ impl Tensor {
         g.initialize_device(device)
     }
 
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn load(&self, path: impl AsRef<std::path::Path>) -> Vec<Tensor> {
+        todo!()
+    }
+
     #[must_use]
     pub fn shape(&self) -> Vec<usize> {
         RT.lock().shape(self.id)
@@ -80,7 +86,8 @@ impl Tensor {
 
     #[must_use]
     pub fn to(self, device: Device) -> Tensor {
-        todo!()
+        let rt = RT.lock();
+        rt.load();
     }
 
     // Initializers

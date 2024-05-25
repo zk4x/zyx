@@ -6,10 +6,9 @@ Everything that is differentiable in math is differentiable in zyx (sometimes ev
 
 You can just do any operations with your tensors.
 ```rust
-# use zyx_opencl;
-# let dev = zyx_opencl::device()?;
-let x = dev.randn([1024, 1024], DType::F32);
-let y = dev.tensor([2, 3, 1]);
+use zyx::Tensor;
+let x = Tensor::randn([1024, 1024], DType::F32);
+let y = Tensor::from([2, 3, 1]);
 let z = (x + y.pad([(1000, 21)], 8)) * x;
 ```
 At any point in time, you can differentiate any tensor w.r.t. any other tensor or set of tensors. This example differentiates
@@ -21,8 +20,8 @@ let grads = z.backward([&x, &y]);
 Backward function return Vec<Option<Tensor>>. Grads can contain some None values, if there is no direct connection
 between dependent and independent variables.
 ```rust
-let x = dev.randn([2, 3], DType::F32);
-let y = dev.randn([2, 3], DType::F32);
+let x = Tensor::randn([2, 3], DType::F32);
+let y = Tensor::randn([2, 3], DType::F32);
 let z = y.exp();
 let grads = z.backward([&x]);
 assert_eq!(grads, vec![None]);

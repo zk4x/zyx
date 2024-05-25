@@ -16,19 +16,19 @@ One aspect of debugging which is often overlooked is visual representation of gr
 
 Zyx asks you to give it any number of tensors and then plots all relations between them into picture. Let x, y and z be tensors.
 ```rust
-let dot_graph = dev.plot_graph([&x, &y, &z]);
+let dot_graph = Tensor::plot_graph([&x, &y, &z]);
 fs::write("graph.dot", dot_graph).unwrap();
 ```
 
 If you want to see just forward part of graph, you can do for example this:
 ```rust
-let dot_graph = dev.plot_graph(model.into_iter().chain([&x, &loss]));
+let dot_graph = Tensor::plot_graph(model.into_iter().chain([&x, &loss]));
 ```
 Where model is your model, x is your input and loss is your loss/error.
 
 If you want to only look at the backward part of graph, that is also simple:
 ```rust
-let dot_graph = dev.plot_graph(grads.chain([&loss]));
+let dot_graph = Tensor::plot_graph(grads.chain([&loss]));
 ```
 
 Zyx will order nodes automatically, so there is no difference in the order in which tensors are stored in the iterator.

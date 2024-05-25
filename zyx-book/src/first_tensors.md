@@ -4,27 +4,7 @@ In this chapter we go over tensor initialization and running your first operatio
 
 ## Choosing your backend
 
-Before we can create tensors, we need to choose which device they should be stored in.
-The recommended backend is zyx-opencl, so that is what we will use in this book,
-but if it does not work for you, or you can't figure out how to install OpenCL runtime
-on your OS, you can go with zyx-cpu backend which does not have any dependencies outside
-of rust.
-
-```shell
-cargo add zyx-opencl
-```
-
-Let's initialize the backend.
-```rust
-use zyx_opencl;
-use zyx_opencl::ZyxError;
-
-fn main() -> Result<(), ZyxError> {
-    let dev = zyx_opencl::device()?;
-    Ok(())
-}
-```
-That's it!
+Zyx automatically chooses the best backend for you.
 
 ## Tensor #1
 

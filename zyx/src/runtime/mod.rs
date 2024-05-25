@@ -336,6 +336,15 @@ impl Runtime {
         return Ok(tensor)
     }
 
+    pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Tensor, RuntimeError> {
+        match self.device(x) {
+            Device::CUDA => self.cuda.load(x),
+            Device::OpenCL => {}
+            Device::WGPU => {}
+            Device::CPU => {}
+        }
+    }
+
     fn push(&mut self, node: Node) -> Tensor {
         //std::println!("Assigned id: {id}, rcs {:?}", self.rcs);
         /*self.unrealized_nodes_count += 1;
