@@ -1,6 +1,6 @@
+use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
 use alloc::vec::Vec;
-use crate::runtime::compiler::ir::IRKernel;
 
 pub(crate) struct WGPU {}
 
@@ -20,15 +20,19 @@ impl Compiler for WGPU {
         todo!()
     }
 
-    fn store_memory<T>(&mut self, buffer: &mut Self::Buffer, data: &[T]) -> Result<(), CompilerError> {
+    fn store_memory<T>(
+        &mut self,
+        buffer: &mut Self::Buffer,
+        data: &[T],
+    ) -> Result<(), CompilerError> {
         todo!()
     }
 
-    fn load_mem<T>(&self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
+    fn load_memory<T>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
         todo!()
     }
 
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) {
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
         todo!()
     }
 
@@ -36,7 +40,11 @@ impl Compiler for WGPU {
         todo!()
     }
 
-    fn launch_program(&mut self, program: &Self::Program, args: &[&mut Self::Buffer]) -> Result<(), CompilerError> {
+    fn launch_program(
+        &mut self,
+        program: &Self::Program,
+        args: &[&mut Self::Buffer],
+    ) -> Result<(), CompilerError> {
         todo!()
     }
 
@@ -44,4 +52,3 @@ impl Compiler for WGPU {
         todo!()
     }
 }
-

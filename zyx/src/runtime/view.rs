@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy)]
 struct Dimension {
@@ -38,11 +38,20 @@ impl View {
     #[must_use]
     pub fn from(shape: &[usize]) -> Self {
         let mut stride = 1;
-        let mut first_shape: Vec<Dimension> = shape.iter().rev().map(|size| {
-            let temp = Dimension { size: *size, stride, len: *size, shift: *size };
-            stride *= size;
-            temp
-        }).collect();
+        let mut first_shape: Vec<Dimension> = shape
+            .iter()
+            .rev()
+            .map(|size| {
+                let temp = Dimension {
+                    size: *size,
+                    stride,
+                    len: *size,
+                    shift: *size,
+                };
+                stride *= size;
+                temp
+            })
+            .collect();
         first_shape.reverse();
         Self {
             binds: alloc::vec![0; first_shape.len()],
@@ -85,7 +94,9 @@ impl View {
     /// Reshape view into different shape
     pub fn reshape(&mut self, shape: &[usize]) {
         assert_eq!(self.numel(), shape.iter().product());
-        if self.shape() == *shape { return }
+        if self.shape() == *shape {
+            return;
+        }
         // TODO perhaps we can merge more shapes with the previous shape
 
         // TODO merge split and join dimension reshapes
@@ -157,16 +168,21 @@ impl View {
         }*/
 
         let mut new_stride = 1;
-        let mut new_shape: Vec<Dimension> = shape.iter().copied().rev().map(|size| {
-            let stride = new_stride;
-            new_stride *= size;
-            Dimension {
-                size,
-                stride,
-                len: size,
-                shift: size
-            }
-        }).collect();
+        let mut new_shape: Vec<Dimension> = shape
+            .iter()
+            .copied()
+            .rev()
+            .map(|size| {
+                let stride = new_stride;
+                new_stride *= size;
+                Dimension {
+                    size,
+                    stride,
+                    len: size,
+                    shift: size,
+                }
+            })
+            .collect();
         new_shape.reverse();
         // TODO fix binds
         let binds = vec![0; new_shape.len()];
@@ -183,8 +199,14 @@ impl View {
     pub fn pad(&mut self, padding: &[isize]) {
         use itertools::Itertools;
         debug_assert!(self.shapes[0].len() >= padding.len());
-        for (dim, (lp, rp)) in self.shapes[0].iter_mut().rev().zip(padding.into_iter().tuples()) {
-            dim.size = (<usize as TryInto<isize>>::try_into(dim.size).unwrap() + lp + rp).try_into().unwrap();
+        for (dim, (lp, rp)) in self.shapes[0]
+            .iter_mut()
+            .rev()
+            .zip(padding.into_iter().tuples())
+        {
+            dim.size = (<usize as TryInto<isize>>::try_into(dim.size).unwrap() + lp + rp)
+                .try_into()
+                .unwrap();
             dim.shift = (<usize as TryInto<isize>>::try_into(dim.shift).unwrap() + lp) as usize;
         }
     }

@@ -1,5 +1,5 @@
-use half::{bf16, f16};
 use crate::{DType, Scalar};
+use half::{bf16, f16};
 
 impl Scalar for i64 {
     fn from_bf16(t: bf16) -> Self {
@@ -39,7 +39,9 @@ impl Scalar for i64 {
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        i64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])
+        i64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ])
     }
 
     fn dtype() -> DType {

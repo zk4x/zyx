@@ -1,6 +1,6 @@
+use crate::{DType, Scalar};
 use half::{bf16, f16};
 use num_complex::Complex;
-use crate::{DType, Scalar};
 
 impl Scalar for Complex<f32> {
     fn from_bf16(t: bf16) -> Self {

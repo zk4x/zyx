@@ -48,8 +48,8 @@ impl RNNCell {
     /// Initilize linear layer in device self
     pub fn new(self, input_size: usize, hidden_size: usize) -> RNNCell {
         use zyx::Scalar;
-        let l = -(1./(hidden_size as f32)).sqrt();
-        let u = (1./(hidden_size as f32)).sqrt();
+        let l = -(1. / (hidden_size as f32)).sqrt();
+        let u = (1. / (hidden_size as f32)).sqrt();
         RNNCell {
             weight_ih: Tensor::uniform([hidden_size, input_size], l..u),
             weight_hh: Tensor::uniform([hidden_size, hidden_size], l..u),
@@ -66,9 +66,13 @@ impl RNNCell {
     pub fn forward(&self, x: impl Into<Tensor>, hidden: impl Into<Tensor>) -> (Tensor, Tensor) {
         let x = x.into();
         let mut hx = self.weight_hh.dot(hidden);
-        if let Some(b) = &self.bias_hh { hx = hx + b }
+        if let Some(b) = &self.bias_hh {
+            hx = hx + b
+        }
         hx = hx + self.weight_ih.dot(&x);
-        if let Some(b) = &self.bias_ih { hx = hx + b }
+        if let Some(b) = &self.bias_ih {
+            hx = hx + b
+        }
         return (x, hx);
     }
 }

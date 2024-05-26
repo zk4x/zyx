@@ -1,13 +1,12 @@
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::runtime::compiler::cuda::CUDA;
-use crate::runtime::compiler::opencl::OpenCL;
+use crate::runtime::compiler::opencl::OpenCLCompiler;
 use crate::runtime::compiler::wgpu::WGPU;
 use crate::runtime::compiler::{CompiledBackend, CompilerError};
 use crate::runtime::interpreter::cpu::CPU;
 use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
-use crate::tensor::Tensor;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::cell::OnceCell;
@@ -22,18 +21,18 @@ mod view;
 type TensorId = u32;
 
 #[derive(Debug)]
-pub(crate) enum RuntimeError {
+pub enum ZyxError {
     CompilerError(CompilerError),
     InterpreterError(InterpreterError),
 }
 
-impl From<CompilerError> for RuntimeError {
+impl From<CompilerError> for ZyxError {
     fn from(value: CompilerError) -> Self {
         Self::CompilerError(value)
     }
 }
 
-impl From<InterpreterError> for RuntimeError {
+impl From<InterpreterError> for ZyxError {
     fn from(value: InterpreterError) -> Self {
         Self::InterpreterError(value)
     }
@@ -46,7 +45,6 @@ struct Graph {
     shapes: Vec<usize>,
     axes: Vec<usize>,
     paddings: Vec<isize>,
-    devices: Vec<Device>,
 }
 
 impl Graph {
@@ -54,77 +52,89 @@ impl Graph {
         let mut x = x;
         let mut i = 0;
         while i < 10000 {
-        let node = & self.nodes[x as usize];
-        match node {
-            Node::Const { .. } => return alloc::vec![1],
-            Node::Leaf { len, .. } => return alloc::vec![ * len],
-            Node::Reshape { shape_id: shape, .. }
-            | Node::Pad { shape_id: shape, .. }
-            | Node::Permute { shape_id: shape, .. }
-            | Node::Sum { shape_id: shape, .. }
-            | Node::Max { shape_id: shape, .. }
-            | Node::Expand { shape_id: shape, .. } => return self._shape( * shape).into(),
-            _ => x = node.parameters().next().unwrap(),
+            let node = &self.nodes[<u32 as TryInto<usize>>::try_into(x).unwrap()];
+            match node {
+                Node::Const { .. } => return alloc::vec![1],
+                Node::Leaf { len, .. } => return alloc::vec![*len],
+                Node::Reshape {
+                    shape_id: shape, ..
+                }
+                | Node::Pad {
+                    shape_id: shape, ..
+                }
+                | Node::Permute {
+                    shape_id: shape, ..
+                }
+                | Node::Sum {
+                    shape_id: shape, ..
+                }
+                | Node::Max {
+                    shape_id: shape, ..
+                }
+                | Node::Expand {
+                    shape_id: shape, ..
+                } => return self._shape(*shape).into(),
+                _ => x = node.parameters().next().unwrap(),
             }
         }
         panic!("Shape of {x} could not be found. This is internal bug.")
     }
 
     fn dtype(&self, x: TensorId) -> DType {
-        todo!()
+        // TODO
+        DType::F32
     }
 
     fn device(&self, x: TensorId) -> Device {
-        self.devices[<u32 as TryInto<usize>>::try_into(x).unwrap()]
+        // TODO
+        Device::OpenCL
     }
 
     fn _shape(&self, shape_id: u32) -> &[usize] {
         let id = <u32 as TryInto<usize>>::try_into(shape_id).unwrap();
         let len = self.shapes[id];
-        return &self.shapes[id+1..id+1+len]
+        return &self.shapes[id + 1..id + 1 + len];
     }
 
     fn _axes(&self, axes_id: u32) -> &[usize] {
         let id = <u32 as TryInto<usize>>::try_into(axes_id).unwrap();
         let len = self.axes[id];
-        return &self.axes[id+1..id+1+len]
+        return &self.axes[id + 1..id + 1 + len];
     }
 
     fn _padding(&self, padding_id: u32) -> &[isize] {
         let id = <u32 as TryInto<usize>>::try_into(padding_id).unwrap();
         let len = <isize as TryInto<usize>>::try_into(self.paddings[id]).unwrap();
-        return &self.paddings[id+1..id+1+len]
+        return &self.paddings[id + 1..id + 1 + len];
     }
 
     fn is_empty(&self, x: TensorId) -> bool {
         self.rcs[<u32 as TryInto<usize>>::try_into(x).unwrap()] == 0
     }
 
-    fn push(&mut self, node: Node) -> Tensor {
+    fn push(&mut self, node: Node) -> TensorId {
         for nid in node.parameters() {
             self.rcs[<u32 as TryInto<usize>>::try_into(nid).unwrap()] += 1;
         }
-        if let Some(i) = (0..self.rcs.len())
-            .into_iter()
-            .skip_while(|i| !self.is_empty(<usize as TryInto<u32>>::try_into(*i).unwrap()))
-            .next()
-        {
-            let tensor = Tensor::from_raw(i);
+        let mut i = 0;
+        let n = self.rcs.len();
+        while i < n && self.rcs[i] != 0 {
+            i += 1;
+        }
+        if i != self.rcs.len() {
             self.rcs[i] = 1;
             self.nodes[i] = node;
-            return tensor
         } else {
-            let tensor = Tensor::from_raw(self.rcs.len());
             self.rcs.push(1);
             self.nodes.push(node);
-            return tensor
         }
+        return i.try_into().unwrap()
     }
 }
 
 pub(crate) struct Runtime {
     graph: Graph,
-    opencl: Option<CompiledBackend<OpenCL>>,
+    opencl: Option<CompiledBackend<OpenCLCompiler>>,
     cuda: Option<CompiledBackend<CUDA>>,
     wgpu: Option<CompiledBackend<WGPU>>,
     cpu: Option<InterpretedBackend<CPU>>,
@@ -135,7 +145,6 @@ pub(crate) struct Runtime {
 
 impl Runtime {
     pub(crate) const fn new() -> Self {
-        use rand::SeedableRng;
         Runtime {
             graph: Graph {
                 rcs: Vec::new(),
@@ -143,7 +152,6 @@ impl Runtime {
                 shapes: Vec::new(),
                 axes: Vec::new(),
                 paddings: Vec::new(),
-                devices: Vec::new(),
             },
             opencl: None,
             cuda: None,
@@ -222,7 +230,7 @@ impl Runtime {
     }
 
     pub(crate) fn retain(&mut self, x: TensorId) {
-        self.graph.rcs[x as usize] += 1;
+        self.graph.rcs[<u32 as TryInto<usize>>::try_into(x).unwrap()] += 1;
     }
 
     pub(crate) fn release(&mut self, x: TensorId) {
@@ -233,7 +241,7 @@ impl Runtime {
             self.graph.rcs[i] -= 1;
             if self.graph.rcs[i] == 0 {
                 params.extend(self.graph.nodes[i].parameters());
-                match self.graph.devices[i] {
+                match self.device(i.try_into().unwrap()) {
                     Device::CUDA => self.cuda.as_mut().unwrap().remove(x),
                     Device::OpenCL => self.opencl.as_mut().unwrap().remove(x),
                     Device::WGPU => self.wgpu.as_mut().unwrap().remove(x),
@@ -244,111 +252,136 @@ impl Runtime {
     }
 
     pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {
-        return self.graph.shape(x)
+        return self.graph.shape(x);
     }
 
     pub(crate) fn dtype(&self, x: TensorId) -> DType {
-        return self.graph.dtype(x)
+        return self.graph.dtype(x);
     }
 
     pub(crate) fn device(&self, x: TensorId) -> Device {
-        return self.graph.device(x)
+        return self.graph.device(x);
     }
 
-    pub(crate) fn relu(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::ReLU { x })
+    pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::ReLU { x });
     }
 
-    pub(crate) fn exp(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::Exp { x })
+    pub(crate) fn exp(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Exp { x });
     }
 
-    pub(crate) fn ln(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::Ln { x })
+    pub(crate) fn ln(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Ln { x });
     }
 
-    pub(crate) fn sin(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::Sin { x })
+    pub(crate) fn sin(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Sin { x });
     }
 
-    pub(crate) fn cos(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::Cos { x })
+    pub(crate) fn cos(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Cos { x });
     }
 
-    pub(crate) fn sqrt(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::Sqrt { x })
+    pub(crate) fn sqrt(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Sqrt { x });
     }
 
-    pub(crate) fn tanh(&mut self, x: TensorId) -> Tensor {
-        return self.push(Node::Cos { x })
+    pub(crate) fn tanh(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Cos { x });
     }
 
-    pub(crate) fn reshape(&mut self, x: TensorId, shape: &[usize]) -> Tensor {
+    pub(crate) fn reshape(&mut self, x: TensorId, shape: &[usize]) -> TensorId {
         let shape_id = self.graph.shapes.len().try_into().unwrap();
         self.graph.shapes.push(shape.len());
         self.graph.shapes.extend(shape);
-        return self.push(Node::Reshape { x, shape_id })
+        return self.push(Node::Reshape { x, shape_id });
     }
 }
 
 impl Runtime {
     fn is_empty(&self, x: TensorId) -> bool {
-        self.graph.rcs[x as usize] == 0
+        self.graph.rcs[<u32 as TryInto<usize>>::try_into(x).unwrap()] == 0
     }
 
     pub(crate) fn store<T: Scalar>(
         &mut self,
         data: &[T],
-        dev: Device,
-    ) -> Result<Tensor, RuntimeError> {
-        let node = Node::Leaf { len: data.len(), dtype: T::dtype() };
-        match dev {
+        device: Device,
+    ) -> Result<TensorId, ZyxError> {
+        let node = Node::Leaf {
+            len: data.len(),
+            dtype: T::dtype(),
+            device,
+        };
+        let tensor_id = self.graph.push(node);
+        match device {
             Device::OpenCL => {
                 if self.opencl.is_none() {
                     self.opencl = Some(CompiledBackend::initialize()?);
                 }
                 let dev = self.opencl.as_mut().unwrap();
-                dev.store(data)?;
+                dev.store(tensor_id, data)?;
             }
             Device::CUDA => {
                 if self.cuda.is_none() {
                     self.cuda = Some(CompiledBackend::initialize()?);
                 }
                 let dev = self.cuda.as_mut().unwrap();
-                dev.store(data)?;
+                dev.store(tensor_id, data)?;
             }
             Device::WGPU => {
                 if self.wgpu.is_none() {
                     self.wgpu = Some(CompiledBackend::initialize()?);
                 }
                 let dev = self.wgpu.as_mut().unwrap();
-                dev.store(data)?;
+                dev.store(tensor_id, data)?;
             }
             Device::CPU => {
                 if self.cpu.is_none() {
                     self.cpu = Some(InterpretedBackend::initialize()?);
                 }
                 let dev = self.cpu.as_mut().unwrap();
-                dev.store(data)?;
+                dev.store(tensor_id, data)?;
             }
         }
-        let tensor = self.graph.push(node);
-        return Ok(tensor)
+        return Ok(tensor_id);
     }
 
-    pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, RuntimeError> {
-        if !self.is_realized(x) {
-            self.realize(BTreeSet::from_iter([x]))?;
-        }
-        match self.device(x) {
-            Device::CUDA => Ok(self.cuda.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
-            Device::OpenCL => Ok(self.opencl.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
-            Device::WGPU => Ok(self.wgpu.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
-            Device::CPU => Ok(self.cpu.as_ref().unwrap().load(x, self.shape(x).iter().product())?),
+    pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
+        return match self.device(x) {
+            Device::CUDA => {
+                if !self.cuda.as_ref().unwrap().is_realized(x) {
+                    self.realize(BTreeSet::from_iter([x]))?;
+                }
+                let length = self.shape(x).iter().product();
+                Ok(self.cuda.as_mut().unwrap().load(x, length)?)
+            }
+            Device::OpenCL => {
+                if !self.opencl.as_ref().unwrap().is_realized(x) {
+                    self.realize(BTreeSet::from_iter([x]))?;
+                }
+                let length = self.shape(x).iter().product();
+                Ok(self.opencl.as_mut().unwrap().load(x, length)?)
+            }
+            Device::WGPU => {
+                if !self.wgpu.as_ref().unwrap().is_realized(x) {
+                    self.realize(BTreeSet::from_iter([x]))?;
+                }
+                let length = self.shape(x).iter().product();
+                Ok(self.wgpu.as_mut().unwrap().load(x, length)?)
+            }
+            Device::CPU => {
+                if !self.cpu.as_ref().unwrap().is_realized(x) {
+                    self.realize(BTreeSet::from_iter([x]))?;
+                }
+                let length = self.shape(x).iter().product();
+                Ok(self.cpu.as_mut().unwrap().load(x, length)?)
+            }
         }
     }
 
-    fn push(&mut self, node: Node) -> Tensor {
+    fn push(&mut self, node: Node) -> TensorId {
         //std::println!("Assigned id: {id}, rcs {:?}", self.rcs);
         /*self.unrealized_nodes_count += 1;
         // This regulates caching, 256 tensors per batch seems like a good default
@@ -356,38 +389,46 @@ impl Runtime {
             self.realize([id].into_iter().collect::<BTreeSet<Id>>())?;
             //std::println!("Num tensors: {}", self.nodes.len());
         }*/
-        return self.graph.push(node)
+        return  self.graph.push(node)
     }
 
     fn is_realized(&self, x: TensorId) -> bool {
         return match self.device(x) {
-            Device::CUDA => if let Some(cuda) = self.cuda.as_ref() {
-                cuda.is_realized(x)
-            } else {
-                false
+            Device::CUDA => {
+                if let Some(cuda) = self.cuda.as_ref() {
+                    cuda.is_realized(x)
+                } else {
+                    false
+                }
             }
-            Device::OpenCL => if let Some(opencl) = self.opencl.as_ref() {
-                opencl.is_realized(x)
-            } else {
-                false
+            Device::OpenCL => {
+                if let Some(opencl) = self.opencl.as_ref() {
+                    opencl.is_realized(x)
+                } else {
+                    false
+                }
             }
-            Device::WGPU => if let Some(wgpu) = self.wgpu.as_ref() {
-                wgpu.is_realized(x)
-            } else {
-                false
+            Device::WGPU => {
+                if let Some(wgpu) = self.wgpu.as_ref() {
+                    wgpu.is_realized(x)
+                } else {
+                    false
+                }
             }
-            Device::CPU => if let Some(cpu) = self.cpu.as_ref() {
-                cpu.is_realized(x)
-            } else {
-                false
+            Device::CPU => {
+                if let Some(cpu) = self.cpu.as_ref() {
+                    cpu.is_realized(x)
+                } else {
+                    false
+                }
             }
-        }
+        };
     }
 
-    fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), RuntimeError> {
+    fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // topo search
         let mut params: Vec<TensorId> = tensors.iter().map(|tensor_id| *tensor_id).collect();
-        let device = self.graph.devices[params[0] as usize];
+        let device = self.graph.device(params[0]);
         let mut visited = BTreeSet::new();
         while let Some(param) = params.pop() {
             if visited.insert(param) {
@@ -400,7 +441,10 @@ impl Runtime {
                     .into_iter()
                     .map(|id| (id, self.graph.nodes[id as usize]))
                     .collect();
-                self.opencl.as_mut().unwrap().compile_graph(&self.graph, graph, tensors)?;
+                self.opencl
+                    .as_mut()
+                    .unwrap()
+                    .compile_graph(&self.graph, graph, tensors)?;
             }
             Device::CUDA => {
                 todo!()
@@ -412,6 +456,6 @@ impl Runtime {
                 todo!()
             }
         }
-        return Ok(())
+        return Ok(());
     }
 }

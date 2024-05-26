@@ -1,5 +1,5 @@
-use crate::DType;
 use crate::runtime::TensorId;
+use crate::{Device, DType};
 
 /// Constant value
 /// Floats must be bitcasted in order to implement Ord and Eq.
@@ -44,7 +44,7 @@ impl Constant {
             Constant::I16(..) => DType::I16,
             Constant::I32(..) => DType::I32,
             Constant::I64(..) => DType::I64,
-        }
+        };
     }
 }
 
@@ -56,6 +56,7 @@ pub(super) enum Node {
     Leaf {
         len: usize,
         dtype: DType,
+        device: Device,
     },
     Cast {
         x: TensorId,
@@ -162,7 +163,7 @@ impl Iterator for NodeParametersIterator {
         }
         let idx = self.idx;
         self.idx += 1;
-        return Some(self.parameters[idx as usize])
+        return Some(self.parameters[idx as usize]);
     }
 }
 
@@ -170,46 +171,46 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         return match self {
-            Node::Const {..} | Node::Leaf {..} => NodeParametersIterator {
+            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
                 parameters: [0; 3],
                 idx: 0,
                 len: 0,
             },
-            Node::Cast {x, ..}
-            | Node::Inv {x}
-            | Node::Neg {x}
-            | Node::ReLU {x}
-            | Node::Exp {x}
-            | Node::Ln {x}
-            | Node::Sin {x}
-            | Node::Cos {x}
-            | Node::Sqrt {x}
-            | Node::Tanh {x}
-            | Node::Reshape {x, ..}
-            | Node::Expand {x, ..}
-            | Node::Permute {x, ..}
-            | Node::Pad {x, ..}
-            | Node::Sum {x, ..}
-            | Node::Max {x, ..} => NodeParametersIterator {
+            Node::Cast { x, .. }
+            | Node::Inv { x }
+            | Node::Neg { x }
+            | Node::ReLU { x }
+            | Node::Exp { x }
+            | Node::Ln { x }
+            | Node::Sin { x }
+            | Node::Cos { x }
+            | Node::Sqrt { x }
+            | Node::Tanh { x }
+            | Node::Reshape { x, .. }
+            | Node::Expand { x, .. }
+            | Node::Permute { x, .. }
+            | Node::Pad { x, .. }
+            | Node::Sum { x, .. }
+            | Node::Max { x, .. } => NodeParametersIterator {
                 parameters: [*x, 0, 0],
                 idx: 0,
                 len: 1,
             },
-            Node::Add {x, y}
-            | Node::Sub {x, y}
-            | Node::Mul {x, y}
-            | Node::Div {x, y}
-            | Node::Cmplt {x, y}
-            | Node::Pow {x, y} => NodeParametersIterator {
+            Node::Add { x, y }
+            | Node::Sub { x, y }
+            | Node::Mul { x, y }
+            | Node::Div { x, y }
+            | Node::Cmplt { x, y }
+            | Node::Pow { x, y } => NodeParametersIterator {
                 parameters: [*x, *y, 0],
                 idx: 0,
                 len: 2,
             },
-            Node::Where {x, y, z} => NodeParametersIterator {
+            Node::Where { x, y, z } => NodeParametersIterator {
                 parameters: [*x, *y, *z],
                 idx: 0,
                 len: 3,
             },
-        }
+        };
     }
 }

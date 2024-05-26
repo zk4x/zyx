@@ -1,7 +1,7 @@
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use crate::runtime::TensorId;
 use crate::scalar::Scalar;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 pub(super) mod cpu;
 
@@ -20,7 +20,11 @@ pub(crate) enum InterpreterError {
 pub(super) trait Interpreter: Sized {
     type Buffer;
     fn initialize() -> Result<Self, InterpreterError>;
-    fn load_mem<T: Scalar>(&self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, InterpreterError>;
+    fn load_mem<T: Scalar>(
+        &self,
+        buffer: &Self::Buffer,
+        length: usize,
+    ) -> Result<Vec<T>, InterpreterError>;
 }
 
 impl<I: Interpreter> InterpretedBackend<I> {
@@ -35,15 +39,19 @@ impl<I: Interpreter> InterpretedBackend<I> {
         self.buffers.contains_key(&x)
     }
 
-    pub(super) fn store<T: Scalar>(&mut self, data: &[T]) -> Result<(), InterpreterError> {
+    pub(super) fn store<T: Scalar>(&mut self, x: TensorId, data: &[T]) -> Result<(), InterpreterError> {
         todo!()
     }
 
     // Load values at x, if x is not evaluated, it will return error
-    pub(super) fn load<T: Scalar>(&self, x: TensorId, length: usize) -> Result<Vec<T>, InterpreterError> {
+    pub(super) fn load<T: Scalar>(
+        &self,
+        x: TensorId,
+        length: usize,
+    ) -> Result<Vec<T>, InterpreterError> {
         if let Some(buffer) = self.buffers.get(&x) {
-            return self.interpreter.load_mem(buffer, length)
+            return self.interpreter.load_mem(buffer, length);
         }
-        return Err(InterpreterError::BufferDoesNotExist)
+        return Err(InterpreterError::BufferDoesNotExist);
     }
 }

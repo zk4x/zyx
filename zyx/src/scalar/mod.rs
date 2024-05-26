@@ -1,17 +1,17 @@
 mod scalar_bf16;
+mod scalar_cf32;
+mod scalar_cf64;
 mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
-mod scalar_cf32;
-mod scalar_cf64;
-mod scalar_u8;
-mod scalar_i8;
 mod scalar_i16;
 mod scalar_i32;
 mod scalar_i64;
+mod scalar_i8;
+mod scalar_u8;
 
-use half::{bf16, f16};
 use crate::dtype::DType;
+use half::{bf16, f16};
 
 /// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {

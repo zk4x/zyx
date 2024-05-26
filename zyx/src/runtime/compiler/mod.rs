@@ -1,17 +1,17 @@
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec;
-use crate::scalar::Scalar;
-use alloc::vec::Vec;
-use crate::DType;
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::node::Node;
-use crate::runtime::{Graph, TensorId};
 use crate::runtime::view::View;
+use crate::runtime::{Graph, TensorId};
+use crate::scalar::Scalar;
+use crate::DType;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec;
+use alloc::vec::Vec;
 
-pub(super) mod opencl;
 pub(super) mod cuda;
-pub(super) mod wgpu;
 mod ir;
+pub(super) mod opencl;
+pub(super) mod wgpu;
 
 trait Compiler: Sized {
     type Buffer;
@@ -19,11 +19,19 @@ trait Compiler: Sized {
     fn initialize() -> Result<Self, CompilerError>;
     fn hwinfo(&mut self) -> Result<HWInfo, CompilerError>;
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError>;
-    fn store_memory<T>(&mut self, buffer: &mut Self::Buffer, data: &[T]) -> Result<(), CompilerError>;
-    fn load_mem<T>(&self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError>;
-    fn deallocate_memory(&mut self, buffer: Self::Buffer);
+    fn store_memory<T: Scalar>(
+        &mut self,
+        buffer: &mut Self::Buffer,
+        data: &[T],
+    ) -> Result<(), CompilerError>;
+    fn load_memory<T: Scalar>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError>;
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError>;
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError>;
-    fn launch_program(&mut self, program: &Self::Program, args: &[&mut Self::Buffer]) -> Result<(), CompilerError>;
+    fn launch_program(
+        &mut self,
+        program: &Self::Program,
+        args: &[&mut Self::Buffer],
+    ) -> Result<(), CompilerError>;
     fn drop_program(&mut self, program: Self::Program);
 }
 
@@ -43,12 +51,12 @@ pub(super) struct CompiledGraph<Program> {
 
 #[derive(Debug)]
 pub(crate) enum CompilerError {
-    InitializationFailure,
-    DeviceOutOfMemory,
-    HostOutOfMemory,
-    BufferDoesNotExist,
+    InitializationFailure(&'static str),
+    OutOfDeviceMemory(&'static str),
+    OutOfHostMemory(&'static str),
+    BufferDoesNotExist(&'static str),
     // For all unknown errors
-    GeneralExecutionError,
+    GeneralExecutionError(&'static str),
 }
 
 /// Hardware information needed for applying optimizations
@@ -93,16 +101,23 @@ impl<C: Compiler> CompiledBackend<C> {
         self.buffers.contains_key(&x)
     }
 
-    pub(super) fn store<T: Scalar>(&mut self, data: &[T]) -> Result<(), CompilerError> {
-        todo!()
+    pub(super) fn store<T: Scalar>(&mut self, x: TensorId, data: &[T]) -> Result<(), CompilerError> {
+        let mut buffer = self.compiler.allocate_memory(data.len() * T::byte_size())?;
+        self.compiler.store_memory(&mut buffer, data)?;
+        self.buffers.insert(x, buffer);
+        return Ok(())
     }
 
     // Load values at x, if x is not evaluated, it will return error
-    pub(super) fn load<T: Scalar>(&self, x: TensorId, length: usize) -> Result<Vec<T>, CompilerError> {
+    pub(super) fn load<T: Scalar>(
+        &mut self,
+        x: TensorId,
+        length: usize,
+    ) -> Result<Vec<T>, CompilerError> {
         if let Some(buffer) = self.buffers.get(&x) {
-            return self.compiler.load_mem(buffer, length)
+            return self.compiler.load_memory(buffer, length);
         }
-        return Err(CompilerError::BufferDoesNotExist)
+        return Err(CompilerError::BufferDoesNotExist("Buffer with given id does not exist."));
     }
 
     pub(super) fn remove(&mut self, x: TensorId) {
@@ -112,7 +127,12 @@ impl<C: Compiler> CompiledBackend<C> {
     }
 
     /// Compiles and caches graph
-    pub(super) fn compile_graph(&mut self, graph: &Graph, subgraph: BTreeMap<TensorId, Node>, to_eval: BTreeSet<TensorId>) -> Result<(), CompilerError> {
+    pub(super) fn compile_graph(
+        &mut self,
+        graph: &Graph,
+        subgraph: BTreeMap<TensorId, Node>,
+        to_eval: BTreeSet<TensorId>,
+    ) -> Result<(), CompilerError> {
         //std::println!("{hw_info:?}");
         // Find the best order of execution of nodes
         let (order, rcs) = {
@@ -161,14 +181,17 @@ impl<C: Compiler> CompiledBackend<C> {
             //std::println!("{:?}", nodes[nid.i()]);
             if self.buffers.contains_key(&nid) {
                 let dtype = graph.dtype(nid);
-                tiles.insert(nid, Tile {
-                    view: View::from(&graph.shape(nid)),
-                    dtype,
-                    scope: 2,
-                    first_op: FirstOp::Load { dtype },
-                    ops: Vec::new(),
-                    can_be_fused: rcs[&nid] < 2,
-                });
+                tiles.insert(
+                    nid,
+                    Tile {
+                        view: View::from(&graph.shape(nid)),
+                        dtype,
+                        scope: 2,
+                        first_op: FirstOp::Load { dtype },
+                        ops: Vec::new(),
+                        can_be_fused: rcs[&nid] < 2,
+                    },
+                );
                 continue;
             }
             match &subgraph[&nid] {
@@ -196,26 +219,24 @@ impl<C: Compiler> CompiledBackend<C> {
                     };
                     tiles.insert(nid, tile);
                 }
-                Node::Reshape { x, shape_id } => {
-                    match &tiles[x].first_op {
-                        FirstOp::Reduce { .. } => {
-                            let tile = Tile {
-                                view: View::from(graph._shape(*shape_id)),
-                                dtype: graph.dtype(nid),
-                                scope: 2,
-                                first_op: FirstOp::Movement { x: *x },
-                                ops: vec![],
-                                can_be_fused: rcs[&nid] < 2,
-                            };
-                            tiles.insert(nid, tile);
-                        }
-                        _ => {
-                            let mut tile = tiles[x].clone();
-                            tile.view.reshape(graph._shape(*shape_id));
-                            tiles.insert(nid, tile);
-                        }
+                Node::Reshape { x, shape_id } => match &tiles[x].first_op {
+                    FirstOp::Reduce { .. } => {
+                        let tile = Tile {
+                            view: View::from(graph._shape(*shape_id)),
+                            dtype: graph.dtype(nid),
+                            scope: 2,
+                            first_op: FirstOp::Movement { x: *x },
+                            ops: vec![],
+                            can_be_fused: rcs[&nid] < 2,
+                        };
+                        tiles.insert(nid, tile);
                     }
-                }
+                    _ => {
+                        let mut tile = tiles[x].clone();
+                        tile.view.reshape(graph._shape(*shape_id));
+                        tiles.insert(nid, tile);
+                    }
+                },
                 Node::Expand { x, shape_id } => {
                     let mut view = View::from(&graph.shape(*x));
                     view.expand(graph._shape(*shape_id));
@@ -233,7 +254,11 @@ impl<C: Compiler> CompiledBackend<C> {
                     // Permute permutes all views.
                     // In case of reduce kernel, permute also axes and shape before reduce.
                 }
-                Node::Pad { x, shape_id, padding_id } => {
+                Node::Pad {
+                    x,
+                    shape_id,
+                    padding_id,
+                } => {
                     let padding = graph._padding(*padding_id);
                     match &tiles[x].first_op {
                         FirstOp::Reduce { .. } => {
@@ -256,7 +281,11 @@ impl<C: Compiler> CompiledBackend<C> {
                         }
                     }
                 }
-                Node::Sum { x, axes_id, shape_id } => {
+                Node::Sum {
+                    x,
+                    axes_id,
+                    shape_id,
+                } => {
                     let tile = Tile {
                         view: View::from(graph._shape(*shape_id)),
                         dtype: graph.dtype(nid),
@@ -265,7 +294,7 @@ impl<C: Compiler> CompiledBackend<C> {
                             x: *x,
                             shape: graph._shape(*shape_id).into(),
                             axes: graph._axes(*axes_id).into(),
-                            op: ROp::Sum
+                            op: ROp::Sum,
                         },
                         ops: vec![],
                         can_be_fused: rcs[&nid] < 2,
@@ -299,7 +328,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         // reshape to 3d
                         tile.view.reshape(&[1, 1, tile.view.numel()]);
                     }
-                }
+                },
                 2 => match &tile.first_op {
                     FirstOp::Reduce { x, shape, axes, op } => {
                         // permute to join reduce axes together in last dimension
@@ -309,7 +338,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         let d1 = sh[1];
                         if axes.contains(&0) {
                             if axes.contains(&1) {
-                                tile.view.reshape(&[1, 1, 1, d0*d1]);
+                                tile.view.reshape(&[1, 1, 1, d0 * d1]);
                             } else {
                                 tile.view.permute(&[1, 0]);
                                 tile.view.reshape(&[1, 1, d1, d0]);
@@ -323,46 +352,68 @@ impl<C: Compiler> CompiledBackend<C> {
                         let sh = tile.view.shape();
                         tile.view.reshape(&[1, sh[0], sh[1]]);
                     }
-                }
+                },
                 3 => match &mut tile.first_op {
                     FirstOp::Reduce { x, shape, axes, op } => {
                         // permute to join reduce axes together in last dimension
                         // and possibly reshape to 4d, last dim reduce
-                        let all_axes: Vec<usize> = (0..tile.view.rank()).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
+                        let all_axes: Vec<usize> = (0..tile.view.rank())
+                            .filter(|a| !axes.contains(a))
+                            .chain(axes.iter().copied())
+                            .collect();
                         tile.view.permute(&all_axes);
                         let sh = tile.view.shape();
                         let r = sh.len();
-                        let d1 = if r - axes.len() > 2 { sh[r-axes.len()-2] } else { 1 };
-                        let d2 = if r - axes.len() > 1 { sh[r-axes.len()-1] } else { 1 };
-                        let d3 = sh[r-axes.len()..r].iter().product();
-                        let d0 = sh.iter().product::<usize>()/(d1*d2*d3);
+                        let d1 = if r - axes.len() > 2 {
+                            sh[r - axes.len() - 2]
+                        } else {
+                            1
+                        };
+                        let d2 = if r - axes.len() > 1 {
+                            sh[r - axes.len() - 1]
+                        } else {
+                            1
+                        };
+                        let d3 = sh[r - axes.len()..r].iter().product();
+                        let d0 = sh.iter().product::<usize>() / (d1 * d2 * d3);
                         tile.view.reshape(&[d0, d1, d2, d3]);
                     }
                     _ => {}
-                }
+                },
                 _ => match &tile.first_op {
                     FirstOp::Reduce { x, shape, axes, op } => {
                         // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
-                        let all_axes: Vec<usize> = (0..tile.view.rank()).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
+                        let all_axes: Vec<usize> = (0..tile.view.rank())
+                            .filter(|a| !axes.contains(a))
+                            .chain(axes.iter().copied())
+                            .collect();
                         tile.view.permute(&all_axes);
                         let sh = tile.view.shape();
                         let r = sh.len();
-                        let d1 = if r - axes.len() > 2 { sh[r-axes.len()-2] } else { 1 };
-                        let d2 = if r - axes.len() > 1 { sh[r-axes.len()-1] } else { 1 };
-                        let d3 = sh[r-axes.len()..r].iter().product();
-                        let d0 = sh.iter().product::<usize>()/(d1*d2*d3);
+                        let d1 = if r - axes.len() > 2 {
+                            sh[r - axes.len() - 2]
+                        } else {
+                            1
+                        };
+                        let d2 = if r - axes.len() > 1 {
+                            sh[r - axes.len() - 1]
+                        } else {
+                            1
+                        };
+                        let d3 = sh[r - axes.len()..r].iter().product();
+                        let d0 = sh.iter().product::<usize>() / (d1 * d2 * d3);
                         tile.view.reshape(&[d0, d1, d2, d3]);
                     }
                     _ => {
                         // reshape to 3d
                         let sh = tile.view.shape();
                         let n = sh.len();
-                        let d1 = sh[n-2];
-                        let d2 = sh[n-1];
-                        tile.view.reshape(&[tile.view.numel()/(d1*d2), d1, d2]);
+                        let d1 = sh[n - 2];
+                        let d2 = sh[n - 1];
+                        tile.view.reshape(&[tile.view.numel() / (d1 * d2), d1, d2]);
                     }
-                }
+                },
             }
         }
 
@@ -409,7 +460,10 @@ impl<C: Compiler> CompiledBackend<C> {
         })*/
     }
 
-    pub(super) fn launch_graph(&mut self, graph: &BTreeMap<TensorId, Node>) -> Result<(), CompilerError> {
+    pub(super) fn launch_graph(
+        &mut self,
+        graph: &BTreeMap<TensorId, Node>,
+    ) -> Result<(), CompilerError> {
         let graph = self.compiled_graphs.get(graph).unwrap();
         let mut buffers = Vec::with_capacity(graph.args.len());
         // We can move those buffers out of self.buffers and then move them back,
@@ -417,7 +471,7 @@ impl<C: Compiler> CompiledBackend<C> {
         /*for arg in &graph.args {
             buffers.push(self.buffers.get_mut(arg).unwrap());
         }*/
-        return self.compiler.launch_program(&graph.program, &buffers) //, graph.flop, graph.bytes)
+        return self.compiler.launch_program(&graph.program, &buffers); //, graph.flop, graph.bytes)
     }
 }
 

@@ -8,7 +8,7 @@ pub trait IntoShape: Clone {
 }
 
 impl IntoShape for usize {
-    fn into_shape(self) -> impl Iterator<Item=usize> {
+    fn into_shape(self) -> impl Iterator<Item = usize> {
         [self].into_iter()
     }
 
@@ -48,7 +48,7 @@ where
     let t = axis + rank.try_into().unwrap();
     let t = <T as TryInto<usize>>::try_into(t).unwrap();
     let t = t % rank;
-    return t
+    return t;
 }
 
 pub trait IntoAxes: Clone {
@@ -56,13 +56,13 @@ pub trait IntoAxes: Clone {
 }
 
 impl<const N: usize> IntoAxes for [isize; N] {
-    fn into_axes(self, rank: usize) -> impl Iterator<Item=usize> {
+    fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         self.into_iter().map(move |a| to_axis(a, rank))
     }
 }
 
 impl IntoAxes for RangeInclusive<isize> {
-    fn into_axes(self, rank: usize) -> impl Iterator<Item=usize> {
+    fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         to_axis(*self.start(), rank)..to_axis(*self.end(), rank)
     }
 }

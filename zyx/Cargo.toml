@@ -22,14 +22,16 @@ itertools = { version = "0.13.0", default-features = false }
 # These will be optional
 half = { version = "2.4.1", default-features = false }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
-num-complex = { version = "*", default-features = false, features = [] }
+num-complex = { version = "0.4.6", default-features = false }
+opencl-sys = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 libc-print = { version = "0.1.23" }
 
 [features]
 # by default all features will be enabled
-#default = ["std"]
+default = ["std", "debug1"]
+debug1 = []
 std = []
 #rand = ["dep:rand"]
 #complex = ["dep:num-complex"]

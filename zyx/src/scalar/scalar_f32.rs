@@ -1,5 +1,5 @@
-use half::{bf16, f16};
 use crate::{DType, Scalar};
+use half::{bf16, f16};
 
 impl Scalar for f32 {
     fn from_bf16(t: bf16) -> Self {

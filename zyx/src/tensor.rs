@@ -3,13 +3,17 @@ use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
 use alloc::vec::Vec;
-use core::ops::{Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub};
+use core::ops::{
+    Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo,
+    RangeToInclusive, Sub,
+};
 use half::{bf16, f16};
 use num_complex::Complex;
-use rand::Rng;
 use rand::rngs::SmallRng;
+use rand::Rng;
 
 use crate::RT;
+use crate::runtime::ZyxError;
 
 pub struct Tensor {
     id: u32,
@@ -29,13 +33,13 @@ impl Drop for Tensor {
 }
 
 impl Tensor {
-    pub(crate) fn from_raw(id: usize) -> Tensor {
-        Tensor { id: id as u32 }
+    pub(crate) fn from_raw(id: u32) -> Tensor {
+        Tensor { id }
     }
 
-    pub(crate) fn id(&self) -> u32 {
+    /*pub(crate) fn id(&self) -> u32 {
         self.id
-    }
+    }*/
 }
 
 impl Tensor {
@@ -56,7 +60,10 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn backward<'a>(&self, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
+    pub fn backward<'a>(
+        &self,
+        sources: impl IntoIterator<Item = &'a Tensor>,
+    ) -> Vec<Option<Tensor>> {
         todo!()
     }
 
@@ -94,59 +101,59 @@ impl Tensor {
     #[must_use]
     pub fn to(self, device: Device) -> Tensor {
         let mut rt = RT.lock();
-        match self.dtype() {
+        return Tensor { id: match self.dtype() {
             DType::BF16 => {
                 let data = rt.load::<bf16>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::F16 => {
                 let data = rt.load::<f16>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::F32 => {
                 let data = rt.load::<f32>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::F64 => {
                 let data = rt.load::<f64>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::CF32 => {
                 let data = rt.load::<Complex<f32>>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::CF64 => {
                 let data = rt.load::<Complex<f64>>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::U8 => {
                 let data = rt.load::<u8>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::I8 => {
                 let data = rt.load::<i8>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::I16 => {
                 let data = rt.load::<i16>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::I32 => {
                 let data = rt.load::<i32>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
             DType::I64 => {
                 let data = rt.load::<i64>(self.id).unwrap();
-                return rt.store(&data, device).unwrap()
+                rt.store(&data, device)
             }
-        }
+        }.unwrap() }
     }
 
     // Initializers
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
-        use rand::SeedableRng;
         use rand::distributions::Standard;
+        use rand::SeedableRng;
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let shape: Vec<usize> = shape.into_shape().collect();
@@ -154,7 +161,7 @@ impl Tensor {
         let default_device = rt.default_device;
         rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
         let rng = rt.rng.get_mut().unwrap();
-        let tensor = match dtype {
+        let tensor_id = match dtype {
             DType::BF16 => todo!(),
             DType::F16 => todo!(),
             DType::F32 => {
@@ -178,9 +185,9 @@ impl Tensor {
             DType::I64 => todo!(),
         };
         if shape.len() > 1 {
-            return rt.reshape(tensor.id(), &shape)
+            return Tensor { id: rt.reshape(tensor_id, &shape) };
         }
-        return tensor
+        return Tensor { id: tensor_id };
     }
 
     #[must_use]
@@ -237,7 +244,7 @@ impl Tensor {
 
     #[must_use]
     pub fn cos(&self) -> Tensor {
-        RT.lock().cos(self.id)
+        Self { id: RT.lock().cos(self.id) }
     }
 
     #[must_use]
@@ -252,7 +259,7 @@ impl Tensor {
 
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        RT.lock().exp(self.id)
+        Self { id: RT.lock().exp(self.id) }
     }
 
     #[must_use]
@@ -307,7 +314,7 @@ impl Tensor {
 
     #[must_use]
     pub fn sin(&self) -> Tensor {
-        RT.lock().sin(self.id)
+        Self { id: RT.lock().sin(self.id) }
     }
 
     #[must_use]
@@ -317,7 +324,7 @@ impl Tensor {
 
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
-        RT.lock().sqrt(self.id)
+        Self { id: RT.lock().sqrt(self.id) }
     }
 
     #[must_use]
@@ -332,7 +339,7 @@ impl Tensor {
 
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        RT.lock().tanh(self.id)
+        Self { id: RT.lock().tanh(self.id) }
     }
 
     // movement
@@ -538,9 +545,9 @@ impl Tensor {
 }*/
 
 impl<T: Scalar> TryFrom<&Tensor> for Vec<T> {
-    type Error = ();
+    type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        todo!()
+        RT.lock().load(value.id)
     }
 }
 
