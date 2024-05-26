@@ -4,7 +4,7 @@ use crate::{Device, DType};
 /// Constant value
 /// Floats must be bitcasted in order to implement Ord and Eq.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Constant {
+enum Constant {
     /// bf16 constant
     BF16(u16),
     /// f16 constant
@@ -31,7 +31,7 @@ pub enum Constant {
 
 impl Constant {
     /// Get dtype of this constant
-    pub fn dtype(&self) -> DType {
+    fn dtype(&self) -> DType {
         return match self {
             Constant::BF16(..) => DType::BF16,
             Constant::F16(..) => DType::F16,
@@ -84,9 +84,6 @@ pub(super) enum Node {
         x: TensorId,
     },
     Sqrt {
-        x: TensorId,
-    },
-    Tanh {
         x: TensorId,
     },
     Add {
@@ -185,7 +182,6 @@ impl Node {
             | Node::Sin { x }
             | Node::Cos { x }
             | Node::Sqrt { x }
-            | Node::Tanh { x }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }

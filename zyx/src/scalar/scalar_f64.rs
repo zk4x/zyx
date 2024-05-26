@@ -129,7 +129,7 @@ impl Scalar for f64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        f64::pow(self, rhs)
+        pow(self, rhs)
     }
 
     fn cmplt(self, rhs: Self) -> Self {

@@ -26,7 +26,6 @@ num-complex = { version = "0.4.6", default-features = false }
 opencl-sys = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
-libc-print = { version = "0.1.23" }
 
 [features]
 # by default all features will be enabled

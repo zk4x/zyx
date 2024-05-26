@@ -28,18 +28,8 @@ impl Clone for Tensor {
 
 impl Drop for Tensor {
     fn drop(&mut self) {
-        RT.lock().release(self.id);
+        RT.lock().release(self.id).unwrap();
     }
-}
-
-impl Tensor {
-    pub(crate) fn from_raw(id: u32) -> Tensor {
-        Tensor { id }
-    }
-
-    /*pub(crate) fn id(&self) -> u32 {
-        self.id
-    }*/
 }
 
 impl Tensor {

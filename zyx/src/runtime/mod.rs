@@ -233,7 +233,7 @@ impl Runtime {
         self.graph.rcs[<u32 as TryInto<usize>>::try_into(x).unwrap()] += 1;
     }
 
-    pub(crate) fn release(&mut self, x: TensorId) {
+    pub(crate) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         while let Some(x) = params.pop() {
@@ -242,13 +242,14 @@ impl Runtime {
             if self.graph.rcs[i] == 0 {
                 params.extend(self.graph.nodes[i].parameters());
                 match self.device(i.try_into().unwrap()) {
-                    Device::CUDA => self.cuda.as_mut().unwrap().remove(x),
-                    Device::OpenCL => self.opencl.as_mut().unwrap().remove(x),
-                    Device::WGPU => self.wgpu.as_mut().unwrap().remove(x),
+                    Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
+                    Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
+                    Device::WGPU => self.wgpu.as_mut().unwrap().remove(x)?,
                     Device::CPU => todo!(), //self.cpu.as_mut().unwrap().remove(x),
                 }
             }
         }
+        return Ok(())
     }
 
     pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {

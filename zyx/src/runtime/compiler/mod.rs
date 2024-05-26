@@ -1,9 +1,9 @@
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::node::Node;
 use crate::runtime::view::View;
-use crate::runtime::{Graph, TensorId};
+use crate::runtime::{Graph, Runtime, TensorId};
 use crate::scalar::Scalar;
-use crate::DType;
+use crate::{DType, ZyxError};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -120,10 +120,11 @@ impl<C: Compiler> CompiledBackend<C> {
         return Err(CompilerError::BufferDoesNotExist("Buffer with given id does not exist."));
     }
 
-    pub(super) fn remove(&mut self, x: TensorId) {
+    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), CompilerError> {
         if let Some(buffer) = self.buffers.remove(&x) {
-            self.compiler.deallocate_memory(buffer);
+            return self.compiler.deallocate_memory(buffer)
         }
+        return Ok(())
     }
 
     /// Compiles and caches graph
