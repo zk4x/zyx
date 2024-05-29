@@ -21,12 +21,6 @@ pub use runtime::ZyxError;
 
 const SEED: u64 = 69420;
 
-//extern crate std;
-
-#[cfg(feature = "std")]
-extern crate std;
-//use libc_print::std_name::println;
-
 static RT: spin::Mutex<Runtime> = spin::Mutex::new(Runtime::new());
 
 #[test]

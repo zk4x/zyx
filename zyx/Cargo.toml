@@ -24,13 +24,12 @@ half = { version = "2.4.1", default-features = false }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 num-complex = { version = "0.4.6", default-features = false }
 opencl-sys = { version = "0.3.1", default-features = false }
-
-[dev-dependencies]
+#cuda-driver-sys = { version = "0.3.0", default-features = false }
+libc-print = { version = "0.1.23", default-features = false }
 
 [features]
-# by default all features will be enabled
-default = ["std", "debug1"]
+default = ["debug1"]
 debug1 = []
-std = []
+#std = []
 #rand = ["dep:rand"]
 #complex = ["dep:num-complex"]

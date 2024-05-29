@@ -9,6 +9,9 @@ use opencl_sys::{cl_device_id, CL_DEVICE_NOT_FOUND, cl_device_type, CL_DEVICE_TY
 use alloc::string::String;
 use crate::Scalar;
 
+#[cfg(feature = "debug1")]
+use libc_print::std_name::println;
+
 pub(crate) struct OpenCLBuffer {
     memory: *mut c_void,
     event: *mut c_void,
@@ -96,7 +99,7 @@ impl Compiler for OpenCLCompiler {
         };
         let platform = *platform;
         #[cfg(feature = "debug1")]
-        std::println!(
+        println!(
             "Using OpenCL platform: {}",
             String::from_utf8(
                 get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME).map_err(|err| {
@@ -122,10 +125,10 @@ impl Compiler for OpenCLCompiler {
             })
         })?;
         #[cfg(feature = "debug1")]
-        std::println!("Using devices:");
+        println!("Using devices:");
         #[cfg(feature = "debug1")]
         for dev in &device_ids {
-            std::println!(
+            println!(
                 "{}",
                 String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(
                     |err| {
@@ -170,7 +173,7 @@ impl Compiler for OpenCLCompiler {
         // be plenty. And lower values also lower memory usage.
         //device_ids.iter().map(|dev| get_device_info(*dev, CL_DEVICE_MAX_ON_DEVICE_QUEUES)?.into()).min()?;
         #[cfg(feature = "debug1")]
-        std::println!("Using {queues_per_device} queues per device.");
+        println!("Using {queues_per_device} queues per device.");
         let (queues, errs): (Vec<*mut c_void>, Vec<cl_int>) = (0..queues_per_device)
             .flat_map(|_| {
                 device_ids.iter().map(move |dev| {

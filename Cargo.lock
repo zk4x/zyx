@@ -70,6 +70,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd"
 
 [[package]]
+name = "libc-print"
+version = "0.1.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a660208db49e35faf57b37484350f1a61072f2a5becf0592af6015d9ddd4b0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -365,6 +374,7 @@ version = "0.13.0"
 dependencies = [
  "half",
  "itertools",
+ "libc-print",
  "num-complex",
  "opencl-sys",
  "rand",
@@ -389,6 +399,10 @@ dependencies = [
  "zyx-nn",
  "zyx-optim",
 ]
+
+[[package]]
+name = "zyx-io"
+version = "0.1.0"
 
 [[package]]
 name = "zyx-nn"

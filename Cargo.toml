@@ -7,7 +7,7 @@ members = [
   "zyx-derive",
   "zyx-examples",
   #"zyx-test",
-  "zyx-py",
+  "zyx-py", "zyx-io",
 ]
 
 [workspace.package]

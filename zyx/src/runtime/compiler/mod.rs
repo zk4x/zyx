@@ -1,9 +1,9 @@
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::node::Node;
 use crate::runtime::view::View;
-use crate::runtime::{Graph, Runtime, TensorId};
+use crate::runtime::{Graph, TensorId};
 use crate::scalar::Scalar;
-use crate::{DType, ZyxError};
+use crate::DType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
