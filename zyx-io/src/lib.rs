@@ -1,14 +1,38 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+use std::io;
+use std::path::Path;
+use zyx::Tensor;
+
+pub trait TensorLoad: Sized {
+    fn load(path: impl AsRef<std::path::Path>) -> Result<Self, io::Error>;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub trait TensorSave {
+    fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), io::Error>;
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+/*impl TensorLoad for Tensor {
+    fn load(path: impl AsRef<std::path::Path>) -> Result<Vec<Tensor>, io::Error> {
+        todo!()
     }
 }
+
+impl TensorSave for Tensor {
+    fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), io::Error> {
+        todo!()
+    }
+}*/
+
+// TODO this probably can't work, TensorLoad can probably be implemented only for From<Iterator<...>>
+// impl<'a, M: From<Iterator<&'a Tensor>>> TensorLoad for M { ... }
+impl<'a, M: IntoIterator<Item = &'a mut Tensor>> TensorLoad  for M {
+    fn load(path: impl AsRef<Path>) -> Result<M, io::Error> {
+        todo!()
+    }
+}
+
+impl<'a, M: IntoIterator<Item = &'a Tensor>> TensorSave for M {
+    fn save(&self, path: impl AsRef<Path>) -> Result<(), io::Error> {
+        todo!()
+    }
+}
+

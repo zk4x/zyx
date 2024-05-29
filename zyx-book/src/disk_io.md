@@ -13,9 +13,7 @@ Zyx uses safetensors format for saving tensors.
 
 Loading is similar.
 ```rust
-let mut model = Linear::new(1024, 128, DType::F32);
-
-model.load("model.safetensors")?;
+let mut model = Linear::load("model.safetensors")?;
 ```
 
 If you don't know the structure of tensors saved on disks, you can load them like this.

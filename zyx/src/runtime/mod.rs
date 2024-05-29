@@ -252,6 +252,14 @@ impl Runtime {
         return Ok(())
     }
 
+    #[cfg(feature = "debug1")]
+    pub(crate) fn debug_graph(&self) {
+        use libc_print::std_name::println;
+        for (id, node) in self.graph.nodes.iter().enumerate() {
+            println!("{id:>5} x{:>3} -> {node:?}", self.graph.rcs[id]);
+        }
+    }
+
     pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {
         return self.graph.shape(x);
     }

@@ -57,12 +57,6 @@ impl Tensor {
         todo!()
     }
 
-    /*#[cfg(feature = "std")]
-    #[must_use]
-    pub fn load(&self, path: impl AsRef<std::path::Path>) -> Vec<Tensor> {
-        todo!()
-    }*/
-
     #[must_use]
     pub fn shape(&self) -> Vec<usize> {
         RT.lock().shape(self.id)

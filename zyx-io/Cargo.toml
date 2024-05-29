@@ -16,5 +16,6 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
+zyx = { workspace = true }
 
 [features]
