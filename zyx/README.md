@@ -51,8 +51,8 @@ Tensor::set_default_device_best();
 let l0 = Linear::new(3, 1024, DType::F16);
 let l1 = Linear::new(1024, 2, DType::F16);
 
-let x = Tensor::new([2, 3, 1]).cast(DType::F16);
-let target = Tensor::new([2, 4]);
+let x = Tensor::from([2, 3, 1]).cast(DType::F16);
+let target = Tensor::from([2, 4]);
 
 let mut optim = zyx_optim::SGD {
     learning_rate: 0.01,
