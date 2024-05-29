@@ -1,13 +1,21 @@
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
+use crate::Scalar;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
-use opencl_sys::{cl_device_id, CL_DEVICE_NOT_FOUND, cl_device_type, CL_DEVICE_TYPE_ALL, cl_int, CL_MEM_READ_ONLY, CL_NON_BLOCKING, cl_platform_id, cl_program_info, CL_SUCCESS, cl_uint, clCreateBuffer, clCreateCommandQueue, clCreateContext, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clWaitForEvents};
+use opencl_sys::{
+    clCreateBuffer, clCreateCommandQueue, clCreateContext, clEnqueueReadBuffer,
+    clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo,
+    clReleaseEvent, clReleaseMemObject, clWaitForEvents, cl_device_id, cl_device_type, cl_int,
+    cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
+    CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_SUCCESS,
+};
+
+#[cfg(feature = "debug1")]
 use alloc::string::String;
-use crate::Scalar;
 
 #[cfg(feature = "debug1")]
 use libc_print::std_name::println;
@@ -41,15 +49,23 @@ impl OpenCLCompiler {
             let status = unsafe { clFinish(res) };
             if status != CL_SUCCESS {
                 return Err(match status {
-                    -36 => CompilerError::GeneralExecutionError("Unable to finish command queue. ERR -36: CL_INVALID_COMMAND_QUEUE"),
-                    -5 => CompilerError::GeneralExecutionError("Unable to finish command queue. ERR -5: CL_OUT_OF_RESOURCES"),
-                    -6 => CompilerError::OutOfHostMemory("Unable to finish command queue. ERR -6: CL_OUT_OF_HOST_MEMORY"),
-                    _ => CompilerError::GeneralExecutionError("Unable to finish command queue. UNKNOWN ERROR"),
+                    -36 => CompilerError::GeneralExecutionError(
+                        "Unable to finish command queue. ERR -36: CL_INVALID_COMMAND_QUEUE",
+                    ),
+                    -5 => CompilerError::GeneralExecutionError(
+                        "Unable to finish command queue. ERR -5: CL_OUT_OF_RESOURCES",
+                    ),
+                    -6 => CompilerError::OutOfHostMemory(
+                        "Unable to finish command queue. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                    ),
+                    _ => CompilerError::GeneralExecutionError(
+                        "Unable to finish command queue. UNKNOWN ERROR",
+                    ),
                 });
             }
             self.queue_size[self.queue_id] = 0;
         }
-        self.queue_id = (self.queue_id+1)%self.queues.len();
+        self.queue_id = (self.queue_id + 1) % self.queues.len();
         Ok(res)
     }
 }
@@ -225,14 +241,30 @@ impl Compiler for OpenCLCompiler {
         };
         if err != CL_SUCCESS {
             return Err(match err {
-                -34 => CompilerError::GeneralExecutionError("Unable to allocate memory. ERR -34: CL_INVALID_CONTEXT"),
-                -64 => CompilerError::GeneralExecutionError("Unable to allocate memory. ERR -64: CL_INVALID_PROPERTY"),
-                -30 => CompilerError::GeneralExecutionError("Unable to allocate memory. ERR -30: CL_INVALID_VALUE"),
-                -61 => CompilerError::GeneralExecutionError("Unable to allocate memory. ERR -61: CL_INVALID_BUFFER_SIZE"),
-                -4 => CompilerError::OutOfDeviceMemory("Unable to allocate memory. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE"),
-                -5 => CompilerError::GeneralExecutionError("Unable to allocate memory. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfHostMemory("Unable to allocate memory. ERR -6: CL_OUT_OF_HOST_MEMORY"),
-                _ => CompilerError::GeneralExecutionError("Unable to allocate memory. UNKNOWN ERROR"),
+                -34 => CompilerError::GeneralExecutionError(
+                    "Unable to allocate memory. ERR -34: CL_INVALID_CONTEXT",
+                ),
+                -64 => CompilerError::GeneralExecutionError(
+                    "Unable to allocate memory. ERR -64: CL_INVALID_PROPERTY",
+                ),
+                -30 => CompilerError::GeneralExecutionError(
+                    "Unable to allocate memory. ERR -30: CL_INVALID_VALUE",
+                ),
+                -61 => CompilerError::GeneralExecutionError(
+                    "Unable to allocate memory. ERR -61: CL_INVALID_BUFFER_SIZE",
+                ),
+                -4 => CompilerError::OutOfDeviceMemory(
+                    "Unable to allocate memory. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
+                ),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to allocate memory. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to allocate memory. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
+                _ => {
+                    CompilerError::GeneralExecutionError("Unable to allocate memory. UNKNOWN ERROR")
+                }
             });
         }
         Ok(Self::Buffer {
@@ -266,19 +298,39 @@ impl Compiler for OpenCLCompiler {
         };
         if status != CL_SUCCESS {
             return Err(match status {
-                -36 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -36: CL_INVALID_COMMAND_QUEUE"),
-                -34 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -34: CL_INVALID_CONTEXT"),
-                -38 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -38: CL_INVALID_MEM_OBJECT"),
-                -30 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -30: CL_INVALID_VALUE"),
-                -57 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -57: CL_INVALID_EVENT_WAIT_LIST"),
-                -13 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET"),
-                -14 => {
-                    CompilerError::GeneralExecutionError("Unable to write buffer. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST")
-                }
-                -4 => CompilerError::OutOfDeviceMemory("Unable to write buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE"),
-                -59 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -59: CL_INVALID_OPERATION"),
-                -5 => CompilerError::GeneralExecutionError("Unable to write buffer. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfHostMemory("Unable to write buffer. ERR -6: CL_OUT_OF_HOST_MEMORY"),
+                -36 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -36: CL_INVALID_COMMAND_QUEUE",
+                ),
+                -34 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -34: CL_INVALID_CONTEXT",
+                ),
+                -38 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -38: CL_INVALID_MEM_OBJECT",
+                ),
+                -30 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -30: CL_INVALID_VALUE",
+                ),
+                -57 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
+                ),
+                -13 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
+                ),
+                -14 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+                ),
+                -4 => CompilerError::OutOfDeviceMemory(
+                    "Unable to write buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
+                ),
+                -59 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -59: CL_INVALID_OPERATION",
+                ),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to write buffer. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to write buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
                 _ => CompilerError::GeneralExecutionError("Unable to write buffer. UNKNOWN ERROR"),
             });
         }
@@ -297,7 +349,11 @@ impl Compiler for OpenCLCompiler {
         Ok(())
     }
 
-    fn load_memory<T: Scalar>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
+    fn load_memory<T: Scalar>(
+        &mut self,
+        buffer: &Self::Buffer,
+        length: usize,
+    ) -> Result<Vec<T>, CompilerError> {
         let mut data: Vec<T> = Vec::with_capacity(length);
         let mut event: *mut c_void = ptr::null_mut();
         cl_wait_for_events(&[buffer.event])?;
@@ -317,19 +373,39 @@ impl Compiler for OpenCLCompiler {
         };
         if status != CL_SUCCESS {
             return Err(match status {
-                -36 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -36: CL_INVALID_COMMAND_QUEUE"),
-                -34 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -34: CL_INVALID_CONTEXT"),
-                -38 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -38: CL_INVALID_MEM_OBJECT"),
-                -30 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -30: CL_INVALID_VALUE"),
-                -57 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -57: CL_INVALID_EVENT_WAIT_LIST"),
-                -13 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET"),
-                -14 => {
-                    CompilerError::GeneralExecutionError("Unable to read buffer. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST")
-                }
-                -4 => CompilerError::OutOfDeviceMemory("Unable to read buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE"),
-                -59 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -59: CL_INVALID_OPERATION"),
-                -5 => CompilerError::GeneralExecutionError("Unable to read buffer. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfHostMemory("Unable to read buffer. ERR -6: CL_OUT_OF_HOST_MEMORY"),
+                -36 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -36: CL_INVALID_COMMAND_QUEUE",
+                ),
+                -34 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -34: CL_INVALID_CONTEXT",
+                ),
+                -38 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -38: CL_INVALID_MEM_OBJECT",
+                ),
+                -30 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -30: CL_INVALID_VALUE",
+                ),
+                -57 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
+                ),
+                -13 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
+                ),
+                -14 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+                ),
+                -4 => CompilerError::OutOfDeviceMemory(
+                    "Unable to read buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
+                ),
+                -59 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -59: CL_INVALID_OPERATION",
+                ),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to read buffer. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to read buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
                 _ => CompilerError::GeneralExecutionError("Unable to read buffer. UNKNOWN ERROR"),
             });
         }
@@ -343,18 +419,32 @@ impl Compiler for OpenCLCompiler {
         let status = unsafe { clReleaseMemObject(buffer.memory) };
         if status != CL_SUCCESS {
             return Err(match status {
-                -38 => CompilerError::GeneralExecutionError("Unable to release buffer. ERR -38: CL_INVALID_MEM_OBJECT"),
-                -5 => CompilerError::GeneralExecutionError("Unable to release buffer. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfHostMemory("Unable to release buffer. ERR -6: CL_OUT_OF_HOST_MEMORY"),
-                _ => CompilerError::GeneralExecutionError("Unable to release buffer. UNKNOWN ERROR"),
+                -38 => CompilerError::GeneralExecutionError(
+                    "Unable to release buffer. ERR -38: CL_INVALID_MEM_OBJECT",
+                ),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to release buffer. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to release buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
+                _ => {
+                    CompilerError::GeneralExecutionError("Unable to release buffer. UNKNOWN ERROR")
+                }
             });
         }
         let status = unsafe { clReleaseEvent(buffer.event) };
         if status != CL_SUCCESS {
             return Err(match status {
-                -58 => CompilerError::GeneralExecutionError("Unable to release event. ERR -58: CL_INVALID_EVENT"),
-                -5 => CompilerError::GeneralExecutionError("Unable to release event. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfHostMemory("Unable to release event. ERR -6: CL_OUT_OF_HOST_MEMORY"),
+                -58 => CompilerError::GeneralExecutionError(
+                    "Unable to release event. ERR -58: CL_INVALID_EVENT",
+                ),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to release event. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to release event. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
                 _ => CompilerError::GeneralExecutionError("Unable to release event. UNKNOWN ERROR"),
             });
         }
@@ -389,9 +479,9 @@ fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), CompilerError> {
             -5 => CompilerError::OutOfDeviceMemory("Unable to finish buffer read event. ERR -5: CL_OUT_OF_RESOURCES"),
             -6 => CompilerError::OutOfDeviceMemory("Unable to finish buffer read event. ERR -6: CL_OUT_OF_MEMORY"),
             _ => CompilerError::GeneralExecutionError("Unable to finish buffer read event. UNKNOWN ERROR"),
-        })
+        });
     }
-    return Ok(())
+    return Ok(());
 }
 
 fn get_program_build_data(
@@ -576,4 +666,3 @@ fn get_platform_data(
     }
     get_vector(platform, param_name, size)
 }
-

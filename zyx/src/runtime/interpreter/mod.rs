@@ -2,6 +2,7 @@ use crate::runtime::TensorId;
 use crate::scalar::Scalar;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use crate::runtime::compiler::CompilerError;
 
 pub(super) mod cpu;
 
@@ -25,6 +26,7 @@ pub(super) trait Interpreter: Sized {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, InterpreterError>;
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError>;
 }
 
 impl<I: Interpreter> InterpretedBackend<I> {
@@ -39,7 +41,11 @@ impl<I: Interpreter> InterpretedBackend<I> {
         self.buffers.contains_key(&x)
     }
 
-    pub(super) fn store<T: Scalar>(&mut self, x: TensorId, data: &[T]) -> Result<(), InterpreterError> {
+    pub(super) fn store<T: Scalar>(
+        &mut self,
+        x: TensorId,
+        data: &[T],
+    ) -> Result<(), InterpreterError> {
         todo!()
     }
 
@@ -53,5 +59,12 @@ impl<I: Interpreter> InterpretedBackend<I> {
             return self.interpreter.load_mem(buffer, length);
         }
         return Err(InterpreterError::BufferDoesNotExist);
+    }
+
+    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), InterpreterError> {
+        if let Some(buffer) = self.buffers.remove(&x) {
+            return self.interpreter.deallocate_memory(buffer);
+        }
+        return Ok(());
     }
 }

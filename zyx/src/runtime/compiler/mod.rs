@@ -1,12 +1,15 @@
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::node::Node;
 use crate::runtime::view::View;
-use crate::runtime::{Graph, TensorId};
+use crate::runtime::{Graph, Subgraph, TensorId};
 use crate::scalar::Scalar;
-use crate::DType;
+use crate::{DType, Tensor};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ops::Sub;
+
+use libc_print::std_name::println;
 
 pub(super) mod cuda;
 mod ir;
@@ -24,7 +27,11 @@ trait Compiler: Sized {
         buffer: &mut Self::Buffer,
         data: &[T],
     ) -> Result<(), CompilerError>;
-    fn load_memory<T: Scalar>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError>;
+    fn load_memory<T: Scalar>(
+        &mut self,
+        buffer: &Self::Buffer,
+        length: usize,
+    ) -> Result<Vec<T>, CompilerError>;
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError>;
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError>;
     fn launch_program(
@@ -101,11 +108,15 @@ impl<C: Compiler> CompiledBackend<C> {
         self.buffers.contains_key(&x)
     }
 
-    pub(super) fn store<T: Scalar>(&mut self, x: TensorId, data: &[T]) -> Result<(), CompilerError> {
+    pub(super) fn store<T: Scalar>(
+        &mut self,
+        x: TensorId,
+        data: &[T],
+    ) -> Result<(), CompilerError> {
         let mut buffer = self.compiler.allocate_memory(data.len() * T::byte_size())?;
         self.compiler.store_memory(&mut buffer, data)?;
         self.buffers.insert(x, buffer);
-        return Ok(())
+        return Ok(());
     }
 
     // Load values at x, if x is not evaluated, it will return error
@@ -117,58 +128,29 @@ impl<C: Compiler> CompiledBackend<C> {
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_memory(buffer, length);
         }
-        return Err(CompilerError::BufferDoesNotExist("Buffer with given id does not exist."));
+        return Err(CompilerError::BufferDoesNotExist(
+            "Buffer with given id does not exist.",
+        ));
     }
 
     pub(super) fn remove(&mut self, x: TensorId) -> Result<(), CompilerError> {
         if let Some(buffer) = self.buffers.remove(&x) {
-            return self.compiler.deallocate_memory(buffer)
+            return self.compiler.deallocate_memory(buffer);
         }
-        return Ok(())
+        return Ok(());
     }
 
     /// Compiles and caches graph
     pub(super) fn compile_graph(
         &mut self,
-        graph: &Graph,
-        subgraph: BTreeMap<TensorId, Node>,
+        graph: Subgraph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
-        //std::println!("{hw_info:?}");
+        //println!("{subgraph:?}");
+        //println!("{hw_info:?}");
         // Find the best order of execution of nodes
-        let (order, rcs) = {
-            let mut temp_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            params.reserve(100);
-            while let Some(nid) = params.pop() {
-                //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
-                temp_rcs
-                    .entry(nid)
-                    .and_modify(|rc| *rc += 1)
-                    .or_insert_with(|| {
-                        if graph.is_empty(nid) {
-                            params.extend(subgraph[&nid].parameters());
-                        }
-                        1
-                    });
-            }
-            // Order them using rcs reference counts.
-            let mut order = Vec::new();
-            let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            params.reserve(100);
-            while let Some(nid) = params.pop() {
-                if let Some(temp_rc) = temp_rcs.get(&nid) {
-                    let rc = rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                    if *temp_rc == *rc {
-                        order.push(nid);
-                        params.extend(subgraph[&nid].parameters());
-                    }
-                }
-            }
-            order.reverse();
-            (order, rcs)
-        };
+        let rcs = calculate_graph_rcs(&graph, &to_eval);
+        let order = calculate_graph_execution_order(&graph, &to_eval, &rcs);
 
         // First reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
@@ -177,6 +159,8 @@ impl<C: Compiler> CompiledBackend<C> {
         // Global work sizes are known as the shapes of the reduce kernels!
 
         let mut tiles = BTreeMap::new();
+
+        println!("Order: {order:?}");
 
         for nid in order.iter().copied() {
             //std::println!("{:?}", nodes[nid.i()]);
@@ -195,13 +179,13 @@ impl<C: Compiler> CompiledBackend<C> {
                 );
                 continue;
             }
-            match &subgraph[&nid] {
+            match graph[nid] {
                 Node::Const { .. } => {}
                 Node::Leaf { .. } => {}
                 Node::Cast { .. } => {}
                 Node::Exp { x } => {
                     //libc_print::libc_println!("{x}");
-                    let mut tile = tiles[x].clone();
+                    let mut tile = tiles[&x].clone();
                     tile.ops.push(UOp::Exp);
                     tiles.insert(nid, tile);
                 }
@@ -211,8 +195,8 @@ impl<C: Compiler> CompiledBackend<C> {
                         dtype: graph.dtype(nid),
                         scope: 2,
                         first_op: FirstOp::Binary {
-                            x: *x,
-                            y: *y,
+                            x,
+                            y,
                             op: BOp::Add,
                         },
                         ops: vec![],
@@ -220,32 +204,32 @@ impl<C: Compiler> CompiledBackend<C> {
                     };
                     tiles.insert(nid, tile);
                 }
-                Node::Reshape { x, shape_id } => match &tiles[x].first_op {
+                Node::Reshape { x, shape_id } => match &tiles[&x].first_op {
                     FirstOp::Reduce { .. } => {
                         let tile = Tile {
-                            view: View::from(graph._shape(*shape_id)),
+                            view: View::from(graph._shape(shape_id)),
                             dtype: graph.dtype(nid),
                             scope: 2,
-                            first_op: FirstOp::Movement { x: *x },
+                            first_op: FirstOp::Movement { x },
                             ops: vec![],
                             can_be_fused: rcs[&nid] < 2,
                         };
                         tiles.insert(nid, tile);
                     }
                     _ => {
-                        let mut tile = tiles[x].clone();
-                        tile.view.reshape(graph._shape(*shape_id));
+                        let mut tile = tiles[&x].clone();
+                        tile.view.reshape(graph._shape(shape_id));
                         tiles.insert(nid, tile);
                     }
                 },
                 Node::Expand { x, shape_id } => {
-                    let mut view = View::from(&graph.shape(*x));
-                    view.expand(graph._shape(*shape_id));
+                    let mut view = View::from(&graph.shape(x));
+                    view.expand(graph._shape(shape_id));
                     let tile = Tile {
                         view,
                         dtype: graph.dtype(nid),
                         scope: 2,
-                        first_op: FirstOp::Movement { x: *x },
+                        first_op: FirstOp::Movement { x },
                         ops: vec![],
                         can_be_fused: rcs[&nid] < 2,
                     };
@@ -260,23 +244,23 @@ impl<C: Compiler> CompiledBackend<C> {
                     shape_id,
                     padding_id,
                 } => {
-                    let padding = graph._padding(*padding_id);
-                    match &tiles[x].first_op {
+                    let padding = graph._padding(padding_id);
+                    match &tiles[&x].first_op {
                         FirstOp::Reduce { .. } => {
-                            let mut view = View::from(&graph.shape(*x));
+                            let mut view = View::from(&graph.shape(x));
                             view.pad(padding);
                             let tile = Tile {
                                 view,
                                 dtype: graph.dtype(nid),
                                 scope: 2,
-                                first_op: FirstOp::Movement { x: *x },
+                                first_op: FirstOp::Movement { x },
                                 ops: vec![],
                                 can_be_fused: rcs[&nid] < 2,
                             };
                             tiles.insert(nid, tile);
                         }
                         _ => {
-                            let mut tile = tiles[x].clone();
+                            let mut tile = tiles[&x].clone();
                             tile.view.pad(padding);
                             tiles.insert(nid, tile);
                         }
@@ -288,13 +272,13 @@ impl<C: Compiler> CompiledBackend<C> {
                     shape_id,
                 } => {
                     let tile = Tile {
-                        view: View::from(graph._shape(*shape_id)),
+                        view: View::from(graph._shape(shape_id)),
                         dtype: graph.dtype(nid),
                         scope: 2,
                         first_op: FirstOp::Reduce {
-                            x: *x,
-                            shape: graph._shape(*shape_id).into(),
-                            axes: graph._axes(*axes_id).into(),
+                            x,
+                            shape: graph._shape(shape_id).into(),
+                            axes: graph._axes(axes_id).into(),
                             op: ROp::Sum,
                         },
                         ops: vec![],
@@ -474,6 +458,55 @@ impl<C: Compiler> CompiledBackend<C> {
         }*/
         return self.compiler.launch_program(&graph.program, &buffers); //, graph.flop, graph.bytes)
     }
+}
+
+fn calculate_graph_rcs(
+    subgraph: &Subgraph,
+    to_eval: &BTreeSet<TensorId>,
+) -> BTreeMap<TensorId, u32> {
+    // Depth first search through graph. Number of visits of each node are reference counts.
+    let mut visited_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+    let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+    params.reserve(100);
+    while let Some(nid) = params.pop() {
+        //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
+        visited_rcs
+            .entry(nid)
+            .and_modify(|rc| *rc += 1)
+            .or_insert_with(|| {
+                params.extend(subgraph[nid].parameters());
+                1
+            });
+    }
+    println!("Temp: {visited_rcs:?}");
+    return visited_rcs
+}
+
+fn calculate_graph_execution_order(
+    graph: &Subgraph,
+    to_eval: &BTreeSet<TensorId>,
+    temp_rcs: &BTreeMap<TensorId, u32>,
+) -> Vec<TensorId> {
+    // Calculates dependency graph of nodes and viable execution order, which is not currently
+    // optimized. It is depth first search. On each visit of the node, rc is increased. Once
+    // rc of the node A reaches A's rc in the whole graph, then A gets added to the order,
+    // that is, there are no more nodes that node A depends on, i.e. there are no nodes that
+    // need to be evaluated before A.
+    let mut order = Vec::new();
+    let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+    let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+    params.reserve(100);
+    while let Some(nid) = params.pop() {
+        if let Some(temp_rc) = temp_rcs.get(&nid) {
+            let rc = rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+            if *temp_rc == *rc {
+                order.push(nid);
+                params.extend(graph[nid].parameters());
+            }
+        }
+    }
+    order.reverse();
+    return order
 }
 
 // Includes Noop for copying between tiles of various scopes

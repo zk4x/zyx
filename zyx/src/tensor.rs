@@ -12,8 +12,8 @@ use num_complex::Complex;
 use rand::rngs::SmallRng;
 use rand::Rng;
 
-use crate::RT;
 use crate::runtime::ZyxError;
+use crate::RT;
 
 pub struct Tensor {
     id: u32,
@@ -64,7 +64,7 @@ impl Tensor {
 
     #[must_use]
     pub fn shape(&self) -> Vec<usize> {
-        RT.lock().shape(self.id)
+        RT.lock().shape(self.id).to_vec()
     }
 
     #[must_use]
@@ -90,52 +90,56 @@ impl Tensor {
     #[must_use]
     pub fn to(self, device: Device) -> Tensor {
         let mut rt = RT.lock();
-        return Tensor { id: match self.dtype() {
-            DType::BF16 => {
-                let data = rt.load::<bf16>(self.id).unwrap();
-                rt.store(&data, device)
+        let shape = rt.shape(self.id).to_vec();
+        return Tensor {
+            id: match self.dtype() {
+                DType::BF16 => {
+                    let data = rt.load::<bf16>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::F16 => {
+                    let data = rt.load::<f16>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::F32 => {
+                    let data = rt.load::<f32>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::F64 => {
+                    let data = rt.load::<f64>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::CF32 => {
+                    let data = rt.load::<Complex<f32>>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::CF64 => {
+                    let data = rt.load::<Complex<f64>>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::U8 => {
+                    let data = rt.load::<u8>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::I8 => {
+                    let data = rt.load::<i8>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::I16 => {
+                    let data = rt.load::<i16>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::I32 => {
+                    let data = rt.load::<i32>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
+                DType::I64 => {
+                    let data = rt.load::<i64>(self.id).unwrap();
+                    rt.store(&data, device, shape)
+                }
             }
-            DType::F16 => {
-                let data = rt.load::<f16>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::F32 => {
-                let data = rt.load::<f32>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::F64 => {
-                let data = rt.load::<f64>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::CF32 => {
-                let data = rt.load::<Complex<f32>>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::CF64 => {
-                let data = rt.load::<Complex<f64>>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::U8 => {
-                let data = rt.load::<u8>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::I8 => {
-                let data = rt.load::<i8>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::I16 => {
-                let data = rt.load::<i16>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::I32 => {
-                let data = rt.load::<i32>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-            DType::I64 => {
-                let data = rt.load::<i64>(self.id).unwrap();
-                rt.store(&data, device)
-            }
-        }.unwrap() }
+            .unwrap(),
+        };
     }
 
     // Initializers
@@ -157,13 +161,13 @@ impl Tensor {
                 let data = &(0..n)
                     .map(move |_| rng.sample(Standard))
                     .collect::<Vec<f32>>();
-                rt.store(data, default_device).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::F64 => {
                 let data = &(0..n)
                     .map(move |_| rng.sample(Standard))
                     .collect::<Vec<f64>>();
-                rt.store(data, default_device).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::CF32 => todo!(),
             DType::CF64 => todo!(),
@@ -173,9 +177,6 @@ impl Tensor {
             DType::I32 => todo!(),
             DType::I64 => todo!(),
         };
-        if shape.len() > 1 {
-            return Tensor { id: rt.reshape(tensor_id, &shape) };
-        }
         return Tensor { id: tensor_id };
     }
 
@@ -233,7 +234,9 @@ impl Tensor {
 
     #[must_use]
     pub fn cos(&self) -> Tensor {
-        Self { id: RT.lock().cos(self.id) }
+        Self {
+            id: RT.lock().cos(self.id),
+        }
     }
 
     #[must_use]
@@ -248,7 +251,9 @@ impl Tensor {
 
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        Self { id: RT.lock().exp(self.id) }
+        Self {
+            id: RT.lock().exp(self.id),
+        }
     }
 
     #[must_use]
@@ -303,7 +308,9 @@ impl Tensor {
 
     #[must_use]
     pub fn sin(&self) -> Tensor {
-        Self { id: RT.lock().sin(self.id) }
+        Self {
+            id: RT.lock().sin(self.id),
+        }
     }
 
     #[must_use]
@@ -313,7 +320,9 @@ impl Tensor {
 
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
-        Self { id: RT.lock().sqrt(self.id) }
+        Self {
+            id: RT.lock().sqrt(self.id),
+        }
     }
 
     #[must_use]
@@ -328,7 +337,9 @@ impl Tensor {
 
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        Self { id: RT.lock().tanh(self.id) }
+        Self {
+            id: RT.lock().tanh(self.id),
+        }
     }
 
     // movement

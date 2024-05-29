@@ -1,5 +1,5 @@
 use crate::runtime::TensorId;
-use crate::{Device, DType};
+use crate::{DType, Device};
 
 /// Constant value
 /// Floats must be bitcasted in order to implement Ord and Eq.
@@ -54,7 +54,7 @@ pub(super) enum Node {
         value: Constant,
     },
     Leaf {
-        len: usize,
+        shape_id: u32,
         dtype: DType,
         device: Device,
     },

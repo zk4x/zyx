@@ -155,12 +155,15 @@ impl View {
                     }
                 } else if sh_dim == 1 {
                     new_binds.insert(0, 0);
-                    new_shape.insert(0, Dimension {
-                        size: 1,
-                        stride: self.shapes[0][i].stride,
-                        len: 1,
-                        shift: 1,
-                    });
+                    new_shape.insert(
+                        0,
+                        Dimension {
+                            size: 1,
+                            stride: self.shapes[0][i].stride,
+                            len: 1,
+                            shift: 1,
+                        },
+                    );
                 } else {
                     merge_possible = false;
                     break;
@@ -168,7 +171,7 @@ impl View {
             }
             if merge_possible {
                 self.shapes[0] = new_shape;
-                return
+                return;
             }
         }
 
@@ -287,13 +290,41 @@ fn test_unsqueeze() {
     assert_eq!(view0.shape(), vec![3, 5, 4, 2]);
     view0.reshape(&[3, 1, 5, 4, 2]);
     assert_eq!(view0.shapes.len(), 1);
-    assert_eq!(view0.shapes[0], vec![
-        Dimension { size: 3, stride: 8, len: 3, shift: 3 },
-        Dimension { size: 1, stride: 8, len: 1, shift: 1 },
-        Dimension { size: 5, stride: 0, len: 1, shift: 1 },
-        Dimension { size: 4, stride: 2, len: 4, shift: 4 },
-        Dimension { size: 2, stride: 1, len: 2, shift: 2 },
-    ]);
+    assert_eq!(
+        view0.shapes[0],
+        vec![
+            Dimension {
+                size: 3,
+                stride: 8,
+                len: 3,
+                shift: 3
+            },
+            Dimension {
+                size: 1,
+                stride: 8,
+                len: 1,
+                shift: 1
+            },
+            Dimension {
+                size: 5,
+                stride: 0,
+                len: 1,
+                shift: 1
+            },
+            Dimension {
+                size: 4,
+                stride: 2,
+                len: 4,
+                shift: 4
+            },
+            Dimension {
+                size: 2,
+                stride: 1,
+                len: 2,
+                shift: 2
+            },
+        ]
+    );
 }
 
 #[test]

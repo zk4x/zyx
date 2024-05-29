@@ -10,7 +10,9 @@ impl Compiler for CUDA {
 
     fn initialize() -> Result<Self, CompilerError> {
         // TODO
-        return Err(CompilerError::InitializationFailure("CUDA device is not available."));
+        return Err(CompilerError::InitializationFailure(
+            "CUDA device is not available.",
+        ));
     }
 
     fn hwinfo(&mut self) -> Result<HWInfo, CompilerError> {
@@ -29,7 +31,11 @@ impl Compiler for CUDA {
         todo!()
     }
 
-    fn load_memory<T>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
+    fn load_memory<T>(
+        &mut self,
+        buffer: &Self::Buffer,
+        length: usize,
+    ) -> Result<Vec<T>, CompilerError> {
         todo!()
     }
 

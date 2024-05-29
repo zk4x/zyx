@@ -110,4 +110,8 @@ impl Interpreter for CPU {
             }
         }
     }
+
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError> {
+        todo!()
+    }
 }

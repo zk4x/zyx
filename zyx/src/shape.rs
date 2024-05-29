@@ -27,6 +27,16 @@ impl<const N: usize> IntoShape for [usize; N] {
     }
 }
 
+impl IntoShape for &[usize] {
+    fn into_shape(self) -> impl Iterator<Item = usize> {
+        self.into_iter().copied()
+    }
+
+    fn rank(&self) -> usize {
+        self.len()
+    }
+}
+
 impl IntoShape for Vec<usize> {
     fn into_shape(self) -> impl Iterator<Item = usize> {
         self.into_iter()

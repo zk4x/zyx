@@ -7,11 +7,13 @@ use crate::runtime::compiler::{CompiledBackend, CompilerError};
 use crate::runtime::interpreter::cpu::CPU;
 use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::cell::OnceCell;
+use core::ops::Index;
 use node::Node;
 use rand::rngs::SmallRng;
+use crate::IntoShape;
 
 mod compiler;
 mod interpreter;
@@ -48,32 +50,28 @@ struct Graph {
 }
 
 impl Graph {
-    fn shape(&self, x: TensorId) -> Vec<usize> {
+    fn push_shape(&mut self, shape: impl IntoShape) -> u32 {
+        let shape_id = self.shapes.len().try_into().unwrap();
+        self.shapes.push(shape.rank());
+        self.shapes.extend(shape.into_shape());
+        return shape_id
+    }
+
+    fn shape(&self, x: TensorId) -> &[usize] {
         let mut x = x;
         let mut i = 0;
         while i < 10000 {
             let node = &self.nodes[<u32 as TryInto<usize>>::try_into(x).unwrap()];
             match node {
-                Node::Const { .. } => return alloc::vec![1],
-                Node::Leaf { len, .. } => return alloc::vec![*len],
-                Node::Reshape {
-                    shape_id: shape, ..
-                }
-                | Node::Pad {
-                    shape_id: shape, ..
-                }
-                | Node::Permute {
-                    shape_id: shape, ..
-                }
-                | Node::Sum {
-                    shape_id: shape, ..
-                }
-                | Node::Max {
-                    shape_id: shape, ..
-                }
-                | Node::Expand {
-                    shape_id: shape, ..
-                } => return self._shape(*shape).into(),
+                Node::Const { .. } => return &[1],
+                Node::Leaf { shape_id, .. }
+                | Node::Reshape { shape_id, .. }
+                | Node::Pad { shape_id, .. }
+                | Node::Permute { shape_id, .. }
+                | Node::Sum { shape_id, .. }
+                | Node::Max { shape_id, .. }
+                | Node::Expand { shape_id, ..
+                } => return self._shape(*shape_id).into(),
                 _ => x = node.parameters().next().unwrap(),
             }
         }
@@ -128,7 +126,66 @@ impl Graph {
             self.rcs.push(1);
             self.nodes.push(node);
         }
-        return i.try_into().unwrap()
+        return i.try_into().unwrap();
+    }
+}
+
+struct Subgraph<'a> {
+    nodes: BTreeMap<TensorId, Node>,
+    shapes: &'a [usize],
+    axes: &'a [usize],
+    paddings: &'a [isize],
+}
+
+impl Subgraph<'_> {
+    fn dtype(&self, tensor_id: TensorId) -> DType {
+        todo!()
+    }
+
+    fn shape(&self, tensor_id: TensorId) -> &[usize] {
+        let mut x = tensor_id;
+        let mut i = 0;
+        while i < 10000 {
+            let node = &self.nodes[&x];
+            match node {
+                Node::Const { .. } => return &[1],
+                Node::Leaf { shape_id, .. }
+                | Node::Reshape { shape_id, .. }
+                | Node::Pad { shape_id, .. }
+                | Node::Permute { shape_id, .. }
+                | Node::Sum { shape_id, .. }
+                | Node::Max { shape_id, .. }
+                | Node::Expand { shape_id, ..
+                } => return self._shape(*shape_id).into(),
+                _ => x = node.parameters().next().unwrap(),
+            }
+        }
+        panic!("Shape of {x} could not be found. This is internal bug.")
+    }
+
+    fn _shape(&self, shape_id: u32) -> &[usize] {
+        let id = <u32 as TryInto<usize>>::try_into(shape_id).unwrap();
+        let len = self.shapes[id];
+        return &self.shapes[id + 1..id + 1 + len];
+    }
+
+    fn _axes(&self, axes_id: u32) -> &[usize] {
+        let id = <u32 as TryInto<usize>>::try_into(axes_id).unwrap();
+        let len = self.axes[id];
+        return &self.axes[id + 1..id + 1 + len];
+    }
+
+    fn _padding(&self, padding_id: u32) -> &[isize] {
+        let id = <u32 as TryInto<usize>>::try_into(padding_id).unwrap();
+        let len = <isize as TryInto<usize>>::try_into(self.paddings[id]).unwrap();
+        return &self.paddings[id + 1..id + 1 + len];
+    }
+}
+
+impl Index<TensorId> for Subgraph<'_> {
+    type Output = Node;
+    fn index(&self, index: TensorId) -> &Self::Output {
+        self.nodes.get(&index).unwrap()
     }
 }
 
@@ -245,11 +302,12 @@ impl Runtime {
                     Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
                     Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
                     Device::WGPU => self.wgpu.as_mut().unwrap().remove(x)?,
-                    Device::CPU => todo!(), //self.cpu.as_mut().unwrap().remove(x),
+                    Device::CPU => self.cpu.as_mut().unwrap().remove(x)?,
                 }
             }
+            // TODO release shapes, axes, paddings, otherwise this is a memory leak
         }
-        return Ok(())
+        return Ok(());
     }
 
     #[cfg(feature = "debug1")]
@@ -260,20 +318,20 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn shape(&self, x: TensorId) -> Vec<usize> {
-        return self.graph.shape(x);
+    pub(crate) fn shape(&self, x: TensorId) -> &[usize] {
+        return self.graph.shape(x)
     }
 
     pub(crate) fn dtype(&self, x: TensorId) -> DType {
-        return self.graph.dtype(x);
+        return self.graph.dtype(x)
     }
 
     pub(crate) fn device(&self, x: TensorId) -> Device {
-        return self.graph.device(x);
+        return self.graph.device(x)
     }
 
     pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
-        return self.push(Node::ReLU { x });
+        return self.push(Node::ReLU { x })
     }
 
     pub(crate) fn exp(&mut self, x: TensorId) -> TensorId {
@@ -300,10 +358,8 @@ impl Runtime {
         return self.push(Node::Cos { x });
     }
 
-    pub(crate) fn reshape(&mut self, x: TensorId, shape: &[usize]) -> TensorId {
-        let shape_id = self.graph.shapes.len().try_into().unwrap();
-        self.graph.shapes.push(shape.len());
-        self.graph.shapes.extend(shape);
+    pub(crate) fn reshape(&mut self, x: TensorId, shape: impl IntoShape) -> TensorId {
+        let shape_id = self.graph.push_shape(shape);
         return self.push(Node::Reshape { x, shape_id });
     }
 }
@@ -317,9 +373,10 @@ impl Runtime {
         &mut self,
         data: &[T],
         device: Device,
+        shape: impl IntoShape,
     ) -> Result<TensorId, ZyxError> {
         let node = Node::Leaf {
-            len: data.len(),
+            shape_id: self.graph.push_shape(shape),
             dtype: T::dtype(),
             device,
         };
@@ -387,7 +444,7 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.cpu.as_mut().unwrap().load(x, length)?)
             }
-        }
+        };
     }
 
     fn push(&mut self, node: Node) -> TensorId {
@@ -398,7 +455,7 @@ impl Runtime {
             self.realize([id].into_iter().collect::<BTreeSet<Id>>())?;
             //std::println!("Num tensors: {}", self.nodes.len());
         }*/
-        return  self.graph.push(node)
+        return self.graph.push(node);
     }
 
     fn is_realized(&self, x: TensorId) -> bool {
@@ -441,20 +498,25 @@ impl Runtime {
         let mut visited = BTreeSet::new();
         while let Some(param) = params.pop() {
             if visited.insert(param) {
-                params.extend(self.graph.nodes[param as usize].parameters());
+                if self.is_realized(param) {
+                    // TODO This param should be converted to Load in subgraph
+                } else {
+                    params.extend(self.graph.nodes[param as usize].parameters());
+                }
             }
         }
+        let subgraph = visited
+            .into_iter()
+            .map(|id| (id, self.graph.nodes[id as usize]))
+            .collect();
+        let graph = Subgraph {
+            shapes: &self.graph.shapes,
+            axes: &self.graph.axes,
+            paddings: &self.graph.paddings,
+            nodes: subgraph,
+        };
         match device {
-            Device::OpenCL => {
-                let graph = visited
-                    .into_iter()
-                    .map(|id| (id, self.graph.nodes[id as usize]))
-                    .collect();
-                self.opencl
-                    .as_mut()
-                    .unwrap()
-                    .compile_graph(&self.graph, graph, tensors)?;
-            }
+            Device::OpenCL => self.opencl.as_mut().unwrap().compile_graph(graph, tensors)?,
             Device::CUDA => {
                 todo!()
             }

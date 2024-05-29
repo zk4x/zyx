@@ -28,7 +28,11 @@ impl Compiler for WGPU {
         todo!()
     }
 
-    fn load_memory<T>(&mut self, buffer: &Self::Buffer, length: usize) -> Result<Vec<T>, CompilerError> {
+    fn load_memory<T>(
+        &mut self,
+        buffer: &Self::Buffer,
+        length: usize,
+    ) -> Result<Vec<T>, CompilerError> {
         todo!()
     }
 
