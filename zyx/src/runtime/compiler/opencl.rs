@@ -17,7 +17,7 @@ use opencl_sys::{
 #[cfg(feature = "debug1")]
 use alloc::string::String;
 
-#[cfg(feature = "debug1")]
+//#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
 pub(crate) struct OpenCLBuffer {
@@ -225,7 +225,7 @@ impl Compiler for OpenCLCompiler {
     }
 
     fn hwinfo(&mut self) -> Result<HWInfo, CompilerError> {
-        todo!()
+
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
@@ -452,6 +452,7 @@ impl Compiler for OpenCLCompiler {
     }
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
+        println!("Compiling IRKernel: {kernel:#?}");
         todo!()
     }
 

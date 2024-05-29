@@ -1,13 +1,12 @@
 use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::node::Node;
 use crate::runtime::view::View;
-use crate::runtime::{Graph, Subgraph, TensorId};
+use crate::runtime::{Subgraph, TensorId};
 use crate::scalar::Scalar;
-use crate::{DType, Tensor};
+use crate::DType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ops::Sub;
 
 use libc_print::std_name::println;
 
@@ -46,6 +45,7 @@ pub(super) struct CompiledBackend<C: Compiler> {
     compiler: C,
     buffers: BTreeMap<TensorId, C::Buffer>,
     compiled_graphs: BTreeMap<BTreeMap<TensorId, Node>, CompiledGraph<C::Program>>,
+    hwinfo: HWInfo,
 }
 
 /// Compiled graph
@@ -93,12 +93,16 @@ pub struct HWInfo {
     pub local_mem_size: usize,
     /// Number of registers per thread
     pub num_registers: usize,
+    /// Does this hardware support native matmul of 16x16 local tiles?
+    pub native_mm16x16_support: bool,
 }
 
 impl<C: Compiler> CompiledBackend<C> {
     pub(super) fn initialize() -> Result<Self, CompilerError> {
+        let mut compiler = C::initialize()?;
         Ok(Self {
-            compiler: C::initialize()?,
+            hwinfo: compiler.hwinfo()?,
+            compiler,
             buffers: BTreeMap::new(),
             compiled_graphs: BTreeMap::new(),
         })
@@ -166,13 +170,14 @@ impl<C: Compiler> CompiledBackend<C> {
             //std::println!("{:?}", nodes[nid.i()]);
             if self.buffers.contains_key(&nid) {
                 let dtype = graph.dtype(nid);
+                println!("Id if the buffer: {nid}");
                 tiles.insert(
                     nid,
                     Tile {
                         view: View::from(&graph.shape(nid)),
                         dtype,
                         scope: 2,
-                        first_op: FirstOp::Load { dtype },
+                        first_op: FirstOp::Load { dtype, buffer_id: nid },
                         ops: Vec::new(),
                         can_be_fused: rcs[&nid] < 2,
                     },
@@ -241,7 +246,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
                 Node::Pad {
                     x,
-                    shape_id,
+                    shape_id: _,
                     padding_id,
                 } => {
                     let padding = graph._padding(padding_id);
@@ -411,7 +416,7 @@ impl<C: Compiler> CompiledBackend<C> {
         }*/
 
         // Rewrite tiled representation to looped representation
-        let ir = ir::tiled_to_ir(tiles, &order);
+        let ir = ir::tiled_to_ir(tiles, &order, &self.hwinfo);
         //std::println!("{looped:#?}");
 
         let mut to_compile = to_eval.clone();
@@ -566,6 +571,7 @@ enum ROp {
 enum FirstOp {
     // Load existing buffer from memory
     Load {
+        buffer_id: TensorId,
         dtype: DType,
     },
     Binary {

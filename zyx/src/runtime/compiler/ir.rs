@@ -4,7 +4,7 @@
 // matmuls (like strassen or tensor cores) or 16x16x16 matmul (wmma).
 // These optimizations are hardware dependent.
 
-use crate::runtime::compiler::{BOp, FirstOp, Tile, UOp};
+use crate::runtime::compiler::{BOp, FirstOp, HWInfo, Tile, UOp};
 use crate::runtime::view::View;
 use crate::runtime::TensorId;
 use crate::DType;
@@ -12,16 +12,22 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[derive(Debug)]
 pub(super) struct IRKernel {
     ops: Vec<IROp>,
 }
 
+/// IROp for direct translation to hardware kernels
+/// Scope:
+/// 0 - global
+/// 1 - local
+/// 2 - register
 #[derive(Debug, Clone)]
 enum IROp {
     // Global kernel argument load
-    Load { id: TensorId, dtype: DType },
+    Load { buffer_id: TensorId, dtype: DType },
     // Global kerneL argument store
-    Store { id: TensorId, dtype: DType },
+    Store { buffer_id: TensorId, dtype: DType },
     // Movement op, simply changes the view of this buffer. This means moving things around in memory
     // and thus is extremely expensive. We should use memory caching here if possible.
     // Things can be also moved between different memory scopes.
@@ -43,6 +49,7 @@ enum IROp {
 pub(crate) fn tiled_to_ir(
     tiles: BTreeMap<TensorId, Tile>,
     order: &[TensorId],
+    hwinfo: &HWInfo,
 ) -> BTreeMap<TensorId, IRKernel> {
     let mut kernels = BTreeMap::new();
 
@@ -52,10 +59,11 @@ pub(crate) fn tiled_to_ir(
 
     for nid in order {
         match tiles[nid].first_op {
-            FirstOp::Load { dtype } => {
+            FirstOp::Load { dtype, buffer_id } => {
                 let tile = &tiles[nid];
                 let sh = tile.view.shape();
                 let mut ops = vec![
+                    // Global work size
                     IROp::Loop {
                         iters: sh[0],
                         scope: 0,
@@ -68,13 +76,29 @@ pub(crate) fn tiled_to_ir(
                         iters: sh[2],
                         scope: 0,
                     },
-                    IROp::Load { id: *nid, dtype },
-                    IROp::Movement {
+                    // Local work size, TODO change it to highest multiple
+                    // of sh[0..2] dimensions, but less than hwinfo.max_work_group_size
+                    IROp::Loop {
+                        iters: 1,
+                        scope: 1,
+                    },
+                    IROp::Loop {
+                        iters: 1,
+                        scope: 1,
+                    },
+                    IROp::Loop {
+                        iters: 1,
+                        scope: 1,
+                    },
+                    IROp::Load { buffer_id, dtype },
+                ];
+                if !tile.view.is_contiguous() {
+                    ops.push(IROp::Movement {
                         x: 3,
                         scope: 0,
                         view: tile.view.clone(),
-                    },
-                ];
+                    });
+                }
                 for op in &tile.ops {
                     ops.push(IROp::Unary {
                         x: ops.len() - 1,

@@ -2,7 +2,6 @@ use crate::runtime::TensorId;
 use crate::scalar::Scalar;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::runtime::compiler::CompilerError;
 
 pub(super) mod cpu;
 

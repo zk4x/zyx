@@ -360,7 +360,7 @@ impl Tensor {
 
     #[must_use]
     pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
-        todo!()
+        Tensor { id: RT.lock().reshape(self.id, shape) }
     }
 
     #[must_use]

@@ -92,6 +92,11 @@ impl View {
         temp
     }
 
+    #[must_use]
+    pub(crate) fn is_contiguous(&self) -> bool {
+        self.shapes.len() == 1 && self.is_last_shape_contiguous()
+    }
+
     /// Pad view with padding.
     /// This function assumes standard padding beginning at last dimension.
     pub fn pad(&mut self, padding: &[isize]) {

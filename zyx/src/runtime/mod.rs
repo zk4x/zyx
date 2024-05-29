@@ -139,7 +139,8 @@ struct Subgraph<'a> {
 
 impl Subgraph<'_> {
     fn dtype(&self, tensor_id: TensorId) -> DType {
-        todo!()
+        // TODO
+        DType::F32
     }
 
     fn shape(&self, tensor_id: TensorId) -> &[usize] {
