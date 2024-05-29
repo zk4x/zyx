@@ -33,6 +33,11 @@ impl Drop for Tensor {
 }
 
 impl Tensor {
+    #[cfg(feature = "debug1")]
+    pub fn debug_graph() {
+        RT.lock().debug_graph()
+    }
+
     /// Get default device used for new tensors.
     #[must_use]
     pub fn default_device() -> Device {

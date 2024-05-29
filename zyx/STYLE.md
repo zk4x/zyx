@@ -28,3 +28,7 @@ for floats. Just use ordered float crate and accept everything bad about it (hor
 Another example is lifetimes. Try to use lifetimes very rarely, do not go into complex lifetime annotations, just
 use global variables or Rc/Arc. Another example is orphan rule, just do to not use traits if possible. Use procedural
 programming like if you are writing c.
+
+Use Vec instead of Box<[]> even on immutable data structures. Box<[]> simply isn't flexible enough. Box<[]> can not
+be created from parallel iterator. Many other libraries will return Vec<> and converting that to Box<[]> is expensive.
+Just use Vec and accept that it takes 24 bytes instead of 16 bytes (on 64 bit machines).

@@ -27,6 +27,8 @@ static RT: spin::Mutex<Runtime> = spin::Mutex::new(Runtime::new());
 fn t0() {
     use libc_print::std_name::println;
     let x = Tensor::randn([1024, 1024], DType::F32);
+    println!("{:?}", x.shape());
+    Tensor::debug_graph();
     println!("{x}");
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
