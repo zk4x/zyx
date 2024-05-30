@@ -4,7 +4,7 @@
 // matmuls (like strassen or tensor cores) or 16x16x16 matmul (wmma).
 // These optimizations are hardware dependent.
 
-use crate::runtime::compiler::{BOp, FirstOp, HWInfo, Tile, UOp};
+use crate::runtime::compiler::{BOp, FirstOp, HWInfo, Scope, Tile, UOp};
 use crate::runtime::view::{Index, View};
 use crate::runtime::TensorId;
 use crate::DType;
@@ -20,7 +20,7 @@ pub(super) struct IRKernel {
 #[derive(Debug)]
 struct IRMem {
     id: u32,
-    scope: u8,
+    scope: Scope,
     index: Option<u32>,
 }
 
@@ -31,7 +31,7 @@ enum IRIdx {
 }
 
 #[derive(Debug)]
-enum IdxBOp {
+pub(super) enum IdxBOp {
     Add,
     Mul,
     Div,
@@ -48,13 +48,14 @@ pub(super) enum IROp {
     // All variables are 1d, so that it is easier for implementors
     InitMem {
         id: u32,
-        scope: u8,
+        scope: Scope,
         dtype: DType,
+        read_only: bool,
         len: usize,
     },
     AssignMem {
-        left: IRMem,
-        right: IRMem,
+        z: IRMem,
+        x: IRMem,
     },
     UnaryMem {
         z: IRMem,
@@ -79,35 +80,18 @@ pub(super) enum IROp {
     },
     Loop {
         id: u32,
-        iters: usize,
-        scope: u8,
+        max: usize,
+        scope: Scope,
     },
     EndLoop,
 }
 
-/*#[derive(Debug, Clone)]
-pub(super) enum IROp {
-    // Global kernel argument load
-    Load { buffer_id: TensorId, dtype: DType },
-    // Global kerneL argument store
-    Store { buffer_id: TensorId, dtype: DType },
-    // Movement op, simply changes the view of this buffer. This means moving things around in memory
-    // and thus is extremely expensive. We should use memory caching here if possible.
-    // Things can be also moved between different memory scopes.
-    Movement { x: usize, scope: u8, view: View },
-    // Unary and binary ops always take and return variables in registers
-    // Cheap op
-    Unary { x: usize, op: UOp },
-    // Even binary ops are cheap
-    Binary { x: usize, y: usize, op: BOp },
-    // TODO we also need
-    // Loop, global, local, register ...
-    Loop { iters: usize, scope: u8 },
-    EndLoop,
-    // Optimation instructions, implementation is hardware specific and thus is up to the compiler
-    // Matmul of two 16x16 tiles, result is also 16x16 tile stored in local memory
-    NativeMM16x16 { x: usize, y: usize },
-}*/
+// Movement op, simply changes the view of this buffer. This means moving things around in memory
+// and thus is extremely expensive. We should use memory caching here if possible.
+// Things can be also moved between different memory scopes.
+
+// Optimation instructions, implementation is hardware specific and thus is up to the compiler
+// Matmul of two 16x16 tiles, result is also 16x16 tile stored in local memory
 
 pub(crate) fn tiled_to_ir(
     tiles: BTreeMap<TensorId, Tile>,
@@ -129,35 +113,35 @@ pub(crate) fn tiled_to_ir(
                     // Global work size
                     IROp::Loop {
                         id: 0,
-                        iters: sh[0],
-                        scope: 0,
+                        max: sh[0],
+                        scope: Scope::Global,
                     },
                     IROp::Loop {
                         id: 1,
-                        iters: sh[1],
-                        scope: 0,
+                        max: sh[1],
+                        scope: Scope::Global,
                     },
                     IROp::Loop {
                         id: 2,
-                        iters: sh[2],
-                        scope: 0,
+                        max: sh[2],
+                        scope: Scope::Global,
                     },
                     IROp::Loop {
                         id: 3,
-                        iters: 1,
-                        scope: 1,
+                        max: 1,
+                        scope: Scope::Local,
                     },
                     IROp::Loop {
                         id: 4,
-                        iters: 1,
-                        scope: 1,
+                        max: 1,
+                        scope: Scope::Local,
                     },
                     IROp::Loop {
                         id: 5,
-                        iters: 1,
-                        scope: 1,
+                        max: 1,
+                        scope: Scope::Local,
                     },
-                    IROp::Load { buffer_id, dtype },
+                    IROp::AssignMem { buffer_id, dtype },
                 ];
                 if !tile.view.is_contiguous() {
                     ops.push(IROp::Movement {

@@ -1,14 +1,15 @@
-use crate::runtime::compiler::ir::{IRKernel, IROp};
-use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
+use crate::runtime::compiler::ir::{IRKernel, IROp, IdxBOp};
+use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::Scalar;
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::ffi::CString;
+use alloc::format as f;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
-use opencl_sys::{clCreateBuffer, clCreateCommandQueue, clCreateContext, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_SUCCESS, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_LOCAL_MEM_SIZE, clCreateProgramWithSource, clBuildProgram, CL_PROGRAM_BUILD_LOG};
-use alloc::string::String;
-use alloc::format as f;
+use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateProgramWithSource, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_NOT_FOUND, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clReleaseProgram, clCreateKernel, clSetKernelArg, clEnqueueNDRangeKernel};
 
 //#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
@@ -78,7 +79,6 @@ impl Compiler for OpenCLCompiler {
     fn initialize() -> Result<Self, CompilerError> {
         let platform_id = 0;
         let queues_per_device = 8;
-        // TODO
         let platform_ids = {
             // Get the number of platforms
             let mut count: cl_uint = 0;
@@ -227,26 +227,69 @@ impl Compiler for OpenCLCompiler {
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
         let dev = *self.devices.first().unwrap();
-        let max_work_item_dims = u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS).unwrap().try_into().unwrap()) as usize;
+        let max_work_item_dims = u32::from_ne_bytes(
+            get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        ) as usize;
         let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES).unwrap();
         //let ptr: *const usize = unsafe { core::mem::transmute([mwis[0], mwis[1], mwis[2], mwis[3], mwis[4], mwis[5], mwis[6], mwis[7]]) };
         //let max_work_item_sizes = unsafe { core::slice::from_raw_parts::<usize>(ptr, max_work_item_dims) }.to_vec();
         let max_work_item_sizes = alloc::vec![256, 256, 256];
         return Ok(HWInfo {
             max_work_item_sizes,
-            max_work_group_size: usize::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE).unwrap().try_into().unwrap()),
-            preferred_vector_size: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT).unwrap().try_into().unwrap()) as usize * 4,
+            max_work_group_size: usize::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ),
+            preferred_vector_size: u32::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ) as usize
+                * 4,
             f16_support: true,
             f64_support: true,
             fmadd: true,
-            global_mem_size: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE).unwrap().try_into().unwrap()) as usize,
-            max_mem_alloc: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_MEM_ALLOC_SIZE).unwrap().try_into().unwrap()) as usize,
-            mem_align: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE).unwrap().try_into().unwrap()) as usize / 8,
-            page_size: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MEM_BASE_ADDR_ALIGN).unwrap().try_into().unwrap()) as usize / 8,
-            local_mem_size: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE).unwrap().try_into().unwrap()) as usize,
+            global_mem_size: u64::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ) as usize,
+            max_mem_alloc: u64::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_MAX_MEM_ALLOC_SIZE)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ) as usize,
+            mem_align: u32::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ) as usize
+                / 8,
+            page_size: u32::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_MEM_BASE_ADDR_ALIGN)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ) as usize
+                / 8,
+            local_mem_size: u64::from_ne_bytes(
+                get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ) as usize,
             num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
             native_mm16x16_support: false,
-        })
+        });
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
@@ -473,45 +516,118 @@ impl Compiler for OpenCLCompiler {
     }
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
-        println!("Compiling IRKernel: {kernel:#?}");
+        //println!("Compiling IRKernel: {kernel:#?}");
+
         // Create list of kernel arguments
         let mut kernel_args = BTreeMap::new();
         for op in &kernel.ops {
             match op {
-                IROp::Load { buffer_id, dtype } => {
-                    kernel_args.insert(buffer_id, (dtype, true));
-                }
-                IROp::Store { buffer_id, dtype } => {
-                    kernel_args.insert(buffer_id, (dtype, false));
+                IROp::InitMem {
+                    id,
+                    scope,
+                    dtype,
+                    read_only,
+                    ..
+                } => {
+                    if matches!(scope, Scope::Global) {
+                        kernel_args.insert(id, (dtype, read_only));
+                    }
                 }
                 _ => {}
             }
         }
 
-        let global_work_size = [0; 3];
-        let local_work_size = [0; 3];
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
 
         let mut source = String::new();
-        let index_t = "unsigned int";
-        let indent = String::from("  ");
+        let mut indent = String::from("  ");
 
         for op in &kernel.ops {
             match op {
-                IROp::InitMem { id, scope, len, dtype } => {
+                IROp::InitMem {
+                    id,
+                    scope,
+                    read_only,
+                    len,
+                    dtype,
+                } => {
+                    source += &f!(
+                        "{indent}{dtype} {}mem{id}{}{};\n",
+                        match scope {
+                            Scope::Global => "g",
+                            Scope::Local => "l",
+                            Scope::Register => "r",
+                        },
+                        if *len > 1 { &f!("[{len}]") } else { "" }
+                    );
+                }
+                IROp::AssignMem { z, x } => {
+                    source += &f!("{indent} {z} = {x};\n");
+                }
+                IROp::UnaryMem { z, x, op } => {
+                    source += &f!("{indent} {z} = {}{x}{});\n", match op {
+                        UOp::Cast(dtype) => &f!("({dtype})("),
+                        UOp::Inv => "1/(",
+                        UOp::Neg => "-(",
+                        UOp::Sin => "sin(",
+                        UOp::Cos => "cos(",
+                        UOp::Exp => "exp(",
+                        UOp::Ln => "log(",
+                        UOp::Sqrt => "sqrt(",
+                    });
+                }
+                IROp::BinaryMem { z, x, y, op } => {
+                    source += &f!("{indent} {z} = {};\n", match op {
+                        BOp::Add => &f!("{x}+{y}"),
+                        BOp::Sub => &f!("{x}-{y}"),
+                        BOp::Mul => &f!("{x}*{y}"),
+                        BOp::Div => &f!("{x}/{y}"),
+                        BOp::Pow => &f!("powf({x}, {y})"),
+                        BOp::Max => &f!("max({x}, {y})"),
+                        BOp::Cmplt => &f!("{x}<{y}"),
+                    });
+                }
+                IROp::InitIdx { id, value } => {
+                    source += &f!("{indent} unsigned int idx{id} = {value}\n");
+                }
+                IROp::BinaryIdx { z, x, y, op } => {
+                    source += &f!("{indent} {z} = {};\n", match op {
+                        IdxBOp::Add => &f!("{x}+{y}"),
+                        IdxBOp::Mul => &f!("{x}*{y}"),
+                        IdxBOp::Div => &f!("{x}/{y}"),
+                        IdxBOp::Mod => &f!("{x}%{y}"),
+                    });
+                }
+                IROp::Loop { id, max, scope } => {
                     match scope {
-                        0 => source += &f!("{indent}{dtype} mem{id};\n")
+                        Scope::Global => {
+                            global_work_size[id] = max;
+                        }
+                        Scope::Local => {
+                            local_work_size[id] = max;
+                        }
+                        Scope::Register => {
+                            source += &f!("{indent}for (; {id} < {max}; {id}++) {{\n");
+                            indent += "  ";
+                        }
                     }
                 }
-                IROp::AssignMem { .. } => {}
-                IROp::UnaryMem { .. } => {}
-                IROp::BinaryMem { .. } => {}
-                IROp::InitIdx { .. } => {}
-                IROp::BinaryIdx { .. } => {}
-                IROp::Loop { .. } => {}
-                IROp::EndLoop => {}
+                IROp::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    source += &f!("{indent}}}\n");
+                }
             }
         }
-        return OpenCLProgram::compile_from_source(&source, self.context, &self.devices, global_work_size, local_work_size)
+
+        return OpenCLProgram::compile_from_source(
+            &source,
+            self.context,
+            &self.devices,
+            global_work_size,
+            local_work_size,
+        );
     }
 
     fn launch_program(
@@ -519,11 +635,138 @@ impl Compiler for OpenCLCompiler {
         program: &Self::Program,
         args: &[&mut Self::Buffer],
     ) -> Result<(), CompilerError> {
-        todo!()
+        #[cfg(not(feature = "debug1"))]
+        let (_, _) = (flop, bytes);
+        let program_name = &CString::new(program.name.clone()).unwrap();
+        let mut status = CL_SUCCESS;
+        let kernel =
+            unsafe { clCreateKernel(program.program, program_name.as_ptr().cast(), &mut status) };
+        if status != CL_SUCCESS {
+            return Err(CompilerError::GeneralExecutionError(match status {
+                -44 => "Unable to create kernel. ERR -: CL_INVALID_PROGRAM",
+                -45 => "Unable to create kernel. ERR -: CL_INVALID_PROGRAM_EXECUTABLE",
+                -46 => "Unable to create kernel. ERR -: CL_INVALID_KERNEL_NAME",
+                -47 => "Unable to create kernel. ERR -: CL_INVALID_KERNEL_DEFINITION",
+                -30 => "Unable to create kernel. ERR -: CL_INVALID_VALUE",
+                -5 => "Unable to create kernel. ERR -: CL_OUT_OF_RESOURCES",
+                -6 => "Unable to create kernel. ERR -: CL_OUT_OF_HOST_MEMORY",
+                _ => "Unable to create kernel. UNKNOWN ERROR",
+            }));
+        }
+        let kernel_arg_err_handler = |err| {
+            CompilerError::GeneralExecutionError(match err {
+                -48 => "Unable to set kernel arg. ERR -48: CL_INVALID_KERNEL",
+                -49 => "Unable to set kernel arg. ERR -49: CL_INVALID_ARG_INDEX",
+                -50 => "Unable to set kernel arg. ERR -50: CL_INVALID_ARG_VALUE",
+                -38 => "Unable to set kernel arg. ERR -38: CL_INVALID_MEM_OBJECT",
+                -41 => "Unable to set kernel arg. ERR -41: CL_INVALID_SAMPLER",
+                -33 => "Unable to set kernel arg. ERR -33: CL_INVALID_DEVICE_QUEUE",
+                -51 => "Unable to set kernel arg. ERR -51: CL_INVALID_ARG_SIZE",
+                -72 => "Unable to set kernel arg. ERR -: CL_MAX_SIZE_RESTRICTION_EXCEEDED",
+                -5 => "Unable to set kernel arg. ERR -5: CL_OUT_OF_RESOURCES",
+                -6 => "Unable to set kernel arg. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                _ => "Unable to set kernel arg. UNKNOWN ERROR",
+            })
+        };
+        let mut events = Vec::new();
+        let mut i = 0;
+        for arg in args {
+            let (buffer, event) = (arg.memory, arg.event);
+            events.push(event);
+            //std::println!("Arg: {:?}", self.load::<f32>(arg, 6));
+            // This is POINTER MAGIC. Be careful.
+            let ptr: *const _ = &buffer;
+            status = unsafe {
+                clSetKernelArg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
+            };
+            if status != CL_SUCCESS {
+                return Err(kernel_arg_err_handler(status));
+            }
+            i += 1;
+        }
+        let mut event: *mut c_void = ptr::null_mut();
+        //#[cfg(feature = "debug1")]
+        //let begin = std::time::Instant::now();
+        let status = unsafe {
+            clEnqueueNDRangeKernel(
+                self.queue()?,
+                kernel,
+                u32::try_from(program.global_work_size.len()).unwrap(),
+                ptr::null(),
+                program.global_work_size.as_ptr(),
+                program.local_work_size.as_ptr(),
+                u32::try_from(events.len()).unwrap(),
+                if events.is_empty() {
+                    ptr::null()
+                } else {
+                    events.as_ptr()
+                },
+                &mut event,
+            )
+        };
+        if status != CL_SUCCESS {
+            return Err(CompilerError::GeneralExecutionError(match status {
+                -45 => "Unable to enqueue kernel. ERR -45: CL_INVALID_PROGRAM_EXECUTABLE",
+                -36 => "Unable to enqueue kernel. ERR -36: CL_INVALID_COMMAND_QUEUE",
+                -48 => "Unable to enqueue kernel. ERR -48: CL_INVALID_KERNEL",
+                -34 => "Unable to enqueue kernel. ERR -34: CL_INVALID_CONTEXT",
+                -52 => "Unable to enqueue kernel. ERR -52: CL_INVALID_KERNEL_ARGS",
+                -53 => "Unable to enqueue kernel. ERR -53: CL_INVALID_WORK_DIMENSION",
+                -63 => "Unable to enqueue kernel. ERR -63: CL_INVALID_GLOBAL_WORK_SIZE",
+                -56 => "Unable to enqueue kernel. ERR -56: CL_INVALID_GLOBAL_OFFSET",
+                -54 => "Unable to enqueue kernel. ERR -54: CL_INVALID_WORK_GROUP_SIZE",
+                -55 => "Unable to enqueue kernel. ERR -55: CL_INVALID_WORK_ITEM_SIZE",
+                -13 => "Unable to enqueue kernel. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
+                -40 => "Unable to enqueue kernel. ERR -40: CL_INVALID_IMAGE_SIZE",
+                -10 => "Unable to enqueue kernel. ERR -10: CL_IMAGE_FORMAT_NOT_SUPPORTED",
+                -5 => "Unable to enqueue kernel. ERR -5: CL_OUT_OF_RESOURCES",
+                -4 => "Unable to enqueue kernel. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
+                -57 => "Unable to enqueue kernel. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
+                -59 => "Unable to enqueue kernel. ERR -59: CL_INVALID_OPERATION",
+                -6 => "Unable to enqueue kernel. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                _ => "Unable to enqueue kernel. UNKNOWN ERROR",
+            }));
+        }
+        #[cfg(feature = "debug1")]
+        {
+            let err = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
+            if err != CL_SUCCESS {
+                return Err(CompilerError::GeneralExecutionError(match err {
+                    -30 => "Unable to finish kernel execution event. ERR -30: CL_INVALID_VALUE",
+                    -34 => "Unable to finish kernel execution event. ERR -34: CL_INVALID_CONTEXT",
+                    -58 => "Unable to finish kernel execution event. ERR -58: CL_INVALID_EVENT",
+                    -14 => "Unable to finish kernel execution event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+                    -5 => "Unable to finish kernel execution event. ERR -5: CL_OUT_OF_RESOURCES",
+                    -6 => "Unable to finish kernel execution event. ERR -6: CL_OUT_OF_MEMORY",
+                    _ => "Unable to finish kernel execution event. UNKNOWN ERROR",
+                }));
+            }
+            /*let elapsed_nanos = begin.elapsed().as_nanos();
+            let elapsed_millis = elapsed_nanos as f64 / 1000000.;
+            println!(
+                "Kernel took {elapsed_millis:.3}ms for {bytes} B, {flop} FLOP ~ {:.2} GFLOPS, {:.2} GB/s",
+                flop as f64 / elapsed_nanos as f64,
+                bytes as f64 / elapsed_nanos as f64,
+            );*/
+        }
+        Ok(())
     }
 
-    fn drop_program(&mut self, program: Self::Program) {
-        todo!()
+    fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
+        let status = unsafe { clReleaseProgram(program.program) };
+        if status != CL_SUCCESS {
+            return Err(match status {
+                -44 => CompilerError::GeneralExecutionError("Unable to release program. ERR -44: CL_INVALID_PROGRAM"),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to release program. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to release program. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
+                _ => CompilerError::GeneralExecutionError("Unable to release program. UNKNOWN ERROR"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -568,12 +811,22 @@ impl OpenCLProgram {
         };
         if err != CL_SUCCESS {
             return Err(match err {
-                -34 => CompilerError::GeneralExecutionError("Unable to compile program. ERR -34: CL_INVALID_CONTEXT"),
-                -30 => CompilerError::GeneralExecutionError("Unable to compile program. ERR -30: CL_INVALID_VALUE"),
-                -5 => CompilerError::GeneralExecutionError("Unable to compile program. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfHostMemory("Unable to compile program. ERR -6: CL_OUT_OF_HOST_MEMORY"),
-                _ => CompilerError::GeneralExecutionError("Unable to compile program. UNKNOWN ERROR"),
-            })
+                -34 => CompilerError::GeneralExecutionError(
+                    "Unable to compile program. ERR -34: CL_INVALID_CONTEXT",
+                ),
+                -30 => CompilerError::GeneralExecutionError(
+                    "Unable to compile program. ERR -30: CL_INVALID_VALUE",
+                ),
+                -5 => CompilerError::GeneralExecutionError(
+                    "Unable to compile program. ERR -5: CL_OUT_OF_RESOURCES",
+                ),
+                -6 => CompilerError::OutOfHostMemory(
+                    "Unable to compile program. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                ),
+                _ => {
+                    CompilerError::GeneralExecutionError("Unable to compile program. UNKNOWN ERROR")
+                }
+            });
         };
         let devices = devices.iter().copied().collect::<Vec<*mut c_void>>();
         let err = unsafe {

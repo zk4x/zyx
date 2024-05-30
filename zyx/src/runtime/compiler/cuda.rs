@@ -55,7 +55,7 @@ impl Compiler for CUDA {
         todo!()
     }
 
-    fn drop_program(&mut self, program: Self::Program) {
+    fn release_program(&mut self, program: Self::Program) {
         todo!()
     }
 }

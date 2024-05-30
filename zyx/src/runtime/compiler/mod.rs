@@ -19,7 +19,7 @@ pub(super) mod wgpu;
 enum Scope {
     Global,
     Local,
-    Private,
+    Register,
 }
 
 trait Compiler: Sized {
@@ -45,7 +45,7 @@ trait Compiler: Sized {
         program: &Self::Program,
         args: &[&mut Self::Buffer],
     ) -> Result<(), CompilerError>;
-    fn drop_program(&mut self, program: Self::Program);
+    fn release_program(&mut self, program: Self::Program);
 }
 
 pub(super) struct CompiledBackend<C: Compiler> {
@@ -516,13 +516,12 @@ fn calculate_graph_execution_order(
 // Includes Noop for copying between tiles of various scopes
 #[derive(Debug, Clone, Copy)]
 enum UOp {
-    Noop,
+    Inv,
     Neg,
     Sin,
     Cos,
     Exp,
     Ln,
-    Tanh,
     Sqrt,
     Cast(DType),
 }
