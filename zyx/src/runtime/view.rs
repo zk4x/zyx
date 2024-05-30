@@ -143,32 +143,42 @@ impl View {
         }
         // TODO perhaps we can merge more shapes with the previous shape
 
-        // TODO merge split and join dimension reshapes
+        // TODO perhaps merge reshapes joining dimensions
 
-        // Merge unsqueeze
+        // Merge dimension splits (also works for unsqueeze)
         if shape.len() > self.shapes[0].len() {
-            let mut merge_possible = true; // is it only squeeze, not reshape?
-            let mut new_shape = Vec::new();
             let mut new_binds = Vec::new();
-            let mut i = self.shapes[0].len() - 1;
-            for sh_dim in shape.iter().copied().rev() {
-                if sh_dim == self.shapes[0][i].size {
-                    new_binds.insert(0, self.binds[i]);
-                    new_shape.insert(0, self.shapes[0][i]);
-                    if i > 0 {
-                        i -= 1;
+            let mut merge_possible = true;
+            let mut di = self.shapes[0].len() - 1; // index to old shape
+            let mut new_shape = Vec::new();
+            let mut expansion_stride = 1;
+            // Iterate in reverse
+            for dim in shape.iter().copied().rev() {
+                if dim == self.shapes[0][di].size {
+                    new_binds.insert(0, self.binds[di]);
+                    new_shape.insert(0, self.shapes[0][di]);
+                    if di > 0 {
+                        di -= 1;
                     }
-                } else if sh_dim == 1 {
-                    new_binds.insert(0, 0);
+                    expansion_stride = 1;
+                } else if dim < self.shapes[0][di].size {
+                    // If this dimension was padded, we probably can't merge
+                    if self.shapes[0][di].len != self.shapes[0][di].size ||
+                        self.shapes[0][di].shift != self.shapes[0][di].size {
+                        merge_possible = false;
+                        break
+                    }
+                    new_binds.insert(0, 0); // TODO deal with binds later
                     new_shape.insert(
                         0,
                         Dimension {
-                            size: 1,
-                            stride: self.shapes[0][i].stride,
-                            len: 1,
-                            shift: 1,
+                            size: dim,
+                            stride: self.shapes[0][di].stride * expansion_stride,
+                            len: dim,
+                            shift: dim,
                         },
                     );
+                    expansion_stride *= dim;
                 } else {
                     merge_possible = false;
                     break;
@@ -341,4 +351,42 @@ fn test_standard() {
     assert_eq!(view0.shape(), vec![3, 5, 4, 2]);
     view0.reshape(&[15, 8]);
     assert_eq!(view0.shape(), vec![15, 8]);
+}
+
+#[test]
+fn test_reshape_merge1() {
+    let mut view0 = View::from(&[3, 4, 20]);
+    view0.permute(&[2, 0, 1]);
+    view0.reshape(&[5, 4, 3, 4]);
+    //libc_println!("{view0:#?}");
+    assert_eq!(view0.shapes.len(), 1);
+    assert_eq!(
+        view0.shapes[0],
+        vec![
+            Dimension {
+                size: 5,
+                stride: 4,
+                len: 5,
+                shift: 5,
+            },
+            Dimension {
+                size: 4,
+                stride: 1,
+                len: 4,
+                shift: 4
+            },
+            Dimension {
+                size: 3,
+                stride: 80,
+                len: 3,
+                shift: 3
+            },
+            Dimension {
+                size: 4,
+                stride: 20,
+                len: 4,
+                shift: 4
+            },
+        ]
+    );
 }
