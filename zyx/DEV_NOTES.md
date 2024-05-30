@@ -89,3 +89,10 @@ into single tile. Tiles with the same work size are joined together unless some 
 Tiles with results used more than once are evaluated separately, so that their results can be reused.
 This should be a good compromise. Unary ops are usually cheap enough to be worth recalculating, but other ops
 usually are not worth recalculating. Tiled version does not contain loops.
+
+# 2024-05-30
+
+We need to write from IR to OpenCL compiler.
+Then finish IR compiler without optimizations.
+Then we need to write extensive tests to check that it works correctly.
+Only after everything works fine can we start optimizing with local memory and register tiling and such.

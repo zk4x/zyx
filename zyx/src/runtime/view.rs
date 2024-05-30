@@ -264,13 +264,14 @@ impl View {
 // multipliers and extract them out.
 
 /// Virtual representation of index into
+#[derive(Debug)]
 pub enum Index {
     /// Expanded and/or padded
     /// Pairs of index id and multiplier.
     /// Can use wide loads directly with pointer casts.
     Contiguous {
         /// Dimension and multiplier
-        dims: BTreeMap<usize, usize>,
+        dims: BTreeMap<u32, usize>,
         /// When should the padding get applied?
         padding_condition: String,
     },
@@ -279,7 +280,7 @@ pub enum Index {
     /// Wide loads are possible only if we can transpose it in the kernel
     Strided {
         /// Dimension and multiplier
-        dims: BTreeMap<usize, usize>,
+        dims: BTreeMap<u32, usize>,
         /// When should the padding get applied?
         padding_condition: String,
     },
@@ -287,7 +288,7 @@ pub enum Index {
     /// Only if reshape could not be merged.
     Reshaped {
         /// Multiple dimension and multipliers
-        dims: Vec<BTreeMap<usize, usize>>,
+        dims: Vec<BTreeMap<u32, usize>>,
         /// When should the padding get applied?
         padding_condition: String,
     },

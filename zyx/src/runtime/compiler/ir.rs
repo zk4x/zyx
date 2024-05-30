@@ -5,7 +5,7 @@
 // These optimizations are hardware dependent.
 
 use crate::runtime::compiler::{BOp, FirstOp, HWInfo, Tile, UOp};
-use crate::runtime::view::View;
+use crate::runtime::view::{Index, View};
 use crate::runtime::TensorId;
 use crate::DType;
 use alloc::collections::BTreeMap;
@@ -17,12 +17,75 @@ pub(super) struct IRKernel {
     pub(super) ops: Vec<IROp>,
 }
 
+#[derive(Debug)]
+struct IRMem {
+    id: u32,
+    scope: u8,
+    index: Option<u32>,
+}
+
+#[derive(Debug)]
+enum IRIdx {
+    Index(u32),
+    Const(u32),
+}
+
+#[derive(Debug)]
+enum IdxBOp {
+    Add,
+    Mul,
+    Div,
+    Mod,
+}
+
 /// IROp for direct translation to hardware kernels
 /// Scope:
 /// 0 - global
 /// 1 - local
 /// 2 - register
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+pub(super) enum IROp {
+    // All variables are 1d, so that it is easier for implementors
+    InitMem {
+        id: u32,
+        scope: u8,
+        dtype: DType,
+        len: usize,
+    },
+    AssignMem {
+        left: IRMem,
+        right: IRMem,
+    },
+    UnaryMem {
+        z: IRMem,
+        x: IRMem,
+        op: UOp,
+    },
+    BinaryMem {
+        z: IRMem,
+        x: IRMem,
+        y: IRMem,
+        op: BOp,
+    },
+    InitIdx {
+        id: u32,
+        value: usize,
+    },
+    BinaryIdx {
+        z: IRIdx,
+        x: IRIdx,
+        y: IRIdx,
+        op: IdxBOp,
+    },
+    Loop {
+        id: u32,
+        iters: usize,
+        scope: u8,
+    },
+    EndLoop,
+}
+
+/*#[derive(Debug, Clone)]
 pub(super) enum IROp {
     // Global kernel argument load
     Load { buffer_id: TensorId, dtype: DType },
@@ -44,7 +107,7 @@ pub(super) enum IROp {
     // Optimation instructions, implementation is hardware specific and thus is up to the compiler
     // Matmul of two 16x16 tiles, result is also 16x16 tile stored in local memory
     NativeMM16x16 { x: usize, y: usize },
-}
+}*/
 
 pub(crate) fn tiled_to_ir(
     tiles: BTreeMap<TensorId, Tile>,
@@ -65,28 +128,32 @@ pub(crate) fn tiled_to_ir(
                 let mut ops = vec![
                     // Global work size
                     IROp::Loop {
+                        id: 0,
                         iters: sh[0],
                         scope: 0,
                     },
                     IROp::Loop {
+                        id: 1,
                         iters: sh[1],
                         scope: 0,
                     },
                     IROp::Loop {
+                        id: 2,
                         iters: sh[2],
                         scope: 0,
                     },
-                    // Local work size, TODO change it to highest multiple
-                    // of sh[0..2] dimensions, but less than hwinfo.max_work_group_size
                     IROp::Loop {
+                        id: 3,
                         iters: 1,
                         scope: 1,
                     },
                     IROp::Loop {
+                        id: 4,
                         iters: 1,
                         scope: 1,
                     },
                     IROp::Loop {
+                        id: 5,
                         iters: 1,
                         scope: 1,
                     },
@@ -170,5 +237,8 @@ pub(crate) fn tiled_to_ir(
             kernel.ops.push(IROp::EndLoop);
         }
     }
+
+    // TODO optimize ir_kernels using memory tiling and such
+
     kernels
 }

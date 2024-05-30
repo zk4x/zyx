@@ -2,7 +2,7 @@ use crate::runtime::compiler::ir::{IRKernel, IROp};
 use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
 use crate::Scalar;
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
@@ -474,19 +474,41 @@ impl Compiler for OpenCLCompiler {
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
         println!("Compiling IRKernel: {kernel:#?}");
-        let mut source = "";
-        let global_work_size = [0; 3];
-        let local_work_size = [0; 3];
+        // Create list of kernel arguments
+        let mut kernel_args = BTreeMap::new();
         for op in &kernel.ops {
             match op {
-                IROp::Load { .. } => {}
-                IROp::Store { .. } => {}
-                IROp::Movement { .. } => {}
-                IROp::Unary { .. } => {}
-                IROp::Binary { .. } => {}
+                IROp::Load { buffer_id, dtype } => {
+                    kernel_args.insert(buffer_id, (dtype, true));
+                }
+                IROp::Store { buffer_id, dtype } => {
+                    kernel_args.insert(buffer_id, (dtype, false));
+                }
+                _ => {}
+            }
+        }
+
+        let global_work_size = [0; 3];
+        let local_work_size = [0; 3];
+
+        let mut source = String::new();
+        let index_t = "unsigned int";
+        let indent = String::from("  ");
+
+        for op in &kernel.ops {
+            match op {
+                IROp::InitMem { id, scope, len, dtype } => {
+                    match scope {
+                        0 => source += &f!("{indent}{dtype} mem{id};\n")
+                    }
+                }
+                IROp::AssignMem { .. } => {}
+                IROp::UnaryMem { .. } => {}
+                IROp::BinaryMem { .. } => {}
+                IROp::InitIdx { .. } => {}
+                IROp::BinaryIdx { .. } => {}
                 IROp::Loop { .. } => {}
                 IROp::EndLoop => {}
-                IROp::NativeMM16x16 { .. } => {}
             }
         }
         return OpenCLProgram::compile_from_source(&source, self.context, &self.devices, global_work_size, local_work_size)

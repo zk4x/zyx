@@ -15,11 +15,18 @@ mod ir;
 pub(super) mod opencl;
 pub(super) mod wgpu;
 
+#[derive(Debug)]
+enum Scope {
+    Global,
+    Local,
+    Private,
+}
+
 trait Compiler: Sized {
     type Buffer;
     type Program;
     fn initialize() -> Result<Self, CompilerError>;
-    fn hardware_information(&mut self) -> Result<crate::runtime::compiler::HWInfo, crate::runtime::compiler::CompilerError>;
+    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError>;
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError>;
     fn store_memory<T: Scalar>(
         &mut self,
@@ -185,7 +192,6 @@ impl<C: Compiler> CompiledBackend<C> {
                     Tile {
                         view: View::from(&graph.shape(nid)),
                         dtype,
-                        scope: 2,
                         first_op: FirstOp::Load { dtype, buffer_id: nid },
                         ops: Vec::new(),
                         can_be_fused: rcs[&nid] < 2,
@@ -207,7 +213,6 @@ impl<C: Compiler> CompiledBackend<C> {
                     let tile = Tile {
                         view: View::from(&graph.shape(nid)),
                         dtype: graph.dtype(nid),
-                        scope: 2,
                         first_op: FirstOp::Binary {
                             x,
                             y,
@@ -223,7 +228,6 @@ impl<C: Compiler> CompiledBackend<C> {
                         let tile = Tile {
                             view: View::from(graph._shape(shape_id)),
                             dtype: graph.dtype(nid),
-                            scope: 2,
                             first_op: FirstOp::Movement { x },
                             ops: vec![],
                             can_be_fused: rcs[&nid] < 2,
@@ -242,7 +246,6 @@ impl<C: Compiler> CompiledBackend<C> {
                     let tile = Tile {
                         view,
                         dtype: graph.dtype(nid),
-                        scope: 2,
                         first_op: FirstOp::Movement { x },
                         ops: vec![],
                         can_be_fused: rcs[&nid] < 2,
@@ -266,7 +269,6 @@ impl<C: Compiler> CompiledBackend<C> {
                             let tile = Tile {
                                 view,
                                 dtype: graph.dtype(nid),
-                                scope: 2,
                                 first_op: FirstOp::Movement { x },
                                 ops: vec![],
                                 can_be_fused: rcs[&nid] < 2,
@@ -288,7 +290,6 @@ impl<C: Compiler> CompiledBackend<C> {
                     let tile = Tile {
                         view: View::from(graph._shape(shape_id)),
                         dtype: graph.dtype(nid),
-                        scope: 2,
                         first_op: FirstOp::Reduce {
                             x,
                             shape: graph._shape(shape_id).into(),
@@ -416,27 +417,16 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
-        //std::println!();
-        //std::println!();
-
-        // Print AST
-        /*for tile in &tiles {
-            std::println!("{tile:?}");
-        }*/
-
         // Rewrite tiled representation to looped representation
-        let ir = ir::tiled_to_ir(tiles, &order, &self.hwinfo);
-        //std::println!("{looped:#?}");
+        let mut ir_kernels = ir::tiled_to_ir(tiles, &order, &self.hwinfo);
 
-        let mut to_compile = to_eval.clone();
-        let mut programs = Vec::new();
-        while let Some(id) = to_compile.pop_last() {
+        let mut programs = BTreeMap::new();
+        while let Some((id, ir_kernel)) = ir_kernels.pop_last() {
             // Go backward from to_eval, compile those kernels and then compile all kernels
             // that are used as arguments to those kernels.
             // Search over
-            programs.push(self.compiler.compile_program(&ir[&id]));
+            programs.insert(id, self.compiler.compile_program(&ir_kernel));
         }
-
         panic!();
 
         // Check work sizes (view.shapes) of tiles and add appropriate loops.
@@ -552,7 +542,6 @@ enum BOp {
 struct Tile {
     pub(crate) view: View,
     dtype: DType,
-    scope: u8,
     pub(crate) first_op: FirstOp,
     // Note that order of these ops does not matter for correctness,
     // but may matter for performance
