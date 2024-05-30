@@ -12,7 +12,7 @@ impl Compiler for WGPU {
         todo!()
     }
 
-    fn hwinfo(&mut self) -> Result<HWInfo, CompilerError> {
+    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
         todo!()
     }
 

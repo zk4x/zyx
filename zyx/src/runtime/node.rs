@@ -209,4 +209,29 @@ impl Node {
             },
         };
     }
+
+    pub const fn is_movement(&self) -> bool {
+        return match self {
+            Node::Reshape { .. }
+            | Node::Permute { .. }
+            | Node::Expand { .. }
+            | Node::Pad { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub const fn is_unary(&self) -> bool {
+        return match self {
+            Node::Cast { x, .. }
+            | Node::Inv { x }
+            | Node::Neg { x }
+            | Node::ReLU { x }
+            | Node::Exp { x }
+            | Node::Ln { x }
+            | Node::Sin { x }
+            | Node::Cos { x }
+            | Node::Sqrt { x } => true,
+            _ => false,
+        }
+    }
 }

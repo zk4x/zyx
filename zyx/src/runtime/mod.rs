@@ -181,6 +181,41 @@ impl Subgraph<'_> {
         let len = <isize as TryInto<usize>>::try_into(self.paddings[id]).unwrap();
         return &self.paddings[id + 1..id + 1 + len];
     }
+
+    /// Swap movement and unary op
+    /// first and second tensors must have rc == 1!
+    fn swap_nodes(&mut self, first: TensorId, second: TensorId) {
+        let temp;
+        match self.nodes.get_mut(&first).unwrap() {
+            Node::Reshape { x, .. }
+            | Node::Expand { x, .. }
+            | Node::Pad { x, .. }
+            | Node::Permute { x, .. } => {
+                temp = *x;
+                *x = first;
+            }
+            _ => panic!("First op must be movement"),
+        }
+        match self.nodes.get_mut(&second).unwrap() {
+            Node::Cast { x, .. }
+            | Node::Neg { x, .. }
+            | Node::Inv { x, .. }
+            | Node::ReLU { x, .. }
+            | Node::Exp { x, .. }
+            | Node::Ln { x, .. }
+            | Node::Sin { x, .. }
+            | Node::Cos { x, .. }
+            | Node::Sqrt { x, .. } => {
+                *x = temp;
+            }
+            _ => panic!("Second op must be unary"),
+        }
+        // swap the two nodes
+        let first_value = self.nodes.remove(&first).unwrap();
+        let second_value = self.nodes.remove(&second).unwrap();
+        self.nodes.insert(first, second_value);
+        self.nodes.insert(second, first_value);
+    }
 }
 
 impl Index<TensorId> for Subgraph<'_> {

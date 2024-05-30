@@ -1,4 +1,4 @@
-use crate::runtime::compiler::ir::IRKernel;
+use crate::runtime::compiler::ir::{IRKernel, IROp};
 use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
 use crate::Scalar;
 use alloc::boxed::Box;
@@ -6,23 +6,23 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
-use opencl_sys::{
-    clCreateBuffer, clCreateCommandQueue, clCreateContext, clEnqueueReadBuffer,
-    clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo,
-    clReleaseEvent, clReleaseMemObject, clWaitForEvents, cl_device_id, cl_device_type, cl_int,
-    cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL,
-    CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_SUCCESS,
-};
-
-#[cfg(feature = "debug1")]
+use opencl_sys::{clCreateBuffer, clCreateCommandQueue, clCreateContext, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_SUCCESS, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_LOCAL_MEM_SIZE, clCreateProgramWithSource, clBuildProgram, CL_PROGRAM_BUILD_LOG};
 use alloc::string::String;
+use alloc::format as f;
 
 //#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
-pub(crate) struct OpenCLBuffer {
+pub(super) struct OpenCLBuffer {
     memory: *mut c_void,
     event: *mut c_void,
+}
+
+pub(super) struct OpenCLProgram {
+    name: String,
+    program: *mut c_void,
+    global_work_size: [usize; 3],
+    local_work_size: [usize; 3],
 }
 
 pub(crate) struct OpenCLCompiler {
@@ -38,6 +38,7 @@ pub(crate) struct OpenCLCompiler {
 // so they should stay valid no matter the thread.
 unsafe impl Send for OpenCLCompiler {}
 unsafe impl Send for OpenCLBuffer {}
+unsafe impl Send for OpenCLProgram {}
 
 impl OpenCLCompiler {
     fn queue(&mut self) -> Result<*mut c_void, CompilerError> {
@@ -72,7 +73,7 @@ impl OpenCLCompiler {
 
 impl Compiler for OpenCLCompiler {
     type Buffer = OpenCLBuffer;
-    type Program = ();
+    type Program = OpenCLProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
         let platform_id = 0;
@@ -224,8 +225,28 @@ impl Compiler for OpenCLCompiler {
         })
     }
 
-    fn hwinfo(&mut self) -> Result<HWInfo, CompilerError> {
-
+    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
+        let dev = *self.devices.first().unwrap();
+        let max_work_item_dims = u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS).unwrap().try_into().unwrap()) as usize;
+        let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES).unwrap();
+        //let ptr: *const usize = unsafe { core::mem::transmute([mwis[0], mwis[1], mwis[2], mwis[3], mwis[4], mwis[5], mwis[6], mwis[7]]) };
+        //let max_work_item_sizes = unsafe { core::slice::from_raw_parts::<usize>(ptr, max_work_item_dims) }.to_vec();
+        let max_work_item_sizes = alloc::vec![256, 256, 256];
+        return Ok(HWInfo {
+            max_work_item_sizes,
+            max_work_group_size: usize::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE).unwrap().try_into().unwrap()),
+            preferred_vector_size: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT).unwrap().try_into().unwrap()) as usize * 4,
+            f16_support: true,
+            f64_support: true,
+            fmadd: true,
+            global_mem_size: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE).unwrap().try_into().unwrap()) as usize,
+            max_mem_alloc: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_MAX_MEM_ALLOC_SIZE).unwrap().try_into().unwrap()) as usize,
+            mem_align: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE).unwrap().try_into().unwrap()) as usize / 8,
+            page_size: u32::from_ne_bytes(get_device_data(dev, CL_DEVICE_MEM_BASE_ADDR_ALIGN).unwrap().try_into().unwrap()) as usize / 8,
+            local_mem_size: u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE).unwrap().try_into().unwrap()) as usize,
+            num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
+            native_mm16x16_support: false,
+        })
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
@@ -453,7 +474,22 @@ impl Compiler for OpenCLCompiler {
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
         println!("Compiling IRKernel: {kernel:#?}");
-        todo!()
+        let mut source = "";
+        let global_work_size = [0; 3];
+        let local_work_size = [0; 3];
+        for op in &kernel.ops {
+            match op {
+                IROp::Load { .. } => {}
+                IROp::Store { .. } => {}
+                IROp::Movement { .. } => {}
+                IROp::Unary { .. } => {}
+                IROp::Binary { .. } => {}
+                IROp::Loop { .. } => {}
+                IROp::EndLoop => {}
+                IROp::NativeMM16x16 { .. } => {}
+            }
+        }
+        return OpenCLProgram::compile_from_source(&source, self.context, &self.devices, global_work_size, local_work_size)
     }
 
     fn launch_program(
@@ -466,6 +502,108 @@ impl Compiler for OpenCLCompiler {
 
     fn drop_program(&mut self, program: Self::Program) {
         todo!()
+    }
+}
+
+impl OpenCLProgram {
+    fn compile_from_source(
+        source: &str,
+        context: *mut c_void,
+        devices: &BTreeSet<*mut c_void>,
+        global_work_size: [usize; 3],
+        local_work_size: [usize; 3],
+    ) -> Result<Self, CompilerError> {
+        let name = f!(
+            "k__{}__{}",
+            global_work_size
+                .iter()
+                .map(|x| f!("{x}"))
+                .collect::<Vec<_>>()
+                .join("_"),
+            local_work_size
+                .iter()
+                .map(|x| f!("{x}"))
+                .collect::<Vec<_>>()
+                .join("_"),
+        );
+        let mut pragma = f!("");
+        if source.contains("double") {
+            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
+        let source = f!("{pragma}__kernel void {name}{source}");
+        #[cfg(feature = "debug1")]
+        println!("{source}");
+        let sources: &[&str] = &[source.as_str()];
+        let mut err = CL_SUCCESS;
+        let program = unsafe {
+            clCreateProgramWithSource(
+                context,
+                1,
+                sources.as_ptr().cast(),
+                &[source.len()] as *const usize,
+                &mut err,
+            )
+        };
+        if err != CL_SUCCESS {
+            return Err(match err {
+                -34 => CompilerError::GeneralExecutionError("Unable to compile program. ERR -34: CL_INVALID_CONTEXT"),
+                -30 => CompilerError::GeneralExecutionError("Unable to compile program. ERR -30: CL_INVALID_VALUE"),
+                -5 => CompilerError::GeneralExecutionError("Unable to compile program. ERR -5: CL_OUT_OF_RESOURCES"),
+                -6 => CompilerError::OutOfHostMemory("Unable to compile program. ERR -6: CL_OUT_OF_HOST_MEMORY"),
+                _ => CompilerError::GeneralExecutionError("Unable to compile program. UNKNOWN ERROR"),
+            })
+        };
+        let devices = devices.iter().copied().collect::<Vec<*mut c_void>>();
+        let err = unsafe {
+            clBuildProgram(
+                program,
+                devices.len() as cl_uint,
+                devices.as_ptr().cast(),
+                core::ffi::CStr::from_bytes_with_nul(b"-cl-fast-relaxed-math\0")
+                    .unwrap()
+                    .as_ptr()
+                    .cast(),
+                None,
+                ptr::null_mut(),
+            )
+        };
+        if err != CL_SUCCESS {
+            panic!("{}", String::from_utf8_lossy(&get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG).map_err(
+                |err| {
+                    match err {
+                        -33 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE"),
+                        -30 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE"),
+                        -44 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM"),
+                        -5 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES"),
+                        -6 => CompilerError::OutOfHostMemory("Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY"),
+                        _ => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. UNKNOWN ERROR"),
+                    }
+                }
+            )?));
+            /*return Err(ZyxError::CompileError(Box::new(f!(
+                "{err}\n{}",
+                String::from_utf8_lossy(
+                    &get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG).map_err(
+                        |err| {
+                            ZyxError::BackendError(match err {
+                                -33 => "Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE",
+                                -30 => "Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE",
+                                -44 => "Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM",
+                                -5 => "Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES",
+                                -6 => "Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                                _ => "Unable to get info about failed compilation. UNKNOWN ERROR",
+                            })
+                        }
+                    )?
+                ).into_owned()
+            ))));*/
+        }
+        Ok(Self {
+            name,
+            program,
+            global_work_size,
+            local_work_size,
+        })
     }
 }
 
@@ -538,7 +676,6 @@ fn get_program_build_data(
     get_vector(program, device, param_name, size)
 }
 
-#[cfg(feature = "debug1")]
 pub fn get_device_data(
     device: cl_device_id,
     param_name: opencl_sys::cl_device_info,

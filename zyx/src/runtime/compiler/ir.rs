@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 
 #[derive(Debug)]
 pub(super) struct IRKernel {
-    ops: Vec<IROp>,
+    pub(super) ops: Vec<IROp>,
 }
 
 /// IROp for direct translation to hardware kernels
@@ -23,7 +23,7 @@ pub(super) struct IRKernel {
 /// 1 - local
 /// 2 - register
 #[derive(Debug, Clone)]
-enum IROp {
+pub(super) enum IROp {
     // Global kernel argument load
     Load { buffer_id: TensorId, dtype: DType },
     // Global kerneL argument store
@@ -164,9 +164,9 @@ pub(crate) fn tiled_to_ir(
             }
         }
     }
-    // End global loops
+    // End global and local loops
     for kernel in kernels.values_mut() {
-        for _ in 0..3 {
+        for _ in 0..6 {
             kernel.ops.push(IROp::EndLoop);
         }
     }

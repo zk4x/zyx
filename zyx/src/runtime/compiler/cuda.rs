@@ -15,7 +15,7 @@ impl Compiler for CUDA {
         ));
     }
 
-    fn hwinfo(&mut self) -> Result<HWInfo, CompilerError> {
+    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
         todo!()
     }
 

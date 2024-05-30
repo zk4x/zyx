@@ -19,7 +19,7 @@ trait Compiler: Sized {
     type Buffer;
     type Program;
     fn initialize() -> Result<Self, CompilerError>;
-    fn hwinfo(&mut self) -> Result<HWInfo, CompilerError>;
+    fn hardware_information(&mut self) -> Result<crate::runtime::compiler::HWInfo, crate::runtime::compiler::CompilerError>;
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError>;
     fn store_memory<T: Scalar>(
         &mut self,
@@ -101,7 +101,7 @@ impl<C: Compiler> CompiledBackend<C> {
     pub(super) fn initialize() -> Result<Self, CompilerError> {
         let mut compiler = C::initialize()?;
         Ok(Self {
-            hwinfo: compiler.hwinfo()?,
+            hwinfo: compiler.hardware_information()?,
             compiler,
             buffers: BTreeMap::new(),
             compiled_graphs: BTreeMap::new(),
@@ -147,7 +147,7 @@ impl<C: Compiler> CompiledBackend<C> {
     /// Compiles and caches graph
     pub(super) fn compile_graph(
         &mut self,
-        graph: Subgraph,
+        mut graph: Subgraph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
         //println!("{subgraph:?}");
@@ -156,15 +156,24 @@ impl<C: Compiler> CompiledBackend<C> {
         let rcs = calculate_graph_rcs(&graph, &to_eval);
         let order = calculate_graph_execution_order(&graph, &to_eval, &rcs);
 
-        // First reorder nodes in such a way, that movement ops are as late as possible,
+        // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
-        // Permutes after reduce ops can be also moved before reduce ops!
+        let mut node_swap = true;
+        while node_swap {
+            node_swap = false;
+            for nid in order.iter().take(order.len()-1) {
+                if graph.nodes[nid].is_movement() && graph.nodes[&(nid+1)].is_unary() {
+                    graph.swap_nodes(*nid, nid+1);
+                    node_swap = true;
+                }
+            }
+        }
 
         // Global work sizes are known as the shapes of the reduce kernels!
 
         let mut tiles = BTreeMap::new();
 
-        println!("Order: {order:?}");
+        //println!("Order: {order:?}");
 
         for nid in order.iter().copied() {
             //std::println!("{:?}", nodes[nid.i()]);
