@@ -1,7 +1,9 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec;
+use alloc::{format, vec};
 use alloc::vec::Vec;
+use core::fmt::Formatter;
+use core::fmt::Display;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Dimension {
@@ -30,7 +32,7 @@ struct Dimension {
 pub struct View {
     shapes: Vec<Vec<Dimension>>,
     // TODO perhaps binds for each shape in shapes? But probably not.
-    binds: Vec<usize>,
+    //binds: Vec<usize>,
 }
 
 impl View {
@@ -55,7 +57,7 @@ impl View {
             .collect();
         first_shape.reverse();
         Self {
-            binds: alloc::vec![0; first_shape.len()],
+            //binds: alloc::vec![0; first_shape.len()],
             shapes: alloc::vec![first_shape],
         }
     }
@@ -139,8 +141,34 @@ impl View {
         debug_assert!(shape.len() > 0);
         debug_assert_eq!(self.numel(), shape.iter().product());
         if self.shape() == *shape {
-            return;
+            return
         }
+        let mut new_stride = 1;
+        let mut new_shape: Vec<Dimension> = shape
+            .iter()
+            .copied()
+            .rev()
+            .map(|size| {
+                let stride = new_stride;
+                new_stride *= size;
+                Dimension {
+                    size,
+                    stride,
+                    len: size,
+                    shift: size,
+                }
+            })
+            .collect();
+        new_shape.reverse();
+        if self.is_last_shape_contiguous() {
+            // Merge contiguous shape
+            //libc_print::libc_println!("{:?}", new_shape);
+            self.shapes[0] = new_shape.clone();
+            return
+        }
+
+        //libc_print::libc_println!("Reshaping {:?} to {:?}", self.shape(), shape);
+
         // TODO perhaps we can merge more shapes with the previous shape
 
         // TODO perhaps merge reshapes joining dimensions
@@ -155,7 +183,7 @@ impl View {
             // Iterate in reverse
             for dim in shape.iter().copied().rev() {
                 if dim == self.shapes[0][di].size {
-                    new_binds.insert(0, self.binds[di]);
+                    //new_binds.insert(0, self.binds[di]);
                     new_shape.insert(0, self.shapes[0][di]);
                     if di > 0 {
                         di -= 1;
@@ -190,72 +218,52 @@ impl View {
             }
         }
 
-        // TODO Merge squeeze
-        /*if sh.rank() < self.shapes[0].len() {
-            let mut merge_possible = true;
-            let mut new_shape = Vec::new();
-            let mut new_binds = self.binds.clone();
-            let mut i = sh.rank();
-            for dim in self.shapes[0].iter().rev() {
-                if dim.size != 1 {
-                    if dim.size != sh[i] {
-                        merge_possible = false;
-                        break;
-                    } else {
-                        new_shape.insert(0, *dim);
-                        i -= 1;
-                    }
-                } else {
-                    if dim.size == sh[i] {
-                        new_shape.insert(0, *dim);
-                        i -= 1;
-                    } else {
-                        new_binds.remove(i);
-                    }
-                }
-            }
-            if merge_possible {
-                self.shapes[0] = new_shape;
-                return
-            }
-        }*/
-
-        let mut new_stride = 1;
-        let mut new_shape: Vec<Dimension> = shape
-            .iter()
-            .copied()
-            .rev()
-            .map(|size| {
-                let stride = new_stride;
-                new_stride *= size;
-                Dimension {
-                    size,
-                    stride,
-                    len: size,
-                    shift: size,
-                }
-            })
-            .collect();
-        new_shape.reverse();
-        // TODO fix binds
-        let binds = vec![0; new_shape.len()];
-        if self.is_last_shape_contiguous() {
-            // Merge contiguous shape
-            self.shapes[0] = new_shape;
-        } else {
-            self.shapes.insert(0, new_shape);
-        }
+        self.shapes.insert(0, new_shape);
     }
 
     /// Bind index id to dimension, this is used for index names when generating indexes
-    /// for buffers in kernels (cidx function). Overwrites previous binds if any.
-    pub fn bind(&mut self, index: usize, dim: usize) {
-        self.binds[dim] = index;
+    /// for buffers in kernels (ir_index function). Overwrites previous binds if any.
+    //pub fn bind(&mut self, index: usize, dim: usize) {
+        //self.binds[dim] = index;
+    //}
+
+    /// This assumes that self is 3d view.
+    /// It calculates optimal local dimensions and reshapes view to 6d (3 global and 3 local
+    /// dimensions)
+    /// Result has shape:
+    /// gws0, lws0, gws1, lws1, gws2, lws2
+    pub(crate) fn optimize_local(&mut self, max_local_work_size: usize) {
+        let mut total = 1;
+        let mut dims = [0; 6];
+        let mut i = 0;
+        libc_print::libc_println!("Optimize local {:?}", self.shape());
+        //libc_print::libc_println!("max lws {:?}", max_local_work_size);
+        for dim in &self.shapes[0] {
+            let mut n = 1;
+            while dim.size % (n*2) == 0 && total*n < max_local_work_size {
+                n *= 2;
+            }
+            total *= n;
+            dims[i] = dim.size/n;
+            i += 1;
+            dims[i] = n;
+            i += 1;
+        }
+        libc_print::libc_println!("to {:?}", dims);
+        self.reshape(&dims);
     }
 
     /// Get index from this view, using bound indices, this function panics if some dimensions
     /// don't have bound indices.
-    pub fn cidx(&self) -> Index {
+    /// Binds are indices into this dimension
+    pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
+        libc_print::libc_println!("{self:?}");
+        if self.is_contiguous() {
+            return Index::Contiguous {
+                dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
+                //padding_condition: String::new(),
+            }
+        }
         todo!()
     }
 }
@@ -264,7 +272,7 @@ impl View {
 // multipliers and extract them out.
 
 /// Virtual representation of index into
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Index {
     /// Expanded and/or padded
     /// Pairs of index id and multiplier.
@@ -272,8 +280,8 @@ pub enum Index {
     Contiguous {
         /// Dimension and multiplier
         dims: BTreeMap<u32, usize>,
-        /// When should the padding get applied?
-        padding_condition: String,
+        // When should the padding get applied?
+        //padding_condition: String,
     },
     /// Expanded and/or permuted
     /// Pairs of index id and multiplier.
@@ -281,8 +289,8 @@ pub enum Index {
     Strided {
         /// Dimension and multiplier
         dims: BTreeMap<u32, usize>,
-        /// When should the padding get applied?
-        padding_condition: String,
+        // When should the padding get applied?
+        //padding_condition: String,
     },
     /// Expanded, permuted, reshaped and/or padded
     /// Only if reshape could not be merged.
@@ -294,8 +302,21 @@ pub enum Index {
     },
 }
 
-#[cfg(feature = "std")]
-use std::println;
+impl Display for Index {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Index::Contiguous { dims } | Index::Strided { dims } => {
+                let mut res = String::new();
+                for (id, mul) in dims {
+                    res += &format!("idx{id}*{mul}+");
+                }
+                res.pop();
+                return f.write_str(&res)
+            },
+            Index::Reshaped { .. } => todo!(),
+        }
+    }
+}
 
 #[test]
 fn test_unsqueeze() {

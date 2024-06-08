@@ -7,6 +7,7 @@ use crate::DType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt::{Display, Formatter};
 
 use libc_print::std_name::println;
 
@@ -15,11 +16,21 @@ mod ir;
 pub(super) mod opencl;
 pub(super) mod wgpu;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Scope {
     Global,
     Local,
     Register,
+}
+
+impl Display for Scope {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Global => "g",
+            Self::Local => "l",
+            Self::Register => "r",
+        })
+    }
 }
 
 trait Compiler: Sized {
@@ -45,7 +56,7 @@ trait Compiler: Sized {
         program: &Self::Program,
         args: &[&mut Self::Buffer],
     ) -> Result<(), CompilerError>;
-    fn release_program(&mut self, program: Self::Program);
+    fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError>;
 }
 
 pub(super) struct CompiledBackend<C: Compiler> {
@@ -161,7 +172,7 @@ impl<C: Compiler> CompiledBackend<C> {
         //println!("{hw_info:?}");
         // Find the best order of execution of nodes
         let rcs = calculate_graph_rcs(&graph, &to_eval);
-        let order = calculate_graph_execution_order(&graph, &to_eval, &rcs);
+        let mut order = calculate_graph_execution_order(&graph, &to_eval, &rcs);
 
         // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
@@ -190,6 +201,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 tiles.insert(
                     nid,
                     Tile {
+                        args: BTreeSet::new(),
                         view: View::from(&graph.shape(nid)),
                         dtype,
                         first_op: FirstOp::Load { dtype, buffer_id: nid },
@@ -211,6 +223,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
                 Node::Add { x, y } => {
                     let tile = Tile {
+                        args: BTreeSet::from([x, y]),
                         view: View::from(&graph.shape(nid)),
                         dtype: graph.dtype(nid),
                         first_op: FirstOp::Binary {
@@ -226,6 +239,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 Node::Reshape { x, shape_id } => match &tiles[&x].first_op {
                     FirstOp::Reduce { .. } => {
                         let tile = Tile {
+                            args: BTreeSet::from([x]),
                             view: View::from(graph._shape(shape_id)),
                             dtype: graph.dtype(nid),
                             first_op: FirstOp::Movement { x },
@@ -244,6 +258,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     let mut view = View::from(&graph.shape(x));
                     view.expand(graph._shape(shape_id));
                     let tile = Tile {
+                        args: BTreeSet::from([x]),
                         view,
                         dtype: graph.dtype(nid),
                         first_op: FirstOp::Movement { x },
@@ -267,6 +282,7 @@ impl<C: Compiler> CompiledBackend<C> {
                             let mut view = View::from(&graph.shape(x));
                             view.pad(padding);
                             let tile = Tile {
+                                args: BTreeSet::from([x]),
                                 view,
                                 dtype: graph.dtype(nid),
                                 first_op: FirstOp::Movement { x },
@@ -288,6 +304,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     shape_id,
                 } => {
                     let tile = Tile {
+                        args: BTreeSet::from([x]),
                         view: View::from(graph._shape(shape_id)),
                         dtype: graph.dtype(nid),
                         first_op: FirstOp::Reduce {
@@ -307,10 +324,19 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
-        // Print AST
-        /*for tile in &tiles {
-            std::println!("{tile:?}");
-        }*/
+        // Find which kernels are absolutely necessary for evaluation of to_eval
+        // and delete the rest.
+        // I.e. remove fused ids (first round of fusion, unary ops get fused)
+        //println!("To eval: {to_eval:?}");
+        let mut required_kernel_ids = to_eval.clone();
+        let mut params = to_eval.clone();
+        while let Some(id) = params.pop_last() {
+            params.extend(tiles[&id].args.iter());
+            required_kernel_ids.extend(tiles[&id].args.iter());
+        }
+        //println!("Required kernel_ids: {required_kernel_ids:?}");
+        tiles.retain(|id, _| required_kernel_ids.contains(id));
+        order.retain(|id| required_kernel_ids.contains(id));
 
         // Reshape and permute tiles to use exactly work 3 dimensions
         // and at most single reduce loop over the last dimension>
@@ -417,7 +443,13 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
-        // Rewrite tiled representation to looped representation
+        // Find optimal local work sizes and reshape tiles appropriatelly
+        for (id, tile) in &mut tiles {
+            println!("Kernels: {id}");
+            tile.view.optimize_local(self.hwinfo.max_work_group_size);
+        }
+
+        // Rewrite tiled representation to ir representation
         let mut ir_kernels = ir::tiled_to_ir(tiles, &order, &self.hwinfo);
 
         let mut programs = BTreeMap::new();
@@ -435,12 +467,7 @@ impl<C: Compiler> CompiledBackend<C> {
         // that is closed by reduce tile (i.e. we know that there is a reduce tile)
 
         // Kernel
-        /*let mut kernel = VirtKernel {
-            indices: vec![],
-            mems: vec![],
-            instructions: vec![],
-        };
-
+        /*
         Ok(CompiledGraph {
             args: vec![],
             program: self.compiler.compile_program(&kernel)?,
@@ -539,6 +566,7 @@ enum BOp {
 
 #[derive(Debug, Clone)]
 struct Tile {
+    args: BTreeSet<TensorId>, // which tensors need to be evaluated before this
     pub(crate) view: View,
     dtype: DType,
     pub(crate) first_op: FirstOp,

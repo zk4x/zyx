@@ -1,6 +1,6 @@
-use crate::runtime::compiler::ir::{IRKernel, IROp, IdxBOp};
+use crate::runtime::compiler::ir::{IRKernel, IROp, IRKernelArg};
 use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
-use crate::Scalar;
+use crate::{DType, Scalar};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::ffi::CString;
@@ -9,10 +9,39 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
-use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateProgramWithSource, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES, CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_NOT_FOUND, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clReleaseProgram, clCreateKernel, clSetKernelArg, clEnqueueNDRangeKernel};
+use opencl_sys::{
+    clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
+    clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
+    clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent,
+    clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id,
+    cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_GLOBAL_MEM_SIZE,
+    CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE,
+    CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES,
+    CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_NOT_FOUND,
+    CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING,
+    CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
+};
 
 //#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
+
+impl DType {
+    fn ocl(&self) -> &str {
+        match self {
+            DType::BF16 => "TODO",
+            DType::F16 => "half",
+            DType::F32 => "float",
+            DType::F64 => "double",
+            DType::CF32 => "TODO",
+            DType::CF64 => "TODO",
+            DType::U8 => "unsigned char",
+            DType::I8 => "char",
+            DType::I16 => "short",
+            DType::I32 => "int",
+            DType::I64 => "long",
+        }
+    }
+}
 
 pub(super) struct OpenCLBuffer {
     memory: *mut c_void,
@@ -518,31 +547,31 @@ impl Compiler for OpenCLCompiler {
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
         //println!("Compiling IRKernel: {kernel:#?}");
 
-        // Create list of kernel arguments
-        let mut kernel_args = BTreeMap::new();
-        for op in &kernel.ops {
-            match op {
-                IROp::InitMem {
-                    id,
-                    scope,
-                    dtype,
-                    read_only,
-                    ..
-                } => {
-                    if matches!(scope, Scope::Global) {
-                        kernel_args.insert(id, (dtype, read_only));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
-
-        let mut source = String::new();
+        let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
+        // Transpile kernel args
+        for (id, IRKernelArg { dtype, read_only }) in kernel.args.iter().enumerate() {
+            source += &f!(
+                "{indent}__global {}{}* gmem{id},\n",
+                if *read_only { "const " } else { "" },
+                dtype.ocl()
+            );
+        }
+
+        source.pop();
+        source.pop();
+        source += "\n) {\n";
+
+        // Add indices for global and local loops
+        source += "  unsigned int idx0 = get_group_id(0);\n";
+        source += "  unsigned int idx1 = get_local_id(0);\n";
+        source += "  unsigned int idx2 = get_group_id(1);\n";
+        source += "  unsigned int idx3 = get_local_id(1);\n";
+        source += "  unsigned int idx4 = get_group_id(2);\n";
+        source += "  unsigned int idx5 = get_local_id(2);\n";
+
+        // Transpile kernel ops, skip ends of global and local loops
         for op in &kernel.ops {
             match op {
                 IROp::InitMem {
@@ -551,68 +580,64 @@ impl Compiler for OpenCLCompiler {
                     read_only,
                     len,
                     dtype,
-                } => {
-                    source += &f!(
-                        "{indent}{dtype} {}mem{id}{}{};\n",
-                        match scope {
-                            Scope::Global => "g",
-                            Scope::Local => "l",
-                            Scope::Register => "r",
-                        },
-                        if *len > 1 { &f!("[{len}]") } else { "" }
-                    );
-                }
+                } => match scope {
+                    Scope::Global => {}
+                    Scope::Local => todo!(),
+                    Scope::Register => {
+                        let read_only = if *read_only { "const " } else { "" };
+                        let size = if *len > 1 {
+                            f!("[{len}]")
+                        } else {
+                            String::new()
+                        };
+                        source += &f!(
+                            "{indent}{read_only}{} {}mem{id}{};\n",
+                            dtype.ocl(),
+                            match scope {
+                                Scope::Global => "g",
+                                Scope::Local => "l",
+                                Scope::Register => "r",
+                            },
+                            size,
+                        );
+                    }
+                },
                 IROp::AssignMem { z, x } => {
-                    source += &f!("{indent} {z} = {x};\n");
+                    source += &f!("{indent}{z} = {x};\n");
                 }
                 IROp::UnaryMem { z, x, op } => {
-                    source += &f!("{indent} {z} = {}{x}{});\n", match op {
-                        UOp::Cast(dtype) => &f!("({dtype})("),
-                        UOp::Inv => "1/(",
-                        UOp::Neg => "-(",
-                        UOp::Sin => "sin(",
-                        UOp::Cos => "cos(",
-                        UOp::Exp => "exp(",
-                        UOp::Ln => "log(",
-                        UOp::Sqrt => "sqrt(",
-                    });
+                    source += &f!(
+                        "{indent}{z} = {}{x});\n",
+                        match op {
+                            UOp::Cast(dtype) => f!("({})(", dtype.ocl()),
+                            UOp::Inv => String::from("1/("),
+                            UOp::Neg => String::from("-("),
+                            UOp::Sin => String::from("sin("),
+                            UOp::Cos => String::from("cos("),
+                            UOp::Exp => String::from("exp("),
+                            UOp::Ln => String::from("log("),
+                            UOp::Sqrt => String::from("sqrt("),
+                        }
+                    );
                 }
                 IROp::BinaryMem { z, x, y, op } => {
-                    source += &f!("{indent} {z} = {};\n", match op {
-                        BOp::Add => &f!("{x}+{y}"),
-                        BOp::Sub => &f!("{x}-{y}"),
-                        BOp::Mul => &f!("{x}*{y}"),
-                        BOp::Div => &f!("{x}/{y}"),
-                        BOp::Pow => &f!("powf({x}, {y})"),
-                        BOp::Max => &f!("max({x}, {y})"),
-                        BOp::Cmplt => &f!("{x}<{y}"),
-                    });
-                }
-                IROp::InitIdx { id, value } => {
-                    source += &f!("{indent} unsigned int idx{id} = {value}\n");
-                }
-                IROp::BinaryIdx { z, x, y, op } => {
-                    source += &f!("{indent} {z} = {};\n", match op {
-                        IdxBOp::Add => &f!("{x}+{y}"),
-                        IdxBOp::Mul => &f!("{x}*{y}"),
-                        IdxBOp::Div => &f!("{x}/{y}"),
-                        IdxBOp::Mod => &f!("{x}%{y}"),
-                    });
-                }
-                IROp::Loop { id, max, scope } => {
-                    match scope {
-                        Scope::Global => {
-                            global_work_size[id] = max;
+                    source += &f!(
+                        "{indent}{z} = {};\n",
+                        match op {
+                            BOp::Add => f!("{x}+{y}"),
+                            BOp::Sub => f!("{x}-{y}"),
+                            BOp::Mul => f!("{x}*{y}"),
+                            BOp::Div => f!("{x}/{y}"),
+                            BOp::Pow => f!("powf({x}, {y})"),
+                            BOp::Max => f!("max({x}, {y})"),
+                            BOp::Cmplt => f!("{x}<{y}"),
                         }
-                        Scope::Local => {
-                            local_work_size[id] = max;
-                        }
-                        Scope::Register => {
-                            source += &f!("{indent}for (; {id} < {max}; {id}++) {{\n");
-                            indent += "  ";
-                        }
-                    }
+                    );
                 }
+                IROp::Loop { id, max } => {
+                    source += &f!("{indent}for (; {id} < {max}; {id}++) {{\n");
+                    indent += "  ";
+                },
                 IROp::EndLoop => {
                     indent.pop();
                     indent.pop();
@@ -621,12 +646,14 @@ impl Compiler for OpenCLCompiler {
             }
         }
 
+        source += "}";
+
         return OpenCLProgram::compile_from_source(
             &source,
             self.context,
             &self.devices,
-            global_work_size,
-            local_work_size,
+            kernel.global_work_size,
+            kernel.local_work_size,
         );
     }
 
@@ -635,8 +662,8 @@ impl Compiler for OpenCLCompiler {
         program: &Self::Program,
         args: &[&mut Self::Buffer],
     ) -> Result<(), CompilerError> {
-        #[cfg(not(feature = "debug1"))]
-        let (_, _) = (flop, bytes);
+        //#[cfg(not(feature = "debug1"))]
+        //let (_, _) = (flop, bytes);
         let program_name = &CString::new(program.name.clone()).unwrap();
         let mut status = CL_SUCCESS;
         let kernel =
@@ -756,14 +783,18 @@ impl Compiler for OpenCLCompiler {
         let status = unsafe { clReleaseProgram(program.program) };
         if status != CL_SUCCESS {
             return Err(match status {
-                -44 => CompilerError::GeneralExecutionError("Unable to release program. ERR -44: CL_INVALID_PROGRAM"),
+                -44 => CompilerError::GeneralExecutionError(
+                    "Unable to release program. ERR -44: CL_INVALID_PROGRAM",
+                ),
                 -5 => CompilerError::GeneralExecutionError(
                     "Unable to release program. ERR -5: CL_OUT_OF_RESOURCES",
                 ),
                 -6 => CompilerError::OutOfHostMemory(
                     "Unable to release program. ERR -6: CL_OUT_OF_HOST_MEMORY",
                 ),
-                _ => CompilerError::GeneralExecutionError("Unable to release program. UNKNOWN ERROR"),
+                _ => {
+                    CompilerError::GeneralExecutionError("Unable to release program. UNKNOWN ERROR")
+                }
             });
         }
         Ok(())
@@ -778,18 +809,13 @@ impl OpenCLProgram {
         global_work_size: [usize; 3],
         local_work_size: [usize; 3],
     ) -> Result<Self, CompilerError> {
-        let name = f!(
-            "k__{}__{}",
-            global_work_size
-                .iter()
-                .map(|x| f!("{x}"))
-                .collect::<Vec<_>>()
-                .join("_"),
-            local_work_size
-                .iter()
-                .map(|x| f!("{x}"))
-                .collect::<Vec<_>>()
-                .join("_"),
+        let name = f!("k__{}_{}__{}_{}__{}_{}",
+            global_work_size[0],
+            local_work_size[0],
+            global_work_size[1],
+            local_work_size[1],
+            global_work_size[2],
+            local_work_size[2],
         );
         let mut pragma = f!("");
         if source.contains("double") {

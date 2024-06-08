@@ -52,7 +52,7 @@ impl Compiler for WGPU {
         todo!()
     }
 
-    fn release_program(&mut self, program: Self::Program) {
+    fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
         todo!()
     }
 }
