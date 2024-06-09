@@ -4,6 +4,8 @@ use alloc::{format, vec};
 use alloc::vec::Vec;
 use core::fmt::Formatter;
 use core::fmt::Display;
+use crate::runtime::compiler::HWInfo;
+use crate::Scalar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Dimension {
@@ -227,30 +229,68 @@ impl View {
         //self.binds[dim] = index;
     //}
 
-    /// This assumes that self is 3d view.
-    /// It calculates optimal local dimensions and reshapes view to 6d (3 global and 3 local
-    /// dimensions)
+    /// This assumes that self is 3d (element wise) or 4d view (reduce).
+    /// It calculates optimal local dimensions and reshapes view to 8d (3 global, 3 local
+    /// and 2 register dimensions) or 10d (if there is reduce)
     /// Result has shape:
-    /// gws0, lws0, gws1, lws1, gws2, lws2
-    pub(crate) fn optimize_local(&mut self, max_local_work_size: usize) {
+    /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2
+    /// or
+    /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
+    pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
+        //libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
+
+        // Optimize work size per thread
+        // Over all dimensions excluding first (batch) dimension.
+        // Each dimension is divided by the same value d. This can be later optimized
+        // for different wpt in each dimension.
+        // Current (year 2024) gpus have a bit more than 64 registers.
+        // This is set by hwinfo.num_registers.
+        // On current devices d will be 8, which means 64 elements per thread in element
+        // wise kernels and 512 elements per thread in reduce kernels (with 64 element
+        // accumulator)
+        let s = &self.shapes[0];
+        let d = Scalar::sqrt(hwinfo.num_registers as i64) as usize;
+        let mut dims = [s[0].size, 1, s[1].size/d, 1, d, s[2].size/d, 1, d];
+
+        // Optimize local work size
+        // Local work will be over second and third dimensions, currently
+        // we will not make it over first dimension (usually batch dimension)
+        // or reduce dimension. This can be later changed for further optimizations.
+        // equally distribute max_local_work_size to dims[4] and dims[5]
+        let sqrt = Scalar::sqrt(hwinfo.max_work_group_size as i64) as usize;
         let mut total = 1;
-        let mut dims = [0; 6];
-        let mut i = 0;
-        libc_print::libc_println!("Optimize local {:?}", self.shape());
-        //libc_print::libc_println!("max lws {:?}", max_local_work_size);
-        for dim in &self.shapes[0] {
-            let mut n = 1;
-            while dim.size % (n*2) == 0 && total*n < max_local_work_size {
-                n *= 2;
-            }
-            total *= n;
-            dims[i] = dim.size/n;
-            i += 1;
-            dims[i] = n;
-            i += 1;
+        let mut n = 1;
+        while dims[2] % (n*2) == 0 && n*2 <= sqrt {
+            n *= 2;
         }
-        libc_print::libc_println!("to {:?}", dims);
-        self.reshape(&dims);
+        dims[2] /= n;
+        dims[3] *= n;
+        total *= n;
+        // put the rest into third dimension
+        let mut n = 1;
+        while dims[5] % (n*2) == 0 && n*2*total <= hwinfo.max_work_group_size {
+            n *= 2;
+        }
+        dims[5] /= n;
+        dims[6] *= n;
+        total *= n;
+        // if third dimension was too small, put the rest into second dimension
+        let mut n = 1;
+        while dims[2] % (n*2) == 0 && n*2*total <= hwinfo.max_work_group_size {
+            n *= 2;
+        }
+        dims[2] /= n;
+        dims[3] *= n;
+
+        if self.len() == 4 {
+            // if reduce
+            let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
+            //libc_print::libc_println!("to {:?}", dims);
+            self.reshape(&dims);
+        } else {
+            //libc_print::libc_println!("to {:?}", dims);
+            self.reshape(&dims);
+        }
     }
 
     /// Get index from this view, using bound indices, this function panics if some dimensions

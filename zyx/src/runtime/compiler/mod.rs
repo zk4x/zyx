@@ -179,9 +179,9 @@ impl<C: Compiler> CompiledBackend<C> {
         let mut node_swap = true;
         while node_swap {
             node_swap = false;
-            for nid in order.iter().take(order.len()-1) {
-                if graph.nodes[nid].is_movement() && graph.nodes[&(nid+1)].is_unary() {
-                    graph.swap_nodes(*nid, nid+1);
+            for nid in order.iter().take(order.len() - 1) {
+                if graph.nodes[nid].is_movement() && graph.nodes[&(nid + 1)].is_unary() {
+                    graph.swap_nodes(*nid, nid + 1);
                     node_swap = true;
                 }
             }
@@ -204,7 +204,10 @@ impl<C: Compiler> CompiledBackend<C> {
                         args: BTreeSet::new(),
                         view: View::from(&graph.shape(nid)),
                         dtype,
-                        first_op: FirstOp::Load { dtype, buffer_id: nid },
+                        first_op: FirstOp::Load {
+                            dtype,
+                            buffer_id: nid,
+                        },
                         ops: Vec::new(),
                         can_be_fused: rcs[&nid] < 2,
                     },
@@ -226,11 +229,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         args: BTreeSet::from([x, y]),
                         view: View::from(&graph.shape(nid)),
                         dtype: graph.dtype(nid),
-                        first_op: FirstOp::Binary {
-                            x,
-                            y,
-                            op: BOp::Add,
-                        },
+                        first_op: FirstOp::Binary { x, y, op: BOp::Add },
                         ops: vec![],
                         can_be_fused: rcs[&nid] < 2,
                     };
@@ -443,10 +442,11 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
-        // Find optimal local work sizes and reshape tiles appropriatelly
+        // Find optimal local work sizes and reshape tiles appropriately
         for (id, tile) in &mut tiles {
             println!("Kernels: {id}");
-            tile.view.optimize_local(self.hwinfo.max_work_group_size);
+            tile.view
+                .optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
         }
 
         // Rewrite tiled representation to ir representation
@@ -510,7 +510,7 @@ fn calculate_graph_rcs(
             });
     }
     println!("Temp: {visited_rcs:?}");
-    return visited_rcs
+    return visited_rcs;
 }
 
 fn calculate_graph_execution_order(
@@ -537,7 +537,7 @@ fn calculate_graph_execution_order(
         }
     }
     order.reverse();
-    return order
+    return order;
 }
 
 // Includes Noop for copying between tiles of various scopes
