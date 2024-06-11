@@ -47,7 +47,7 @@ impl Compiler for WGPU {
     fn launch_program(
         &mut self,
         program: &Self::Program,
-        args: &[&mut Self::Buffer],
+        args: &mut [Self::Buffer],
     ) -> Result<(), CompilerError> {
         todo!()
     }

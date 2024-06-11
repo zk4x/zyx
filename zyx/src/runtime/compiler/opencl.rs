@@ -2,7 +2,7 @@ use crate::runtime::compiler::ir::{IRKernel, IROp, IRKernelArg};
 use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::{DType, Scalar};
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::{BTreeSet};
 use alloc::ffi::CString;
 use alloc::format as f;
 use alloc::string::String;
@@ -21,9 +21,6 @@ use opencl_sys::{
     CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING,
     CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
-
-//#[cfg(feature = "debug1")]
-use libc_print::std_name::println;
 
 impl DType {
     fn ocl(&self) -> &str {
@@ -145,7 +142,7 @@ impl Compiler for OpenCLCompiler {
         };
         let platform = *platform;
         #[cfg(feature = "debug1")]
-        println!(
+        libc_print::libc_println!(
             "Using OpenCL platform: {}",
             String::from_utf8(
                 get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME).map_err(|err| {
@@ -171,10 +168,10 @@ impl Compiler for OpenCLCompiler {
             })
         })?;
         #[cfg(feature = "debug1")]
-        println!("Using devices:");
+        libc_print::libc_println!("Using devices:");
         #[cfg(feature = "debug1")]
         for dev in &device_ids {
-            println!(
+            libc_print::libc_println!(
                 "{}",
                 String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(
                     |err| {
@@ -219,7 +216,7 @@ impl Compiler for OpenCLCompiler {
         // be plenty. And lower values also lower memory usage.
         //device_ids.iter().map(|dev| get_device_info(*dev, CL_DEVICE_MAX_ON_DEVICE_QUEUES)?.into()).min()?;
         #[cfg(feature = "debug1")]
-        println!("Using {queues_per_device} queues per device.");
+        libc_print::libc_println!("Using {queues_per_device} queues per device.");
         let (queues, errs): (Vec<*mut c_void>, Vec<cl_int>) = (0..queues_per_device)
             .flat_map(|_| {
                 device_ids.iter().map(move |dev| {
@@ -256,6 +253,7 @@ impl Compiler for OpenCLCompiler {
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
         let dev = *self.devices.first().unwrap();
+        // TODO get max work item sizes by somehow converting Vec<u8> into Vec<usize>
         let max_work_item_dims = u32::from_ne_bytes(
             get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)
                 .unwrap()
@@ -263,6 +261,7 @@ impl Compiler for OpenCLCompiler {
                 .unwrap(),
         ) as usize;
         let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES).unwrap();
+        libc_print::libc_println!("Max work item sizes: {mwis:?}");
         //let ptr: *const usize = unsafe { core::mem::transmute([mwis[0], mwis[1], mwis[2], mwis[3], mwis[4], mwis[5], mwis[6], mwis[7]]) };
         //let max_work_item_sizes = unsafe { core::slice::from_raw_parts::<usize>(ptr, max_work_item_dims) }.to_vec();
         let max_work_item_sizes = alloc::vec![256, 256, 256];
@@ -553,7 +552,7 @@ impl Compiler for OpenCLCompiler {
         // Transpile kernel args
         for (id, IRKernelArg { dtype, read_only }) in kernel.args.iter().enumerate() {
             source += &f!(
-                "{indent}__global {}{}* gmem{id},\n",
+                "{indent}__global {}{}* g{id},\n",
                 if *read_only { "const " } else { "" },
                 dtype.ocl()
             );
@@ -564,12 +563,12 @@ impl Compiler for OpenCLCompiler {
         source += "\n) {\n";
 
         // Add indices for global and local loops
-        source += "  unsigned int idx0 = get_group_id(0);\n";
-        source += "  unsigned int idx1 = get_local_id(0);\n";
-        source += "  unsigned int idx2 = get_group_id(1);\n";
-        source += "  unsigned int idx3 = get_local_id(1);\n";
-        source += "  unsigned int idx4 = get_group_id(2);\n";
-        source += "  unsigned int idx5 = get_local_id(2);\n";
+        source += "  unsigned int i0 = get_group_id(0);\n";
+        source += "  unsigned int i1 = get_local_id(0);\n";
+        source += "  unsigned int i2 = get_group_id(1);\n";
+        source += "  unsigned int i3 = get_local_id(1);\n";
+        source += "  unsigned int i5 = get_group_id(2);\n";
+        source += "  unsigned int i6 = get_local_id(2);\n";
 
         // Transpile kernel ops, skip ends of global and local loops
         for op in &kernel.ops {
@@ -591,7 +590,7 @@ impl Compiler for OpenCLCompiler {
                             String::new()
                         };
                         source += &f!(
-                            "{indent}{read_only}{} {}mem{id}{};\n",
+                            "{indent}{read_only}{} {}{id}{};\n",
                             dtype.ocl(),
                             match scope {
                                 Scope::Global => "g",
@@ -635,7 +634,7 @@ impl Compiler for OpenCLCompiler {
                     );
                 }
                 IROp::Loop { id, max } => {
-                    source += &f!("{indent}for (; {id} < {max}; {id}++) {{\n");
+                    source += &f!("{indent}for (unsigned int i{id}; i{id} < {max}; i{id}++) {{\n");
                     indent += "  ";
                 },
                 IROp::EndLoop => {
@@ -660,7 +659,7 @@ impl Compiler for OpenCLCompiler {
     fn launch_program(
         &mut self,
         program: &Self::Program,
-        args: &[&mut Self::Buffer],
+        args: &mut [Self::Buffer],
     ) -> Result<(), CompilerError> {
         //#[cfg(not(feature = "debug1"))]
         //let (_, _) = (flop, bytes);
@@ -823,7 +822,7 @@ impl OpenCLProgram {
         }
         let source = f!("{pragma}__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
-        println!("{source}");
+        libc_print::libc_println!("{source}");
         let sources: &[&str] = &[source.as_str()];
         let mut err = CL_SUCCESS;
         let program = unsafe {

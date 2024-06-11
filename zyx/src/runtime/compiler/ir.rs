@@ -10,7 +10,7 @@ use crate::DType;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt::{Display, Formatter, Write};
+use core::fmt::{Display, Formatter};
 use crate::runtime::view::{Index, View};
 
 #[derive(Debug)]
@@ -37,9 +37,9 @@ pub(super) struct IRMem {
 impl Display for IRMem {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         return if let Some(idx) = &self.index {
-            f.write_fmt(format_args!("{}mem{}[{idx}]", self.scope, self.id))
+            f.write_fmt(format_args!("{}{}[{idx}]", self.scope, self.id))
         } else {
-            f.write_fmt(format_args!("{}mem{}", self.scope, self.id))
+            f.write_fmt(format_args!("{}{}", self.scope, self.id))
         }
     }
 }
@@ -94,12 +94,11 @@ pub(crate) fn tiled_to_ir(
     tiles: BTreeMap<TensorId, Tile>,
     order: &[TensorId],
     hwinfo: &HWInfo,
-) -> BTreeMap<TensorId, IRKernel> {
+) -> BTreeMap<TensorId, (Vec<TensorId>, IRKernel)> {
     let mut kernels = BTreeMap::new();
 
-    // At this point every kernel is already 3d, reduce kernels are 4d, with last dim reduce
-
-    // First we write version with only global and register loops, without caching
+    // At this point every kernel is already 8d, reduce kernels are 10d, with last dim reduce
+    // and added local loops for first 3 dims and register loops for last 2 dims and reduce dim
 
     for nid in order {
         match tiles[nid].first_op {
@@ -125,11 +124,11 @@ pub(crate) fn tiled_to_ir(
                         x: IRMem {
                             id: 0,
                             scope: Scope::Global,
-                            index: Some(tile.view.ir_index(&[0, 1, 2, 3, 4, 5])),
+                            index: Some(tile.view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
                         },
                     },
                 ];
-                // id for the last register value
+                // id for the last register variable
                 let mut id = 0;
                 for op in &tile.ops {
                     if let UOp::Cast(inner_dtype) = *op {
@@ -161,7 +160,7 @@ pub(crate) fn tiled_to_ir(
                 // store result to global
                 ops.push(IROp::AssignMem {
                     z: IRMem {
-                        id: id + 1,
+                        id: 1,
                         scope: Scope::Global,
                         index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5]]).ir_index(&[0, 1, 2, 3, 4, 5])),
                     },
@@ -171,12 +170,12 @@ pub(crate) fn tiled_to_ir(
                         index: None,
                     },
                 });
-                kernels.insert(*nid, IRKernel {
-                    global_work_size: [sh[0], sh[2], sh[4]],
-                    local_work_size: [sh[1], sh[3], sh[5]],
+                kernels.insert(*nid, (vec![buffer_id, *nid], IRKernel {
+                    global_work_size: [sh[0], sh[2], sh[5]],
+                    local_work_size: [sh[1], sh[3], sh[6]],
                     args: vec![IRKernelArg { dtype: first_dtype, read_only: true }, IRKernelArg { dtype, read_only: false }],
                     ops
-                });
+                }));
             }
             // These tiled kernels can be fused with previous kernels if reduce and expand
             // kernels exist back to back (with some binary kernels in between and the final
@@ -191,9 +190,9 @@ pub(crate) fn tiled_to_ir(
                 let sh = tile.view.shape();
                 // Add ops from input tiles
                 // Copy directly from tile_x
-                let mut ops = kernel_x.ops.clone();
-                let n = ops.len() - 3; // 3 is the number of loops in kernel_y that are removed
-                                             // Reindex ops from tile_y
+                //let mut ops = kernel_x.ops.clone();
+                //let n = ops.len() - 3; // 3 is the number of loops in kernel_y that are removed
+                                         // Reindex ops from tile_y
                 /*for op in &kernel_y.ops {
                     match op {
                         IROp::Movement { x, scope, view } => {
@@ -236,7 +235,13 @@ pub(crate) fn tiled_to_ir(
         }
     }
 
-    // TODO optimize ir_kernels using memory tiling and such
+    // add register loops (for more work per thread)
+    for (_, (_, kernel)) in &mut kernels {
+        kernel.ops.insert(0, IROp::Loop { id: 4, max: 1 });
+        kernel.ops.insert(1, IROp::Loop { id: 7, max: 1 });
+        kernel.ops.push(IROp::EndLoop);
+        kernel.ops.push(IROp::EndLoop);
+    }
 
     kernels
 }

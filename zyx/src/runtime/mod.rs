@@ -130,6 +130,7 @@ impl Graph {
     }
 }
 
+#[derive(Clone)]
 struct Subgraph<'a> {
     nodes: BTreeMap<TensorId, Node>,
     shapes: &'a [usize],
@@ -552,15 +553,21 @@ impl Runtime {
             nodes: subgraph,
         };
         match device {
-            Device::OpenCL => self.opencl.as_mut().unwrap().compile_graph(graph, tensors)?,
+            Device::OpenCL => {
+                self.opencl.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.opencl.as_mut().unwrap().launch_graph(&graph.nodes)?;
+            },
             Device::CUDA => {
-                todo!()
+                self.cuda.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.cuda.as_mut().unwrap().launch_graph(&graph.nodes)?;
             }
             Device::WGPU => {
-                todo!()
+                self.wgpu.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.wgpu.as_mut().unwrap().launch_graph(&graph.nodes)?;
             }
             Device::CPU => {
                 todo!()
+                //self.cpu.as_mut().unwrap().interpret_graph(&graph, tensors)?;
             }
         }
         return Ok(());

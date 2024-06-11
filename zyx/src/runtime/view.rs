@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::{format, vec};
+use alloc::format;
 use alloc::vec::Vec;
 use core::fmt::Formatter;
 use core::fmt::Display;
@@ -237,7 +237,7 @@ impl View {
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
     pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
-        //libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
+        libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
 
         // Optimize work size per thread
         // Over all dimensions excluding first (batch) dimension.
@@ -249,7 +249,8 @@ impl View {
         // wise kernels and 512 elements per thread in reduce kernels (with 64 element
         // accumulator)
         let s = &self.shapes[0];
-        let d = Scalar::sqrt(hwinfo.num_registers as i64) as usize;
+        //let d = Scalar::sqrt(hwinfo.num_registers as i64) as usize;
+        let d = 1;
         let mut dims = [s[0].size, 1, s[1].size/d, 1, d, s[2].size/d, 1, d];
 
         // Optimize local work size
@@ -282,13 +283,13 @@ impl View {
         dims[2] /= n;
         dims[3] *= n;
 
-        if self.len() == 4 {
+        if self.rank() == 4 {
             // if reduce
             let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
-            //libc_print::libc_println!("to {:?}", dims);
+            libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         } else {
-            //libc_print::libc_println!("to {:?}", dims);
+            libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         }
     }
@@ -297,7 +298,7 @@ impl View {
     /// don't have bound indices.
     /// Binds are indices into this dimension
     pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
-        libc_print::libc_println!("{self:?}");
+        //libc_print::libc_println!("{self:?}");
         if self.is_contiguous() {
             return Index::Contiguous {
                 dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
@@ -309,9 +310,12 @@ impl View {
 }
 
 // With this representation of index, we can find repeating
-// multipliers and extract them out.
+// multipliers and extract them out into common factors.
+// However this would be a bit of micro-optimization, as OpenCL, CUDA, WGPU
+// and most other compilers extract them automatically.
+// This will be needed if we want to directly generate SPIR or PTX IR.
 
-/// Virtual representation of index into
+/// Virtual representation of index into view
 #[derive(Debug, Clone)]
 pub enum Index {
     /// Expanded and/or padded
@@ -348,7 +352,7 @@ impl Display for Index {
             Index::Contiguous { dims } | Index::Strided { dims } => {
                 let mut res = String::new();
                 for (id, mul) in dims {
-                    res += &format!("idx{id}*{mul}+");
+                    res += &format!("i{id}*{mul}+");
                 }
                 res.pop();
                 return f.write_str(&res)

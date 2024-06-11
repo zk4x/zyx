@@ -54,7 +54,7 @@ trait Compiler: Sized {
     fn launch_program(
         &mut self,
         program: &Self::Program,
-        args: &[&mut Self::Buffer],
+        args: &mut [Self::Buffer],
     ) -> Result<(), CompilerError>;
     fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError>;
 }
@@ -68,8 +68,8 @@ pub(super) struct CompiledBackend<C: Compiler> {
 
 /// Compiled graph
 pub(super) struct CompiledGraph<Program> {
-    args: Vec<TensorId>,
-    program: Program,
+    // Ordered programs and arguments to them
+    programs: Vec<(Vec<TensorId>, Program)>,
     flop: usize,
     bytes: usize,
 }
@@ -165,9 +165,13 @@ impl<C: Compiler> CompiledBackend<C> {
     /// Compiles and caches graph
     pub(super) fn compile_graph(
         &mut self,
-        mut graph: Subgraph,
+        org_graph: &Subgraph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
+        if self.compiled_graphs.contains_key(&org_graph.nodes) {
+            return Ok(())
+        }
+        let mut graph = org_graph.clone();
         //println!("{subgraph:?}");
         //println!("{hw_info:?}");
         // Find the best order of execution of nodes
@@ -452,28 +456,29 @@ impl<C: Compiler> CompiledBackend<C> {
         // Rewrite tiled representation to ir representation
         let mut ir_kernels = ir::tiled_to_ir(tiles, &order, &self.hwinfo);
 
-        let mut programs = BTreeMap::new();
-        while let Some((id, ir_kernel)) = ir_kernels.pop_last() {
-            // Go backward from to_eval, compile those kernels and then compile all kernels
-            // that are used as arguments to those kernels.
-            // Search over
-            programs.insert(id, self.compiler.compile_program(&ir_kernel));
+        // Remove unnecessary ids from order (i.e. those kernels that were fused)
+        order.retain(|id| ir_kernels.contains_key(id));
+
+        let mut programs = Vec::new();
+        // TODO kernels can be compiled in parallel
+        while let Some((id, (args, ir_kernel))) = ir_kernels.pop_last() {
+            // Allocate memory for intermediate args and results
+            for arg in args.iter().copied() {
+                if !self.buffers.contains_key(&arg) {
+                    self.buffers.insert(arg, self.compiler.allocate_memory(graph.shape(arg).iter().product::<usize>()*graph.dtype(arg).byte_size())?);
+                }
+            }
+            // Compile kernel
+            programs.push((args, self.compiler.compile_program(&ir_kernel)?));
         }
-        panic!();
 
-        // Check work sizes (view.shapes) of tiles and add appropriate loops.
-        // Global (and local) work size is maximum shape of input and output (to_eval) tiles.
-        // Any tile expanded beyond this maximum size starts a reduce loops,
-        // that is closed by reduce tile (i.e. we know that there is a reduce tile)
-
-        // Kernel
-        /*
-        Ok(CompiledGraph {
-            args: vec![],
-            program: self.compiler.compile_program(&kernel)?,
+        self.compiled_graphs.insert(org_graph.nodes.clone(), CompiledGraph {
+            programs,
             flop: 0,
             bytes: 0,
-        })*/
+        });
+
+        Ok(())
     }
 
     pub(super) fn launch_graph(
@@ -481,13 +486,21 @@ impl<C: Compiler> CompiledBackend<C> {
         graph: &BTreeMap<TensorId, Node>,
     ) -> Result<(), CompilerError> {
         let graph = self.compiled_graphs.get(graph).unwrap();
-        let mut buffers = Vec::with_capacity(graph.args.len());
-        // We can move those buffers out of self.buffers and then move them back,
-        // or we can pass &mut self.buffers to launch program. Which one is better?
-        /*for arg in &graph.args {
-            buffers.push(self.buffers.get_mut(arg).unwrap());
-        }*/
-        return self.compiler.launch_program(&graph.program, &buffers); //, graph.flop, graph.bytes)
+
+        for (args, program) in &graph.programs {
+            let mut buffers = Vec::with_capacity(args.len());
+            for arg in args {
+                libc_print::libc_println!("Argument: {arg}");
+                let buffer = self.buffers.remove(arg).unwrap();
+                buffers.push(buffer);
+            }
+            self.compiler.launch_program(&program, &mut buffers)?; // graph.flop, graph.bytes)
+            for arg in args.iter().copied().rev() {
+                self.buffers.insert(arg, buffers.pop().unwrap());
+            }
+        }
+
+        return Ok(())
     }
 }
 
@@ -509,7 +522,7 @@ fn calculate_graph_rcs(
                 1
             });
     }
-    println!("Temp: {visited_rcs:?}");
+    //println!("Temp: {visited_rcs:?}");
     return visited_rcs;
 }
 

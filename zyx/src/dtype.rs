@@ -30,3 +30,21 @@ impl core::fmt::Display for DType {
         })
     }
 }
+
+impl DType {
+    pub(super) fn byte_size(&self) -> usize {
+        match self {
+            DType::BF16 => 2,
+            DType::F16 => 2,
+            DType::F32 => 4,
+            DType::F64 => 8,
+            DType::CF32 => 8,
+            DType::CF64 => 16,
+            DType::U8 => 1,
+            DType::I8 => 1,
+            DType::I16 => 2,
+            DType::I32 => 4,
+            DType::I64 => 8,
+        }
+    }
+}
