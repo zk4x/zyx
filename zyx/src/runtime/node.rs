@@ -222,15 +222,15 @@ impl Node {
 
     pub const fn is_unary(&self) -> bool {
         return match self {
-            Node::Cast { x, .. }
-            | Node::Inv { x }
-            | Node::Neg { x }
-            | Node::ReLU { x }
-            | Node::Exp { x }
-            | Node::Ln { x }
-            | Node::Sin { x }
-            | Node::Cos { x }
-            | Node::Sqrt { x } => true,
+            Node::Cast { .. }
+            | Node::Inv { .. }
+            | Node::Neg { .. }
+            | Node::ReLU { .. }
+            | Node::Exp { .. }
+            | Node::Ln { .. }
+            | Node::Sin { .. }
+            | Node::Cos { .. }
+            | Node::Sqrt { .. } => true,
             _ => false,
         }
     }

@@ -20,6 +20,24 @@ pub(crate) enum CPUBuffer {
     I64(Vec<i64>),
 }
 
+impl CPUBuffer {
+    fn len(&self) -> usize {
+        return match self {
+            CPUBuffer::BF16(x) => x.len(),
+            CPUBuffer::F16(x) => x.len(),
+            CPUBuffer::F32(x) => x.len(),
+            CPUBuffer::F64(x) => x.len(),
+            CPUBuffer::CF32(x) => x.len(),
+            CPUBuffer::CF64(x) => x.len(),
+            CPUBuffer::U8(x) => x.len(),
+            CPUBuffer::I8(x) => x.len(),
+            CPUBuffer::I16(x) => x.len(),
+            CPUBuffer::I32(x) => x.len(),
+            CPUBuffer::I64(x) => x.len(),
+        }
+    }
+}
+
 impl Interpreter for CPU {
     type Buffer = CPUBuffer;
     fn initialize() -> Result<Self, InterpreterError> {
@@ -30,6 +48,7 @@ impl Interpreter for CPU {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, InterpreterError> {
+        debug_assert_eq!(buffer.len(), length);
         match T::dtype() {
             DType::BF16 => {
                 if let CPUBuffer::BF16(data) = buffer {
@@ -112,6 +131,7 @@ impl Interpreter for CPU {
     }
 
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError> {
+        let _ = buffer;
         todo!()
     }
 }

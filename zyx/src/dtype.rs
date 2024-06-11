@@ -15,7 +15,7 @@ pub enum DType {
 
 impl core::fmt::Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
+        return f.write_str(match self {
             DType::BF16 => "BF16",
             DType::F16 => "F16",
             DType::F32 => "F32",
@@ -33,7 +33,7 @@ impl core::fmt::Display for DType {
 
 impl DType {
     pub(super) fn byte_size(&self) -> usize {
-        match self {
+        return match self {
             DType::BF16 => 2,
             DType::F16 => 2,
             DType::F32 => 4,

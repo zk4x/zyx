@@ -1,5 +1,8 @@
 #![no_std]
 
+// This is just a personal preference
+//#![deny(clippy::implicit_return)]
+
 extern crate alloc;
 
 use crate::runtime::Runtime;

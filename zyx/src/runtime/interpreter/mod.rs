@@ -30,14 +30,14 @@ pub(super) trait Interpreter: Sized {
 
 impl<I: Interpreter> InterpretedBackend<I> {
     pub(super) fn initialize() -> Result<Self, InterpreterError> {
-        Ok(Self {
+        return Ok(Self {
             interpreter: I::initialize()?,
             buffers: BTreeMap::new(),
         })
     }
 
     pub(super) fn is_realized(&self, x: TensorId) -> bool {
-        self.buffers.contains_key(&x)
+        return self.buffers.contains_key(&x)
     }
 
     pub(super) fn store<T: Scalar>(
@@ -45,6 +45,8 @@ impl<I: Interpreter> InterpretedBackend<I> {
         x: TensorId,
         data: &[T],
     ) -> Result<(), InterpreterError> {
+        let _ = x;
+        let _ = data;
         todo!()
     }
 

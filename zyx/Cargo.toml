@@ -23,13 +23,17 @@ itertools = { version = "0.13.0", default-features = false }
 half = { version = "2.4.1", default-features = false }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 num-complex = { version = "0.4.6", default-features = false }
+cuda-driver-sys = { version = "0.3.0", default-features = false }
 opencl-sys = { version = "0.3.1", default-features = false }
-#cuda-driver-sys = { version = "0.3.0", default-features = false }
-libc-print = { version = "0.1.23", default-features = false }
+wgpu = { version = "0.20.0", default-features = false }
+libc-print = { version = "0.1.23", default-features = false, optional = true }
 
 [features]
-default = ["debug1"]
-debug1 = []
+default = ["debug1"] # TODO remove default from release build
+debug1 = ["dep:libc-print"]
 #std = []
 #rand = ["dep:rand"]
 #complex = ["dep:num-complex"]
+#opencl = ["dep:opencl-sys"]
+#cuda = ["dep:cuda-driver-sys"]
+#wgpu = ["dep:wgpu"]

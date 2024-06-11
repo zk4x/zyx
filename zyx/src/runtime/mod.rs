@@ -74,6 +74,7 @@ impl Graph {
                 } => return self._shape(*shape_id).into(),
                 _ => x = node.parameters().next().unwrap(),
             }
+            i += 1;
         }
         panic!("Shape of {x} could not be found. This is internal bug.")
     }
@@ -130,6 +131,7 @@ impl Graph {
     }
 }
 
+// TODO delete subgraph, shape and dtype should be standalone functions
 #[derive(Clone)]
 struct Subgraph<'a> {
     nodes: BTreeMap<TensorId, Node>,

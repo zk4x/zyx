@@ -54,11 +54,11 @@ impl View {
                     shift: *size,
                 };
                 stride *= size;
-                temp
+                return temp
             })
             .collect();
         first_shape.reverse();
-        Self {
+        return Self {
             //binds: alloc::vec![0; first_shape.len()],
             shapes: alloc::vec![first_shape],
         }
@@ -67,19 +67,19 @@ impl View {
     /// Shape
     #[must_use]
     pub fn shape(&self) -> Vec<usize> {
-        self.shapes[0].iter().map(|dim| dim.size).collect()
+        return self.shapes[0].iter().map(|dim| dim.size).collect()
     }
 
     /// Rank
     #[must_use]
     pub fn rank(&self) -> usize {
-        self.shapes[0].len()
+        return self.shapes[0].len()
     }
 
     /// Numel
     #[must_use]
     pub fn numel(&self) -> usize {
-        self.shapes[0].iter().map(|dim| dim.size).product()
+        return self.shapes[0].iter().map(|dim| dim.size).product()
     }
 
     #[must_use]
@@ -93,12 +93,12 @@ impl View {
             }
             stride *= dim.size;
         }
-        temp
+        return temp
     }
 
     #[must_use]
     pub(crate) fn is_contiguous(&self) -> bool {
-        self.shapes.len() == 1 && self.is_last_shape_contiguous()
+        return self.shapes.len() == 1 && self.is_last_shape_contiguous()
     }
 
     /// Pad view with padding.
@@ -237,7 +237,7 @@ impl View {
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
     pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
-        libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
+        //libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
 
         // Optimize work size per thread
         // Over all dimensions excluding first (batch) dimension.
@@ -286,10 +286,10 @@ impl View {
         if self.rank() == 4 {
             // if reduce
             let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
-            libc_print::libc_println!("to {:?}", dims);
+            //libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         } else {
-            libc_print::libc_println!("to {:?}", dims);
+            //libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         }
     }

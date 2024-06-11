@@ -9,41 +9,41 @@ pub trait IntoShape: Clone {
 
 impl IntoShape for usize {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        [self].into_iter()
+        return [self].into_iter()
     }
 
     fn rank(&self) -> usize {
-        1
+        return 1
     }
 }
 
 impl<const N: usize> IntoShape for [usize; N] {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        self.into_iter()
+        return self.into_iter()
     }
 
     fn rank(&self) -> usize {
-        N
+        return N
     }
 }
 
 impl IntoShape for &[usize] {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        self.into_iter().copied()
+        return self.into_iter().copied()
     }
 
     fn rank(&self) -> usize {
-        self.len()
+        return self.len()
     }
 }
 
 impl IntoShape for Vec<usize> {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        self.into_iter()
+        return self.into_iter()
     }
 
     fn rank(&self) -> usize {
-        self.len()
+        return self.len()
     }
 }
 
@@ -67,12 +67,12 @@ pub trait IntoAxes: Clone {
 
 impl<const N: usize> IntoAxes for [isize; N] {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        self.into_iter().map(move |a| to_axis(a, rank))
+        return self.into_iter().map(move |a| to_axis(a, rank))
     }
 }
 
 impl IntoAxes for RangeInclusive<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        to_axis(*self.start(), rank)..to_axis(*self.end(), rank)
+        return to_axis(*self.start(), rank)..to_axis(*self.end(), rank)
     }
 }

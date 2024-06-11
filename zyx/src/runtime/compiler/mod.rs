@@ -9,8 +9,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
-use libc_print::std_name::println;
-
 pub(super) mod cuda;
 mod ir;
 pub(super) mod opencl;
@@ -33,7 +31,7 @@ impl Display for Scope {
     }
 }
 
-trait Compiler: Sized {
+pub(super) trait Compiler: Sized {
     type Buffer;
     type Program;
     fn initialize() -> Result<Self, CompilerError>;
@@ -64,6 +62,19 @@ pub(super) struct CompiledBackend<C: Compiler> {
     buffers: BTreeMap<TensorId, C::Buffer>,
     compiled_graphs: BTreeMap<BTreeMap<TensorId, Node>, CompiledGraph<C::Program>>,
     hwinfo: HWInfo,
+}
+
+impl<C: Compiler> Drop for CompiledBackend<C> {
+    fn drop(&mut self) {
+        while let Some((_, buffer)) = self.buffers.pop_last() {
+            self.compiler.deallocate_memory(buffer).unwrap();
+        }
+        while let Some((_, graph)) = self.compiled_graphs.pop_last() {
+            for (_, program) in graph.programs {
+                self.compiler.release_program(program).unwrap();
+            }
+        }
+    }
 }
 
 /// Compiled graph
@@ -201,7 +212,7 @@ impl<C: Compiler> CompiledBackend<C> {
             //std::println!("{:?}", nodes[nid.i()]);
             if self.buffers.contains_key(&nid) {
                 let dtype = graph.dtype(nid);
-                println!("Id if the buffer: {nid}");
+                //libc_print::libc_println!("Id if the buffer: {nid}");
                 tiles.insert(
                     nid,
                     Tile {
@@ -343,8 +354,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
         // Reshape and permute tiles to use exactly work 3 dimensions
         // and at most single reduce loop over the last dimension>
-
-        for (id, tile) in &mut tiles {
+        for (_, tile) in &mut tiles {
             match tile.view.rank() {
                 1 => match &mut tile.first_op {
                     FirstOp::Reduce { axes, .. } => {
@@ -359,7 +369,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     }
                 },
                 2 => match &tile.first_op {
-                    FirstOp::Reduce { x, shape, axes, op } => {
+                    FirstOp::Reduce { x: _, shape: _, axes, op: _ } => {
                         // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
                         let sh = tile.view.shape();
@@ -383,7 +393,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     }
                 },
                 3 => match &mut tile.first_op {
-                    FirstOp::Reduce { x, shape, axes, op } => {
+                    FirstOp::Reduce { x: _, shape: _, axes, op: _ } => {
                         // permute to join reduce axes together in last dimension
                         // and possibly reshape to 4d, last dim reduce
                         let all_axes: Vec<usize> = (0..tile.view.rank())
@@ -410,7 +420,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     _ => {}
                 },
                 _ => match &tile.first_op {
-                    FirstOp::Reduce { x, shape, axes, op } => {
+                    FirstOp::Reduce { x: _, shape: _, axes, op: _ } => {
                         // permute to join reduce axes together in last dimension
                         // reshape to 4d, last dim reduce
                         let all_axes: Vec<usize> = (0..tile.view.rank())
@@ -448,7 +458,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
         // Find optimal local work sizes and reshape tiles appropriately
         for (id, tile) in &mut tiles {
-            println!("Kernels: {id}");
+            //libc_print::libc_println!("Kernels: {id}");
             tile.view
                 .optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
         }
@@ -461,7 +471,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
         let mut programs = Vec::new();
         // TODO kernels can be compiled in parallel
-        while let Some((id, (args, ir_kernel))) = ir_kernels.pop_last() {
+        while let Some((_, (args, ir_kernel))) = ir_kernels.pop_last() {
             // Allocate memory for intermediate args and results
             for arg in args.iter().copied() {
                 if !self.buffers.contains_key(&arg) {
@@ -490,7 +500,7 @@ impl<C: Compiler> CompiledBackend<C> {
         for (args, program) in &graph.programs {
             let mut buffers = Vec::with_capacity(args.len());
             for arg in args {
-                libc_print::libc_println!("Argument: {arg}");
+                //libc_print::libc_println!("Argument: {arg}");
                 let buffer = self.buffers.remove(arg).unwrap();
                 buffers.push(buffer);
             }

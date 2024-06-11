@@ -244,5 +244,5 @@ pub(crate) fn tiled_to_ir(
         kernel.ops.push(IROp::EndLoop);
     }
 
-    kernels
+    return kernels
 }

@@ -24,7 +24,7 @@ use opencl_sys::{
 
 impl DType {
     fn ocl(&self) -> &str {
-        match self {
+        return match self {
             DType::BF16 => "TODO",
             DType::F16 => "half",
             DType::F32 => "float",
@@ -40,12 +40,12 @@ impl DType {
     }
 }
 
-pub(super) struct OpenCLBuffer {
+pub(crate) struct OpenCLBuffer {
     memory: *mut c_void,
     event: *mut c_void,
 }
 
-pub(super) struct OpenCLProgram {
+pub(crate) struct OpenCLProgram {
     name: String,
     program: *mut c_void,
     global_work_size: [usize; 3],
@@ -94,7 +94,7 @@ impl OpenCLCompiler {
             self.queue_size[self.queue_id] = 0;
         }
         self.queue_id = (self.queue_id + 1) % self.queues.len();
-        Ok(res)
+        return Ok(res)
     }
 }
 
@@ -242,7 +242,7 @@ impl Compiler for OpenCLCompiler {
         for dev in device_ids {
             devices.insert(dev);
         }
-        Ok(Self {
+        return Ok(Self {
             context,
             devices,
             queue_size: alloc::vec![0; queues.len()].into_boxed_slice(),
@@ -517,7 +517,7 @@ impl Compiler for OpenCLCompiler {
         cl_wait_for_events(&[event])?;
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(length) }
-        Ok(data)
+        return Ok(data)
     }
 
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
@@ -553,7 +553,7 @@ impl Compiler for OpenCLCompiler {
                 _ => CompilerError::GeneralExecutionError("Unable to release event. UNKNOWN ERROR"),
             });
         }
-        Ok(())
+        return Ok(())
     }
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
@@ -788,7 +788,7 @@ impl Compiler for OpenCLCompiler {
                 bytes as f64 / elapsed_nanos as f64,
             );*/
         }
-        Ok(())
+        return Ok(())
     }
 
     fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
@@ -952,9 +952,9 @@ fn get_program_build_data(
             clGetProgramBuildInfo(object, idx, param_name, 0, ptr::null_mut(), &mut size)
         };
         if CL_SUCCESS != status {
-            Err(status)
+            return Err(status)
         } else {
-            Ok(size)
+            return Ok(size)
         }
     }
     let size = get_size(program, device, param_name)?;
@@ -979,15 +979,15 @@ fn get_program_build_data(
                 )
             };
             if CL_SUCCESS != status {
-                Err(status)
+                return Err(status)
             } else {
-                Ok(data)
+                return Ok(data)
             }
         } else {
-            Ok(Vec::default())
+            return Ok(Vec::default())
         }
     }
-    get_vector(program, device, param_name, size)
+    return get_vector(program, device, param_name, size)
 }
 
 pub fn get_device_data(
@@ -1000,9 +1000,9 @@ pub fn get_device_data(
             opencl_sys::clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size)
         };
         if CL_SUCCESS != status {
-            Err(status)
+            return Err(status)
         } else {
-            Ok(size)
+            return Ok(size)
         }
     }
     let size = get_size(device, param_name)?;
@@ -1025,15 +1025,15 @@ pub fn get_device_data(
                 )
             };
             if CL_SUCCESS != status {
-                Err(status)
+                return Err(status)
             } else {
-                Ok(data)
+                return Ok(data)
             }
         } else {
-            Ok(Vec::default())
+            return Ok(Vec::default())
         }
     }
-    get_vector(device, param_name, size)
+    return get_vector(device, param_name, size)
 }
 
 fn get_device_ids(
@@ -1046,7 +1046,7 @@ fn get_device_ids(
         unsafe { clGetDeviceIDs(platform, device_type, 0, ptr::null_mut(), &mut count) };
 
     if (CL_SUCCESS != status) && (CL_DEVICE_NOT_FOUND != status) {
-        Err(status)
+        return Err(status)
     } else if 0 < count {
         // Get the device ids.
         let len = count as usize;
@@ -1063,12 +1063,12 @@ fn get_device_ids(
         };
 
         if CL_SUCCESS != status {
-            Err(status)
+            return Err(status)
         } else {
-            Ok(ids)
+            return Ok(ids)
         }
     } else {
-        Ok(Vec::default())
+        return Ok(Vec::default())
     }
 }
 
@@ -1083,9 +1083,9 @@ fn get_platform_data(
             opencl_sys::clGetPlatformInfo(object, param_name, 0, ptr::null_mut(), &mut size)
         };
         if CL_SUCCESS != status {
-            Err(status)
+            return Err(status)
         } else {
-            Ok(size)
+            return Ok(size)
         }
     }
     let size = get_size(platform, param_name)?;
@@ -1108,13 +1108,13 @@ fn get_platform_data(
                 )
             };
             if CL_SUCCESS != status {
-                Err(status)
+                return Err(status)
             } else {
-                Ok(data)
+                return Ok(data)
             }
         } else {
-            Ok(Vec::default())
+            return Ok(Vec::default())
         }
     }
-    get_vector(platform, param_name, size)
+    return get_vector(platform, param_name, size)
 }
