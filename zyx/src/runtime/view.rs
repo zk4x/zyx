@@ -364,6 +364,7 @@ impl Display for Index {
 
 #[test]
 fn test_unsqueeze() {
+    use alloc::vec;
     let mut view0 = View::from(&[3, 4, 2, 1]);
     view0.permute(&[0, 3, 1, 2]);
     assert_eq!(view0.shape(), vec![3, 1, 4, 2]);
@@ -410,6 +411,7 @@ fn test_unsqueeze() {
 
 #[test]
 fn test_standard() {
+    use alloc::vec;
     let mut view0 = View::from(&[3, 4, 2, 1]);
     view0.permute(&[0, 3, 1, 2]);
     assert_eq!(view0.shape(), vec![3, 1, 4, 2]);
@@ -421,6 +423,7 @@ fn test_standard() {
 
 #[test]
 fn test_reshape_merge1() {
+    use alloc::vec;
     let mut view0 = View::from(&[3, 4, 20]);
     view0.permute(&[2, 0, 1]);
     view0.reshape(&[5, 4, 3, 4]);

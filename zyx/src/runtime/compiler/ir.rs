@@ -95,6 +95,7 @@ pub(crate) fn tiled_to_ir(
     order: &[TensorId],
     hwinfo: &HWInfo,
 ) -> BTreeMap<TensorId, (Vec<TensorId>, IRKernel)> {
+    let _ = hwinfo;
     let mut kernels = BTreeMap::new();
 
     // At this point every kernel is already 8d, reduce kernels are 10d, with last dim reduce
@@ -103,7 +104,7 @@ pub(crate) fn tiled_to_ir(
     for nid in order {
         match tiles[nid].first_op {
             FirstOp::Load { dtype, buffer_id } => {
-                let mut first_dtype = dtype;
+                let first_dtype = dtype;
                 let mut dtype = dtype;
                 let tile = &tiles[nid];
                 let sh = tile.view.shape();
@@ -183,11 +184,11 @@ pub(crate) fn tiled_to_ir(
             FirstOp::Reduce { .. } => {}
             FirstOp::Movement { .. } => {}
             // Binary tile fuses two ir kernels together
-            FirstOp::Binary { x, y, op } => {
-                let kernel_x = &kernels[&x];
-                let kernel_y = &kernels[&y];
-                let tile = &tiles[nid];
-                let sh = tile.view.shape();
+            FirstOp::Binary { .. } => {
+                //let kernel_x = &kernels[&x];
+                //let kernel_y = &kernels[&y];
+                //let tile = &tiles[nid];
+                //let sh = tile.view.shape();
                 // Add ops from input tiles
                 // Copy directly from tile_x
                 //let mut ops = kernel_x.ops.clone();

@@ -20,6 +20,7 @@ impl Compiler for CUDA {
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
+        let _ = byte_size;
         todo!()
     }
 
@@ -28,6 +29,8 @@ impl Compiler for CUDA {
         buffer: &mut Self::Buffer,
         data: &[T],
     ) -> Result<(), CompilerError> {
+        let _ = buffer;
+        let _ = data;
         todo!()
     }
 
@@ -36,14 +39,18 @@ impl Compiler for CUDA {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
+        let _ = buffer;
+        let _ = length;
         todo!()
     }
 
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
+        let _ = buffer;
         todo!()
     }
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
+        let _ = kernel;
         todo!()
     }
 
@@ -52,10 +59,13 @@ impl Compiler for CUDA {
         program: &Self::Program,
         args: &mut [Self::Buffer],
     ) -> Result<(), CompilerError> {
+        let _ = program;
+        let _ = args;
         todo!()
     }
 
     fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
+        let _ = program;
         todo!()
     }
 }

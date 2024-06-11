@@ -1,8 +1,8 @@
-use crate::runtime::compiler::ir::{IRKernel, IROp, IRKernelArg};
+use crate::runtime::compiler::ir::{IRKernel, IRKernelArg, IROp};
 use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::{DType, Scalar};
 use alloc::boxed::Box;
-use alloc::collections::{BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::ffi::CString;
 use alloc::format as f;
 use alloc::string::String;
@@ -261,10 +261,23 @@ impl Compiler for OpenCLCompiler {
                 .unwrap(),
         ) as usize;
         let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES).unwrap();
-        libc_print::libc_println!("Max work item sizes: {mwis:?}");
-        //let ptr: *const usize = unsafe { core::mem::transmute([mwis[0], mwis[1], mwis[2], mwis[3], mwis[4], mwis[5], mwis[6], mwis[7]]) };
-        //let max_work_item_sizes = unsafe { core::slice::from_raw_parts::<usize>(ptr, max_work_item_dims) }.to_vec();
-        let max_work_item_sizes = alloc::vec![256, 256, 256];
+        let mut max_work_item_sizes = Vec::with_capacity(max_work_item_dims);
+        for i in 0..max_work_item_dims {
+            let max_dim_size: usize = unsafe {
+                core::mem::transmute([
+                    mwis[i * 8 + 0],
+                    mwis[i * 8 + 1],
+                    mwis[i * 8 + 2],
+                    mwis[i * 8 + 3],
+                    mwis[i * 8 + 4],
+                    mwis[i * 8 + 5],
+                    mwis[i * 8 + 6],
+                    mwis[i * 8 + 7],
+                ])
+            };
+            max_work_item_sizes.push(max_dim_size);
+        }
+        //libc_print::libc_println!("Max work item sizes: {max_work_item_sizes:?}");
         return Ok(HWInfo {
             max_work_item_sizes,
             max_work_group_size: usize::from_ne_bytes(
@@ -636,7 +649,7 @@ impl Compiler for OpenCLCompiler {
                 IROp::Loop { id, max } => {
                     source += &f!("{indent}for (unsigned int i{id}; i{id} < {max}; i{id}++) {{\n");
                     indent += "  ";
-                },
+                }
                 IROp::EndLoop => {
                     indent.pop();
                     indent.pop();
@@ -808,7 +821,8 @@ impl OpenCLProgram {
         global_work_size: [usize; 3],
         local_work_size: [usize; 3],
     ) -> Result<Self, CompilerError> {
-        let name = f!("k__{}_{}__{}_{}__{}_{}",
+        let name = f!(
+            "k__{}_{}__{}_{}__{}_{}",
             global_work_size[0],
             local_work_size[0],
             global_work_size[1],
