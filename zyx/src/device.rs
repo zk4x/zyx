@@ -2,6 +2,7 @@
 pub enum Device {
     CUDA,
     OpenCL,
+    #[cfg(feature = "wgpu")]
     WGPU,
     CPU,
 }

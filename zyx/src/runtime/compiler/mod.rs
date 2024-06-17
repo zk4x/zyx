@@ -12,6 +12,7 @@ use core::fmt::{Display, Formatter};
 pub(super) mod cuda;
 mod ir;
 pub(super) mod opencl;
+#[cfg(feature = "wgpu")]
 pub(super) mod wgpu;
 
 #[derive(Debug, Clone, Copy)]

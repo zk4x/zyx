@@ -129,21 +129,21 @@ pub(crate) fn tiled_to_ir(
                         },
                     },
                 ];
-                // id for the last register variable
                 let mut id = 0;
+                // id for the last register variable
                 for op in &tile.ops {
+                    let source_id = id;
                     if let UOp::Cast(inner_dtype) = *op {
                         dtype = inner_dtype;
+                        id += 1;
+                        ops.push(IROp::InitMem {
+                            id,
+                            scope: Scope::Register,
+                            dtype,
+                            read_only: false,
+                            len: 1,
+                        });
                     };
-                    let source_id = id;
-                    id += 1;
-                    ops.push(IROp::InitMem {
-                        id,
-                        scope: Scope::Register,
-                        dtype,
-                        read_only: false,
-                        len: 1,
-                    });
                     ops.push(IROp::UnaryMem {
                         z: IRMem {
                             id,

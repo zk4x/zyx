@@ -25,7 +25,8 @@ rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
 num-complex = { version = "0.4.6", default-features = false }
 cuda-driver-sys = { version = "0.3.0", default-features = false }
 opencl-sys = { version = "0.3.1", default-features = false }
-wgpu = { version = "0.20.0", default-features = false }
+wgpu = { version = "0.20.0", default-features = false, optional = true }
+nostd_async = { version = "0.6.1", default-features = false, optional = true }
 libc-print = { version = "0.1.23", default-features = false, optional = true }
 
 [features]
@@ -36,4 +37,4 @@ debug1 = ["dep:libc-print"]
 #complex = ["dep:num-complex"]
 #opencl = ["dep:opencl-sys"]
 #cuda = ["dep:cuda-driver-sys"]
-#wgpu = ["dep:wgpu"]
+wgpu = ["dep:wgpu", "nostd_async"]

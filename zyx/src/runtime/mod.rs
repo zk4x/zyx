@@ -2,7 +2,6 @@ use crate::device::Device;
 use crate::dtype::DType;
 use crate::runtime::compiler::cuda::CUDA;
 use crate::runtime::compiler::opencl::OpenCLCompiler;
-use crate::runtime::compiler::wgpu::WGPU;
 use crate::runtime::compiler::{CompiledBackend, CompilerError};
 use crate::runtime::interpreter::cpu::CPU;
 use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
@@ -163,6 +162,7 @@ impl Subgraph<'_> {
                 } => return self._shape(*shape_id).into(),
                 _ => x = node.parameters().next().unwrap(),
             }
+            i += 1;
         }
         panic!("Shape of {x} could not be found. This is internal bug.")
     }
@@ -232,7 +232,8 @@ pub(crate) struct Runtime {
     graph: Graph,
     opencl: Option<CompiledBackend<OpenCLCompiler>>,
     cuda: Option<CompiledBackend<CUDA>>,
-    wgpu: Option<CompiledBackend<WGPU>>,
+    #[cfg(feature = "wgpu")]
+    wgpu: Option<CompiledBackend<wgpu::WGPU>>,
     cpu: Option<InterpretedBackend<CPU>>,
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
@@ -251,6 +252,7 @@ impl Runtime {
             },
             opencl: None,
             cuda: None,
+            #[cfg(feature = "wgpu")]
             wgpu: None,
             cpu: None,
             default_device: Device::CPU,
@@ -278,6 +280,7 @@ impl Runtime {
             self.default_device = Device::OpenCL;
             return;
         }
+        #[cfg(feature = "wgpu")]
         if self.initialize_device(Device::WGPU) {
             self.default_device = Device::WGPU;
             return;
@@ -306,6 +309,7 @@ impl Runtime {
                     false
                 }
             }
+            #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 if let Ok(wgpu) = CompiledBackend::initialize() {
                     self.wgpu = Some(wgpu);
@@ -340,6 +344,7 @@ impl Runtime {
                 match self.device(i.try_into().unwrap()) {
                     Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
                     Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
+                    #[cfg(feature = "wgpu")]
                     Device::WGPU => self.wgpu.as_mut().unwrap().remove(x)?,
                     Device::CPU => self.cpu.as_mut().unwrap().remove(x)?,
                 }
@@ -435,6 +440,7 @@ impl Runtime {
                 let dev = self.cuda.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
+            #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 if self.wgpu.is_none() {
                     self.wgpu = Some(CompiledBackend::initialize()?);
@@ -469,6 +475,7 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.opencl.as_mut().unwrap().load(x, length)?)
             }
+            #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 if !self.wgpu.as_ref().unwrap().is_realized(x) {
                     self.realize(BTreeSet::from_iter([x]))?;
@@ -513,6 +520,7 @@ impl Runtime {
                     false
                 }
             }
+            #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 if let Some(wgpu) = self.wgpu.as_ref() {
                     wgpu.is_realized(x)
@@ -563,6 +571,7 @@ impl Runtime {
                 self.cuda.as_mut().unwrap().compile_graph(&graph, tensors)?;
                 self.cuda.as_mut().unwrap().launch_graph(&graph.nodes)?;
             }
+            #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 self.wgpu.as_mut().unwrap().compile_graph(&graph, tensors)?;
                 self.wgpu.as_mut().unwrap().launch_graph(&graph.nodes)?;
