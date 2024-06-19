@@ -3,87 +3,87 @@ use half::{bf16, f16};
 
 impl Scalar for bf16 {
     fn from_bf16(t: bf16) -> Self {
-        todo!()
+        t
     }
 
     fn from_f16(t: f16) -> Self {
-        todo!()
+        bf16::from_f32(t.into())
     }
 
     fn from_f32(t: f32) -> Self {
-        todo!()
+        bf16::from_f32(t)
     }
 
     fn from_f64(t: f64) -> Self {
-        todo!()
+        bf16::from_f64(t)
     }
 
     fn from_u8(t: u8) -> Self {
-        todo!()
+        bf16::from_f32(t.into_f32())
     }
 
     fn from_i8(t: i8) -> Self {
-        todo!()
+        bf16::from_f32(t.into_f32())
     }
 
     fn from_i16(t: i16) -> Self {
-        todo!()
+        bf16::from_f32(t.into_f32())
     }
 
     fn from_i32(t: i32) -> Self {
-        todo!()
+        bf16::from_f32(t.into_f32())
     }
 
-    fn from_i74(t: i32) -> Self {
-        todo!()
+    fn from_i64(t: i64) -> Self {
+        bf16::from_f32(t.into_f32())
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        todo!()
+        bf16::from_le_bytes([bytes[0], bytes[1]])
     }
 
     fn dtype() -> DType {
-        todo!()
+        DType::BF16
     }
 
     fn zero() -> Self {
-        todo!()
+        bf16::ZERO
     }
 
     fn one() -> Self {
-        todo!()
+        bf16::ONE
     }
 
     fn byte_size() -> usize {
-        todo!()
+        2
     }
 
     fn into_f32(self) -> f32 {
-        todo!()
+        self.into()
     }
 
     fn into_f64(self) -> f64 {
-        todo!()
+        self.into()
     }
 
     fn into_i32(self) -> i32 {
-        todo!()
+        self.into_f32().into_i32()
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self.max(-self)
     }
 
     fn reciprocal(self) -> Self {
-        todo!()
+        bf16::ONE/self
     }
 
     fn neg(self) -> Self {
-        todo!()
+        -self
     }
 
     fn relu(self) -> Self {
-        todo!()
+        self.max(bf16::ZERO)
     }
 
     fn sin(self) -> Self {
@@ -111,46 +111,50 @@ impl Scalar for bf16 {
     }
 
     fn add(self, rhs: Self) -> Self {
-        todo!()
+        self + rhs
     }
 
     fn sub(self, rhs: Self) -> Self {
-        todo!()
+        self - rhs
     }
 
     fn mul(self, rhs: Self) -> Self {
-        todo!()
+        self * rhs
     }
 
     fn div(self, rhs: Self) -> Self {
-        todo!()
+        self / rhs
     }
 
     fn pow(self, rhs: Self) -> Self {
-        todo!()
+        bf16::from_f32(self.into_f32().pow(rhs.into_f32()))
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        todo!()
+        if self < rhs {
+            bf16::ONE
+        } else {
+            bf16::ZERO
+        }
     }
 
     fn max(self, rhs: Self) -> Self {
-        todo!()
+        self.max(rhs)
     }
 
     fn max_value() -> Self {
-        todo!()
+        bf16::MAX
     }
 
     fn min_value() -> Self {
-        todo!()
+        bf16::MIN
     }
 
     fn epsilon() -> Self {
-        todo!()
+        bf16::MIN_POSITIVE
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        todo!()
+        self == rhs
     }
 }

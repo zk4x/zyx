@@ -32,7 +32,7 @@ pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
     /// From i32
     fn from_i32(t: i32) -> Self;
     /// From i64
-    fn from_i74(t: i32) -> Self;
+    fn from_i64(t: i64) -> Self;
     /// From little endian bytes
     fn from_le_bytes(bytes: &[u8]) -> Self;
     /// Get dtype of Self

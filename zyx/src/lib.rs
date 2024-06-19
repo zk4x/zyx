@@ -29,7 +29,9 @@ static RT: spin::Mutex<Runtime> = spin::Mutex::new(Runtime::new());
 #[test]
 fn t0() {
     use libc_print::std_name::println;
-    let x = Tensor::randn([16, 16], DType::F32).reshape(256).exp();
+    //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
+    //let x = Tensor::from([[2, 3], [4, 5]]).cast(DType::F32).exp();
+    let x = Tensor::from([[2., 3.], [4., 5.]]).exp();
     //println!("{:?}", x.shape());
     //Tensor::debug_graph();
     println!("{x}");

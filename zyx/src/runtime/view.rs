@@ -2,6 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::format;
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 use core::fmt::Formatter;
 use core::fmt::Display;
 use crate::runtime::compiler::HWInfo;
@@ -122,6 +123,24 @@ impl View {
     /// Expand view into different shape
     pub fn expand(&mut self, shape: &[usize]) {
         debug_assert!(shape.len() > 0);
+        if shape.len() > self.shapes[0].len() {
+            let mut sh = self.shape();
+            let mut i = sh.len();
+            for d in shape.iter().rev() {
+                i -= 1;
+                match d.cmp(&sh[i]) {
+                    Ordering::Less => {
+                        i += 1;
+                        sh.insert(i, 1);
+                    }
+                    Ordering::Greater => debug_assert_eq!(sh[i], 1),
+                    Ordering::Equal => {}
+                }
+            }
+            //#[cfg(feature = "debug1")]
+            //libc_print::libc_println!("Expand reshape: {sh:?}");
+            self.reshape(&sh);
+        }
         debug_assert_eq!(self.shapes[0].len(), shape.len());
         for (dim, sh_dim) in self.shapes[0].iter_mut().zip(shape) {
             if dim.size != *sh_dim {

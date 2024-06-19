@@ -709,9 +709,12 @@ impl Compiler for OpenCLCompiler {
         };
         let mut events = Vec::new();
         let mut i = 0;
-        for arg in args {
+        for arg in &mut *args {
             let (buffer, event) = (arg.memory, arg.event);
-            events.push(event);
+            //libc_print::libc_println!("Buffer {buffer:?}, event {event:?}");
+            if !event.is_null() {
+                events.push(event);
+            }
             //std::println!("Arg: {:?}", self.load::<f32>(arg, 6));
             // This is POINTER MAGIC. Be careful.
             let ptr: *const _ = &buffer;
@@ -723,6 +726,10 @@ impl Compiler for OpenCLCompiler {
             }
             i += 1;
         }
+        let mut global_work_size = program.global_work_size;
+        for (i, lwd) in program.local_work_size.iter().enumerate() {
+            global_work_size[i] *= lwd;
+        }
         let mut event: *mut c_void = ptr::null_mut();
         //#[cfg(feature = "debug1")]
         //let begin = std::time::Instant::now();
@@ -732,7 +739,7 @@ impl Compiler for OpenCLCompiler {
                 kernel,
                 u32::try_from(program.global_work_size.len()).unwrap(),
                 ptr::null(),
-                program.global_work_size.as_ptr(),
+                global_work_size.as_ptr(),
                 program.local_work_size.as_ptr(),
                 u32::try_from(events.len()).unwrap(),
                 if events.is_empty() {
@@ -788,6 +795,12 @@ impl Compiler for OpenCLCompiler {
                 bytes as f64 / elapsed_nanos as f64,
             );*/
         }
+        for arg in &mut *args {
+            if arg.event.is_null() {
+                arg.event = event;
+            }
+        }
+        libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[1], 4).unwrap());
         return Ok(())
     }
 

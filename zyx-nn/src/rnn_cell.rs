@@ -48,8 +48,8 @@ impl RNNCell {
     /// Initialize linear layer in device self
     pub fn new(self, input_size: usize, hidden_size: usize) -> RNNCell {
         use zyx::Scalar;
-        let l = -(1. / (hidden_size as f32)).sqrt();
-        let u = (1. / (hidden_size as f32)).sqrt();
+        let l = Scalar::sqrt(-(1. / (hidden_size as f32)));
+        let u = Scalar::sqrt(1. / (hidden_size as f32));
         RNNCell {
             weight_ih: Tensor::uniform([hidden_size, input_size], l..u),
             weight_hh: Tensor::uniform([hidden_size, hidden_size], l..u),

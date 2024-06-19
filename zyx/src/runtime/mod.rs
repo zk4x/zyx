@@ -12,7 +12,7 @@ use core::cell::OnceCell;
 use core::ops::Index;
 use node::Node;
 use rand::rngs::SmallRng;
-use crate::IntoShape;
+use crate::{IntoAxes, IntoShape};
 
 mod compiler;
 mod interpreter;
@@ -56,10 +56,17 @@ impl Graph {
         return shape_id
     }
 
+    fn push_axes(&mut self, axes: impl IntoAxes, rank: usize) -> u32 {
+        let axes_id = self.axes.len().try_into().unwrap();
+        self.axes.push(axes.len());
+        self.axes.extend(axes.into_axes(rank));
+        return axes_id
+    }
+
     fn shape(&self, x: TensorId) -> &[usize] {
         let mut x = x;
         let mut i = 0;
-        while i < 10000 {
+        while i < 1000000 {
             let node = &self.nodes[<u32 as TryInto<usize>>::try_into(x).unwrap()];
             match node {
                 Node::Const { .. } => return &[1],
@@ -79,13 +86,32 @@ impl Graph {
     }
 
     fn dtype(&self, x: TensorId) -> DType {
-        // TODO
-        DType::F32
+        let mut x = x;
+        let mut i = 0;
+        while i < 1000000 {
+            let node = &self.nodes[<u32 as TryInto<usize>>::try_into(x).unwrap()];
+            match node {
+                Node::Leaf { dtype, .. } | Node::Cast { dtype, .. } => return *dtype,
+                Node::Const { value, .. } => return value.dtype(),
+                _ => x = node.parameters().next().unwrap(),
+            }
+            i += 1;
+        }
+        panic!("DType of {x} could not be found. This is internal bug.")
     }
 
     fn device(&self, x: TensorId) -> Device {
-        // TODO
-        Device::OpenCL
+        let mut x = x;
+        let mut i = 0;
+        while i < 1000000 {
+            let node = &self.nodes[<u32 as TryInto<usize>>::try_into(x).unwrap()];
+            match node {
+                Node::Leaf { device, .. } | Node::Const { device, .. } => return *device,
+                _ => x = node.parameters().next().unwrap(),
+            }
+            i += 1;
+        }
+        panic!("Device of {x} could not be found. This is internal bug.")
     }
 
     fn _shape(&self, shape_id: u32) -> &[usize] {
@@ -141,8 +167,18 @@ struct Subgraph<'a> {
 
 impl Subgraph<'_> {
     fn dtype(&self, tensor_id: TensorId) -> DType {
-        // TODO
-        DType::F32
+        let mut x = tensor_id;
+        let mut i = 0;
+        while i < 1000000 {
+            let node = &self.nodes[&x];
+            match node {
+                Node::Leaf { dtype, .. } | Node::Cast { dtype, .. } => return *dtype,
+                Node::Const { value, .. } => return value.dtype(),
+                _ => x = node.parameters().next().unwrap(),
+            }
+            i += 1;
+        }
+        panic!("DType of {x} could not be found. This is internal bug.")
     }
 
     fn shape(&self, tensor_id: TensorId) -> &[usize] {
@@ -233,7 +269,7 @@ pub(crate) struct Runtime {
     opencl: Option<CompiledBackend<OpenCLCompiler>>,
     cuda: Option<CompiledBackend<CUDA>>,
     #[cfg(feature = "wgpu")]
-    wgpu: Option<CompiledBackend<wgpu::WGPU>>,
+    wgpu: Option<CompiledBackend<compiler::wgpu::WGPU>>,
     cpu: Option<InterpretedBackend<CPU>>,
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
@@ -374,6 +410,14 @@ impl Runtime {
         return self.graph.device(x)
     }
 
+    pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
+        return self.push(Node::Cast { x, dtype })
+    }
+
+    pub(crate) fn reciprocal(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Inv { x })
+    }
+
     pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
         return self.push(Node::ReLU { x })
     }
@@ -405,6 +449,18 @@ impl Runtime {
     pub(crate) fn reshape(&mut self, x: TensorId, shape: impl IntoShape) -> TensorId {
         let shape_id = self.graph.push_shape(shape);
         return self.push(Node::Reshape { x, shape_id });
+    }
+
+    pub(crate) fn expand(&mut self, x: TensorId, shape: impl IntoShape) -> TensorId {
+        let shape_id = self.graph.push_shape(shape);
+        return self.push(Node::Expand { x, shape_id });
+    }
+
+    pub(crate) fn permute(&mut self, x: TensorId, axes: impl IntoAxes) -> TensorId {
+        let shape: Vec<usize> = self.shape(x).permute(axes.clone()).collect();
+        let axes_id = self.graph.push_axes(axes, shape.len());
+        let shape_id = self.graph.push_shape(shape);
+        return self.push(Node::Permute { x, shape_id, axes_id });
     }
 }
 

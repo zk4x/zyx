@@ -18,6 +18,7 @@ maintenance = { status = "experimental" }
 [dependencies]
 spin = { version = "0.9.8", default-features = false, features = ["mutex", "spin_mutex"] }
 itertools = { version = "0.13.0", default-features = false }
+libm = { version = "0.2.8", default-features = false }
 
 # These will be optional
 half = { version = "2.4.1", default-features = false }
@@ -31,10 +32,26 @@ libc-print = { version = "0.1.23", default-features = false, optional = true }
 
 [features]
 default = ["debug1"] # TODO remove default from release build
+
+#
 debug1 = ["dep:libc-print"]
+
 #std = []
+
+# Enables random number generation for randn, uniform ...
 #rand = ["dep:rand"]
+
+# Enables f16 and bf16 dtypes
+#half = ["dep:half"]
+
+# Enables complex dtype
 #complex = ["dep:num-complex"]
-#opencl = ["dep:opencl-sys"]
+
+# Enables cuda device
 #cuda = ["dep:cuda-driver-sys"]
+
+# Enables opencl device
+#opencl = ["dep:opencl-sys"]
+
+# Enables wgpu device
 wgpu = ["dep:wgpu", "nostd_async"]

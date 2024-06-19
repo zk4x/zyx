@@ -458,7 +458,7 @@ impl<C: Compiler> CompiledBackend<C> {
         }
 
         // Find optimal local work sizes and reshape tiles appropriately
-        for (id, tile) in &mut tiles {
+        for (_, tile) in &mut tiles {
             //libc_print::libc_println!("Kernels: {id}");
             tile.view
                 .optimize_local_mem_size_and_work_per_thread(&self.hwinfo);

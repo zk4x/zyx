@@ -3,10 +3,12 @@ use half::{bf16, f16};
 
 impl Scalar for i32 {
     fn from_bf16(t: bf16) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_f16(t: f16) -> Self {
+        let _ = t;
         todo!()
     }
 
@@ -19,23 +21,23 @@ impl Scalar for i32 {
     }
 
     fn from_u8(t: u8) -> Self {
-        todo!()
+        t.into()
     }
 
     fn from_i8(t: i8) -> Self {
-        todo!()
+        t.into()
     }
 
     fn from_i16(t: i16) -> Self {
-        todo!()
+        t.into()
     }
 
     fn from_i32(t: i32) -> Self {
         t
     }
 
-    fn from_i74(t: i32) -> Self {
-        todo!()
+    fn from_i64(t: i64) -> Self {
+        t as i32
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {

@@ -1,3 +1,4 @@
+use alloc::format;
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
@@ -59,6 +60,7 @@ impl Tensor {
         &self,
         sources: impl IntoIterator<Item = &'a Tensor>,
     ) -> Vec<Option<Tensor>> {
+        let _ = sources;
         todo!()
     }
 
@@ -69,12 +71,12 @@ impl Tensor {
 
     #[must_use]
     pub fn numel(&self) -> usize {
-        todo!()
+        self.shape().iter().product()
     }
 
     #[must_use]
     pub fn rank(&self) -> usize {
-        todo!()
+        self.shape().len()
     }
 
     #[must_use]
@@ -182,36 +184,142 @@ impl Tensor {
 
     #[must_use]
     pub fn uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
+        let _ = shape;
+        let _ = range;
         RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
+        let _ = shape;
+        let _ = range;
         RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
-        RT.lock().set_default_device_best();
-        todo!()
+        let n = shape.clone().into_shape().product();
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let tensor_id = match dtype {
+            DType::BF16 => {
+                let data: Vec<_> = core::iter::repeat(bf16::ZERO).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::F16 => {
+                let data: Vec<_> = core::iter::repeat(f16::ZERO).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::F32 => {
+                let data: Vec<_> = core::iter::repeat(0f32).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::F64 => {
+                let data: Vec<_> = core::iter::repeat(0f64).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::CF32 => {
+                let data: Vec<_> = core::iter::repeat(Complex::<f32>::ZERO).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::CF64 => {
+                let data: Vec<_> = core::iter::repeat(Complex::<f32>::ZERO).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::U8 => {
+                let data: Vec<_> = core::iter::repeat(0u8).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I8 => {
+                let data: Vec<_> = core::iter::repeat(0i8).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I16 => {
+                let data: Vec<_> = core::iter::repeat(0i16).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I32 => {
+                let data: Vec<_> = core::iter::repeat(0i32).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I64 => {
+                let data: Vec<_> = core::iter::repeat(0i64).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+        };
+        return Tensor { id: tensor_id }
     }
 
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
-        RT.lock().set_default_device_best();
-        todo!()
+        let n = shape.clone().into_shape().product();
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let tensor_id = match dtype {
+            DType::BF16 => {
+                let data: Vec<_> = core::iter::repeat(bf16::ONE).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::F16 => {
+                let data: Vec<_> = core::iter::repeat(f16::ONE).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::F32 => {
+                let data: Vec<_> = core::iter::repeat(1f32).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::F64 => {
+                let data: Vec<_> = core::iter::repeat(1f64).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::CF32 => {
+                let data: Vec<_> = core::iter::repeat(Complex::<f32>::ONE).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::CF64 => {
+                let data: Vec<_> = core::iter::repeat(Complex::<f32>::ONE).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::U8 => {
+                let data: Vec<_> = core::iter::repeat(1u8).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I8 => {
+                let data: Vec<_> = core::iter::repeat(1i8).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I16 => {
+                let data: Vec<_> = core::iter::repeat(1i16).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I32 => {
+                let data: Vec<_> = core::iter::repeat(1i32).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+            DType::I64 => {
+                let data: Vec<_> = core::iter::repeat(1i64).take(n).collect();
+                rt.store(&data, default_device, shape).unwrap()
+            }
+        };
+        return Tensor { id: tensor_id }
     }
 
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
+        let _ = n;
+        let _ = dtype;
         RT.lock().set_default_device_best();
         todo!()
     }
 
     #[must_use]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
+        let _ = shape;
+        let _ = value;
         RT.lock().set_default_device_best();
         todo!()
     }
@@ -224,7 +332,7 @@ impl Tensor {
 
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
-        todo!()
+        return Tensor { id: RT.lock().cast(self.id, dtype) }
     }
 
     #[must_use]
@@ -241,6 +349,7 @@ impl Tensor {
 
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
+        let _ = probability;
         todo!()
     }
 
@@ -251,9 +360,7 @@ impl Tensor {
 
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        Self {
-            id: RT.lock().exp(self.id),
-        }
+        return Tensor { id: RT.lock().exp(self.id) }
     }
 
     #[must_use]
@@ -268,7 +375,7 @@ impl Tensor {
 
     #[must_use]
     pub fn ln(&self) -> Tensor {
-        todo!()
+        return Tensor { id: RT.lock().ln(self.id) }
     }
 
     #[must_use]
@@ -283,12 +390,12 @@ impl Tensor {
 
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
-        todo!()
+        return Tensor { id: RT.lock().reciprocal(self.id) }
     }
 
     #[must_use]
     pub fn relu(&self) -> Tensor {
-        todo!()
+        return Tensor { id: RT.lock().relu(self.id) }
     }
 
     #[must_use]
@@ -308,9 +415,7 @@ impl Tensor {
 
     #[must_use]
     pub fn sin(&self) -> Tensor {
-        Self {
-            id: RT.lock().sin(self.id),
-        }
+        return Tensor { id: RT.lock().sin(self.id) }
     }
 
     #[must_use]
@@ -320,9 +425,7 @@ impl Tensor {
 
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
-        Self {
-            id: RT.lock().sqrt(self.id),
-        }
+        return Tensor { id: RT.lock().sqrt(self.id) }
     }
 
     #[must_use]
@@ -337,29 +440,34 @@ impl Tensor {
 
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        Self {
-            id: RT.lock().tanh(self.id),
-        }
+        return Tensor { id: RT.lock().tanh(self.id) }
     }
 
     // movement
     #[must_use]
     pub fn expand(&self, shape: impl IntoShape) -> Tensor {
-        todo!()
+        // TODO checks
+        return Tensor { id: RT.lock().expand(self.id, shape) }
     }
 
     #[must_use]
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor {
-        todo!()
+        // TODO checks
+        return Tensor { id: RT.lock().permute(self.id, axes) }
     }
 
     #[must_use]
     pub fn pad(&self, padding: impl IntoPadding, value: impl Scalar) -> Tensor {
+        let _ = padding;
+        let _ = value;
+        // TODO add nonzero padding
+        //return Tensor { id: RT.lock().pad(self.id, padding) }
         todo!()
     }
 
     #[must_use]
     pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
+        debug_assert_eq!(shape.clone().into_shape().product::<usize>(), self.numel(), "Invalid reshape {:?} into {:?}", self.shape(), shape);
         Tensor { id: RT.lock().reshape(self.id, shape) }
     }
 
@@ -377,11 +485,13 @@ impl Tensor {
 
     #[must_use]
     pub fn max(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
         todo!()
     }
 
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
         todo!()
     }
 
@@ -397,11 +507,12 @@ impl Tensor {
 
     #[must_use]
     pub fn std(&self, axes: impl IntoAxes) -> Tensor {
-        todo!()
+        self.var(axes).sqrt()
     }
 
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
         todo!()
     }
 
@@ -413,12 +524,14 @@ impl Tensor {
 
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
         todo!()
     }
 
     // index
     #[must_use]
     pub fn get(&self, index: impl IntoIndex) -> Tensor {
+        let _ = index;
         todo!()
     }
 
@@ -433,21 +546,26 @@ impl Tensor {
 
     // binary
     #[must_use]
-    pub fn cmplt(&self, other: impl Into<Tensor>) -> Tensor {
+    pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Tensor {
+        let _ = rhs;
         todo!()
     }
 
     #[must_use]
-    pub fn dot(&self, other: impl Into<Tensor>) -> Tensor {
+    pub fn dot(&self, rhs: impl Into<Tensor>) -> Tensor {
+        let _ = rhs;
         todo!()
     }
 
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
+        let _ = exponent;
         todo!()
     }
 
     // ternary
     pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Tensor {
+        let _ = if_true;
+        let _ = if_false;
         todo!()
     }
 
@@ -504,16 +622,22 @@ impl Tensor {
 
     #[must_use]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: i64) -> Tensor {
+        let _ = tensors;
+        let _ = dim;
         todo!()
     }
 
     #[must_use]
     pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: i64) -> Tensor {
+        let _ = tensors;
+        let _ = dim;
         todo!()
     }
 
     #[must_use]
     pub fn split(&self, sizes: &[usize], dim: i64) -> Vec<Tensor> {
+        let _ = sizes;
+        let _ = dim;
         todo!()
     }
 
@@ -569,34 +693,30 @@ impl core::fmt::Display for Tensor {
         let res = match self.dtype() {
             DType::F16 => {
                 let data: Result<Vec<f16>, _> = self.try_into();
-                if let Ok(data) = data {
-                    tensor_to_string(&data, &self.shape(), precision, f.width())
-                } else {
-                    "f16 tensor failed to realize".into()
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("f16 tensor failed to realize {e:?}"),
                 }
             }
             DType::F32 => {
                 let data: Result<Vec<f32>, _> = self.try_into();
-                if let Ok(data) = data {
-                    tensor_to_string(&data, &self.shape(), precision, f.width())
-                } else {
-                    "f32 tensor failed to realize".into()
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("f32 tensor failed to realize {e:?}"),
                 }
             }
             DType::F64 => {
                 let data: Result<Vec<f64>, _> = self.try_into();
-                if let Ok(data) = data {
-                    tensor_to_string(&data, &self.shape(), precision, f.width())
-                } else {
-                    "f64 tensor failed to realize".into()
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("f64 tensor failed to realize {e:?}"),
                 }
             }
             DType::I32 => {
                 let data: Result<Vec<i32>, _> = self.try_into();
-                if let Ok(data) = data {
-                    tensor_to_string(&data, &self.shape(), precision, f.width())
-                } else {
-                    "i32 tensor failed to realize".into()
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             _ => todo!(),
@@ -919,39 +1039,65 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        todo!()
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let id = rt.store(&[value], default_device, 1).unwrap();
+        return Tensor { id }
     }
 }
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
-    fn from(value: Vec<T>) -> Self {
-        todo!()
+    fn from(data: Vec<T>) -> Self {
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let id = rt.store(&data, default_device, data.len()).unwrap();
+        return Tensor { id }
     }
 }
 
 impl<T: Scalar> From<&[T]> for Tensor {
-    fn from(value: &[T]) -> Self {
-        todo!()
+    fn from(data: &[T]) -> Self {
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let id = rt.store(data, default_device, data.len()).unwrap();
+        return Tensor { id }
     }
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
-    fn from(value: [T; D0]) -> Self {
-        todo!()
+    fn from(data: [T; D0]) -> Self {
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let id = rt.store(&data, default_device, D0).unwrap();
+        return Tensor { id }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
-    fn from(value: [[T; D1]; D0]) -> Self {
-        todo!()
+    fn from(data: [[T; D1]; D0]) -> Self {
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0*D1) };
+        let id = rt.store(data, default_device, [D0, D1]).unwrap();
+        return Tensor { id }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]>
     for Tensor
 {
-    fn from(value: [[[T; D2]; D1]; D0]) -> Self {
-        todo!()
+    fn from(data: [[[T; D2]; D1]; D0]) -> Self {
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0*D1*D2) };
+        let id = rt.store(data, default_device, [D0, D1, D2]).unwrap();
+        return Tensor { id }
     }
 }
 

@@ -4,7 +4,7 @@ use crate::{DType, Device};
 /// Constant value
 /// Floats must be bitcasted in order to implement Ord and Eq.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Constant {
+pub(super) enum Constant {
     /// bf16 constant
     BF16(u16),
     /// f16 constant
@@ -31,7 +31,7 @@ enum Constant {
 
 impl Constant {
     /// Get dtype of this constant
-    fn dtype(&self) -> DType {
+    pub(super) fn dtype(&self) -> DType {
         return match self {
             Constant::BF16(..) => DType::BF16,
             Constant::F16(..) => DType::F16,
@@ -52,6 +52,8 @@ impl Constant {
 pub(super) enum Node {
     Const {
         value: Constant,
+        // Somewhat meaningless, just for simpler device search
+        device: Device,
     },
     Leaf {
         shape_id: u32,

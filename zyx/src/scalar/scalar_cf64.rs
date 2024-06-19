@@ -4,43 +4,55 @@ use num_complex::Complex;
 
 impl Scalar for Complex<f64> {
     fn from_bf16(t: bf16) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_f16(t: f16) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_f32(t: f32) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_f64(t: f64) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_u8(t: u8) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_i8(t: i8) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_i16(t: i16) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_i32(t: i32) -> Self {
+        let _ = t;
         todo!()
     }
 
-    fn from_i74(t: i32) -> Self {
+    fn from_i64(t: i64) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        todo!()
+        Complex::<f64>::new(
+            f64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
+            f64::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]]),
+        )
     }
 
     fn dtype() -> DType {
@@ -112,30 +124,33 @@ impl Scalar for Complex<f64> {
     }
 
     fn add(self, rhs: Self) -> Self {
-        todo!()
+        self + rhs
     }
 
     fn sub(self, rhs: Self) -> Self {
-        todo!()
+        self - rhs
     }
 
     fn mul(self, rhs: Self) -> Self {
-        todo!()
+        self * rhs
     }
 
     fn div(self, rhs: Self) -> Self {
-        todo!()
+        self / rhs
     }
 
     fn pow(self, rhs: Self) -> Self {
+        let _ = rhs;
         todo!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {
+        let _ = rhs;
         todo!()
     }
 
     fn max(self, rhs: Self) -> Self {
+        let _ = rhs;
         todo!()
     }
 
@@ -152,6 +167,6 @@ impl Scalar for Complex<f64> {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        todo!()
+        self == rhs
     }
 }

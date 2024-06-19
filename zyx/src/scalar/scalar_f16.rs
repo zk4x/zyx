@@ -19,14 +19,17 @@ impl Scalar for f16 {
     }
 
     fn from_u8(t: u8) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_i8(t: i8) -> Self {
+        let _ = t;
         todo!()
     }
 
     fn from_i16(t: i16) -> Self {
+        let _ = t;
         todo!()
     }
 
@@ -34,8 +37,8 @@ impl Scalar for f16 {
         f16::from_f32(t as f32)
     }
 
-    fn from_i74(t: i32) -> Self {
-        todo!()
+    fn from_i64(t: i64) -> Self {
+        f16::from_f64(t as f64)
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
