@@ -460,9 +460,11 @@ impl Compiler for OpenCLCompiler {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
+        debug_assert!(!buffer.memory.is_null(), "Trying to read uninitialized memory. Internal bug.");
+        debug_assert!(!buffer.event.is_null(), "Trying to read uninitialized memory. Internal bug.");
+        cl_wait_for_events(&[buffer.event])?;
         let mut data: Vec<T> = Vec::with_capacity(length);
         let mut event: *mut c_void = ptr::null_mut();
-        cl_wait_for_events(&[buffer.event])?;
         let status = unsafe {
             clEnqueueReadBuffer(
                 self.queue()?,
@@ -583,12 +585,12 @@ impl Compiler for OpenCLCompiler {
         source += "\n) {\n";
 
         // Add indices for global and local loops
-        source += "  unsigned int i0 = get_group_id(0);\n";
-        source += "  unsigned int i1 = get_local_id(0);\n";
-        source += "  unsigned int i2 = get_group_id(1);\n";
-        source += "  unsigned int i3 = get_local_id(1);\n";
-        source += "  unsigned int i5 = get_group_id(2);\n";
-        source += "  unsigned int i6 = get_local_id(2);\n";
+        source += &f!("  unsigned int i0 = get_group_id(0); /* 0..{} */\n", kernel.global_work_size[0]);
+        source += &f!("  unsigned int i1 = get_local_id(0); /* 0..{} */\n", kernel.local_work_size[0]);
+        source += &f!("  unsigned int i2 = get_group_id(1); /* 0..{} */\n", kernel.global_work_size[1]);
+        source += &f!("  unsigned int i3 = get_local_id(1); /* 0..{} */\n", kernel.local_work_size[1]);
+        source += &f!("  unsigned int i5 = get_group_id(2); /* 0..{} */\n", kernel.global_work_size[2]);
+        source += &f!("  unsigned int i6 = get_local_id(2); /* 0..{} */\n", kernel.local_work_size[2]);
 
         // Transpile kernel ops, skip ends of global and local loops
         for op in &kernel.ops {
@@ -654,7 +656,7 @@ impl Compiler for OpenCLCompiler {
                     );
                 }
                 IROp::Loop { id, max } => {
-                    source += &f!("{indent}for (unsigned int i{id}; i{id} < {max}; i{id}++) {{\n");
+                    source += &f!("{indent}for (unsigned int i{id} = 0; i{id} < {max}; i{id}++) {{\n");
                     indent += "  ";
                 }
                 IROp::EndLoop => {
@@ -682,8 +684,9 @@ impl Compiler for OpenCLCompiler {
         program: &Self::Program,
         args: &mut [Self::Buffer],
     ) -> Result<(), CompilerError> {
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[0], 4).unwrap());
         //#[cfg(not(feature = "debug1"))]
-        //let (_, _) = (flop, bytes);
         let program_name = &CString::new(program.name.clone()).unwrap();
         let mut status = CL_SUCCESS;
         let kernel =
@@ -719,11 +722,10 @@ impl Compiler for OpenCLCompiler {
         let mut i = 0;
         for arg in &mut *args {
             let (buffer, event) = (arg.memory, arg.event);
-            //libc_print::libc_println!("Buffer {buffer:?}, event {event:?}");
+            // Memory that is freshly allocated does not need to be awaited using events
             if !event.is_null() {
                 events.push(event);
             }
-            //std::println!("Arg: {:?}", self.load::<f32>(arg, 6));
             // This is POINTER MAGIC. Be careful.
             let ptr: *const _ = &buffer;
             status = unsafe {
@@ -809,8 +811,8 @@ impl Compiler for OpenCLCompiler {
                 arg.event = event;
             }
         }
-        #[cfg(feature = "debug1")]
-        libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[1], 4).unwrap());
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[1], 4).unwrap());
         return Ok(())
     }
 

@@ -163,7 +163,7 @@ pub(crate) fn tiled_to_ir(
                     z: IRMem {
                         id: 1,
                         scope: Scope::Global,
-                        index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5]]).ir_index(&[0, 1, 2, 3, 4, 5])),
+                        index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]]).ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
                     },
                     x: IRMem {
                         id,

@@ -153,6 +153,7 @@ impl View {
 
     /// Permute view with axes
     pub fn permute(&mut self, axes: &[usize]) {
+        libc_print::libc_println!("Permuting to {axes:?}");
         debug_assert_eq!(self.shapes[0].len(), axes.len());
         self.shapes[0] = axes.iter().map(|axis| self.shapes[0][*axis]).collect();
     }
@@ -256,7 +257,7 @@ impl View {
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
     pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
-        //libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
+        libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
 
         // Optimize work size per thread
         // Over all dimensions excluding first (batch) dimension.
@@ -305,10 +306,10 @@ impl View {
         if self.rank() == 4 {
             // if reduce
             let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
-            //libc_print::libc_println!("to {:?}", dims);
+            libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         } else {
-            //libc_print::libc_println!("to {:?}", dims);
+            libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         }
     }
@@ -317,6 +318,7 @@ impl View {
     /// don't have bound indices.
     /// Binds are indices into this dimension
     pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
+        debug_assert_eq!(self.rank(), binds.len());
         //libc_print::libc_println!("{self:?}");
         if self.is_contiguous() {
             return Index::Contiguous {
@@ -335,7 +337,7 @@ impl View {
 // This will be needed if we want to directly generate SPIR or PTX IR.
 
 /// Virtual representation of index into view
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Index {
     /// Expanded and/or padded
     /// Pairs of index id and multiplier.
@@ -477,4 +479,11 @@ fn test_reshape_merge1() {
             },
         ]
     );
+}
+
+#[test]
+fn test_ir_index() {
+    let view0 = View::from(&[2, 43, 1]);
+    assert_eq!(view0.shapes.len(), 1);
+    assert_eq!(view0.ir_index(&[0, 1, 2]), Index::Contiguous { dims: BTreeMap::from([(0, 43), (1, 1), (2, 1)]) });
 }
