@@ -50,6 +50,7 @@ pub(crate) struct OpenCLProgram {
     program: *mut c_void,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
+    args_read_only: Vec<bool>,
 }
 
 pub(crate) struct OpenCLCompiler {
@@ -563,12 +564,18 @@ impl Compiler for OpenCLCompiler {
         let mut indent = String::from("  ");
 
         // Transpile kernel args
+        let mut args_read_only = Vec::new();
         for (id, IRKernelArg { dtype, read_only }) in kernel.args.iter().enumerate() {
             source += &f!(
                 "{indent}__global {}{}* g{id},\n",
                 if *read_only { "const " } else { "" },
                 dtype.ocl()
             );
+            if *read_only {
+                args_read_only.push(true);
+            } else {
+                args_read_only.push(false);
+            }
         }
 
         source.pop();
@@ -666,6 +673,7 @@ impl Compiler for OpenCLCompiler {
             &self.devices,
             kernel.global_work_size,
             kernel.local_work_size,
+            args_read_only,
         );
     }
 
@@ -795,11 +803,13 @@ impl Compiler for OpenCLCompiler {
                 bytes as f64 / elapsed_nanos as f64,
             );*/
         }
-        for arg in &mut *args {
-            if arg.event.is_null() {
+        // set event for buffers that were written into
+        for (arg, read_only) in args.iter_mut().zip(&program.args_read_only) {
+            if !read_only {
                 arg.event = event;
             }
         }
+        #[cfg(feature = "debug1")]
         libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[1], 4).unwrap());
         return Ok(())
     }
@@ -833,6 +843,7 @@ impl OpenCLProgram {
         devices: &BTreeSet<*mut c_void>,
         global_work_size: [usize; 3],
         local_work_size: [usize; 3],
+        args_read_only: Vec<bool>,
     ) -> Result<Self, CompilerError> {
         let name = f!(
             "k__{}_{}__{}_{}__{}_{}",
@@ -930,6 +941,7 @@ impl OpenCLProgram {
             program,
             global_work_size,
             local_work_size,
+            args_read_only,
         })
     }
 }

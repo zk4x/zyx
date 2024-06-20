@@ -1,9 +1,9 @@
-use alloc::format;
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 use core::ops::{
     Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo,
     RangeToInclusive, Sub,
@@ -547,8 +547,8 @@ impl Tensor {
     // binary
     #[must_use]
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Tensor {
-        let _ = rhs;
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().add(x.id, y.id) }
     }
 
     #[must_use]
@@ -558,8 +558,8 @@ impl Tensor {
     }
 
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
-        let _ = exponent;
-        todo!()
+        let (x, y) = Tensor::broadcast(self, exponent);
+        return Tensor { id: RT.lock().add(x.id, y.id) }
     }
 
     // ternary
@@ -652,21 +652,151 @@ impl Tensor {
     }
 }
 
-// impl neg, add, sub, mul, div, eq for Tensor
+impl Tensor {
+    /// Braodcasts to synchronize shapes and casts to synchronize dtypss
+    /// This does both automatic expand AND automatic casting between dtypes.
+    // TODO Both of these can be disable by changing a setting in the backend.
+    #[must_use]
+    fn broadcast(x: impl Into<Tensor>, y: impl Into<Tensor>) -> (Tensor, Tensor) {
+        let mut x = x.into();
+        let mut y = y.into();
+        /*assert_eq!(
+            graph.dtype(xid),
+            graph.dtype(yid),
+            "{op} parameters {xid} and {yid} have different dtypes: {} and {}",
+            graph.dtype(xid),
+            graph.dtype(yid)
+        );*/
+        // Now we just do implicit conversions. Not exactly rust style, but it's convenient.
+        // We can later add option for backend to disable these implicit conversions.
+        match (x.dtype(), y.dtype()) {
+            (DType::F32, DType::I32) => y = y.cast(DType::F32),
+            (DType::F32, DType::F64) => x = x.cast(DType::F64),
+            (DType::I32, DType::F32) => x = x.cast(DType::F32),
+            (DType::I32, DType::F64) => x = x.cast(DType::F64),
+            (DType::F64, DType::F32) => y = y.cast(DType::F64),
+            (DType::F64, DType::I32) => y = y.cast(DType::F64),
+            _ => {}
+        }
+        let mut x_shape = x.shape();
+        let mut y_shape = y.shape();
 
-/*impl<T: Scalar> TryInto<T> for Tensor {
-    type Error = ();
-    fn try_into(self) -> Result<T, Self::Error> {
-        todo!()
-    }
-}*/
+        for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
+            if x != y {
+                debug_assert!(
+                    *x == 1 || *y == 1,
+                    "Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}"
+                );
+            }
+        }
 
-/*impl<T: Scalar> TryInto<Vec<T>> for Tensor {
-    type Error = ();
-    fn try_into(self) -> Result<Vec<T>, Self::Error> {
-        todo!()
+        let rx = x_shape.rank();
+        let ry = y_shape.rank();
+        match rx.cmp(&ry) {
+            Ordering::Less => {
+                x_shape = core::iter::repeat(1)
+                    .take(ry - rx)
+                    .chain(x_shape.into_iter())
+                    .collect();
+            }
+            Ordering::Greater => {
+                y_shape = core::iter::repeat(1)
+                    .take(rx - ry)
+                    .chain(y_shape.into_iter())
+                    .collect();
+            }
+            Ordering::Equal => {}
+        }
+        let mut eshape = Vec::new();
+        for (x, y) in x_shape.iter().zip(y_shape.iter()) {
+            eshape.push(*x.max(y));
+        }
+        if x_shape != eshape {
+            x = x.expand(&*eshape);
+        }
+        if y_shape != eshape {
+            y = y.expand(eshape);
+        }
+        (x, y)
     }
-}*/
+}
+
+impl TryFrom<&Tensor> for bf16 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for f16 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for f32 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for f64 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for Complex<f32> {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for Complex<f64> {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for u8 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for i8 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for i16 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for i32 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<&Tensor> for i64 {
+    type Error = ZyxError;
+    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+    }
+}
 
 impl<T: Scalar> TryFrom<&Tensor> for Vec<T> {
     type Error = ZyxError;
@@ -695,28 +825,28 @@ impl core::fmt::Display for Tensor {
                 let data: Result<Vec<f16>, _> = self.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("f16 tensor failed to realize {e:?}"),
+                    Err(e) => alloc::format!("f16 tensor failed to realize {e:?}"),
                 }
             }
             DType::F32 => {
                 let data: Result<Vec<f32>, _> = self.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("f32 tensor failed to realize {e:?}"),
+                    Err(e) => alloc::format!("f32 tensor failed to realize {e:?}"),
                 }
             }
             DType::F64 => {
                 let data: Result<Vec<f64>, _> = self.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("f64 tensor failed to realize {e:?}"),
+                    Err(e) => alloc::format!("f64 tensor failed to realize {e:?}"),
                 }
             }
             DType::I32 => {
                 let data: Result<Vec<i32>, _> = self.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("i32 tensor failed to realize {e:?}"),
+                    Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             _ => todo!(),
@@ -1104,69 +1234,77 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 impl<IT: Into<Tensor>> Add<IT> for Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().add(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Add<IT> for &Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().add(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Sub<IT> for Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().sub(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().sub(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Mul<IT> for Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().mul(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().mul(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().div(x.id, y.id) }
     }
 }
 
 impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        todo!()
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor { id: RT.lock().div(x.id, y.id) }
     }
 }
 
 impl Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        todo!()
+        Tensor { id: RT.lock().neg(self.id) }
     }
 }
 
 impl Neg for &Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        todo!()
+        Tensor { id: RT.lock().neg(self.id) }
     }
 }

@@ -25,6 +25,7 @@ type TensorId = u32;
 pub enum ZyxError {
     CompilerError(CompilerError),
     InterpreterError(InterpreterError),
+    EmptyTensor,
 }
 
 impl From<CompilerError> for ZyxError {
@@ -418,6 +419,10 @@ impl Runtime {
         return self.push(Node::Inv { x })
     }
 
+    pub(crate) fn neg(&mut self, x: TensorId) -> TensorId {
+        return self.push(Node::Neg { x });
+    }
+
     pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
         return self.push(Node::ReLU { x })
     }
@@ -461,6 +466,30 @@ impl Runtime {
         let axes_id = self.graph.push_axes(axes, shape.len());
         let shape_id = self.graph.push_shape(shape);
         return self.push(Node::Permute { x, shape_id, axes_id });
+    }
+
+    pub(crate) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.push(Node::Add { x, y });
+    }
+
+    pub(crate) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.push(Node::Add { x, y });
+    }
+
+    pub(crate) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.push(Node::Add { x, y });
+    }
+
+    pub(crate) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.push(Node::Add { x, y });
+    }
+
+    pub(crate) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.push(Node::Add { x, y });
+    }
+
+    pub(crate) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.push(Node::Add { x, y });
     }
 }
 
