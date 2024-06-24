@@ -160,11 +160,11 @@ impl<C: Compiler> CompiledBackend<C> {
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
         if let Some(buffer) = self.buffers.get(&x) {
-            return self.compiler.load_memory(buffer, length);
+            return self.compiler.load_memory(buffer, length)
         }
         return Err(CompilerError::BufferDoesNotExist(
             "Buffer with given id does not exist.",
-        ));
+        ))
     }
 
     pub(super) fn remove(&mut self, x: TensorId) -> Result<(), CompilerError> {
@@ -180,6 +180,8 @@ impl<C: Compiler> CompiledBackend<C> {
         org_graph: &Subgraph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
+        #[cfg(feature = "debug1")]
+        libc_print::libc_println!("Evaluating {to_eval:?}");
         if self.compiled_graphs.contains_key(&org_graph.nodes) {
             return Ok(())
         }
@@ -270,17 +272,25 @@ impl<C: Compiler> CompiledBackend<C> {
                     }
                 },
                 Node::Expand { x, shape_id } => {
-                    let mut view = View::from(&graph.shape(x));
-                    view.expand(graph._shape(shape_id));
-                    let tile = Tile {
-                        args: BTreeSet::from([x]),
-                        view,
-                        dtype: graph.dtype(nid),
-                        first_op: FirstOp::Movement { x },
-                        ops: vec![],
-                        can_be_fused: rcs[&nid] < 2,
-                    };
-                    tiles.insert(nid, tile);
+                    if matches!(tiles[&x].first_op, FirstOp::Load { .. }) && tiles[&x].ops.len() == 0 {
+                        let mut tile = tiles[&x].clone();
+                        tile.view.expand(graph._shape(shape_id));
+                        tiles.insert(nid, tile);
+                    } else {
+                        let mut view = View::from(&graph.shape(x));
+                        view.expand(graph._shape(shape_id));
+                        let tile = Tile {
+                            args: BTreeSet::from([x]),
+                            view,
+                            dtype: graph.dtype(nid),
+                            first_op: FirstOp::Movement { x },
+                            ops: vec![],
+                            can_be_fused: rcs[&nid] < 2,
+                        };
+                        #[cfg(feature = "debug1")]
+                        libc_print::libc_println!("Inserting expand tile {nid}");
+                        tiles.insert(nid, tile);
+                    }
                 }
                 Node::Permute { .. } => {
                     // Permute permutes all views.
@@ -352,6 +362,9 @@ impl<C: Compiler> CompiledBackend<C> {
         //println!("Required kernel_ids: {required_kernel_ids:?}");
         tiles.retain(|id, _| required_kernel_ids.contains(id));
         order.retain(|id| required_kernel_ids.contains(id));
+
+        #[cfg(feature = "debug1")]
+        libc_print::libc_println!("Tiles kept {:?}", tiles.keys());
 
         // Reshape and permute tiles to use exactly work 3 dimensions
         // and at most single reduce loop over the last dimension>
@@ -480,6 +493,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
             }
             // Compile kernel
+            libc_print::libc_println!("Program with args: {:?}", args);
             programs.push((args, self.compiler.compile_program(&ir_kernel)?));
         }
 
@@ -501,7 +515,8 @@ impl<C: Compiler> CompiledBackend<C> {
         for (args, program) in &graph.programs {
             let mut buffers = Vec::with_capacity(args.len());
             for arg in args {
-                //libc_print::libc_println!("Argument: {arg}");
+                #[cfg(feature = "debug1")]
+                libc_print::libc_println!("Argument: {arg}");
                 let buffer = self.buffers.remove(arg).unwrap();
                 buffers.push(buffer);
             }

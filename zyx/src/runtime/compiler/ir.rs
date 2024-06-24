@@ -10,8 +10,10 @@ use crate::DType;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::string::String;
 use core::fmt::{Display, Formatter};
 use crate::runtime::view::{Index, View};
+use alloc::format as f;
 
 #[derive(Debug)]
 pub(super) struct IRKernel {
@@ -34,12 +36,43 @@ pub(super) struct IRMem {
     index: Option<Index>,
 }
 
-impl Display for IRMem {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+impl IRMem {
+    pub(super) fn to_str(&self, temp_id: u32) -> (Vec<String>, String) {
         return if let Some(idx) = &self.index {
-            f.write_fmt(format_args!("{}{}[{idx}]", self.scope, self.id))
+            match idx {
+                Index::Contiguous { dims } | Index::Strided { dims } => {
+                    let mut res = String::new();
+                    for (id, mul) in dims {
+                        res += &f!("i{id}*{mul}+");
+                    }
+                    res.pop();
+                    return (Vec::new(), f!("{}{}[{res}]", self.scope, self.id))
+                },
+                Index::Reshaped { dims, reshapes, .. } => {
+                    let mut res = String::new();
+                    for (id, mul) in dims {
+                        res += &f!("i{id}*{mul}+");
+                    }
+                    res.pop();
+                    let mut res = vec![res];
+                    for reshape in reshapes[..reshapes.len()-1].iter() {
+                        let mut idx = String::new();
+                        for (div, m, mul) in reshape.iter() {
+                            idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
+                        }
+                        idx.pop();
+                        res.push(idx);
+                    }
+                    let mut idx = String::new();
+                    for (div, m, mul) in reshapes.last().unwrap().iter() {
+                        idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
+                    }
+                    idx.pop();
+                    return (res, f!("{}{}[{idx}]", self.scope, self.id))
+                },
+            }
         } else {
-            f.write_fmt(format_args!("{}{}", self.scope, self.id))
+            return (Vec::new(), f!("{}{}", self.scope, self.id))
         }
     }
 }
@@ -171,6 +204,8 @@ pub(crate) fn tiled_to_ir(
                         index: None,
                     },
                 });
+                //#[cfg(feature = "debug1")]
+                //libc_print::libc_println!("Nid; {nid}");
                 kernels.insert(*nid, (vec![buffer_id, *nid], IRKernel {
                     global_work_size: [sh[0], sh[2], sh[5]],
                     local_work_size: [sh[1], sh[3], sh[6]],
@@ -178,11 +213,13 @@ pub(crate) fn tiled_to_ir(
                     ops
                 }));
             }
+            FirstOp::Movement { x } => {
+                // New movement operation that could not be merged
+            }
             // These tiled kernels can be fused with previous kernels if reduce and expand
             // kernels exist back to back (with some binary kernels in between and the final
             // work size is the same as the beginning work size.
             FirstOp::Reduce { .. } => {}
-            FirstOp::Movement { .. } => {}
             // Binary tile fuses two ir kernels together
             FirstOp::Binary { .. } => {
                 //let kernel_x = &kernels[&x];

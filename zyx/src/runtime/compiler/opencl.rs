@@ -541,7 +541,11 @@ impl Compiler for OpenCLCompiler {
                 }
             });
         }
-        let status = unsafe { clReleaseEvent(buffer.event) };
+        if !buffer.event.is_null() {
+            let status = unsafe { clReleaseEvent(buffer.event) };
+        } else {
+            libc_print::libc_println!("Warning: A buffer was allocated, but never initialized.");
+        }
         if status != CL_SUCCESS {
             return Err(match status {
                 -58 => CompilerError::GeneralExecutionError(
@@ -591,6 +595,9 @@ impl Compiler for OpenCLCompiler {
         source += &f!("  unsigned int i3 = get_local_id(1); /* 0..{} */\n", kernel.local_work_size[1]);
         source += &f!("  unsigned int i5 = get_group_id(2); /* 0..{} */\n", kernel.global_work_size[2]);
         source += &f!("  unsigned int i6 = get_local_id(2); /* 0..{} */\n", kernel.local_work_size[2]);
+        source += "  unsigned int t0;\n";
+        source += "  unsigned int t1;\n";
+        source += "  unsigned int t2;\n";
 
         // Transpile kernel ops, skip ends of global and local loops
         for op in &kernel.ops {
@@ -624,9 +631,33 @@ impl Compiler for OpenCLCompiler {
                     }
                 },
                 IROp::AssignMem { z, x } => {
+                    let (zt, z) = z.to_str(0);
+                    if !zt.is_empty() {
+                        for idx in zt.into_iter() {
+                            source += &f!("{indent}t0 = {idx};\n");
+                        }
+                    }
+                    let (xt, x) = x.to_str(1);
+                    if !xt.is_empty() {
+                        for idx in xt.into_iter() {
+                            source += &f!("{indent}t1 = {idx};\n");
+                        }
+                    }
                     source += &f!("{indent}{z} = {x};\n");
                 }
                 IROp::UnaryMem { z, x, op } => {
+                    let (zt, z) = z.to_str(0);
+                    if !zt.is_empty() {
+                        for idx in zt.into_iter() {
+                            source += &f!("{indent}t0 = {idx};\n");
+                        }
+                    }
+                    let (xt, x) = x.to_str(1);
+                    if !xt.is_empty() {
+                        for idx in xt.into_iter() {
+                            source += &f!("{indent}t1 = {idx};\n");
+                        }
+                    }
                     source += &f!(
                         "{indent}{z} = {}{x});\n",
                         match op {
@@ -642,6 +673,24 @@ impl Compiler for OpenCLCompiler {
                     );
                 }
                 IROp::BinaryMem { z, x, y, op } => {
+                    let (zt, z) = z.to_str(0);
+                    if !zt.is_empty() {
+                        for idx in zt.into_iter() {
+                            source += &f!("{indent}t0 = {idx};\n");
+                        }
+                    }
+                    let (xt, x) = x.to_str(1);
+                    if !xt.is_empty() {
+                        for idx in xt.into_iter() {
+                            source += &f!("{indent}t1 = {idx};\n");
+                        }
+                    }
+                    let (yt, y) = y.to_str(2);
+                    if !yt.is_empty() {
+                        for idx in yt.into_iter() {
+                            source += &f!("{indent}t2 = {idx};\n");
+                        }
+                    }
                     source += &f!(
                         "{indent}{z} = {};\n",
                         match op {

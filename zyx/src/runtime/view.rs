@@ -71,6 +71,12 @@ impl View {
         return self.shapes[0].iter().map(|dim| dim.size).collect()
     }
 
+    /// Strides
+    #[must_use]
+    fn strides(&self) -> Vec<usize> {
+        return self.shapes[0].iter().map(|dim| dim.stride).collect()
+    }
+
     /// Rank
     #[must_use]
     pub fn rank(&self) -> usize {
@@ -153,6 +159,7 @@ impl View {
 
     /// Permute view with axes
     pub fn permute(&mut self, axes: &[usize]) {
+        #[cfg(feature = "debug1")]
         libc_print::libc_println!("Permuting to {axes:?}");
         debug_assert_eq!(self.shapes[0].len(), axes.len());
         self.shapes[0] = axes.iter().map(|axis| self.shapes[0][*axis]).collect();
@@ -160,6 +167,7 @@ impl View {
 
     /// Reshape view into different shape
     pub fn reshape(&mut self, shape: &[usize]) {
+        libc_print::libc_println!("Len: {}. Reshaping {:?} to {:?}", self.shapes.len(), self.shape(), shape);
         debug_assert!(shape.len() > 0);
         debug_assert_eq!(self.numel(), shape.iter().product());
         if self.shape() == *shape {
@@ -188,8 +196,6 @@ impl View {
             self.shapes[0] = new_shape.clone();
             return
         }
-
-        //libc_print::libc_println!("Reshaping {:?} to {:?}", self.shape(), shape);
 
         // TODO perhaps we can merge more shapes with the previous shape
 
@@ -240,7 +246,12 @@ impl View {
             }
         }
 
+        libc_print::libc_println!("Reshape from shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
+
+        // If it could not be merged
         self.shapes.insert(0, new_shape);
+
+        libc_print::libc_println!("to shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
     }
 
     /// Bind index id to dimension, this is used for index names when generating indexes
@@ -257,6 +268,7 @@ impl View {
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
     pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
+        #[cfg(feature = "debug1")]
         libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
 
         // Optimize work size per thread
@@ -306,9 +318,11 @@ impl View {
         if self.rank() == 4 {
             // if reduce
             let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
+            #[cfg(feature = "debug1")]
             libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         } else {
+            #[cfg(feature = "debug1")]
             libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         }
@@ -319,14 +333,38 @@ impl View {
     /// Binds are indices into this dimension
     pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
         debug_assert_eq!(self.rank(), binds.len());
-        //libc_print::libc_println!("{self:?}");
+        #[cfg(feature = "debug1")]
+        libc_print::libc_println!("{self:?}");
         if self.is_contiguous() {
             return Index::Contiguous {
                 dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
                 //padding_condition: String::new(),
             }
         }
-        todo!()
+        if self.shapes.len() == 1 {
+            return Index::Strided {
+                dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
+            }
+        }
+        // + idx / ost % d * st
+        let mut reshapes = Vec::with_capacity(self.shapes.len() - 1);
+        for shape in self.shapes[1..].iter().rev() {
+            let mut ost = 1;
+            let mut reshape = Vec::with_capacity(shape.len());
+            for dim in shape.iter().rev() {
+                reshape.push((ost, dim.size, dim.stride));
+                ost *= dim.size;
+            }
+            reshape.reverse();
+            reshapes.push(reshape);
+        }
+        #[cfg(feature = "debug1")]
+        libc_print::libc_println!("Reshapes: {reshapes:?}");
+        return Index::Reshaped {
+            dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
+            reshapes,
+            padding_condition: String::new(), // TODO add correct padding condition
+        }
     }
 }
 
@@ -361,26 +399,11 @@ pub enum Index {
     /// Only if reshape could not be merged.
     Reshaped {
         /// Multiple dimension and multipliers
-        dims: Vec<BTreeMap<u32, usize>>,
+        dims: BTreeMap<u32, usize>,
+        reshapes: Vec<Vec<(usize, usize, usize)>>,
         /// When should the padding get applied?
         padding_condition: String,
     },
-}
-
-impl Display for Index {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Index::Contiguous { dims } | Index::Strided { dims } => {
-                let mut res = String::new();
-                for (id, mul) in dims {
-                    res += &format!("i{id}*{mul}+");
-                }
-                res.pop();
-                return f.write_str(&res)
-            },
-            Index::Reshaped { .. } => todo!(),
-        }
-    }
 }
 
 #[test]
