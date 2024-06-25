@@ -11,12 +11,11 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::string::String;
-use core::fmt::{Display, Formatter};
 use crate::runtime::view::{Index, View};
 use alloc::format as f;
 
 #[derive(Debug)]
-pub(super) struct IRKernel {
+pub(in crate::runtime) struct IRKernel {
     pub(super) global_work_size: [usize; 3],
     pub(super) local_work_size: [usize; 3],
     pub(super) args: Vec<IRKernelArg>,
@@ -38,7 +37,7 @@ pub(super) struct IRMem {
 
 impl IRMem {
     pub(super) fn to_str(&self, temp_id: u32) -> (Vec<String>, String) {
-        return if let Some(idx) = &self.index {
+        if let Some(idx) = &self.index {
             match idx {
                 Index::Contiguous { dims } | Index::Strided { dims } => {
                     let mut res = String::new();

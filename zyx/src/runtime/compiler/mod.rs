@@ -87,7 +87,7 @@ pub(super) struct CompiledGraph<Program> {
 }
 
 #[derive(Debug)]
-pub(crate) enum CompilerError {
+pub enum CompilerError {
     InitializationFailure(&'static str),
     OutOfDeviceMemory(&'static str),
     OutOfHostMemory(&'static str),

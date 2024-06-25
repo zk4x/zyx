@@ -1,10 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::format;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use core::fmt::Formatter;
-use core::fmt::Display;
 use crate::runtime::compiler::HWInfo;
 use crate::Scalar;
 
@@ -333,8 +330,8 @@ impl View {
     /// Binds are indices into this dimension
     pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
         debug_assert_eq!(self.rank(), binds.len());
-        #[cfg(feature = "debug1")]
-        libc_print::libc_println!("{self:?}");
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("{self:?}");
         if self.is_contiguous() {
             return Index::Contiguous {
                 dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),

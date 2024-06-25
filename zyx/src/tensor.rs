@@ -548,7 +548,7 @@ impl Tensor {
     #[must_use]
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().add(x.id, y.id) }
+        return Tensor { id: RT.lock().cmplt(x.id, y.id) }
     }
 
     #[must_use]
@@ -559,7 +559,7 @@ impl Tensor {
 
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, exponent);
-        return Tensor { id: RT.lock().add(x.id, y.id) }
+        return Tensor { id: RT.lock().pow(x.id, y.id) }
     }
 
     // ternary

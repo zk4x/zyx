@@ -76,22 +76,7 @@ impl OpenCLCompiler {
         // much better than that.
         if self.queue_size[self.queue_id] == 2 {
             let status = unsafe { clFinish(res) };
-            if status != CL_SUCCESS {
-                return Err(match status {
-                    -36 => CompilerError::GeneralExecutionError(
-                        "Unable to finish command queue. ERR -36: CL_INVALID_COMMAND_QUEUE",
-                    ),
-                    -5 => CompilerError::GeneralExecutionError(
-                        "Unable to finish command queue. ERR -5: CL_OUT_OF_RESOURCES",
-                    ),
-                    -6 => CompilerError::OutOfHostMemory(
-                        "Unable to finish command queue. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                    ),
-                    _ => CompilerError::GeneralExecutionError(
-                        "Unable to finish command queue. UNKNOWN ERROR",
-                    ),
-                });
-            }
+            handle_status(status, "Unable to finish execution of command queue.", &[-36, -5, -6])?;
             self.queue_size[self.queue_id] = 0;
         }
         self.queue_id = (self.queue_id + 1) % self.queues.len();
@@ -109,28 +94,15 @@ impl Compiler for OpenCLCompiler {
         let platform_ids = {
             // Get the number of platforms
             let mut count: cl_uint = 0;
-            let mut err = unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut count) };
-            if err != CL_SUCCESS {
-                return Err(CompilerError::InitializationFailure(match err {
-                    -30 => "Unable to get OpenCL platform ids. ERR -30: CL_INVALID_VALUE",
-                    -6 => "Unable to get OpenCL platform ids. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                    _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
-                }));
-            } else if count > 0 {
+            let status = unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut count) };
+            handle_status(status, "Unable to get OpenCL platform ids.", &[-30, -6])?;
+            if count > 0 {
                 // Get the platform ids.
                 let len = count as usize;
                 let mut ids: Vec<*mut c_void> = Vec::with_capacity(len);
-                unsafe {
-                    err = clGetPlatformIDs(count, ids.as_mut_ptr(), ptr::null_mut());
-                    ids.set_len(len);
-                };
-                if CL_SUCCESS != err {
-                    return Err(CompilerError::InitializationFailure(match err {
-                        -30 => "Unable to get OpenCL platform ids. ERR -30: CL_INVALID_VALUE",
-                        -6 => "Unable to get OpenCL platform ids. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                        _ => "Unable to get OpenCL platform ids. UNKNOWN ERROR",
-                    }));
-                }
+                let status = unsafe { clGetPlatformIDs(count, ids.as_mut_ptr(), ptr::null_mut()) };
+                handle_status(status, "Unable to get OpenCL platform ids.", &[-30, -6])?;
+                unsafe { ids.set_len(len) };
                 ids
             } else {
                 Vec::new()
@@ -145,17 +117,7 @@ impl Compiler for OpenCLCompiler {
         #[cfg(feature = "debug1")]
         libc_print::libc_println!(
             "Using OpenCL platform: {}",
-            String::from_utf8(
-                get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME).map_err(|err| {
-                    CompilerError::InitializationFailure(match err {
-                        -32 => "Unable to get OpenCL platform name. ERR -32: CL_INVALID_PLATFORM",
-                        -30 => "Unable to get OpenCL platform name. ERR -30: CL_INVALID_VALUE",
-                        -6 => "Unable to get OpenCL platform name. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                        _ => "Unable to get OpenCL platform name. UNKNOWN ERROR",
-                    })
-                })?
-            )
-            .unwrap()
+            String::from_utf8(get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME)?).unwrap()
         );
         let device_ids = get_device_ids(platform, CL_DEVICE_TYPE_ALL).map_err(|err| {
             CompilerError::InitializationFailure(match err {
@@ -335,44 +297,17 @@ impl Compiler for OpenCLCompiler {
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
-        let mut err = CL_SUCCESS;
+        let mut status = CL_SUCCESS;
         let memory = unsafe {
             clCreateBuffer(
                 self.context,
                 CL_MEM_READ_ONLY,
                 byte_size,
                 ptr::null_mut(),
-                &mut err,
+                &mut status,
             )
         };
-        if err != CL_SUCCESS {
-            return Err(match err {
-                -34 => CompilerError::GeneralExecutionError(
-                    "Unable to allocate memory. ERR -34: CL_INVALID_CONTEXT",
-                ),
-                -64 => CompilerError::GeneralExecutionError(
-                    "Unable to allocate memory. ERR -64: CL_INVALID_PROPERTY",
-                ),
-                -30 => CompilerError::GeneralExecutionError(
-                    "Unable to allocate memory. ERR -30: CL_INVALID_VALUE",
-                ),
-                -61 => CompilerError::GeneralExecutionError(
-                    "Unable to allocate memory. ERR -61: CL_INVALID_BUFFER_SIZE",
-                ),
-                -4 => CompilerError::OutOfDeviceMemory(
-                    "Unable to allocate memory. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to allocate memory. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to allocate memory. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => {
-                    CompilerError::GeneralExecutionError("Unable to allocate memory. UNKNOWN ERROR")
-                }
-            });
-        }
+        handle_status(status, "Unable to allocate memory.", &[-34, -64, -30, -61, -4, -5, -6])?;
         Ok(Self::Buffer {
             memory,
             event: ptr::null_mut(),
@@ -402,57 +337,10 @@ impl Compiler for OpenCLCompiler {
                 &mut buffer.event,
             )
         };
-        if status != CL_SUCCESS {
-            return Err(match status {
-                -36 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -36: CL_INVALID_COMMAND_QUEUE",
-                ),
-                -34 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -34: CL_INVALID_CONTEXT",
-                ),
-                -38 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -38: CL_INVALID_MEM_OBJECT",
-                ),
-                -30 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -30: CL_INVALID_VALUE",
-                ),
-                -57 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
-                ),
-                -13 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
-                ),
-                -14 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-                ),
-                -4 => CompilerError::OutOfDeviceMemory(
-                    "Unable to write buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
-                ),
-                -59 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -59: CL_INVALID_OPERATION",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to write buffer. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to write buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => CompilerError::GeneralExecutionError("Unable to write buffer. UNKNOWN ERROR"),
-            });
-        }
+        handle_status(status, "Unable to write buffer.", &[-36, -34, -38, -30, -57, -13, -14, -4, -59, -5, -6])?;
+        // Immediattely synchronize because we do not know the lifetime of data
         let status = unsafe { clWaitForEvents(1, (&[buffer.event]).as_ptr().cast()) };
-        if status != CL_SUCCESS {
-            return Err(match status {
-                -30 => CompilerError::GeneralExecutionError("Unable to finish buffer write event. ERR -30: CL_INVALID_VALUE"),
-                -34 => CompilerError::GeneralExecutionError("Unable to finish buffer write event. ERR -34: CL_INVALID_CONTEXT"),
-                -58 => CompilerError::GeneralExecutionError("Unable to finish buffer write event. ERR -58: CL_INVALID_EVENT"),
-                -14 => CompilerError::GeneralExecutionError("Unable to finish buffer write event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST"),
-                -5 => CompilerError::GeneralExecutionError("Unable to finish buffer write event. ERR -5: CL_OUT_OF_RESOURCES"),
-                -6 => CompilerError::OutOfDeviceMemory("Unable to finish buffer write event. ERR -6: CL_OUT_OF_MEMORY"),
-                _ => CompilerError::GeneralExecutionError("Unable to finish buffer write event. UNKNOWN ERROR"),
-            });
-        }
-        Ok(())
+        return handle_status(status, "Unable to finish buffer write event.", &[-30, -34, -58, -14, -5, -6])
     }
 
     fn load_memory<T: Scalar>(
@@ -460,7 +348,7 @@ impl Compiler for OpenCLCompiler {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
-        debug_assert!(!buffer.memory.is_null(), "Trying to read uninitialized memory. Internal bug.");
+        debug_assert!(!buffer.memory.is_null(), "Trying to read null memory. Internal bug.");
         debug_assert!(!buffer.event.is_null(), "Trying to read uninitialized memory. Internal bug.");
         cl_wait_for_events(&[buffer.event])?;
         let mut data: Vec<T> = Vec::with_capacity(length);
@@ -479,44 +367,7 @@ impl Compiler for OpenCLCompiler {
                 &mut event,
             )
         };
-        if status != CL_SUCCESS {
-            return Err(match status {
-                -36 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -36: CL_INVALID_COMMAND_QUEUE",
-                ),
-                -34 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -34: CL_INVALID_CONTEXT",
-                ),
-                -38 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -38: CL_INVALID_MEM_OBJECT",
-                ),
-                -30 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -30: CL_INVALID_VALUE",
-                ),
-                -57 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
-                ),
-                -13 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
-                ),
-                -14 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-                ),
-                -4 => CompilerError::OutOfDeviceMemory(
-                    "Unable to read buffer. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
-                ),
-                -59 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -59: CL_INVALID_OPERATION",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to read buffer. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to read buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => CompilerError::GeneralExecutionError("Unable to read buffer. UNKNOWN ERROR"),
-            });
-        }
+        handle_status(status, "Unable to read buffer.", &[-36, -34, -38, -30, -57, -13, -14, -4, -59, -5, -6])?;
         cl_wait_for_events(&[event])?;
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(length) }
@@ -525,40 +376,12 @@ impl Compiler for OpenCLCompiler {
 
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
         let status = unsafe { clReleaseMemObject(buffer.memory) };
-        if status != CL_SUCCESS {
-            return Err(match status {
-                -38 => CompilerError::GeneralExecutionError(
-                    "Unable to release buffer. ERR -38: CL_INVALID_MEM_OBJECT",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to release buffer. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to release buffer. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => {
-                    CompilerError::GeneralExecutionError("Unable to release buffer. UNKNOWN ERROR")
-                }
-            });
-        }
+        handle_status(status, "Unable to release buffer.", &[-38, -5, -6])?;
         if !buffer.event.is_null() {
             let status = unsafe { clReleaseEvent(buffer.event) };
+            handle_status(status, "Unable to release event.", &[-58, -5, -6])?;
         } else {
             libc_print::libc_println!("Warning: A buffer was allocated, but never initialized.");
-        }
-        if status != CL_SUCCESS {
-            return Err(match status {
-                -58 => CompilerError::GeneralExecutionError(
-                    "Unable to release event. ERR -58: CL_INVALID_EVENT",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to release event. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to release event. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => CompilerError::GeneralExecutionError("Unable to release event. UNKNOWN ERROR"),
-            });
         }
         return Ok(())
     }
@@ -740,33 +563,7 @@ impl Compiler for OpenCLCompiler {
         let mut status = CL_SUCCESS;
         let kernel =
             unsafe { clCreateKernel(program.program, program_name.as_ptr().cast(), &mut status) };
-        if status != CL_SUCCESS {
-            return Err(CompilerError::GeneralExecutionError(match status {
-                -44 => "Unable to create kernel. ERR -: CL_INVALID_PROGRAM",
-                -45 => "Unable to create kernel. ERR -: CL_INVALID_PROGRAM_EXECUTABLE",
-                -46 => "Unable to create kernel. ERR -: CL_INVALID_KERNEL_NAME",
-                -47 => "Unable to create kernel. ERR -: CL_INVALID_KERNEL_DEFINITION",
-                -30 => "Unable to create kernel. ERR -: CL_INVALID_VALUE",
-                -5 => "Unable to create kernel. ERR -: CL_OUT_OF_RESOURCES",
-                -6 => "Unable to create kernel. ERR -: CL_OUT_OF_HOST_MEMORY",
-                _ => "Unable to create kernel. UNKNOWN ERROR",
-            }));
-        }
-        let kernel_arg_err_handler = |err| {
-            CompilerError::GeneralExecutionError(match err {
-                -48 => "Unable to set kernel arg. ERR -48: CL_INVALID_KERNEL",
-                -49 => "Unable to set kernel arg. ERR -49: CL_INVALID_ARG_INDEX",
-                -50 => "Unable to set kernel arg. ERR -50: CL_INVALID_ARG_VALUE",
-                -38 => "Unable to set kernel arg. ERR -38: CL_INVALID_MEM_OBJECT",
-                -41 => "Unable to set kernel arg. ERR -41: CL_INVALID_SAMPLER",
-                -33 => "Unable to set kernel arg. ERR -33: CL_INVALID_DEVICE_QUEUE",
-                -51 => "Unable to set kernel arg. ERR -51: CL_INVALID_ARG_SIZE",
-                -72 => "Unable to set kernel arg. ERR -: CL_MAX_SIZE_RESTRICTION_EXCEEDED",
-                -5 => "Unable to set kernel arg. ERR -5: CL_OUT_OF_RESOURCES",
-                -6 => "Unable to set kernel arg. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                _ => "Unable to set kernel arg. UNKNOWN ERROR",
-            })
-        };
+        handle_status(status, "Unable to create kernel.", &[-44, -45, -46, -47, -30, -5, -6])?;
         let mut events = Vec::new();
         let mut i = 0;
         for arg in &mut *args {
@@ -780,9 +577,7 @@ impl Compiler for OpenCLCompiler {
             status = unsafe {
                 clSetKernelArg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
             };
-            if status != CL_SUCCESS {
-                return Err(kernel_arg_err_handler(status));
-            }
+            handle_status(status, "Unable to set kernel arg.", &[-48, -49, -50, -38, -41, -33, -51, -72, -5, -6])?;
             i += 1;
         }
         let mut global_work_size = program.global_work_size;
@@ -809,43 +604,11 @@ impl Compiler for OpenCLCompiler {
                 &mut event,
             )
         };
-        if status != CL_SUCCESS {
-            return Err(CompilerError::GeneralExecutionError(match status {
-                -45 => "Unable to enqueue kernel. ERR -45: CL_INVALID_PROGRAM_EXECUTABLE",
-                -36 => "Unable to enqueue kernel. ERR -36: CL_INVALID_COMMAND_QUEUE",
-                -48 => "Unable to enqueue kernel. ERR -48: CL_INVALID_KERNEL",
-                -34 => "Unable to enqueue kernel. ERR -34: CL_INVALID_CONTEXT",
-                -52 => "Unable to enqueue kernel. ERR -52: CL_INVALID_KERNEL_ARGS",
-                -53 => "Unable to enqueue kernel. ERR -53: CL_INVALID_WORK_DIMENSION",
-                -63 => "Unable to enqueue kernel. ERR -63: CL_INVALID_GLOBAL_WORK_SIZE",
-                -56 => "Unable to enqueue kernel. ERR -56: CL_INVALID_GLOBAL_OFFSET",
-                -54 => "Unable to enqueue kernel. ERR -54: CL_INVALID_WORK_GROUP_SIZE",
-                -55 => "Unable to enqueue kernel. ERR -55: CL_INVALID_WORK_ITEM_SIZE",
-                -13 => "Unable to enqueue kernel. ERR -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
-                -40 => "Unable to enqueue kernel. ERR -40: CL_INVALID_IMAGE_SIZE",
-                -10 => "Unable to enqueue kernel. ERR -10: CL_IMAGE_FORMAT_NOT_SUPPORTED",
-                -5 => "Unable to enqueue kernel. ERR -5: CL_OUT_OF_RESOURCES",
-                -4 => "Unable to enqueue kernel. ERR -4: CL_MEM_OBJECT_ALLOCATION_FAILURE",
-                -57 => "Unable to enqueue kernel. ERR -57: CL_INVALID_EVENT_WAIT_LIST",
-                -59 => "Unable to enqueue kernel. ERR -59: CL_INVALID_OPERATION",
-                -6 => "Unable to enqueue kernel. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                _ => "Unable to enqueue kernel. UNKNOWN ERROR",
-            }));
-        }
+        handle_status(status, "Unable to enqueue kernel.", &[-45, -36, -48, -34, -52, -53, -63, -56, -54, -55, -13, -40, -10, -5, -4, -57, -59, -6])?;
         #[cfg(feature = "debug1")]
         {
-            let err = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
-            if err != CL_SUCCESS {
-                return Err(CompilerError::GeneralExecutionError(match err {
-                    -30 => "Unable to finish kernel execution event. ERR -30: CL_INVALID_VALUE",
-                    -34 => "Unable to finish kernel execution event. ERR -34: CL_INVALID_CONTEXT",
-                    -58 => "Unable to finish kernel execution event. ERR -58: CL_INVALID_EVENT",
-                    -14 => "Unable to finish kernel execution event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
-                    -5 => "Unable to finish kernel execution event. ERR -5: CL_OUT_OF_RESOURCES",
-                    -6 => "Unable to finish kernel execution event. ERR -6: CL_OUT_OF_MEMORY",
-                    _ => "Unable to finish kernel execution event. UNKNOWN ERROR",
-                }));
-            }
+            let status = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
+            handle_status(status, "Unable to finish kernel execution event.", &[-30, -34, -58, -14, -5, -6])?;
             /*let elapsed_nanos = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed_nanos as f64 / 1000000.;
             println!(
@@ -867,22 +630,7 @@ impl Compiler for OpenCLCompiler {
 
     fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
         let status = unsafe { clReleaseProgram(program.program) };
-        if status != CL_SUCCESS {
-            return Err(match status {
-                -44 => CompilerError::GeneralExecutionError(
-                    "Unable to release program. ERR -44: CL_INVALID_PROGRAM",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to release program. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to release program. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => {
-                    CompilerError::GeneralExecutionError("Unable to release program. UNKNOWN ERROR")
-                }
-            });
-        }
+        handle_status(status, "Unable to release program", &[-44, -5, -6])?;
         Ok(())
     }
 }
@@ -913,35 +661,17 @@ impl OpenCLProgram {
         #[cfg(feature = "debug1")]
         libc_print::libc_println!("{source}");
         let sources: &[&str] = &[source.as_str()];
-        let mut err = CL_SUCCESS;
+        let mut status = CL_SUCCESS;
         let program = unsafe {
             clCreateProgramWithSource(
                 context,
                 1,
                 sources.as_ptr().cast(),
                 &[source.len()] as *const usize,
-                &mut err,
+                &mut status,
             )
         };
-        if err != CL_SUCCESS {
-            return Err(match err {
-                -34 => CompilerError::GeneralExecutionError(
-                    "Unable to compile program. ERR -34: CL_INVALID_CONTEXT",
-                ),
-                -30 => CompilerError::GeneralExecutionError(
-                    "Unable to compile program. ERR -30: CL_INVALID_VALUE",
-                ),
-                -5 => CompilerError::GeneralExecutionError(
-                    "Unable to compile program. ERR -5: CL_OUT_OF_RESOURCES",
-                ),
-                -6 => CompilerError::OutOfHostMemory(
-                    "Unable to compile program. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                ),
-                _ => {
-                    CompilerError::GeneralExecutionError("Unable to compile program. UNKNOWN ERROR")
-                }
-            });
-        };
+        handle_status(status, "Unable to compile program.", &[-34, -30, -5, -6])?;
         let devices = devices.iter().copied().collect::<Vec<*mut c_void>>();
         let err = unsafe {
             clBuildProgram(
@@ -957,35 +687,12 @@ impl OpenCLProgram {
             )
         };
         if err != CL_SUCCESS {
-            panic!("{}", String::from_utf8_lossy(&get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG).map_err(
-                |err| {
-                    match err {
-                        -33 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE"),
-                        -30 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE"),
-                        -44 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM"),
-                        -5 => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES"),
-                        -6 => CompilerError::OutOfHostMemory("Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY"),
-                        _ => CompilerError::GeneralExecutionError("Unable to get info about failed compilation. UNKNOWN ERROR"),
-                    }
-                }
-            )?));
-            /*return Err(ZyxError::CompileError(Box::new(f!(
-                "{err}\n{}",
-                String::from_utf8_lossy(
-                    &get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG).map_err(
-                        |err| {
-                            ZyxError::BackendError(match err {
-                                -33 => "Unable to get info about failed compilation. ERR -33: CL_INVALID_DEVICE",
-                                -30 => "Unable to get info about failed compilation. ERR -30: CL_INVALID_VALUE",
-                                -44 => "Unable to get info about failed compilation. ERR -44: CL_INVALID_PROGRAM",
-                                -5 => "Unable to get info about failed compilation. ERR -5: CL_OUT_OF_RESOURCES",
-                                -6 => "Unable to get info about failed compilation. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                                _ => "Unable to get info about failed compilation. UNKNOWN ERROR",
-                            })
-                        }
-                    )?
-                ).into_owned()
-            ))));*/
+            // TODO perhaps return error instead of panic
+            let build_log = get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG);
+            match build_log {
+                Ok(build_log) => panic!("{}", String::from_utf8_lossy(&build_log)),
+                Err(status) => handle_status(status, "Unable to get info about failed compilation.", &[-33, -30, -44, -5, -6])?,
+            }
         }
         Ok(Self {
             name,
@@ -999,18 +706,7 @@ impl OpenCLProgram {
 
 fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), CompilerError> {
     let status = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
-    if status != CL_SUCCESS {
-        return Err(match status {
-            -30 => CompilerError::GeneralExecutionError("Unable to finish buffer read event. ERR -30: CL_INVALID_VALUE"),
-            -34 => CompilerError::GeneralExecutionError("Unable to finish buffer read event. ERR -34: CL_INVALID_CONTEXT"),
-            -58 => CompilerError::GeneralExecutionError("Unable to finish buffer read event. ERR -58: CL_INVALID_EVENT"),
-            -14 => CompilerError::GeneralExecutionError("Unable to finish buffer read event. ERR -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST"),
-            -5 => CompilerError::OutOfDeviceMemory("Unable to finish buffer read event. ERR -5: CL_OUT_OF_RESOURCES"),
-            -6 => CompilerError::OutOfDeviceMemory("Unable to finish buffer read event. ERR -6: CL_OUT_OF_MEMORY"),
-            _ => CompilerError::GeneralExecutionError("Unable to finish buffer read event. UNKNOWN ERROR"),
-        });
-    }
-    return Ok(());
+    return handle_status(status, "Unable to finish buffer read event.", &[-30, -34, -58, -14, -5, -6])
 }
 
 fn get_program_build_data(
@@ -1152,45 +848,74 @@ fn get_device_ids(
 fn get_platform_data(
     platform: cl_platform_id,
     param_name: opencl_sys::cl_platform_info,
-) -> Result<Vec<u8>, cl_int> {
-    fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
-        let mut size: usize = 0;
+) -> Result<Vec<u8>, CompilerError> {
+    let mut size: usize = 0;
+    let status = unsafe {
+        opencl_sys::clGetPlatformInfo(platform, param_name, 0, ptr::null_mut(), &mut size)
+    };
+    handle_status(status, "Unable to get platform info.", &[-32, -30, -6])?;
+    if 0 < size {
+        let count = size / core::mem::size_of::<u8>();
+        let mut data: Vec<u8> = Vec::with_capacity(count);
         let status = unsafe {
-            opencl_sys::clGetPlatformInfo(object, param_name, 0, ptr::null_mut(), &mut size)
+            data.set_len(count);
+            opencl_sys::clGetPlatformInfo(
+                platform,
+                param_name,
+                size,
+                data.as_mut_ptr() as *mut c_void,
+                ptr::null_mut(),
+            )
         };
-        if CL_SUCCESS != status {
-            return Err(status)
-        } else {
-            return Ok(size)
-        }
+        handle_status(status, "Unable to get platform info.", &[-32, -30, -6])?;
+        return Ok(data)
+    } else {
+        return Ok(Vec::default())
     }
-    let size = get_size(platform, param_name)?;
-    fn get_vector(
-        object: *mut c_void,
-        param_name: cl_uint,
-        size: usize,
-    ) -> Result<Vec<u8>, cl_int> {
-        if 0 < size {
-            let count = size / core::mem::size_of::<u8>();
-            let mut data: Vec<u8> = Vec::with_capacity(count);
-            let status = unsafe {
-                data.set_len(count);
-                opencl_sys::clGetPlatformInfo(
-                    object,
-                    param_name,
-                    size,
-                    data.as_mut_ptr() as *mut c_void,
-                    ptr::null_mut(),
-                )
-            };
-            if CL_SUCCESS != status {
-                return Err(status)
-            } else {
-                return Ok(data)
-            }
-        } else {
-            return Ok(Vec::default())
-        }
+}
+
+fn handle_status(status: cl_int, err_msg: &str, possible_errors: &[cl_int]) -> Result<(), CompilerError> {
+    if status == CL_SUCCESS {
+        return Ok(())
+    } else {
+        debug_assert!(possible_errors.contains(&status), "Internal bug. OpenCL error out of range of expected errors.");
+        #[cfg(feature = "debug1")]
+        libc_print::libc_println!("Error: {err_msg}, OpenCL error code {status}");
+        return Err(match status {
+            -4 => CompilerError::OutOfDeviceMemory("OpenCL Err -4: CL_MEM_OBJECT_ALLOCATION_FAILURE"),
+            -5 => CompilerError::GeneralExecutionError("OpenCL Err -5: CL_OUT_OF_RESOURCES"),
+            -6 => CompilerError::OutOfHostMemory("OpenCL Err -6: CL_OUT_OF_HOST_MEMORY"),
+            -10 => CompilerError::GeneralExecutionError("OpenCL Err -10: CL_IMAGE_FORMAT_NOT_SUPPORTED"),
+            -13 => CompilerError::GeneralExecutionError("OpenCL Err -13: CL_MISALIGNED_SUB_BUFFER_OFFSET"),
+            -14 => CompilerError::GeneralExecutionError("OpenCL Err -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST"),
+            -30 => CompilerError::GeneralExecutionError("OpenCL Err -30: CL_INVALID_VALUE"),
+            -33 => CompilerError::GeneralExecutionError("OpenCL Err -33: CL_INVALID_DEVICE_QUEUE"),
+            -34 => CompilerError::GeneralExecutionError("OpenCL Err -34: CL_INVALID_CONTEXT"),
+            -36 => CompilerError::GeneralExecutionError("OpenCL Err -36: CL_INVALID_COMMAND_QUEUE"),
+            -38 => CompilerError::GeneralExecutionError("OpenCL Err -38: CL_INVALID_MEM_OBJECT"),
+            -40 => CompilerError::GeneralExecutionError("OpenCL Err -40: CL_INVALID_IMAGE_SIZE"),
+            -41 => CompilerError::GeneralExecutionError("OpenCL Err -41: CL_INVALID_SAMPLER"),
+            -44 => CompilerError::GeneralExecutionError("OpenCL Err -44: CL_INVALID_PROGRAM"),
+            -45 => CompilerError::GeneralExecutionError("OpenCL Err -45: CL_INVALID_PROGRAM_EXECUTABLE"),
+            -46 => CompilerError::GeneralExecutionError("OpenCL Err -46: CL_INVALID_KERNEL_NAME"),
+            -47 => CompilerError::GeneralExecutionError("OpenCL Err -47: CL_INVALID_KERNEL_DEFINITION"),
+            -48 => CompilerError::GeneralExecutionError("OpenCL Err -48: CL_INVALID_KERNEL"),
+            -49 => CompilerError::GeneralExecutionError("OpenCL Err -49: CL_INVALID_ARG_INDEX"),
+            -50 => CompilerError::GeneralExecutionError("OpenCL Err -50: CL_INVALID_ARG_VALUE"),
+            -51 => CompilerError::GeneralExecutionError("OpenCL Err -51: CL_INVALID_ARG_SIZE"),
+            -52 => CompilerError::GeneralExecutionError("OpenCL Err -52: CL_INVALID_KERNEL_ARGS"),
+            -53 => CompilerError::GeneralExecutionError("OpenCL Err -53: CL_INVALID_WORK_DIMENSION"),
+            -54 => CompilerError::GeneralExecutionError("OpenCL Err -54: CL_INVALID_WORK_GROUP_SIZE"),
+            -55 => CompilerError::GeneralExecutionError("OpenCL Err -55: CL_INVALID_WORK_ITEM_SIZE"),
+            -56 => CompilerError::GeneralExecutionError("OpenCL Err -56: CL_INVALID_GLOBAL_OFFSET"),
+            -57 => CompilerError::GeneralExecutionError("OpenCL Err -57: CL_INVALID_EVENT_WAIT_LIST"),
+            -58 => CompilerError::GeneralExecutionError("OpenCL Err -58: CL_INVALID_EVENT"),
+            -59 => CompilerError::GeneralExecutionError("OpenCL Err -59: CL_INVALID_OPERATION"),
+            -61 => CompilerError::GeneralExecutionError("OpenCL Err -61: CL_INVALID_BUFFER_SIZE"),
+            -63 => CompilerError::GeneralExecutionError("OpenCL Err -63: CL_INVALID_GLOBAL_WORK_SIZE"),
+            -64 => CompilerError::GeneralExecutionError("OpenCL Err -64: CL_INVALID_PROPERTY"),
+            -72 => CompilerError::GeneralExecutionError("OpenCL Err -72: CL_MAX_SIZE_RESTRICTION_EXCEEDED"),
+            _ => CompilerError::GeneralExecutionError("OpenCL Err: UNKNOWN ERROR"),
+        })
     }
-    return get_vector(platform, param_name, size)
 }

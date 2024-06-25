@@ -11,7 +11,7 @@ pub(super) struct InterpretedBackend<I: Interpreter> {
 }
 
 #[derive(Debug)]
-pub(crate) enum InterpreterError {
+pub enum InterpreterError {
     InitializationFailure,
     MemoryAllocationFailure,
     BufferDoesNotExist,
