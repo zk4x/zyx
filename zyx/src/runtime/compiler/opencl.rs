@@ -1,6 +1,7 @@
 use crate::runtime::compiler::ir::{IRKernel, IRKernelArg, IROp};
 use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
-use crate::{DType, Scalar};
+use crate::dtype::DType;
+use crate::scalar::Scalar;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::ffi::CString;
@@ -228,14 +229,14 @@ impl Compiler for OpenCLCompiler {
         for i in 0..max_work_item_dims {
             let max_dim_size: usize = unsafe {
                 core::mem::transmute([
-                    mwis[i * 8 + 0],
-                    mwis[i * 8 + 1],
-                    mwis[i * 8 + 2],
-                    mwis[i * 8 + 3],
-                    mwis[i * 8 + 4],
-                    mwis[i * 8 + 5],
-                    mwis[i * 8 + 6],
-                    mwis[i * 8 + 7],
+                    mwis[i*8+0],
+                    mwis[i*8+1],
+                    mwis[i*8+2],
+                    mwis[i*8+3],
+                    mwis[i*8+4],
+                    mwis[i*8+5],
+                    mwis[i*8+6],
+                    mwis[i*8+7],
                 ])
             };
             max_work_item_sizes.push(max_dim_size);
@@ -381,6 +382,7 @@ impl Compiler for OpenCLCompiler {
             let status = unsafe { clReleaseEvent(buffer.event) };
             handle_status(status, "Unable to release event.", &[-58, -5, -6])?;
         } else {
+            #[cfg(feature = "debug1")]
             libc_print::libc_println!("Warning: A buffer was allocated, but never initialized.");
         }
         return Ok(())
@@ -418,14 +420,12 @@ impl Compiler for OpenCLCompiler {
         source += &f!("  unsigned int i3 = get_local_id(1); /* 0..{} */\n", kernel.local_work_size[1]);
         source += &f!("  unsigned int i5 = get_group_id(2); /* 0..{} */\n", kernel.global_work_size[2]);
         source += &f!("  unsigned int i6 = get_local_id(2); /* 0..{} */\n", kernel.local_work_size[2]);
-        source += "  unsigned int t0;\n";
-        source += "  unsigned int t1;\n";
-        source += "  unsigned int t2;\n";
+        source += "  unsigned int t0, t1, t2;\n";
 
         // Transpile kernel ops, skip ends of global and local loops
         for op in &kernel.ops {
             match op {
-                IROp::InitMem {
+                IROp::DeclareMem {
                     id,
                     scope,
                     read_only,
@@ -433,7 +433,19 @@ impl Compiler for OpenCLCompiler {
                     dtype,
                 } => match scope {
                     Scope::Global => {}
-                    Scope::Local => todo!(),
+                    Scope::Local => {
+                        let read_only = if *read_only { "const " } else { "" };
+                        let size = if *len > 1 {
+                            f!("[{len}]")
+                        } else {
+                            String::new()
+                        };
+                        source += &f!(
+                            "{indent}__local {read_only}{} l{id}{};\n",
+                            dtype.ocl(),
+                            size,
+                        );
+                    }
                     Scope::Register => {
                         let read_only = if *read_only { "const " } else { "" };
                         let size = if *len > 1 {
@@ -442,13 +454,8 @@ impl Compiler for OpenCLCompiler {
                             String::new()
                         };
                         source += &f!(
-                            "{indent}{read_only}{} {}{id}{};\n",
+                            "{indent}{read_only}{} r{id}{};\n",
                             dtype.ocl(),
-                            match scope {
-                                Scope::Global => "g",
-                                Scope::Local => "l",
-                                Scope::Register => "r",
-                            },
                             size,
                         );
                     }
@@ -535,6 +542,14 @@ impl Compiler for OpenCLCompiler {
                     indent.pop();
                     indent.pop();
                     source += &f!("{indent}}}\n");
+                }
+                IROp::Barrier { scope } => {
+                    let scope = match scope {
+                        Scope::Register => panic!(),
+                        Scope::Local => "LOCAL",
+                        Scope::Global => "GLOBAL",
+                    };
+                    source += &f!("{indent}barrier(CLK_{scope}_MEM_FENCE);\n");
                 }
             }
         }

@@ -12,7 +12,7 @@ use core::cell::OnceCell;
 use core::ops::Index;
 use node::Node;
 use rand::rngs::SmallRng;
-use crate::{IntoAxes, IntoShape};
+use crate::shape::{IntoAxes, IntoShape};
 
 mod compiler;
 mod interpreter;
@@ -473,23 +473,27 @@ impl Runtime {
     }
 
     pub(crate) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        return self.push(Node::Add { x, y });
+        return self.push(Node::Sub { x, y });
     }
 
     pub(crate) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        return self.push(Node::Add { x, y });
+        return self.push(Node::Mul { x, y });
     }
 
     pub(crate) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        return self.push(Node::Add { x, y });
+        return self.push(Node::Div { x, y });
     }
 
     pub(crate) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        return self.push(Node::Add { x, y });
+        return self.push(Node::Pow { x, y });
     }
 
     pub(crate) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        return self.push(Node::Add { x, y });
+        return self.push(Node::Cmplt { x, y });
+    }
+
+    pub(crate) fn where_(&mut self, x: TensorId, y: TensorId, z: TensorId) -> TensorId {
+        return self.push(Node::Where { x, y, z });
     }
 }
 

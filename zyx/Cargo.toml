@@ -33,7 +33,7 @@ libc-print = { version = "0.1.23", default-features = false, optional = true }
 [features]
 default = ["debug1"] # TODO remove default from release build
 
-#
+# Debug, prints GPU kernels
 debug1 = ["dep:libc-print"]
 
 #std = []

@@ -1,5 +1,6 @@
 use crate::runtime::interpreter::{Interpreter, InterpreterError};
-use crate::{DType, Scalar};
+use crate::dtype::DType;
+use crate::scalar::Scalar;
 use alloc::vec::Vec;
 use half::{bf16, f16};
 use num_complex::Complex;

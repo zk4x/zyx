@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use crate::runtime::compiler::HWInfo;
-use crate::Scalar;
+use crate::scalar::Scalar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Dimension {
@@ -70,7 +70,7 @@ impl View {
 
     /// Strides
     #[must_use]
-    fn strides(&self) -> Vec<usize> {
+    pub fn strides(&self) -> Vec<usize> {
         return self.shapes[0].iter().map(|dim| dim.stride).collect()
     }
 
@@ -84,6 +84,16 @@ impl View {
     #[must_use]
     pub fn numel(&self) -> usize {
         return self.shapes[0].iter().map(|dim| dim.size).product()
+    }
+
+    /// Was the last shape expanded?
+    /// This is used for local memory tiling.
+    /// It may later be updated to work with expands
+    /// in all shapes, not only the last one.
+    pub fn is_expanded(&self) -> bool {
+        //#[cfg(feature="debug1")]
+        //libc_print::libc_println!("Strides for is_expanded: {:?}", self.strides());
+        return self.strides().contains(&0)
     }
 
     #[must_use]
@@ -156,15 +166,15 @@ impl View {
 
     /// Permute view with axes
     pub fn permute(&mut self, axes: &[usize]) {
-        #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Permuting to {axes:?}");
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("Permuting to {axes:?}");
         debug_assert_eq!(self.shapes[0].len(), axes.len());
         self.shapes[0] = axes.iter().map(|axis| self.shapes[0][*axis]).collect();
     }
 
     /// Reshape view into different shape
     pub fn reshape(&mut self, shape: &[usize]) {
-        libc_print::libc_println!("Len: {}. Reshaping {:?} to {:?}", self.shapes.len(), self.shape(), shape);
+        //libc_print::libc_println!("Len: {}. Reshaping {:?} to {:?}", self.shapes.len(), self.shape(), shape);
         debug_assert!(shape.len() > 0);
         debug_assert_eq!(self.numel(), shape.iter().product());
         if self.shape() == *shape {
@@ -200,55 +210,58 @@ impl View {
 
         // Merge dimension splits (also works for unsqueeze)
         if shape.len() > self.shapes[0].len() {
-            let mut new_binds = Vec::new();
             let mut merge_possible = true;
             let mut di = self.shapes[0].len() - 1; // index to old shape
             let mut new_shape = Vec::new();
             let mut expansion_stride = 1;
             // Iterate in reverse
-            for dim in shape.iter().copied().rev() {
-                if dim == self.shapes[0][di].size {
+            for size in shape.iter().copied().rev() {
+                let old_dim = self.shapes[0][di];
+                //libc_print::libc_println!("New dim {}, old dim {}", size, old_dim.size);
+                if size == old_dim.size {
                     //new_binds.insert(0, self.binds[di]);
-                    new_shape.insert(0, self.shapes[0][di]);
+                    new_shape.insert(0, old_dim);
                     if di > 0 {
                         di -= 1;
+                    } else {
+                        break
                     }
                     expansion_stride = 1;
-                } else if dim < self.shapes[0][di].size {
+                } else if size < old_dim.size {
                     // If this dimension was padded, we probably can't merge
-                    if self.shapes[0][di].len != self.shapes[0][di].size ||
-                        self.shapes[0][di].shift != self.shapes[0][di].size {
+                    //libc_print::libc_println!("Old len {}, old size {}, old stride {}", old_dim.len, old_dim.size, old_dim.stride);
+                    if old_dim.stride != 0 && (old_dim.len != old_dim.size || old_dim.shift != old_dim.len) {
                         merge_possible = false;
                         break
                     }
-                    new_binds.insert(0, 0); // TODO deal with binds later
                     new_shape.insert(
                         0,
                         Dimension {
-                            size: dim,
-                            stride: self.shapes[0][di].stride * expansion_stride,
-                            len: dim,
-                            shift: dim,
+                            size,
+                            stride: old_dim.stride * expansion_stride,
+                            len: size,
+                            shift: size,
                         },
                     );
-                    expansion_stride *= dim;
+                    expansion_stride *= size;
                 } else {
                     merge_possible = false;
-                    break;
+                    break
                 }
+                //libc_print::libc_println!("Merge possible: {}", merge_possible);
             }
             if merge_possible {
                 self.shapes[0] = new_shape;
-                return;
+                return
             }
         }
 
-        libc_print::libc_println!("Reshape from shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
+        //libc_print::libc_println!("Reshape from shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
 
         // If it could not be merged
         self.shapes.insert(0, new_shape);
 
-        libc_print::libc_println!("to shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
+        //libc_print::libc_println!("to shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
     }
 
     /// Bind index id to dimension, this is used for index names when generating indexes
@@ -265,8 +278,8 @@ impl View {
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
     pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
-        #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
 
         // Optimize work size per thread
         // Over all dimensions excluding first (batch) dimension.
@@ -315,12 +328,12 @@ impl View {
         if self.rank() == 4 {
             // if reduce
             let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
-            #[cfg(feature = "debug1")]
-            libc_print::libc_println!("to {:?}", dims);
+            //#[cfg(feature = "debug1")]
+            //libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         } else {
-            #[cfg(feature = "debug1")]
-            libc_print::libc_println!("to {:?}", dims);
+            //#[cfg(feature = "debug1")]
+            //libc_print::libc_println!("to {:?}", dims);
             self.reshape(&dims);
         }
     }
@@ -355,8 +368,8 @@ impl View {
             reshape.reverse();
             reshapes.push(reshape);
         }
-        #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Reshapes: {reshapes:?}");
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("Reshapes: {reshapes:?}");
         return Index::Reshaped {
             dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
             reshapes,

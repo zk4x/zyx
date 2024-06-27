@@ -16,11 +16,11 @@ mod tensor;
 
 pub use device::Device;
 pub use dtype::DType;
+pub use tensor::Tensor;
 pub use runtime::ZyxError;
 pub use scalar::Scalar;
-pub use shape::IntoAxes;
-pub use shape::IntoShape;
-pub use tensor::Tensor;
+//pub use shape::IntoAxes;
+//pub use shape::IntoShape;
 
 const SEED: u64 = 69420;
 
@@ -31,7 +31,7 @@ fn t0() {
     use libc_print::std_name::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
     //let x = Tensor::from([[2, 3], [4, 5]]).cast(DType::F32).exp();
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2]);
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2]).exp();
     //let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).exp();
     //println!("{:?}", x.shape());
     //Tensor::debug_graph();

@@ -9,13 +9,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
+use libc_print::libc_println;
+
 pub(super) mod cuda;
 mod ir;
 pub(super) mod opencl;
 #[cfg(feature = "wgpu")]
 pub(super) mod wgpu;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scope {
     Global,
     Local,
@@ -159,6 +161,7 @@ impl<C: Compiler> CompiledBackend<C> {
         x: TensorId,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
+        libc_print::libc_println!("Attempting to load buffer with id {x}");
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_memory(buffer, length)
         }
@@ -180,8 +183,8 @@ impl<C: Compiler> CompiledBackend<C> {
         org_graph: &Subgraph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
-        #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Evaluating {to_eval:?}");
+        //#[cfg(feature = "debug1")]
+        //libc_print::libc_println!("Evaluating {to_eval:?}");
         if self.compiled_graphs.contains_key(&org_graph.nodes) {
             return Ok(())
         }
@@ -199,6 +202,7 @@ impl<C: Compiler> CompiledBackend<C> {
             node_swap = false;
             for nid in order.iter().take(order.len() - 1) {
                 if graph.nodes[nid].is_movement() && graph.nodes[&(nid + 1)].is_unary() {
+                    //libc_print::libc_println!("Reordering movement and unary ops, swap {} and {}", nid, nid+1);
                     graph.swap_nodes(*nid, nid + 1);
                     node_swap = true;
                 }
@@ -212,7 +216,7 @@ impl<C: Compiler> CompiledBackend<C> {
         //println!("Order: {order:?}");
 
         for nid in order.iter().copied() {
-            //std::println!("{:?}", nodes[nid.i()]);
+            libc_print::libc_println!("Node {:?}", graph.nodes[&nid]);
             if self.buffers.contains_key(&nid) {
                 let dtype = graph.dtype(nid);
                 //libc_print::libc_println!("Id if the buffer: {nid}");
@@ -273,10 +277,12 @@ impl<C: Compiler> CompiledBackend<C> {
                 },
                 Node::Expand { x, shape_id } => {
                     if matches!(tiles[&x].first_op, FirstOp::Load { .. }) && tiles[&x].ops.len() == 0 {
+                        libc_println!("Fusing expand");
                         let mut tile = tiles[&x].clone();
                         tile.view.expand(graph._shape(shape_id));
                         tiles.insert(nid, tile);
                     } else {
+                        libc_println!("Not fusing expand");
                         let mut view = View::from(&graph.shape(x));
                         view.expand(graph._shape(shape_id));
                         let tile = Tile {
@@ -287,8 +293,8 @@ impl<C: Compiler> CompiledBackend<C> {
                             ops: vec![],
                             can_be_fused: rcs[&nid] < 2,
                         };
-                        #[cfg(feature = "debug1")]
-                        libc_print::libc_println!("Inserting expand tile {nid}");
+                        //#[cfg(feature = "debug1")]
+                        //libc_print::libc_println!("Inserting expand tile {nid}");
                         tiles.insert(nid, tile);
                     }
                 }
@@ -363,7 +369,6 @@ impl<C: Compiler> CompiledBackend<C> {
         tiles.retain(|id, _| required_kernel_ids.contains(id));
         order.retain(|id| required_kernel_ids.contains(id));
 
-        #[cfg(feature = "debug1")]
         libc_print::libc_println!("Tiles kept {:?}", tiles.keys());
 
         // Reshape and permute tiles to use exactly work 3 dimensions
@@ -472,9 +477,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
         // Find optimal local work sizes and reshape tiles appropriately
         for tile in tiles.values_mut() {
-            //libc_print::libc_println!("Kernels: {id}");
-            tile.view
-                .optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
+            tile.view.optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
         }
 
         // Rewrite tiled representation to ir representation
@@ -485,7 +488,7 @@ impl<C: Compiler> CompiledBackend<C> {
 
         let mut programs = Vec::new();
         // TODO kernels can be compiled in parallel
-        while let Some((_, (args, ir_kernel))) = ir_kernels.pop_last() {
+        while let Some((_, (args, ir_kernel))) = ir_kernels.pop_first() {
             // Allocate memory for intermediate args and results
             for arg in args.iter().copied() {
                 if !self.buffers.contains_key(&arg) {
@@ -493,7 +496,9 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
             }
             // Compile kernel
-            libc_print::libc_println!("Program with args: {:?}", args);
+            //libc_print::libc_println!("Program with args: {:?}", args);
+            // BEWARE in which order compiled kernels are pushed into programs,
+            // as lanuching graph executes them in this same order FIFO
             programs.push((args, self.compiler.compile_program(&ir_kernel)?));
         }
 
@@ -515,7 +520,6 @@ impl<C: Compiler> CompiledBackend<C> {
         for (args, program) in &graph.programs {
             let mut buffers = Vec::with_capacity(args.len());
             for arg in args {
-                #[cfg(feature = "debug1")]
                 libc_print::libc_println!("Argument: {arg}");
                 let buffer = self.buffers.remove(arg).unwrap();
                 buffers.push(buffer);

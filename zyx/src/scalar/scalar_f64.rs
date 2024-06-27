@@ -1,4 +1,5 @@
-use crate::{DType, Scalar};
+use crate::dtype::DType;
+use crate::scalar::Scalar;
 use half::{bf16, f16};
 
 impl Scalar for f64 {
