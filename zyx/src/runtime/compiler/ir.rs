@@ -18,12 +18,12 @@ use alloc::format as f;
 pub(in crate::runtime) struct IRKernel {
     pub(super) global_work_size: [usize; 3],
     pub(super) local_work_size: [usize; 3],
-    pub(super) args: Vec<IRKernelArg>,
+    pub(super) args: Vec<IRArg>,
     pub(super) ops: Vec<IROp>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct IRKernelArg {
+pub(super) struct IRArg {
     pub(super) dtype: DType,
     pub(super) read_only: bool,
 }
@@ -140,119 +140,13 @@ pub(crate) fn tiled_to_ir(
         let tile = &tiles[nid];
         match tile.first_op {
             FirstOp::Load { dtype, buffer_id } => {
-                let first_dtype = dtype;
-                let mut dtype = dtype;
-                let sh = tile.view.shape();
-                let mut ops = Vec::new();
-                if tile.view.is_expanded() {
-                    // Add local memory tiling for expanded buffers
-                    // Dimensions for local tiles are register work size * local work size,
-                    // that is global index change means load of new tile.
-                    let strides = tile.view.strides();
-                    let len = sh.iter().zip(strides.iter()).enumerate()
-                        .map(|(i, (d, st))| if *st == 0 || [0, 2, 5, 8].contains(&i) { 1 } else { *d })
-                        .product();
-                    if len > 1 {
-                        #[cfg(feature = "debug1")]
-                        libc_print::libc_println!("Adding local memory tile.");
-                        ops.insert(0, IROp::DeclareMem {
-                            id: 0,
-                            scope: Scope::Local,
-                            dtype,
-                            read_only: false,
-                            // skip expanded dimensions and global work size,
-                            // use only local * register work size
-                            len,
-                        });
-                    }
-                    // load from global into local memory
-                    // if tile is expanded in some dimension that is local,
-                    // then use threads from that dimension to load different local dimension
-                    // of this tile.
-                    let mut local_load_loops_count = 0;
-                    if strides[4] != 0 {
-                        ops.push(IROp::Loop { id: 4, max: sh[4] });
-                        local_load_loops_count += 1;
-                    }
-                    if strides[7] != 0 {
-                        ops.push(IROp::Loop { id: 7, max: sh[7] });
-                        local_load_loops_count += 1;
-                    }
-                    for _ in 0..local_load_loops_count {
-                        ops.push(IROp::EndLoop);
-                    }
-                }
-                let mut id = 0;
-                // add register loops (for more work per thread)
-                ops.push(IROp::Loop { id: 4, max: sh[4] });
-                ops.push(IROp::Loop { id: 7, max: sh[7] });
-                ops.push(IROp::DeclareMem {
-                    id: 0,
-                    scope: Scope::Register,
-                    dtype,
-                    read_only: false,
-                    len: 0,
-                });
-                ops.push(IROp::AssignMem {
-                    z: IRMem {
-                        id: 0,
-                        scope: Scope::Register,
-                        index: None,
-                    },
-                    x: IRMem {
-                        id: 0,
-                        scope: Scope::Global,
-                        index: Some(tile.view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
-                    },
-                });
-                // id for the last register variable
-                for op in &tile.ops {
-                    let source_id = id;
-                    if let UOp::Cast(inner_dtype) = *op {
-                        dtype = inner_dtype;
-                        id += 1;
-                        ops.push(IROp::DeclareMem {
-                            id,
-                            scope: Scope::Register,
-                            dtype,
-                            read_only: false,
-                            len: 1,
-                        });
-                    };
-                    ops.push(IROp::UnaryMem {
-                        z: IRMem {
-                            id,
-                            scope: Scope::Register,
-                            index: None,
-                        },
-                        x: IRMem {
-                            id: source_id,
-                            scope: Scope::Register,
-                            index: None,
-                        },
-                        op: *op,
-                    });
-                }
-                // store result to global
-                ops.push(IROp::AssignMem {
-                    z: IRMem {
-                        id: 1,
-                        scope: Scope::Global,
-                        index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]]).ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
-                    },
-                    x: IRMem {
-                        id,
-                        scope: Scope::Register,
-                        index: None,
-                    },
-                });
-                ops.push(IROp::EndLoop);
-                ops.push(IROp::EndLoop);
                 //libc_print::libc_println!("Nid {nid}");
+                let sh = tile.view.shape();
+                let (ops, args) = create_unary_kernel(dtype, &sh, &tile.view, &tile.ops);
                 kernels.insert(*nid, (vec![buffer_id, *nid], IRKernel {
                     global_work_size: [sh[0], sh[2], sh[5]],
                     local_work_size: [sh[1], sh[3], sh[6]],
-                    args: vec![IRKernelArg { dtype: first_dtype, read_only: true }, IRKernelArg { dtype, read_only: false }],
+                    args,
                     ops
                 }));
             }
@@ -270,125 +164,19 @@ pub(crate) fn tiled_to_ir(
                     || lws[1] != sh[3]
                     || gws[2] != sh[5]
                     || lws[3] != sh[6] {
-                    let first_dtype = dtype;
-                    let mut ops = Vec::new();
-                    if tile.view.is_expanded() {
-                        // Add local memory tiling for expanded buffers
-                        // Dimensions for local tiles are register work size * local work size,
-                        // that is global index change means load of new tile.
-                        let strides = tile.view.strides();
-                        let len = sh.iter().zip(strides.iter()).enumerate()
-                            .map(|(i, (d, st))| if *st == 0 || [0, 2, 5, 8].contains(&i) { 1 } else { *d })
-                            .product();
-                        if len > 1 {
-                            #[cfg(feature = "debug1")]
-                            libc_print::libc_println!("Adding local memory tile.");
-                            ops.insert(0, IROp::DeclareMem {
-                                id: 0,
-                                scope: Scope::Local,
-                                dtype,
-                                read_only: false,
-                                // skip expanded dimensions and global work size,
-                                // use only local * register work size
-                                len,
-                            });
-                        }
-                        // load from global into local memory
-                        // if tile is expanded in some dimension that is local,
-                        // then use threads from that dimension to load different local dimension
-                        // of this tile.
-                        let mut local_load_loops_count = 0;
-                        if strides[4] != 0 {
-                            ops.push(IROp::Loop { id: 4, max: sh[4] });
-                            local_load_loops_count += 1;
-                        }
-                        if strides[7] != 0 {
-                            ops.push(IROp::Loop { id: 7, max: sh[7] });
-                            local_load_loops_count += 1;
-                        }
-                        for _ in 0..local_load_loops_count {
-                            ops.push(IROp::EndLoop);
-                        }
-                    }
-                    let mut id = 0;
-                    // add register loops (for more work per thread)
-                    ops.push(IROp::Loop { id: 4, max: sh[4] });
-                    ops.push(IROp::Loop { id: 7, max: sh[7] });
-                    ops.push(IROp::DeclareMem {
-                        id: 0,
-                        scope: Scope::Register,
-                        dtype,
-                        read_only: false,
-                        len: 0,
-                    });
-                    ops.push(IROp::AssignMem {
-                        z: IRMem {
-                            id: 0,
-                            scope: Scope::Register,
-                            index: None,
-                        },
-                        x: IRMem {
-                            id: 0,
-                            scope: Scope::Global,
-                            index: Some(tile.view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
-                        },
-                    });
-                    // id for the last register variable
-                    for op in &tile.ops {
-                        let source_id = id;
-                        if let UOp::Cast(inner_dtype) = *op {
-                            dtype = inner_dtype;
-                            id += 1;
-                            ops.push(IROp::DeclareMem {
-                                id,
-                                scope: Scope::Register,
-                                dtype,
-                                read_only: false,
-                                len: 1,
-                            });
-                        };
-                        ops.push(IROp::UnaryMem {
-                            z: IRMem {
-                                id,
-                                scope: Scope::Register,
-                                index: None,
-                            },
-                            x: IRMem {
-                                id: source_id,
-                                scope: Scope::Register,
-                                index: None,
-                            },
-                            op: *op,
-                        });
-                    }
-                    // store result to global
-                    ops.push(IROp::AssignMem {
-                        z: IRMem {
-                            id: 1,
-                            scope: Scope::Global,
-                            index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]]).ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
-                        },
-                        x: IRMem {
-                            id,
-                            scope: Scope::Register,
-                            index: None,
-                        },
-                    });
-                    ops.push(IROp::EndLoop);
-                    ops.push(IROp::EndLoop);
+                    // If kernel can not be fused
+                    let (ops, args) = create_unary_kernel(dtype, &sh, &tile.view, &tile.ops);
                     kernels.insert(*nid, (
                         vec![x, *nid],
                         IRKernel {
                             global_work_size: [sh[0], sh[2], sh[5]],
                             local_work_size: [sh[1], sh[3], sh[6]],
-                            args: vec![
-                                IRKernelArg { dtype: first_dtype, read_only: true },
-                                IRKernelArg { dtype, read_only: false }
-                            ],
+                            args,
                             ops
                         }
                     ));
                 } else {
+                    // If kernel can be fused
                     //let ops = kernels[&x].1.ops.clone();
                     //let args = kernels[&x].1.args.clone();
                     todo!();
@@ -465,4 +253,144 @@ pub(crate) fn tiled_to_ir(
     }
 
     return kernels
+}
+
+fn create_unary_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp]) -> (Vec<IROp>, Vec<IRArg>) {
+    let first_dtype = dtype;
+    let mut ops = Vec::new();
+    let l_view = if view.is_expanded() {
+        // Add local memory tiling for expanded buffers
+        // Dimensions for local tiles are register work size * local work size,
+        // that is global index change means load of new tile.
+        let strides = view.strides();
+        let len = sh.iter().zip(strides.iter()).enumerate()
+            .map(|(i, (d, st))| if *st == 0 || [0, 2, 5, 8].contains(&i) { 1 } else { *d })
+            .product();
+        if len > 1 {
+            #[cfg(feature = "debug1")]
+            libc_print::libc_println!("Adding local memory tile.");
+            ops.insert(0, IROp::DeclareMem {
+                id: 0,
+                scope: Scope::Local,
+                dtype,
+                read_only: false,
+                // skip expanded dimensions and global work size,
+                // use only local * register work size
+                len,
+            });
+        }
+        // load from global into local memory
+        // if tile is expanded in some dimension that is local,
+        // then use threads from that dimension to load different local dimension
+        // of this tile.
+        for i in [4, 7] {
+            if strides[i] != 0 {
+                ops.push(IROp::Loop { id: i as u32, max: sh[i] });
+            } else {
+                ops.push(IROp::Loop { id: i as u32, max: 1 });
+            }
+        }
+        let mut l_sh = [sh[1], sh[3], sh[4], sh[6], sh[7]];
+        for (st, d) in strides.iter().zip(&mut l_sh) {
+            if *st == 0 {
+                *d = 1;
+            }
+        }
+        // TODO change l_view indices for tiles with expanded dimensions
+        // being work local dimensions such that these other local threads
+        // help load different unexpanded dimension of the tile.
+        let l_view = View::from(&l_sh);
+        ops.push(IROp::AssignMem {
+            z: IRMem {
+                id: 0,
+                scope: Scope::Local,
+                index: Some(l_view.ir_index(&[1, 3, 4, 6, 7])),
+            },
+            x: IRMem {
+                id: 0,
+                scope: Scope::Global,
+                index: Some(view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
+            },
+        });
+        ops.push(IROp::EndLoop);
+        ops.push(IROp::EndLoop);
+        ops.push(IROp::Barrier { scope: Scope::Local });
+        Some(l_view)
+    } else {
+        None
+    };
+    let mut id = 0;
+    // add register loops (for more work per thread)
+    ops.push(IROp::Loop { id: 4, max: sh[4] });
+    ops.push(IROp::Loop { id: 7, max: sh[7] });
+    ops.push(IROp::DeclareMem {
+        id: 0,
+        scope: Scope::Register,
+        dtype,
+        read_only: false,
+        len: 0,
+    });
+    ops.push(IROp::AssignMem {
+        z: IRMem {
+            id: 0,
+            scope: Scope::Register,
+            index: None,
+        },
+        x: if let Some(l_view) = l_view {
+            IRMem {
+                id: 0,
+                scope: Scope::Local,
+                index: Some(l_view.ir_index(&[1, 3, 4, 6, 7])),
+            }
+        } else {
+            IRMem {
+                id: 0,
+                scope: Scope::Global,
+                index: Some(view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
+            }
+        },
+    });
+    for op in uops {
+        let source_id = id;
+        if let UOp::Cast(inner_dtype) = *op {
+            dtype = inner_dtype;
+            id += 1;
+            ops.push(IROp::DeclareMem {
+                id,
+                scope: Scope::Register,
+                dtype,
+                read_only: false,
+                len: 1,
+            });
+        };
+        ops.push(IROp::UnaryMem {
+            z: IRMem {
+                id,
+                scope: Scope::Register,
+                index: None,
+            },
+            x: IRMem {
+                id: source_id,
+                scope: Scope::Register,
+                index: None,
+            },
+            op: *op,
+        });
+    }
+    // store result to global
+    ops.push(IROp::AssignMem {
+        z: IRMem {
+            id: 1,
+            scope: Scope::Global,
+            index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]]).ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
+        },
+        x: IRMem {
+            id,
+            scope: Scope::Register,
+            index: None,
+        },
+    });
+    ops.push(IROp::EndLoop);
+    ops.push(IROp::EndLoop);
+    return (ops, vec![IRArg { dtype: first_dtype, read_only: true }, IRArg { dtype, read_only: false }])
 }

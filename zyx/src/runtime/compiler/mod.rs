@@ -520,7 +520,7 @@ impl<C: Compiler> CompiledBackend<C> {
         for (args, program) in &graph.programs {
             let mut buffers = Vec::with_capacity(args.len());
             for arg in args {
-                libc_print::libc_println!("Argument: {arg}");
+                //libc_print::libc_println!("Argument: {arg}");
                 let buffer = self.buffers.remove(arg).unwrap();
                 buffers.push(buffer);
             }

@@ -1,4 +1,4 @@
-use crate::runtime::compiler::ir::{IRKernel, IRKernelArg, IROp};
+use crate::runtime::compiler::ir::{IRKernel, IRArg, IROp};
 use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::dtype::DType;
 use crate::scalar::Scalar;
@@ -396,7 +396,7 @@ impl Compiler for OpenCLCompiler {
 
         // Transpile kernel args
         let mut args_read_only = Vec::new();
-        for (id, IRKernelArg { dtype, read_only }) in kernel.args.iter().enumerate() {
+        for (id, IRArg { dtype, read_only }) in kernel.args.iter().enumerate() {
             source += &f!(
                 "{indent}__global {}{}* g{id},\n",
                 if *read_only { "const " } else { "" },
