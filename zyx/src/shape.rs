@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::fmt::Debug;
-use core::ops::{Add, RangeInclusive};
+use core::ops::{Add, Range, RangeInclusive};
 
 pub trait IntoShape: Clone + Debug {
     fn into_shape(self) -> impl Iterator<Item = usize>;
@@ -9,6 +9,11 @@ pub trait IntoShape: Clone + Debug {
         let rank = self.rank();
         let shape: Vec<usize> = self.into_shape().collect();
         axes.into_axes(rank).map(move |a| shape[a])
+    }
+    fn reduce(self, axes: impl IntoAxes) -> impl Iterator<Item = usize> {
+        let rank = self.rank();
+        let axes: Vec<usize> = axes.into_axes(rank).collect();
+        self.into_shape().enumerate().map(move |(i, d)| if axes.contains(&i) { 1 } else { d })
     }
 }
 
@@ -71,6 +76,16 @@ pub trait IntoAxes: Clone {
     fn len(&self) -> usize;
 }
 
+impl IntoAxes for isize {
+    fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
+        return [to_axis(self, rank)].into_iter()
+    }
+
+    fn len(&self) -> usize {
+        1
+    }
+}
+
 impl<const N: usize> IntoAxes for [isize; N] {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         return self.into_iter().map(move |a| to_axis(a, rank))
@@ -78,6 +93,16 @@ impl<const N: usize> IntoAxes for [isize; N] {
 
     fn len(&self) -> usize {
         N
+    }
+}
+
+impl IntoAxes for Range<isize> {
+    fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
+        return to_axis(self.start, rank)..to_axis(self.end, rank)
+    }
+
+    fn len(&self) -> usize {
+        (self.end - self.start) as usize
     }
 }
 

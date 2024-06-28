@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
-use libc_print::libc_println;
+//use libc_print::libc_println;
 
 pub(super) mod cuda;
 mod ir;
@@ -277,12 +277,12 @@ impl<C: Compiler> CompiledBackend<C> {
                 },
                 Node::Expand { x, shape_id } => {
                     if matches!(tiles[&x].first_op, FirstOp::Load { .. }) && tiles[&x].ops.len() == 0 {
-                        libc_println!("Fusing expand");
+                        // Expand can be fused
                         let mut tile = tiles[&x].clone();
                         tile.view.expand(graph._shape(shape_id));
                         tiles.insert(nid, tile);
                     } else {
-                        libc_println!("Not fusing expand");
+                        // Expand can not be fused
                         let mut view = View::from(&graph.shape(x));
                         view.expand(graph._shape(shape_id));
                         let tile = Tile {
@@ -301,6 +301,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 Node::Permute { .. } => {
                     // Permute permutes all views.
                     // In case of reduce kernel, permute also axes and shape before reduce.
+                    todo!()
                 }
                 Node::Pad {
                     x,
@@ -334,13 +335,20 @@ impl<C: Compiler> CompiledBackend<C> {
                     axes_id,
                     shape_id,
                 } => {
+                    let args = if matches!(tiles[&x].first_op, FirstOp::Load { .. }) && tiles[&x].ops.len() == 0 {
+                        // Sum can be fused
+                        tiles[&x].args.clone()
+                    } else {
+                        // Sum can not be fused
+                        BTreeSet::from([x])
+                    };
                     let tile = Tile {
-                        args: BTreeSet::from([x]),
-                        view: View::from(graph._shape(shape_id)),
+                        args,
+                        view: View::from(graph.shape(x)),
                         dtype: graph.dtype(nid),
                         first_op: FirstOp::Reduce {
                             x,
-                            shape: graph._shape(shape_id).into(),
+                            shape: graph.shape(x).into(),
                             axes: graph._axes(axes_id).into(),
                             op: ROp::Sum,
                         },
@@ -625,7 +633,7 @@ impl Tile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum ROp {
     Sum,
     Max,

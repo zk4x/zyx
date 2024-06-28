@@ -468,6 +468,13 @@ impl Runtime {
         return self.push(Node::Permute { x, shape_id, axes_id });
     }
 
+    pub(crate) fn sum(&mut self, x: TensorId, axes: impl IntoAxes) -> TensorId {
+        let shape: Vec<usize> = self.shape(x).reduce(axes.clone()).collect();
+        let axes_id = self.graph.push_axes(axes, shape.len());
+        let shape_id = self.graph.push_shape(shape);
+        return self.push(Node::Sum { x, shape_id, axes_id });
+    }
+
     pub(crate) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.push(Node::Add { x, y });
     }

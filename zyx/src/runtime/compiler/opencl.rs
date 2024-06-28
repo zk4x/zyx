@@ -435,7 +435,7 @@ impl Compiler for OpenCLCompiler {
                     Scope::Global => {}
                     Scope::Local => {
                         let read_only = if *read_only { "const " } else { "" };
-                        let size = if *len > 1 {
+                        let size = if *len > 0 {
                             f!("[{len}]")
                         } else {
                             String::new()
@@ -448,7 +448,7 @@ impl Compiler for OpenCLCompiler {
                     }
                     Scope::Register => {
                         let read_only = if *read_only { "const " } else { "" };
-                        let size = if *len > 1 {
+                        let size = if *len > 0 {
                             f!("[{len}]")
                         } else {
                             String::new()

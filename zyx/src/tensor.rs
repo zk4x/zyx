@@ -512,8 +512,20 @@ impl Tensor {
 
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        let mut rt = RT.lock();
+        #[cfg(debug_assertions)]
+        {
+            // We can add checks for axes being less than rank and axes not containing duplicates
+            let mut unique = BTreeSet::new();
+            let rank = self.rank();
+            let axes: Vec<usize> = axes.into_axes(rank).collect();
+            for a in &axes {
+                debug_assert!(unique.insert(a), "Axes contain duplicates.");
+                // This is checked by into_axes function
+                //debug_assert!(a < rank, "Axes are too high");
+            }
+        }
+        return Tensor { id: rt.sum(self.id, axes) }
     }
 
     #[must_use]

@@ -174,7 +174,7 @@ impl View {
 
     /// Reshape view into different shape
     pub fn reshape(&mut self, shape: &[usize]) {
-        //libc_print::libc_println!("Len: {}. Reshaping {:?} to {:?}", self.shapes.len(), self.shape(), shape);
+        libc_print::libc_println!("Len: {}. Reshaping {:?} to {:?}", self.shapes.len(), self.shape(), shape);
         debug_assert!(shape.len() > 0);
         debug_assert_eq!(self.numel(), shape.iter().product());
         if self.shape() == *shape {
