@@ -142,7 +142,12 @@ impl View {
             let mut sh = self.shape();
             let mut i = sh.len();
             for d in shape.iter().rev() {
-                i -= 1;
+                if i == 0 {
+                    // Adding dimensions to the front of the shape
+                    sh.insert(i, 1);
+                } else {
+                    i -= 1;
+                }
                 println!("Comparing {d}, {}", sh[i]);
                 match d.cmp(&sh[i]) {
                     Ordering::Less => {
@@ -532,5 +537,16 @@ fn test_expand_3() {
     view0.reshape(&[2, 1, 3, 2]);
     view0.reshape(&[2, 1, 1, 1, 1, 3, 1, 1, 2, 1]);
     //println!("{view0:?}");
-    println!("{:?}", view0.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    assert_eq!(
+        Index::Strided { dims: BTreeMap::from([(0, 2), (1, 2), (2, 2), (3, 2), (4, 2), (5, 0), (6, 0), (7, 0), (8, 1), (9, 1)]) },
+        view0.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    );
+}
+
+#[test]
+fn test_expand_4() {
+    let mut view0 = View::from(&[2, 3, 1]);
+    view0.expand(&[3, 2, 3, 4]);
+    assert_eq!(view0.shape(), [3, 2, 3, 4]);
+    assert_eq!(view0.strides(), [0, 3, 1, 0]);
 }
