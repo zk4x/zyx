@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
-//use libc_print::libc_println;
+use libc_print::std_name::println;
 
 pub(super) mod cuda;
 mod ir;
@@ -247,7 +247,7 @@ impl<C: Compiler> CompiledBackend<C> {
                     tiles.insert(nid, tile);
                 }
                 Node::Add { x, y } => {
-                    let tile = Tile {
+                    /*let tile = Tile {
                         args: BTreeSet::from([x, y]),
                         view: View::from(&graph.shape(nid)),
                         dtype: graph.dtype(nid),
@@ -255,7 +255,9 @@ impl<C: Compiler> CompiledBackend<C> {
                         ops: vec![],
                         can_be_fused: rcs[&nid] < 2,
                     };
-                    tiles.insert(nid, tile);
+                    tiles.insert(nid, tile);*/
+                    let (_, _) = (x, y);
+                    todo!();
                 }
                 Node::Reshape { x, shape_id } => match &tiles[&x].first_op {
                     FirstOp::Reduce { .. } => {
@@ -335,16 +337,21 @@ impl<C: Compiler> CompiledBackend<C> {
                     axes_id,
                     shape_id,
                 } => {
-                    let args = if matches!(tiles[&x].first_op, FirstOp::Load { .. }) && tiles[&x].ops.len() == 0 {
-                        // Sum can be fused
-                        tiles[&x].args.clone()
+                    let (x, args, view) = if let FirstOp::Load { buffer_id, .. } = tiles[&x].first_op {
+                        if tiles[&x].ops.len() == 0 {
+                            // Sum can be fused
+                            (buffer_id, tiles[&x].args.clone(), tiles[&x].view.clone())
+                        } else {
+                            // Sum can not be fused
+                            (x, BTreeSet::from([x]), View::from(graph.shape(x)))
+                        }
                     } else {
                         // Sum can not be fused
-                        BTreeSet::from([x])
+                        (x, BTreeSet::from([x]), View::from(graph.shape(x)))
                     };
                     let tile = Tile {
                         args,
-                        view: View::from(graph.shape(x)),
+                        view,
                         dtype: graph.dtype(nid),
                         first_op: FirstOp::Reduce {
                             x,
@@ -365,7 +372,8 @@ impl<C: Compiler> CompiledBackend<C> {
 
         // Find which kernels are absolutely necessary for evaluation of to_eval
         // and delete the rest.
-        // I.e. remove fused ids (first round of fusion, unary ops get fused)
+        // I.e. remove fused ids (first round of fusion, second round is in IR,
+        // unary ops get fused)
         //println!("To eval: {to_eval:?}");
         let mut required_kernel_ids = to_eval.clone();
         let mut params = to_eval.clone();
@@ -377,7 +385,7 @@ impl<C: Compiler> CompiledBackend<C> {
         tiles.retain(|id, _| required_kernel_ids.contains(id));
         order.retain(|id| required_kernel_ids.contains(id));
 
-        libc_print::libc_println!("Tiles kept {:?}", tiles.keys());
+        //libc_print::libc_println!("Tiles kept {:?}", tiles.keys());
 
         // Reshape and permute tiles to use exactly work 3 dimensions
         // and at most single reduce loop over the last dimension>
@@ -427,6 +435,7 @@ impl<C: Compiler> CompiledBackend<C> {
                             .filter(|a| !axes.contains(a))
                             .chain(axes.iter().copied())
                             .collect();
+                        println!("{all_axes:?}");
                         tile.view.permute(&all_axes);
                         let sh = tile.view.shape();
                         let r = sh.len();
@@ -617,14 +626,16 @@ enum BOp {
 
 #[derive(Debug, Clone)]
 struct Tile {
-    args: BTreeSet<TensorId>, // which tensors need to be evaluated before this
+    // which tensors need to be evaluated before this
+    args: BTreeSet<TensorId>,
     pub(crate) view: View,
     dtype: DType,
     pub(crate) first_op: FirstOp,
     // Note that order of these ops does not matter for correctness,
     // but may matter for performance
     pub(crate) ops: Vec<UOp>,
-    can_be_fused: bool, // true by default, false if this tile is used by more than one tile (rc>1)
+    // true by default, false if this tile is used by more than one tile (rc>1)
+    can_be_fused: bool,
 }
 
 impl Tile {
@@ -656,6 +667,7 @@ enum FirstOp {
         op: BOp,
     },
     Reduce {
+        // Which buffer needs to be load for reduce op
         x: TensorId,
         shape: Vec<usize>, // Shape before reduce
         axes: Vec<usize>,
@@ -665,7 +677,7 @@ enum FirstOp {
     // Permute can always be fused.
     // Expand can never be fused.
     // Reshape and pad can not be fused with reduce kernel.
-    // Technically reshaped and pad could be fused with some reduce kernels,
+    // Technically reshape and pad could be fused with some reduce kernels,
     // but we can keep this simple here and fuse them in looped kernel.
     Movement {
         x: TensorId,

@@ -5,6 +5,8 @@ use core::cmp::Ordering;
 use crate::runtime::compiler::HWInfo;
 use crate::scalar::Scalar;
 
+use libc_print::std_name::println;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Dimension {
     // size of the dimension in shape
@@ -39,7 +41,7 @@ impl View {
     /// Create new View from given shape
     #[must_use]
     pub fn from(shape: &[usize]) -> Self {
-        debug_assert!(shape.len() > 0);
+        assert!(shape.len() > 0);
         let mut stride = 1;
         let mut first_shape: Vec<Dimension> = shape
             .iter()
@@ -91,8 +93,7 @@ impl View {
     /// It may later be updated to work with expands
     /// in all shapes, not only the last one.
     pub fn is_expanded(&self) -> bool {
-        //#[cfg(feature="debug1")]
-        //libc_print::libc_println!("Strides for is_expanded: {:?}", self.strides());
+        //println!("Strides for is_expanded: {:?}", self.strides());
         return self.strides().contains(&0)
     }
 
@@ -119,8 +120,8 @@ impl View {
     /// This function assumes standard padding beginning at last dimension.
     pub fn pad(&mut self, padding: &[isize]) {
         use itertools::Itertools;
-        debug_assert!(padding.len() > 0);
-        debug_assert!(self.shapes[0].len() >= padding.len());
+        assert!(padding.len() > 0);
+        assert!(self.shapes[0].len() >= padding.len());
         for (dim, (lp, rp)) in self.shapes[0]
             .iter_mut()
             .rev()
@@ -135,48 +136,52 @@ impl View {
 
     /// Expand view into different shape
     pub fn expand(&mut self, shape: &[usize]) {
-        debug_assert!(shape.len() > 0);
+        println!("Expanding shape {:?}, strides {:?}", self.shape(), self.strides());
+        assert!(shape.len() > 0);
         if shape.len() > self.shapes[0].len() {
             let mut sh = self.shape();
             let mut i = sh.len();
             for d in shape.iter().rev() {
                 i -= 1;
+                println!("Comparing {d}, {}", sh[i]);
                 match d.cmp(&sh[i]) {
                     Ordering::Less => {
                         i += 1;
                         sh.insert(i, 1);
                     }
-                    Ordering::Greater => debug_assert_eq!(sh[i], 1),
+                    Ordering::Greater => {
+                        //println!("Here {}", sh[i]);
+                        assert_eq!(sh[i], 1, "Cannot expand {:?} into {shape:?}", self.shape());
+                    }
                     Ordering::Equal => {}
                 }
             }
-            //#[cfg(feature = "debug1")]
-            //libc_print::libc_println!("Expand reshape: {sh:?}");
+            //println!("Expand reshape: {sh:?}");
             self.reshape(&sh);
         }
-        debug_assert_eq!(self.shapes[0].len(), shape.len());
+        assert_eq!(self.shapes[0].len(), shape.len());
         for (dim, sh_dim) in self.shapes[0].iter_mut().zip(shape) {
             if dim.size != *sh_dim {
-                debug_assert_eq!(dim.size, 1);
+                assert_eq!(dim.size, 1);
                 dim.size = *sh_dim;
                 dim.stride = 0;
             }
         }
+        println!("to shape {:?}, strides {:?}", self.shape(), self.strides());
     }
 
     /// Permute view with axes
     pub fn permute(&mut self, axes: &[usize]) {
-        //#[cfg(feature = "debug1")]
-        //libc_print::libc_println!("Permuting to {axes:?}");
-        debug_assert_eq!(self.shapes[0].len(), axes.len());
+        //println!("Permuting to {axes:?}");
+        assert_eq!(self.shapes[0].len(), axes.len());
         self.shapes[0] = axes.iter().map(|axis| self.shapes[0][*axis]).collect();
     }
 
     /// Reshape view into different shape
     pub fn reshape(&mut self, shape: &[usize]) {
-        libc_print::libc_println!("Len: {}. Reshaping {:?} to {:?}", self.shapes.len(), self.shape(), shape);
-        debug_assert!(shape.len() > 0);
-        debug_assert_eq!(self.numel(), shape.iter().product());
+        println!("Len: {} Reshaping shape {:?}, strides {:?}", self.shapes.len(), self.shape(), self.strides());
+        assert!(shape.len() > 0);
+        assert_eq!(self.numel(), shape.iter().product());
         if self.shape() == *shape {
             return
         }
@@ -199,8 +204,8 @@ impl View {
         new_shape.reverse();
         if self.is_last_shape_contiguous() {
             // Merge contiguous shape
-            //libc_print::libc_println!("{:?}", new_shape);
             self.shapes[0] = new_shape.clone();
+            println!("merging contiguous to shape {:?} strides {:?}", self.shape(), self.strides());
             return
         }
 
@@ -223,13 +228,11 @@ impl View {
                     new_shape.insert(0, old_dim);
                     if di > 0 {
                         di -= 1;
-                    } else {
-                        break
                     }
                     expansion_stride = 1;
                 } else if size < old_dim.size {
                     // If this dimension was padded, we probably can't merge
-                    //libc_print::libc_println!("Old len {}, old size {}, old stride {}", old_dim.len, old_dim.size, old_dim.stride);
+                    //println!("Old len {}, old size {}, old stride {}", old_dim.len, old_dim.size, old_dim.stride);
                     if old_dim.stride != 0 && (old_dim.len != old_dim.size || old_dim.shift != old_dim.len) {
                         merge_possible = false;
                         break
@@ -248,20 +251,18 @@ impl View {
                     merge_possible = false;
                     break
                 }
-                //libc_print::libc_println!("Merge possible: {}", merge_possible);
             }
             if merge_possible {
                 self.shapes[0] = new_shape;
+                println!("merging to shape {:?} strides {:?}", self.shape(), self.strides());
                 return
             }
         }
 
-        //libc_print::libc_println!("Reshape from shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
-
         // If it could not be merged
         self.shapes.insert(0, new_shape);
 
-        //libc_print::libc_println!("to shape/strides:\n{:?}\n{:?}", self.shape(), self.strides());
+        println!("adding new shape to shape {:?}, strides {:?}", self.shape(), self.strides());
     }
 
     /// Bind index id to dimension, this is used for index names when generating indexes
@@ -278,8 +279,7 @@ impl View {
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
     pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
-        //#[cfg(feature = "debug1")]
-        //libc_print::libc_println!("Optimize local and wpt {:?}", self.shape());
+        //println!("Optimize local and wpt {:?}", self.shape());
 
         // Optimize work size per thread
         // Over all dimensions excluding first (batch) dimension.
@@ -325,26 +325,24 @@ impl View {
         dims[2] /= n;
         dims[3] *= n;
 
+        println!("Rank optim: {}", self.rank());
         if self.rank() == 4 {
             // if reduce
             let dims = [dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size, d];
-            //#[cfg(feature = "debug1")]
-            //libc_print::libc_println!("to {:?}", dims);
+            println!("to {:?}", dims);
             self.reshape(&dims);
         } else {
-            //#[cfg(feature = "debug1")]
-            //libc_print::libc_println!("to {:?}", dims);
+            println!("to {:?}", dims);
             self.reshape(&dims);
         }
     }
 
-    /// Get index from this view, using bound indices, this function panics if some dimensions
-    /// don't have bound indices.
+    /// Get index from this view, using bound indices, this function does not work
+    /// correctly if some dimensions don't have bound indices.
     /// Binds are indices into this dimension
     pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
-        debug_assert_eq!(self.rank(), binds.len());
-        //#[cfg(feature = "debug1")]
-        //libc_print::libc_println!("{self:?}");
+        assert_eq!(binds.len(), self.rank(), "Number of binds ({}) differs from number of dimensions ({}).", binds.len(), self.rank());
+        //println!("{self:?}");
         if self.is_contiguous() {
             return Index::Contiguous {
                 dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
@@ -368,8 +366,7 @@ impl View {
             reshape.reverse();
             reshapes.push(reshape);
         }
-        //#[cfg(feature = "debug1")]
-        //libc_print::libc_println!("Reshapes: {reshapes:?}");
+        //println!("Reshapes: {reshapes:?}");
         return Index::Reshaped {
             dims: self.shapes[0].iter().zip(binds).map(|(dim, b)| (*b, dim.stride)).collect(),
             reshapes,
@@ -519,4 +516,21 @@ fn test_ir_index() {
     let view0 = View::from(&[2, 43, 1]);
     assert_eq!(view0.shapes.len(), 1);
     assert_eq!(view0.ir_index(&[0, 1, 2]), Index::Contiguous { dims: BTreeMap::from([(0, 43), (1, 1), (2, 1)]) });
+}
+
+#[test]
+#[should_panic]
+fn test_expand_2() {
+    let mut view0 = View::from(&[2, 2]);
+    view0.expand(&[2, 3, 2]);
+}
+
+#[test]
+fn test_expand_3() {
+    let mut view0 = View::from(&[2, 1, 2]);
+    view0.expand(&[2, 3, 2]);
+    view0.reshape(&[2, 1, 3, 2]);
+    view0.reshape(&[2, 1, 1, 1, 1, 3, 1, 1, 2, 1]);
+    //println!("{view0:?}");
+    println!("{:?}", view0.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
 }

@@ -15,6 +15,8 @@ use alloc::string::String;
 use crate::runtime::view::{Index, View};
 use alloc::format as f;
 
+use libc_print::std_name::println;
+
 #[derive(Debug)]
 pub(in crate::runtime) struct IRKernel {
     pub(super) global_work_size: [usize; 3],
@@ -155,7 +157,7 @@ pub(crate) fn tiled_to_ir(
         let tile = &tiles[nid];
         match tile.first_op {
             FirstOp::Load { dtype, buffer_id } => {
-                //libc_print::libc_println!("Nid {nid}");
+                //println!("Nid {nid}");
                 let sh = tile.view.shape();
                 let (ops, args) = create_unary_kernel(dtype, &sh, &tile.view, &tile.ops);
                 kernels.insert(*nid, (vec![buffer_id, *nid], IRKernel {
@@ -177,7 +179,7 @@ pub(crate) fn tiled_to_ir(
                     || gws[1] != sh[2]
                     || lws[1] != sh[3]
                     || gws[2] != sh[5]
-                    || lws[3] != sh[6] {
+                    || lws[2] != sh[6] {
                     // If kernel can not be fused
                     let (ops, args) = create_unary_kernel(tile.dtype, &sh, &tile.view, &tile.ops);
                     kernels.insert(*nid, (
@@ -202,66 +204,48 @@ pub(crate) fn tiled_to_ir(
             // work size is the same as the beginning work size.
             FirstOp::Reduce { x, ref shape, ref axes, op } => {
                 let sh = tile.view.shape();
-                let (ops, args) = create_reduce_kernel(tile.dtype, &sh, &tile.view, &tile.ops);
-                kernels.insert(*nid, (
-                    vec![x, *nid],
-                    IRKernel {
-                        global_work_size: [sh[0], sh[2], sh[5]],
-                        local_work_size: [sh[1], sh[3], sh[6]],
-                        args,
-                        ops
+                if let Some(kernel) = kernels.get(&x) {
+                    let (gws, lws) = (kernel.1.global_work_size, kernel.1.local_work_size);
+                    if gws[0] != sh[0]
+                        || lws[0] != sh[1]
+                        || gws[1] != sh[2]
+                        || lws[1] != sh[3]
+                        || gws[2] != sh[5]
+                        || lws[2] != sh[6] {
+                        // If kernel can not be fused
+                        let (ops, args) = create_reduce_kernel(tile.dtype, &sh, &tile.view, &tile.ops);
+                        kernels.insert(*nid, (
+                            vec![x, *nid],
+                            IRKernel {
+                                global_work_size: [sh[0], sh[2], sh[5]],
+                                local_work_size: [sh[1], sh[3], sh[6]],
+                                args,
+                                ops
+                            }
+                        ));
+                    } else {
+                        // If kernel can be fused
+                        todo!();
                     }
-                ));
+                } else {
+                    // If kernel can not be fused
+                    println!("Args: {:?}", [x, *nid]);
+                    let (ops, args) = create_reduce_kernel(tile.dtype, &sh, &tile.view, &tile.ops);
+                    kernels.insert(*nid, (
+                        vec![x, *nid],
+                        IRKernel {
+                            global_work_size: [sh[0], sh[2], sh[5]],
+                            local_work_size: [sh[1], sh[3], sh[6]],
+                            args,
+                            ops
+                        }
+                    ));
+                }
             }
             // Binary tile fuses two ir kernels together
-            FirstOp::Binary { .. } => {
-                //let kernel_x = &kernels[&x];
-                //let kernel_y = &kernels[&y];
-                //let tile = &tiles[nid];
-                //let sh = tile.view.shape();
-                // Add ops from input tiles
-                // Copy directly from tile_x
-                //let mut ops = kernel_x.ops.clone();
-                //let n = ops.len() - 3; // 3 is the number of loops in kernel_y that are removed
-                                         // Reindex ops from tile_y
-                /*for op in &kernel_y.ops {
-                    match op {
-                        IROp::Movement { x, scope, view } => {
-                            ops.push(IROp::Movement {
-                                x: x + n,
-                                scope: *scope,
-                                view: view.clone(),
-                            });
-                        }
-                        IROp::Unary { x, op } => {
-                            ops.push(IROp::Unary { x: x + n, op: *op });
-                        }
-                        IROp::Binary { x, y, op } => {
-                            ops.push(IROp::Binary {
-                                x: x + n,
-                                y: y + n,
-                                op: *op,
-                            });
-                        }
-                        IROp::Loop { .. } => {}
-                        _ => {
-                            ops.push(op.clone());
-                        }
-                    };
-                }
-                // Add ops from binary tile
-                ops.push(IROp::Binary {
-                    x: n - 1,
-                    y: ops.len() - 1,
-                    op: BOp::Add,
-                });
-                for op in &tile.ops {
-                    ops.push(IROp::Unary {
-                        x: ops.len() - 1,
-                        op: *op,
-                    });
-                }*/
-                //kernels.insert(*nid, IRKernel { ops });
+            FirstOp::Binary { x, y, op } => {
+                let (_, _, _) = (x, y, op);
+                todo!()
             }
         }
     }
@@ -293,8 +277,7 @@ fn create_unary_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp]
             .map(|(i, (d, st))| if *st == 0 || [0, 2, 5, 8].contains(&i) { 1 } else { *d })
             .product();
         if len > 1 {
-            #[cfg(feature = "debug1")]
-            libc_print::libc_println!("Adding local memory tile.");
+            println!("Adding local memory tile.");
             ops.insert(0, IROp::DeclareMem {
                 id: 0,
                 scope: Scope::Local,
@@ -424,68 +407,7 @@ fn create_unary_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp]
 fn create_reduce_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp]) -> (Vec<IROp>, Vec<IRArg>) {
     let first_dtype = dtype;
     let mut ops = Vec::new();
-    let l_view = if view.is_expanded() {
-        // Add local memory tiling for expanded buffers
-        // Dimensions for local tiles are register work size * local work size,
-        // that is global index change means load of new tile.
-        let strides = view.strides();
-        let len = sh.iter().zip(strides.iter()).enumerate()
-            .map(|(i, (d, st))| if *st == 0 || [0, 2, 5, 8].contains(&i) { 1 } else { *d })
-            .product();
-        if len > 1 {
-            #[cfg(feature = "debug1")]
-            libc_print::libc_println!("Adding local memory tile.");
-            ops.insert(0, IROp::DeclareMem {
-                id: 0,
-                scope: Scope::Local,
-                dtype,
-                read_only: false,
-                // skip expanded dimensions and global work size,
-                // use only local * register work size
-                len,
-            });
-        }
-        // load from global into local memory
-        // if tile is expanded in some dimension that is local,
-        // then use threads from that dimension to load different local dimension
-        // of this tile.
-        for i in [4, 7] {
-            if strides[i] != 0 {
-                ops.push(IROp::Loop { id: i as u32, max: sh[i] });
-            } else {
-                ops.push(IROp::Loop { id: i as u32, max: 1 });
-            }
-        }
-        let mut l_sh = [sh[1], sh[3], sh[4], sh[6], sh[7]];
-        for (st, d) in strides.iter().zip(&mut l_sh) {
-            if *st == 0 {
-                *d = 1;
-            }
-        }
-        // TODO change l_view indices for tiles with expanded dimensions
-        // being work local dimensions such that these other local threads
-        // help load different unexpanded dimension of the tile.
-        let l_view = View::from(&l_sh);
-        ops.push(IROp::AssignMem {
-            z: IRMem::Var {
-                id: 0,
-                scope: Scope::Local,
-                index: Some(l_view.ir_index(&[1, 3, 4, 6, 7, 9])),
-            },
-            x: IRMem::Var {
-                id: 0,
-                scope: Scope::Global,
-                index: Some(view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])),
-            },
-        });
-        ops.push(IROp::EndLoop);
-        ops.push(IROp::EndLoop);
-        ops.push(IROp::Barrier { scope: Scope::Local });
-        Some(l_view)
-    } else {
-        None
-    };
-    let mut id = 0;
+
     // Create accumulator, size is equal to register work size
     ops.push(IROp::DeclareMem {
         id: 1,
@@ -512,8 +434,77 @@ fn create_reduce_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp
     });
     ops.push(IROp::EndLoop);
     ops.push(IROp::EndLoop);
+
     // Global reduce thread
     ops.push(IROp::Loop { id: 8, max: sh[8] });
+
+    // Local memory tiling
+    let l_view = if view.is_expanded() {
+        // Add local memory tiling for expanded buffers
+        // Dimensions for local tiles are register work size * local work size,
+        // that is global index change means load of new tile.
+        let strides = view.strides();
+        let len = sh.iter().zip(strides.iter()).enumerate()
+            .map(|(i, (d, st))| if *st == 0 || [0, 2, 5].contains(&i) { 1 } else { *d })
+            .product();
+        println!("Local shape {:?}, strides {:?}, len {}", sh, strides, len);
+        if len > 1 {
+            println!("Adding local memory tile.");
+            ops.insert(0, IROp::DeclareMem {
+                id: 0,
+                scope: Scope::Local,
+                dtype,
+                read_only: false,
+                // skip expanded dimensions and global work size,
+                // use only local * register work size
+                len,
+            });
+            // load from global into local memory
+            // if tile is expanded in some dimension that is local,
+            // then use threads from that dimension to load different local dimension
+            // of this tile.
+            for i in [4, 7, 9] {
+                if strides[i] != 0 {
+                    ops.push(IROp::Loop { id: i as u32, max: sh[i] });
+                } else {
+                    ops.push(IROp::Loop { id: i as u32, max: 1 });
+                }
+            }
+            let mut l_sh = [sh[1], sh[3], sh[4], sh[6], sh[7], sh[9]];
+            for (st, d) in strides.iter().zip(&mut l_sh) {
+                if *st == 0 {
+                    *d = 1;
+                }
+            }
+            // TODO change l_view indices for tiles with expanded dimensions
+            // being work local dimensions such that these other local threads
+            // help load different unexpanded dimension of the tile.
+            let l_view = View::from(&l_sh);
+            ops.push(IROp::AssignMem {
+                z: IRMem::Var {
+                    id: 0,
+                    scope: Scope::Local,
+                    index: Some(l_view.ir_index(&[1, 3, 4, 6, 7, 9])),
+                },
+                x: IRMem::Var {
+                    id: 0,
+                    scope: Scope::Global,
+                    index: Some(view.ir_index(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])),
+                },
+            });
+            ops.push(IROp::EndLoop);
+            ops.push(IROp::EndLoop);
+            ops.push(IROp::EndLoop);
+            // Synchronize after loading tile
+            ops.push(IROp::Barrier { scope: Scope::Local });
+            Some(l_view)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut id = 0;
     // add register loops (for more work per thread)
     ops.push(IROp::Loop { id: 4, max: sh[4] });
     ops.push(IROp::Loop { id: 7, max: sh[7] });
@@ -593,7 +584,11 @@ fn create_reduce_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp
     ops.push(IROp::EndLoop);
     ops.push(IROp::EndLoop);
     ops.push(IROp::EndLoop);
+    // Synchronize before loading next tile
+    ops.push(IROp::Barrier { scope: Scope::Local });
     ops.push(IROp::EndLoop);
+
+    // Store accumulator to global
     ops.push(IROp::Loop { id: 4, max: sh[4] });
     ops.push(IROp::Loop { id: 7, max: sh[7] });
     // store result to global
@@ -601,7 +596,7 @@ fn create_reduce_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp
         z: IRMem::Var {
             id: 1,
             scope: Scope::Global,
-            index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]]).ir_index(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])),
+            index: Some(View::from(&[sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]]).ir_index(&[0, 1, 2, 3, 4, 5, 6, 7])),
         },
         x: IRMem::Var {
             id: 1,
