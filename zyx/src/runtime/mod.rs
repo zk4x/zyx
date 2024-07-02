@@ -8,11 +8,12 @@ use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
-use core::cell::OnceCell;
 use core::ops::Index;
 use node::Node;
-use rand::rngs::SmallRng;
 use crate::shape::{IntoAxes, IntoShape};
+
+#[cfg(feature = "rand")]
+use rand::rngs::SmallRng;
 
 mod compiler;
 mod interpreter;
@@ -274,7 +275,8 @@ pub(crate) struct Runtime {
     cpu: Option<InterpretedBackend<CPU>>,
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
-    pub(crate) rng: OnceCell<SmallRng>,
+    #[cfg(feature = "rand")]
+    pub(crate) rng: core::cell::OnceCell<SmallRng>,
 }
 
 impl Runtime {
@@ -294,7 +296,8 @@ impl Runtime {
             cpu: None,
             default_device: Device::CPU,
             default_device_set_by_user: false,
-            rng: OnceCell::new(),
+            #[cfg(feature = "rand")]
+            rng: core::cell::OnceCell::new(),
         }
     }
 

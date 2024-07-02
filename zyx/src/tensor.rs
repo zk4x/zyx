@@ -9,11 +9,14 @@ use core::ops::{
     RangeToInclusive, Sub,
 };
 use half::{bf16, f16};
-use rand::rngs::SmallRng;
-use rand::Rng;
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
+
+#[cfg(feature = "rand")]
+use rand::rngs::SmallRng;
+#[cfg(feature = "rand")]
+use rand::Rng;
 
 use crate::runtime::ZyxError;
 use crate::RT;
@@ -149,6 +152,7 @@ impl Tensor {
     }
 
     // Initializers
+    #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
         use rand::distributions::Standard;
@@ -188,6 +192,7 @@ impl Tensor {
         return Tensor { id: tensor_id };
     }
 
+    #[cfg(feature = "rand")]
     #[must_use]
     pub fn uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
         let _ = shape;
@@ -196,6 +201,7 @@ impl Tensor {
         todo!()
     }
 
+    #[cfg(feature = "rand")]
     #[must_use]
     pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
         let _ = shape;
