@@ -1,8 +1,6 @@
 use crate::device::Device;
 use crate::dtype::DType;
-use crate::runtime::compiler::cuda::CUDA;
-use crate::runtime::compiler::opencl::OpenCLCompiler;
-use crate::runtime::compiler::{CompiledBackend, CompilerError};
+use crate::runtime::compiler::CompilerError;
 use crate::runtime::interpreter::cpu::CPU;
 use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
@@ -12,8 +10,17 @@ use core::ops::Index;
 use node::Node;
 use crate::shape::{IntoAxes, IntoShape};
 
+#[cfg(any(feature = "cuda", feature = "opencl", feature = "wgpu"))]
+use crate::compiler::CompiledBackend;
+
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
+
+#[cfg(feature = "cuda")]
+use crate::runtime::compiler::cuda::CUDA;
+
+#[cfg(feature = "opencl")]
+use crate::runtime::compiler::opencl::OpenCLCompiler;
 
 mod compiler;
 mod interpreter;
@@ -268,8 +275,10 @@ impl Index<TensorId> for Subgraph<'_> {
 
 pub(crate) struct Runtime {
     graph: Graph,
-    opencl: Option<CompiledBackend<OpenCLCompiler>>,
+    #[cfg(feature = "cuda")]
     cuda: Option<CompiledBackend<CUDA>>,
+    #[cfg(feature = "opencl")]
+    opencl: Option<CompiledBackend<OpenCLCompiler>>,
     #[cfg(feature = "wgpu")]
     wgpu: Option<CompiledBackend<compiler::wgpu::WGPU>>,
     cpu: Option<InterpretedBackend<CPU>>,
@@ -289,8 +298,10 @@ impl Runtime {
                 axes: Vec::new(),
                 paddings: Vec::new(),
             },
-            opencl: None,
+            #[cfg(feature = "cuda")]
             cuda: None,
+            #[cfg(feature = "opencl")]
+            opencl: None,
             #[cfg(feature = "wgpu")]
             wgpu: None,
             cpu: None,
@@ -312,10 +323,12 @@ impl Runtime {
         if self.default_device_set_by_user {
             return;
         }
+        #[cfg(feature = "cuda")]
         if self.initialize_device(Device::CUDA) {
             self.default_device = Device::CUDA;
             return;
         }
+        #[cfg(feature = "opencl")]
         if self.initialize_device(Device::OpenCL) {
             self.default_device = Device::OpenCL;
             return;
@@ -333,6 +346,7 @@ impl Runtime {
 
     pub(crate) fn initialize_device(&mut self, device: Device) -> bool {
         match device {
+            #[cfg(feature = "cuda")]
             Device::CUDA => {
                 if let Ok(cuda) = CompiledBackend::initialize() {
                     self.cuda = Some(cuda);
@@ -341,6 +355,7 @@ impl Runtime {
                     false
                 }
             }
+            #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if let Ok(opencl) = CompiledBackend::initialize() {
                     self.opencl = Some(opencl);
@@ -382,7 +397,9 @@ impl Runtime {
             if self.graph.rcs[i] == 0 {
                 params.extend(self.graph.nodes[i].parameters());
                 match self.device(i.try_into().unwrap()) {
+                    #[cfg(feature = "cuda")]
                     Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
+                    #[cfg(feature = "opencl")]
                     Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
                     #[cfg(feature = "wgpu")]
                     Device::WGPU => self.wgpu.as_mut().unwrap().remove(x)?,
@@ -525,18 +542,20 @@ impl Runtime {
         };
         let tensor_id = self.graph.push(node);
         match device {
-            Device::OpenCL => {
-                if self.opencl.is_none() {
-                    self.opencl = Some(CompiledBackend::initialize()?);
-                }
-                let dev = self.opencl.as_mut().unwrap();
-                dev.store(tensor_id, data)?;
-            }
+            #[cfg(feature = "cuda")]
             Device::CUDA => {
                 if self.cuda.is_none() {
                     self.cuda = Some(CompiledBackend::initialize()?);
                 }
                 let dev = self.cuda.as_mut().unwrap();
+                dev.store(tensor_id, data)?;
+            }
+            #[cfg(feature = "opencl")]
+            Device::OpenCL => {
+                if self.opencl.is_none() {
+                    self.opencl = Some(CompiledBackend::initialize()?);
+                }
+                let dev = self.opencl.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
             #[cfg(feature = "wgpu")]
@@ -560,6 +579,7 @@ impl Runtime {
 
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         return match self.device(x) {
+            #[cfg(feature = "cuda")]
             Device::CUDA => {
                 if !self.cuda.as_ref().unwrap().is_realized(x) {
                     self.realize(BTreeSet::from_iter([x]))?;
@@ -567,6 +587,7 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.cuda.as_mut().unwrap().load(x, length)?)
             }
+            #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if !self.opencl.as_ref().unwrap().is_realized(x) {
                     self.realize(BTreeSet::from_iter([x]))?;
@@ -605,6 +626,7 @@ impl Runtime {
 
     fn is_realized(&self, x: TensorId) -> bool {
         return match self.device(x) {
+            #[cfg(feature = "cuda")]
             Device::CUDA => {
                 if let Some(cuda) = self.cuda.as_ref() {
                     cuda.is_realized(x)
@@ -612,6 +634,7 @@ impl Runtime {
                     false
                 }
             }
+            #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if let Some(opencl) = self.opencl.as_ref() {
                     opencl.is_realized(x)
@@ -662,14 +685,16 @@ impl Runtime {
             nodes: subgraph,
         };
         match device {
-            Device::OpenCL => {
-                self.opencl.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.opencl.as_mut().unwrap().launch_graph(&graph.nodes)?;
-            },
+            #[cfg(feature = "cuda")]
             Device::CUDA => {
                 self.cuda.as_mut().unwrap().compile_graph(&graph, tensors)?;
                 self.cuda.as_mut().unwrap().launch_graph(&graph.nodes)?;
             }
+            #[cfg(feature = "opencl")]
+            Device::OpenCL => {
+                self.opencl.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.opencl.as_mut().unwrap().launch_graph(&graph.nodes)?;
+            },
             #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 self.wgpu.as_mut().unwrap().compile_graph(&graph, tensors)?;

@@ -11,9 +11,14 @@ use core::fmt::{Display, Formatter};
 
 use libc_print::std_name::println;
 
-pub(super) mod cuda;
 mod ir;
+
+#[cfg(feature = "cuda")]
+pub(super) mod cuda;
+
+#[cfg(feature = "opencl")]
 pub(super) mod opencl;
+
 #[cfg(feature = "wgpu")]
 pub(super) mod wgpu;
 
