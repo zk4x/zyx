@@ -2,6 +2,8 @@ use crate::runtime::interpreter::{Interpreter, InterpreterError};
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
+
+#[cfg(feature = "half")]
 use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
@@ -10,7 +12,9 @@ use num_complex::Complex;
 pub(crate) struct CPU {}
 
 pub(crate) enum CPUBuffer {
+    #[cfg(feature = "half")]
     BF16(Vec<bf16>),
+    #[cfg(feature = "half")]
     F16(Vec<f16>),
     F32(Vec<f32>),
     F64(Vec<f64>),
@@ -28,7 +32,9 @@ pub(crate) enum CPUBuffer {
 impl CPUBuffer {
     fn len(&self) -> usize {
         return match self {
+            #[cfg(feature = "half")]
             CPUBuffer::BF16(x) => x.len(),
+            #[cfg(feature = "half")]
             CPUBuffer::F16(x) => x.len(),
             CPUBuffer::F32(x) => x.len(),
             CPUBuffer::F64(x) => x.len(),
@@ -57,6 +63,7 @@ impl Interpreter for CPU {
     ) -> Result<Vec<T>, InterpreterError> {
         debug_assert_eq!(buffer.len(), length);
         match T::dtype() {
+            #[cfg(feature = "half")]
             DType::BF16 => {
                 if let CPUBuffer::BF16(data) = buffer {
                     return Ok(unsafe { core::mem::transmute(data.clone()) });
@@ -64,6 +71,7 @@ impl Interpreter for CPU {
                     return Err(InterpreterError::BufferDoesNotExist);
                 }
             }
+            #[cfg(feature = "half")]
             DType::F16 => {
                 if let CPUBuffer::F16(data) = buffer {
                     return Ok(unsafe { core::mem::transmute(data.clone()) });

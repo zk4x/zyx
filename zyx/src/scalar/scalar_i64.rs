@@ -1,13 +1,16 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
+#[cfg(feature = "half")]
 use half::{bf16, f16};
 
 impl Scalar for i64 {
+    #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
         let _ = t;
         todo!()
     }
 
+    #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self {
         let _ = t;
         todo!()

@@ -26,7 +26,9 @@ use opencl_sys::{
 impl DType {
     fn ocl(&self) -> &str {
         return match self {
-            DType::BF16 => "TODO",
+            #[cfg(feature = "half")]
+            DType::BF16 => "BF16 is not native to OpenCL, workaround is WIP.",
+            #[cfg(feature = "half")]
             DType::F16 => "half",
             DType::F32 => "float",
             DType::F64 => "double",

@@ -1,6 +1,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
+    #[cfg(feature = "half")]
     BF16,
+    #[cfg(feature = "half")]
     F16,
     F32,
     F64,
@@ -18,7 +20,9 @@ pub enum DType {
 impl core::fmt::Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         return f.write_str(match self {
+            #[cfg(feature = "half")]
             DType::BF16 => "BF16",
+            #[cfg(feature = "half")]
             DType::F16 => "F16",
             DType::F32 => "F32",
             DType::F64 => "F64",
@@ -38,7 +42,9 @@ impl core::fmt::Display for DType {
 impl DType {
     pub(super) fn byte_size(&self) -> usize {
         return match self {
+            #[cfg(feature = "half")]
             DType::BF16 => 2,
+            #[cfg(feature = "half")]
             DType::F16 => 2,
             DType::F32 => 4,
             DType::F64 => 8,

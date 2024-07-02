@@ -8,6 +8,8 @@ use core::ops::{
     Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo,
     RangeToInclusive, Sub,
 };
+
+#[cfg(feature = "half")]
 use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
@@ -100,10 +102,12 @@ impl Tensor {
         let shape = rt.shape(self.id).to_vec();
         return Tensor {
             id: match self.dtype() {
+                #[cfg(feature = "half")]
                 DType::BF16 => {
                     let data = rt.load::<bf16>(self.id).unwrap();
                     rt.store(&data, device, shape)
                 }
+                #[cfg(feature = "half")]
                 DType::F16 => {
                     let data = rt.load::<f16>(self.id).unwrap();
                     rt.store(&data, device, shape)
@@ -217,10 +221,12 @@ impl Tensor {
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let tensor_id = match dtype {
+            #[cfg(feature = "half")]
             DType::BF16 => {
                 let data: Vec<_> = core::iter::repeat(bf16::ZERO).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "half")]
             DType::F16 => {
                 let data: Vec<_> = core::iter::repeat(f16::ZERO).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
@@ -274,10 +280,12 @@ impl Tensor {
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let tensor_id = match dtype {
+            #[cfg(feature = "half")]
             DType::BF16 => {
                 let data: Vec<_> = core::iter::repeat(bf16::ONE).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "half")]
             DType::F16 => {
                 let data: Vec<_> = core::iter::repeat(f16::ONE).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
@@ -751,6 +759,7 @@ impl Tensor {
     }
 }
 
+#[cfg(feature = "half")]
 impl TryFrom<&Tensor> for bf16 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
@@ -758,6 +767,7 @@ impl TryFrom<&Tensor> for bf16 {
     }
 }
 
+#[cfg(feature = "half")]
 impl TryFrom<&Tensor> for f16 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
@@ -853,6 +863,7 @@ impl core::fmt::Display for Tensor {
             3
         };
         let res = match self.dtype() {
+            #[cfg(feature = "half")]
             DType::F16 => {
                 let data: Result<Vec<f16>, _> = self.try_into();
                 match data {

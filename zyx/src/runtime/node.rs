@@ -6,8 +6,10 @@ use crate::{DType, Device};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Constant {
     /// bf16 constant
+    #[cfg(feature = "half")]
     BF16(u16),
     /// f16 constant
+    #[cfg(feature = "half")]
     F16(u16),
     /// f32 constant
     F32(u32),
@@ -35,7 +37,9 @@ impl Constant {
     /// Get dtype of this constant
     pub(super) fn dtype(&self) -> DType {
         return match self {
+            #[cfg(feature = "half")]
             Constant::BF16(..) => DType::BF16,
+            #[cfg(feature = "half")]
             Constant::F16(..) => DType::F16,
             Constant::F32(..) => DType::F32,
             Constant::F64(..) => DType::F64,

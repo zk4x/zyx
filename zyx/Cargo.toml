@@ -21,7 +21,7 @@ itertools = { version = "0.13.0", default-features = false }
 libm = { version = "0.2.8", default-features = false }
 
 # These will be optional
-half = { version = "2.4.1", default-features = false }
+half = { version = "2.4.1", default-features = false, optional = true }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"], optional = true }
 num-complex = { version = "0.4.6", default-features = false, optional = true }
 cuda-driver-sys = { version = "0.3.0", default-features = false, optional = true }
@@ -42,9 +42,9 @@ debug1 = ["dep:libc-print"]
 rand = ["dep:rand"]
 
 # Enables f16 and bf16 dtypes
-#half = ["dep:half"]
+half = ["dep:half"]
 
-# Enables complex dtype
+# Enables complex f32 and complex f64 dtypes
 complex = ["dep:num-complex"]
 
 # Enables cuda device

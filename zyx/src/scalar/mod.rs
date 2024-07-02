@@ -1,9 +1,11 @@
+#[cfg(feature = "half")]
 mod scalar_bf16;
+#[cfg(feature = "half")]
+mod scalar_f16;
 #[cfg(feature = "complex")]
 mod scalar_cf32;
 #[cfg(feature = "complex")]
 mod scalar_cf64;
-mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
 mod scalar_i16;
@@ -12,14 +14,18 @@ mod scalar_i64;
 mod scalar_i8;
 mod scalar_u8;
 
-use crate::dtype::DType;
+#[cfg(feature = "half")]
 use half::{bf16, f16};
+
+use crate::dtype::DType;
 
 /// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
     /// From bf16
+    #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self;
     /// From f16
+    #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self;
     /// From f32
     fn from_f32(t: f32) -> Self;
