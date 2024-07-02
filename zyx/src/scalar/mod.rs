@@ -1,5 +1,7 @@
 mod scalar_bf16;
+#[cfg(feature = "complex")]
 mod scalar_cf32;
+#[cfg(feature = "complex")]
 mod scalar_cf64;
 mod scalar_f16;
 mod scalar_f32;

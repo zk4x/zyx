@@ -9,9 +9,11 @@ use core::ops::{
     RangeToInclusive, Sub,
 };
 use half::{bf16, f16};
-use num_complex::Complex;
 use rand::rngs::SmallRng;
 use rand::Rng;
+
+#[cfg(feature = "complex")]
+use num_complex::Complex;
 
 use crate::runtime::ZyxError;
 use crate::RT;
@@ -111,10 +113,12 @@ impl Tensor {
                     let data = rt.load::<f64>(self.id).unwrap();
                     rt.store(&data, device, shape)
                 }
+                #[cfg(feature = "complex")]
                 DType::CF32 => {
                     let data = rt.load::<Complex<f32>>(self.id).unwrap();
                     rt.store(&data, device, shape)
                 }
+                #[cfg(feature = "complex")]
                 DType::CF64 => {
                     let data = rt.load::<Complex<f64>>(self.id).unwrap();
                     rt.store(&data, device, shape)
@@ -171,7 +175,9 @@ impl Tensor {
                     .collect::<Vec<f64>>();
                 rt.store(data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "complex")]
             DType::CF32 => todo!(),
+            #[cfg(feature = "complex")]
             DType::CF64 => todo!(),
             DType::U8 => todo!(),
             DType::I8 => todo!(),
@@ -221,10 +227,12 @@ impl Tensor {
                 let data: Vec<_> = core::iter::repeat(0f64).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "complex")]
             DType::CF32 => {
                 let data: Vec<_> = core::iter::repeat(Complex::<f32>::ZERO).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "complex")]
             DType::CF64 => {
                 let data: Vec<_> = core::iter::repeat(Complex::<f32>::ZERO).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
@@ -276,10 +284,12 @@ impl Tensor {
                 let data: Vec<_> = core::iter::repeat(1f64).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "complex")]
             DType::CF32 => {
                 let data: Vec<_> = core::iter::repeat(Complex::<f32>::ONE).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
             }
+            #[cfg(feature = "complex")]
             DType::CF64 => {
                 let data: Vec<_> = core::iter::repeat(Complex::<f32>::ONE).take(n).collect();
                 rt.store(&data, default_device, shape).unwrap()
@@ -693,6 +703,8 @@ impl Tensor {
         let mut x_shape = x.shape();
         let mut y_shape = y.shape();
 
+        todo!();
+
         for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
                 debug_assert!(
@@ -761,6 +773,7 @@ impl TryFrom<&Tensor> for f64 {
     }
 }
 
+#[cfg(feature = "complex")]
 impl TryFrom<&Tensor> for Complex<f32> {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
@@ -768,6 +781,7 @@ impl TryFrom<&Tensor> for Complex<f32> {
     }
 }
 
+#[cfg(feature = "complex")]
 impl TryFrom<&Tensor> for Complex<f64> {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {

@@ -148,7 +148,7 @@ impl View {
                 } else {
                     i -= 1;
                 }
-                println!("Comparing {d}, {}", sh[i]);
+                //println!("Comparing {d}, {}", sh[i]);
                 match d.cmp(&sh[i]) {
                     Ordering::Less => {
                         i += 1;

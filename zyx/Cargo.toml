@@ -23,8 +23,8 @@ libm = { version = "0.2.8", default-features = false }
 # These will be optional
 half = { version = "2.4.1", default-features = false }
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"] }
-num-complex = { version = "0.4.6", default-features = false }
-cuda-driver-sys = { version = "0.3.0", default-features = false }
+num-complex = { version = "0.4.6", default-features = false, optional = true }
+cuda-driver-sys = { version = "0.3.0", default-features = false, optional = true }
 opencl-sys = { version = "0.3.1", default-features = false }
 wgpu = { version = "0.20.0", default-features = false, optional = true }
 nostd_async = { version = "0.6.1", default-features = false, optional = true }
@@ -45,10 +45,10 @@ debug1 = ["dep:libc-print"]
 #half = ["dep:half"]
 
 # Enables complex dtype
-#complex = ["dep:num-complex"]
+complex = ["dep:num-complex"]
 
 # Enables cuda device
-#cuda = ["dep:cuda-driver-sys"]
+cuda = ["dep:cuda-driver-sys"]
 
 # Enables opencl device
 #opencl = ["dep:opencl-sys"]

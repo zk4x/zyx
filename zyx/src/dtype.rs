@@ -4,7 +4,9 @@ pub enum DType {
     F16,
     F32,
     F64,
+    #[cfg(feature = "complex")]
     CF32,
+    #[cfg(feature = "complex")]
     CF64,
     U8,
     I8,
@@ -20,7 +22,9 @@ impl core::fmt::Display for DType {
             DType::F16 => "F16",
             DType::F32 => "F32",
             DType::F64 => "F64",
+            #[cfg(feature = "complex")]
             DType::CF32 => "CF32",
+            #[cfg(feature = "complex")]
             DType::CF64 => "CF64",
             DType::U8 => "U8",
             DType::I8 => "I8",
@@ -38,7 +42,9 @@ impl DType {
             DType::F16 => 2,
             DType::F32 => 4,
             DType::F64 => 8,
+            #[cfg(feature = "complex")]
             DType::CF32 => 8,
+            #[cfg(feature = "complex")]
             DType::CF64 => 16,
             DType::U8 => 1,
             DType::I8 => 1,

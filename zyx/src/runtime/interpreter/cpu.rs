@@ -3,6 +3,8 @@ use crate::dtype::DType;
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
 use half::{bf16, f16};
+
+#[cfg(feature = "complex")]
 use num_complex::Complex;
 
 pub(crate) struct CPU {}
@@ -12,7 +14,9 @@ pub(crate) enum CPUBuffer {
     F16(Vec<f16>),
     F32(Vec<f32>),
     F64(Vec<f64>),
+    #[cfg(feature = "complex")]
     CF32(Vec<Complex<f32>>),
+    #[cfg(feature = "complex")]
     CF64(Vec<Complex<f64>>),
     U8(Vec<u8>),
     I8(Vec<i8>),
@@ -28,7 +32,9 @@ impl CPUBuffer {
             CPUBuffer::F16(x) => x.len(),
             CPUBuffer::F32(x) => x.len(),
             CPUBuffer::F64(x) => x.len(),
+            #[cfg(feature = "complex")]
             CPUBuffer::CF32(x) => x.len(),
+            #[cfg(feature = "complex")]
             CPUBuffer::CF64(x) => x.len(),
             CPUBuffer::U8(x) => x.len(),
             CPUBuffer::I8(x) => x.len(),
@@ -79,6 +85,7 @@ impl Interpreter for CPU {
                     return Err(InterpreterError::BufferDoesNotExist);
                 }
             }
+            #[cfg(feature = "complex")]
             DType::CF32 => {
                 if let CPUBuffer::CF32(data) = buffer {
                     return Ok(unsafe { core::mem::transmute(data.clone()) });
@@ -86,6 +93,7 @@ impl Interpreter for CPU {
                     return Err(InterpreterError::BufferDoesNotExist);
                 }
             }
+            #[cfg(feature = "complex")]
             DType::CF64 => {
                 if let CPUBuffer::CF64(data) = buffer {
                     return Ok(unsafe { core::mem::transmute(data.clone()) });

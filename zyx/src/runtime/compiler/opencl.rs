@@ -30,8 +30,10 @@ impl DType {
             DType::F16 => "half",
             DType::F32 => "float",
             DType::F64 => "double",
-            DType::CF32 => "TODO",
-            DType::CF64 => "TODO",
+            #[cfg(feature = "complex")]
+            DType::CF32 => "Not native to OpenCL, workaround is WIP",
+            #[cfg(feature = "complex")]
+            DType::CF64 => "Not native to OpenCL, workaround is WIP",
             DType::U8 => "unsigned char",
             DType::I8 => "char",
             DType::I16 => "short",

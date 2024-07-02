@@ -522,7 +522,7 @@ fn create_reduce_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp
             scope: Scope::Register,
             index: None,
         },
-        x: if let Some(l_view) = l_view {
+        x: if let Some(ref l_view) = l_view {
             IRMem::Var {
                 id: 0,
                 scope: Scope::Local,
@@ -585,7 +585,9 @@ fn create_reduce_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp
     ops.push(IROp::EndLoop);
     ops.push(IROp::EndLoop);
     // Synchronize before loading next tile
-    ops.push(IROp::Barrier { scope: Scope::Local });
+    if l_view.is_some() {
+        ops.push(IROp::Barrier { scope: Scope::Local });
+    }
     ops.push(IROp::EndLoop);
 
     // Store accumulator to global
