@@ -18,7 +18,7 @@ maintenance = { status = "experimental" }
 [dependencies]
 spin = { version = "0.9.8", default-features = false, features = ["mutex", "spin_mutex"] }
 libm = { version = "0.2.8", default-features = false }
-itertools = { version = "0.13.0", default-features = false }
+#itertools = { version = "0.13.0", default-features = false }
 
 # These will be optional
 half = { version = "2.4.1", default-features = false, optional = true }

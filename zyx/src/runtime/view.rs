@@ -119,8 +119,8 @@ impl View {
     /// Pad view with padding.
     /// This function assumes standard padding beginning at last dimension.
     pub fn pad(&mut self, padding: &[isize]) {
-        use itertools::Itertools;
-        assert!(padding.len() > 0);
+        todo!()
+        /*assert!(padding.len() > 0);
         assert!(self.shapes[0].len() >= padding.len());
         for (dim, (lp, rp)) in self.shapes[0]
             .iter_mut()
@@ -131,7 +131,7 @@ impl View {
                 .try_into()
                 .unwrap();
             dim.shift = (<usize as TryInto<isize>>::try_into(dim.shift).unwrap() + lp) as usize;
-        }
+        }*/
     }
 
     /// Expand view into different shape
