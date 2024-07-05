@@ -11,7 +11,7 @@ use node::Node;
 use crate::shape::{IntoAxes, IntoShape};
 
 #[cfg(any(feature = "cuda", feature = "opencl", feature = "wgpu"))]
-use crate::compiler::CompiledBackend;
+use compiler::CompiledBackend;
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -21,6 +21,8 @@ use crate::runtime::compiler::cuda::CUDA;
 
 #[cfg(feature = "opencl")]
 use crate::runtime::compiler::opencl::OpenCLCompiler;
+
+use libc_print::std_name::println;
 
 mod compiler;
 mod interpreter;
@@ -344,41 +346,59 @@ impl Runtime {
         }
     }
 
+    /// Returns true on successfull initialization or if device
+    /// was already initialized.
     pub(crate) fn initialize_device(&mut self, device: Device) -> bool {
         match device {
             #[cfg(feature = "cuda")]
             Device::CUDA => {
-                if let Ok(cuda) = CompiledBackend::initialize() {
-                    self.cuda = Some(cuda);
-                    true
+                if self.cuda.is_none() {
+                    if let Ok(cuda) = CompiledBackend::initialize() {
+                        self.cuda = Some(cuda);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    false
+                    true
                 }
             }
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
-                if let Ok(opencl) = CompiledBackend::initialize() {
-                    self.opencl = Some(opencl);
-                    true
+                if self.opencl.is_none() {
+                    if let Ok(opencl) = CompiledBackend::initialize() {
+                        self.opencl = Some(opencl);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    false
+                    true
                 }
             }
             #[cfg(feature = "wgpu")]
             Device::WGPU => {
-                if let Ok(wgpu) = CompiledBackend::initialize() {
-                    self.wgpu = Some(wgpu);
-                    true
+                if self.wgpu.is_none() {
+                    if let Ok(wgpu) = CompiledBackend::initialize() {
+                        self.wgpu = Some(wgpu);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    false
+                    true
                 }
             }
             Device::CPU => {
-                if let Ok(cpu) = InterpretedBackend::initialize() {
-                    self.cpu = Some(cpu);
-                    true
+                if self.cpu.is_none() {
+                    if let Ok(cpu) = InterpretedBackend::initialize() {
+                        self.cpu = Some(cpu);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    false
+                    true
                 }
             }
         }
@@ -535,6 +555,7 @@ impl Runtime {
         device: Device,
         shape: impl IntoShape,
     ) -> Result<TensorId, ZyxError> {
+        println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
         let node = Node::Leaf {
             shape_id: self.graph.push_shape(shape),
             dtype: T::dtype(),

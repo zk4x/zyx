@@ -9,6 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
+//#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
 mod ir;
@@ -166,7 +167,7 @@ impl<C: Compiler> CompiledBackend<C> {
         x: TensorId,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
-        libc_print::libc_println!("Attempting to load buffer with id {x}");
+        println!("Attempting to load buffer with id {x}");
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_memory(buffer, length)
         }
@@ -221,10 +222,10 @@ impl<C: Compiler> CompiledBackend<C> {
         //println!("Order: {order:?}");
 
         for nid in order.iter().copied() {
-            libc_print::libc_println!("Node {:?}", graph.nodes[&nid]);
+            //println!("Node {nid}: {:?}", graph.nodes[&nid]);
             if self.buffers.contains_key(&nid) {
                 let dtype = graph.dtype(nid);
-                //libc_print::libc_println!("Id if the buffer: {nid}");
+                //println!("Load buffer: {nid}");
                 tiles.insert(
                     nid,
                     Tile {
@@ -252,25 +253,23 @@ impl<C: Compiler> CompiledBackend<C> {
                     tiles.insert(nid, tile);
                 }
                 Node::Add { x, y } => {
-                    /*let tile = Tile {
+                    let tile = Tile {
                         args: BTreeSet::from([x, y]),
                         view: View::from(&graph.shape(nid)),
                         dtype: graph.dtype(nid),
-                        first_op: FirstOp::Binary { x, y, op: BOp::Add },
+                        first_op: TileOp::Binary { x, y, op: BOp::Add },
                         ops: vec![],
                         can_be_fused: rcs[&nid] < 2,
                     };
-                    tiles.insert(nid, tile);*/
-                    let (_, _) = (x, y);
-                    todo!();
+                    tiles.insert(nid, tile);
                 }
                 Node::Reshape { x, shape_id } => match &tiles[&x].first_op {
-                    FirstOp::Reduce { .. } => {
+                    TileOp::Reduce { .. } => {
                         let tile = Tile {
                             args: BTreeSet::from([x]),
                             view: View::from(graph._shape(shape_id)),
                             dtype: graph.dtype(nid),
-                            first_op: FirstOp::Movement { x },
+                            first_op: TileOp::Movement { x },
                             ops: vec![],
                             can_be_fused: rcs[&nid] < 2,
                         };
@@ -283,8 +282,8 @@ impl<C: Compiler> CompiledBackend<C> {
                     }
                 },
                 Node::Expand { x, shape_id } => {
-                    if matches!(tiles[&x].first_op, FirstOp::Load { .. }) && tiles[&x].ops.len() == 0 {
-                        // Expand can be fused
+                    if matches!(tiles[&x].first_op, TileOp::Load { .. }) && tiles[&x].ops.len() == 0 {
+                        // Expand can be fused only with load op
                         let mut tile = tiles[&x].clone();
                         tile.view.expand(graph._shape(shape_id));
                         tiles.insert(nid, tile);
@@ -296,7 +295,7 @@ impl<C: Compiler> CompiledBackend<C> {
                             args: BTreeSet::from([x]),
                             view,
                             dtype: graph.dtype(nid),
-                            first_op: FirstOp::Movement { x },
+                            first_op: TileOp::Store { x },
                             ops: vec![],
                             can_be_fused: rcs[&nid] < 2,
                         };
@@ -375,22 +374,24 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
+        //println!("{tiles:?}");
+
         // Find which kernels are absolutely necessary for evaluation of to_eval
         // and delete the rest.
-        // I.e. remove fused ids (first round of fusion, second round is in IR,
-        // unary ops get fused)
+        // I.e. remove fused ids (first round of fusion - unary ops get fused,
+        // second round of fusion is in IR)
         //println!("To eval: {to_eval:?}");
         let mut required_kernel_ids = to_eval.clone();
         let mut params = to_eval.clone();
         while let Some(id) = params.pop_last() {
+            println!("Id {id}");
             params.extend(tiles[&id].args.iter());
             required_kernel_ids.extend(tiles[&id].args.iter());
         }
         //println!("Required kernel_ids: {required_kernel_ids:?}");
         tiles.retain(|id, _| required_kernel_ids.contains(id));
         order.retain(|id| required_kernel_ids.contains(id));
-
-        //libc_print::libc_println!("Tiles kept {:?}", tiles.keys());
+        //println!("Tiles kept {:?}", tiles.keys());
 
         // Reshape and permute tiles to use exactly work 3 dimensions
         // and at most single reduce loop over the last dimension>
@@ -629,7 +630,43 @@ enum BOp {
     Max, // for ReLU and max reduce
 }
 
+// Movement operation can be skipped for now, perhaps later added for some register ->
+// local -> register movement operations without storing to global, but that is complex.
 #[derive(Debug, Clone)]
+enum Tile {
+    // Load from global to register
+    Load {
+        z: TensorId,
+        x: TensorId,
+        view: View,
+    },
+    // Binary operation
+    Binary {
+        z: TensorId,
+        x: TensorId,
+        y: TensorId,
+        op: BOp,
+    },
+    // Reduce operation, z is accumulator
+    Reduce {
+        z: TensorId,
+        x: TensorId,
+    },
+    // Store from register to global
+    Store {
+        z: TensorId,
+        x: TensorId,
+        view: View,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ROp {
+    Sum,
+    Max,
+}
+
+/*#[derive(Debug, Clone)]
 struct Tile {
     // which tensors need to be evaluated before this
     args: BTreeSet<TensorId>,
@@ -649,28 +686,24 @@ impl Tile {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ROp {
-    Sum,
-    Max,
-}
-
 // It is better if these ops represent breaks between tiles,
 // from performance perspective, for example we do not want to run
 // expanded tensor in a million threads if it was a tensor with just 10 scalars.
 // But these are also fused (if possible) later when converted to looped representation.
 #[derive(Debug, Clone)]
-enum FirstOp {
-    // Load existing buffer from memory
+enum TileOp {
+    // Load existing buffer from memory using view, then apply unary ops
     Load {
         buffer_id: TensorId,
         dtype: DType,
     },
+    // Apply movement, then binary op and unary ops
     Binary {
         x: TensorId,
         y: TensorId,
         op: BOp,
     },
+    // Apply movement, then reduce op and unary ops
     Reduce {
         // Which buffer needs to be load for reduce op
         x: TensorId,
@@ -684,7 +717,12 @@ enum FirstOp {
     // Reshape and pad can not be fused with reduce kernel.
     // Technically reshape and pad could be fused with some reduce kernels,
     // but we can keep this simple here and fuse them in looped kernel.
-    Movement {
+    /*Movement {
         x: TensorId,
-    },
-}
+    },*/
+    // Apply movement, then unary ops and store into global variable
+    Store {
+        buffer_id: TensorId,
+        dtype: DType,
+    }
+}*/

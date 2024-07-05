@@ -244,8 +244,49 @@ pub(crate) fn tiled_to_ir(
             }
             // Binary tile fuses two ir kernels together
             FirstOp::Binary { x, y, op } => {
-                let (_, _, _) = (x, y, op);
-                todo!()
+                // Even two reduce kernels are fusable now that we can add global
+                // temporary variables.
+                //println!("Kernel x ops {:?}", kernels[&x].1.ops);
+                //println!("Kernel y ops {:?}", kernels[&y].1.ops);
+                // These two input kernels have their own register loops,
+                // resulting views are guaranteed to be contiguous.
+                // Movement ops take care of necessary global temporaries.
+                // Thus we can remove assignements to global variables
+                // and directly apply binary operation on register variables.
+                // If inputs are reduce kernels, we need to work with accumulators.
+                // So for now lets just assume there are two register loops, we keep
+                // one and remove the other. We also remove both global assigns
+                // and replace it with our own.
+                let mut ops = Vec::new();
+                let x_ops = &kernels[&x].1.ops;
+                let y_ops = &kernels[&y].1.ops;
+                let max_id: u32 = if let IROp::AssignMem { z, x } = &x_ops[x_ops.len()-3] {
+                    if let IRMem::Var { id, .. } = z {
+                        *id
+                    } else {
+                        todo!()
+                    }
+                } else {
+                    todo!()
+                };
+                for op in &x_ops[..x_ops.len()-3] {
+                    ops.push(op.clone());
+                }
+                for op in &y_ops[2..y_ops.len()-3] {
+                    ops.push(op.clone());
+                }
+                for op in &y_ops[y_ops.len()-2..] {
+                    ops.push(op.clone());
+                }
+                kernels.insert(*nid, (
+                    kernels[&x].0.iter().chain(kernels[&y].0.iter()).copied().collect(),
+                    IRKernel {
+                        global_work_size: kernels[&x].1.global_work_size,
+                        local_work_size: kernels[&x].1.local_work_size,
+                        args: kernels[&x].1.args.iter().chain(kernels[&y].1.args.iter()).cloned().collect(),
+                        ops
+                    }
+                ));
             }
         }
     }

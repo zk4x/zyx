@@ -23,12 +23,15 @@ use rand::Rng;
 use crate::runtime::ZyxError;
 use crate::RT;
 
+use libc_print::std_name::println;
+
 pub struct Tensor {
     id: u32,
 }
 
 impl Clone for Tensor {
     fn clone(&self) -> Self {
+        println!("cloning");
         RT.lock().retain(self.id);
         Tensor { id: self.id }
     }
@@ -36,6 +39,7 @@ impl Clone for Tensor {
 
 impl Drop for Tensor {
     fn drop(&mut self) {
+        println!("dropping");
         RT.lock().release(self.id).unwrap();
     }
 }
@@ -717,8 +721,6 @@ impl Tensor {
         let mut x_shape = x.shape();
         let mut y_shape = y.shape();
 
-        todo!();
-
         for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
                 debug_assert!(
@@ -755,7 +757,8 @@ impl Tensor {
         if y_shape != eshape {
             y = y.expand(eshape);
         }
-        (x, y)
+        println!("Returning from broadcast.");
+        return (x, y)
     }
 }
 
@@ -1278,7 +1281,12 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().add(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1286,7 +1294,12 @@ impl<IT: Into<Tensor>> Add<IT> for &Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().add(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1294,7 +1307,12 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().sub(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1302,7 +1320,12 @@ impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().sub(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1310,7 +1333,12 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().mul(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1318,7 +1346,12 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().mul(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1326,7 +1359,12 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().div(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
+        return tensor
     }
 }
 
@@ -1334,7 +1372,12 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().div(x.id, y.id) }
+        // We have to do this using temporary variable,
+        // otherwise rust drops tensor before dropping mutexguard,
+        // causing deadlock. But with temporary variable
+        // it works. Welcome to most beloved language of all time.
+        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
+        return tensor
     }
 }
 
