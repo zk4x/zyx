@@ -5,13 +5,13 @@ use crate::runtime::{Subgraph, TensorId};
 use crate::scalar::Scalar;
 use crate::DType;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
-//#[cfg(feature = "debug1")]
+#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
+mod compile;
 mod ir;
 
 #[cfg(feature = "cuda")]
@@ -23,7 +23,7 @@ pub(super) mod opencl;
 #[cfg(feature = "wgpu")]
 pub(super) mod wgpu;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Scope {
     Global,
     Local,
@@ -167,13 +167,14 @@ impl<C: Compiler> CompiledBackend<C> {
         x: TensorId,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
+        #[cfg(feature = "debug1")]
         println!("Attempting to load buffer with id {x}");
         if let Some(buffer) = self.buffers.get(&x) {
-            return self.compiler.load_memory(buffer, length)
+            return self.compiler.load_memory(buffer, length);
         }
         return Err(CompilerError::BufferDoesNotExist(
             "Buffer with given id does not exist.",
-        ))
+        ));
     }
 
     pub(super) fn remove(&mut self, x: TensorId) -> Result<(), CompilerError> {
@@ -192,7 +193,7 @@ impl<C: Compiler> CompiledBackend<C> {
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("Evaluating {to_eval:?}");
         if self.compiled_graphs.contains_key(&org_graph.nodes) {
-            return Ok(())
+            return Ok(());
         }
         let mut graph = org_graph.clone();
         //println!("{subgraph:?}");
@@ -215,321 +216,156 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
-        // Global work sizes are known as the shapes of the reduce kernels!
+        let mut kernels = compile::create_kernels(
+            &self.buffers.keys().copied().collect(),
+            &graph,
+            to_eval,
+            &order,
+        );
 
-        let mut tiles = BTreeMap::new();
+        for kernel in &kernels {
+            #[cfg(feature = "debug1")]
+            println!("\n{kernel:?}\n");
+        }
 
-        //println!("Order: {order:?}");
+        // Create kernels function merges all mergeable ops together, creates final groups of ops
+        // and includes reduce loops. Shapes are still original and not changed.
 
-        for nid in order.iter().copied() {
-            //println!("Node {nid}: {:?}", graph.nodes[&nid]);
-            if self.buffers.contains_key(&nid) {
-                let dtype = graph.dtype(nid);
-                //println!("Load buffer: {nid}");
-                tiles.insert(
-                    nid,
-                    Tile {
-                        args: BTreeSet::new(),
-                        view: View::from(&graph.shape(nid)),
-                        dtype,
-                        first_op: FirstOp::Load {
-                            dtype,
-                            buffer_id: nid,
-                        },
-                        ops: Vec::new(),
-                        can_be_fused: rcs[&nid] < 2,
-                    },
-                );
-                continue;
+        // Now we need to optimize shapes to 8d non reduce and 10d in reduce loops
+        for kernel in &mut kernels {
+            let mut kernel_view = View::from(&kernel.shape);
+
+            // Make all kernels 3d
+            let mut sh = kernel.shape.clone();
+            while sh.len() < 3 {
+                sh.insert(0, 1);
             }
-            match graph[nid] {
-                Node::Const { .. } => {}
-                Node::Leaf { .. } => {}
-                Node::Cast { .. } => {}
-                Node::Exp { x } => {
-                    //libc_print::libc_println!("{x}");
-                    let mut tile = tiles[&x].clone();
-                    tile.ops.push(UOp::Exp);
-                    tiles.insert(nid, tile);
-                }
-                Node::Add { x, y } => {
-                    let tile = Tile {
-                        args: BTreeSet::from([x, y]),
-                        view: View::from(&graph.shape(nid)),
-                        dtype: graph.dtype(nid),
-                        first_op: TileOp::Binary { x, y, op: BOp::Add },
-                        ops: vec![],
-                        can_be_fused: rcs[&nid] < 2,
-                    };
-                    tiles.insert(nid, tile);
-                }
-                Node::Reshape { x, shape_id } => match &tiles[&x].first_op {
-                    TileOp::Reduce { .. } => {
-                        let tile = Tile {
-                            args: BTreeSet::from([x]),
-                            view: View::from(graph._shape(shape_id)),
-                            dtype: graph.dtype(nid),
-                            first_op: TileOp::Movement { x },
-                            ops: vec![],
-                            can_be_fused: rcs[&nid] < 2,
-                        };
-                        tiles.insert(nid, tile);
-                    }
-                    _ => {
-                        let mut tile = tiles[&x].clone();
-                        tile.view.reshape(graph._shape(shape_id));
-                        tiles.insert(nid, tile);
-                    }
-                },
-                Node::Expand { x, shape_id } => {
-                    if matches!(tiles[&x].first_op, TileOp::Load { .. }) && tiles[&x].ops.len() == 0 {
-                        // Expand can be fused only with load op
-                        let mut tile = tiles[&x].clone();
-                        tile.view.expand(graph._shape(shape_id));
-                        tiles.insert(nid, tile);
-                    } else {
-                        // Expand can not be fused
-                        let mut view = View::from(&graph.shape(x));
-                        view.expand(graph._shape(shape_id));
-                        let tile = Tile {
-                            args: BTreeSet::from([x]),
-                            view,
-                            dtype: graph.dtype(nid),
-                            first_op: TileOp::Store { x },
-                            ops: vec![],
-                            can_be_fused: rcs[&nid] < 2,
-                        };
-                        //#[cfg(feature = "debug1")]
-                        //libc_print::libc_println!("Inserting expand tile {nid}");
-                        tiles.insert(nid, tile);
-                    }
-                }
-                Node::Permute { .. } => {
-                    // Permute permutes all views.
-                    // In case of reduce kernel, permute also axes and shape before reduce.
-                    todo!()
-                }
-                Node::Pad {
-                    x,
-                    shape_id: _,
-                    padding_id,
-                } => {
-                    let padding = graph._padding(padding_id);
-                    match &tiles[&x].first_op {
-                        FirstOp::Reduce { .. } => {
-                            let mut view = View::from(&graph.shape(x));
-                            view.pad(padding);
-                            let tile = Tile {
-                                args: BTreeSet::from([x]),
-                                view,
-                                dtype: graph.dtype(nid),
-                                first_op: FirstOp::Movement { x },
-                                ops: vec![],
-                                can_be_fused: rcs[&nid] < 2,
-                            };
-                            tiles.insert(nid, tile);
-                        }
-                        _ => {
-                            let mut tile = tiles[&x].clone();
-                            tile.view.pad(padding);
-                            tiles.insert(nid, tile);
-                        }
-                    }
-                }
-                Node::Sum {
-                    x,
-                    axes_id,
-                    shape_id,
-                } => {
-                    let (x, args, view) = if let FirstOp::Load { buffer_id, .. } = tiles[&x].first_op {
-                        if tiles[&x].ops.len() == 0 {
-                            // Sum can be fused
-                            (buffer_id, tiles[&x].args.clone(), tiles[&x].view.clone())
+            let rank = sh.len();
+            if rank > 3 {
+                let sh = [sh[..rank - 2].iter().product(), sh[rank - 2], sh[rank - 1]];
+                kernel_view.reshape(&sh);
+            } else {
+                kernel_view.reshape(&sh);
+            }
+            kernel_view.optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
+            let sh = kernel_view.shape();
+            kernel.shape = sh.clone();
+
+            let mut reduce_data: Option<(Vec<usize>, Vec<usize>)> = None;
+            for op in &mut kernel.ops {
+                // Make all loads outside of reduce loops 3d, in reduce loops 4d
+                match op {
+                    compile::Op::Load { view, .. } => {
+                        if let Some((shape, axes)) = &reduce_data {
+                            view.permute(axes);
+                            view.reshape(shape);
                         } else {
-                            // Sum can not be fused
-                            (x, BTreeSet::from([x]), View::from(graph.shape(x)))
-                        }
-                    } else {
-                        // Sum can not be fused
-                        (x, BTreeSet::from([x]), View::from(graph.shape(x)))
-                    };
-                    let tile = Tile {
-                        args,
-                        view,
-                        dtype: graph.dtype(nid),
-                        first_op: FirstOp::Reduce {
-                            x,
-                            shape: graph.shape(x).into(),
-                            axes: graph._axes(axes_id).into(),
-                            op: ROp::Sum,
-                        },
-                        ops: vec![],
-                        can_be_fused: rcs[&nid] < 2,
-                    };
-                    tiles.insert(nid, tile);
-                }
-                _ => {
-                    todo!()
-                }
-            }
-        }
-
-        //println!("{tiles:?}");
-
-        // Find which kernels are absolutely necessary for evaluation of to_eval
-        // and delete the rest.
-        // I.e. remove fused ids (first round of fusion - unary ops get fused,
-        // second round of fusion is in IR)
-        //println!("To eval: {to_eval:?}");
-        let mut required_kernel_ids = to_eval.clone();
-        let mut params = to_eval.clone();
-        while let Some(id) = params.pop_last() {
-            println!("Id {id}");
-            params.extend(tiles[&id].args.iter());
-            required_kernel_ids.extend(tiles[&id].args.iter());
-        }
-        //println!("Required kernel_ids: {required_kernel_ids:?}");
-        tiles.retain(|id, _| required_kernel_ids.contains(id));
-        order.retain(|id| required_kernel_ids.contains(id));
-        //println!("Tiles kept {:?}", tiles.keys());
-
-        // Reshape and permute tiles to use exactly work 3 dimensions
-        // and at most single reduce loop over the last dimension>
-        for (_, tile) in &mut tiles {
-            match tile.view.rank() {
-                1 => match &mut tile.first_op {
-                    FirstOp::Reduce { axes, .. } => {
-                        // reshape to 4d, last dim reduce
-                        debug_assert_eq!(axes.len(), 1);
-                        *axes = vec![3];
-                        tile.view.reshape(&[1, 1, 1, tile.view.numel()]);
-                    }
-                    _ => {
-                        // reshape to 3d
-                        tile.view.reshape(&[1, 1, tile.view.numel()]);
-                    }
-                },
-                2 => match &tile.first_op {
-                    FirstOp::Reduce { x: _, shape: _, axes, op: _ } => {
-                        // permute to join reduce axes together in last dimension
-                        // reshape to 4d, last dim reduce
-                        let sh = tile.view.shape();
-                        let d0 = sh[0];
-                        let d1 = sh[1];
-                        if axes.contains(&0) {
-                            if axes.contains(&1) {
-                                tile.view.reshape(&[1, 1, 1, d0 * d1]);
-                            } else {
-                                tile.view.permute(&[1, 0]);
-                                tile.view.reshape(&[1, 1, d1, d0]);
-                            }
-                        } else if axes.contains(&1) {
-                            tile.view.reshape(&[1, 1, d0, d1]);
+                            view.reshape(&sh);
                         }
                     }
-                    _ => {
-                        // reshape to 3d
-                        let sh = tile.view.shape();
-                        tile.view.reshape(&[1, sh[0], sh[1]]);
-                    }
-                },
-                3 => match &mut tile.first_op {
-                    FirstOp::Reduce { x: _, shape: _, axes, op: _ } => {
-                        // permute to join reduce axes together in last dimension
-                        // and possibly reshape to 4d, last dim reduce
-                        let all_axes: Vec<usize> = (0..tile.view.rank())
+                    compile::Op::ReduceLoop {
+                        axes,
+                        shape_before_reduce,
+                        ..
+                    } => {
+                        let all_axes: Vec<usize> = (0..shape_before_reduce.len())
                             .filter(|a| !axes.contains(a))
                             .chain(axes.iter().copied())
                             .collect();
-                        println!("{all_axes:?}");
-                        tile.view.permute(&all_axes);
-                        let sh = tile.view.shape();
-                        let r = sh.len();
-                        let d1 = if r - axes.len() > 2 {
-                            sh[r - axes.len() - 2]
+
+                        let mut view = View::from(&shape_before_reduce);
+                        view.permute(&all_axes);
+                        let sh = view.shape();
+
+                        let r_dim = axes.iter().map(|a| shape_before_reduce[*a]).product();
+                        // Reshape to join reduce axes and make it 4d
+                        let mut sh: Vec<usize> = sh[..sh.len() - axes.len()]
+                            .iter()
+                            .copied()
+                            .chain([r_dim])
+                            .collect();
+                        while sh.len() < 4 {
+                            sh.insert(0, 1);
+                        }
+                        let rank = sh.len();
+                        if rank > 4 {
+                            let sh = [
+                                sh[..rank - 3].iter().product(),
+                                sh[rank - 3],
+                                sh[rank - 2],
+                                sh[rank - 1],
+                            ];
+                            view.reshape(&sh);
                         } else {
-                            1
-                        };
-                        let d2 = if r - axes.len() > 1 {
-                            sh[r - axes.len() - 1]
-                        } else {
-                            1
-                        };
-                        let d3 = sh[r - axes.len()..r].iter().product();
-                        let d0 = sh.iter().product::<usize>() / (d1 * d2 * d3);
-                        tile.view.reshape(&[d0, d1, d2, d3]);
+                            view.reshape(&sh);
+                        }
+                        view.optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
+                        let sh = view.shape();
+                        // Set shape_before_reduce to be just reduce dims, now it is over last dimensions
+                        *shape_before_reduce = alloc::vec![sh[8], sh[9]];
+                        reduce_data = Some((sh, all_axes));
+                    }
+                    compile::Op::Reduce { .. } => {
+                        reduce_data = None;
                     }
                     _ => {}
-                },
-                _ => match &tile.first_op {
-                    FirstOp::Reduce { x: _, shape: _, axes, op: _ } => {
-                        // permute to join reduce axes together in last dimension
-                        // reshape to 4d, last dim reduce
-                        let all_axes: Vec<usize> = (0..tile.view.rank())
-                            .filter(|a| !axes.contains(a))
-                            .chain(axes.iter().copied())
-                            .collect();
-                        tile.view.permute(&all_axes);
-                        let sh = tile.view.shape();
-                        let r = sh.len();
-                        let d1 = if r - axes.len() > 2 {
-                            sh[r - axes.len() - 2]
-                        } else {
-                            1
-                        };
-                        let d2 = if r - axes.len() > 1 {
-                            sh[r - axes.len() - 1]
-                        } else {
-                            1
-                        };
-                        let d3 = sh[r - axes.len()..r].iter().product();
-                        let d0 = sh.iter().product::<usize>() / (d1 * d2 * d3);
-                        tile.view.reshape(&[d0, d1, d2, d3]);
-                    }
-                    _ => {
-                        // reshape to 3d
-                        let sh = tile.view.shape();
-                        let n = sh.len();
-                        let d1 = sh[n - 2];
-                        let d2 = sh[n - 1];
-                        tile.view.reshape(&[tile.view.numel() / (d1 * d2), d1, d2]);
-                    }
-                },
-            }
-        }
-
-        // Find optimal local work sizes and reshape tiles appropriately
-        for tile in tiles.values_mut() {
-            tile.view.optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
-        }
-
-        // Rewrite tiled representation to ir representation
-        let mut ir_kernels = ir::tiled_to_ir(tiles, &order, &self.hwinfo);
-
-        // Remove unnecessary ids from order (i.e. those kernels that were fused)
-        order.retain(|id| ir_kernels.contains_key(id));
-
-        let mut programs = Vec::new();
-        // TODO kernels can be compiled in parallel
-        while let Some((_, (args, ir_kernel))) = ir_kernels.pop_first() {
-            // Allocate memory for intermediate args and results
-            for arg in args.iter().copied() {
-                if !self.buffers.contains_key(&arg) {
-                    self.buffers.insert(arg, self.compiler.allocate_memory(graph.shape(arg).iter().product::<usize>()*graph.dtype(arg).byte_size())?);
                 }
             }
+        }
+
+        for kernel in &kernels {
+            #[cfg(feature = "debug1")]
+            println!("\n{kernel:?}\n");
+        }
+
+        // TODO there are some advanced optimizations that can be additionally applied.
+        // Namely some movement operations could be done without the need for global temporary
+        // variable, but these can be added in later.
+
+        let mut programs = Vec::new();
+
+        // Rewrite tiled representation to IR representation and compile it for HW device
+        #[cfg(feature = "debug1")]
+        println!("Compiling kernels");
+        // TODO kernels can be compiled in parallel
+        for kernel in kernels {
+            let ir_kernel = ir::tiled_to_ir(
+                kernel.global_work_size,
+                kernel.local_work_size,
+                kernel.ops,
+                &self.hwinfo,
+            );
+
+            let args: Vec<TensorId> = ir_kernel.args.keys().copied().collect();
+
             // Compile kernel
             //libc_print::libc_println!("Program with args: {:?}", args);
             // BEWARE in which order compiled kernels are pushed into programs,
             // as lanuching graph executes them in this same order FIFO
-            programs.push((args, self.compiler.compile_program(&ir_kernel)?));
+            programs.push((args.clone(), self.compiler.compile_program(&ir_kernel)?));
+
+            // Allocate memory for intermediate args and results
+            for arg in args.iter().copied() {
+                if !self.buffers.contains_key(&arg) {
+                    self.buffers.insert(
+                        arg,
+                        self.compiler.allocate_memory(
+                            graph.shape(arg).iter().product::<usize>()
+                                * graph.dtype(arg).byte_size(),
+                        )?,
+                    );
+                }
+            }
         }
 
-        self.compiled_graphs.insert(org_graph.nodes.clone(), CompiledGraph {
-            programs,
-            flop: 0,
-            bytes: 0,
-        });
+        self.compiled_graphs.insert(
+            org_graph.nodes.clone(),
+            CompiledGraph {
+                programs,
+                flop: 0,
+                bytes: 0,
+            },
+        );
 
         Ok(())
     }
@@ -553,7 +389,7 @@ impl<C: Compiler> CompiledBackend<C> {
             }
         }
 
-        return Ok(())
+        return Ok(());
     }
 }
 
@@ -606,7 +442,60 @@ fn calculate_graph_execution_order(
     return order;
 }
 
-// Includes Noop for copying between tiles of various scopes
+// This is basically just a kernel represented as bunch of tiles with common global and local work
+// size.
+struct TiledKernel {
+    global_work_size: [usize; 3],
+    local_work_size: [usize; 3],
+    tiles: Vec<Tile>,
+}
+
+// Movement operation can be skipped for now, perhaps later added for some register ->
+// local -> register movement operations without storing to global, but that is complex.
+// Load and reduce are currently only operations that contain movement ops.
+#[derive(Debug, Clone)]
+enum Tile {
+    // Load from global to register
+    Load {
+        z: TensorId,
+        x: TensorId,
+        view: View,
+        dtype: DType,
+    },
+    // Store from register to global, contiguous
+    Store {
+        z: TensorId,
+        dtype: DType,
+    },
+    // Multiple unary ops applied on x, resulting in z
+    Unary {
+        z: TensorId,
+        x: TensorId,
+        z_dtype: DType,
+        ops: Vec<UOp>,
+    },
+    // Binary operation
+    Binary {
+        z: TensorId,
+        x: TensorId,
+        y: TensorId,
+        op: BOp,
+    },
+    // Reduce operation begin loop, z is accumulator
+    ReduceBegin {
+        z: TensorId,
+        z_dtype: DType,
+        op: ROp,
+        r_dim: usize,
+    },
+    // Reduce operation end loop, z is accumulator
+    ReduceEnd {
+        z: TensorId,
+        x: TensorId,
+        op: ROp,
+    },
+}
+
 #[derive(Debug, Clone, Copy)]
 enum UOp {
     Inv,
@@ -630,99 +519,8 @@ enum BOp {
     Max, // for ReLU and max reduce
 }
 
-// Movement operation can be skipped for now, perhaps later added for some register ->
-// local -> register movement operations without storing to global, but that is complex.
-#[derive(Debug, Clone)]
-enum Tile {
-    // Load from global to register
-    Load {
-        z: TensorId,
-        x: TensorId,
-        view: View,
-    },
-    // Binary operation
-    Binary {
-        z: TensorId,
-        x: TensorId,
-        y: TensorId,
-        op: BOp,
-    },
-    // Reduce operation, z is accumulator
-    Reduce {
-        z: TensorId,
-        x: TensorId,
-    },
-    // Store from register to global
-    Store {
-        z: TensorId,
-        x: TensorId,
-        view: View,
-    },
-}
-
 #[derive(Debug, Clone, Copy)]
 enum ROp {
     Sum,
     Max,
 }
-
-/*#[derive(Debug, Clone)]
-struct Tile {
-    // which tensors need to be evaluated before this
-    args: BTreeSet<TensorId>,
-    pub(crate) view: View,
-    dtype: DType,
-    pub(crate) first_op: FirstOp,
-    // Note that order of these ops does not matter for correctness,
-    // but may matter for performance
-    pub(crate) ops: Vec<UOp>,
-    // true by default, false if this tile is used by more than one tile (rc>1)
-    can_be_fused: bool,
-}
-
-impl Tile {
-    fn is_reduce(&self) -> bool {
-        matches!(self.first_op, FirstOp::Reduce { .. })
-    }
-}
-
-// It is better if these ops represent breaks between tiles,
-// from performance perspective, for example we do not want to run
-// expanded tensor in a million threads if it was a tensor with just 10 scalars.
-// But these are also fused (if possible) later when converted to looped representation.
-#[derive(Debug, Clone)]
-enum TileOp {
-    // Load existing buffer from memory using view, then apply unary ops
-    Load {
-        buffer_id: TensorId,
-        dtype: DType,
-    },
-    // Apply movement, then binary op and unary ops
-    Binary {
-        x: TensorId,
-        y: TensorId,
-        op: BOp,
-    },
-    // Apply movement, then reduce op and unary ops
-    Reduce {
-        // Which buffer needs to be load for reduce op
-        x: TensorId,
-        shape: Vec<usize>, // Shape before reduce
-        axes: Vec<usize>,
-        op: ROp,
-    },
-    // Some movement ops can not be fused into existing kernel
-    // Permute can always be fused.
-    // Expand can never be fused.
-    // Reshape and pad can not be fused with reduce kernel.
-    // Technically reshape and pad could be fused with some reduce kernels,
-    // but we can keep this simple here and fuse them in looped kernel.
-    /*Movement {
-        x: TensorId,
-    },*/
-    // Apply movement, then unary ops and store into global variable
-    Store {
-        buffer_id: TensorId,
-        dtype: DType,
-    }
-}*/

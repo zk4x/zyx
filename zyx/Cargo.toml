@@ -16,12 +16,17 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-spin = { version = "0.9.8", default-features = false, features = ["mutex", "spin_mutex"] }
+spin = { version = "0.9.8", default-features = false, features = [
+    "mutex",
+    "spin_mutex",
+] }
 libm = { version = "0.2.8", default-features = false }
 
 # Optional features
 half = { version = "2.4.1", default-features = false, optional = true }
-rand = { version = "0.8.5", default-features = false, features = ["small_rng"], optional = true }
+rand = { version = "0.8.5", default-features = false, features = [
+    "small_rng",
+], optional = true }
 num-complex = { version = "0.4.6", default-features = false, optional = true }
 cuda-driver-sys = { version = "0.3.0", default-features = false, optional = true }
 opencl-sys = { version = "0.3.1", default-features = false, optional = true }

@@ -39,7 +39,7 @@ impl<'a> IntoIterator for &'a mut LayerNorm {
 
 impl LayerNorm {
     /// Initialize layer_norm layer in device self
-    pub fn new(self, normalized_shape: impl IntoShape) -> LayerNorm {
+    pub fn new(self, normalized_shape: impl zyx::IntoShape) -> LayerNorm {
         LayerNorm {
             d_dims: normalized_shape.rank(),
             weight: Some(Tensor::randn(normalized_shape.clone(), DType::F32)),

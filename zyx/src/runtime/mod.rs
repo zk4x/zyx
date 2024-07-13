@@ -4,11 +4,12 @@ use crate::runtime::compiler::CompilerError;
 use crate::runtime::interpreter::cpu::CPU;
 use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
+use crate::shape::{IntoAxes, IntoShape};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
-use core::ops::Index;
 use node::Node;
-use crate::shape::{IntoAxes, IntoShape};
+
+pub(super) use node::Constant;
 
 #[cfg(any(feature = "cuda", feature = "opencl", feature = "wgpu"))]
 use compiler::CompiledBackend;
@@ -22,9 +23,11 @@ use crate::runtime::compiler::cuda::CUDA;
 #[cfg(feature = "opencl")]
 use crate::runtime::compiler::opencl::OpenCLCompiler;
 
+#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
 mod compiler;
+mod graph;
 mod interpreter;
 mod node;
 mod view;
@@ -64,14 +67,14 @@ impl Graph {
         let shape_id = self.shapes.len().try_into().unwrap();
         self.shapes.push(shape.rank());
         self.shapes.extend(shape.into_shape());
-        return shape_id
+        return shape_id;
     }
 
     fn push_axes(&mut self, axes: impl IntoAxes, rank: usize) -> u32 {
         let axes_id = self.axes.len().try_into().unwrap();
         self.axes.push(axes.len());
         self.axes.extend(axes.into_axes(rank));
-        return axes_id
+        return axes_id;
     }
 
     fn shape(&self, x: TensorId) -> &[usize] {
@@ -87,8 +90,7 @@ impl Graph {
                 | Node::Permute { shape_id, .. }
                 | Node::Sum { shape_id, .. }
                 | Node::Max { shape_id, .. }
-                | Node::Expand { shape_id, ..
-                } => return self._shape(*shape_id).into(),
+                | Node::Expand { shape_id, .. } => return self._shape(*shape_id).into(),
                 _ => x = node.parameters().next().unwrap(),
             }
             i += 1;
@@ -205,8 +207,7 @@ impl Subgraph<'_> {
                 | Node::Permute { shape_id, .. }
                 | Node::Sum { shape_id, .. }
                 | Node::Max { shape_id, .. }
-                | Node::Expand { shape_id, ..
-                } => return self._shape(*shape_id).into(),
+                | Node::Expand { shape_id, .. } => return self._shape(*shape_id).into(),
                 _ => x = node.parameters().next().unwrap(),
             }
             i += 1;
@@ -268,7 +269,7 @@ impl Subgraph<'_> {
     }
 }
 
-impl Index<TensorId> for Subgraph<'_> {
+impl core::ops::Index<TensorId> for Subgraph<'_> {
     type Output = Node;
     fn index(&self, index: TensorId) -> &Self::Output {
         self.nodes.get(&index).unwrap()
@@ -440,23 +441,23 @@ impl Runtime {
     }
 
     pub(crate) fn shape(&self, x: TensorId) -> &[usize] {
-        return self.graph.shape(x)
+        return self.graph.shape(x);
     }
 
     pub(crate) fn dtype(&self, x: TensorId) -> DType {
-        return self.graph.dtype(x)
+        return self.graph.dtype(x);
     }
 
     pub(crate) fn device(&self, x: TensorId) -> Device {
-        return self.graph.device(x)
+        return self.graph.device(x);
     }
 
     pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
-        return self.push(Node::Cast { x, dtype })
+        return self.push(Node::Cast { x, dtype });
     }
 
     pub(crate) fn reciprocal(&mut self, x: TensorId) -> TensorId {
-        return self.push(Node::Inv { x })
+        return self.push(Node::Inv { x });
     }
 
     pub(crate) fn neg(&mut self, x: TensorId) -> TensorId {
@@ -464,7 +465,7 @@ impl Runtime {
     }
 
     pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
-        return self.push(Node::ReLU { x })
+        return self.push(Node::ReLU { x });
     }
 
     pub(crate) fn exp(&mut self, x: TensorId) -> TensorId {
@@ -505,14 +506,22 @@ impl Runtime {
         let shape: Vec<usize> = self.shape(x).permute(axes.clone()).collect();
         let axes_id = self.graph.push_axes(axes, shape.len());
         let shape_id = self.graph.push_shape(shape);
-        return self.push(Node::Permute { x, shape_id, axes_id });
+        return self.push(Node::Permute {
+            x,
+            shape_id,
+            axes_id,
+        });
     }
 
     pub(crate) fn sum(&mut self, x: TensorId, axes: impl IntoAxes) -> TensorId {
         let shape: Vec<usize> = self.shape(x).reduce(axes.clone()).collect();
         let axes_id = self.graph.push_axes(axes, shape.len());
         let shape_id = self.graph.push_shape(shape);
-        return self.push(Node::Sum { x, shape_id, axes_id });
+        return self.push(Node::Sum {
+            x,
+            shape_id,
+            axes_id,
+        });
     }
 
     pub(crate) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
@@ -555,6 +564,7 @@ impl Runtime {
         device: Device,
         shape: impl IntoShape,
     ) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug1")]
         println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
         let node = Node::Leaf {
             shape_id: self.graph.push_shape(shape),
@@ -713,9 +723,12 @@ impl Runtime {
             }
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
-                self.opencl.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.opencl
+                    .as_mut()
+                    .unwrap()
+                    .compile_graph(&graph, tensors)?;
                 self.opencl.as_mut().unwrap().launch_graph(&graph.nodes)?;
-            },
+            }
             #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 self.wgpu.as_mut().unwrap().compile_graph(&graph, tensors)?;

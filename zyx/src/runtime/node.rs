@@ -4,7 +4,7 @@ use crate::{DType, Device};
 /// Constant value
 /// Floats must be bitcasted in order to implement Ord and Eq.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Constant {
+pub(crate) enum Constant {
     /// bf16 constant
     #[cfg(feature = "half")]
     BF16(u16),

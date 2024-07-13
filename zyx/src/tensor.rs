@@ -23,6 +23,7 @@ use rand::Rng;
 use crate::runtime::ZyxError;
 use crate::RT;
 
+#[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
 pub struct Tensor {
@@ -31,6 +32,7 @@ pub struct Tensor {
 
 impl Clone for Tensor {
     fn clone(&self) -> Self {
+        #[cfg(feature = "debug1")]
         println!("cloning");
         RT.lock().retain(self.id);
         Tensor { id: self.id }
@@ -39,7 +41,7 @@ impl Clone for Tensor {
 
 impl Drop for Tensor {
     fn drop(&mut self) {
-        println!("dropping");
+        //println!("dropping");
         RT.lock().release(self.id).unwrap();
     }
 }
@@ -173,7 +175,9 @@ impl Tensor {
         rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
         let rng = rt.rng.get_mut().unwrap();
         let tensor_id = match dtype {
+            #[cfg(feature = "half")]
             DType::BF16 => todo!(),
+            #[cfg(feature = "half")]
             DType::F16 => todo!(),
             DType::F32 => {
                 let data = &(0..n)
@@ -274,7 +278,7 @@ impl Tensor {
                 rt.store(&data, default_device, shape).unwrap()
             }
         };
-        return Tensor { id: tensor_id }
+        return Tensor { id: tensor_id };
     }
 
     #[must_use]
@@ -333,7 +337,7 @@ impl Tensor {
                 rt.store(&data, default_device, shape).unwrap()
             }
         };
-        return Tensor { id: tensor_id }
+        return Tensor { id: tensor_id };
     }
 
     #[must_use]
@@ -360,7 +364,9 @@ impl Tensor {
 
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
-        return Tensor { id: RT.lock().cast(self.id, dtype) }
+        return Tensor {
+            id: RT.lock().cast(self.id, dtype),
+        };
     }
 
     #[must_use]
@@ -388,7 +394,9 @@ impl Tensor {
 
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        return Tensor { id: RT.lock().exp(self.id) }
+        return Tensor {
+            id: RT.lock().exp(self.id),
+        };
     }
 
     #[must_use]
@@ -403,7 +411,9 @@ impl Tensor {
 
     #[must_use]
     pub fn ln(&self) -> Tensor {
-        return Tensor { id: RT.lock().ln(self.id) }
+        return Tensor {
+            id: RT.lock().ln(self.id),
+        };
     }
 
     #[must_use]
@@ -418,12 +428,16 @@ impl Tensor {
 
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
-        return Tensor { id: RT.lock().reciprocal(self.id) }
+        return Tensor {
+            id: RT.lock().reciprocal(self.id),
+        };
     }
 
     #[must_use]
     pub fn relu(&self) -> Tensor {
-        return Tensor { id: RT.lock().relu(self.id) }
+        return Tensor {
+            id: RT.lock().relu(self.id),
+        };
     }
 
     #[must_use]
@@ -443,7 +457,9 @@ impl Tensor {
 
     #[must_use]
     pub fn sin(&self) -> Tensor {
-        return Tensor { id: RT.lock().sin(self.id) }
+        return Tensor {
+            id: RT.lock().sin(self.id),
+        };
     }
 
     #[must_use]
@@ -453,7 +469,9 @@ impl Tensor {
 
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
-        return Tensor { id: RT.lock().sqrt(self.id) }
+        return Tensor {
+            id: RT.lock().sqrt(self.id),
+        };
     }
 
     #[must_use]
@@ -468,20 +486,26 @@ impl Tensor {
 
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        return Tensor { id: RT.lock().tanh(self.id) }
+        return Tensor {
+            id: RT.lock().tanh(self.id),
+        };
     }
 
     // movement
     #[must_use]
     pub fn expand(&self, shape: impl IntoShape) -> Tensor {
         // TODO checks
-        return Tensor { id: RT.lock().expand(self.id, shape) }
+        return Tensor {
+            id: RT.lock().expand(self.id, shape),
+        };
     }
 
     #[must_use]
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor {
         // TODO checks
-        return Tensor { id: RT.lock().permute(self.id, axes) }
+        return Tensor {
+            id: RT.lock().permute(self.id, axes),
+        };
     }
 
     #[must_use]
@@ -495,8 +519,16 @@ impl Tensor {
 
     #[must_use]
     pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
-        debug_assert_eq!(shape.clone().into_shape().product::<usize>(), self.numel(), "Invalid reshape {:?} into {:?}", self.shape(), shape);
-        Tensor { id: RT.lock().reshape(self.id, shape) }
+        debug_assert_eq!(
+            shape.clone().into_shape().product::<usize>(),
+            self.numel(),
+            "Invalid reshape {:?} into {:?}",
+            self.shape(),
+            shape
+        );
+        Tensor {
+            id: RT.lock().reshape(self.id, shape),
+        }
     }
 
     #[must_use]
@@ -540,20 +572,21 @@ impl Tensor {
 
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
-        let mut rt = RT.lock();
         #[cfg(debug_assertions)]
         {
             // We can add checks for axes being less than rank and axes not containing duplicates
-            let mut unique = BTreeSet::new();
+            let mut unique = alloc::collections::BTreeSet::new();
             let rank = self.rank();
-            let axes: Vec<usize> = axes.into_axes(rank).collect();
+            let axes: Vec<usize> = axes.clone().into_axes(rank).collect();
             for a in &axes {
                 debug_assert!(unique.insert(a), "Axes contain duplicates.");
                 // This is checked by into_axes function
                 //debug_assert!(a < rank, "Axes are too high");
             }
         }
-        return Tensor { id: rt.sum(self.id, axes) }
+        return Tensor {
+            id: RT.lock().sum(self.id, axes),
+        };
     }
 
     #[must_use]
@@ -588,7 +621,9 @@ impl Tensor {
     #[must_use]
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor { id: RT.lock().cmplt(x.id, y.id) }
+        return Tensor {
+            id: RT.lock().cmplt(x.id, y.id),
+        };
     }
 
     #[must_use]
@@ -599,7 +634,9 @@ impl Tensor {
 
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, exponent);
-        return Tensor { id: RT.lock().pow(x.id, y.id) }
+        return Tensor {
+            id: RT.lock().pow(x.id, y.id),
+        };
     }
 
     // ternary
@@ -757,8 +794,7 @@ impl Tensor {
         if y_shape != eshape {
             y = y.expand(eshape);
         }
-        println!("Returning from broadcast.");
-        return (x, y)
+        return (x, y);
     }
 }
 
@@ -766,7 +802,11 @@ impl Tensor {
 impl TryFrom<&Tensor> for bf16 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
@@ -774,21 +814,33 @@ impl TryFrom<&Tensor> for bf16 {
 impl TryFrom<&Tensor> for f16 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for f32 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for f64 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
@@ -796,7 +848,11 @@ impl TryFrom<&Tensor> for f64 {
 impl TryFrom<&Tensor> for Complex<f32> {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
@@ -804,42 +860,66 @@ impl TryFrom<&Tensor> for Complex<f32> {
 impl TryFrom<&Tensor> for Complex<f64> {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for u8 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for i8 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for i16 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for i32 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
 impl TryFrom<&Tensor> for i64 {
     type Error = ZyxError;
     fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)?.first().copied().ok_or(ZyxError::EmptyTensor)
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
@@ -1219,7 +1299,7 @@ impl<T: Scalar> From<T> for Tensor {
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let id = rt.store(&[value], default_device, 1).unwrap();
-        return Tensor { id }
+        return Tensor { id };
     }
 }
 
@@ -1229,7 +1309,7 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let id = rt.store(&data, default_device, data.len()).unwrap();
-        return Tensor { id }
+        return Tensor { id };
     }
 }
 
@@ -1239,7 +1319,7 @@ impl<T: Scalar> From<&[T]> for Tensor {
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let id = rt.store(data, default_device, data.len()).unwrap();
-        return Tensor { id }
+        return Tensor { id };
     }
 }
 
@@ -1249,7 +1329,7 @@ impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let id = rt.store(&data, default_device, D0).unwrap();
-        return Tensor { id }
+        return Tensor { id };
     }
 }
 
@@ -1258,9 +1338,9 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let default_device = rt.default_device;
-        let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0*D1) };
+        let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
         let id = rt.store(data, default_device, [D0, D1]).unwrap();
-        return Tensor { id }
+        return Tensor { id };
     }
 }
 
@@ -1271,9 +1351,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let default_device = rt.default_device;
-        let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0*D1*D2) };
+        let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
         let id = rt.store(data, default_device, [D0, D1, D2]).unwrap();
-        return Tensor { id }
+        return Tensor { id };
     }
 }
 
@@ -1285,8 +1365,10 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().add(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1298,8 +1380,10 @@ impl<IT: Into<Tensor>> Add<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().add(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1311,8 +1395,10 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().sub(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1324,8 +1410,10 @@ impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().sub(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1337,8 +1425,10 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().mul(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1350,8 +1440,10 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().mul(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1363,8 +1455,10 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().div(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
@@ -1376,21 +1470,27 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
-        return tensor
+        let tensor = Tensor {
+            id: RT.lock().div(x.id, y.id),
+        };
+        return tensor;
     }
 }
 
 impl Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor { id: RT.lock().neg(self.id) }
+        Tensor {
+            id: RT.lock().neg(self.id),
+        }
     }
 }
 
 impl Neg for &Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor { id: RT.lock().neg(self.id) }
+        Tensor {
+            id: RT.lock().neg(self.id),
+        }
     }
 }

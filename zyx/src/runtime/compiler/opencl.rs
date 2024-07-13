@@ -1,4 +1,4 @@
-use crate::runtime::compiler::ir::{IRKernel, IRArg, IROp};
+use crate::runtime::compiler::ir::{IRKernel, IRArg, IROp, variable_to_str};
 use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::dtype::DType;
 use crate::scalar::Scalar;
@@ -400,7 +400,7 @@ impl Compiler for OpenCLCompiler {
 
         // Transpile kernel args
         let mut args_read_only = Vec::new();
-        for (id, IRArg { dtype, read_only }) in kernel.args.iter().enumerate() {
+        for (id, IRArg { dtype, read_only }) in kernel.args.iter() {
             source += &f!(
                 "{indent}__global {}{}* g{id},\n",
                 if *read_only { "const " } else { "" },
@@ -435,6 +435,7 @@ impl Compiler for OpenCLCompiler {
                     read_only,
                     len,
                     dtype,
+                    init: _,
                 } => match scope {
                     Scope::Global => {}
                     Scope::Local => {
@@ -464,14 +465,14 @@ impl Compiler for OpenCLCompiler {
                         );
                     }
                 },
-                IROp::AssignMem { z, x } => {
-                    let (zt, z) = z.to_str(0);
+                IROp::AssignMem { z_id, z_scope, z_index, x_id, x_scope, x_index } => {
+                    let (zt, z) = variable_to_str(*z_id, *z_scope, z_index, 0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) = x.to_str(1);
+                    let (xt, x) = variable_to_str(*x_id, *x_scope, x_index, 1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
@@ -479,47 +480,48 @@ impl Compiler for OpenCLCompiler {
                     }
                     source += &f!("{indent}{z} = {x};\n");
                 }
-                IROp::UnaryMem { z, x, op } => {
-                    let (zt, z) = z.to_str(0);
+                IROp::Unary { z, x, ops, index } => {
+                    let (zt, z) = variable_to_str(*z, Scope::Register, index, 0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) = x.to_str(1);
+                    let (xt, x) = variable_to_str(*x, Scope::Register, index, 1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
                         }
                     }
-                    source += &f!(
-                        "{indent}{z} = {}{x});\n",
-                        match op {
-                            UOp::Cast(dtype) => f!("({})(", dtype.ocl()),
-                            UOp::Inv => String::from("1/("),
-                            UOp::Neg => String::from("-("),
-                            UOp::Sin => String::from("sin("),
-                            UOp::Cos => String::from("cos("),
-                            UOp::Exp => String::from("exp("),
-                            UOp::Ln => String::from("log("),
-                            UOp::Sqrt => String::from("sqrt("),
-                        }
-                    );
+                    let mut inner_op = f!("{x}");
+                    for uop in ops {
+                        inner_op = match uop {
+                            UOp::Cast(dtype) => f!("({}){inner_op}", dtype.ocl()),
+                            UOp::Neg => f!("-({inner_op})"),
+                            UOp::Inv => f!("1/{inner_op}"),
+                            UOp::Sin => f!("sin({inner_op})"),
+                            UOp::Cos => f!("cos({inner_op})"),
+                            UOp::Exp => f!("exp({inner_op})"),
+                            UOp::Ln => f!("log({inner_op})"),
+                            UOp::Sqrt => f!("sqrt({inner_op})"),
+                        };
+                    }
+                    source += &f!("{indent}{z} = {inner_op};\n");
                 }
-                IROp::BinaryMem { z, x, y, op } => {
-                    let (zt, z) = z.to_str(0);
+                IROp::Binary { z, x, y, op, zy_index } => {
+                    let (zt, z) = variable_to_str(*z, Scope::Register, zy_index, 0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) = x.to_str(1);
+                    let (xt, x) = variable_to_str(*x, Scope::Register, &crate::runtime::view::Index::None, 1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
                         }
                     }
-                    let (yt, y) = y.to_str(2);
+                    let (yt, y) = variable_to_str(*y, Scope::Register, zy_index, 2);
                     if !yt.is_empty() {
                         for idx in yt.into_iter() {
                             source += &f!("{indent}t2 = {idx};\n");

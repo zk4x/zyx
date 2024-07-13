@@ -1,3 +1,5 @@
+use crate::runtime::Constant;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
     #[cfg(feature = "half")]
@@ -57,6 +59,26 @@ impl DType {
             DType::I16 => 2,
             DType::I32 => 4,
             DType::I64 => 8,
+        }
+    }
+
+    pub(super) fn zero(&self) -> Constant {
+        return match self {
+            #[cfg(feature = "half")]
+            DType::BF16 => Constant::BF16(0),
+            #[cfg(feature = "half")]
+            DType::F16 => Constant::F16(0),
+            DType::F32 => Constant::F32(0),
+            DType::F64 => Constant::F64(0),
+            #[cfg(feature = "complex")]
+            DType::CF32 => Constant::CF32(0),
+            #[cfg(feature = "complex")]
+            DType::CF64 => Constant::CF64(0),
+            DType::U8 => Constant::U8(0),
+            DType::I8 => Constant::I8(0),
+            DType::I16 => Constant::I16(0),
+            DType::I32 => Constant::I32(0),
+            DType::I64 => Constant::I64(0),
         }
     }
 }

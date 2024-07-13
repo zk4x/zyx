@@ -20,7 +20,7 @@ use zyx::{Tensor, DType};
 
 let x = Tensor::randn([1024, 1024], DType::BF16);
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32);
-let b = Tensor::zeros([ 1024], DType::F16);
+let b = Tensor::zeros([1024], DType::F16);
 let z = &x + &y;
 let z = (x.dot(&y), + b).gelu();
 let b_grad = z.backward([&b]);
