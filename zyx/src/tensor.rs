@@ -5,9 +5,11 @@ use crate::shape::{IntoAxes, IntoShape};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::ops::{
-    Add, Div, Mul, Neg, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo,
-    RangeToInclusive, Sub,
+    Add, Div, Mul, Neg, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub,
 };
+
+use crate::runtime::ZyxError;
+use crate::RT;
 
 #[cfg(feature = "half")]
 use half::{bf16, f16};
@@ -20,14 +22,13 @@ use rand::rngs::SmallRng;
 #[cfg(feature = "rand")]
 use rand::Rng;
 
-use crate::runtime::ZyxError;
-use crate::RT;
-
 #[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
+pub(crate) type TensorId = usize;
+
 pub struct Tensor {
-    id: u32,
+    id: TensorId,
 }
 
 impl Clone for Tensor {
@@ -47,10 +48,10 @@ impl Drop for Tensor {
 }
 
 impl Tensor {
-    #[cfg(feature = "debug1")]
+    /*#[cfg(feature = "debug1")]
     pub fn debug_graph() {
         RT.lock().debug_graph()
-    }
+    }*/
 
     /// Get default device used for new tensors.
     #[must_use]
@@ -97,6 +98,7 @@ impl Tensor {
         RT.lock().dtype(self.id)
     }
 
+    /// Returns on which devices is this tensor stored or where it will be stored once evaluated
     #[must_use]
     pub fn device(&self) -> Device {
         RT.lock().device(self.id)
@@ -206,7 +208,10 @@ impl Tensor {
 
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
+    pub fn uniform<T: Scalar>(
+        shape: impl IntoShape,
+        range: impl core::ops::RangeBounds<T>,
+    ) -> Tensor {
         let _ = shape;
         let _ = range;
         RT.lock().set_default_device_best();
@@ -215,7 +220,10 @@ impl Tensor {
 
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, range: impl RangeBounds<T>) -> Tensor {
+    pub fn kaiming_uniform<T: Scalar>(
+        shape: impl IntoShape,
+        range: impl core::ops::RangeBounds<T>,
+    ) -> Tensor {
         let _ = shape;
         let _ = range;
         RT.lock().set_default_device_best();

@@ -1,162 +1,106 @@
-use crate::runtime::TensorId;
-use crate::{DType, Device};
+use alloc::vec::Vec;
 
-/// Constant value
-/// Floats must be bitcasted in order to implement Ord and Eq.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Constant {
-    /// bf16 constant
-    #[cfg(feature = "half")]
-    BF16(u16),
-    /// f16 constant
-    #[cfg(feature = "half")]
-    F16(u16),
-    /// f32 constant
-    F32(u32),
-    /// f64 constant
-    F64(u64),
-    /// complex f32 constant
-    #[cfg(feature = "complex")]
-    CF32(u32),
-    /// complex f64 constant
-    #[cfg(feature = "complex")]
-    CF64(u64),
-    /// u8 constant
-    U8(u8),
-    /// i8 constant
-    I8(i8),
-    /// i16 constant
-    I16(i16),
-    /// i32 constant
-    I32(i32),
-    /// i64 constant
-    I64(i64),
+use crate::{tensor::TensorId, DType, Device};
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub(crate) enum BOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Cmplt,
 }
 
-impl Constant {
-    /// Get dtype of this constant
-    pub(super) fn dtype(&self) -> DType {
-        return match self {
-            #[cfg(feature = "half")]
-            Constant::BF16(..) => DType::BF16,
-            #[cfg(feature = "half")]
-            Constant::F16(..) => DType::F16,
-            Constant::F32(..) => DType::F32,
-            Constant::F64(..) => DType::F64,
-            #[cfg(feature = "complex")]
-            Constant::CF32(..) => DType::CF32,
-            #[cfg(feature = "complex")]
-            Constant::CF64(..) => DType::CF64,
-            Constant::U8(..) => DType::U8,
-            Constant::I8(..) => DType::I8,
-            Constant::I16(..) => DType::I16,
-            Constant::I32(..) => DType::I32,
-            Constant::I64(..) => DType::I64,
-        };
-    }
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub(crate) enum UOp {
+    ReLU,
+    Neg,
+    Exp,
+    Ln,
+    Tanh,
+    Inv,
+    Sqrt,
+    Sin,
+    Cos,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Node {
-    Const {
-        value: Constant,
-        // Somewhat meaningless, just for simpler device search
-        device: Device,
-    },
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub(crate) enum ROp {
+    Sum,
+    Max,
+}
+
+type Axis = usize;
+
+type Dimension = usize;
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub(crate) enum Node {
+    // TODO later add constant nodes
+    /*Const {
+        value: enum {
+            F32(u32),
+            I32(i32),
+            I64(i64),
+        },
+    },*/
     Leaf {
-        shape_id: u32,
+        shape: Vec<Dimension>,
         dtype: DType,
         device: Device,
+    },
+    // Can be later added for moving between devices
+    /*ToDevice {
+        x: TensorId,
+        device: Device,
+    },*/
+    Expand {
+        x: TensorId,
+        shape: Vec<Dimension>,
+    },
+    Permute {
+        x: TensorId,
+        axes: Vec<Axis>,
+        shape: Vec<usize>,
+    },
+    // Reshape can be sometimes axis split or axis join
+    Reshape {
+        x: TensorId,
+        shape: Vec<Dimension>,
+    },
+    Pad {
+        x: TensorId,
+        pad: Vec<(isize, isize)>,
+        shape: Vec<usize>,
+    },
+    Reduce {
+        x: TensorId,
+        axes: Vec<Axis>,
+        shape: Vec<usize>,
+        rop: ROp,
     },
     Cast {
         x: TensorId,
         dtype: DType,
     },
-    ReLU {
+    Unary {
         x: TensorId,
+        uop: UOp,
     },
-    Neg {
-        x: TensorId,
-    },
-    Inv {
-        x: TensorId,
-    },
-    Cos {
-        x: TensorId,
-    },
-    Sin {
-        x: TensorId,
-    },
-    Exp {
-        x: TensorId,
-    },
-    Ln {
-        x: TensorId,
-    },
-    Sqrt {
-        x: TensorId,
-    },
-    Add {
+    Binary {
         x: TensorId,
         y: TensorId,
-    },
-    Sub {
-        x: TensorId,
-        y: TensorId,
-    },
-    Mul {
-        x: TensorId,
-        y: TensorId,
-    },
-    Div {
-        x: TensorId,
-        y: TensorId,
-    },
-    Pow {
-        x: TensorId,
-        y: TensorId,
-    },
-    Cmplt {
-        x: TensorId,
-        y: TensorId,
+        bop: BOp,
     },
     Where {
         x: TensorId,
         y: TensorId,
         z: TensorId,
     },
-    Reshape {
-        x: TensorId,
-        shape_id: u32,
-    },
-    Expand {
-        x: TensorId,
-        shape_id: u32,
-    },
-    Permute {
-        x: TensorId,
-        axes_id: u32,
-        shape_id: u32,
-    },
-    Pad {
-        x: TensorId,
-        padding_id: u32,
-        shape_id: u32,
-    },
-    Sum {
-        x: TensorId,
-        axes_id: u32,
-        shape_id: u32,
-    },
-    Max {
-        x: TensorId,
-        axes_id: u32,
-        shape_id: u32,
-    },
 }
 
-/// Iterator over parameters of node which does not allocate on heap.
-pub struct NodeParametersIterator {
+pub(crate) struct NodeParametersIterator {
     parameters: [TensorId; 3],
     len: u8,
     idx: u8,
@@ -178,36 +122,28 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         return match self {
-            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
-                parameters: [0; 3],
+            Node::Leaf { .. } => NodeParametersIterator {
+                parameters: [0, 0, 0],
                 idx: 0,
                 len: 0,
             },
+            /*TODO Node::ToDevice { x, .. } => NodeParametersIterator {
+            parameters: [*x, 0, 0],
+            idx: 0,
+            len: 1,
+            },*/
             Node::Cast { x, .. }
-            | Node::Inv { x }
-            | Node::Neg { x }
-            | Node::ReLU { x }
-            | Node::Exp { x }
-            | Node::Ln { x }
-            | Node::Sin { x }
-            | Node::Cos { x }
-            | Node::Sqrt { x }
+            | Node::Unary { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
-            | Node::Sum { x, .. }
-            | Node::Max { x, .. } => NodeParametersIterator {
+            | Node::Reduce { x, .. } => NodeParametersIterator {
                 parameters: [*x, 0, 0],
                 idx: 0,
                 len: 1,
             },
-            Node::Add { x, y }
-            | Node::Sub { x, y }
-            | Node::Mul { x, y }
-            | Node::Div { x, y }
-            | Node::Cmplt { x, y }
-            | Node::Pow { x, y } => NodeParametersIterator {
+            Node::Binary { x, y, .. } => NodeParametersIterator {
                 parameters: [*x, *y, 0],
                 idx: 0,
                 len: 2,
@@ -218,30 +154,5 @@ impl Node {
                 len: 3,
             },
         };
-    }
-
-    pub const fn is_movement(&self) -> bool {
-        return match self {
-            Node::Reshape { .. }
-            | Node::Permute { .. }
-            | Node::Expand { .. }
-            | Node::Pad { .. } => true,
-            _ => false,
-        }
-    }
-
-    pub const fn is_unary(&self) -> bool {
-        return match self {
-            Node::Cast { .. }
-            | Node::Inv { .. }
-            | Node::Neg { .. }
-            | Node::ReLU { .. }
-            | Node::Exp { .. }
-            | Node::Ln { .. }
-            | Node::Sin { .. }
-            | Node::Cos { .. }
-            | Node::Sqrt { .. } => true,
-            _ => false,
-        }
     }
 }

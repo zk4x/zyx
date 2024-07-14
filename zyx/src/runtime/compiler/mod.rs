@@ -1,9 +1,6 @@
 use crate::runtime::compiler::ir::IRKernel;
-use crate::runtime::node::Node;
-use crate::runtime::view::View;
-use crate::runtime::{Subgraph, TensorId};
+use crate::runtime::TensorId;
 use crate::scalar::Scalar;
-use crate::DType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
@@ -11,7 +8,9 @@ use core::fmt::{Display, Formatter};
 #[cfg(feature = "debug1")]
 use libc_print::std_name::println;
 
-mod compile;
+use super::graph::Graph;
+use super::node::{BOp, Node, ROp, UOp};
+
 mod ir;
 
 #[cfg(feature = "cuda")]
@@ -69,7 +68,7 @@ pub(super) trait Compiler: Sized {
 pub(super) struct CompiledBackend<C: Compiler> {
     compiler: C,
     buffers: BTreeMap<TensorId, C::Buffer>,
-    compiled_graphs: BTreeMap<BTreeMap<TensorId, Node>, CompiledGraph<C::Program>>,
+    compiled_graphs: BTreeMap<Graph, CompiledGraph<C::Program>>,
     hwinfo: HWInfo,
 }
 
@@ -187,52 +186,33 @@ impl<C: Compiler> CompiledBackend<C> {
     /// Compiles and caches graph
     pub(super) fn compile_graph(
         &mut self,
-        org_graph: &Subgraph,
+        graph: &Graph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("Evaluating {to_eval:?}");
-        if self.compiled_graphs.contains_key(&org_graph.nodes) {
+        if self.compiled_graphs.contains_key(&graph) {
             return Ok(());
         }
-        let mut graph = org_graph.clone();
-        //println!("{subgraph:?}");
-        //println!("{hw_info:?}");
-        // Find the best order of execution of nodes
-        let rcs = calculate_graph_rcs(&graph, &to_eval);
-        let mut order = calculate_graph_execution_order(&graph, &to_eval, &rcs);
+        let mut graph = graph.clone();
+        let order = graph.execution_order(&to_eval);
+        let kernels = generate_kernels(&graph, &order, &to_eval);
 
-        // Reorder nodes in such a way, that movement ops are as late as possible,
-        // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
-        let mut node_swap = true;
-        while node_swap {
-            node_swap = false;
-            for nid in order.iter().take(order.len() - 1) {
-                if graph.nodes[nid].is_movement() && graph.nodes[&(nid + 1)].is_unary() {
-                    //libc_print::libc_println!("Reordering movement and unary ops, swap {} and {}", nid, nid+1);
-                    graph.swap_nodes(*nid, nid + 1);
-                    node_swap = true;
+        #[cfg(feature = "debug1")]
+        {
+            for kernel in kernels {
+                println!();
+                for op in &kernel.ops {
+                    println!("{op:?}");
                 }
+                println!();
             }
         }
 
-        let mut kernels = compile::create_kernels(
-            &self.buffers.keys().copied().collect(),
-            &graph,
-            to_eval,
-            &order,
-        );
-
-        for kernel in &kernels {
-            #[cfg(feature = "debug1")]
-            println!("\n{kernel:?}\n");
-        }
-
-        // Create kernels function merges all mergeable ops together, creates final groups of ops
-        // and includes reduce loops. Shapes are still original and not changed.
+        let _ = kernels;
 
         // Now we need to optimize shapes to 8d non reduce and 10d in reduce loops
-        for kernel in &mut kernels {
+        /*for kernel in &mut kernels {
             let mut kernel_view = View::from(&kernel.shape);
 
             // Make all kernels 3d
@@ -311,18 +291,13 @@ impl<C: Compiler> CompiledBackend<C> {
                     _ => {}
                 }
             }
-        }
-
-        for kernel in &kernels {
-            #[cfg(feature = "debug1")]
-            println!("\n{kernel:?}\n");
-        }
+        }*/
 
         // TODO there are some advanced optimizations that can be additionally applied.
         // Namely some movement operations could be done without the need for global temporary
         // variable, but these can be added in later.
 
-        let mut programs = Vec::new();
+        /*let mut programs = Vec::new();
 
         // Rewrite tiled representation to IR representation and compile it for HW device
         #[cfg(feature = "debug1")]
@@ -365,15 +340,12 @@ impl<C: Compiler> CompiledBackend<C> {
                 flop: 0,
                 bytes: 0,
             },
-        );
+        );*/
 
         Ok(())
     }
 
-    pub(super) fn launch_graph(
-        &mut self,
-        graph: &BTreeMap<TensorId, Node>,
-    ) -> Result<(), CompilerError> {
+    pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), CompilerError> {
         let graph = self.compiled_graphs.get(graph).unwrap();
 
         for (args, program) in &graph.programs {
@@ -393,134 +365,250 @@ impl<C: Compiler> CompiledBackend<C> {
     }
 }
 
-fn calculate_graph_rcs(
-    subgraph: &Subgraph,
-    to_eval: &BTreeSet<TensorId>,
-) -> BTreeMap<TensorId, u32> {
-    // Depth first search through graph. Number of visits of each node are reference counts.
-    let mut visited_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-    let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-    params.reserve(100);
-    while let Some(nid) = params.pop() {
-        //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
-        visited_rcs
-            .entry(nid)
-            .and_modify(|rc| *rc += 1)
-            .or_insert_with(|| {
-                params.extend(subgraph[nid].parameters());
-                1
-            });
-    }
-    //println!("Temp: {visited_rcs:?}");
-    return visited_rcs;
+type Axis = usize;
+type Dimension = usize;
+type Stride = usize;
+
+#[derive(Debug)]
+struct Kernel {
+    // Current shape of the kernel after all current ops
+    shape: Vec<Dimension>,
+    // Global loads
+    inputs: BTreeSet<TensorId>,
+    // Global stores
+    outputs: BTreeSet<TensorId>,
+    // Register variables
+    vars: BTreeSet<TensorId>,
+    ops: Vec<VOp>,
 }
 
-fn calculate_graph_execution_order(
-    graph: &Subgraph,
-    to_eval: &BTreeSet<TensorId>,
-    temp_rcs: &BTreeMap<TensorId, u32>,
-) -> Vec<TensorId> {
-    // Calculates dependency graph of nodes and viable execution order, which is not currently
-    // optimized. It is depth first search. On each visit of the node, rc is increased. Once
-    // rc of the node A reaches A's rc in the whole graph, then A gets added to the order,
-    // that is, there are no more nodes that node A depends on, i.e. there are no nodes that
-    // need to be evaluated before A.
-    let mut order = Vec::new();
-    let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-    let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-    params.reserve(100);
-    while let Some(nid) = params.pop() {
-        if let Some(temp_rc) = temp_rcs.get(&nid) {
-            let rc = rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-            if *temp_rc == *rc {
-                order.push(nid);
-                params.extend(graph[nid].parameters());
-            }
-        }
-    }
-    order.reverse();
-    return order;
+#[derive(Debug)]
+struct View(Vec<ViewDim>);
+
+#[derive(Debug)]
+struct ViewDim {
+    axis: Axis,
+    dim: Dimension,
+    stride: Stride,
+    len: usize,
+    shift: usize,
 }
 
-// This is basically just a kernel represented as bunch of tiles with common global and local work
-// size.
-struct TiledKernel {
-    global_work_size: [usize; 3],
-    local_work_size: [usize; 3],
-    tiles: Vec<Tile>,
-}
-
-// Movement operation can be skipped for now, perhaps later added for some register ->
-// local -> register movement operations without storing to global, but that is complex.
-// Load and reduce are currently only operations that contain movement ops.
-#[derive(Debug, Clone)]
-enum Tile {
-    // Load from global to register
+#[derive(Debug)]
+enum VOp {
     Load {
         z: TensorId,
         x: TensorId,
         view: View,
-        dtype: DType,
     },
-    // Store from register to global, contiguous
     Store {
         z: TensorId,
-        dtype: DType,
+        strides: Vec<(Axis, Stride)>,
     },
-    // Multiple unary ops applied on x, resulting in z
+    Loop {
+        axis: Axis,
+        dimension: Dimension,
+    },
+    Accumulator {
+        z: TensorId,
+        rop: ROp,
+    },
+    Reduce {
+        axis: Axis,
+        rop: ROp,
+        z: TensorId,
+        x: TensorId,
+    },
     Unary {
         z: TensorId,
         x: TensorId,
-        z_dtype: DType,
-        ops: Vec<UOp>,
+        uop: UOp,
     },
-    // Binary operation
     Binary {
         z: TensorId,
         x: TensorId,
         y: TensorId,
-        op: BOp,
-    },
-    // Reduce operation begin loop, z is accumulator
-    ReduceBegin {
-        z: TensorId,
-        z_dtype: DType,
-        op: ROp,
-        r_dim: usize,
-    },
-    // Reduce operation end loop, z is accumulator
-    ReduceEnd {
-        z: TensorId,
-        x: TensorId,
-        op: ROp,
+        bop: BOp,
     },
 }
 
-#[derive(Debug, Clone, Copy)]
-enum UOp {
-    Inv,
-    Neg,
-    Sin,
-    Cos,
-    Exp,
-    Ln,
-    Sqrt,
-    Cast(DType),
-}
+fn generate_kernels(
+    graph: &Graph,
+    order: &[TensorId],
+    to_eval: &BTreeSet<TensorId>,
+) -> Vec<Kernel> {
+    let mut kernels: Vec<Kernel> = Vec::new();
+    for nid in order.iter().copied() {
+        let node = &graph[nid];
+        match node {
+            Node::Leaf { shape, .. } => {
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| &kernel.shape == shape) {
+                    let mut stride = 1;
+                    let mut strides: Vec<(Axis, Dimension)> = shape
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .map(|(axis, dimension)| {
+                            let temp = stride;
+                            stride *= dimension;
+                            (axis, temp)
+                        })
+                        .collect();
+                    strides.reverse();
+                    kernel.ops.push(VOp::Load {
+                        z: nid,
+                        x: nid,
+                        strides,
+                    });
+                    kernel.inputs.insert(nid);
+                    kernel.vars.insert(nid);
+                } else {
+                    let mut ops: Vec<VOp> = shape
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .map(|(axis, dimension)| VOp::Loop { axis, dimension })
+                        .collect();
+                    let mut stride = 1;
+                    let mut strides: Vec<(Axis, Dimension)> = shape
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .map(|(axis, dimension)| {
+                            let temp = stride;
+                            stride *= dimension;
+                            (axis, temp)
+                        })
+                        .collect();
+                    strides.reverse();
+                    ops.push(VOp::Load {
+                        z: nid,
+                        x: nid,
+                        strides,
+                    });
+                    kernels.push(Kernel {
+                        shape: shape.clone(),
+                        inputs: BTreeSet::from([nid]),
+                        outputs: BTreeSet::new(),
+                        vars: BTreeSet::from([nid]),
+                        ops,
+                    });
+                }
+            }
+            Node::Expand { x, shape } => {
+                // Expand can just add loops
+                // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
+                // Expand increases axes with dimension of 1 to bigger dimension
+                // and sets strides in those axes to 0 for both loads and stores
+                todo!()
+            }
+            Node::Permute { x, axes, .. } => {
+                // Permute shuffles load and store strides
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    for op in kernel.ops {
+                        match op {
+                            VOp::Load { z, x, view } => {
+                                view.permute();
+                            }
+                            VOp::Store { z: (), strides: () } => {
+                                strides.permute();
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    panic!()
+                }
+            }
+            /*Node::Split { axis, dimensions } => {
+            // Split axis into multiple axes
+            if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                for axis in axes {
+                    kernel.ops.push(Op::Loop {
+                        axis: *axis,
+                        dimension: 1,
+                    });
+                }
+            } else {
+                panic!()
+            }
+            }*/
+            Node::Reshape { x, shape } => {
+                // Reshape always creates new kernel, as squeeze, unsqueeze and axis split
+                // are already separate operations
+                // If we really want, we can get reshape working with loads and stores
+                // simply by using view for loads
+                // But for now it is much simpler to just add new kernel
 
-#[derive(Debug, Clone, Copy)]
-enum BOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Pow,
-    Cmplt,
-    Max, // for ReLU and max reduce
-}
+                // First if we can split axes, split axes
 
-#[derive(Debug, Clone, Copy)]
-enum ROp {
-    Sum,
-    Max,
+                // else create new kernel
+                todo!()
+            }
+            Node::Pad { x, pad, .. } => {
+                // Pad shrinks or expands dimension of axes, but if there is store,
+                // then it creates new kernel
+                todo!()
+            }
+            Node::Unary { x, uop } => {
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    kernel.ops.push(VOp::Unary {
+                        z: nid,
+                        x: *x,
+                        uop: UOp::Exp,
+                    });
+                    kernel.vars.insert(nid);
+                } else {
+                    panic!()
+                }
+            }
+            Node::Binary { x, y, bop } => {
+                // Binary ops may allow us to join two kernels together
+                if let Some(kernel) = kernels
+                    .iter_mut()
+                    .find(|kernel| kernel.vars.contains(x) && kernel.vars.contains(y))
+                {
+                    // If both inputs are in the same kernel
+                    kernel.ops.push(VOp::Binary {
+                        z: nid,
+                        x: *x,
+                        y: *y,
+                        bop: *bop,
+                    });
+                    kernel.vars.insert(nid);
+                } else if let Some(kernel_x_id) =
+                    kernels.iter().position(|kernel| kernel.vars.contains(x))
+                {
+                    if let Some(kernel_y_id) =
+                        kernels.iter().position(|kernel| kernel.vars.contains(y))
+                    {
+                        // Two separate kernels contain our inputs, so we join them together
+                        // TODO do some checks that this join is always valid
+                        let kernel_y = kernels.remove(kernel_y_id);
+                        let kernel_x = &mut kernels[kernel_x_id];
+                        assert_eq!(kernel_x.shape, kernel_y.shape);
+                        // Here we must do something about the loops
+                        // We cannot have both loops from kernel_x and kernel_y
+                        // We have to remove one set of loops
+                        kernel_x.ops.extend(kernel_y.ops);
+                        kernel_x.ops.push(VOp::Binary {
+                            z: nid,
+                            x: *x,
+                            y: *y,
+                            bop: *bop,
+                        })
+                    } else {
+                        panic!()
+                    }
+                } else {
+                    panic!()
+                }
+            }
+            Node::Reduce { x, axes, rop, .. } => {
+                // Reduce removes loops and adds accumulator before those loops that it removes
+                todo!()
+            }
+        }
+    }
+    return kernels;
 }

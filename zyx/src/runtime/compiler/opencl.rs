@@ -1,6 +1,6 @@
-use crate::runtime::compiler::ir::{IRKernel, IRArg, IROp, variable_to_str};
-use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::dtype::DType;
+use crate::runtime::compiler::ir::{variable_to_str, BOp, IRArg, IRKernel, IROp, UOp};
+use crate::runtime::compiler::{Compiler, CompilerError, HWInfo, Scope};
 use crate::scalar::Scalar;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -41,7 +41,7 @@ impl DType {
             DType::I16 => "short",
             DType::I32 => "int",
             DType::I64 => "long",
-        }
+        };
     }
 }
 
@@ -81,11 +81,15 @@ impl OpenCLCompiler {
         // much better than that.
         if self.queue_size[self.queue_id] == 2 {
             let status = unsafe { clFinish(res) };
-            handle_status(status, "Unable to finish execution of command queue.", &[-36, -5, -6])?;
+            handle_status(
+                status,
+                "Unable to finish execution of command queue.",
+                &[-36, -5, -6],
+            )?;
             self.queue_size[self.queue_id] = 0;
         }
         self.queue_id = (self.queue_id + 1) % self.queues.len();
-        return Ok(res)
+        return Ok(res);
     }
 }
 
@@ -216,7 +220,7 @@ impl Compiler for OpenCLCompiler {
             queue_size: alloc::vec![0; queues.len()].into_boxed_slice(),
             queues: queues.into_boxed_slice(),
             queue_id: 0,
-        })
+        });
     }
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
@@ -233,14 +237,14 @@ impl Compiler for OpenCLCompiler {
         for i in 0..max_work_item_dims {
             let max_dim_size: usize = unsafe {
                 core::mem::transmute([
-                    mwis[i*8+0],
-                    mwis[i*8+1],
-                    mwis[i*8+2],
-                    mwis[i*8+3],
-                    mwis[i*8+4],
-                    mwis[i*8+5],
-                    mwis[i*8+6],
-                    mwis[i*8+7],
+                    mwis[i * 8 + 0],
+                    mwis[i * 8 + 1],
+                    mwis[i * 8 + 2],
+                    mwis[i * 8 + 3],
+                    mwis[i * 8 + 4],
+                    mwis[i * 8 + 5],
+                    mwis[i * 8 + 6],
+                    mwis[i * 8 + 7],
                 ])
             };
             max_work_item_sizes.push(max_dim_size);
@@ -312,7 +316,11 @@ impl Compiler for OpenCLCompiler {
                 &mut status,
             )
         };
-        handle_status(status, "Unable to allocate memory.", &[-34, -64, -30, -61, -4, -5, -6])?;
+        handle_status(
+            status,
+            "Unable to allocate memory.",
+            &[-34, -64, -30, -61, -4, -5, -6],
+        )?;
         Ok(Self::Buffer {
             memory,
             event: ptr::null_mut(),
@@ -342,10 +350,18 @@ impl Compiler for OpenCLCompiler {
                 &mut buffer.event,
             )
         };
-        handle_status(status, "Unable to write buffer.", &[-36, -34, -38, -30, -57, -13, -14, -4, -59, -5, -6])?;
+        handle_status(
+            status,
+            "Unable to write buffer.",
+            &[-36, -34, -38, -30, -57, -13, -14, -4, -59, -5, -6],
+        )?;
         // Immediattely synchronize because we do not know the lifetime of data
         let status = unsafe { clWaitForEvents(1, (&[buffer.event]).as_ptr().cast()) };
-        return handle_status(status, "Unable to finish buffer write event.", &[-30, -34, -58, -14, -5, -6])
+        return handle_status(
+            status,
+            "Unable to finish buffer write event.",
+            &[-30, -34, -58, -14, -5, -6],
+        );
     }
 
     fn load_memory<T: Scalar>(
@@ -353,8 +369,14 @@ impl Compiler for OpenCLCompiler {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
-        debug_assert!(!buffer.memory.is_null(), "Trying to read null memory. Internal bug.");
-        debug_assert!(!buffer.event.is_null(), "Trying to read uninitialized memory. Internal bug.");
+        debug_assert!(
+            !buffer.memory.is_null(),
+            "Trying to read null memory. Internal bug."
+        );
+        debug_assert!(
+            !buffer.event.is_null(),
+            "Trying to read uninitialized memory. Internal bug."
+        );
         cl_wait_for_events(&[buffer.event])?;
         let mut data: Vec<T> = Vec::with_capacity(length);
         let mut event: *mut c_void = ptr::null_mut();
@@ -372,11 +394,15 @@ impl Compiler for OpenCLCompiler {
                 &mut event,
             )
         };
-        handle_status(status, "Unable to read buffer.", &[-36, -34, -38, -30, -57, -13, -14, -4, -59, -5, -6])?;
+        handle_status(
+            status,
+            "Unable to read buffer.",
+            &[-36, -34, -38, -30, -57, -13, -14, -4, -59, -5, -6],
+        )?;
         cl_wait_for_events(&[event])?;
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(length) }
-        return Ok(data)
+        return Ok(data);
     }
 
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
@@ -389,7 +415,7 @@ impl Compiler for OpenCLCompiler {
             #[cfg(feature = "debug1")]
             libc_print::libc_println!("Warning: A buffer was allocated, but never initialized.");
         }
-        return Ok(())
+        return Ok(());
     }
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
@@ -418,12 +444,30 @@ impl Compiler for OpenCLCompiler {
         source += "\n) {\n";
 
         // Add indices for global and local loops
-        source += &f!("  unsigned int i0 = get_group_id(0); /* 0..{} */\n", kernel.global_work_size[0]);
-        source += &f!("  unsigned int i1 = get_local_id(0); /* 0..{} */\n", kernel.local_work_size[0]);
-        source += &f!("  unsigned int i2 = get_group_id(1); /* 0..{} */\n", kernel.global_work_size[1]);
-        source += &f!("  unsigned int i3 = get_local_id(1); /* 0..{} */\n", kernel.local_work_size[1]);
-        source += &f!("  unsigned int i5 = get_group_id(2); /* 0..{} */\n", kernel.global_work_size[2]);
-        source += &f!("  unsigned int i6 = get_local_id(2); /* 0..{} */\n", kernel.local_work_size[2]);
+        source += &f!(
+            "  unsigned int i0 = get_group_id(0); /* 0..{} */\n",
+            kernel.global_work_size[0]
+        );
+        source += &f!(
+            "  unsigned int i1 = get_local_id(0); /* 0..{} */\n",
+            kernel.local_work_size[0]
+        );
+        source += &f!(
+            "  unsigned int i2 = get_group_id(1); /* 0..{} */\n",
+            kernel.global_work_size[1]
+        );
+        source += &f!(
+            "  unsigned int i3 = get_local_id(1); /* 0..{} */\n",
+            kernel.local_work_size[1]
+        );
+        source += &f!(
+            "  unsigned int i5 = get_group_id(2); /* 0..{} */\n",
+            kernel.global_work_size[2]
+        );
+        source += &f!(
+            "  unsigned int i6 = get_local_id(2); /* 0..{} */\n",
+            kernel.local_work_size[2]
+        );
         source += "  unsigned int t0, t1, t2;\n";
 
         // Transpile kernel ops, skip ends of global and local loops
@@ -458,14 +502,17 @@ impl Compiler for OpenCLCompiler {
                         } else {
                             String::new()
                         };
-                        source += &f!(
-                            "{indent}{read_only}{} r{id}{};\n",
-                            dtype.ocl(),
-                            size,
-                        );
+                        source += &f!("{indent}{read_only}{} r{id}{};\n", dtype.ocl(), size,);
                     }
                 },
-                IROp::AssignMem { z_id, z_scope, z_index, x_id, x_scope, x_index } => {
+                IROp::AssignMem {
+                    z_id,
+                    z_scope,
+                    z_index,
+                    x_id,
+                    x_scope,
+                    x_index,
+                } => {
                     let (zt, z) = variable_to_str(*z_id, *z_scope, z_index, 0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
@@ -508,14 +555,21 @@ impl Compiler for OpenCLCompiler {
                     }
                     source += &f!("{indent}{z} = {inner_op};\n");
                 }
-                IROp::Binary { z, x, y, op, zy_index } => {
+                IROp::Binary {
+                    z,
+                    x,
+                    y,
+                    op,
+                    zy_index,
+                } => {
                     let (zt, z) = variable_to_str(*z, Scope::Register, zy_index, 0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) = variable_to_str(*x, Scope::Register, &crate::runtime::view::Index::None, 1);
+                    let (xt, x) =
+                        variable_to_str(*x, Scope::Register, &crate::runtime::view::Index::None, 1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
@@ -541,7 +595,8 @@ impl Compiler for OpenCLCompiler {
                     );
                 }
                 IROp::Loop { id, max } => {
-                    source += &f!("{indent}for (unsigned int i{id} = 0; i{id} < {max}; i{id}++) {{\n");
+                    source +=
+                        &f!("{indent}for (unsigned int i{id} = 0; i{id} < {max}; i{id}++) {{\n");
                     indent += "  ";
                 }
                 IROp::EndLoop => {
@@ -584,7 +639,11 @@ impl Compiler for OpenCLCompiler {
         let mut status = CL_SUCCESS;
         let kernel =
             unsafe { clCreateKernel(program.program, program_name.as_ptr().cast(), &mut status) };
-        handle_status(status, "Unable to create kernel.", &[-44, -45, -46, -47, -30, -5, -6])?;
+        handle_status(
+            status,
+            "Unable to create kernel.",
+            &[-44, -45, -46, -47, -30, -5, -6],
+        )?;
         let mut events = Vec::new();
         let mut i = 0;
         for arg in &mut *args {
@@ -598,7 +657,11 @@ impl Compiler for OpenCLCompiler {
             status = unsafe {
                 clSetKernelArg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
             };
-            handle_status(status, "Unable to set kernel arg.", &[-48, -49, -50, -38, -41, -33, -51, -72, -5, -6])?;
+            handle_status(
+                status,
+                "Unable to set kernel arg.",
+                &[-48, -49, -50, -38, -41, -33, -51, -72, -5, -6],
+            )?;
             i += 1;
         }
         let mut global_work_size = program.global_work_size;
@@ -625,11 +688,22 @@ impl Compiler for OpenCLCompiler {
                 &mut event,
             )
         };
-        handle_status(status, "Unable to enqueue kernel.", &[-45, -36, -48, -34, -52, -53, -63, -56, -54, -55, -13, -40, -10, -5, -4, -57, -59, -6])?;
+        handle_status(
+            status,
+            "Unable to enqueue kernel.",
+            &[
+                -45, -36, -48, -34, -52, -53, -63, -56, -54, -55, -13, -40, -10, -5, -4, -57, -59,
+                -6,
+            ],
+        )?;
         #[cfg(feature = "debug1")]
         {
             let status = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
-            handle_status(status, "Unable to finish kernel execution event.", &[-30, -34, -58, -14, -5, -6])?;
+            handle_status(
+                status,
+                "Unable to finish kernel execution event.",
+                &[-30, -34, -58, -14, -5, -6],
+            )?;
             /*let elapsed_nanos = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed_nanos as f64 / 1000000.;
             println!(
@@ -646,7 +720,7 @@ impl Compiler for OpenCLCompiler {
         }
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[1], 4).unwrap());
-        return Ok(())
+        return Ok(());
     }
 
     fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
@@ -712,7 +786,11 @@ impl OpenCLProgram {
             let build_log = get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG);
             match build_log {
                 Ok(build_log) => panic!("{}", String::from_utf8_lossy(&build_log)),
-                Err(status) => handle_status(status, "Unable to get info about failed compilation.", &[-33, -30, -44, -5, -6])?,
+                Err(status) => handle_status(
+                    status,
+                    "Unable to get info about failed compilation.",
+                    &[-33, -30, -44, -5, -6],
+                )?,
             }
         }
         Ok(Self {
@@ -727,7 +805,11 @@ impl OpenCLProgram {
 
 fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), CompilerError> {
     let status = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
-    return handle_status(status, "Unable to finish buffer read event.", &[-30, -34, -58, -14, -5, -6])
+    return handle_status(
+        status,
+        "Unable to finish buffer read event.",
+        &[-30, -34, -58, -14, -5, -6],
+    );
 }
 
 fn get_program_build_data(
@@ -745,9 +827,9 @@ fn get_program_build_data(
             clGetProgramBuildInfo(object, idx, param_name, 0, ptr::null_mut(), &mut size)
         };
         if CL_SUCCESS != status {
-            return Err(status)
+            return Err(status);
         } else {
-            return Ok(size)
+            return Ok(size);
         }
     }
     let size = get_size(program, device, param_name)?;
@@ -772,15 +854,15 @@ fn get_program_build_data(
                 )
             };
             if CL_SUCCESS != status {
-                return Err(status)
+                return Err(status);
             } else {
-                return Ok(data)
+                return Ok(data);
             }
         } else {
-            return Ok(Vec::default())
+            return Ok(Vec::default());
         }
     }
-    return get_vector(program, device, param_name, size)
+    return get_vector(program, device, param_name, size);
 }
 
 pub fn get_device_data(
@@ -793,9 +875,9 @@ pub fn get_device_data(
             opencl_sys::clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size)
         };
         if CL_SUCCESS != status {
-            return Err(status)
+            return Err(status);
         } else {
-            return Ok(size)
+            return Ok(size);
         }
     }
     let size = get_size(device, param_name)?;
@@ -818,15 +900,15 @@ pub fn get_device_data(
                 )
             };
             if CL_SUCCESS != status {
-                return Err(status)
+                return Err(status);
             } else {
-                return Ok(data)
+                return Ok(data);
             }
         } else {
-            return Ok(Vec::default())
+            return Ok(Vec::default());
         }
     }
-    return get_vector(device, param_name, size)
+    return get_vector(device, param_name, size);
 }
 
 fn get_device_ids(
@@ -839,7 +921,7 @@ fn get_device_ids(
         unsafe { clGetDeviceIDs(platform, device_type, 0, ptr::null_mut(), &mut count) };
 
     if (CL_SUCCESS != status) && (CL_DEVICE_NOT_FOUND != status) {
-        return Err(status)
+        return Err(status);
     } else if 0 < count {
         // Get the device ids.
         let len = count as usize;
@@ -856,12 +938,12 @@ fn get_device_ids(
         };
 
         if CL_SUCCESS != status {
-            return Err(status)
+            return Err(status);
         } else {
-            return Ok(ids)
+            return Ok(ids);
         }
     } else {
-        return Ok(Vec::default())
+        return Ok(Vec::default());
     }
 }
 
@@ -889,26 +971,41 @@ fn get_platform_data(
             )
         };
         handle_status(status, "Unable to get platform info.", &[-32, -30, -6])?;
-        return Ok(data)
+        return Ok(data);
     } else {
-        return Ok(Vec::default())
+        return Ok(Vec::default());
     }
 }
 
-fn handle_status(status: cl_int, err_msg: &str, possible_errors: &[cl_int]) -> Result<(), CompilerError> {
+fn handle_status(
+    status: cl_int,
+    err_msg: &str,
+    possible_errors: &[cl_int],
+) -> Result<(), CompilerError> {
     if status == CL_SUCCESS {
-        return Ok(())
+        return Ok(());
     } else {
-        debug_assert!(possible_errors.contains(&status), "Internal bug. OpenCL error out of range of expected errors.");
+        debug_assert!(
+            possible_errors.contains(&status),
+            "Internal bug. OpenCL error out of range of expected errors."
+        );
         #[cfg(feature = "debug1")]
         libc_print::libc_println!("Error: {err_msg}, OpenCL error code {status}");
         return Err(match status {
-            -4 => CompilerError::OutOfDeviceMemory("OpenCL Err -4: CL_MEM_OBJECT_ALLOCATION_FAILURE"),
+            -4 => {
+                CompilerError::OutOfDeviceMemory("OpenCL Err -4: CL_MEM_OBJECT_ALLOCATION_FAILURE")
+            }
             -5 => CompilerError::GeneralExecutionError("OpenCL Err -5: CL_OUT_OF_RESOURCES"),
             -6 => CompilerError::OutOfHostMemory("OpenCL Err -6: CL_OUT_OF_HOST_MEMORY"),
-            -10 => CompilerError::GeneralExecutionError("OpenCL Err -10: CL_IMAGE_FORMAT_NOT_SUPPORTED"),
-            -13 => CompilerError::GeneralExecutionError("OpenCL Err -13: CL_MISALIGNED_SUB_BUFFER_OFFSET"),
-            -14 => CompilerError::GeneralExecutionError("OpenCL Err -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST"),
+            -10 => CompilerError::GeneralExecutionError(
+                "OpenCL Err -10: CL_IMAGE_FORMAT_NOT_SUPPORTED",
+            ),
+            -13 => CompilerError::GeneralExecutionError(
+                "OpenCL Err -13: CL_MISALIGNED_SUB_BUFFER_OFFSET",
+            ),
+            -14 => CompilerError::GeneralExecutionError(
+                "OpenCL Err -14: CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST",
+            ),
             -30 => CompilerError::GeneralExecutionError("OpenCL Err -30: CL_INVALID_VALUE"),
             -33 => CompilerError::GeneralExecutionError("OpenCL Err -33: CL_INVALID_DEVICE_QUEUE"),
             -34 => CompilerError::GeneralExecutionError("OpenCL Err -34: CL_INVALID_CONTEXT"),
@@ -917,26 +1014,42 @@ fn handle_status(status: cl_int, err_msg: &str, possible_errors: &[cl_int]) -> R
             -40 => CompilerError::GeneralExecutionError("OpenCL Err -40: CL_INVALID_IMAGE_SIZE"),
             -41 => CompilerError::GeneralExecutionError("OpenCL Err -41: CL_INVALID_SAMPLER"),
             -44 => CompilerError::GeneralExecutionError("OpenCL Err -44: CL_INVALID_PROGRAM"),
-            -45 => CompilerError::GeneralExecutionError("OpenCL Err -45: CL_INVALID_PROGRAM_EXECUTABLE"),
+            -45 => CompilerError::GeneralExecutionError(
+                "OpenCL Err -45: CL_INVALID_PROGRAM_EXECUTABLE",
+            ),
             -46 => CompilerError::GeneralExecutionError("OpenCL Err -46: CL_INVALID_KERNEL_NAME"),
-            -47 => CompilerError::GeneralExecutionError("OpenCL Err -47: CL_INVALID_KERNEL_DEFINITION"),
+            -47 => {
+                CompilerError::GeneralExecutionError("OpenCL Err -47: CL_INVALID_KERNEL_DEFINITION")
+            }
             -48 => CompilerError::GeneralExecutionError("OpenCL Err -48: CL_INVALID_KERNEL"),
             -49 => CompilerError::GeneralExecutionError("OpenCL Err -49: CL_INVALID_ARG_INDEX"),
             -50 => CompilerError::GeneralExecutionError("OpenCL Err -50: CL_INVALID_ARG_VALUE"),
             -51 => CompilerError::GeneralExecutionError("OpenCL Err -51: CL_INVALID_ARG_SIZE"),
             -52 => CompilerError::GeneralExecutionError("OpenCL Err -52: CL_INVALID_KERNEL_ARGS"),
-            -53 => CompilerError::GeneralExecutionError("OpenCL Err -53: CL_INVALID_WORK_DIMENSION"),
-            -54 => CompilerError::GeneralExecutionError("OpenCL Err -54: CL_INVALID_WORK_GROUP_SIZE"),
-            -55 => CompilerError::GeneralExecutionError("OpenCL Err -55: CL_INVALID_WORK_ITEM_SIZE"),
+            -53 => {
+                CompilerError::GeneralExecutionError("OpenCL Err -53: CL_INVALID_WORK_DIMENSION")
+            }
+            -54 => {
+                CompilerError::GeneralExecutionError("OpenCL Err -54: CL_INVALID_WORK_GROUP_SIZE")
+            }
+            -55 => {
+                CompilerError::GeneralExecutionError("OpenCL Err -55: CL_INVALID_WORK_ITEM_SIZE")
+            }
             -56 => CompilerError::GeneralExecutionError("OpenCL Err -56: CL_INVALID_GLOBAL_OFFSET"),
-            -57 => CompilerError::GeneralExecutionError("OpenCL Err -57: CL_INVALID_EVENT_WAIT_LIST"),
+            -57 => {
+                CompilerError::GeneralExecutionError("OpenCL Err -57: CL_INVALID_EVENT_WAIT_LIST")
+            }
             -58 => CompilerError::GeneralExecutionError("OpenCL Err -58: CL_INVALID_EVENT"),
             -59 => CompilerError::GeneralExecutionError("OpenCL Err -59: CL_INVALID_OPERATION"),
             -61 => CompilerError::GeneralExecutionError("OpenCL Err -61: CL_INVALID_BUFFER_SIZE"),
-            -63 => CompilerError::GeneralExecutionError("OpenCL Err -63: CL_INVALID_GLOBAL_WORK_SIZE"),
+            -63 => {
+                CompilerError::GeneralExecutionError("OpenCL Err -63: CL_INVALID_GLOBAL_WORK_SIZE")
+            }
             -64 => CompilerError::GeneralExecutionError("OpenCL Err -64: CL_INVALID_PROPERTY"),
-            -72 => CompilerError::GeneralExecutionError("OpenCL Err -72: CL_MAX_SIZE_RESTRICTION_EXCEEDED"),
+            -72 => CompilerError::GeneralExecutionError(
+                "OpenCL Err -72: CL_MAX_SIZE_RESTRICTION_EXCEEDED",
+            ),
             _ => CompilerError::GeneralExecutionError("OpenCL Err: UNKNOWN ERROR"),
-        })
+        });
     }
 }

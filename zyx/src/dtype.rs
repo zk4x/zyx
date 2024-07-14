@@ -1,4 +1,21 @@
-use crate::runtime::Constant;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Constant {
+    #[cfg(feature = "half")]
+    BF16(u16),
+    #[cfg(feature = "half")]
+    F16(u16),
+    F32(u32),
+    F64(u64),
+    #[cfg(feature = "complex")]
+    CF32(u64),
+    #[cfg(feature = "complex")]
+    CF64(u128),
+    U8(u8),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
@@ -37,7 +54,7 @@ impl core::fmt::Display for DType {
             DType::I16 => "I16",
             DType::I32 => "I32",
             DType::I64 => "I64",
-        })
+        });
     }
 }
 
@@ -59,7 +76,7 @@ impl DType {
             DType::I16 => 2,
             DType::I32 => 4,
             DType::I64 => 8,
-        }
+        };
     }
 
     pub(super) fn zero(&self) -> Constant {
@@ -79,6 +96,6 @@ impl DType {
             DType::I16 => Constant::I16(0),
             DType::I32 => Constant::I32(0),
             DType::I64 => Constant::I64(0),
-        }
+        };
     }
 }

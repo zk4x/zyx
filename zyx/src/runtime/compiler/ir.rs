@@ -4,9 +4,9 @@
 // matmuls (like strassen or tensor cores) or 16x16x16 matmul (wmma).
 // These optimizations are hardware dependent.
 
-use crate::runtime::compiler::{BOp, HWInfo, ROp, Scope, Tile, UOp};
-use crate::runtime::node::Constant;
-use crate::runtime::view::{Index, View};
+use crate::dtype::Constant;
+use crate::runtime::compiler::{HWInfo, Scope};
+use crate::runtime::view::Index;
 use crate::runtime::TensorId;
 use crate::DType;
 use alloc::collections::BTreeMap;
@@ -17,6 +17,8 @@ use alloc::vec::Vec;
 
 #[cfg(feature = "debug1")]
 use libc_print::std_name::println;
+
+use super::VOp;
 
 #[derive(Debug)]
 pub(in crate::runtime) struct IRKernel {
@@ -94,6 +96,31 @@ pub(super) fn variable_to_str(
     //}
 }
 
+#[derive(Debug, Clone)]
+enum UOp {
+    Cast(DType),
+    ReLU,
+    Neg,
+    Exp,
+    Ln,
+    Tanh,
+    Inv,
+    Sqrt,
+    Sin,
+    Cos,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum BOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Max,
+    Pow,
+    Cmplt,
+}
+
 /// IROp for direct translation to hardware kernels
 #[derive(Debug, Clone)]
 pub(super) enum IROp {
@@ -150,14 +177,14 @@ pub(super) enum IROp {
 pub(crate) fn tiled_to_ir(
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
-    tiles: Vec<Tile>,
+    tiles: Vec<VOp>,
     hwinfo: &HWInfo,
 ) -> IRKernel {
     let _ = hwinfo;
     let gws = global_work_size;
     let lws = local_work_size;
 
-    let mut ops = Vec::new();
+    /*let mut ops = Vec::new();
 
     // At this point every kernel is already 8d, reduce kernels are 10d, with last dim reduce
     // and added local loops for first 3 dims and register loops for last 2 dims and reduce dim
@@ -346,7 +373,8 @@ pub(crate) fn tiled_to_ir(
         local_work_size,
         ops,
         args,
-    };
+        };*/
+    todo!()
 }
 
 /*fn create_unary_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp]) -> (Vec<IROp>, Vec<IRArg>) {

@@ -1,7 +1,9 @@
 use crate::runtime::TensorId;
 use crate::scalar::Scalar;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
+
+use super::graph::Graph;
 
 pub(super) mod cpu;
 
@@ -33,11 +35,11 @@ impl<I: Interpreter> InterpretedBackend<I> {
         return Ok(Self {
             interpreter: I::initialize()?,
             buffers: BTreeMap::new(),
-        })
+        });
     }
 
     pub(super) fn is_realized(&self, x: TensorId) -> bool {
-        return self.buffers.contains_key(&x)
+        return self.buffers.contains_key(&x);
     }
 
     pub(super) fn store<T: Scalar>(
@@ -67,5 +69,13 @@ impl<I: Interpreter> InterpretedBackend<I> {
             return self.interpreter.deallocate_memory(buffer);
         }
         return Ok(());
+    }
+
+    pub(super) fn interpret_graph(
+        &mut self,
+        graph: &Graph,
+        to_eval: &BTreeSet<TensorId>,
+    ) -> Result<(), InterpreterError> {
+        todo!()
     }
 }
