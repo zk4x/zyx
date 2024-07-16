@@ -180,8 +180,8 @@ impl Runtime {
 
     pub(crate) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
-        for x in to_remove {
-            match self.device(x) {
+        for (x, device) in to_remove {
+            match device {
                 #[cfg(feature = "cuda")]
                 Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
                 #[cfg(feature = "opencl")]
@@ -215,7 +215,10 @@ impl Runtime {
     }
 
     pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
-        return self.graph.push(Node::Cast { x, dtype });
+        return self.graph.push(Node::Unary {
+            x,
+            uop: UOp::Cast(dtype),
+        });
     }
 
     pub(crate) fn reciprocal(&mut self, x: TensorId) -> TensorId {

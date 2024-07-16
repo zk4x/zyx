@@ -3,7 +3,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::{DType, Device};
+use crate::{runtime::node::UOp, DType, Device};
 
 use super::{node::Node, TensorId};
 
@@ -25,7 +25,7 @@ impl Graph {
     }
 
     /// Returns which tensors should be deallocated
-    pub(crate) fn release(&mut self, x: TensorId) -> BTreeSet<TensorId> {
+    pub(crate) fn release(&mut self, x: TensorId) -> BTreeSet<(TensorId, Device)> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         let mut to_remove = BTreeSet::new();
@@ -34,45 +34,55 @@ impl Graph {
             node.0 -= 1;
             if node.0 == 0 {
                 params.extend(node.1.parameters());
+                to_remove.insert((x, self.device(x)));
                 self.nodes.remove(&x);
-                to_remove.insert(x);
             }
         }
         to_remove
     }
 
     pub(crate) fn push(&mut self, node: Node) -> TensorId {
+        //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
             self.nodes.get_mut(&nid).unwrap().0 += 1;
         }
         let id = if let Some((id, _)) = self.nodes.last_key_value() {
-            *id
+            id + 1
         } else {
             1
         };
-        self.nodes.insert(id, (0, node));
+        self.nodes.insert(id, (1, node));
         return id;
     }
 
     pub(crate) fn dtype(&self, tensor_id: TensorId) -> DType {
-        let mut x = tensor_id;
+        let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 1000000 {
-            let node = &self.nodes[&x].1;
+            let node = &self.nodes[&tensor_id].1;
+            //libc_print::libc_println!("{tensor_id}, {node:?}");
             match node {
-                Node::Leaf { dtype, .. } | Node::Cast { dtype, .. } => return *dtype,
+                Node::Leaf { dtype, .. } => return *dtype,
+                Node::Unary { x, uop } => {
+                    if let UOp::Cast(dtype) = uop {
+                        return *dtype;
+                    } else {
+                        tensor_id = *x;
+                    }
+                }
                 //Node::Const { value, .. } => return value.dtype(),
-                _ => x = node.parameters().next().unwrap(),
+                _ => tensor_id = node.parameters().next().unwrap(),
             }
             i += 1;
         }
-        panic!("DType of {x} could not be found. This is internal bug.")
+        panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
 
     pub(crate) fn device(&self, tensor_id: TensorId) -> Device {
         let mut x = tensor_id;
         let mut i = 0;
         while i < 1000000 {
+            //libc_print::libc_println!("Id: {x}, nodes: {:?}", self.nodes);
             let node = &self.nodes[&x].1;
             match node {
                 Node::Leaf { device, .. } => return *device,
@@ -81,7 +91,7 @@ impl Graph {
             }
             i += 1;
         }
-        panic!("DType of {x} could not be found. This is internal bug.")
+        panic!("Device of {x} could not be found. This is internal bug.")
     }
 
     pub(crate) fn shape(&self, tensor_id: TensorId) -> &[usize] {

@@ -510,7 +510,13 @@ impl Tensor {
 
     #[must_use]
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor {
-        // TODO checks
+        assert_eq!(
+            self.shape().len(),
+            axes.len(),
+            "Axes has rank {}, but tensor has rank {}. It must be the same for permute.",
+            axes.len(),
+            self.rank()
+        );
         return Tensor {
             id: RT.lock().permute(self.id, axes),
         };

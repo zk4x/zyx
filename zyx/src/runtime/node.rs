@@ -14,6 +14,8 @@ pub(crate) enum BOp {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum UOp {
+    Noop,
+    Cast(DType),
     ReLU,
     Neg,
     Exp,
@@ -25,7 +27,7 @@ pub(crate) enum UOp {
     Cos,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum ROp {
     Sum,
     Max,
@@ -80,10 +82,6 @@ pub(crate) enum Node {
         shape: Vec<usize>,
         rop: ROp,
     },
-    Cast {
-        x: TensorId,
-        dtype: DType,
-    },
     Unary {
         x: TensorId,
         uop: UOp,
@@ -132,8 +130,7 @@ impl Node {
             idx: 0,
             len: 1,
             },*/
-            Node::Cast { x, .. }
-            | Node::Unary { x, .. }
+            Node::Unary { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }

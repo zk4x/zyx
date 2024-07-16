@@ -2,6 +2,7 @@ use crate::runtime::compiler::ir::IRKernel;
 use crate::runtime::TensorId;
 use crate::scalar::Scalar;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
@@ -186,137 +187,79 @@ impl<C: Compiler> CompiledBackend<C> {
     /// Compiles and caches graph
     pub(super) fn compile_graph(
         &mut self,
-        graph: &Graph,
+        org_graph: &Graph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), CompilerError> {
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("Evaluating {to_eval:?}");
-        if self.compiled_graphs.contains_key(&graph) {
+        if self.compiled_graphs.contains_key(&org_graph) {
             return Ok(());
         }
-        let mut graph = graph.clone();
+        let mut graph = org_graph.clone();
         let order = graph.execution_order(&to_eval);
-        let kernels = generate_kernels(&graph, &order, &to_eval);
+        let mut kernels = generate_kernels(&graph, &order, &to_eval);
 
+        let mut programs = Vec::new();
         #[cfg(feature = "debug1")]
-        {
-            for kernel in kernels {
+        println!("Compiling kernels");
+        // Rewrite tiled representation to IR representation and compile it for HW device
+        // TODO kernels can be compiled in parallel
+        for kernel in &mut kernels {
+            // Get the number of loops before any other operation
+            let num_loops = kernel
+                .ops
+                .iter()
+                .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
+                .unwrap();
+
+            // If there is more loops than 3, pick first three loops as global loops,
+            // rest is register loops.
+            if num_loops > 3 {
+                todo!()
+            }
+            // If there is less than three loops, add loops with dimension 1
+            if num_loops < 3 {
+                todo!()
+            }
+
+            // Then split those first three loops into global and local loops.
+            // Reshape kernels to 6d (global, local) with some register loops
+            // should be shape: [gws[0], lws[0], gws[1], lws[1], gws[2], lws[2]]
+            let mut gws = [0; 3];
+            let lws = [1; 3]; // TODO
+            for op in &kernel.ops {
+                if let VOp::Loop { axis, dimension } = op {
+                    if *axis > 2 {
+                        break;
+                    }
+                    gws[*axis] = *dimension;
+                }
+            }
+
+            kernel.split_axis(0, &[gws[0], lws[0]]);
+            kernel.split_axis(2, &[gws[1], lws[1]]);
+            kernel.split_axis(4, &[gws[2], lws[2]]);
+
+            #[cfg(feature = "debug1")]
+            {
                 println!();
                 for op in &kernel.ops {
                     println!("{op:?}");
                 }
                 println!();
             }
-        }
 
-        let _ = kernels;
-
-        // Now we need to optimize shapes to 8d non reduce and 10d in reduce loops
-        /*for kernel in &mut kernels {
-            let mut kernel_view = View::from(&kernel.shape);
-
-            // Make all kernels 3d
-            let mut sh = kernel.shape.clone();
-            while sh.len() < 3 {
-                sh.insert(0, 1);
-            }
-            let rank = sh.len();
-            if rank > 3 {
-                let sh = [sh[..rank - 2].iter().product(), sh[rank - 2], sh[rank - 1]];
-                kernel_view.reshape(&sh);
-            } else {
-                kernel_view.reshape(&sh);
-            }
-            kernel_view.optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
-            let sh = kernel_view.shape();
-            kernel.shape = sh.clone();
-
-            let mut reduce_data: Option<(Vec<usize>, Vec<usize>)> = None;
-            for op in &mut kernel.ops {
-                // Make all loads outside of reduce loops 3d, in reduce loops 4d
-                match op {
-                    compile::Op::Load { view, .. } => {
-                        if let Some((shape, axes)) = &reduce_data {
-                            view.permute(axes);
-                            view.reshape(shape);
-                        } else {
-                            view.reshape(&sh);
-                        }
-                    }
-                    compile::Op::ReduceLoop {
-                        axes,
-                        shape_before_reduce,
-                        ..
-                    } => {
-                        let all_axes: Vec<usize> = (0..shape_before_reduce.len())
-                            .filter(|a| !axes.contains(a))
-                            .chain(axes.iter().copied())
-                            .collect();
-
-                        let mut view = View::from(&shape_before_reduce);
-                        view.permute(&all_axes);
-                        let sh = view.shape();
-
-                        let r_dim = axes.iter().map(|a| shape_before_reduce[*a]).product();
-                        // Reshape to join reduce axes and make it 4d
-                        let mut sh: Vec<usize> = sh[..sh.len() - axes.len()]
-                            .iter()
-                            .copied()
-                            .chain([r_dim])
-                            .collect();
-                        while sh.len() < 4 {
-                            sh.insert(0, 1);
-                        }
-                        let rank = sh.len();
-                        if rank > 4 {
-                            let sh = [
-                                sh[..rank - 3].iter().product(),
-                                sh[rank - 3],
-                                sh[rank - 2],
-                                sh[rank - 1],
-                            ];
-                            view.reshape(&sh);
-                        } else {
-                            view.reshape(&sh);
-                        }
-                        view.optimize_local_mem_size_and_work_per_thread(&self.hwinfo);
-                        let sh = view.shape();
-                        // Set shape_before_reduce to be just reduce dims, now it is over last dimensions
-                        *shape_before_reduce = alloc::vec![sh[8], sh[9]];
-                        reduce_data = Some((sh, all_axes));
-                    }
-                    compile::Op::Reduce { .. } => {
-                        reduce_data = None;
-                    }
-                    _ => {}
-                }
-            }
-        }*/
-
-        // TODO there are some advanced optimizations that can be additionally applied.
-        // Namely some movement operations could be done without the need for global temporary
-        // variable, but these can be added in later.
-
-        /*let mut programs = Vec::new();
-
-        // Rewrite tiled representation to IR representation and compile it for HW device
-        #[cfg(feature = "debug1")]
-        println!("Compiling kernels");
-        // TODO kernels can be compiled in parallel
-        for kernel in kernels {
-            let ir_kernel = ir::tiled_to_ir(
-                kernel.global_work_size,
-                kernel.local_work_size,
-                kernel.ops,
+            let ir_kernel = ir::compile_ir(
+                &graph,
+                gws,
+                lws,
+                &kernel.inputs,
+                &kernel.outputs,
+                &kernel.ops,
                 &self.hwinfo,
             );
 
             let args: Vec<TensorId> = ir_kernel.args.keys().copied().collect();
-
-            // Compile kernel
-            //libc_print::libc_println!("Program with args: {:?}", args);
-            // BEWARE in which order compiled kernels are pushed into programs,
-            // as lanuching graph executes them in this same order FIFO
             programs.push((args.clone(), self.compiler.compile_program(&ir_kernel)?));
 
             // Allocate memory for intermediate args and results
@@ -334,15 +277,15 @@ impl<C: Compiler> CompiledBackend<C> {
         }
 
         self.compiled_graphs.insert(
-            org_graph.nodes.clone(),
+            org_graph.clone(),
             CompiledGraph {
                 programs,
                 flop: 0,
                 bytes: 0,
             },
-        );*/
+        );
 
-        Ok(())
+        return Ok(());
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), CompilerError> {
@@ -382,10 +325,105 @@ struct Kernel {
     ops: Vec<VOp>,
 }
 
+impl Kernel {
+    fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
+        // First split loop at op_id
+        let VOp::Loop { axis, dimension } = &mut self.ops[op_id] else {
+            panic!()
+        };
+        *dimension = dimensions[0];
+        let axis = *axis;
+        let mut temp_axis = axis;
+        let mut id = op_id;
+        for dim in dimensions[1..].iter() {
+            id += 1;
+            temp_axis += 1;
+            self.ops.insert(
+                id,
+                VOp::Loop {
+                    axis: temp_axis,
+                    dimension: *dim,
+                },
+            )
+        }
+        let axis_shift = dimensions.len() - 1;
+        let mut loop_ends = 0;
+        for i in id + 1..self.ops.len() {
+            match &mut self.ops[i] {
+                // Then change axis ids for all following loops
+                VOp::Loop { axis, .. } => {
+                    *axis += axis_shift;
+                }
+                VOp::Reduce { axis, .. } => {
+                    if loop_ends == axis_shift {
+                        break;
+                    }
+                    loop_ends += 1;
+                    *axis += axis_shift;
+                }
+                // Then change all load and store operations in this
+                // loop in the same way.
+                VOp::Load { view, .. } => {
+                    // TODO
+                }
+                VOp::Store { strides, .. } => {
+                    // Example of axis split
+                    // shape
+                    //  2, 6,    2
+                    //  2, 3, 2, 2
+                    // strides
+                    // 12, 2,    1
+                    // 12, 4, 2, 1
+                    println!("{axis}");
+                    let mut stride = strides[axis];
+                    for dim in dimensions[1..].iter().rev() {
+                        strides.insert(axis, stride);
+                        stride *= dim;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct View(Vec<ViewDim>);
 
-#[derive(Debug)]
+impl View {
+    fn new(shape: &[usize]) -> Self {
+        let mut stride = 1;
+        let mut view: Vec<ViewDim> = shape
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(axis, dim)| {
+                let temp = stride;
+                stride *= dim;
+                ViewDim {
+                    axis,
+                    stride: temp,
+                    dim: *dim,
+                    len: *dim,
+                    shift: *dim,
+                }
+            })
+            .collect();
+        view.reverse();
+        return Self(view);
+    }
+
+    fn rank(&self) -> usize {
+        self.0.len()
+    }
+
+    fn permute(&mut self, axes: &[usize]) {
+        assert_eq!(self.0.len(), axes.len());
+        self.0 = axes.iter().map(|axis| self.0[*axis]).collect();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ViewDim {
     axis: Axis,
     dim: Dimension,
@@ -403,7 +441,7 @@ enum VOp {
     },
     Store {
         z: TensorId,
-        strides: Vec<(Axis, Stride)>,
+        strides: Vec<Stride>,
     },
     Loop {
         axis: Axis,
@@ -442,24 +480,14 @@ fn generate_kernels(
         let node = &graph[nid];
         match node {
             Node::Leaf { shape, .. } => {
+                let view = View::new(shape);
+                let load_op = VOp::Load {
+                    z: nid,
+                    x: nid,
+                    view,
+                };
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| &kernel.shape == shape) {
-                    let mut stride = 1;
-                    let mut strides: Vec<(Axis, Dimension)> = shape
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .map(|(axis, dimension)| {
-                            let temp = stride;
-                            stride *= dimension;
-                            (axis, temp)
-                        })
-                        .collect();
-                    strides.reverse();
-                    kernel.ops.push(VOp::Load {
-                        z: nid,
-                        x: nid,
-                        strides,
-                    });
+                    kernel.ops.push(load_op);
                     kernel.inputs.insert(nid);
                     kernel.vars.insert(nid);
                 } else {
@@ -469,23 +497,7 @@ fn generate_kernels(
                         .enumerate()
                         .map(|(axis, dimension)| VOp::Loop { axis, dimension })
                         .collect();
-                    let mut stride = 1;
-                    let mut strides: Vec<(Axis, Dimension)> = shape
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .map(|(axis, dimension)| {
-                            let temp = stride;
-                            stride *= dimension;
-                            (axis, temp)
-                        })
-                        .collect();
-                    strides.reverse();
-                    ops.push(VOp::Load {
-                        z: nid,
-                        x: nid,
-                        strides,
-                    });
+                    ops.push(load_op);
                     kernels.push(Kernel {
                         shape: shape.clone(),
                         inputs: BTreeSet::from([nid]),
@@ -500,39 +512,81 @@ fn generate_kernels(
                 // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
                 // Expand increases axes with dimension of 1 to bigger dimension
                 // and sets strides in those axes to 0 for both loads and stores
-                todo!()
-            }
-            Node::Permute { x, axes, .. } => {
-                // Permute shuffles load and store strides
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
-                    for op in kernel.ops {
+                    assert_eq!(kernel.shape.len(), shape.len());
+                    let mut expand_axes = BTreeSet::new();
+                    for a in 0..kernel.shape.len() {
+                        if kernel.shape[a] != shape[a] {
+                            assert_eq!(kernel.shape[a], 1);
+                            kernel.shape[a] = shape[a];
+                            expand_axes.insert(a);
+                        }
+                    }
+                    // We go over ops in reverse, increasing last loops dimension
+                    let mut done_expanding = BTreeSet::new();
+                    for op in kernel.ops.iter_mut().rev() {
                         match op {
-                            VOp::Load { z, x, view } => {
-                                view.permute();
+                            VOp::Loop { axis, dimension } => {
+                                if expand_axes.contains(axis) && done_expanding.insert(*axis) {
+                                    assert_eq!(*dimension, 1);
+                                    *dimension = shape[*axis];
+                                }
                             }
-                            VOp::Store { z: (), strides: () } => {
-                                strides.permute();
+                            VOp::Load { view, .. } => {
+                                // Done expanding marks which loops are behind us,
+                                // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
+                                for a in expand_axes.difference(&done_expanding) {
+                                    view.0[*a].dim = shape[*a];
+                                    view.0[*a].stride = 0;
+                                }
+                            }
+                            VOp::Store { strides, .. } => {
+                                for a in expand_axes.difference(&done_expanding) {
+                                    // TODO This will do multiple writes of the same value, so this would probably be better solved in different way,
+                                    // perhaps doing only single write during the whole loop
+                                    strides[*a] = 0;
+                                }
                             }
                             _ => {}
                         }
                     }
+                    kernel.ops.push(VOp::Unary {
+                        z: nid,
+                        x: *x,
+                        uop: UOp::Noop,
+                    });
+                    kernel.vars.insert(nid);
                 } else {
                     panic!()
                 }
             }
-            /*Node::Split { axis, dimensions } => {
-            // Split axis into multiple axes
-            if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
-                for axis in axes {
-                    kernel.ops.push(Op::Loop {
-                        axis: *axis,
-                        dimension: 1,
+            Node::Permute { x, axes, .. } => {
+                // Permute shuffles load and store strides
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    for op in &mut kernel.ops {
+                        match op {
+                            VOp::Load { view, .. } => {
+                                view.permute(&axes[..view.rank()]);
+                            }
+                            VOp::Store { strides, .. } => {
+                                *strides = axes[..strides.len()]
+                                    .iter()
+                                    .map(|axis| strides[*axis])
+                                    .collect();
+                            }
+                            _ => {}
+                        }
+                    }
+                    kernel.ops.push(VOp::Unary {
+                        z: nid,
+                        x: *x,
+                        uop: UOp::Noop,
                     });
+                    kernel.vars.insert(nid);
+                } else {
+                    panic!()
                 }
-            } else {
-                panic!()
             }
-            }*/
             Node::Reshape { x, shape } => {
                 // Reshape always creates new kernel, as squeeze, unsqueeze and axis split
                 // are already separate operations
@@ -540,22 +594,71 @@ fn generate_kernels(
                 // simply by using view for loads
                 // But for now it is much simpler to just add new kernel
 
-                // First if we can split axes, split axes
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    // First if this is unsqueeze, add new loop with dimension 1 to the end of ops
+                    // TODO
 
-                // else create new kernel
-                todo!()
+                    // else if we can split axes, split axes by replacing one loop with two loops
+                    // TODO
+
+                    // else create new kernel after storing results of previous kernel
+                    let strides = shape_to_strides(graph.shape(*x));
+                    kernel.ops.push(VOp::Store { z: *x, strides });
+                    kernel.outputs.insert(*x);
+                    kernels.push(Kernel {
+                        shape: shape.clone(),
+                        inputs: BTreeSet::from([*x]),
+                        outputs: BTreeSet::new(),
+                        vars: BTreeSet::from([nid]),
+                        ops: vec![VOp::Load {
+                            z: nid,
+                            x: *x,
+                            view: View::new(shape),
+                        }],
+                    });
+                } else {
+                    panic!()
+                }
             }
             Node::Pad { x, pad, .. } => {
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
                 todo!()
             }
+            Node::Reduce { x, axes, rop, .. } => {
+                // Reduce removes loops and adds accumulator before those loops that it removes
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    let mut axes_order = Vec::new();
+                    // Add accumulator
+                    let mut i = kernel.ops.len();
+                    while i > 0 {
+                        i -= 1;
+                        if let VOp::Loop { axis, .. } = &kernel.ops[i] {
+                            if axes.contains(axis) {
+                                axes_order.push(*axis);
+                                kernel.ops.insert(i, VOp::Accumulator { z: nid, rop: *rop });
+                            }
+                        }
+                    }
+                    // End loop
+                    for axis in axes_order {
+                        kernel.ops.push(VOp::Reduce {
+                            axis,
+                            rop: *rop,
+                            z: nid,
+                            x: *x,
+                        });
+                    }
+                } else {
+                    panic!()
+                }
+            }
             Node::Unary { x, uop } => {
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
                     kernel.ops.push(VOp::Unary {
                         z: nid,
                         x: *x,
-                        uop: UOp::Exp,
+                        uop: *uop,
                     });
                     kernel.vars.insert(nid);
                 } else {
@@ -587,7 +690,7 @@ fn generate_kernels(
                         let kernel_y = kernels.remove(kernel_y_id);
                         let kernel_x = &mut kernels[kernel_x_id];
                         assert_eq!(kernel_x.shape, kernel_y.shape);
-                        // Here we must do something about the loops
+                        // TODO Here we must do something about the loops
                         // We cannot have both loops from kernel_x and kernel_y
                         // We have to remove one set of loops
                         kernel_x.ops.extend(kernel_y.ops);
@@ -604,11 +707,35 @@ fn generate_kernels(
                     panic!()
                 }
             }
-            Node::Reduce { x, axes, rop, .. } => {
-                // Reduce removes loops and adds accumulator before those loops that it removes
+            Node::Where { x, y, z } => {
                 todo!()
+            }
+        }
+        if to_eval.contains(&nid) {
+            if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {
+                kernel.ops.push(VOp::Store {
+                    z: nid,
+                    strides: shape_to_strides(graph.shape(nid)),
+                });
+            } else {
+                panic!()
             }
         }
     }
     return kernels;
+}
+
+fn shape_to_strides(shape: &[usize]) -> Vec<usize> {
+    let mut stride = 1;
+    let mut strides: Vec<usize> = shape
+        .iter()
+        .rev()
+        .map(|d| {
+            let temp = stride;
+            stride *= d;
+            temp
+        })
+        .collect();
+    strides.reverse();
+    return strides;
 }

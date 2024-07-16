@@ -6,10 +6,12 @@
 
 use crate::dtype::Constant;
 use crate::runtime::compiler::{HWInfo, Scope};
+use crate::runtime::graph::Graph;
+use crate::runtime::node::UOp;
 use crate::runtime::view::Index;
 use crate::runtime::TensorId;
 use crate::DType;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format as f;
 use alloc::string::String;
 use alloc::vec;
@@ -34,80 +36,62 @@ pub(super) struct IRArg {
     pub(super) read_only: bool,
 }
 
-/*#[derive(Debug, Clone)]
+#[derive(Debug, Clone)]
 pub(super) enum IRMem {
     Const(Constant),
-    Var {
-        id: u32,
-        scope: Scope,
-        index: Index,
-    },
-}*/
-
-pub(super) fn variable_to_str(
-    id: u32,
-    scope: Scope,
-    index: &Index,
-    temp_id: u32,
-) -> (Vec<String>, String) {
-    //match self {
-    /*IRMem::Const(value) => {
-        return (Vec::new(), match value {
-            Constant::F32(value) => f!("{}", unsafe { core::mem::transmute::<u32, f32>(*value) }),
-            Constant::I32(value) => f!("{}", value),
-            _ => todo!(),
-        })
-    }*/
-    //IRMem::Var { id, scope, index } => {
-    match index {
-        Index::Contiguous { dims } | Index::Strided { dims } => {
-            let mut res = String::new();
-            for (id, mul) in dims {
-                res += &f!("i{id}*{mul}+");
-            }
-            res.pop();
-            return (Vec::new(), f!("{}{}[{res}]", scope, id));
-        }
-        Index::Reshaped { dims, reshapes, .. } => {
-            let mut res = String::new();
-            for (id, mul) in dims {
-                res += &f!("i{id}*{mul}+");
-            }
-            res.pop();
-            let mut res = vec![res];
-            for reshape in reshapes[..reshapes.len() - 1].iter() {
-                let mut idx = String::new();
-                for (div, m, mul) in reshape.iter() {
-                    idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-                }
-                idx.pop();
-                res.push(idx);
-            }
-            let mut idx = String::new();
-            for (div, m, mul) in reshapes.last().unwrap().iter() {
-                idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-            }
-            idx.pop();
-            return (res, f!("{}{}[{idx}]", scope, id));
-        }
-        Index::None => return (Vec::new(), f!("{}{}", scope, id)),
-    }
-    //}
-    //}
+    Var { id: u32, scope: Scope, index: Index },
 }
 
-#[derive(Debug, Clone)]
-enum UOp {
-    Cast(DType),
-    ReLU,
-    Neg,
-    Exp,
-    Ln,
-    Tanh,
-    Inv,
-    Sqrt,
-    Sin,
-    Cos,
+impl IRMem {
+    pub(super) fn to_str(&self, temp_id: u32) -> (Vec<String>, String) {
+        match self {
+            IRMem::Const(value) => {
+                return (
+                    Vec::new(),
+                    match value {
+                        Constant::F32(value) => {
+                            f!("{}", unsafe { core::mem::transmute::<u32, f32>(*value) })
+                        }
+                        Constant::I32(value) => f!("{}", value),
+                        _ => todo!(),
+                    },
+                )
+            }
+            IRMem::Var { id, scope, index } => match index {
+                Index::Contiguous { dims } | Index::Strided { dims } => {
+                    let mut res = String::new();
+                    for (id, mul) in dims {
+                        res += &f!("i{id}*{mul}+");
+                    }
+                    res.pop();
+                    return (Vec::new(), f!("{}{}[{res}]", scope, id));
+                }
+                Index::Reshaped { dims, reshapes, .. } => {
+                    let mut res = String::new();
+                    for (id, mul) in dims {
+                        res += &f!("i{id}*{mul}+");
+                    }
+                    res.pop();
+                    let mut res = vec![res];
+                    for reshape in reshapes[..reshapes.len() - 1].iter() {
+                        let mut idx = String::new();
+                        for (div, m, mul) in reshape.iter() {
+                            idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
+                        }
+                        idx.pop();
+                        res.push(idx);
+                    }
+                    let mut idx = String::new();
+                    for (div, m, mul) in reshapes.last().unwrap().iter() {
+                        idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
+                    }
+                    idx.pop();
+                    return (res, f!("{}{}[{idx}]", scope, id));
+                }
+                Index::None => return (Vec::new(), f!("{}{}", scope, id)),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -135,34 +119,33 @@ pub(super) enum IROp {
         init: Option<Constant>,
     },
     AssignMem {
-        z_id: u32,
-        z_scope: Scope,
-        z_index: Index,
-        x_id: u32,
-        x_scope: Scope,
-        x_index: Index,
+        z: IRMem,
+        x: IRMem,
     },
     /// Multiple successive unary ops on register variables
     Unary {
-        z: u32,
-        x: u32,
-        index: Index,
+        z: IRMem,
+        x: IRMem,
         ops: Vec<UOp>,
     },
     /// Single binary op on register variables, x is scalar
     Binary {
-        z: u32,
-        x: u32,
-        y: u32,
-        zy_index: Index,
+        z: IRMem,
+        x: IRMem,
+        y: IRMem,
         op: BOp,
     },
-    /// Register loop, max is number of iterations, step is 1
-    Loop { id: u32, max: usize },
+    /// Register loop, len is number of iterations, step is 1
+    Loop {
+        id: u32,
+        len: usize,
+    },
     /// End of register loop
     EndLoop,
     /// Synchronization barrier
-    Barrier { scope: Scope },
+    Barrier {
+        scope: Scope,
+    },
 }
 
 // Movement op, simply changes the view of this buffer. This means moving things around in memory
@@ -174,10 +157,13 @@ pub(super) enum IROp {
 
 /// Rewrite tiled representation to ir representation, optionally fuse some kernels if possible
 /// (if they have the same work size)
-pub(crate) fn tiled_to_ir(
+pub(crate) fn compile_ir(
+    graph: &Graph,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
-    tiles: Vec<VOp>,
+    inputs: &BTreeSet<TensorId>,
+    outputs: &BTreeSet<TensorId>,
+    ops: &[VOp],
     hwinfo: &HWInfo,
 ) -> IRKernel {
     let _ = hwinfo;

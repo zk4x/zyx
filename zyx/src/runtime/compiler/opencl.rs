@@ -1,6 +1,6 @@
 use crate::dtype::DType;
-use crate::runtime::compiler::ir::{variable_to_str, BOp, IRArg, IRKernel, IROp, UOp};
-use crate::runtime::compiler::{Compiler, CompilerError, HWInfo, Scope};
+use crate::runtime::compiler::ir::{BOp, IRArg, IRKernel, IROp};
+use crate::runtime::compiler::{Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::scalar::Scalar;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -445,27 +445,27 @@ impl Compiler for OpenCLCompiler {
 
         // Add indices for global and local loops
         source += &f!(
-            "  unsigned int i0 = get_group_id(0); /* 0..{} */\n",
+            "  unsigned int i0 = get_group_id(0);   /* 0..{} */\n",
             kernel.global_work_size[0]
         );
         source += &f!(
-            "  unsigned int i1 = get_local_id(0); /* 0..{} */\n",
+            "  unsigned int i1 = get_local_id(0);   /* 0..{} */\n",
             kernel.local_work_size[0]
         );
         source += &f!(
-            "  unsigned int i2 = get_group_id(1); /* 0..{} */\n",
+            "  unsigned int i2 = get_group_id(1);   /* 0..{} */\n",
             kernel.global_work_size[1]
         );
         source += &f!(
-            "  unsigned int i3 = get_local_id(1); /* 0..{} */\n",
+            "  unsigned int i3 = get_local_id(1);   /* 0..{} */\n",
             kernel.local_work_size[1]
         );
         source += &f!(
-            "  unsigned int i5 = get_group_id(2); /* 0..{} */\n",
+            "  unsigned int i5 = get_group_id(2);   /* 0..{} */\n",
             kernel.global_work_size[2]
         );
         source += &f!(
-            "  unsigned int i6 = get_local_id(2); /* 0..{} */\n",
+            "  unsigned int i6 = get_local_id(2);   /* 0..{} */\n",
             kernel.local_work_size[2]
         );
         source += "  unsigned int t0, t1, t2;\n";
@@ -505,21 +505,14 @@ impl Compiler for OpenCLCompiler {
                         source += &f!("{indent}{read_only}{} r{id}{};\n", dtype.ocl(), size,);
                     }
                 },
-                IROp::AssignMem {
-                    z_id,
-                    z_scope,
-                    z_index,
-                    x_id,
-                    x_scope,
-                    x_index,
-                } => {
-                    let (zt, z) = variable_to_str(*z_id, *z_scope, z_index, 0);
+                IROp::AssignMem { z, x } => {
+                    let (zt, z) = z.to_str(0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) = variable_to_str(*x_id, *x_scope, x_index, 1);
+                    let (xt, x) = x.to_str(1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
@@ -527,14 +520,14 @@ impl Compiler for OpenCLCompiler {
                     }
                     source += &f!("{indent}{z} = {x};\n");
                 }
-                IROp::Unary { z, x, ops, index } => {
-                    let (zt, z) = variable_to_str(*z, Scope::Register, index, 0);
+                IROp::Unary { z, x, ops } => {
+                    let (zt, z) = z.to_str(0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) = variable_to_str(*x, Scope::Register, index, 1);
+                    let (xt, x) = x.to_str(1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
@@ -543,6 +536,7 @@ impl Compiler for OpenCLCompiler {
                     let mut inner_op = f!("{x}");
                     for uop in ops {
                         inner_op = match uop {
+                            UOp::Noop => inner_op,
                             UOp::Cast(dtype) => f!("({}){inner_op}", dtype.ocl()),
                             UOp::Neg => f!("-({inner_op})"),
                             UOp::Inv => f!("1/{inner_op}"),
@@ -551,31 +545,26 @@ impl Compiler for OpenCLCompiler {
                             UOp::Exp => f!("exp({inner_op})"),
                             UOp::Ln => f!("log({inner_op})"),
                             UOp::Sqrt => f!("sqrt({inner_op})"),
+                            UOp::ReLU => f!("max({inner_op}, 0)"),
+                            UOp::Tanh => f!("tanh({inner_op})"),
                         };
                     }
                     source += &f!("{indent}{z} = {inner_op};\n");
                 }
-                IROp::Binary {
-                    z,
-                    x,
-                    y,
-                    op,
-                    zy_index,
-                } => {
-                    let (zt, z) = variable_to_str(*z, Scope::Register, zy_index, 0);
+                IROp::Binary { z, x, y, op } => {
+                    let (zt, z) = z.to_str(0);
                     if !zt.is_empty() {
                         for idx in zt.into_iter() {
                             source += &f!("{indent}t0 = {idx};\n");
                         }
                     }
-                    let (xt, x) =
-                        variable_to_str(*x, Scope::Register, &crate::runtime::view::Index::None, 1);
+                    let (xt, x) = x.to_str(1);
                     if !xt.is_empty() {
                         for idx in xt.into_iter() {
                             source += &f!("{indent}t1 = {idx};\n");
                         }
                     }
-                    let (yt, y) = variable_to_str(*y, Scope::Register, zy_index, 2);
+                    let (yt, y) = y.to_str(2);
                     if !yt.is_empty() {
                         for idx in yt.into_iter() {
                             source += &f!("{indent}t2 = {idx};\n");
@@ -594,9 +583,9 @@ impl Compiler for OpenCLCompiler {
                         }
                     );
                 }
-                IROp::Loop { id, max } => {
+                IROp::Loop { id, len } => {
                     source +=
-                        &f!("{indent}for (unsigned int i{id} = 0; i{id} < {max}; i{id}++) {{\n");
+                        &f!("{indent}for (unsigned int i{id} = 0; i{id} < {len}; i{id}++) {{   /* 0..{len} */\n");
                     indent += "  ";
                 }
                 IROp::EndLoop => {
