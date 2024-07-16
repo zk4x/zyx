@@ -364,7 +364,30 @@ impl Kernel {
                 // Then change all load and store operations in this
                 // loop in the same way.
                 VOp::Load { view, .. } => {
-                    // TODO
+                    let mut stride = view.0[axis].stride;
+                    let mut temp_axis = axis + dimensions.len();
+                    for dim in dimensions[1..].iter().copied().rev() {
+                        temp_axis -= 1;
+                        view.0.insert(
+                            axis + 1,
+                            ViewDim {
+                                axis: temp_axis,
+                                dim,
+                                stride,
+                                // TODO this will need to be different if len and shift weren't equal to dim before
+                                len: dim,
+                                shift: dim,
+                            },
+                        );
+                        stride *= dim;
+                    }
+                    view.0[axis] = ViewDim {
+                        axis,
+                        dim: dimensions[0],
+                        stride,
+                        len: dimensions[0],
+                        shift: dimensions[0],
+                    };
                 }
                 VOp::Store { strides, .. } => {
                     // Example of axis split
@@ -374,7 +397,6 @@ impl Kernel {
                     // strides
                     // 12, 2,    1
                     // 12, 4, 2, 1
-                    println!("{axis}");
                     let mut stride = strides[axis];
                     for dim in dimensions[1..].iter().rev() {
                         strides.insert(axis, stride);
