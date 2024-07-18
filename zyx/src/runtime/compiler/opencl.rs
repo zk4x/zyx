@@ -1,6 +1,6 @@
 use crate::dtype::DType;
-use crate::runtime::compiler::ir::{BOp, IRArg, IRKernel, IROp};
-use crate::runtime::compiler::{Compiler, CompilerError, HWInfo, Scope, UOp};
+use crate::runtime::compiler::ir::{IRArg, IRKernel, IROp};
+use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
 use crate::scalar::Scalar;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -98,7 +98,7 @@ impl Compiler for OpenCLCompiler {
     type Program = OpenCLProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
-        let platform_id = 0;
+        let platform_id = 1;
         let queues_per_device = 8;
         let platform_ids = {
             // Get the number of platforms
@@ -461,11 +461,11 @@ impl Compiler for OpenCLCompiler {
             kernel.local_work_size[1]
         );
         source += &f!(
-            "  unsigned int i5 = get_group_id(2);   /* 0..{} */\n",
+            "  unsigned int i4 = get_group_id(2);   /* 0..{} */\n",
             kernel.global_work_size[2]
         );
         source += &f!(
-            "  unsigned int i6 = get_local_id(2);   /* 0..{} */\n",
+            "  unsigned int i5 = get_local_id(2);   /* 0..{} */\n",
             kernel.local_work_size[2]
         );
         source += "  unsigned int t0, t1, t2;\n";

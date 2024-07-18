@@ -79,23 +79,27 @@ impl DType {
         };
     }
 
-    pub(super) fn zero(&self) -> Constant {
+    pub(super) fn zero_constant(&self) -> Constant {
         return match self {
             #[cfg(feature = "half")]
-            DType::BF16 => Constant::BF16(0),
+            DType::BF16 => Constant::BF16(unsafe { core::mem::transmute(bf16::ZERO) }),
             #[cfg(feature = "half")]
-            DType::F16 => Constant::F16(0),
-            DType::F32 => Constant::F32(0),
-            DType::F64 => Constant::F64(0),
+            DType::F16 => Constant::F16(unsafe { core::mem::transmute(f16::ZERO) }),
+            DType::F32 => Constant::F32(unsafe { core::mem::transmute(0f32) }),
+            DType::F64 => Constant::F64(unsafe { core::mem::transmute(0f64) }),
             #[cfg(feature = "complex")]
-            DType::CF32 => Constant::CF32(0),
+            DType::CF32 => todo!(),
             #[cfg(feature = "complex")]
-            DType::CF64 => Constant::CF64(0),
+            DType::CF64 => todo!(),
             DType::U8 => Constant::U8(0),
             DType::I8 => Constant::I8(0),
             DType::I16 => Constant::I16(0),
             DType::I32 => Constant::I32(0),
             DType::I64 => Constant::I64(0),
         };
+    }
+
+    pub(super) fn min_constant(&self) -> Constant {
+        todo!()
     }
 }

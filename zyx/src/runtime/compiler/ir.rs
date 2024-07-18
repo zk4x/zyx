@@ -7,7 +7,7 @@
 use crate::dtype::Constant;
 use crate::runtime::compiler::{HWInfo, Scope};
 use crate::runtime::graph::Graph;
-use crate::runtime::node::UOp;
+use crate::runtime::node::{BOp, ROp, UOp};
 use crate::runtime::view::Index;
 use crate::runtime::TensorId;
 use crate::DType;
@@ -39,7 +39,11 @@ pub(super) struct IRArg {
 #[derive(Debug, Clone)]
 pub(super) enum IRMem {
     Const(Constant),
-    Var { id: u32, scope: Scope, index: Index },
+    Var {
+        id: usize,
+        scope: Scope,
+        index: Index,
+    },
 }
 
 impl IRMem {
@@ -94,23 +98,12 @@ impl IRMem {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum BOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Max,
-    Pow,
-    Cmplt,
-}
-
 /// IROp for direct translation to hardware kernels
 #[derive(Debug, Clone)]
 pub(super) enum IROp {
     // All variables are 1d, so that it is easier for implementors
     DeclareMem {
-        id: u32,
+        id: usize,
         scope: Scope,
         dtype: DType,
         read_only: bool,
@@ -137,7 +130,7 @@ pub(super) enum IROp {
     },
     /// Register loop, len is number of iterations, step is 1
     Loop {
-        id: u32,
+        id: usize,
         len: usize,
     },
     /// End of register loop
@@ -163,21 +156,165 @@ pub(crate) fn compile_ir(
     local_work_size: [usize; 3],
     inputs: &BTreeSet<TensorId>,
     outputs: &BTreeSet<TensorId>,
-    ops: &[VOp],
+    vops: &[VOp],
     hwinfo: &HWInfo,
 ) -> IRKernel {
     let _ = hwinfo;
     let gws = global_work_size;
     let lws = local_work_size;
 
-    /*let mut ops = Vec::new();
+    let mut ops = Vec::new();
+
+    // Remove first 6 loops, these are global loops.
+
+    for vop in &vops[6..] {
+        match vop {
+            VOp::Load { z, x, view } => {
+                ops.push(IROp::DeclareMem {
+                    id: *z,
+                    scope: Scope::Register,
+                    dtype: graph.dtype(*z),
+                    read_only: false,
+                    len: 0,
+                    init: None,
+                });
+                ops.push(IROp::AssignMem {
+                    z: IRMem::Var {
+                        id: *z,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    x: IRMem::Var {
+                        id: *x,
+                        scope: Scope::Global,
+                        index: view.index(),
+                    },
+                });
+            }
+            VOp::Store { z, strides } => {
+                ops.push(IROp::AssignMem {
+                    z: IRMem::Var {
+                        id: *z,
+                        scope: Scope::Global,
+                        index: Index::Strided {
+                            dims: strides.iter().copied().enumerate().collect(),
+                        },
+                    },
+                    x: IRMem::Var {
+                        id: *z,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                });
+            }
+            VOp::Loop { axis, dimension } => {
+                ops.push(IROp::Loop {
+                    id: *axis,
+                    len: *dimension,
+                });
+            }
+            VOp::Accumulator { z, rop } => {
+                let dtype = graph.dtype(*z);
+                ops.push(IROp::DeclareMem {
+                    id: *z,
+                    scope: Scope::Register,
+                    dtype,
+                    read_only: false,
+                    len: 0,
+                    init: Some(match rop {
+                        ROp::Sum => dtype.zero_constant(),
+                        ROp::Max => dtype.min_constant(),
+                    }),
+                });
+            }
+            VOp::Reduce { axis, rop, z, x } => todo!(),
+            VOp::Unary { z, x, uop } => {
+                ops.push(IROp::DeclareMem {
+                    id: *z,
+                    scope: Scope::Register,
+                    dtype: graph.dtype(*z),
+                    read_only: false,
+                    len: 0,
+                    init: None,
+                });
+                ops.push(IROp::Unary {
+                    z: IRMem::Var {
+                        id: *z,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    x: IRMem::Var {
+                        id: *x,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    ops: vec![*uop],
+                });
+            }
+            VOp::Binary { z, x, y, bop } => {
+                ops.push(IROp::DeclareMem {
+                    id: *z,
+                    scope: Scope::Register,
+                    dtype: graph.dtype(*z),
+                    read_only: false,
+                    len: 0,
+                    init: None,
+                });
+                ops.push(IROp::Binary {
+                    z: IRMem::Var {
+                        id: *z,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    x: IRMem::Var {
+                        id: *x,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    y: IRMem::Var {
+                        id: *y,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    op: *bop,
+                });
+            }
+        }
+    }
+
+    let mut args = BTreeMap::new();
+    for x in inputs {
+        args.insert(
+            *x,
+            IRArg {
+                dtype: graph.dtype(*x),
+                read_only: true,
+            },
+        );
+    }
+    for x in outputs {
+        args.insert(
+            *x,
+            IRArg {
+                dtype: graph.dtype(*x),
+                read_only: false,
+            },
+        );
+    }
+
+    return IRKernel {
+        global_work_size,
+        local_work_size,
+        ops,
+        args,
+    };
 
     // At this point every kernel is already 8d, reduce kernels are 10d, with last dim reduce
     // and added local loops for first 3 dims and register loops for last 2 dims and reduce dim
 
     // A map of global, local and register variables and their views, or probably just indices.
     // The second value is true if read only variables, else it is false.
-    let mut vars: BTreeMap<(TensorId, Scope), (DType, Index, bool)> = BTreeMap::new();
+    /*let mut vars: BTreeMap<(TensorId, Scope), (DType, Index, bool)> = BTreeMap::new();
     let mut last_register_loops = [0; 2];
     // First of these is "global" reduce, second is register
     let mut last_reduce_loops = [0; 2];
@@ -352,15 +489,7 @@ pub(crate) fn compile_ir(
                 args.insert(id, IRArg { dtype, read_only });
             }
         }
-    }
-
-    return IRKernel {
-        global_work_size,
-        local_work_size,
-        ops,
-        args,
-        };*/
-    todo!()
+        }*/
 }
 
 /*fn create_unary_kernel(mut dtype: DType, sh: &[usize], view: &View, uops: &[UOp]) -> (Vec<IROp>, Vec<IRArg>) {

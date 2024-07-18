@@ -382,7 +382,7 @@ impl View {
     /// Get index from this view, using bound indices, this function does not work
     /// correctly if some dimensions don't have bound indices.
     /// Binds are indices into this dimension
-    pub(crate) fn ir_index(&self, binds: &[u32]) -> Index {
+    pub(crate) fn ir_index(&self, binds: &[usize]) -> Index {
         assert_eq!(
             binds.len(),
             self.rank(),
@@ -452,7 +452,7 @@ pub enum Index {
     /// Can use wide loads directly with pointer casts.
     Contiguous {
         /// Dimension and multiplier
-        dims: BTreeMap<u32, usize>,
+        dims: BTreeMap<usize, usize>,
         // When should the padding get applied?
         //padding_condition: String,
     },
@@ -461,7 +461,7 @@ pub enum Index {
     /// Wide loads are possible only if we can transpose it in the kernel
     Strided {
         /// Dimension and multiplier
-        dims: BTreeMap<u32, usize>,
+        dims: BTreeMap<usize, usize>,
         // When should the padding get applied?
         //padding_condition: String,
     },
@@ -469,7 +469,7 @@ pub enum Index {
     /// Only if reshape could not be merged.
     Reshaped {
         /// Multiple dimension and multipliers
-        dims: BTreeMap<u32, usize>,
+        dims: BTreeMap<usize, usize>,
         reshapes: Vec<Vec<(usize, usize, usize)>>,
         /// When should the padding get applied?
         padding_condition: String,

@@ -11,6 +11,7 @@ use libc_print::std_name::println;
 
 use super::graph::Graph;
 use super::node::{BOp, Node, ROp, UOp};
+use super::view::Index;
 
 mod ir;
 
@@ -439,9 +440,20 @@ impl View {
         self.0.len()
     }
 
+    fn numel(&self) -> usize {
+        self.0.iter().map(|dim| dim.dim).product()
+    }
+
     fn permute(&mut self, axes: &[usize]) {
         assert_eq!(self.0.len(), axes.len());
         self.0 = axes.iter().map(|axis| self.0[*axis]).collect();
+    }
+
+    fn index(&self) -> Index {
+        // TODO add index for padded views
+        Index::Strided {
+            dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
+        }
     }
 }
 
