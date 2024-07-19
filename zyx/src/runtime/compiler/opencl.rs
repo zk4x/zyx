@@ -1,3 +1,5 @@
+#![allow(non_camel_case_types)]
+
 use crate::dtype::DType;
 use crate::runtime::compiler::{
     BOp, Compiler, CompilerError, HWInfo, IRArg, IRKernel, IROp, Scope, UOp,
@@ -12,21 +14,200 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
-use opencl_sys::{
-    clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
-    clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
-    clFinish, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent,
-    clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id,
-    cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_GLOBAL_MEM_SIZE,
-    CL_DEVICE_LOCAL_MEM_SIZE, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE,
-    CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, CL_DEVICE_MAX_WORK_ITEM_SIZES,
-    CL_DEVICE_MEM_BASE_ADDR_ALIGN, CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE, CL_DEVICE_NOT_FOUND,
-    CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, CL_DEVICE_TYPE_ALL, CL_MEM_READ_ONLY, CL_NON_BLOCKING,
-    CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
-};
 
 #[cfg(feature = "debug1")]
 use std::println;
+
+type cl_int = i32;
+type cl_uint = u32;
+type cl_bitfield = u64;
+
+const CL_PLATFORM_NAME: cl_uint = 0x0902; // 2306
+const CL_DEVICE_NAME: cl_uint = 0x102B; // 4139
+const CL_DEVICE_GLOBAL_MEM_SIZE: cl_uint = 0x101F; // 4127
+const CL_DEVICE_LOCAL_MEM_SIZE: cl_uint = 0x1023; // 4131
+const CL_DEVICE_MAX_MEM_ALLOC_SIZE: cl_uint = 0x1010; // 4112
+const CL_DEVICE_MAX_WORK_GROUP_SIZE: cl_uint = 0x1004; // 4100
+const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
+const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
+const CL_DEVICE_MEM_BASE_ADDR_ALIGN: cl_uint = 0x1019; // 4121
+const CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE: cl_uint = 0x101A; // 4122
+const CL_DEVICE_NOT_FOUND: cl_int = -1; // 0xFFFF_FFFF
+const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
+const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
+const CL_MEM_READ_ONLY: cl_bitfield = 4;
+const CL_NON_BLOCKING: cl_uint = 0;
+const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
+const CL_SUCCESS: cl_int = 0;
+
+#[cfg_attr(not(target_os = "macos"), link(name = "OpenCL"))]
+#[cfg_attr(target_os = "macos", link(name = "OpenCL", kind = "framework"))]
+extern "system" {
+    // Platform API
+    fn clGetPlatformIDs(
+        num_entries: cl_uint,
+        platforms: *mut *mut c_void,
+        num_platforms: *mut cl_uint,
+    ) -> cl_int;
+
+    fn clGetPlatformInfo(
+        platform: *mut c_void,
+        param_name: cl_uint,
+        param_value_size: usize,
+        param_value: *mut c_void,
+        param_value_size_ret: *mut usize,
+    ) -> cl_int;
+
+    // Device APIs
+    fn clGetDeviceIDs(
+        platform: *mut c_void,
+        device_type: cl_bitfield,
+        num_entries: cl_uint,
+        devices: *mut *mut c_void,
+        num_devices: *mut cl_uint,
+    ) -> cl_int;
+
+    #[cfg(feature = "CL_VERSION_1_2")]
+    fn clReleaseDevice(device: cl_device_id) -> cl_int;
+
+    // Context APIs
+    fn clCreateContext(
+        properties: *const isize,
+        num_devices: cl_uint,
+        devices: *const *mut c_void,
+        pfn_notify: Option<
+            unsafe extern "C" fn(
+                errinfo: *const i8,
+                private_info: *const c_void,
+                cb: usize,
+                user_data: *mut c_void,
+            ),
+        >,
+        user_data: *mut c_void,
+        errcode_ret: *mut cl_int,
+    ) -> *mut c_void;
+
+    fn clReleaseContext(context: *mut c_void) -> cl_int;
+
+    #[cfg(not(feature = "CL_VERSION_2_0"))]
+    fn clCreateCommandQueue(
+        context: *mut c_void,
+        device: *mut c_void,
+        properties: cl_bitfield,
+        errcode_ret: *mut cl_int,
+    ) -> *mut c_void;
+
+    #[cfg(feature = "CL_VERSION_2_0")]
+    fn clCreateCommandQueueWithProperties(
+        context: cl_context,
+        device: cl_device_id,
+        properties: *const cl_queue_properties,
+        errcode_ret: *mut cl_int,
+    ) -> cl_command_queue;
+
+    // Memory Object APIs
+    fn clCreateBuffer(
+        context: *mut c_void,
+        flags: cl_bitfield,
+        size: usize,
+        host_ptr: *mut c_void,
+        errcode_ret: *mut cl_int,
+    ) -> *mut c_void;
+
+    fn clEnqueueWriteBuffer(
+        command_queue: *mut c_void,
+        buffer: *mut c_void,
+        blocking_write: cl_uint,
+        offset: usize,
+        cb: usize,
+        ptr: *const c_void,
+        num_events_in_wait_list: cl_uint,
+        event_wait_list: *const *mut c_void,
+        event: *mut *mut c_void,
+    ) -> cl_int;
+
+    pub fn clEnqueueReadBuffer(
+        command_queue: *mut c_void,
+        buffer: *mut c_void,
+        blocking_read: cl_uint,
+        offset: usize,
+        cb: usize,
+        ptr: *mut c_void,
+        num_events_in_wait_list: cl_uint,
+        event_wait_list: *const *mut c_void,
+        event: *mut *mut c_void,
+    ) -> cl_int;
+
+    fn clReleaseMemObject(memobj: *mut c_void) -> cl_int;
+
+    // Program Object APIs
+    fn clCreateProgramWithSource(
+        context: *mut c_void,
+        count: cl_uint,
+        strings: *const *const i8,
+        lengths: *const usize,
+        errcode_ret: *mut cl_int,
+    ) -> *mut c_void;
+
+    fn clReleaseProgram(program: *mut c_void) -> cl_int;
+
+    fn clCreateKernel(
+        program: *mut c_void,
+        kernel_name: *const i8,
+        errcode_ret: *mut cl_int,
+    ) -> *mut c_void;
+
+    fn clSetKernelArg(
+        kernel: *mut c_void,
+        arg_index: cl_uint,
+        arg_size: usize,
+        arg_value: *const c_void,
+    ) -> cl_int;
+
+    fn clBuildProgram(
+        program: *mut c_void,
+        num_devices: cl_uint,
+        device_list: *const *mut c_void,
+        options: *const i8,
+        pfn_notify: Option<unsafe extern "C" fn(program: *mut c_void, user_data: *mut c_void)>,
+        user_data: *mut c_void,
+    ) -> cl_int;
+
+    fn clWaitForEvents(num_events: cl_uint, event_list: *const *mut c_void) -> cl_int;
+
+    fn clReleaseEvent(event: *mut c_void) -> cl_int;
+
+    fn clFinish(command_queue: *mut c_void) -> cl_int;
+
+    fn clGetDeviceInfo(
+        device: *mut c_void,
+        param_name: cl_uint,
+        param_value_size: usize,
+        param_value: *mut c_void,
+        param_value_size_ret: *mut usize,
+    ) -> cl_int;
+
+    fn clGetProgramBuildInfo(
+        program: *mut c_void,
+        device: *mut c_void,
+        param_name: cl_uint,
+        param_value_size: usize,
+        param_value: *mut c_void,
+        param_value_size_ret: *mut usize,
+    ) -> cl_int;
+
+    fn clEnqueueNDRangeKernel(
+        command_queue: *mut c_void,
+        kernel: *mut c_void,
+        work_dim: cl_uint,
+        global_work_offset: *const usize,
+        global_work_dims: *const usize,
+        local_work_dims: *const usize,
+        num_events_in_wait_list: cl_uint,
+        event_wait_list: *const *mut c_void,
+        event: *mut *mut c_void,
+    ) -> cl_int;
+}
 
 impl DType {
     fn ocl(&self) -> &str {
@@ -98,12 +279,24 @@ impl OpenCLRuntime {
     }
 }
 
+impl Drop for OpenCLRuntime {
+    fn drop(&mut self) {
+        #[cfg(feature = "CL_VERSION_1_2")]
+        for device in &mut self.devices {
+            let status = unsafe { clReleaseDevice(device) };
+            handle_status(status, "Unable to release device.", &[-33, -5, -6]).unwrap();
+        }
+        let status = unsafe { clReleaseContext(self.context) };
+        handle_status(status, "Unable to release context.", &[-34, -5, -6]).unwrap();
+    }
+}
+
 impl Compiler for OpenCLRuntime {
     type Buffer = OpenCLBuffer;
     type Program = OpenCLProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
-        let platform_id = 1;
+        let platform_id = 0;
         let queues_per_device = 8;
         let platform_ids = {
             // Get the number of platforms
@@ -131,7 +324,7 @@ impl Compiler for OpenCLRuntime {
         #[cfg(feature = "debug1")]
         println!(
             "Using OpenCL platform: {}",
-            String::from_utf8(get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME)?).unwrap()
+            String::from_utf8(get_platform_data(platform, CL_PLATFORM_NAME)?).unwrap()
         );
         let device_ids = get_device_ids(platform, CL_DEVICE_TYPE_ALL).map_err(|err| {
             CompilerError::InitializationFailure(match err {
@@ -150,17 +343,15 @@ impl Compiler for OpenCLRuntime {
         for dev in &device_ids {
             println!(
                 "{}",
-                String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(
-                    |err| {
-                        CompilerError::InitializationFailure(match err {
-                            -33 => "Unable to get OpenCL device name. ERR -33: CL_INVALID_DEVICE",
-                            -30 => "Unable to get OpenCL device name. ERR -30: CL_INVALID_VALUE",
-                            -5 => "Unable to get OpenCL device name. ERR -5: CL_OUT_OF_RESOURCES",
-                            -6 => "Unable to get OpenCL device name. ERR -6: CL_OUT_OF_HOST_MEMORY",
-                            _ => "Unable to get OpenCL device name. UNKNOWN ERROR",
-                        })
-                    }
-                )?)
+                String::from_utf8(get_device_data(*dev, CL_DEVICE_NAME).map_err(|err| {
+                    CompilerError::InitializationFailure(match err {
+                        -33 => "Unable to get OpenCL device name. ERR -33: CL_INVALID_DEVICE",
+                        -30 => "Unable to get OpenCL device name. ERR -30: CL_INVALID_VALUE",
+                        -5 => "Unable to get OpenCL device name. ERR -5: CL_OUT_OF_RESOURCES",
+                        -6 => "Unable to get OpenCL device name. ERR -6: CL_OUT_OF_HOST_MEMORY",
+                        _ => "Unable to get OpenCL device name. UNKNOWN ERROR",
+                    })
+                })?)
                 .unwrap()
             );
         }
@@ -808,12 +999,12 @@ fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), CompilerError> {
 
 fn get_program_build_data(
     program: *mut c_void,
-    device: cl_device_id,
-    param_name: cl_program_info,
+    device: *mut c_void,
+    param_name: cl_uint,
 ) -> Result<Vec<u8>, cl_int> {
     fn get_size(
         object: *mut c_void,
-        idx: cl_device_id,
+        idx: *mut c_void,
         param_name: cl_uint,
     ) -> Result<usize, cl_int> {
         let mut size: usize = 0;
@@ -829,7 +1020,7 @@ fn get_program_build_data(
     let size = get_size(program, device, param_name)?;
     fn get_vector(
         object: *mut c_void,
-        idx: cl_device_id,
+        idx: *mut c_void,
         param_name: cl_uint,
         size: usize,
     ) -> Result<Vec<u8>, cl_int> {
@@ -859,15 +1050,10 @@ fn get_program_build_data(
     return get_vector(program, device, param_name, size);
 }
 
-pub fn get_device_data(
-    device: cl_device_id,
-    param_name: opencl_sys::cl_device_info,
-) -> Result<Vec<u8>, cl_int> {
+fn get_device_data(device: *mut c_void, param_name: cl_uint) -> Result<Vec<u8>, cl_int> {
     fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
         let mut size: usize = 0;
-        let status = unsafe {
-            opencl_sys::clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size)
-        };
+        let status = unsafe { clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size) };
         if CL_SUCCESS != status {
             return Err(status);
         } else {
@@ -885,7 +1071,7 @@ pub fn get_device_data(
             let mut data: Vec<u8> = Vec::with_capacity(count);
             let status = unsafe {
                 data.set_len(count);
-                opencl_sys::clGetDeviceInfo(
+                clGetDeviceInfo(
                     object,
                     param_name,
                     size,
@@ -906,9 +1092,9 @@ pub fn get_device_data(
 }
 
 fn get_device_ids(
-    platform: cl_platform_id,
-    device_type: cl_device_type,
-) -> Result<Vec<cl_device_id>, cl_int> {
+    platform: *mut c_void,
+    device_type: cl_bitfield,
+) -> Result<Vec<*mut c_void>, cl_int> {
     // Get the number of devices of device_type
     let mut count: cl_uint = 0;
     let mut status =
@@ -919,7 +1105,7 @@ fn get_device_ids(
     } else if 0 < count {
         // Get the device ids.
         let len = count as usize;
-        let mut ids: Vec<cl_device_id> = Vec::with_capacity(len);
+        let mut ids: Vec<*mut c_void> = Vec::with_capacity(len);
         unsafe {
             status = clGetDeviceIDs(
                 platform,
@@ -942,21 +1128,16 @@ fn get_device_ids(
 }
 
 #[cfg(feature = "debug1")]
-fn get_platform_data(
-    platform: cl_platform_id,
-    param_name: opencl_sys::cl_platform_info,
-) -> Result<Vec<u8>, CompilerError> {
+fn get_platform_data(platform: *mut c_void, param_name: cl_uint) -> Result<Vec<u8>, CompilerError> {
     let mut size: usize = 0;
-    let status = unsafe {
-        opencl_sys::clGetPlatformInfo(platform, param_name, 0, ptr::null_mut(), &mut size)
-    };
+    let status = unsafe { clGetPlatformInfo(platform, param_name, 0, ptr::null_mut(), &mut size) };
     handle_status(status, "Unable to get platform info.", &[-32, -30, -6])?;
     if 0 < size {
         let count = size / core::mem::size_of::<u8>();
         let mut data: Vec<u8> = Vec::with_capacity(count);
         let status = unsafe {
             data.set_len(count);
-            opencl_sys::clGetPlatformInfo(
+            clGetPlatformInfo(
                 platform,
                 param_name,
                 size,
