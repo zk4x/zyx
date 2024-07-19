@@ -100,6 +100,11 @@ impl Runtime {
             self.default_device = Device::CUDA;
             return;
         }
+        #[cfg(feature = "hip")]
+        if self.initialize_device(Device::HIP) {
+            self.default_device = Device::HIP;
+            return;
+        }
         #[cfg(feature = "opencl")]
         if self.initialize_device(Device::OpenCL) {
             self.default_device = Device::OpenCL;
@@ -125,6 +130,19 @@ impl Runtime {
                 if self.cuda.is_none() {
                     if let Ok(cuda) = CompiledBackend::initialize() {
                         self.cuda = Some(cuda);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            }
+            #[cfg(feature = "hip")]
+            Device::HIP => {
+                if self.cuda.is_none() {
+                    if let Ok(hip) = CompiledBackend::initialize() {
+                        self.cuda = Some(hip);
                         true
                     } else {
                         false
@@ -184,6 +202,8 @@ impl Runtime {
             match device {
                 #[cfg(feature = "cuda")]
                 Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
+                #[cfg(feature = "hip")]
+                Device::HIP => self.hip.as_mut().unwrap().remove(x)?,
                 #[cfg(feature = "opencl")]
                 Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
                 #[cfg(feature = "wgpu")]
@@ -367,6 +387,14 @@ impl Runtime {
                 let dev = self.cuda.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
+            #[cfg(feature = "hip")]
+            Device::HIP => {
+                if self.hip.is_none() {
+                    self.hip = Some(CompiledBackend::initialize()?);
+                }
+                let dev = self.hip.as_mut().unwrap();
+                dev.store(tensor_id, data)?;
+            }
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if self.opencl.is_none() {
@@ -404,6 +432,14 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.cuda.as_mut().unwrap().load(x, length)?)
             }
+            #[cfg(feature = "hip")]
+            Device::HIP => {
+                if !self.hip.as_ref().unwrap().is_realized(x) {
+                    self.realize(BTreeSet::from_iter([x]))?;
+                }
+                let length = self.shape(x).iter().product();
+                Ok(self.hip.as_mut().unwrap().load(x, length)?)
+            }
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if !self.opencl.as_ref().unwrap().is_realized(x) {
@@ -436,6 +472,14 @@ impl Runtime {
             Device::CUDA => {
                 if let Some(cuda) = self.cuda.as_ref() {
                     cuda.is_realized(x)
+                } else {
+                    false
+                }
+            }
+            #[cfg(feature = "hip")]
+            Device::HIP => {
+                if let Some(hip) = self.hip.as_ref() {
+                    hip.is_realized(x)
                 } else {
                     false
                 }
@@ -478,7 +522,13 @@ impl Runtime {
             #[cfg(feature = "cuda")]
             Device::CUDA => {
                 self.cuda.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.cuda.as_mut().unwrap().launch_graph(&graph.nodes)?;
+                self.cuda.as_mut().unwrap().launch_graph(&graph)?;
+                return Ok(());
+            }
+            #[cfg(feature = "hip")]
+            Device::HIP => {
+                self.hip.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.hip.as_mut().unwrap().launch_graph(&graph)?;
                 return Ok(());
             }
             #[cfg(feature = "opencl")]
@@ -493,7 +543,7 @@ impl Runtime {
             #[cfg(feature = "wgpu")]
             Device::WGPU => {
                 self.wgpu.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.wgpu.as_mut().unwrap().launch_graph(&graph.nodes)?;
+                self.wgpu.as_mut().unwrap().launch_graph(&graph)?;
                 return Ok(());
             }
             Device::CPU => {

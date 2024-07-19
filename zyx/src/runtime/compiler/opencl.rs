@@ -1,7 +1,9 @@
 use crate::dtype::DType;
-use crate::runtime::compiler::ir::{IRArg, IRKernel, IROp};
-use crate::runtime::compiler::{BOp, Compiler, CompilerError, HWInfo, Scope, UOp};
+use crate::runtime::compiler::{
+    BOp, Compiler, CompilerError, HWInfo, IRArg, IRKernel, IROp, Scope, UOp,
+};
 use crate::scalar::Scalar;
+
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::ffi::CString;
