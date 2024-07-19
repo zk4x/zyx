@@ -20,11 +20,14 @@ use rand::rngs::SmallRng;
 #[cfg(feature = "cuda")]
 use crate::runtime::compiler::cuda::CUDA;
 
+#[cfg(feature = "hsa")]
+use crate::runtime::compiler::hsa::HSARuntime;
+
 #[cfg(feature = "opencl")]
-use crate::runtime::compiler::opencl::OpenCLCompiler;
+use crate::runtime::compiler::opencl::OpenCLRuntime;
 
 #[cfg(feature = "debug1")]
-use libc_print::std_name::println;
+use std::println;
 
 mod compiler;
 mod graph;
@@ -55,8 +58,10 @@ pub(crate) struct Runtime {
     graph: Graph,
     #[cfg(feature = "cuda")]
     cuda: Option<CompiledBackend<CUDA>>,
+    #[cfg(feature = "hsa")]
+    hsa: Option<CompiledBackend<HSARuntime>>,
     #[cfg(feature = "opencl")]
-    opencl: Option<CompiledBackend<OpenCLCompiler>>,
+    opencl: Option<CompiledBackend<OpenCLRuntime>>,
     #[cfg(feature = "wgpu")]
     wgpu: Option<CompiledBackend<compiler::wgpu::WGPU>>,
     cpu: Option<InterpretedBackend<CPU>>,
@@ -72,6 +77,8 @@ impl Runtime {
             graph: Graph::new(),
             #[cfg(feature = "cuda")]
             cuda: None,
+            #[cfg(feature = "hsa")]
+            hsa: None,
             #[cfg(feature = "opencl")]
             opencl: None,
             #[cfg(feature = "wgpu")]
@@ -100,9 +107,9 @@ impl Runtime {
             self.default_device = Device::CUDA;
             return;
         }
-        #[cfg(feature = "hip")]
-        if self.initialize_device(Device::HIP) {
-            self.default_device = Device::HIP;
+        #[cfg(feature = "hsa")]
+        if self.initialize_device(Device::HSA) {
+            self.default_device = Device::HSA;
             return;
         }
         #[cfg(feature = "opencl")]
@@ -138,11 +145,11 @@ impl Runtime {
                     true
                 }
             }
-            #[cfg(feature = "hip")]
-            Device::HIP => {
-                if self.cuda.is_none() {
-                    if let Ok(hip) = CompiledBackend::initialize() {
-                        self.cuda = Some(hip);
+            #[cfg(feature = "hsa")]
+            Device::HSA => {
+                if self.hsa.is_none() {
+                    if let Ok(hsa) = CompiledBackend::initialize() {
+                        self.hsa = Some(hsa);
                         true
                     } else {
                         false
@@ -202,8 +209,8 @@ impl Runtime {
             match device {
                 #[cfg(feature = "cuda")]
                 Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
-                #[cfg(feature = "hip")]
-                Device::HIP => self.hip.as_mut().unwrap().remove(x)?,
+                #[cfg(feature = "hsa")]
+                Device::HSA => self.hsa.as_mut().unwrap().remove(x)?,
                 #[cfg(feature = "opencl")]
                 Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
                 #[cfg(feature = "wgpu")]
@@ -387,12 +394,12 @@ impl Runtime {
                 let dev = self.cuda.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
-            #[cfg(feature = "hip")]
-            Device::HIP => {
-                if self.hip.is_none() {
-                    self.hip = Some(CompiledBackend::initialize()?);
+            #[cfg(feature = "hsa")]
+            Device::HSA => {
+                if self.hsa.is_none() {
+                    self.hsa = Some(CompiledBackend::initialize()?);
                 }
-                let dev = self.hip.as_mut().unwrap();
+                let dev = self.hsa.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
             #[cfg(feature = "opencl")]
@@ -432,13 +439,13 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.cuda.as_mut().unwrap().load(x, length)?)
             }
-            #[cfg(feature = "hip")]
-            Device::HIP => {
-                if !self.hip.as_ref().unwrap().is_realized(x) {
+            #[cfg(feature = "hsa")]
+            Device::HSA => {
+                if !self.hsa.as_ref().unwrap().is_realized(x) {
                     self.realize(BTreeSet::from_iter([x]))?;
                 }
                 let length = self.shape(x).iter().product();
-                Ok(self.hip.as_mut().unwrap().load(x, length)?)
+                Ok(self.hsa.as_mut().unwrap().load(x, length)?)
             }
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
@@ -476,10 +483,10 @@ impl Runtime {
                     false
                 }
             }
-            #[cfg(feature = "hip")]
-            Device::HIP => {
-                if let Some(hip) = self.hip.as_ref() {
-                    hip.is_realized(x)
+            #[cfg(feature = "hsa")]
+            Device::HSA => {
+                if let Some(hsa) = self.hsa.as_ref() {
+                    hsa.is_realized(x)
                 } else {
                     false
                 }
@@ -525,10 +532,10 @@ impl Runtime {
                 self.cuda.as_mut().unwrap().launch_graph(&graph)?;
                 return Ok(());
             }
-            #[cfg(feature = "hip")]
-            Device::HIP => {
-                self.hip.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.hip.as_mut().unwrap().launch_graph(&graph)?;
+            #[cfg(feature = "hsa")]
+            Device::HSA => {
+                self.hsa.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.hsa.as_mut().unwrap().launch_graph(&graph)?;
                 return Ok(());
             }
             #[cfg(feature = "opencl")]

@@ -25,6 +25,9 @@ pub use tensor::Tensor;
 #[cfg(feature = "rand")]
 const SEED: u64 = 69420;
 
+#[cfg(feature = "std")]
+extern crate std;
+
 /*struct Mutex<T>(spin::Mutex<T>, core::sync::atomic::AtomicBool);
 
 impl<T> Mutex<T> {
@@ -76,7 +79,7 @@ static RT: Mutex<Runtime> = Mutex::new(Runtime::new());
 
 #[test]
 fn t0() {
-    use libc_print::std_name::println;
+    use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
     //let x = Tensor::from([[2, 3], [4, 5]]).cast(DType::F32).exp();
     let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2]);

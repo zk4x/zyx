@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 #[cfg(feature = "debug1")]
-use libc_print::std_name::println;
+use std::println;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Dimension {

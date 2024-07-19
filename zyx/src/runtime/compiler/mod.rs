@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
 #[cfg(feature = "debug1")]
-use libc_print::std_name::println;
+use std::println;
 
 use super::graph::Graph;
 use super::node::{BOp, Node, ROp, UOp};
@@ -19,8 +19,8 @@ use super::view::Index;
 #[cfg(feature = "cuda")]
 pub(super) mod cuda;
 
-#[cfg(feature = "hip")]
-pub(super) mod hip;
+#[cfg(feature = "hsa")]
+pub(super) mod hsa;
 
 #[cfg(feature = "opencl")]
 pub(super) mod opencl;

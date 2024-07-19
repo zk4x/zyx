@@ -23,7 +23,7 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 
 #[cfg(feature = "debug1")]
-use libc_print::std_name::println;
+use std::println;
 
 pub(crate) type TensorId = usize;
 

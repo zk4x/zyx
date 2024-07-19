@@ -25,6 +25,9 @@ use opencl_sys::{
     CL_PROGRAM_BUILD_LOG, CL_SUCCESS,
 };
 
+#[cfg(feature = "debug1")]
+use std::println;
+
 impl DType {
     fn ocl(&self) -> &str {
         return match self {
@@ -60,7 +63,7 @@ pub(crate) struct OpenCLProgram {
     args_read_only: Vec<bool>,
 }
 
-pub(crate) struct OpenCLCompiler {
+pub(crate) struct OpenCLRuntime {
     context: *mut c_void,
     devices: BTreeSet<*mut c_void>,
     queues: Box<[*mut c_void]>,
@@ -71,11 +74,11 @@ pub(crate) struct OpenCLCompiler {
 // TODO we must ensure that this is OK
 // Pointers in these structs are OpenCL pointers,
 // so they should stay valid no matter the thread.
-unsafe impl Send for OpenCLCompiler {}
+unsafe impl Send for OpenCLRuntime {}
 unsafe impl Send for OpenCLBuffer {}
 unsafe impl Send for OpenCLProgram {}
 
-impl OpenCLCompiler {
+impl OpenCLRuntime {
     fn queue(&mut self) -> Result<*mut c_void, CompilerError> {
         let res = self.queues[self.queue_id];
         self.queue_size[self.queue_id] += 1;
@@ -95,7 +98,7 @@ impl OpenCLCompiler {
     }
 }
 
-impl Compiler for OpenCLCompiler {
+impl Compiler for OpenCLRuntime {
     type Buffer = OpenCLBuffer;
     type Program = OpenCLProgram;
 
@@ -126,7 +129,7 @@ impl Compiler for OpenCLCompiler {
         };
         let platform = *platform;
         #[cfg(feature = "debug1")]
-        libc_print::libc_println!(
+        println!(
             "Using OpenCL platform: {}",
             String::from_utf8(get_platform_data(platform, opencl_sys::CL_PLATFORM_NAME)?).unwrap()
         );
@@ -142,10 +145,10 @@ impl Compiler for OpenCLCompiler {
             })
         })?;
         #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Using devices:");
+        println!("Using devices:");
         #[cfg(feature = "debug1")]
         for dev in &device_ids {
-            libc_print::libc_println!(
+            println!(
                 "{}",
                 String::from_utf8(get_device_data(*dev, opencl_sys::CL_DEVICE_NAME).map_err(
                     |err| {
@@ -190,7 +193,7 @@ impl Compiler for OpenCLCompiler {
         // be plenty. And lower values also lower memory usage.
         //device_ids.iter().map(|dev| get_device_info(*dev, CL_DEVICE_MAX_ON_DEVICE_QUEUES)?.into()).min()?;
         #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Using {queues_per_device} queues per device.");
+        println!("Using {queues_per_device} queues per device.");
         let (queues, errs): (Vec<*mut c_void>, Vec<cl_int>) = (0..queues_per_device)
             .flat_map(|_| {
                 device_ids.iter().map(move |dev| {
@@ -371,11 +374,11 @@ impl Compiler for OpenCLCompiler {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
-        debug_assert!(
+        assert!(
             !buffer.memory.is_null(),
             "Trying to read null memory. Internal bug."
         );
-        debug_assert!(
+        assert!(
             !buffer.event.is_null(),
             "Trying to read uninitialized memory. Internal bug."
         );
@@ -415,7 +418,7 @@ impl Compiler for OpenCLCompiler {
             handle_status(status, "Unable to release event.", &[-58, -5, -6])?;
         } else {
             #[cfg(feature = "debug1")]
-            libc_print::libc_println!("Warning: A buffer was allocated, but never initialized.");
+            println!("Warning: A buffer was allocated, but never initialized.");
         }
         return Ok(());
     }
@@ -745,7 +748,7 @@ impl OpenCLProgram {
         }
         let source = f!("{pragma}__kernel void {name}{source}");
         #[cfg(feature = "debug1")]
-        libc_print::libc_println!("{source}");
+        println!("{source}");
         let sources: &[&str] = &[source.as_str()];
         let mut status = CL_SUCCESS;
         let program = unsafe {
@@ -976,12 +979,12 @@ fn handle_status(
     if status == CL_SUCCESS {
         return Ok(());
     } else {
-        debug_assert!(
+        assert!(
             possible_errors.contains(&status),
             "Internal bug. OpenCL error out of range of expected errors."
         );
         #[cfg(feature = "debug1")]
-        libc_print::libc_println!("Error: {err_msg}, OpenCL error code {status}");
+        println!("Error: {err_msg}, OpenCL error code {status}");
         return Err(match status {
             -4 => {
                 CompilerError::OutOfDeviceMemory("OpenCL Err -4: CL_MEM_OBJECT_ALLOCATION_FAILURE")

@@ -2,8 +2,8 @@
 pub enum Device {
     #[cfg(feature = "cuda")]
     CUDA,
-    #[cfg(feature = "hip")]
-    HIP,
+    #[cfg(feature = "hsa")]
+    HSA,
     #[cfg(feature = "opencl")]
     OpenCL,
     #[cfg(feature = "wgpu")]

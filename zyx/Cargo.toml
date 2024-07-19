@@ -27,22 +27,21 @@ half = { version = "2.4.1", default-features = false, optional = true }
 rand = { version = "0.8.5", default-features = false, features = [
     "small_rng",
 ], optional = true }
+libc = { version = "0.2.155", default-features = false, optional = true }
 num-complex = { version = "0.4.6", default-features = false, optional = true }
 cuda-driver-sys = { version = "0.3.0", default-features = false, optional = true }
-hip-sys = { version = "0.1.0", default-features = false, optional = true }
 opencl-sys = { version = "0.3.1", default-features = false, optional = true }
 wgpu = { version = "0.20.0", default-features = false, optional = true }
 nostd_async = { version = "0.6.1", default-features = false, optional = true }
-libc-print = { version = "0.1.23", default-features = false, optional = true }
 
 [features]
-default = ["debug1", "hip", "opencl"] # TODO remove default from release build
+default = ["debug1", "hsa", "opencl"] # TODO remove default from release build
 
 # Debug, prints GPU kernels
-debug1 = ["dep:libc-print"]
+debug1 = ["std"]
 
-# Perhaps if absolutely necessary for loading from disk and such
-#std = []
+# Necessary for HSA, no need to enable manually
+std = []
 
 # Enables random number generation for randn, uniform ...
 rand = ["dep:rand"]
@@ -56,8 +55,8 @@ complex = ["dep:num-complex"]
 # Enables cuda device
 cuda = ["dep:cuda-driver-sys"]
 
-# Enables hip device
-hip = ["dep:hip-sys"]
+# Enables hsa device
+hsa = ["std", "dep:libc"]
 
 # Enables opencl device
 opencl = ["dep:opencl-sys"]

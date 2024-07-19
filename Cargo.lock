@@ -376,24 +376,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
-name = "hip-runtime-sys"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "606d9a952a33b70c688e6bf6853f4b70545c40ba5e0a2ca6318e498d5b41b1c6"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "hip-sys"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f399629f98b6249efc10039e949baa70e2ff2bf84d3c30e7a0ca49f179a04287"
-dependencies = [
- "hip-runtime-sys",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -443,18 +425,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "libc"
-version = "0.2.153"
+version = "0.2.155"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd"
-
-[[package]]
-name = "libc-print"
-version = "0.1.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a660208db49e35faf57b37484350f1a61072f2a5becf0592af6015d9ddd4b0"
-dependencies = [
- "libc",
-]
+checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
 
 [[package]]
 name = "libloading"
@@ -1337,8 +1310,7 @@ version = "0.13.0"
 dependencies = [
  "cuda-driver-sys",
  "half",
- "hip-sys",
- "libc-print",
+ "libc",
  "libm",
  "nostd_async",
  "num-complex",
