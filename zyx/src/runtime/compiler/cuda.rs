@@ -1,10 +1,12 @@
-use crate::runtime::compiler::ir::IRKernel;
-use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
+use super::{Compiler, CompilerError, HWInfo};
+use alloc::vec;
 use alloc::vec::Vec;
 
-pub(crate) struct CUDA {}
+use super::IRKernel;
 
-impl Compiler for CUDA {
+pub(crate) struct CUDARuntime {}
+
+impl Compiler for CUDARuntime {
     type Buffer = ();
     type Program = ();
 
@@ -16,7 +18,21 @@ impl Compiler for CUDA {
     }
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
-        todo!()
+        return Ok(HWInfo {
+            max_work_item_sizes: vec![1024, 1024, 1024],
+            max_work_group_size: 256,
+            preferred_vector_size: 4,
+            f16_support: true,
+            f64_support: true,
+            fmadd: true,
+            global_mem_size: 2 * 1024 * 1024 * 1024,
+            max_mem_alloc: 512 * 1024 * 1024,
+            mem_align: 1024,
+            page_size: 1024,
+            local_mem_size: 1024 * 1024,
+            num_registers: 96,
+            native_mm16x16_support: false,
+        });
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {

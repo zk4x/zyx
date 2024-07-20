@@ -1,4 +1,4 @@
-use crate::runtime::compiler::{Compiler, CompilerError, HWInfo};
+use super::{Compiler, CompilerError, HWInfo};
 use alloc::vec;
 use alloc::{boxed::Box, vec::Vec};
 use wgpu::{

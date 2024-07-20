@@ -1,9 +1,7 @@
 #![allow(non_camel_case_types)]
 
+use super::{BOp, Compiler, CompilerError, HWInfo, IRArg, IRKernel, IROp, Scope, UOp};
 use crate::dtype::DType;
-use crate::runtime::compiler::{
-    BOp, Compiler, CompilerError, HWInfo, IRArg, IRKernel, IROp, Scope, UOp,
-};
 use crate::scalar::Scalar;
 
 use alloc::boxed::Box;

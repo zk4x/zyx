@@ -655,9 +655,12 @@ impl Tensor {
 
     // ternary
     pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Tensor {
-        let _ = if_true;
-        let _ = if_false;
-        todo!()
+        let (x, y) = Tensor::broadcast(self, if_true);
+        let (x, z) = Tensor::broadcast(x, if_false);
+        let (y, z) = Tensor::broadcast(y, z);
+        return Tensor {
+            id: RT.lock().where_(x.id, y.id, z.id),
+        };
     }
 
     // loss functions

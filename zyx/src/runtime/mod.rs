@@ -21,15 +21,6 @@ use compiler::{CompiledBackend, CompilerError};
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
 
-#[cfg(feature = "cuda")]
-use crate::runtime::compiler::cuda::CUDA;
-
-#[cfg(feature = "hsa")]
-use crate::runtime::compiler::hsa::HSARuntime;
-
-#[cfg(feature = "opencl")]
-use crate::runtime::compiler::opencl::OpenCLRuntime;
-
 #[cfg(feature = "debug1")]
 use std::println;
 
@@ -79,11 +70,11 @@ impl From<InterpreterError> for ZyxError {
 pub(crate) struct Runtime {
     graph: Graph,
     #[cfg(feature = "cuda")]
-    cuda: Option<CompiledBackend<CUDA>>,
+    cuda: Option<CompiledBackend<compiler::cuda::CUDARuntime>>,
     #[cfg(feature = "hsa")]
-    hsa: Option<CompiledBackend<HSARuntime>>,
+    hsa: Option<CompiledBackend<compiler::hsa::HSARuntime>>,
     #[cfg(feature = "opencl")]
-    opencl: Option<CompiledBackend<OpenCLRuntime>>,
+    opencl: Option<CompiledBackend<compiler::opencl::OpenCLRuntime>>,
     #[cfg(feature = "wgsl")]
     wgsl: Option<CompiledBackend<compiler::wgsl::WGSLRuntime>>,
     cpu: Option<InterpretedBackend<CPU>>,
