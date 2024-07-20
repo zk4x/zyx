@@ -58,6 +58,14 @@ extern "system" {
         param_value_size_ret: *mut usize,
     ) -> cl_int;
 
+    fn clGetDeviceInfo(
+        device: *mut c_void,
+        param_name: cl_uint,
+        param_value_size: usize,
+        param_value: *mut c_void,
+        param_value_size_ret: *mut usize,
+    ) -> cl_int;
+
     // Device APIs
     fn clGetDeviceIDs(
         platform: *mut c_void,
@@ -70,7 +78,6 @@ extern "system" {
     #[cfg(feature = "CL_VERSION_1_2")]
     fn clReleaseDevice(device: cl_device_id) -> cl_int;
 
-    // Context APIs
     fn clCreateContext(
         properties: *const isize,
         num_devices: cl_uint,
@@ -105,7 +112,6 @@ extern "system" {
         errcode_ret: *mut cl_int,
     ) -> cl_command_queue;
 
-    // Memory Object APIs
     fn clCreateBuffer(
         context: *mut c_void,
         flags: cl_bitfield,
@@ -140,7 +146,6 @@ extern "system" {
 
     fn clReleaseMemObject(memobj: *mut c_void) -> cl_int;
 
-    // Program Object APIs
     fn clCreateProgramWithSource(
         context: *mut c_void,
         count: cl_uint,
@@ -173,20 +178,6 @@ extern "system" {
         user_data: *mut c_void,
     ) -> cl_int;
 
-    fn clWaitForEvents(num_events: cl_uint, event_list: *const *mut c_void) -> cl_int;
-
-    fn clReleaseEvent(event: *mut c_void) -> cl_int;
-
-    fn clFinish(command_queue: *mut c_void) -> cl_int;
-
-    fn clGetDeviceInfo(
-        device: *mut c_void,
-        param_name: cl_uint,
-        param_value_size: usize,
-        param_value: *mut c_void,
-        param_value_size_ret: *mut usize,
-    ) -> cl_int;
-
     fn clGetProgramBuildInfo(
         program: *mut c_void,
         device: *mut c_void,
@@ -207,6 +198,12 @@ extern "system" {
         event_wait_list: *const *mut c_void,
         event: *mut *mut c_void,
     ) -> cl_int;
+
+    fn clWaitForEvents(num_events: cl_uint, event_list: *const *mut c_void) -> cl_int;
+
+    fn clFinish(command_queue: *mut c_void) -> cl_int;
+
+    fn clReleaseEvent(event: *mut c_void) -> cl_int;
 }
 
 impl DType {
@@ -263,8 +260,9 @@ impl OpenCLRuntime {
     fn queue(&mut self) -> Result<*mut c_void, CompilerError> {
         let res = self.queues[self.queue_id];
         self.queue_size[self.queue_id] += 1;
-        // Up to two event per queue, before opencl 2.0 we can't do
-        // much better than that.
+        // Up to two events per queue, before opencl 2.0 we can't do
+        // much better than that. After opencl 2.0 we can get status
+        // of the queues, but is it really necessary?.
         if self.queue_size[self.queue_id] == 2 {
             let status = unsafe { clFinish(res) };
             handle_status(

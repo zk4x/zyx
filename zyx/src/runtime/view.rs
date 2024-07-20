@@ -1,4 +1,3 @@
-use crate::runtime::compiler::HWInfo;
 use crate::scalar::Scalar;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -313,71 +312,71 @@ impl View {
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2
     /// or
     /// gws0, lws0, gws1, lws1, rws1, gws2, lws2, rws2, gws3, rws3
-    pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
-        //println!("Optimize local and wpt {:?}", self.shape());
-        assert!(
-            self.rank() == 3 || self.rank() == 4,
-            "Incorrect view rank for applying optimizations."
-        );
+    /*pub(crate) fn optimize_local_mem_size_and_work_per_thread(&mut self, hwinfo: &HWInfo) {
+    //println!("Optimize local and wpt {:?}", self.shape());
+    assert!(
+        self.rank() == 3 || self.rank() == 4,
+        "Incorrect view rank for applying optimizations."
+    );
 
-        // Optimize work size per thread
-        // Over all dimensions excluding first (batch) dimension.
-        // Each dimension is divided by the same value d. This can be later optimized
-        // for different wpt in each dimension.
-        // Current (year 2024) gpus have a bit more than 64 registers.
-        // This is set by hwinfo.num_registers.
-        // On current devices d will be 8, which means 64 elements per thread in element
-        // wise kernels and 512 elements per thread in reduce kernels (with 64 element
-        // accumulator)
-        let s = &self.shapes[0];
-        //let d = Scalar::sqrt(hwinfo.num_registers as i64) as usize;
-        let d = 1;
-        let mut dims = [s[0].size, 1, s[1].size / d, 1, d, s[2].size / d, 1, d];
+    // Optimize work size per thread
+    // Over all dimensions excluding first (batch) dimension.
+    // Each dimension is divided by the same value d. This can be later optimized
+    // for different wpt in each dimension.
+    // Current (year 2024) gpus have a bit more than 64 registers.
+    // This is set by hwinfo.num_registers.
+    // On current devices d will be 8, which means 64 elements per thread in element
+    // wise kernels and 512 elements per thread in reduce kernels (with 64 element
+    // accumulator)
+    let s = &self.shapes[0];
+    //let d = Scalar::sqrt(hwinfo.num_registers as i64) as usize;
+    let d = 1;
+    let mut dims = [s[0].size, 1, s[1].size / d, 1, d, s[2].size / d, 1, d];
 
-        // Optimize local work size
-        // Local work will be over second and third dimensions, currently
-        // we will not make it over first dimension (usually batch dimension)
-        // or reduce dimension. This can be later changed for further optimizations.
-        // equally distribute max_local_work_size to dims[4] and dims[5]
-        let sqrt = Scalar::sqrt(hwinfo.max_work_group_size as i64) as usize;
-        let mut total = 1;
-        let mut n = 1;
-        while dims[2] % (n * 2) == 0 && n * 2 <= sqrt {
-            n *= 2;
-        }
-        dims[2] /= n;
-        dims[3] *= n;
-        total *= n;
-        // put the rest into third dimension
-        let mut n = 1;
-        while dims[5] % (n * 2) == 0 && n * 2 * total <= hwinfo.max_work_group_size {
-            n *= 2;
-        }
-        dims[5] /= n;
-        dims[6] *= n;
-        total *= n;
-        // if third dimension was too small, put the rest into second dimension
-        let mut n = 1;
-        while dims[2] % (n * 2) == 0 && n * 2 * total <= hwinfo.max_work_group_size {
-            n *= 2;
-        }
-        dims[2] /= n;
-        dims[3] *= n;
-
-        //println!("Rank optim: {}", self.rank());
-        if self.rank() == 4 {
-            // if reduce
-            let dims = [
-                dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size,
-                d,
-            ];
-            //println!("to {:?}", dims);
-            self.reshape(&dims);
-        } else {
-            //println!("to {:?}", dims);
-            self.reshape(&dims);
-        }
+    // Optimize local work size
+    // Local work will be over second and third dimensions, currently
+    // we will not make it over first dimension (usually batch dimension)
+    // or reduce dimension. This can be later changed for further optimizations.
+    // equally distribute max_local_work_size to dims[4] and dims[5]
+    let sqrt = Scalar::sqrt(hwinfo.max_work_group_size as i64) as usize;
+    let mut total = 1;
+    let mut n = 1;
+    while dims[2] % (n * 2) == 0 && n * 2 <= sqrt {
+        n *= 2;
     }
+    dims[2] /= n;
+    dims[3] *= n;
+    total *= n;
+    // put the rest into third dimension
+    let mut n = 1;
+    while dims[5] % (n * 2) == 0 && n * 2 * total <= hwinfo.max_work_group_size {
+        n *= 2;
+    }
+    dims[5] /= n;
+    dims[6] *= n;
+    total *= n;
+    // if third dimension was too small, put the rest into second dimension
+    let mut n = 1;
+    while dims[2] % (n * 2) == 0 && n * 2 * total <= hwinfo.max_work_group_size {
+        n *= 2;
+    }
+    dims[2] /= n;
+    dims[3] *= n;
+
+    //println!("Rank optim: {}", self.rank());
+    if self.rank() == 4 {
+        // if reduce
+        let dims = [
+            dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7], s[3].size,
+            d,
+        ];
+        //println!("to {:?}", dims);
+        self.reshape(&dims);
+    } else {
+        //println!("to {:?}", dims);
+        self.reshape(&dims);
+    }
+    }*/
 
     /// Get index from this view, using bound indices, this function does not work
     /// correctly if some dimensions don't have bound indices.

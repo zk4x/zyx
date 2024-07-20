@@ -59,7 +59,7 @@ no matter how long it is. In other words, function should not exist if it is cal
 
 ## Memory
 
-Just use arenas to group allocations for high performance code.
+Just use arenas to group allocations for high performance code. For low performance code just use whatever is easiest to type.
 
 ## API design
 

@@ -1276,6 +1276,7 @@ name = "zyx"
 version = "0.13.0"
 dependencies = [
  "half",
+ "libloading 0.8.3",
  "libm",
  "nostd_async",
  "num-complex",

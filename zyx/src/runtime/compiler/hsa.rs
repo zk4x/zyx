@@ -1,7 +1,10 @@
+#![allow(non_camel_case_types)]
+
 use super::{Compiler, CompilerError, HWInfo};
 use alloc::vec;
 use alloc::{boxed::Box, collections::BTreeSet, string::String, vec::Vec};
 use core::ffi::c_void;
+use libloading::{Library, Symbol};
 
 #[cfg(feature = "debug1")]
 use std::println;
@@ -20,6 +23,7 @@ pub(crate) struct HSAProgram {
 }
 
 pub(crate) struct HSARuntime {
+    hsa_runtime_so: Library,
     context: *mut c_void,
     devices: BTreeSet<*mut c_void>,
     queues: Box<[*mut c_void]>,
@@ -33,14 +37,28 @@ unsafe impl Send for HSABuffer {}
 unsafe impl Send for HSAProgram {}
 unsafe impl Send for HSARuntime {}
 
+type size_t = usize;
+type hsa_status_t = u32;
+type hsa_region_t = *mut c_void;
+
+/*extern "system" {
+    fn hsa_init() -> hsa_status_t;
+
+    fn hsa_memory_allocate(
+        hsa_region: hsa_region_t,
+        size: size_t,
+        ptr: *mut *mut c_void,
+    ) -> hsa_status_t;
+}*/
+
 impl Compiler for HSARuntime {
     type Buffer = HSABuffer;
     type Program = HSAProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
-        let hdr = std::fs::read_to_string("/usr/include/linux/kfd_ioctl.h").map_err(|_| {
+        /*let hdr = std::fs::read_to_string("/usr/include/linux/kfd_ioctl.h").map_err(|_| {
             CompilerError::InitializationFailure("Unable to read /usr/include/linux/kfd_ioctl.h")
-        })?;
+        })?;*/
 
         //println!("{hdr}");
 
@@ -54,7 +72,20 @@ impl Compiler for HSARuntime {
 
         println!("{libhsa_path}");
 
-        todo!()
+        let hsa_runtime_so = unsafe { Library::new(libhsa_path) }.unwrap();
+        let hsa_init: Symbol<unsafe extern "system" fn() -> u32> =
+            unsafe { hsa_runtime_so.get(b"hsa_init") }.unwrap();
+        let status = unsafe { hsa_init() };
+        println!("HSA runtime init status: {status}");
+
+        Ok(Self {
+            hsa_runtime_so,
+            context: todo!(),
+            devices: todo!(),
+            queues: todo!(),
+            queue_size: todo!(),
+            queue_id: todo!(),
+        })
     }
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {

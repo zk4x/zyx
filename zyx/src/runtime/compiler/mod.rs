@@ -14,7 +14,6 @@ use std::println;
 
 use super::graph::Graph;
 use super::node::{BOp, Node, ROp, UOp};
-use super::view::Index;
 
 #[cfg(feature = "cuda")]
 pub(super) mod cuda;
@@ -25,8 +24,8 @@ pub(super) mod hsa;
 #[cfg(feature = "opencl")]
 pub(super) mod opencl;
 
-#[cfg(feature = "wgpu")]
-pub(super) mod wgpu;
+#[cfg(feature = "wgsl")]
+pub(super) mod wgsl;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Scope {
@@ -95,8 +94,8 @@ impl<C: Compiler> Drop for CompiledBackend<C> {
 pub(super) struct CompiledGraph<Program> {
     // Ordered programs and arguments to them
     programs: Vec<(Vec<TensorId>, Program)>,
-    flop: usize,
-    bytes: usize,
+    //flop: usize,
+    //bytes: usize,
 }
 
 #[derive(Debug)]
@@ -230,7 +229,7 @@ impl<C: Compiler> CompiledBackend<C> {
             // Then split those first three loops into global and local loops.
             // Reshape kernels to 6d (global, local) with some register loops
             // should be shape: [gws[0], lws[0], gws[1], lws[1], gws[2], lws[2]]
-            let mut gws = [0; 3];
+            let mut gws = [1; 3];
             let lws = [1; 3]; // TODO
             for op in &kernel.ops {
                 if let VOp::Loop { axis, dimension } = op {
@@ -285,8 +284,8 @@ impl<C: Compiler> CompiledBackend<C> {
             org_graph.clone(),
             CompiledGraph {
                 programs,
-                flop: 0,
-                bytes: 0,
+                //flop: 0,
+                //bytes: 0,
             },
         );
 
@@ -826,28 +825,28 @@ impl IRMem {
                     res.pop();
                     return (Vec::new(), f!("{}{}[{res}]", scope, id));
                 }
-                Index::Reshaped { dims, reshapes, .. } => {
-                    let mut res = String::new();
-                    for (id, mul) in dims {
-                        res += &f!("i{id}*{mul}+");
-                    }
-                    res.pop();
-                    let mut res = vec![res];
-                    for reshape in reshapes[..reshapes.len() - 1].iter() {
-                        let mut idx = String::new();
-                        for (div, m, mul) in reshape.iter() {
-                            idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-                        }
-                        idx.pop();
-                        res.push(idx);
-                    }
+                /*Index::Reshaped { dims, reshapes, .. } => {
+                let mut res = String::new();
+                for (id, mul) in dims {
+                    res += &f!("i{id}*{mul}+");
+                }
+                res.pop();
+                let mut res = vec![res];
+                for reshape in reshapes[..reshapes.len() - 1].iter() {
                     let mut idx = String::new();
-                    for (div, m, mul) in reshapes.last().unwrap().iter() {
+                    for (div, m, mul) in reshape.iter() {
                         idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
                     }
                     idx.pop();
-                    return (res, f!("{}{}[{idx}]", scope, id));
+                    res.push(idx);
                 }
+                let mut idx = String::new();
+                for (div, m, mul) in reshapes.last().unwrap().iter() {
+                    idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
+                }
+                idx.pop();
+                return (res, f!("{}{}[{idx}]", scope, id));
+                }*/
                 Index::None => return (Vec::new(), f!("{}{}", scope, id)),
             },
         }
@@ -1069,4 +1068,43 @@ pub(crate) fn compile_ir(
         ops,
         args,
     };
+}
+
+// With this representation of index, we can find repeating
+// multipliers and extract them out into common factors.
+// However this would be a bit of micro-optimization, as OpenCL, CUDA, WGPU
+// and most other compilers extract them automatically.
+// This will be needed if we want to directly generate SPIR or PTX IR.
+
+/// Virtual representation of index into view
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Index {
+    /// For variables that only have single element (scalars),
+    /// such as most register variables.
+    None,
+    /// Pairs of index id and multiplier.
+    /// Can use wide loads directly with pointer casts.
+    Contiguous {
+        /// Dimension and multiplier
+        dims: BTreeMap<usize, usize>,
+        // When should the padding get applied?
+        //padding_condition: String,
+    },
+    /// Expanded and/or permuted
+    /// Pairs of index id and multiplier.
+    /// Wide loads are possible only if we can transpose it in the kernel
+    Strided {
+        /// Dimension and multiplier
+        dims: BTreeMap<usize, usize>,
+        // When should the padding get applied?
+        //padding_condition: String,
+    },
+    // Expanded, permuted and/or padded
+    // Only if reshape could not be merged.
+    /*Padded {
+    /// Multiple dimension and multipliers
+    dims: BTreeMap<usize, usize>,
+    /// When should the padding get applied?
+    padding_condition: String,
+    },*/
 }

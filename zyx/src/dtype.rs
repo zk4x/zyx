@@ -58,6 +58,12 @@ impl core::fmt::Display for DType {
     }
 }
 
+#[cfg(any(
+    feature = "cuda",
+    feature = "opencl",
+    feature = "wgpu",
+    feature = "hsa"
+))]
 impl DType {
     pub(super) fn byte_size(&self) -> usize {
         return match self {

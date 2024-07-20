@@ -6,7 +6,7 @@ pub enum Device {
     HSA,
     #[cfg(feature = "opencl")]
     OpenCL,
-    #[cfg(feature = "wgpu")]
-    WGPU,
+    #[cfg(feature = "wgsl")]
+    WGSL,
     CPU,
 }

@@ -1,6 +1,5 @@
 use crate::device::Device;
 use crate::dtype::DType;
-use crate::runtime::compiler::CompilerError;
 use crate::runtime::interpreter::cpu::CPU;
 use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
@@ -11,8 +10,13 @@ use alloc::vec::Vec;
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
 
-#[cfg(any(feature = "cuda", feature = "opencl", feature = "wgpu"))]
-use compiler::CompiledBackend;
+#[cfg(any(
+    feature = "cuda",
+    feature = "opencl",
+    feature = "wgsl",
+    feature = "hsa"
+))]
+use compiler::{CompiledBackend, CompilerError};
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -29,19 +33,37 @@ use crate::runtime::compiler::opencl::OpenCLRuntime;
 #[cfg(feature = "debug1")]
 use std::println;
 
+#[cfg(any(
+    feature = "cuda",
+    feature = "opencl",
+    feature = "wgsl",
+    feature = "hsa"
+))]
 mod compiler;
 mod graph;
 mod interpreter;
 mod node;
-mod view;
+//mod view;
 
 #[derive(Debug)]
 pub enum ZyxError {
+    #[cfg(any(
+        feature = "cuda",
+        feature = "opencl",
+        feature = "wgsl",
+        feature = "hsa"
+    ))]
     CompilerError(CompilerError),
     InterpreterError(InterpreterError),
     EmptyTensor,
 }
 
+#[cfg(any(
+    feature = "cuda",
+    feature = "opencl",
+    feature = "wgsl",
+    feature = "hsa"
+))]
 impl From<CompilerError> for ZyxError {
     fn from(value: CompilerError) -> Self {
         Self::CompilerError(value)
@@ -62,8 +84,8 @@ pub(crate) struct Runtime {
     hsa: Option<CompiledBackend<HSARuntime>>,
     #[cfg(feature = "opencl")]
     opencl: Option<CompiledBackend<OpenCLRuntime>>,
-    #[cfg(feature = "wgpu")]
-    wgpu: Option<CompiledBackend<compiler::wgpu::WGPU>>,
+    #[cfg(feature = "wgsl")]
+    wgsl: Option<CompiledBackend<compiler::wgsl::WGSLRuntime>>,
     cpu: Option<InterpretedBackend<CPU>>,
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
@@ -81,8 +103,8 @@ impl Runtime {
             hsa: None,
             #[cfg(feature = "opencl")]
             opencl: None,
-            #[cfg(feature = "wgpu")]
-            wgpu: None,
+            #[cfg(feature = "wgsl")]
+            wgsl: None,
             cpu: None,
             default_device: Device::CPU,
             default_device_set_by_user: false,
@@ -95,7 +117,7 @@ impl Runtime {
     /// successfully initialized device as the default_device in this order:
     /// 1. CUDA
     /// 2. OpenCL
-    /// 3. WGPU
+    /// 3. WGSL
     /// If they all fail to initialize, then default_device
     /// is set to CPU.
     pub(crate) fn set_default_device_best(&mut self) {
@@ -117,9 +139,9 @@ impl Runtime {
             self.default_device = Device::OpenCL;
             return;
         }
-        #[cfg(feature = "wgpu")]
-        if self.initialize_device(Device::WGPU) {
-            self.default_device = Device::WGPU;
+        #[cfg(feature = "wgsl")]
+        if self.initialize_device(Device::WGSL) {
+            self.default_device = Device::WGSL;
             return;
         }
         if self.initialize_device(Device::CPU) {
@@ -171,11 +193,11 @@ impl Runtime {
                     true
                 }
             }
-            #[cfg(feature = "wgpu")]
-            Device::WGPU => {
-                if self.wgpu.is_none() {
-                    if let Ok(wgpu) = CompiledBackend::initialize() {
-                        self.wgpu = Some(wgpu);
+            #[cfg(feature = "wgsl")]
+            Device::WGSL => {
+                if self.wgsl.is_none() {
+                    if let Ok(wgsl) = CompiledBackend::initialize() {
+                        self.wgsl = Some(wgsl);
                         true
                     } else {
                         false
@@ -213,8 +235,8 @@ impl Runtime {
                 Device::HSA => self.hsa.as_mut().unwrap().remove(x)?,
                 #[cfg(feature = "opencl")]
                 Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
-                #[cfg(feature = "wgpu")]
-                Device::WGPU => self.wgpu.as_mut().unwrap().remove(x)?,
+                #[cfg(feature = "wgsl")]
+                Device::WGSL => self.wgsl.as_mut().unwrap().remove(x)?,
                 Device::CPU => self.cpu.as_mut().unwrap().remove(x)?,
             }
         }
@@ -410,12 +432,12 @@ impl Runtime {
                 let dev = self.opencl.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
-            #[cfg(feature = "wgpu")]
-            Device::WGPU => {
-                if self.wgpu.is_none() {
-                    self.wgpu = Some(CompiledBackend::initialize()?);
+            #[cfg(feature = "wgsl")]
+            Device::WGSL => {
+                if self.wgsl.is_none() {
+                    self.wgsl = Some(CompiledBackend::initialize()?);
                 }
-                let dev = self.wgpu.as_mut().unwrap();
+                let dev = self.wgsl.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
             Device::CPU => {
@@ -455,13 +477,13 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.opencl.as_mut().unwrap().load(x, length)?)
             }
-            #[cfg(feature = "wgpu")]
-            Device::WGPU => {
-                if !self.wgpu.as_ref().unwrap().is_realized(x) {
+            #[cfg(feature = "wgsl")]
+            Device::WGSL => {
+                if !self.wgsl.as_ref().unwrap().is_realized(x) {
                     self.realize(BTreeSet::from_iter([x]))?;
                 }
                 let length = self.shape(x).iter().product();
-                Ok(self.wgpu.as_mut().unwrap().load(x, length)?)
+                Ok(self.wgsl.as_mut().unwrap().load(x, length)?)
             }
             Device::CPU => {
                 if !self.cpu.as_ref().unwrap().is_realized(x) {
@@ -499,10 +521,10 @@ impl Runtime {
                     false
                 }
             }
-            #[cfg(feature = "wgpu")]
-            Device::WGPU => {
-                if let Some(wgpu) = self.wgpu.as_ref() {
-                    wgpu.is_realized(x)
+            #[cfg(feature = "wgsl")]
+            Device::WGSL => {
+                if let Some(wgsl) = self.wgsl.as_ref() {
+                    wgsl.is_realized(x)
                 } else {
                     false
                 }
@@ -547,10 +569,10 @@ impl Runtime {
                 self.opencl.as_mut().unwrap().launch_graph(&graph)?;
                 return Ok(());
             }
-            #[cfg(feature = "wgpu")]
-            Device::WGPU => {
-                self.wgpu.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.wgpu.as_mut().unwrap().launch_graph(&graph)?;
+            #[cfg(feature = "wgsl")]
+            Device::WGSL => {
+                self.wgsl.as_mut().unwrap().compile_graph(&graph, tensors)?;
+                self.wgsl.as_mut().unwrap().launch_graph(&graph)?;
                 return Ok(());
             }
             Device::CPU => {
