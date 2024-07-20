@@ -1,13 +1,13 @@
 use crate::device::Device;
 use crate::dtype::DType;
-use crate::runtime::interpreter::cpu::CPU;
-use crate::runtime::interpreter::{InterpretedBackend, InterpreterError};
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
 use crate::tensor::TensorId;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use graph::Graph;
+use interpreter::cpu::CPU;
+use interpreter::{InterpretedBackend, InterpreterError};
 use node::{BOp, Node, ROp, UOp};
 
 #[cfg(any(

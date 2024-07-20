@@ -16,10 +16,6 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-spin = { version = "0.9.8", default-features = false, features = [
-    "mutex",
-    "spin_mutex",
-] }
 libm = { version = "0.2.8", default-features = false }
 
 # Optional features
@@ -35,7 +31,7 @@ libloading = { version = "0.8", default-features = false, optional = true }
 #cuda-driver-sys = { version = "0.3.0", default-features = false, optional = true } // TODO just do the FFI manually
 
 [features]
-default = ["debug1", "hsa"] # TODO remove default from release build
+default = ["debug1", "opencl"] # TODO remove default from release build
 
 # Debug, prints GPU kernels
 debug1 = ["std"]
