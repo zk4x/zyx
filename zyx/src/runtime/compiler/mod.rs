@@ -754,6 +754,7 @@ fn generate_kernels(
                     z: nid,
                     strides: shape_to_strides(graph.shape(nid)),
                 });
+                kernel.outputs.insert(nid);
             } else {
                 panic!()
             }
@@ -914,6 +915,9 @@ pub(crate) fn compile_ir(
     vops: &[VOp],
     hwinfo: &HWInfo,
 ) -> IRKernel {
+    println!("Inputs: {inputs:?}");
+    println!("Outputs: {outputs:?}");
+
     // Here tiles get rewritten into tiles and loops, dimensions get bound
     // and optimizations applied. At this stage, all movement and reduce ops are removed.
     // Also, there will be special instructions for applying optimizations on like 4x4x4
@@ -926,7 +930,6 @@ pub(crate) fn compile_ir(
     let mut ops = Vec::new();
 
     // Remove first 6 loops, these are global loops.
-
     for vop in &vops[6..] {
         match vop {
             VOp::Load { z, x, view } => {
@@ -1042,6 +1045,9 @@ pub(crate) fn compile_ir(
         }
     }
 
+    println!("Inputs: {inputs:?}");
+    println!("Outputs: {outputs:?}");
+
     let mut args = BTreeMap::new();
     for x in inputs {
         args.insert(
@@ -1061,6 +1067,7 @@ pub(crate) fn compile_ir(
             },
         );
     }
+    println!("Args: {args:?}");
 
     return IRKernel {
         global_work_size,

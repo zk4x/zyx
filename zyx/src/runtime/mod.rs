@@ -107,8 +107,9 @@ impl Runtime {
     /// Tries to initialize all devices and set the first
     /// successfully initialized device as the default_device in this order:
     /// 1. CUDA
-    /// 2. OpenCL
-    /// 3. WGSL
+    /// 2. HSA
+    /// 3. OpenCL
+    /// 4. WGSL
     /// If they all fail to initialize, then default_device
     /// is set to CPU.
     pub(crate) fn set_default_device_best(&mut self) {
