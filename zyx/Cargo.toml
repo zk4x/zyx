@@ -36,7 +36,6 @@ default = [
     "opencl",
     "cuda",
     "hsa",
-    "wgsl",
 ] # TODO remove default from release build
 
 # Debug, prints GPU kernels
