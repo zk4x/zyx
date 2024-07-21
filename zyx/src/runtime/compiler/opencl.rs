@@ -605,7 +605,7 @@ impl Compiler for OpenCLRuntime {
             handle_status(status, "Unable to release event.", &[-58, -5, -6])?;
         } else {
             #[cfg(feature = "debug1")]
-            println!("Warning: A buffer was allocated, but never initialized.");
+            println!("Warning: A buffer was allocated, but never used.");
         }
         return Ok(());
     }

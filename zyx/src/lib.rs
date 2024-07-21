@@ -43,12 +43,15 @@ fn t0() {
     let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
         .expand([2, 3, 2])
         .exp()
-        .ln();
+        .ln()
+        .reshape([2, 3, 2, 1]);
     let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
-        .reshape([2, 3, 1])
-        .expand([2, 3, 2]);
+        .reshape([2, 3, 1, 1])
+        .exp()
+        .expand([2, 3, 2, 1]);
     let x = x + y;
-    let x = x.sum(-1);
+    let x = x.exp().expand([2, 3, 2, 2]);
+    let x = x.sum([-1, 0]);
     println!("{x}");
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);

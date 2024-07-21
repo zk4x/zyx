@@ -246,14 +246,14 @@ impl<C: Compiler> CompiledBackend<C> {
             kernel.split_axis(2, &[gws[1], lws[1]]);
             kernel.split_axis(4, &[gws[2], lws[2]]);
 
-            #[cfg(feature = "debug1")]
+            /*#[cfg(feature = "debug1")]
             {
                 println!();
                 for op in &kernel.ops {
                     println!("{op:?}");
                 }
                 println!();
-            }
+            }*/
 
             let ir_kernel = compile_ir(
                 &graph,
@@ -491,6 +491,7 @@ enum VOp {
         rop: ROp,
     },
     Reduce {
+        num_axes: usize,
         rop: ROp,
         z: TensorId,
         x: TensorId,
@@ -637,30 +638,67 @@ fn generate_kernels(
 
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
                     // If this is just a reshape of kernel with only unary ops, we can remove old loops
+                    // and replace them with new loops
+                    if kernel.ops.iter().all(|op| {
+                        matches!(op, VOp::Loop { .. } | VOp::Load { .. } | VOp::Unary { .. })
+                    }) {
+                        // Remove old loops
+                        for _ in 0..kernel.shape.len() {
+                            kernel.ops.remove(0);
+                        }
+                        // Put in new loops
+                        for op in shape_to_loops(shape).into_iter().rev() {
+                            kernel.ops.insert(0, op);
+                        }
+                        // Change Reshape loads and stores
+                        for op in &mut kernel.ops {
+                            match op {
+                                VOp::Load { view, .. } => {
+                                    *view = View::new(shape);
+                                }
+                                VOp::Store { strides, .. } => {
+                                    *strides = shape_to_strides(shape);
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        let mut is_unsqueeze = true;
+                        let mut i = 0;
+                        for dim in shape {
+                            if *dim == kernel.shape[i] {
+                                i -= 1
+                            } else if *dim != 1 {
+                                is_unsqueeze = false;
+                                break;
+                            }
+                        }
+                        if is_unsqueeze {
+                            // If this is unsqueeze, add new loops with dimension 1 to the end of ops
+                            todo!()
+                        } else {
+                            // If we can split axes, split axes by replacing one loop with two loops
+                            // TODO
 
-                    // First if this is unsqueeze, add new loop with dimension 1 to the end of ops
-                    // TODO
-
-                    // else if we can split axes, split axes by replacing one loop with two loops
-                    // TODO
-
-                    // else create new kernel after storing results of previous kernel
-                    let strides = shape_to_strides(graph.shape(*x));
-                    kernel.ops.push(VOp::Store { z: *x, strides });
-                    kernel.outputs.insert(*x);
-                    let mut ops = shape_to_loops(shape);
-                    ops.push(VOp::Load {
-                        z: nid,
-                        x: *x,
-                        view: View::new(shape),
-                    });
-                    kernels.push(Kernel {
-                        shape: shape.clone(),
-                        inputs: BTreeSet::from([*x]),
-                        outputs: BTreeSet::new(),
-                        vars: BTreeSet::from([nid]),
-                        ops,
-                    });
+                            // else create new kernel after storing results of previous kernel
+                            let strides = shape_to_strides(graph.shape(*x));
+                            kernel.ops.push(VOp::Store { z: *x, strides });
+                            kernel.outputs.insert(*x);
+                            let mut ops = shape_to_loops(shape);
+                            ops.push(VOp::Load {
+                                z: nid,
+                                x: *x,
+                                view: View::new(shape),
+                            });
+                            kernels.push(Kernel {
+                                shape: shape.clone(),
+                                inputs: BTreeSet::from([*x]),
+                                outputs: BTreeSet::new(),
+                                vars: BTreeSet::from([nid]),
+                                ops,
+                            });
+                        }
+                    }
                     //println!("\nKernels {kernels:?}\n");
                 } else {
                     panic!()
@@ -677,9 +715,14 @@ fn generate_kernels(
                 rop,
                 shape,
             } => {
+                println!("Axes {axes:?}");
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    // We have to also permute the loop dimensions such that reduce loops are last
+                    // We can also just merge these reduce loops into single loop, since it gets removed
+                    // from the resulting shape either way, but only if there are no ops between those loops.
                     let mut axes_order = Vec::new();
+                    let mut first_loop = 0;
                     // Add accumulator
                     let mut i = kernel.ops.len();
                     while i > 0 {
@@ -687,20 +730,20 @@ fn generate_kernels(
                         if let VOp::Loop { axis, .. } = &kernel.ops[i] {
                             if axes.contains(axis) {
                                 axes_order.push(*axis);
-                                kernel
-                                    .ops
-                                    .insert(i + 1, VOp::Accumulator { z: nid, rop: *rop });
+                                first_loop = i;
                             }
                         }
                     }
-                    // End loop
-                    for _ in axes_order {
-                        kernel.ops.push(VOp::Reduce {
-                            rop: *rop,
-                            z: nid,
-                            x: *x,
-                        });
-                    }
+                    kernel
+                        .ops
+                        .insert(first_loop, VOp::Accumulator { z: nid, rop: *rop });
+                    // End loops
+                    kernel.ops.push(VOp::Reduce {
+                        num_axes: axes.len(),
+                        rop: *rop,
+                        z: nid,
+                        x: *x,
+                    });
                     kernel.vars.insert(nid);
                     kernel.shape = shape.clone();
                 } else {
@@ -783,7 +826,6 @@ fn generate_kernels(
                         // We cannot have both loops from kernel_x and kernel_y
                         // We have to remove one set of loops
 
-                        //kernel_y.ops.extend(kernel_x.ops);
                         let kernel_x_ops: Vec<VOp> = kernel_x
                             .ops
                             .into_iter()
@@ -827,14 +869,14 @@ fn generate_kernels(
             }
         }
     }
-    /*println!("Printing kernels");
+    println!("Printing kernels");
     for kernel in &kernels {
         println!();
         for op in &kernel.ops {
             println!("{op:?}");
         }
         println!();
-        }*/
+    }
     return kernels;
 }
 
@@ -894,7 +936,7 @@ pub(super) enum IRMem {
 }
 
 impl IRMem {
-    pub(super) fn to_str(&self, temp_id: u32) -> (Vec<String>, String) {
+    pub(super) fn to_str(&self, _temp_id: u32) -> (Vec<String>, String) {
         match self {
             IRMem::Const(value) => {
                 return (
@@ -1078,7 +1120,12 @@ pub(crate) fn compile_ir(
                     }),
                 });
             }
-            VOp::Reduce { rop, z, x } => {
+            VOp::Reduce {
+                num_axes,
+                rop,
+                z,
+                x,
+            } => {
                 let z_var = IRMem::Var {
                     id: *z,
                     scope: Scope::Register,
@@ -1097,7 +1144,9 @@ pub(crate) fn compile_ir(
                         ROp::Max => BOp::Max,
                     },
                 });
-                ops.push(IROp::EndLoop);
+                for _ in 0..*num_axes {
+                    ops.push(IROp::EndLoop);
+                }
             }
             VOp::Unary { z, x, uop } => {
                 ops.push(IROp::DeclareMem {
