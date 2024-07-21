@@ -48,16 +48,7 @@ fn t0() {
         .reshape([2, 3, 1])
         .expand([2, 3, 2]);
     let x = x + y;
-    //.exp()
-    //.sum(1);
-    //.expand([3, 2, 3, 4]);
-    //let x = Tensor::from([2, 3, 4]);
-    //let y = Tensor::from([7, 6, 5]);
-    //let z = x + y;
-    //let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).exp();
-    //println!("{:?}", x.shape());
-    //Tensor::debug_graph();
-    println!("{x}");
+    println!("{x:?}");
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
 }

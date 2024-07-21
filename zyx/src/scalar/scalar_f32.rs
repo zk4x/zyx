@@ -115,7 +115,7 @@ impl Scalar for f32 {
         x *= 1. / (2. * PI);
         x -= 0.25 + (x + 0.25).floor();
         x *= 16.0 * (x.abs() - 0.5);
-        //x += 0.225 * x * (std::abs(x) - 1.0);
+        //x += 0.225 * x * (x.abs() - 1.0);
         return x;
     }
 
