@@ -88,7 +88,11 @@ impl Scalar for i8 {
     }
 
     fn reciprocal(self) -> Self {
-        1/self
+        1 / self
+    }
+
+    fn floor(self) -> Self {
+        self
     }
 
     fn neg(self) -> Self {

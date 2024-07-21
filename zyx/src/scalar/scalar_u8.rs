@@ -86,6 +86,10 @@ impl Scalar for u8 {
         todo!()
     }
 
+    fn floor(self) -> Self {
+        self
+    }
+
     fn neg(self) -> Self {
         todo!()
     }

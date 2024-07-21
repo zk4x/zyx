@@ -86,6 +86,10 @@ impl Scalar for i64 {
         1 / self
     }
 
+    fn floor(self) -> Self {
+        self
+    }
+
     fn neg(self) -> Self {
         -self
     }

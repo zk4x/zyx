@@ -88,7 +88,11 @@ impl Scalar for i16 {
     }
 
     fn reciprocal(self) -> Self {
-        1/self
+        1 / self
+    }
+
+    fn floor(self) -> Self {
+        self
     }
 
     fn neg(self) -> Self {
@@ -100,7 +104,8 @@ impl Scalar for i16 {
     }
 
     fn sin(self) -> Self {
-        libm::sin(self as f64) as i16
+        todo!()
+        //libm::sin(self as f64) as i16
     }
 
     fn cos(self) -> Self {

@@ -1,3 +1,5 @@
+use core::f32::consts::{E, PI};
+
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 #[cfg(feature = "half")]
@@ -96,23 +98,41 @@ impl Scalar for f32 {
     }
 
     fn sin(self) -> Self {
-        libm::sinf(self)
+        //libm::sinf(self)
+        let b = 4f32 / PI;
+        let c = -4f32 / (PI * PI);
+        return -(b * self + c * self * if self < 0. { -self } else { self });
+    }
+
+    fn floor(self) -> Self {
+        let i = self as i32 as f32;
+        return i - (i > self) as i32 as f32;
     }
 
     fn cos(self) -> Self {
-        libm::cosf(self)
+        //libm::cosf(self)
+        let mut x = self;
+        x *= 1. / (2. * PI);
+        x -= 0.25 + (x + 0.25).floor();
+        x *= 16.0 * (x.abs() - 0.5);
+        //x += 0.225 * x * (std::abs(x) - 1.0);
+        return x;
     }
 
     fn ln(self) -> Self {
-        libm::logf(self)
+        //libm::logf(self)
+        todo!()
     }
 
     fn exp(self) -> Self {
-        libm::expf(self)
+        //libm::expf(self)
+        todo!()
     }
 
     fn tanh(self) -> Self {
-        libm::tanhf(self)
+        //libm::tanhf(self)
+        let e2x = E.pow(2.0 * self);
+        return (e2x - 1.0) / (e2x + 1.0);
     }
 
     fn sqrt(self) -> Self {
@@ -141,7 +161,8 @@ impl Scalar for f32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        libm::powf(self, rhs)
+        //libm::powf(self, rhs)
+        todo!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {

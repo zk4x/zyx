@@ -218,12 +218,14 @@ impl<C: Compiler> CompiledBackend<C> {
 
             // If there is more loops than 3, pick first three loops as global loops,
             // rest is register loops.
-            if num_loops > 3 {
-                todo!()
-            }
+            // So nothing needs to be done.
             // If there is less than three loops, add loops with dimension 1
             if num_loops < 3 {
-                todo!()
+                let dims: Vec<usize> = core::iter::repeat(1)
+                    .take(3 - num_loops)
+                    .chain([kernel.shape[0]])
+                    .collect();
+                kernel.split_axis(0, &dims);
             }
 
             // Then split those first three loops into global and local loops.
@@ -512,6 +514,7 @@ fn generate_kernels(
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
 ) -> Vec<Kernel> {
+    //println!("Graph: {graph:?}");
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
@@ -528,12 +531,7 @@ fn generate_kernels(
                     kernel.inputs.insert(nid);
                     kernel.vars.insert(nid);
                 } else {
-                    let mut ops: Vec<VOp> = shape
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .map(|(axis, dimension)| VOp::Loop { axis, dimension })
-                        .collect();
+                    let mut ops: Vec<VOp> = shape_to_loops(shape);
                     ops.push(load_op);
                     kernels.push(Kernel {
                         shape: shape.clone(),
@@ -550,6 +548,7 @@ fn generate_kernels(
                 // Expand increases axes with dimension of 1 to bigger dimension
                 // and sets strides in those axes to 0 for both loads and stores
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    //println!("Expanding {kernel:?}");
                     assert_eq!(kernel.shape.len(), shape.len());
                     let mut expand_axes = BTreeSet::new();
                     for a in 0..kernel.shape.len() {
@@ -597,11 +596,16 @@ fn generate_kernels(
                     panic!()
                 }
             }
-            Node::Permute { x, axes, .. } => {
+            Node::Permute { x, axes, shape } => {
                 // Permute shuffles load and store strides
+                // It also changes the dimension of loops
+                // and shape of kernel
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
                     for op in &mut kernel.ops {
                         match op {
+                            VOp::Loop { axis, dimension } => {
+                                *dimension = shape[*axis];
+                            }
                             VOp::Load { view, .. } => {
                                 view.permute(&axes[..view.rank()]);
                             }
@@ -614,6 +618,7 @@ fn generate_kernels(
                             _ => {}
                         }
                     }
+                    kernel.shape = shape.clone();
                     kernel.ops.push(VOp::Unary {
                         z: nid,
                         x: *x,
@@ -632,6 +637,8 @@ fn generate_kernels(
                 // But for now it is much simpler to just add new kernel
 
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    // If this is just a reshape of kernel with only unary ops, we can remove old loops
+
                     // First if this is unsqueeze, add new loop with dimension 1 to the end of ops
                     // TODO
 
@@ -642,17 +649,20 @@ fn generate_kernels(
                     let strides = shape_to_strides(graph.shape(*x));
                     kernel.ops.push(VOp::Store { z: *x, strides });
                     kernel.outputs.insert(*x);
+                    let mut ops = shape_to_loops(shape);
+                    ops.push(VOp::Load {
+                        z: nid,
+                        x: *x,
+                        view: View::new(shape),
+                    });
                     kernels.push(Kernel {
                         shape: shape.clone(),
                         inputs: BTreeSet::from([*x]),
                         outputs: BTreeSet::new(),
                         vars: BTreeSet::from([nid]),
-                        ops: vec![VOp::Load {
-                            z: nid,
-                            x: *x,
-                            view: View::new(shape),
-                        }],
+                        ops,
                     });
+                    println!("\nKernels {kernels:?}\n");
                 } else {
                     panic!()
                 }
@@ -709,6 +719,7 @@ fn generate_kernels(
                     .find(|kernel| kernel.vars.contains(x) && kernel.vars.contains(y))
                 {
                     // If both inputs are in the same kernel
+                    //println!("Both inputs are in the same kernel.");
                     kernel.ops.push(VOp::Binary {
                         z: nid,
                         x: *x,
@@ -716,27 +727,67 @@ fn generate_kernels(
                         bop: *bop,
                     });
                     kernel.vars.insert(nid);
-                } else if let Some(kernel_x_id) =
+                } else if let Some(mut kernel_x_id) =
                     kernels.iter().position(|kernel| kernel.vars.contains(x))
                 {
-                    if let Some(kernel_y_id) =
+                    if let Some(mut kernel_y_id) =
                         kernels.iter().position(|kernel| kernel.vars.contains(y))
                     {
+                        //println!("Both inputs are in different kernels.");
                         // Two separate kernels contain our inputs, so we join them together
                         // TODO do some checks that this join is always valid
-                        let kernel_y = kernels.remove(kernel_y_id);
-                        let kernel_x = &mut kernels[kernel_x_id];
+
+                        // We can not join kernels if say kernel x depends on kernel a
+                        // and kernel a depends on kernel y. In that case we have to create a new kernel.
+                        // However often we can reorder kernels if kernel a does not depend on kernel y,
+                        // just put kernel a before kernel x and kernel y and we can join it normally.
+                        match (
+                            depends_on(kernel_x_id, kernel_y_id, &kernels),
+                            depends_on(kernel_y_id, kernel_x_id, &kernels),
+                        ) {
+                            (true, true) => {
+                                // This should not be possible
+                                panic!()
+                            }
+                            (true, false) => {
+                                // This is ok, nothing needs to be done
+                            }
+                            (false, true) => {
+                                // Here we need to do some reordering,
+                                // or just swap ids.
+                                (kernel_x_id, kernel_y_id) = (kernel_y_id, kernel_x_id);
+                            }
+                            (false, false) => {
+                                // Nothing needs to be done
+                            }
+                        }
+
+                        // We know that kernel_y is the latest kernel,
+                        // since this is the order in which ordering of nodes works.
+                        assert_eq!(kernel_y_id, kernels.len() - 1);
+
+                        let kernel_x = kernels.remove(kernel_x_id);
+                        // we have just removed kernel before this one
+                        kernel_y_id -= 1;
+
+                        let kernel_y = &mut kernels[kernel_y_id];
                         assert_eq!(kernel_x.shape, kernel_y.shape);
                         // TODO Here we must do something about the loops
                         // We cannot have both loops from kernel_x and kernel_y
                         // We have to remove one set of loops
-                        kernel_x.ops.extend(kernel_y.ops);
-                        kernel_x.ops.push(VOp::Binary {
+                        //println!("Kernel x ops: {:?}", kernel_x.ops);
+                        //println!("Kernel y ops: {:?}", kernel_y.ops);
+                        kernel_y.ops.extend(kernel_x.ops);
+                        kernel_y.ops.push(VOp::Binary {
                             z: nid,
                             x: *x,
                             y: *y,
                             bop: *bop,
-                        })
+                        });
+                        kernel_y.inputs.extend(kernel_x.inputs);
+                        kernel_y.outputs.extend(kernel_x.outputs);
+                        kernel_y.vars.extend(kernel_x.vars);
+                        kernel_y.vars.insert(nid);
                     } else {
                         panic!()
                     }
@@ -760,7 +811,24 @@ fn generate_kernels(
             }
         }
     }
+    println!("Printing kernels");
+    for kernel in &kernels {
+        println!();
+        for op in &kernel.ops {
+            println!("{op:?}");
+        }
+        println!();
+    }
     return kernels;
+}
+
+fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
+    shape
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(axis, dimension)| VOp::Loop { axis, dimension })
+        .collect()
 }
 
 fn shape_to_strides(shape: &[usize]) -> Vec<usize> {
@@ -776,6 +844,13 @@ fn shape_to_strides(shape: &[usize]) -> Vec<usize> {
         .collect();
     strides.reverse();
     return strides;
+}
+
+// Checks if kernel_x depends on kernel_y
+fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
+    // TODO
+    //todo!()
+    false
 }
 
 #[derive(Debug)]
@@ -915,9 +990,6 @@ pub(crate) fn compile_ir(
     vops: &[VOp],
     hwinfo: &HWInfo,
 ) -> IRKernel {
-    println!("Inputs: {inputs:?}");
-    println!("Outputs: {outputs:?}");
-
     // Here tiles get rewritten into tiles and loops, dimensions get bound
     // and optimizations applied. At this stage, all movement and reduce ops are removed.
     // Also, there will be special instructions for applying optimizations on like 4x4x4

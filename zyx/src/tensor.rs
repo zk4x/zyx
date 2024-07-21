@@ -502,7 +502,33 @@ impl Tensor {
     // movement
     #[must_use]
     pub fn expand(&self, shape: impl IntoShape) -> Tensor {
-        // TODO checks
+        assert!(shape.rank() > 0);
+        let mut sh = self.shape();
+        let shape: Vec<usize> = shape.into_shape().collect();
+        if shape.rank() > sh.rank() {
+            let mut i = sh.len();
+            for d in shape.iter().copied().rev() {
+                if i == 0 {
+                    // Adding dimensions to the front of the shape
+                    sh.insert(i, 1);
+                } else {
+                    i -= 1;
+                }
+                if d != sh[i] {
+                    assert_eq!(
+                        sh[i],
+                        1,
+                        "Cannot expand {:?} into {:?}",
+                        self.shape(),
+                        shape
+                    )
+                }
+            }
+            let x = self.reshape(sh);
+            return Tensor {
+                id: RT.lock().expand(x.id, shape),
+            };
+        };
         return Tensor {
             id: RT.lock().expand(self.id, shape),
         };

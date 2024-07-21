@@ -84,6 +84,10 @@ impl Scalar for f64 {
         1.0 / self
     }
 
+    fn floor(self) -> Self {
+        todo!()
+    }
+
     fn neg(self) -> Self {
         -self
     }
@@ -93,27 +97,33 @@ impl Scalar for f64 {
     }
 
     fn sin(self) -> Self {
-        libm::sin(self)
+        //libm::sin(self)
+        todo!()
     }
 
     fn cos(self) -> Self {
-        libm::cos(self)
+        //libm::cos(self)
+        todo!()
     }
 
     fn ln(self) -> Self {
-        libm::log(self)
+        //libm::log(self)
+        todo!()
     }
 
     fn exp(self) -> Self {
-        libm::exp(self)
+        //libm::exp(self)
+        todo!()
     }
 
     fn tanh(self) -> Self {
-        libm::tanh(self)
+        //libm::tanh(self)
+        todo!()
     }
 
     fn sqrt(self) -> Self {
-        libm::sqrt(self)
+        //libm::sqrt(self)
+        todo!()
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -133,7 +143,8 @@ impl Scalar for f64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        libm::pow(self, rhs)
+        //libm::pow(self, rhs)
+        todo!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {

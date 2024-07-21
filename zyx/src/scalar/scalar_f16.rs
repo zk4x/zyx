@@ -82,6 +82,10 @@ impl Scalar for f16 {
         f16::ONE / self
     }
 
+    fn floor(self) -> Self {
+        todo!()
+    }
+
     fn neg(self) -> Self {
         -self
     }

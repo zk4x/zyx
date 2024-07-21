@@ -1,11 +1,11 @@
 #[cfg(feature = "half")]
 mod scalar_bf16;
-#[cfg(feature = "half")]
-mod scalar_f16;
 #[cfg(feature = "complex")]
 mod scalar_cf32;
 #[cfg(feature = "complex")]
 mod scalar_cf64;
+#[cfg(feature = "half")]
+mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
 mod scalar_i16;
@@ -61,6 +61,8 @@ pub trait Scalar: Clone + Sized + core::fmt::Debug + 'static {
     fn abs(self) -> Self;
     /// 1/self
     fn reciprocal(self) -> Self;
+    /// Round down
+    fn floor(self) -> Self;
     /// Neg
     fn neg(self) -> Self;
     /// ReLU

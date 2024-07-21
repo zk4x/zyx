@@ -660,7 +660,7 @@ impl Compiler for OpenCLRuntime {
             "  unsigned int i5 = get_local_id(2);   /* 0..{} */\n",
             kernel.local_work_size[2]
         );
-        source += "  unsigned int t0, t1, t2;\n";
+        //source += "  unsigned int t0, t1, t2;\n";
 
         // Transpile kernel ops, skip ends of global and local loops
         for op in &kernel.ops {

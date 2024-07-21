@@ -76,11 +76,15 @@ impl Scalar for bf16 {
     }
 
     fn reciprocal(self) -> Self {
-        bf16::ONE/self
+        bf16::ONE / self
     }
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn floor(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {

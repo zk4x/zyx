@@ -95,6 +95,10 @@ impl Scalar for Complex<f32> {
         todo!()
     }
 
+    fn floor(self) -> Self {
+        todo!()
+    }
+
     fn neg(self) -> Self {
         todo!()
     }
