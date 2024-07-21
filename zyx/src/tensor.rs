@@ -78,6 +78,14 @@ impl Tensor {
         todo!()
     }
 
+    /// Immediatelly evaluate passed tensors
+    #[must_use]
+    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) {
+        RT.lock()
+            .realize(tensors.into_iter().map(|t| t.id).collect())
+            .unwrap();
+    }
+
     #[must_use]
     pub fn shape(&self) -> Vec<usize> {
         RT.lock().shape(self.id).to_vec()
@@ -610,6 +618,7 @@ impl Tensor {
         self.var(axes).sqrt()
     }
 
+    // Removes kernel dimensions for now
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
         #[cfg(debug_assertions)]

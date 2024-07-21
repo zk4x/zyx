@@ -671,7 +671,7 @@ impl Compiler for OpenCLRuntime {
                     read_only,
                     len,
                     dtype,
-                    init: _,
+                    init,
                 } => match scope {
                     Scope::Global => {}
                     Scope::Local => {
@@ -694,7 +694,12 @@ impl Compiler for OpenCLRuntime {
                         } else {
                             String::new()
                         };
-                        source += &f!("{indent}{read_only}{} r{id}{};\n", dtype.ocl(), size,);
+                        source += &f!("{indent}{read_only}{} r{id}{}", dtype.ocl(), size);
+                        if let Some(init) = init {
+                            source += &f!(" = {{{}}};\n", init);
+                        } else {
+                            source += ";\n";
+                        }
                     }
                 },
                 IROp::AssignMem { z, x } => {

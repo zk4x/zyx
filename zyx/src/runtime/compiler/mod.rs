@@ -360,12 +360,12 @@ impl Kernel {
                 VOp::Loop { axis, .. } => {
                     *axis += axis_shift;
                 }
-                VOp::Reduce { axis, .. } => {
+                VOp::Reduce { .. } => {
                     if loop_ends == axis_shift {
                         break;
                     }
                     loop_ends += 1;
-                    *axis += axis_shift;
+                    //*axis += axis_shift;
                 }
                 // Then change all load and store operations in this
                 // loop in the same way.
@@ -415,7 +415,7 @@ impl Kernel {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct View(Vec<ViewDim>);
 
 impl View {
@@ -462,7 +462,7 @@ impl View {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ViewDim {
     axis: Axis,
     dim: Dimension,
@@ -471,7 +471,7 @@ struct ViewDim {
     shift: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum VOp {
     Load {
         z: TensorId,
@@ -491,7 +491,6 @@ enum VOp {
         rop: ROp,
     },
     Reduce {
-        axis: Axis,
         rop: ROp,
         z: TensorId,
         x: TensorId,
@@ -662,7 +661,7 @@ fn generate_kernels(
                         vars: BTreeSet::from([nid]),
                         ops,
                     });
-                    println!("\nKernels {kernels:?}\n");
+                    //println!("\nKernels {kernels:?}\n");
                 } else {
                     panic!()
                 }
@@ -672,7 +671,12 @@ fn generate_kernels(
                 // then it creates new kernel
                 todo!()
             }
-            Node::Reduce { x, axes, rop, .. } => {
+            Node::Reduce {
+                x,
+                axes,
+                rop,
+                shape,
+            } => {
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
                     let mut axes_order = Vec::new();
@@ -683,19 +687,22 @@ fn generate_kernels(
                         if let VOp::Loop { axis, .. } = &kernel.ops[i] {
                             if axes.contains(axis) {
                                 axes_order.push(*axis);
-                                kernel.ops.insert(i, VOp::Accumulator { z: nid, rop: *rop });
+                                kernel
+                                    .ops
+                                    .insert(i + 1, VOp::Accumulator { z: nid, rop: *rop });
                             }
                         }
                     }
                     // End loop
-                    for axis in axes_order {
+                    for _ in axes_order {
                         kernel.ops.push(VOp::Reduce {
-                            axis,
                             rop: *rop,
                             z: nid,
                             x: *x,
                         });
                     }
+                    kernel.vars.insert(nid);
+                    kernel.shape = shape.clone();
                 } else {
                     panic!()
                 }
@@ -772,12 +779,21 @@ fn generate_kernels(
 
                         let kernel_y = &mut kernels[kernel_y_id];
                         assert_eq!(kernel_x.shape, kernel_y.shape);
-                        // TODO Here we must do something about the loops
+
                         // We cannot have both loops from kernel_x and kernel_y
                         // We have to remove one set of loops
-                        //println!("Kernel x ops: {:?}", kernel_x.ops);
-                        //println!("Kernel y ops: {:?}", kernel_y.ops);
-                        kernel_y.ops.extend(kernel_x.ops);
+
+                        //kernel_y.ops.extend(kernel_x.ops);
+                        let kernel_x_ops: Vec<VOp> = kernel_x
+                            .ops
+                            .into_iter()
+                            .enumerate()
+                            .skip_while(|(i, op)| {
+                                matches!(op, VOp::Loop { .. }) && op == &kernel_y.ops[*i]
+                            })
+                            .map(|(_, op)| op)
+                            .collect();
+                        kernel_y.ops.extend(kernel_x_ops);
                         kernel_y.ops.push(VOp::Binary {
                             z: nid,
                             x: *x,
@@ -811,14 +827,14 @@ fn generate_kernels(
             }
         }
     }
-    println!("Printing kernels");
+    /*println!("Printing kernels");
     for kernel in &kernels {
         println!();
         for op in &kernel.ops {
             println!("{op:?}");
         }
         println!();
-    }
+        }*/
     return kernels;
 }
 
@@ -1062,7 +1078,27 @@ pub(crate) fn compile_ir(
                     }),
                 });
             }
-            VOp::Reduce { axis, rop, z, x } => todo!(),
+            VOp::Reduce { rop, z, x } => {
+                let z_var = IRMem::Var {
+                    id: *z,
+                    scope: Scope::Register,
+                    index: Index::None,
+                };
+                ops.push(IROp::Binary {
+                    z: z_var.clone(),
+                    x: IRMem::Var {
+                        id: *x,
+                        scope: Scope::Register,
+                        index: Index::None,
+                    },
+                    y: z_var,
+                    op: match rop {
+                        ROp::Sum => BOp::Add,
+                        ROp::Max => BOp::Max,
+                    },
+                });
+                ops.push(IROp::EndLoop);
+            }
             VOp::Unary { z, x, uop } => {
                 ops.push(IROp::DeclareMem {
                     id: *z,

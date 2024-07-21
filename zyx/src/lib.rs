@@ -48,7 +48,8 @@ fn t0() {
         .reshape([2, 3, 1])
         .expand([2, 3, 2]);
     let x = x + y;
-    println!("{x:?}");
+    let x = x.sum(-1);
+    println!("{x}");
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
 }

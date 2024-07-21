@@ -5,55 +5,59 @@ use core::ops::{Add, Range, RangeInclusive};
 pub trait IntoShape: Clone + Debug {
     fn into_shape(self) -> impl Iterator<Item = usize>;
     fn rank(&self) -> usize;
+
     fn permute(self, axes: impl IntoAxes) -> impl Iterator<Item = usize> {
         let rank = self.rank();
         let shape: Vec<usize> = self.into_shape().collect();
         axes.into_axes(rank).map(move |a| shape[a])
     }
+
     fn reduce(self, axes: impl IntoAxes) -> impl Iterator<Item = usize> {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
-        self.into_shape().enumerate().map(move |(i, d)| if axes.contains(&i) { 1 } else { d })
+        self.into_shape()
+            .enumerate()
+            .filter_map(move |(i, d)| if axes.contains(&i) { None } else { Some(d) })
     }
 }
 
 impl IntoShape for usize {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        return [self].into_iter()
+        return [self].into_iter();
     }
 
     fn rank(&self) -> usize {
-        return 1
+        return 1;
     }
 }
 
 impl<const N: usize> IntoShape for [usize; N] {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        return self.into_iter()
+        return self.into_iter();
     }
 
     fn rank(&self) -> usize {
-        return N
+        return N;
     }
 }
 
 impl IntoShape for &[usize] {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        return self.into_iter().copied()
+        return self.into_iter().copied();
     }
 
     fn rank(&self) -> usize {
-        return self.len()
+        return self.len();
     }
 }
 
 impl IntoShape for Vec<usize> {
     fn into_shape(self) -> impl Iterator<Item = usize> {
-        return self.into_iter()
+        return self.into_iter();
     }
 
     fn rank(&self) -> usize {
-        return self.len()
+        return self.len();
     }
 }
 
@@ -78,7 +82,7 @@ pub trait IntoAxes: Clone {
 
 impl IntoAxes for isize {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return [to_axis(self, rank)].into_iter()
+        return [to_axis(self, rank)].into_iter();
     }
 
     fn len(&self) -> usize {
@@ -88,7 +92,7 @@ impl IntoAxes for isize {
 
 impl<const N: usize> IntoAxes for [isize; N] {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return self.into_iter().map(move |a| to_axis(a, rank))
+        return self.into_iter().map(move |a| to_axis(a, rank));
     }
 
     fn len(&self) -> usize {
@@ -98,7 +102,7 @@ impl<const N: usize> IntoAxes for [isize; N] {
 
 impl IntoAxes for Range<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return to_axis(self.start, rank)..to_axis(self.end, rank)
+        return to_axis(self.start, rank)..to_axis(self.end, rank);
     }
 
     fn len(&self) -> usize {
@@ -108,7 +112,7 @@ impl IntoAxes for Range<isize> {
 
 impl IntoAxes for RangeInclusive<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return to_axis(*self.start(), rank)..to_axis(*self.end(), rank)
+        return to_axis(*self.start(), rank)..to_axis(*self.end(), rank);
     }
 
     fn len(&self) -> usize {

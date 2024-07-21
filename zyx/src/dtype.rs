@@ -1,3 +1,5 @@
+use core::fmt::Display;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Constant {
     #[cfg(feature = "half")]
@@ -15,6 +17,54 @@ pub(crate) enum Constant {
     I16(i16),
     I32(i32),
     I64(i64),
+}
+
+impl Display for Constant {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            #[cfg(feature = "half")]
+            Constant::BF16(value) => {
+                todo!()
+            }
+            #[cfg(feature = "half")]
+            Constant::F16(value) => {
+                todo!()
+            }
+            Constant::F32(value) => {
+                return f.write_fmt(format_args!("{}", unsafe {
+                    core::mem::transmute::<_, f32>(*value)
+                }));
+            }
+            Constant::F64(value) => {
+                return f.write_fmt(format_args!("{}", unsafe {
+                    core::mem::transmute::<_, f64>(*value)
+                }));
+            }
+            #[cfg(feature = "complex")]
+            Constant::CF32(value) => {
+                todo!()
+            }
+            #[cfg(feature = "complex")]
+            Constant::CF64(value) => {
+                todo!()
+            }
+            Constant::U8(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
+            Constant::I8(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
+            Constant::I16(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
+            Constant::I32(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
+            Constant::I64(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
