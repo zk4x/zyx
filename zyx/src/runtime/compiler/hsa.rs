@@ -67,8 +67,8 @@ impl Compiler for HSARuntime {
             Err(_) => "/usr/lib64/libhsa-runtime64.so.1".into(), // TODO search for hsa-runtime64 path
         };
 
-        std::fs::File::open(&libhsa_path)
-            .map_err(|_| CompilerError::InitializationFailure("Unable to access hsa-runtime64"))?;
+        //std::fs::File::open(&libhsa_path)
+        //.map_err(|_| CompilerError::InitializationFailure("Unable to access hsa-runtime64"))?;
 
         println!("{libhsa_path}");
 

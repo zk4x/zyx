@@ -38,9 +38,9 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 fn t0() {
     use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
-    Tensor::set_default_device(Device::OpenCL);
-    //let x = Tensor::from([[[2, 3, 6], [4, 5, 7]]]).permute([0, 2, 1]);
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
+    Tensor::set_default_device(Device::HSA);
+    let x = Tensor::from([[[2, 3, 6], [4, 5, 7]]]).permute([0, 2, 1]);
+    /*let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
         .expand([2, 3, 2])
         .exp()
         .ln()
@@ -51,7 +51,7 @@ fn t0() {
         .expand([2, 3, 2, 1]);
     let x = x + y;
     let x = x.exp().expand([2, 3, 2, 2]);
-    let x = x.sum([-1, 0]);
+    let x = x.sum([-1, 0]);*/
     println!("{x}");
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
