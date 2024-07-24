@@ -258,6 +258,8 @@ impl OpenCLRuntime {
     fn queue(&mut self) -> Result<*mut c_void, CompilerError> {
         let res = self.queues[self.queue_id];
         self.queue_size[self.queue_id] += 1;
+        // Blocks and waits for queue to finish execution so that
+        // we do not overwhelm the device with tasks.
         // Up to two events per queue, before opencl 2.0 we can't do
         // much better than that. After opencl 2.0 we can get status
         // of the queues, but is it really necessary?.

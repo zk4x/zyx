@@ -322,10 +322,12 @@ impl Runtime {
     }
 
     pub(crate) fn sum(&mut self, x: TensorId, axes: impl IntoAxes) -> TensorId {
-        let shape: Vec<usize> = self.shape(x).reduce(axes.clone()).collect();
+        let sh = self.shape(x);
+        let rank = sh.len();
+        let shape: Vec<usize> = sh.reduce(axes.clone()).collect();
         return self.graph.push(Node::Reduce {
             x,
-            axes: axes.into_axes(shape.len()).collect(),
+            axes: axes.into_axes(rank).collect(),
             shape,
             rop: ROp::Sum,
         });

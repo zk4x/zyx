@@ -22,9 +22,6 @@ use rand::rngs::SmallRng;
 #[cfg(feature = "rand")]
 use rand::Rng;
 
-#[cfg(feature = "debug1")]
-use std::println;
-
 pub(crate) type TensorId = usize;
 
 pub struct Tensor {
@@ -33,8 +30,6 @@ pub struct Tensor {
 
 impl Clone for Tensor {
     fn clone(&self) -> Self {
-        #[cfg(feature = "debug1")]
-        println!("cloning");
         RT.lock().retain(self.id);
         Tensor { id: self.id }
     }
@@ -79,7 +74,6 @@ impl Tensor {
     }
 
     /// Immediatelly evaluate passed tensors
-    #[must_use]
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) {
         RT.lock()
             .realize(tensors.into_iter().map(|t| t.id).collect())
@@ -1405,6 +1399,20 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
         let default_device = rt.default_device;
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
         let id = rt.store(data, default_device, [D0, D1, D2]).unwrap();
+        return Tensor { id };
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize>
+    From<[[[[T; D3]; D2]; D1]; D0]> for Tensor
+{
+    fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
+        let mut rt = RT.lock();
+        rt.set_default_device_best();
+        let default_device = rt.default_device;
+        let data =
+            unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
+        let id = rt.store(data, default_device, [D0, D1, D2, D3]).unwrap();
         return Tensor { id };
     }
 }

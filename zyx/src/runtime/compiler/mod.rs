@@ -171,8 +171,7 @@ impl<C: Compiler> CompiledBackend<C> {
         x: TensorId,
         length: usize,
     ) -> Result<Vec<T>, CompilerError> {
-        #[cfg(feature = "debug1")]
-        println!("Attempting to load buffer with id {x}");
+        //println!("Attempting to load buffer with id {x}");
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_memory(buffer, length);
         }
@@ -332,6 +331,29 @@ struct Kernel {
 }
 
 impl Kernel {
+    fn permute(&mut self, axes: &[usize]) {
+        let shape: Vec<usize> = axes.iter().map(|a| self.shape[*a]).collect();
+        for op in &mut self.ops {
+            match op {
+                VOp::Loop { axis, dimension } => {
+                    *dimension = shape[*axis];
+                }
+                VOp::Load { view, .. } => {
+                    view.permute(&axes[..view.rank()]);
+                }
+                VOp::Store { strides, .. } => {
+                    // *strides = shape_to_strides(&shape);
+                    *strides = axes[..strides.len()]
+                        .iter()
+                        .map(|axis| strides[*axis])
+                        .collect();
+                }
+                _ => {}
+            }
+        }
+        self.shape = shape.clone();
+    }
+
     fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
         // First split loop at op_id
         let VOp::Loop { axis, dimension } = &mut self.ops[op_id] else {
@@ -365,35 +387,33 @@ impl Kernel {
                         break;
                     }
                     loop_ends += 1;
-                    //*axis += axis_shift;
+                    // TODO num_axes changes?
                 }
                 // Then change all load and store operations in this
                 // loop in the same way.
                 VOp::Load { view, .. } => {
+                    //println!("Splitting {view:?}");
                     let mut stride = view.0[axis].stride;
+                    view.0.remove(axis);
                     let mut temp_axis = axis + dimensions.len();
-                    for dim in dimensions[1..].iter().copied().rev() {
+                    for dim in dimensions.iter().copied().rev() {
                         temp_axis -= 1;
                         view.0.insert(
-                            axis + 1,
+                            axis,
                             ViewDim {
                                 axis: temp_axis,
                                 dim,
                                 stride,
-                                // TODO this will need to be different if len and shift weren't equal to dim before
                                 len: dim,
                                 shift: dim,
                             },
                         );
                         stride *= dim;
                     }
-                    view.0[axis] = ViewDim {
-                        axis,
-                        dim: dimensions[0],
-                        stride,
-                        len: dimensions[0],
-                        shift: dimensions[0],
-                    };
+                    // Rename all following axes
+                    for a in axis + dimensions.len()..view.0.len() {
+                        view.0[a].axis += dimensions.len() - 1;
+                    }
                 }
                 VOp::Store { strides, .. } => {
                     // Example of axis split
@@ -441,6 +461,10 @@ impl View {
         return Self(view);
     }
 
+    fn shape(&self) -> Vec<usize> {
+        self.0.iter().map(|dim| dim.dim).collect()
+    }
+
     fn rank(&self) -> usize {
         self.0.len()
     }
@@ -452,6 +476,9 @@ impl View {
     fn permute(&mut self, axes: &[usize]) {
         assert_eq!(self.0.len(), axes.len());
         self.0 = axes.iter().map(|axis| self.0[*axis]).collect();
+        for (a, dim) in self.0.iter_mut().enumerate() {
+            dim.axis = a;
+        }
     }
 
     fn index(&self) -> Index {
@@ -459,6 +486,10 @@ impl View {
         Index::Strided {
             dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
         }
+    }
+
+    fn is_contiguous(&self) -> bool {
+        &View::new(&self.shape()) == self
     }
 }
 
@@ -578,7 +609,7 @@ fn generate_kernels(
                             }
                             VOp::Store { strides, .. } => {
                                 for a in expand_axes.difference(&done_expanding) {
-                                    // TODO This will do multiple writes of the same value, so this would probably be better solved in different way,
+                                    // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
                                     // perhaps doing only single write during the whole loop
                                     strides[*a] = 0;
                                 }
@@ -596,30 +627,13 @@ fn generate_kernels(
                     panic!()
                 }
             }
-            Node::Permute { x, axes, shape } => {
+            Node::Permute { x, axes, .. } => {
                 // Permute shuffles load and store strides
                 // It also changes the dimension of loops
                 // and shape of kernel
                 // TODO but what if it is permute after reduce?
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
-                    for op in &mut kernel.ops {
-                        match op {
-                            VOp::Loop { axis, dimension } => {
-                                *dimension = shape[*axis];
-                            }
-                            VOp::Load { view, .. } => {
-                                view.permute(&axes[..view.rank()]);
-                            }
-                            VOp::Store { strides, .. } => {
-                                *strides = axes[..strides.len()]
-                                    .iter()
-                                    .map(|axis| strides[*axis])
-                                    .collect();
-                            }
-                            _ => {}
-                        }
-                    }
-                    kernel.shape = shape.clone();
+                    kernel.permute(&axes);
                     kernel.ops.push(VOp::Unary {
                         z: nid,
                         x: *x,
@@ -635,20 +649,17 @@ fn generate_kernels(
                 // simply by using view for loads to have multiple reshapes in single view.
                 // But for now it is much simpler to just add new kernel.
 
-                // If reshapes comes after reduce, then if it just aplits axes, it can be merged,
+                // If reshape comes after reduce, then if it just aplits axes, it can be merged,
                 // otherwise we have to create new kernel.
 
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
-                    // If this is just a reshape of kernel with only unary ops, we can remove old loops
-                    // and replace them with new loops
-                    if kernel.ops.iter().all(|op| {
-                        matches!(
-                            op,
-                            VOp::Loop { .. }
-                                | VOp::Load { .. }
-                                | VOp::Unary { .. }
-                                | VOp::Binary { .. }
-                        )
+                    // If this is just a reshape of kernel with only unary ops and contiguous loads
+                    // and stores, we can remove old loops and replace them with new loops.
+                    if kernel.ops.iter().all(|op| match op {
+                        VOp::Loop { .. } | VOp::Unary { .. } | VOp::Binary { .. } => true,
+                        VOp::Load { view, .. } => view.is_contiguous(),
+                        VOp::Store { strides, .. } => strides == &shape_to_strides(&kernel.shape),
+                        _ => false,
                     }) {
                         // Remove old loops
                         for _ in 0..kernel.shape.len() {
@@ -670,8 +681,15 @@ fn generate_kernels(
                                 _ => {}
                             }
                         }
+                        kernel.ops.push(VOp::Unary {
+                            z: nid,
+                            x: *x,
+                            uop: UOp::Noop,
+                        });
+                        kernel.shape = shape.clone();
                         kernel.vars.insert(nid);
                     } else {
+                        // TODO
                         // If we can split axes, split axes by replacing one loop with two loops.
                         // If last axes are unsqueezes with ones, add new loops to the end of the kernel.
 
@@ -709,28 +727,39 @@ fn generate_kernels(
                 rop,
                 shape,
             } => {
-                println!("Axes {axes:?}");
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
-                    // We have to also permute the loop dimensions such that reduce loops are last
+                    //println!("Axes {axes:?}");
+                    // Permute the axes such that reduce loops are last
+                    // and keep the order of axes that are not reduced.
+                    let permute_axes: Vec<usize> = (0..graph.shape(*x).len())
+                        .filter(|a| !axes.contains(a))
+                        .chain(axes.iter().copied())
+                        .collect();
+                    //println!("Permute axes: {permute_axes:?}");
+                    kernel.permute(&permute_axes);
+
                     // We can also just merge these reduce loops into single loop, since it gets removed
                     // from the resulting shape either way, but only if there are no ops between those loops.
-                    let mut axes_order = Vec::new();
-                    let mut first_loop = 0;
+
                     // Add accumulator
-                    let mut i = kernel.ops.len();
-                    while i > 0 {
-                        i -= 1;
-                        if let VOp::Loop { axis, .. } = &kernel.ops[i] {
-                            if axes.contains(axis) {
-                                axes_order.push(*axis);
-                                first_loop = i;
-                            }
-                        }
-                    }
+                    let mut num_loops = 0;
+                    let acc_id = kernel.ops.len()
+                        - kernel
+                            .ops
+                            .iter()
+                            .rev()
+                            .position(|op| {
+                                if matches!(op, VOp::Loop { .. }) {
+                                    num_loops += 1;
+                                }
+                                num_loops == axes.len()
+                            })
+                            .unwrap()
+                        - 1;
                     kernel
                         .ops
-                        .insert(first_loop, VOp::Accumulator { z: nid, rop: *rop });
+                        .insert(acc_id, VOp::Accumulator { z: nid, rop: *rop });
                     // End loops
                     kernel.ops.push(VOp::Reduce {
                         num_axes: axes.len(),
@@ -1196,8 +1225,18 @@ pub(crate) fn compile_ir(
         }
     }
 
-    println!("Inputs: {inputs:?}");
-    println!("Outputs: {outputs:?}");
+    // Add loop ends
+    let mut loop_ends_count = 0;
+    for op in &ops {
+        match op {
+            IROp::Loop { .. } => loop_ends_count += 1,
+            IROp::EndLoop { .. } => loop_ends_count -= 1,
+            _ => {}
+        }
+    }
+    for _ in 0..loop_ends_count {
+        ops.push(IROp::EndLoop);
+    }
 
     let mut args = BTreeMap::new();
     for x in inputs {
@@ -1218,7 +1257,6 @@ pub(crate) fn compile_ir(
             },
         );
     }
-    println!("Args: {args:?}");
 
     return IRKernel {
         global_work_size,

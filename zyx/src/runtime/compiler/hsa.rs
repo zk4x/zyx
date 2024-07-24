@@ -11,24 +11,19 @@ use std::println;
 
 pub(crate) struct HSABuffer {
     memory: *mut c_void,
-    event: *mut c_void,
+    //event: *mut c_void,
 }
 
 pub(crate) struct HSAProgram {
     name: String,
-    program: *mut c_void,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
     args_read_only: Vec<bool>,
+    program: *mut c_void,
 }
 
 pub(crate) struct HSARuntime {
     hsa_runtime_so: Library,
-    context: *mut c_void,
-    devices: BTreeSet<*mut c_void>,
-    queues: Box<[*mut c_void]>,
-    queue_size: Box<[u8]>,
-    queue_id: usize,
 }
 
 // These pointers are on device and do not get invalidated when accessing
@@ -78,14 +73,7 @@ impl Compiler for HSARuntime {
         let status = unsafe { hsa_init() };
         println!("HSA runtime init status: {status}");
 
-        Ok(Self {
-            hsa_runtime_so,
-            context: todo!(),
-            devices: todo!(),
-            queues: todo!(),
-            queue_size: todo!(),
-            queue_id: todo!(),
-        })
+        Ok(Self { hsa_runtime_so })
     }
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
