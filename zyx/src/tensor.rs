@@ -64,6 +64,7 @@ impl Tensor {
         g.initialize_device(device)
     }
 
+    /// Returns gradients of self derived w.r.t. sources
     #[must_use]
     pub fn backward<'a>(
         &self,
@@ -80,21 +81,25 @@ impl Tensor {
             .unwrap();
     }
 
+    /// Shape of tensor
     #[must_use]
     pub fn shape(&self) -> Vec<usize> {
         RT.lock().shape(self.id).to_vec()
     }
 
+    /// Number of scalar elements stored in self
     #[must_use]
     pub fn numel(&self) -> usize {
         self.shape().iter().product()
     }
 
+    /// Rank of self. Rank means number of dimensions/axes.
     #[must_use]
     pub fn rank(&self) -> usize {
         self.shape().len()
     }
 
+    /// Datatype of self. See [DType](crate::DType) for available datatypes.
     #[must_use]
     pub fn dtype(&self) -> DType {
         RT.lock().dtype(self.id)
@@ -106,6 +111,7 @@ impl Tensor {
         RT.lock().device(self.id)
     }
 
+    /// Copy tensor to different [device](crate::Device).
     #[must_use]
     pub fn to(self, device: Device) -> Tensor {
         let mut rt = RT.lock();
@@ -166,6 +172,7 @@ impl Tensor {
     }
 
     // Initializers
+    /// Create tensor sampled from standard distribution.
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
@@ -208,6 +215,7 @@ impl Tensor {
         return Tensor { id: tensor_id };
     }
 
+    /// Create tensor sampled from uniform distribution
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn uniform<T: Scalar>(
@@ -220,6 +228,7 @@ impl Tensor {
         todo!()
     }
 
+    /// Create tensor sampled from kaiming uniform distribution.
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn kaiming_uniform<T: Scalar>(
@@ -232,6 +241,7 @@ impl Tensor {
         todo!()
     }
 
+    /// Create tensor filled with zeros.
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
         let n = shape.clone().into_shape().product();
@@ -291,6 +301,7 @@ impl Tensor {
         return Tensor { id: tensor_id };
     }
 
+    /// Create tensor filled with ones.
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
         let n = shape.clone().into_shape().product();
@@ -350,14 +361,7 @@ impl Tensor {
         return Tensor { id: tensor_id };
     }
 
-    #[must_use]
-    pub fn eye(n: usize, dtype: DType) -> Tensor {
-        let _ = n;
-        let _ = dtype;
-        RT.lock().set_default_device_best();
-        todo!()
-    }
-
+    /// Create tensor filled with value.
     #[must_use]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
         let _ = shape;
@@ -366,12 +370,23 @@ impl Tensor {
         todo!()
     }
 
+    /// Create square tensor with ones on the main diagonal and all other values set to zero.
+    #[must_use]
+    pub fn eye(n: usize, dtype: DType) -> Tensor {
+        let _ = n;
+        let _ = dtype;
+        RT.lock().set_default_device_best();
+        todo!()
+    }
+
     // unary
+    /// Computes the absolute value of each element in self.
     #[must_use]
     pub fn abs(&self) -> Tensor {
         todo!()
     }
 
+    /// Casts self to [dtype](crate::DType).
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
         return Tensor {
@@ -379,11 +394,13 @@ impl Tensor {
         };
     }
 
+    /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).
     #[must_use]
-    pub fn celu(&self) -> Tensor {
-        todo!()
+    pub fn celu(&self, alpha: impl Scalar) -> Tensor {
+        return self.relu() - (-((self / alpha).exp() - 1) * alpha).relu();
     }
 
+    /// Returns a new tensor with the cosine of the elements of self.
     #[must_use]
     pub fn cos(&self) -> Tensor {
         Self {
@@ -391,6 +408,11 @@ impl Tensor {
         }
     }
 
+    /// During training, randomly zeroes some of the elements of the input tensor with probability.
+    /// The zeroed elements are chosen independently for each forward call and are sampled from a Bernoulli distribution.
+    /// Each channel will be zeroed out independently on every forward call.
+    /// Furthermore, the outputs are scaled by a factor of 11−p1−p1​ during training.
+    /// This means that during evaluation the module simply computes an identity function.
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
         let _ = probability;
@@ -612,7 +634,9 @@ impl Tensor {
         self.var(axes).sqrt()
     }
 
-    // Removes kernel dimensions for now
+    /// Sum reduce. Removes tensor dimensions.
+    /// Equivalent to pytorch sum(axes, keepdim=False)
+    /// If you want to keep reduce dimensions, see [sum_kd](Tensor::sum_kd)
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
         #[cfg(debug_assertions)]
@@ -630,6 +654,18 @@ impl Tensor {
         return Tensor {
             id: RT.lock().sum(self.id, axes),
         };
+    }
+
+    // Probably just have sum_kd, max_kd that keep tensor dimensions
+    /// Like [sum](Tensor::sum) but keeps reduce dimensions, setting them to 1.
+    /// Equivalent to pytorch sum(axes, keepdim=True)
+    #[must_use]
+    pub fn sum_kd(&self, axes: impl IntoAxes) -> Tensor {
+        let mut shape = self.shape();
+        for a in axes.clone().into_axes(shape.len()) {
+            shape[a] = 1;
+        }
+        self.sum(axes).reshape(shape)
     }
 
     #[must_use]

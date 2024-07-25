@@ -82,6 +82,7 @@ pub(crate) struct Runtime {
     pub(crate) default_device_set_by_user: bool,
     #[cfg(feature = "rand")]
     pub(crate) rng: core::cell::OnceCell<SmallRng>,
+    training: bool,
 }
 
 impl Runtime {
@@ -101,6 +102,7 @@ impl Runtime {
             default_device_set_by_user: false,
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
+            training: false,
         }
     }
 

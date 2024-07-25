@@ -34,11 +34,21 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 //#[cfg(feature = "std")]
 //static RT: std::sync::Mutex<Runtime> = std::sync::Mutex::new(Runtime::new());
 
+// Load and save test
 #[test]
 fn t0() {
     use std::println;
+    Tensor::set_default_device(Device::CUDA);
+    let x = Tensor::from([[2, 3], [4, 5]]);
+    println!("{x}");
+    //assert_eq!(x, [[2, 3], [4, 5]]);
+}
+
+#[test]
+fn t1() {
+    use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
-    Tensor::set_default_device(Device::OpenCL);
+    Tensor::set_default_device(Device::CUDA);
     /*let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
     .expand([2, 3, 2])
     .exp()

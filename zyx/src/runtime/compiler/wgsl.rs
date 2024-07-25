@@ -1,3 +1,4 @@
+use crate::DType;
 use crate::Scalar;
 
 use super::{Compiler, CompilerError, HWInfo};
@@ -129,8 +130,19 @@ impl Compiler for WGSLRuntime {
                 BufferSize::new((data.len() * T::byte_size()) as u64).unwrap(),
             )
             .unwrap();
-        todo!();
-        //data.iter().flat_map(|val| val.to_le_bytes());
+        match T::dtype() {
+            DType::F32 => {
+                for i in 0..data.len() {
+                    let [a, b, c, d] = data[i].clone().into_f32().to_ne_bytes();
+                    view.as_mut()[i * 4] = a;
+                    view.as_mut()[i * 4 + 1] = b;
+                    view.as_mut()[i * 4 + 2] = c;
+                    view.as_mut()[i * 4 + 3] = d;
+                }
+            }
+            _ => {}
+        }
+        //queue.submit(command_buffers);
         Ok(())
     }
 
