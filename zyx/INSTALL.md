@@ -19,6 +19,8 @@ zyx = { version = "*", features = ["cuda"] }
 
 To install cuda toolkit, please refer to Nvidia's official [website](https://developer.nvidia.com/cuda-downloads).
 
+Zyx uses only CUDA's driver API, so you don't need to install runtime API.
+
 ## HSA
 
 HSA is runtime that for running code on AMD gpus.

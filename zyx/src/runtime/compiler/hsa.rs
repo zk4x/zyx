@@ -57,11 +57,6 @@ impl Compiler for HSARuntime {
 
         //println!("{hdr}");
 
-        let libhsa_path = match std::env::var("ROCM_PATH") {
-            Ok(path) => path + "/lib/libhsa-runtime64.so",
-            Err(_) => "/usr/lib64/libhsa-runtime64.so.1".into(), // TODO search for hsa-runtime64 path
-        };
-
         //std::fs::File::open(&libhsa_path)
         //.map_err(|_| CompilerError::InitializationFailure("Unable to access hsa-runtime64"))?;
 

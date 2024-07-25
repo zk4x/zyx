@@ -613,8 +613,6 @@ impl Compiler for OpenCLRuntime {
     }
 
     fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
-        //println!("Compiling IRKernel: {kernel:#?}");
-
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 

@@ -44,8 +44,18 @@ fn t0() {
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }
 
+// Unary test
 #[test]
 fn t1() {
+    use std::println;
+    Tensor::set_default_device(Device::CUDA);
+    let x = Tensor::from([[2, 3], [4, 5]]).exp();
+    println!("{x}");
+    //assert_eq!(x, [[2, 3], [4, 5]]);
+}
+
+#[test]
+fn t2() {
     use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
     Tensor::set_default_device(Device::CUDA);
