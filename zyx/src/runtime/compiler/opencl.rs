@@ -294,7 +294,7 @@ impl Compiler for OpenCLRuntime {
     type Program = OpenCLProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
-        let platform_id = 0;
+        let platform_id = 3;
         let queues_per_device = 8;
         let platform_ids = {
             // Get the number of platforms
@@ -524,20 +524,19 @@ impl Compiler for OpenCLRuntime {
     fn store_memory<T: Scalar>(
         &mut self,
         buffer: &mut Self::Buffer,
-        data: &[T],
+        data: Vec<T>,
     ) -> Result<(), CompilerError> {
         //std::println!("Storing");
         // TODO we can also do async stores with iter being &[T], in then we need a way of making
         // sure that the reference stays valid for the whole duration of the copy.
         // TODO we can do batched load, with buffer of say 1 MB size in RAM and offset write buffer
-        let size = data.len() * T::byte_size();
         let status = unsafe {
             clEnqueueWriteBuffer(
                 self.queue()?,
                 buffer.memory,
                 CL_NON_BLOCKING,
                 0,
-                size,
+                data.len() * T::byte_size(),
                 data.as_ptr().cast(),
                 0,
                 ptr::null(),
@@ -833,13 +832,12 @@ impl Compiler for OpenCLRuntime {
         let mut events = Vec::new();
         let mut i = 0;
         for arg in &mut *args {
-            let (buffer, event) = (arg.memory, arg.event);
             // Memory that is freshly allocated does not need to be awaited using events
-            if !event.is_null() {
-                events.push(event);
+            if !arg.event.is_null() {
+                events.push(arg.event);
             }
             // This is POINTER MAGIC. Be careful.
-            let ptr: *const _ = &buffer;
+            let ptr: *const _ = &arg.memory;
             status = unsafe {
                 clSetKernelArg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
             };

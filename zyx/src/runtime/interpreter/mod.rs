@@ -45,7 +45,7 @@ impl<I: Interpreter> InterpretedBackend<I> {
     pub(super) fn store<T: Scalar>(
         &mut self,
         x: TensorId,
-        data: &[T],
+        data: Vec<T>,
     ) -> Result<(), InterpreterError> {
         let _ = x;
         let _ = data;

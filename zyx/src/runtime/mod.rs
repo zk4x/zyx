@@ -391,7 +391,7 @@ impl Runtime {
 impl Runtime {
     pub(crate) fn store<T: Scalar>(
         &mut self,
-        data: &[T],
+        data: Vec<T>,
         device: Device,
         shape: impl IntoShape,
     ) -> Result<TensorId, ZyxError> {

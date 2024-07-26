@@ -53,7 +53,7 @@ pub(super) trait Compiler: Sized {
     fn store_memory<T: Scalar>(
         &mut self,
         buffer: &mut Self::Buffer,
-        data: &[T],
+        data: Vec<T>,
     ) -> Result<(), CompilerError>;
     fn load_memory<T: Scalar>(
         &mut self,
@@ -157,7 +157,7 @@ impl<C: Compiler> CompiledBackend<C> {
     pub(super) fn store<T: Scalar>(
         &mut self,
         x: TensorId,
-        data: &[T],
+        data: Vec<T>,
     ) -> Result<(), CompilerError> {
         let mut buffer = self.compiler.allocate_memory(data.len() * T::byte_size())?;
         self.compiler.store_memory(&mut buffer, data)?;

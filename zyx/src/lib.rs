@@ -49,7 +49,7 @@ fn t0() {
 fn t1() {
     use std::println;
     Tensor::set_default_device(Device::CUDA);
-    let x = Tensor::from([[2, 3], [4, 5]]).exp();
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }

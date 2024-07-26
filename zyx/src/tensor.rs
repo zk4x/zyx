@@ -2,6 +2,7 @@ use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoShape};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::ops::{
@@ -130,11 +131,11 @@ impl Tensor {
                 }
                 DType::F32 => {
                     let data = rt.load::<f32>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
                 DType::F64 => {
                     let data = rt.load::<f64>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
                 #[cfg(feature = "complex")]
                 DType::CF32 => {
@@ -148,23 +149,23 @@ impl Tensor {
                 }
                 DType::U8 => {
                     let data = rt.load::<u8>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
                 DType::I8 => {
                     let data = rt.load::<i8>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
                 DType::I16 => {
                     let data = rt.load::<i16>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
                 DType::I32 => {
                     let data = rt.load::<i32>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
                 DType::I64 => {
                     let data = rt.load::<i64>(self.id).unwrap();
-                    rt.store(&data, device, shape)
+                    rt.store(data, device, shape)
                 }
             }
             .unwrap(),
@@ -191,13 +192,13 @@ impl Tensor {
             #[cfg(feature = "half")]
             DType::F16 => todo!(),
             DType::F32 => {
-                let data = &(0..n)
+                let data = (0..n)
                     .map(move |_| rng.sample(Standard))
                     .collect::<Vec<f32>>();
                 rt.store(data, default_device, shape).unwrap()
             }
             DType::F64 => {
-                let data = &(0..n)
+                let data = (0..n)
                     .map(move |_| rng.sample(Standard))
                     .collect::<Vec<f64>>();
                 rt.store(data, default_device, shape).unwrap()
@@ -261,11 +262,11 @@ impl Tensor {
             }
             DType::F32 => {
                 let data: Vec<_> = core::iter::repeat(0f32).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::F64 => {
                 let data: Vec<_> = core::iter::repeat(0f64).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             #[cfg(feature = "complex")]
             DType::CF32 => {
@@ -279,23 +280,23 @@ impl Tensor {
             }
             DType::U8 => {
                 let data: Vec<_> = core::iter::repeat(0u8).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I8 => {
                 let data: Vec<_> = core::iter::repeat(0i8).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I16 => {
                 let data: Vec<_> = core::iter::repeat(0i16).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I32 => {
                 let data: Vec<_> = core::iter::repeat(0i32).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I64 => {
                 let data: Vec<_> = core::iter::repeat(0i64).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
         };
         return Tensor { id: tensor_id };
@@ -321,11 +322,11 @@ impl Tensor {
             }
             DType::F32 => {
                 let data: Vec<_> = core::iter::repeat(1f32).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::F64 => {
                 let data: Vec<_> = core::iter::repeat(1f64).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             #[cfg(feature = "complex")]
             DType::CF32 => {
@@ -339,23 +340,23 @@ impl Tensor {
             }
             DType::U8 => {
                 let data: Vec<_> = core::iter::repeat(1u8).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I8 => {
                 let data: Vec<_> = core::iter::repeat(1i8).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I16 => {
                 let data: Vec<_> = core::iter::repeat(1i16).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I32 => {
                 let data: Vec<_> = core::iter::repeat(1i32).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
             DType::I64 => {
                 let data: Vec<_> = core::iter::repeat(1i64).take(n).collect();
-                rt.store(&data, default_device, shape).unwrap()
+                rt.store(data, default_device, shape).unwrap()
             }
         };
         return Tensor { id: tensor_id };
@@ -1380,7 +1381,7 @@ impl<T: Scalar> From<T> for Tensor {
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let default_device = rt.default_device;
-        let id = rt.store(&[value], default_device, 1).unwrap();
+        let id = rt.store(vec![value], default_device, 1).unwrap();
         return Tensor { id };
     }
 }
@@ -1390,7 +1391,8 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let default_device = rt.default_device;
-        let id = rt.store(&data, default_device, data.len()).unwrap();
+        let n = data.len();
+        let id = rt.store(data, default_device, n).unwrap();
         return Tensor { id };
     }
 }
@@ -1400,7 +1402,8 @@ impl<T: Scalar> From<&[T]> for Tensor {
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let default_device = rt.default_device;
-        let id = rt.store(data, default_device, data.len()).unwrap();
+        let n = data.len();
+        let id = rt.store(data.to_vec(), default_device, n).unwrap();
         return Tensor { id };
     }
 }
@@ -1410,7 +1413,7 @@ impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
         let mut rt = RT.lock();
         rt.set_default_device_best();
         let default_device = rt.default_device;
-        let id = rt.store(&data, default_device, D0).unwrap();
+        let id = rt.store(data.to_vec(), default_device, D0).unwrap();
         return Tensor { id };
     }
 }
@@ -1421,7 +1424,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        let id = rt.store(data, default_device, [D0, D1]).unwrap();
+        let id = rt.store(data.to_vec(), default_device, [D0, D1]).unwrap();
         return Tensor { id };
     }
 }
@@ -1434,7 +1437,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
         rt.set_default_device_best();
         let default_device = rt.default_device;
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        let id = rt.store(data, default_device, [D0, D1, D2]).unwrap();
+        let id = rt
+            .store(data.to_vec(), default_device, [D0, D1, D2])
+            .unwrap();
         return Tensor { id };
     }
 }
@@ -1448,7 +1453,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         let default_device = rt.default_device;
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        let id = rt.store(data, default_device, [D0, D1, D2, D3]).unwrap();
+        let id = rt
+            .store(data.to_vec(), default_device, [D0, D1, D2, D3])
+            .unwrap();
         return Tensor { id };
     }
 }
