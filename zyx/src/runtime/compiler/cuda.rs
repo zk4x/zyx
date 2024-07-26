@@ -227,7 +227,9 @@ use std::println;
 fn handle_status(status: CUresult, msg: &str) -> Result<(), CompilerError> {
     // TODO return proper compiler error
     if status != CUresult::CUDA_SUCCESS {
-        panic!("CUDA error: {status:?}, {msg}")
+        #[cfg(feature = "debug1")]
+        println!("CUDA error: {status:?}, {msg}");
+        return Err(CompilerError::GeneralExecutionError(""));
     }
     Ok(())
 }

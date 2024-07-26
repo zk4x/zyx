@@ -294,7 +294,7 @@ impl Compiler for OpenCLRuntime {
     type Program = OpenCLProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
-        let platform_id = 3;
+        let platform_id = 0;
         let queues_per_device = 8;
         let platform_ids = {
             // Get the number of platforms
@@ -601,13 +601,12 @@ impl Compiler for OpenCLRuntime {
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
         let status = unsafe { clReleaseMemObject(buffer.memory) };
         handle_status(status, "Unable to release buffer.", &[-38, -5, -6])?;
-        if !buffer.event.is_null() {
-            let status = unsafe { clReleaseEvent(buffer.event) };
-            handle_status(status, "Unable to release event.", &[-58, -5, -6])?;
-        } else {
+        if buffer.event.is_null() {
             #[cfg(feature = "debug1")]
             println!("Warning: A buffer was allocated, but never used.");
         }
+        /*let status = unsafe { clReleaseEvent(buffer.event) };
+        handle_status(status, "Unable to release event.", &[-58, -5, -6])?;*/
         return Ok(());
     }
 

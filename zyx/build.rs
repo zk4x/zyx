@@ -113,6 +113,10 @@ fn find_cuda_windows() -> PathBuf {
     panic!("Cannot find CUDA NVRTC libraries");
 }
 
+#[cfg(not(feature = "cuda"))]
+fn main() {}
+
+#[cfg(feature = "cuda")]
 fn main() {
     let cuda_path;
     if cfg!(target_os = "windows") {

@@ -38,7 +38,7 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 #[test]
 fn t0() {
     use std::println;
-    Tensor::set_default_device(Device::CUDA);
+    Tensor::set_default_device(Device::OpenCL);
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -48,7 +48,7 @@ fn t0() {
 #[test]
 fn t1() {
     use std::println;
-    Tensor::set_default_device(Device::CUDA);
+    Tensor::set_default_device(Device::OpenCL);
     let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -58,19 +58,20 @@ fn t1() {
 fn t2() {
     use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
-    Tensor::set_default_device(Device::CUDA);
-    /*let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
-    .expand([2, 3, 2])
-    .exp()
-    .ln()
-    .reshape([2, 3, 2, 1]);*/
-    let x = Tensor::from([[[[2f32], [3.]]], [[[4.], [5.]]]]).expand([2, 3, 2, 1]);
+    Tensor::set_default_device(Device::OpenCL);
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
+        .expand([2, 3, 2])
+        .exp()
+        .ln()
+        .reshape([2, 3, 2, 1]);
+    //let x = Tensor::from([[[[2f32], [3.]]], [[[4.], [5.]]]]).expand([2, 3, 2, 1]);
     //println!("{x}");
     let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
         .reshape([2, 3, 1, 1])
         .expand([2, 3, 2, 1]);
     //println!("{y}");
     let z = (&x + &y).expand([2, 3, 2, 2]).sum([3, 0]);
+    let z = z.exp().ln().permute([1, 0]);
     Tensor::realize([&x, &y, &z]);
     println!("{x}\n{y}\n{z}");
     //println!("{z}");

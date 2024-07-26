@@ -60,6 +60,8 @@ impl Compiler for HSARuntime {
         //std::fs::File::open(&libhsa_path)
         //.map_err(|_| CompilerError::InitializationFailure("Unable to access hsa-runtime64"))?;
 
+        //libhsa_path = ;
+
         println!("{libhsa_path}");
 
         let hsa_runtime_so = unsafe { Library::new(libhsa_path) }.unwrap();
@@ -96,7 +98,7 @@ impl Compiler for HSARuntime {
     fn store_memory<T: crate::Scalar>(
         &mut self,
         buffer: &mut Self::Buffer,
-        data: &[T],
+        data: Vec<T>,
     ) -> Result<(), super::CompilerError> {
         todo!()
     }
