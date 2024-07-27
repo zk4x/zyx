@@ -395,8 +395,8 @@ impl Runtime {
         device: Device,
         shape: impl IntoShape,
     ) -> Result<TensorId, ZyxError> {
-        #[cfg(feature = "debug1")]
-        println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
+        //#[cfg(feature = "debug1")]
+        //println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
         let node = Node::Leaf {
             shape: shape.into_shape().collect(),
             dtype: T::dtype(),

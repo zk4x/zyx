@@ -333,20 +333,37 @@ struct Kernel {
 impl Kernel {
     fn permute(&mut self, axes: &[usize]) {
         let shape: Vec<usize> = axes.iter().map(|a| self.shape[*a]).collect();
-        for op in &mut self.ops {
+        let mut permuted_loops: BTreeSet<usize> = axes.iter().copied().collect();
+        'ops_loop: for op in self.ops.iter_mut().rev() {
             match op {
                 VOp::Loop { axis, dimension } => {
-                    *dimension = shape[*axis];
+                    if axes.contains(axis) {
+                        *dimension = shape[*axis];
+                        permuted_loops.remove(axis);
+                        if permuted_loops.is_empty() {
+                            break 'ops_loop;
+                        }
+                    }
                 }
                 VOp::Load { view, .. } => {
-                    view.permute(&axes[..view.rank()]);
+                    let n = view.rank();
+                    if axes.len() < n {
+                        let all_axes: Vec<usize> =
+                            axes.iter().copied().chain(axes.len()..n).collect();
+                        view.permute(&all_axes);
+                    } else {
+                        view.permute(&axes[..n]);
+                    }
                 }
                 VOp::Store { strides, .. } => {
-                    // *strides = shape_to_strides(&shape);
-                    *strides = axes[..strides.len()]
-                        .iter()
-                        .map(|axis| strides[*axis])
-                        .collect();
+                    let n = strides.len();
+                    if axes.len() < n {
+                        let all_axes: Vec<usize> =
+                            axes.iter().copied().chain(axes.len()..n).collect();
+                        *strides = all_axes.iter().map(|axis| strides[*axis]).collect();
+                    } else {
+                        *strides = axes[..n].iter().map(|axis| strides[*axis]).collect();
+                    }
                 }
                 _ => {}
             }

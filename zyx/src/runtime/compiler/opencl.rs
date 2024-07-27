@@ -73,8 +73,8 @@ extern "system" {
         num_devices: *mut cl_uint,
     ) -> cl_int;
 
-    #[cfg(feature = "CL_VERSION_1_2")]
-    fn clReleaseDevice(device: cl_device_id) -> cl_int;
+    /*#[cfg(feature = "CL_VERSION_1_2")]
+    fn clReleaseDevice(device: cl_device_id) -> cl_int;*/
 
     fn clCreateContext(
         properties: *const isize,
@@ -94,7 +94,7 @@ extern "system" {
 
     fn clReleaseContext(context: *mut c_void) -> cl_int;
 
-    #[cfg(not(feature = "CL_VERSION_2_0"))]
+    //#[cfg(not(feature = "CL_VERSION_2_0"))]
     fn clCreateCommandQueue(
         context: *mut c_void,
         device: *mut c_void,
@@ -102,13 +102,13 @@ extern "system" {
         errcode_ret: *mut cl_int,
     ) -> *mut c_void;
 
-    #[cfg(feature = "CL_VERSION_2_0")]
+    /*#[cfg(feature = "CL_VERSION_2_0")]
     fn clCreateCommandQueueWithProperties(
         context: cl_context,
         device: cl_device_id,
         properties: *const cl_queue_properties,
         errcode_ret: *mut cl_int,
-    ) -> cl_command_queue;
+    ) -> cl_command_queue;*/
 
     fn clCreateBuffer(
         context: *mut c_void,
@@ -201,7 +201,7 @@ extern "system" {
 
     fn clFinish(command_queue: *mut c_void) -> cl_int;
 
-    fn clReleaseEvent(event: *mut c_void) -> cl_int;
+    //fn clReleaseEvent(event: *mut c_void) -> cl_int;
 }
 
 impl DType {
@@ -279,11 +279,11 @@ impl OpenCLRuntime {
 
 impl Drop for OpenCLRuntime {
     fn drop(&mut self) {
-        #[cfg(feature = "CL_VERSION_1_2")]
+        /*#[cfg(feature = "CL_VERSION_1_2")]
         for device in &mut self.devices {
             let status = unsafe { clReleaseDevice(device) };
             handle_status(status, "Unable to release device.", &[-33, -5, -6]).unwrap();
-        }
+            }*/
         let status = unsafe { clReleaseContext(self.context) };
         handle_status(status, "Unable to release context.", &[-34, -5, -6]).unwrap();
     }

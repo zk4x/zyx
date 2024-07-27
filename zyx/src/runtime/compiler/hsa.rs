@@ -4,14 +4,13 @@ use super::{Compiler, CompilerError, HWInfo};
 use alloc::vec;
 use alloc::{boxed::Box, collections::BTreeSet, string::String, vec::Vec};
 use core::ffi::c_void;
-use libloading::{Library, Symbol};
+use hsa::{Agent, Region};
 
 #[cfg(feature = "debug1")]
 use std::println;
 
 pub(crate) struct HSABuffer {
-    memory: *mut c_void,
-    //event: *mut c_void,
+    memory: hsa::Memory<u8>,
 }
 
 pub(crate) struct HSAProgram {
@@ -23,7 +22,8 @@ pub(crate) struct HSAProgram {
 }
 
 pub(crate) struct HSARuntime {
-    hsa_runtime_so: Library,
+    agent: Agent,
+    mem_region: Region,
 }
 
 // These pointers are on device and do not get invalidated when accessing
@@ -46,31 +46,28 @@ type hsa_region_t = *mut c_void;
     ) -> hsa_status_t;
 }*/
 
+impl Drop for HSARuntime {
+    fn drop(&mut self) {
+        hsa::shutdown().unwrap();
+    }
+}
+
 impl Compiler for HSARuntime {
     type Buffer = HSABuffer;
     type Program = HSAProgram;
 
     fn initialize() -> Result<Self, CompilerError> {
-        /*let hdr = std::fs::read_to_string("/usr/include/linux/kfd_ioctl.h").map_err(|_| {
-            CompilerError::InitializationFailure("Unable to read /usr/include/linux/kfd_ioctl.h")
-        })?;*/
+        hsa::init().unwrap();
 
-        //println!("{hdr}");
+        let agents = Agent::list().unwrap();
+        println!("Agents:\n{agents:?}");
+        let agent = agents[1];
+        let device = agent.device().unwrap();
+        println!("Device: {device:?}");
+        let regions = agent.regions().unwrap();
+        let mem_region = regions[0];
 
-        //std::fs::File::open(&libhsa_path)
-        //.map_err(|_| CompilerError::InitializationFailure("Unable to access hsa-runtime64"))?;
-
-        //libhsa_path = ;
-
-        println!("{libhsa_path}");
-
-        let hsa_runtime_so = unsafe { Library::new(libhsa_path) }.unwrap();
-        let hsa_init: Symbol<unsafe extern "system" fn() -> u32> =
-            unsafe { hsa_runtime_so.get(b"hsa_init") }.unwrap();
-        let status = unsafe { hsa_init() };
-        println!("HSA runtime init status: {status}");
-
-        Ok(Self { hsa_runtime_so })
+        Ok(Self { agent, mem_region })
     }
 
     fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
@@ -92,7 +89,8 @@ impl Compiler for HSARuntime {
     }
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
-        todo!()
+        let memory = hsa::Memory::allocate(self.mem_region, byte_size).unwrap();
+        return Ok(HSABuffer { memory });
     }
 
     fn store_memory<T: crate::Scalar>(
@@ -100,7 +98,18 @@ impl Compiler for HSARuntime {
         buffer: &mut Self::Buffer,
         data: Vec<T>,
     ) -> Result<(), super::CompilerError> {
-        todo!()
+        //let ptr = buffer.memory.as_mut_ptr();
+        /*for i in 0..data.len() {
+        // TODO get this working with different dtypes
+        let x = data[i].into_f32().to_ne_bytes();
+        unsafe {
+            *ptr.add(i) = x[i];
+            *ptr.add(i + 1) = x[i + 1];
+            *ptr.add(i + 2) = x[i + 2];
+            *ptr.add(i + 3) = x[i + 3];
+        };
+        }*/
+        return Ok(());
     }
 
     fn load_memory<T: crate::Scalar>(
