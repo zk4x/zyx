@@ -158,15 +158,20 @@ impl Graph {
         };
     }
 
-    // Calculates execution order and optimizes graph by moving all unary ops before movement ops
-    pub(crate) fn execution_order(&mut self, to_eval: &BTreeSet<TensorId>) -> Vec<TensorId> {
+    // Compares two graphs and returns overlapping nodes (that are in both graphs).
+    // These nodes are then realized which gives us constant folding.
+    pub(crate) fn get_overlapping_nodes(&self, other: &Self) -> BTreeSet<TensorId> {
+        todo!()
+    }
+
+    // Calculates execution order and optimizes graph:
+    // 1. moves all unary ops before movement ops
+    // 2. removes unnecessary ops (like exp followed by ln)
+    // This function should be pretty fast, because it's also used by the interpreter, which does not do any caching
+    pub(super) fn execution_order(&mut self, to_eval: &BTreeSet<TensorId>) -> Vec<TensorId> {
         let _ = to_eval;
         // TODO actual calculation of execution order once we no longer just use from lowest id to highest id order
         self.nodes.keys().copied().collect()
-    }
-
-    pub(crate) fn swap_movement_and_unary_ops(&mut self) {
-        todo!()
         // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
         /*let mut node_swap = true;
@@ -184,6 +189,12 @@ impl Graph {
 
     // Swap movement and unary op
     // first and second tensors must have rc == 1!
+    #[cfg(any(
+        feature = "cuda",
+        feature = "hsa",
+        feature = "opencl",
+        feature = "wgsl",
+    ))]
     fn swap_nodes(&mut self, first: TensorId, second: TensorId) {
         let _ = first;
         let _ = second;

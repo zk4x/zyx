@@ -1,5 +1,5 @@
-use crate::runtime::interpreter::{Interpreter, InterpreterError};
 use crate::dtype::DType;
+use crate::runtime::interpreter::{Interpreter, InterpreterError};
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
 
@@ -27,6 +27,7 @@ pub(crate) enum CPUBuffer {
     I16(Vec<i16>),
     I32(Vec<i32>),
     I64(Vec<i64>),
+    Bool(Vec<bool>),
 }
 
 impl CPUBuffer {
@@ -47,108 +48,92 @@ impl CPUBuffer {
             CPUBuffer::I16(x) => x.len(),
             CPUBuffer::I32(x) => x.len(),
             CPUBuffer::I64(x) => x.len(),
-        }
+            CPUBuffer::Bool(x) => x.len(),
+        };
+    }
+
+    fn dtype(&self) -> DType {
+        return match self {
+            #[cfg(feature = "half")]
+            CPUBuffer::BF16(_) => DType::BF16,
+            #[cfg(feature = "half")]
+            CPUBuffer::F16(_) => DType::F16,
+            CPUBuffer::F32(_) => DType::F32,
+            CPUBuffer::F64(_) => DType::F64,
+            #[cfg(feature = "complex")]
+            CPUBuffer::CF32(_) => DType::CF32,
+            #[cfg(feature = "complex")]
+            CPUBuffer::CF64(_) => DType::CF64,
+            CPUBuffer::U8(_) => DType::U8,
+            CPUBuffer::I8(_) => DType::I8,
+            CPUBuffer::I16(_) => DType::I16,
+            CPUBuffer::I32(_) => DType::I32,
+            CPUBuffer::I64(_) => DType::I64,
+            CPUBuffer::Bool(_) => DType::Bool,
+        };
     }
 }
 
 impl Interpreter for CPU {
     type Buffer = CPUBuffer;
     fn initialize() -> Result<Self, InterpreterError> {
-        todo!()
+        Ok(Self {})
     }
+
+    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, InterpreterError> {
+        Ok(match T::dtype() {
+            #[cfg(feature = "half")]
+            DType::BF16 => CPUBuffer::BF16(unsafe { core::mem::transmute(data) }),
+            #[cfg(feature = "half")]
+            DType::F16 => CPUBuffer::F16(unsafe { core::mem::transmute(data) }),
+            DType::F32 => CPUBuffer::F32(unsafe { core::mem::transmute(data) }),
+            DType::F64 => CPUBuffer::F64(unsafe { core::mem::transmute(data) }),
+            #[cfg(feature = "complex")]
+            DType::CF32 => CPUBuffer::CF32(unsafe { core::mem::transmute(data) }),
+            #[cfg(feature = "complex")]
+            DType::CF64 => CPUBuffer::CF64(unsafe { core::mem::transmute(data) }),
+            DType::U8 => CPUBuffer::U8(unsafe { core::mem::transmute(data) }),
+            DType::I8 => CPUBuffer::I8(unsafe { core::mem::transmute(data) }),
+            DType::I16 => CPUBuffer::I16(unsafe { core::mem::transmute(data) }),
+            DType::I32 => CPUBuffer::I32(unsafe { core::mem::transmute(data) }),
+            DType::I64 => CPUBuffer::I64(unsafe { core::mem::transmute(data) }),
+            DType::Bool => CPUBuffer::Bool(unsafe { core::mem::transmute(data) }),
+        })
+    }
+
     fn load_mem<T: Scalar>(
         &self,
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, InterpreterError> {
         debug_assert_eq!(buffer.len(), length);
-        match T::dtype() {
-            #[cfg(feature = "half")]
-            DType::BF16 => {
-                if let CPUBuffer::BF16(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            #[cfg(feature = "half")]
-            DType::F16 => {
-                if let CPUBuffer::F16(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::F32 => {
-                if let CPUBuffer::F32(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::F64 => {
-                if let CPUBuffer::F64(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            #[cfg(feature = "complex")]
-            DType::CF32 => {
-                if let CPUBuffer::CF32(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            #[cfg(feature = "complex")]
-            DType::CF64 => {
-                if let CPUBuffer::CF64(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::U8 => {
-                if let CPUBuffer::U8(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::I8 => {
-                if let CPUBuffer::I8(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::I16 => {
-                if let CPUBuffer::I16(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::I32 => {
-                if let CPUBuffer::I32(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
-            DType::I64 => {
-                if let CPUBuffer::I64(data) = buffer {
-                    return Ok(unsafe { core::mem::transmute(data.clone()) });
-                } else {
-                    return Err(InterpreterError::BufferDoesNotExist);
-                }
-            }
+        if T::dtype() != buffer.dtype() {
+            return Err(InterpreterError::BufferDoesNotExist);
         }
+        let data: &Vec<T> = match buffer {
+            #[cfg(feature = "half")]
+            CPUBuffer::BF16(data) => unsafe { core::mem::transmute(data) },
+            #[cfg(feature = "half")]
+            CPUBuffer::F16(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::F32(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::F64(data) => unsafe { core::mem::transmute(data) },
+            #[cfg(feature = "complex")]
+            CPUBuffer::CF32(data) => unsafe { core::mem::transmute(data) },
+            #[cfg(feature = "complex")]
+            CPUBuffer::CF64(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::U8(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::I8(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::I16(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::I32(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::I64(data) => unsafe { core::mem::transmute(data) },
+            CPUBuffer::Bool(data) => unsafe { core::mem::transmute(data) },
+        };
+        return Ok(data.clone());
     }
 
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError> {
-        let _ = buffer;
-        todo!()
+        // or nothing at all, but lets be explicit
+        core::mem::drop(buffer);
+        Ok(())
     }
 }

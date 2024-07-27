@@ -1,5 +1,6 @@
 #[cfg(feature = "half")]
 mod scalar_bf16;
+mod scalar_bool;
 #[cfg(feature = "complex")]
 mod scalar_cf32;
 #[cfg(feature = "complex")]

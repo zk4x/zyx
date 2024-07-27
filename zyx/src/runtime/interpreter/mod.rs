@@ -22,12 +22,16 @@ pub enum InterpreterError {
 pub(super) trait Interpreter: Sized {
     type Buffer;
     fn initialize() -> Result<Self, InterpreterError>;
+    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, InterpreterError>;
     fn load_mem<T: Scalar>(
         &self,
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, InterpreterError>;
     fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError>;
+    //fn exp(&self, x: &Self::Buffer) -> Self::Buffer;
+    //fn add(&self, x: &Self::Buffer, y: &Self::Buffer) -> Self::Buffer;
+    //fn dot(&self, x: &Self::Buffer, y: &Self::Buffer) -> Self::Buffer;
 }
 
 impl<I: Interpreter> InterpretedBackend<I> {
@@ -47,9 +51,8 @@ impl<I: Interpreter> InterpretedBackend<I> {
         x: TensorId,
         data: Vec<T>,
     ) -> Result<(), InterpreterError> {
-        let _ = x;
-        let _ = data;
-        todo!()
+        self.buffers.insert(x, self.interpreter.store_mem(data)?);
+        Ok(())
     }
 
     // Load values at x, if x is not evaluated, it will return error
@@ -73,9 +76,10 @@ impl<I: Interpreter> InterpretedBackend<I> {
 
     pub(super) fn interpret_graph(
         &mut self,
-        graph: &Graph,
+        mut graph: Graph,
         to_eval: &BTreeSet<TensorId>,
     ) -> Result<(), InterpreterError> {
+        let order = graph.execution_order(to_eval);
         todo!()
     }
 }

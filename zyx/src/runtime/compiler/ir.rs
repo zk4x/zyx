@@ -15,7 +15,7 @@ use super::Scope;
 use super::VOp;
 
 #[derive(Debug)]
-pub(super) struct IRKernel {
+pub(crate) struct IRKernel {
     pub(super) global_work_size: [usize; 3],
     pub(super) local_work_size: [usize; 3],
     pub(super) args: BTreeMap<TensorId, IRArg>,

@@ -167,6 +167,10 @@ impl Tensor {
                     let data = rt.load::<i64>(self.id).unwrap();
                     rt.store(data, device, shape)
                 }
+                DType::Bool => {
+                    let data = rt.load::<bool>(self.id).unwrap();
+                    rt.store(data, device, shape)
+                }
             }
             .unwrap(),
         };
@@ -212,6 +216,7 @@ impl Tensor {
             DType::I16 => todo!(),
             DType::I32 => todo!(),
             DType::I64 => todo!(),
+            DType::Bool => todo!(),
         };
         return Tensor { id: tensor_id };
     }
@@ -298,6 +303,10 @@ impl Tensor {
                 let data: Vec<_> = core::iter::repeat(0i64).take(n).collect();
                 rt.store(data, default_device, shape).unwrap()
             }
+            DType::Bool => {
+                let data: Vec<_> = core::iter::repeat(false).take(n).collect();
+                rt.store(data, default_device, shape).unwrap()
+            }
         };
         return Tensor { id: tensor_id };
     }
@@ -356,6 +365,10 @@ impl Tensor {
             }
             DType::I64 => {
                 let data: Vec<_> = core::iter::repeat(1i64).take(n).collect();
+                rt.store(data, default_device, shape).unwrap()
+            }
+            DType::Bool => {
+                let data: Vec<_> = core::iter::repeat(true).take(n).collect();
                 rt.store(data, default_device, shape).unwrap()
             }
         };

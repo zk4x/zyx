@@ -222,6 +222,7 @@ impl DType {
             DType::I16 => "short",
             DType::I32 => "int",
             DType::I64 => "long",
+            DType::Bool => "bool",
         };
     }
 }

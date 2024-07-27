@@ -35,6 +35,7 @@ pub fn find_cuda2() -> Vec<PathBuf> {
     valid_paths
 }
 
+#[cfg(feature = "cuda")]
 fn find_cuda() -> PathBuf {
     let cuda_env = env::var("CUDA_LIBRARY_PATH")
         .ok()
@@ -65,6 +66,7 @@ pub fn read_env() -> Vec<PathBuf> {
     }
 }
 
+#[cfg(feature = "cuda")]
 fn find_cuda_windows() -> PathBuf {
     let paths = read_env();
     if !paths.is_empty() {

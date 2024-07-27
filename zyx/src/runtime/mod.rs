@@ -491,58 +491,32 @@ impl Runtime {
         };
     }
 
-    fn is_realized(&self, x: TensorId) -> bool {
-        return match self.device(x) {
-            #[cfg(feature = "cuda")]
-            Device::CUDA => {
-                if let Some(cuda) = self.cuda.as_ref() {
-                    cuda.is_realized(x)
-                } else {
-                    false
-                }
-            }
-            #[cfg(feature = "hsa")]
-            Device::HSA => {
-                if let Some(hsa) = self.hsa.as_ref() {
-                    hsa.is_realized(x)
-                } else {
-                    false
-                }
-            }
-            #[cfg(feature = "opencl")]
-            Device::OpenCL => {
-                if let Some(opencl) = self.opencl.as_ref() {
-                    opencl.is_realized(x)
-                } else {
-                    false
-                }
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL => {
-                if let Some(wgsl) = self.wgsl.as_ref() {
-                    wgsl.is_realized(x)
-                } else {
-                    false
-                }
-            }
-            Device::CPU => {
-                if let Some(cpu) = self.cpu.as_ref() {
-                    cpu.is_realized(x)
-                } else {
-                    false
-                }
-            }
-        };
-    }
-
     pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         if tensors.len() == 0 {
             return Ok(());
         }
         let device = self.device(*tensors.first().unwrap());
-        let graph = self
-            .graph
-            .realize_graph(&tensors, |id| self.is_realized(id));
+        let graph = match device {
+            #[cfg(feature = "cuda")]
+            Device::CUDA => self
+                .graph
+                .realize_graph(&tensors, |id| self.cuda.as_ref().unwrap().is_realized(id)),
+            #[cfg(feature = "hsa")]
+            Device::HSA => self
+                .graph
+                .realize_graph(&tensors, |id| self.hsa.as_ref().unwrap().is_realized(id)),
+            #[cfg(feature = "opencl")]
+            Device::OpenCL => self
+                .graph
+                .realize_graph(&tensors, |id| self.opencl.as_ref().unwrap().is_realized(id)),
+            #[cfg(feature = "wgsl")]
+            Device::WGSL => self
+                .graph
+                .realize_graph(&tensors, |id| self.wgsl.as_ref().unwrap().is_realized(id)),
+            Device::CPU => self
+                .graph
+                .realize_graph(&tensors, |id| self.cpu.as_ref().unwrap().is_realized(id)),
+        };
         match device {
             #[cfg(feature = "cuda")]
             Device::CUDA => {
@@ -575,7 +549,7 @@ impl Runtime {
                 self.cpu
                     .as_mut()
                     .unwrap()
-                    .interpret_graph(&graph, &tensors)?;
+                    .interpret_graph(graph, &tensors)?;
                 return Ok(());
             }
         }

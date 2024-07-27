@@ -17,6 +17,7 @@ pub(crate) enum Constant {
     I16(i16),
     I32(i32),
     I64(i64),
+    Bool(bool),
 }
 
 impl Display for Constant {
@@ -63,6 +64,9 @@ impl Display for Constant {
             Constant::I64(value) => {
                 return f.write_fmt(format_args!("{}", value));
             }
+            Constant::Bool(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
         }
     }
 }
@@ -84,6 +88,7 @@ pub enum DType {
     I16,
     I32,
     I64,
+    Bool,
 }
 
 impl core::fmt::Display for DType {
@@ -104,6 +109,7 @@ impl core::fmt::Display for DType {
             DType::I16 => "I16",
             DType::I32 => "I32",
             DType::I64 => "I64",
+            DType::Bool => "Bool",
         });
     }
 }
@@ -111,7 +117,7 @@ impl core::fmt::Display for DType {
 #[cfg(any(
     feature = "cuda",
     feature = "opencl",
-    feature = "wgpu",
+    feature = "wgsl",
     feature = "hsa"
 ))]
 impl DType {
@@ -132,6 +138,7 @@ impl DType {
             DType::I16 => 2,
             DType::I32 => 4,
             DType::I64 => 8,
+            DType::Bool => 1,
         };
     }
 
@@ -152,6 +159,7 @@ impl DType {
             DType::I16 => Constant::I16(0),
             DType::I32 => Constant::I32(0),
             DType::I64 => Constant::I64(0),
+            DType::Bool => Constant::Bool(false),
         };
     }
 

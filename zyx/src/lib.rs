@@ -38,7 +38,7 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 #[test]
 fn t0() {
     use std::println;
-    Tensor::set_default_device(Device::OpenCL);
+    Tensor::set_default_device(Device::CPU);
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
