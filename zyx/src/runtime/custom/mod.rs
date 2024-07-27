@@ -4,38 +4,46 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use super::graph::Graph;
+use super::node::{BOp, ROp, UOp};
 
 pub(super) mod cpu;
 
-pub(super) struct InterpretedBackend<I: Interpreter> {
+pub(super) struct InterpretedBackend<I: Custom> {
     interpreter: I,
     buffers: BTreeMap<TensorId, I::Buffer>,
 }
 
 #[derive(Debug)]
-pub enum InterpreterError {
+pub enum CustomError {
     InitializationFailure,
     MemoryAllocationFailure,
     BufferDoesNotExist,
 }
 
-pub(super) trait Interpreter: Sized {
+pub(super) trait Custom: Sized {
     type Buffer;
-    fn initialize() -> Result<Self, InterpreterError>;
-    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, InterpreterError>;
+    fn initialize() -> Result<Self, CustomError>;
+    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, CustomError>;
     fn load_mem<T: Scalar>(
         &self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<Vec<T>, InterpreterError>;
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError>;
-    //fn exp(&self, x: &Self::Buffer) -> Self::Buffer;
-    //fn add(&self, x: &Self::Buffer, y: &Self::Buffer) -> Self::Buffer;
-    //fn dot(&self, x: &Self::Buffer, y: &Self::Buffer) -> Self::Buffer;
+    ) -> Result<Vec<T>, CustomError>;
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CustomError>;
+    /*fn unary(&self, x: &Self::Buffer, x_view: &View, uop: UOp) -> Self::Buffer;
+    fn binary(&self, x: &Self::Buffer, y: &Self::Buffer, bop: BOp) -> Self::Buffer;
+    fn where_(&self, x: &Self::Buffer, y: &Self::Buffer, z: &Self::Buffer) -> Self::Buffer;
+    fn dot(
+        &self,
+        x: &Self::Buffer,
+        y: &Self::Buffer,
+        transpose_x: bool,
+        transpose_y: bool,
+        ) -> Self::Buffer;*/
 }
 
-impl<I: Interpreter> InterpretedBackend<I> {
-    pub(super) fn initialize() -> Result<Self, InterpreterError> {
+impl<I: Custom> InterpretedBackend<I> {
+    pub(super) fn initialize() -> Result<Self, CustomError> {
         return Ok(Self {
             interpreter: I::initialize()?,
             buffers: BTreeMap::new(),
@@ -50,7 +58,7 @@ impl<I: Interpreter> InterpretedBackend<I> {
         &mut self,
         x: TensorId,
         data: Vec<T>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<(), CustomError> {
         self.buffers.insert(x, self.interpreter.store_mem(data)?);
         Ok(())
     }
@@ -60,14 +68,14 @@ impl<I: Interpreter> InterpretedBackend<I> {
         &self,
         x: TensorId,
         length: usize,
-    ) -> Result<Vec<T>, InterpreterError> {
+    ) -> Result<Vec<T>, CustomError> {
         if let Some(buffer) = self.buffers.get(&x) {
             return self.interpreter.load_mem(buffer, length);
         }
-        return Err(InterpreterError::BufferDoesNotExist);
+        return Err(CustomError::BufferDoesNotExist);
     }
 
-    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), InterpreterError> {
+    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), CustomError> {
         if let Some(buffer) = self.buffers.remove(&x) {
             return self.interpreter.deallocate_memory(buffer);
         }
@@ -78,7 +86,7 @@ impl<I: Interpreter> InterpretedBackend<I> {
         &mut self,
         mut graph: Graph,
         to_eval: &BTreeSet<TensorId>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<(), CustomError> {
         let order = graph.execution_order(to_eval);
         todo!()
     }

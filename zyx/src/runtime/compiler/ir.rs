@@ -31,11 +31,7 @@ pub(super) struct IRArg {
 #[derive(Debug, Clone)]
 pub(super) enum IRMem {
     Const(Constant),
-    Var {
-        id: usize,
-        scope: Scope,
-        index: Index,
-    },
+    Var { id: u64, scope: Scope, index: Index },
 }
 
 impl IRMem {
@@ -95,7 +91,7 @@ impl IRMem {
 pub(super) enum IROp {
     // All variables are 1d, so that it is easier for implementors
     DeclareMem {
-        id: usize,
+        id: u64,
         scope: Scope,
         dtype: DType,
         read_only: bool,
@@ -144,8 +140,6 @@ pub(super) fn compile_ir(
     // matmuls (like strassen or tensor cores) or 16x16x16 matmul (wmma).
     // These optimizations are hardware dependent.
     let _ = hwinfo;
-    let gws = global_work_size;
-    let lws = local_work_size;
 
     let mut ops = Vec::new();
 

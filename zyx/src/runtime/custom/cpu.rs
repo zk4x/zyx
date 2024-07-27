@@ -1,5 +1,5 @@
 use crate::dtype::DType;
-use crate::runtime::interpreter::{Interpreter, InterpreterError};
+use crate::runtime::custom::{Custom, CustomError};
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
 
@@ -74,13 +74,13 @@ impl CPUBuffer {
     }
 }
 
-impl Interpreter for CPU {
+impl Custom for CPU {
     type Buffer = CPUBuffer;
-    fn initialize() -> Result<Self, InterpreterError> {
+    fn initialize() -> Result<Self, CustomError> {
         Ok(Self {})
     }
 
-    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, InterpreterError> {
+    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, CustomError> {
         Ok(match T::dtype() {
             #[cfg(feature = "half")]
             DType::BF16 => CPUBuffer::BF16(unsafe { core::mem::transmute(data) }),
@@ -105,10 +105,10 @@ impl Interpreter for CPU {
         &self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<Vec<T>, InterpreterError> {
+    ) -> Result<Vec<T>, CustomError> {
         debug_assert_eq!(buffer.len(), length);
         if T::dtype() != buffer.dtype() {
-            return Err(InterpreterError::BufferDoesNotExist);
+            return Err(CustomError::BufferDoesNotExist);
         }
         let data: &Vec<T> = match buffer {
             #[cfg(feature = "half")]
@@ -131,7 +131,7 @@ impl Interpreter for CPU {
         return Ok(data.clone());
     }
 
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), InterpreterError> {
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CustomError> {
         // or nothing at all, but lets be explicit
         core::mem::drop(buffer);
         Ok(())

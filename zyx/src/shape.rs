@@ -5,20 +5,6 @@ use core::ops::{Add, Range, RangeInclusive};
 pub trait IntoShape: Clone + Debug {
     fn into_shape(self) -> impl Iterator<Item = usize>;
     fn rank(&self) -> usize;
-
-    fn permute(self, axes: impl IntoAxes) -> impl Iterator<Item = usize> {
-        let rank = self.rank();
-        let shape: Vec<usize> = self.into_shape().collect();
-        axes.into_axes(rank).map(move |a| shape[a])
-    }
-
-    fn reduce(self, axes: impl IntoAxes) -> impl Iterator<Item = usize> {
-        let rank = self.rank();
-        let axes: Vec<usize> = axes.into_axes(rank).collect();
-        self.into_shape()
-            .enumerate()
-            .filter_map(move |(i, d)| if axes.contains(&i) { None } else { Some(d) })
-    }
 }
 
 impl IntoShape for usize {

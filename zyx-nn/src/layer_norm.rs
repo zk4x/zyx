@@ -1,4 +1,4 @@
-use zyx::{DType, IntoShape, Tensor};
+use zyx::{DType, Tensor};
 
 /// Lyaer norm layer
 pub struct LayerNorm {

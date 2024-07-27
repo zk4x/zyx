@@ -5,7 +5,10 @@ use alloc::{
 
 use crate::{runtime::node::UOp, DType, Device};
 
-use super::{node::Node, TensorId};
+use super::{
+    node::{BOp, Node},
+    TensorId, ZyxError,
+};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(super) struct Graph {
@@ -229,6 +232,61 @@ impl Graph {
         let second_value = self.nodes.remove(&second).unwrap();
         self.nodes.insert(first, second_value);
         self.nodes.insert(second, first_value);*/
+    }
+
+    pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {
+        // Make a list of visited nodes and their reference counts.
+        let mut params: Vec<TensorId> = alloc::vec![x];
+        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                if !sources.contains(&nid)
+                    && !matches!(
+                        self.nodes[&nid].1,
+                        Node::Binary {
+                            bop: BOp::Cmplt,
+                            ..
+                        }
+                    )
+                // or Node::Detach
+                {
+                    params.extend(self.nodes[&nid].1.parameters());
+                }
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut params: Vec<TensorId> = alloc::vec![x];
+        while let Some(nid) = params.pop() {
+            if let Some(rc) = rcs.get(&nid) {
+                if *rc
+                    == *internal_rcs
+                        .entry(nid)
+                        .and_modify(|rc| *rc += 1)
+                        .or_insert(1)
+                {
+                    order.push(nid);
+                    params.extend(self.nodes[&nid].1.parameters());
+                }
+            }
+        }
+        // Build topo, this way it ensures that grad is not used in backprop
+        // before it was insert_or_add by all parents.
+        let mut topo = Vec::new();
+        let mut req_grad = sources.clone();
+        let mut visited = BTreeSet::new();
+        for nid in order.into_iter().rev() {
+            for p in self.nodes[&nid].1.parameters() {
+                if req_grad.contains(&p) && visited.insert(nid) {
+                    req_grad.insert(nid);
+                    topo.push(nid);
+                }
+            }
+        }
+        topo.reverse();
+        topo
     }
 }
 

@@ -1,13 +1,17 @@
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use crate::shape::{IntoAxes, IntoShape};
 use crate::tensor::TensorId;
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
+use alloc::vec;
+use alloc::{
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    vec::Vec,
+};
+use custom::{
+    cpu::CPU,
+    {CustomError, InterpretedBackend},
+};
 use graph::Graph;
-use interpreter::cpu::CPU;
-use interpreter::{InterpretedBackend, InterpreterError};
 use node::{BOp, Node, ROp, UOp};
 
 #[cfg(any(
@@ -31,10 +35,22 @@ use std::println;
     feature = "hsa"
 ))]
 mod compiler;
+mod custom;
 mod graph;
-mod interpreter;
 mod node;
-//mod view;
+
+fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    axes.iter().map(|a| shape[*a]).collect()
+}
+
+fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    shape
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
+        .collect()
+}
 
 #[derive(Debug)]
 pub enum ZyxError {
@@ -45,7 +61,7 @@ pub enum ZyxError {
         feature = "hsa"
     ))]
     CompilerError(CompilerError),
-    InterpreterError(InterpreterError),
+    CustomError(CustomError),
     EmptyTensor,
 }
 
@@ -61,9 +77,9 @@ impl From<CompilerError> for ZyxError {
     }
 }
 
-impl From<InterpreterError> for ZyxError {
-    fn from(value: InterpreterError) -> Self {
-        Self::InterpreterError(value)
+impl From<CustomError> for ZyxError {
+    fn from(value: CustomError) -> Self {
+        Self::CustomError(value)
     }
 }
 
@@ -106,7 +122,8 @@ impl Runtime {
         }
     }
 
-    /// Tries to initialize all devices and set the first
+    /// If default device was not set by the user, this function
+    /// tries to initialize all devices and set the first
     /// successfully initialized device as the default_device in this order:
     /// 1. CUDA
     /// 2. HSA
@@ -257,6 +274,59 @@ impl Runtime {
         return self.graph.device(x);
     }
 
+    // Initialization
+    pub(crate) fn full(
+        &mut self,
+        shape: Vec<usize>,
+        value: impl Scalar,
+    ) -> Result<TensorId, ZyxError> {
+        let id = self.store(vec![value], vec![1])?;
+        return Ok(self.expand(id, shape));
+    }
+
+    pub(crate) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
+        return match dtype {
+            #[cfg(feature = "half")]
+            DType::BF16 => self.full(shape, todo!()),
+            #[cfg(feature = "half")]
+            DType::F16 => self.full(shape, todo!()),
+            DType::F32 => self.full(shape, 1f32),
+            DType::F64 => self.full(shape, 1f64),
+            #[cfg(feature = "complex")]
+            DType::CF32 => self.full(shape, todo!()),
+            #[cfg(feature = "complex")]
+            DType::CF64 => self.full(shape, todo!()),
+            DType::U8 => self.full(shape, 1u8),
+            DType::I8 => self.full(shape, 1i8),
+            DType::I16 => self.full(shape, 1i16),
+            DType::I32 => self.full(shape, 1i32),
+            DType::I64 => self.full(shape, 1i64),
+            DType::Bool => self.full(shape, true),
+        };
+    }
+
+    pub(crate) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
+        return match dtype {
+            #[cfg(feature = "half")]
+            DType::BF16 => self.full(shape, todo!()),
+            #[cfg(feature = "half")]
+            DType::F16 => self.full(shape, todo!()),
+            DType::F32 => self.full(shape, 0f32),
+            DType::F64 => self.full(shape, 0f64),
+            #[cfg(feature = "complex")]
+            DType::CF32 => self.full(shape, todo!()),
+            #[cfg(feature = "complex")]
+            DType::CF64 => self.full(shape, todo!()),
+            DType::U8 => self.full(shape, 0u8),
+            DType::I8 => self.full(shape, 0i8),
+            DType::I16 => self.full(shape, 0i16),
+            DType::I32 => self.full(shape, 0i32),
+            DType::I64 => self.full(shape, 0i64),
+            DType::Bool => self.full(shape, false),
+        };
+    }
+
+    // Unary ops
     pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
         return self.graph.push(Node::Unary {
             x,
@@ -300,36 +370,24 @@ impl Runtime {
         return self.graph.push(Node::Unary { x, uop: UOp::Tanh });
     }
 
-    pub(crate) fn reshape(&mut self, x: TensorId, shape: impl IntoShape) -> TensorId {
-        return self.graph.push(Node::Reshape {
-            x,
-            shape: shape.into_shape().collect(),
-        });
+    pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        return self.graph.push(Node::Reshape { x, shape });
     }
 
-    pub(crate) fn expand(&mut self, x: TensorId, shape: impl IntoShape) -> TensorId {
-        return self.graph.push(Node::Expand {
-            x,
-            shape: shape.into_shape().collect(),
-        });
+    pub(crate) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        return self.graph.push(Node::Expand { x, shape });
     }
 
-    pub(crate) fn permute(&mut self, x: TensorId, axes: impl IntoAxes) -> TensorId {
-        let shape: Vec<usize> = self.shape(x).permute(axes.clone()).collect();
-        return self.graph.push(Node::Permute {
-            x,
-            axes: axes.into_axes(shape.len()).collect(),
-            shape,
-        });
+    pub(crate) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+        let shape = permute(self.shape(x), &axes);
+        return self.graph.push(Node::Permute { x, axes, shape });
     }
 
-    pub(crate) fn sum(&mut self, x: TensorId, axes: impl IntoAxes) -> TensorId {
-        let sh = self.shape(x);
-        let rank = sh.len();
-        let shape: Vec<usize> = sh.reduce(axes.clone()).collect();
+    pub(crate) fn sum(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+        let shape = reduce(self.shape(x), &axes);
         return self.graph.push(Node::Reduce {
             x,
-            axes: axes.into_axes(rank).collect(),
+            axes,
             shape,
             rop: ROp::Sum,
         });
@@ -392,17 +450,17 @@ impl Runtime {
     pub(crate) fn store<T: Scalar>(
         &mut self,
         data: Vec<T>,
-        device: Device,
-        shape: impl IntoShape,
+        shape: Vec<usize>,
     ) -> Result<TensorId, ZyxError> {
+        self.set_default_device_best();
+        let device = self.default_device;
         //#[cfg(feature = "debug1")]
         //println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
-        let node = Node::Leaf {
-            shape: shape.into_shape().collect(),
+        let tensor_id = self.graph.push(Node::Leaf {
+            shape,
             dtype: T::dtype(),
             device,
-        };
-        let tensor_id = self.graph.push(node);
+        });
         match device {
             #[cfg(feature = "cuda")]
             Device::CUDA => {
@@ -553,5 +611,335 @@ impl Runtime {
                 return Ok(());
             }
         }
+    }
+
+    pub(crate) fn backward(
+        &mut self,
+        x: TensorId,
+        sources: BTreeSet<TensorId>,
+    ) -> Result<BTreeMap<TensorId, TensorId>, ZyxError> {
+        let topo = self.graph.build_topo(x, &sources);
+        //std::println!("Topo: {topo:?}");
+
+        let req_grad: BTreeSet<TensorId> = topo
+            .iter()
+            .copied()
+            .chain(sources.iter().copied())
+            .collect();
+        // Node -> Grad
+        let mut grads: BTreeMap<TensorId, TensorId> = BTreeMap::new();
+        // Initial gradient of ones
+        let grad1 = self.ones(vec![1], self.dtype(x))?;
+        let sh = self.shape(x).into();
+        grads.insert(
+            x,
+            self.graph.push(Node::Expand {
+                x: grad1,
+                shape: sh,
+            }),
+        );
+        self.release(grad1)?;
+        //std::println!("{:?}", self.nodes.last().unwrap());
+
+        fn insert_or_add_grad(
+            r: &mut Runtime,
+            grads: &mut BTreeMap<TensorId, TensorId>,
+            x: TensorId,
+            grad: TensorId,
+        ) -> Result<(), ZyxError> {
+            match grads.entry(x) {
+                Entry::Vacant(e) => {
+                    e.insert(grad);
+                }
+                Entry::Occupied(e) => {
+                    let (k, prev_grad) = e.remove_entry();
+                    grads.insert(k, r.push(Node::Add(prev_grad, grad))?);
+                    r.release(prev_grad)?;
+                    r.release(grad)?;
+                }
+            }
+            Ok(())
+        }
+
+        // backpropagate
+        // TODO this is not very clean code. Can we make it cleaner?
+        // Should we just use Tensors here directly instead of Ids?
+        // It will make it cleaner, because we do not have to put in all release calls,
+        // but it is NOT worth the overhead, since we still need to do
+        // all the req_grad.contains checks and such.
+        for nid in topo {
+            let grad = grads[&nid];
+            match self.graph[nid] {
+                //Node::Const(..) | Node::Detach(..) |
+                Node::Leaf(..) => {}
+                Node::Add(x, y) => {
+                    if req_grad.contains(&x) {
+                        self.retain(grad);
+                        insert_or_add_grad(self, &mut grads, x, grad)?;
+                    }
+                    if req_grad.contains(&y) {
+                        self.retain(grad);
+                        insert_or_add_grad(self, &mut grads, y, grad)?;
+                    }
+                }
+                Node::Sub(x, y) => {
+                    if req_grad.contains(&x) {
+                        self.retain(grad);
+                        insert_or_add_grad(self, &mut grads, x, grad)?;
+                    }
+                    if req_grad.contains(&y) {
+                        let grad = self.push(Node::Neg(grad))?;
+                        insert_or_add_grad(self, &mut grads, y, grad)?;
+                    }
+                }
+                Node::Mul(x, y) => {
+                    if req_grad.contains(&x) {
+                        let grad = self.push(Node::Mul(y, grad))?;
+                        insert_or_add_grad(self, &mut grads, x, grad)?;
+                    }
+                    if req_grad.contains(&y) {
+                        let grad = self.push(Node::Mul(x, grad))?;
+                        insert_or_add_grad(self, &mut grads, y, grad)?;
+                    }
+                }
+                Node::Div(x, y) => {
+                    if req_grad.contains(&x) {
+                        grads.insert(x, self.push(Node::Div(grad, y))?);
+                        insert_or_add_grad(self, &mut grads, x, grad)?;
+                    }
+                    if req_grad.contains(&y) {
+                        // -grad*x/(y^2)
+                        let dtype = self.dtype(y);
+                        let two_temp = self.ones(vec![1], dtype)?;
+                        let two = self.add(two_temp, two_temp);
+                        self.release(two_temp);
+                        let two_e =
+                            self.push(Node::Expand(two, get_shape(&self.nodes, y).clone()))?;
+                        self.release(two)?;
+                        let two_2 = self.push(Node::Pow(y, two_e))?;
+                        self.release(two_e)?;
+                        let temp = self.push(Node::Mul(x, grad))?;
+                        let temp_neg = self.push(Node::Neg(temp))?;
+                        self.release(temp)?;
+                        let y_grad = self.push(Node::Div(temp_neg, two_2))?;
+                        self.release(temp_neg)?;
+                        self.release(two_2)?;
+                        grads.insert(y, y_grad);
+                        insert_or_add_grad(self, &mut grads, y, grad)?;
+                    }
+                }
+                Node::Pow(x, y) => {
+                    if req_grad.contains(&x) {
+                        // grad * y * x.pow(y-1)
+                        let one = match get_dtype(&self.nodes, y) {
+                            DType::F16 => self.store([f16::ONE]),
+                            DType::F32 => self.store([1f32]),
+                            DType::F64 => self.store([1f64]),
+                            DType::I32 => self.store([1i32]),
+                        }?;
+                        let one1 =
+                            self.push(Node::Expand(one, get_shape(&self.nodes, y).clone()))?;
+                        self.release(one)?;
+                        let y_1 = self.push(Node::Sub(y, one1))?;
+                        self.release(one1)?;
+                        let pow_y_1 = self.push(Node::Pow(x, y_1))?;
+                        self.release(y_1)?;
+                        let y_mul = self.push(Node::Mul(y, pow_y_1))?;
+                        self.release(pow_y_1)?;
+                        let x_grad = self.push(Node::Mul(grad, y_mul))?;
+                        self.release(y_mul)?;
+                        insert_or_add_grad(self, &mut grads, x, x_grad)?;
+                    }
+                    if req_grad.contains(&y) {
+                        // grad * x.pow(y) * ln(x)
+                        let temp1 = self.push(Node::Ln(x))?;
+                        let temp2 = self.push(Node::Mul(nid, temp1))?;
+                        self.release(temp1)?;
+                        let y_grad = self.push(Node::Mul(grad, temp2))?;
+                        self.release(temp2)?;
+                        insert_or_add_grad(self, &mut grads, y, y_grad)?;
+                    }
+                }
+                Node::Cmplt(..) => {
+                    panic!(
+                        "Compare less than (cmplt, operator <) is not a differentiable operation."
+                    );
+                }
+                Node::Where(x, y, z) => {
+                    //return None, \
+                    //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None, \
+                    //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
+                    if req_grad.contains(&y) {
+                        let zero = match get_dtype(&self.nodes, x) {
+                            DType::F16 => self.store([f16::ZERO]),
+                            DType::F32 => self.store([0f32]),
+                            DType::F64 => self.store([0f64]),
+                            DType::I32 => self.store([0i32]),
+                        }?;
+                        let zeros =
+                            self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                        self.release(zero)?;
+                        let y_grad = self.push(Node::Where(x, grad, zeros))?;
+                        self.release(zeros)?;
+                        insert_or_add_grad(self, &mut grads, y, y_grad)?;
+                    }
+                    if req_grad.contains(&z) {
+                        let zero = match get_dtype(&self.nodes, x) {
+                            DType::F16 => self.store([f16::ZERO]),
+                            DType::F32 => self.store([0f32]),
+                            DType::F64 => self.store([0f64]),
+                            DType::I32 => self.store([0i32]),
+                        }?;
+                        let zeros =
+                            self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                        self.release(zero)?;
+                        let z_grad = self.push(Node::Where(x, zeros, grad))?;
+                        self.release(zeros)?;
+                        insert_or_add_grad(self, &mut grads, z, z_grad)?;
+                    }
+                }
+                Node::ReLU(x) => {
+                    let zero = match get_dtype(&self.nodes, x) {
+                        DType::F16 => self.store([f16::ZERO]),
+                        DType::F32 => self.store([0f32]),
+                        DType::F64 => self.store([0f64]),
+                        DType::I32 => self.store([0i32]),
+                    }?;
+                    let zeros = self.push(Node::Expand(zero, get_shape(&self.nodes, x).clone()))?;
+                    self.release(zero)?;
+                    let zl = self.push(Node::Cmplt(zeros, x))?;
+                    self.release(zeros)?;
+                    let x_grad = self.push(Node::Mul(zl, grad))?;
+                    self.release(zl)?;
+                    insert_or_add_grad(self, &mut grads, x, x_grad)?;
+                }
+                Node::Exp(x) => {
+                    let grad = self.push(Node::Mul(nid, grad))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Ln(x) => {
+                    let grad = self.push(Node::Div(grad, x))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Sin(x) => {
+                    let x_temp = self.push(Node::Cos(x))?;
+                    let grad = self.push(Node::Mul(x_temp, grad))?;
+                    self.release(x_temp)?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Cos(x) => {
+                    let x_temp1 = self.push(Node::Sin(x))?;
+                    let x_temp = self.push(Node::Neg(x_temp1))?;
+                    self.release(x_temp1)?;
+                    let grad = self.push(Node::Mul(x_temp, grad))?;
+                    self.release(x_temp)?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Sqrt(x) => {
+                    // x_grad = grad/(2*sqrt(x))
+                    let x_shape = get_shape(&self.nodes, x).clone();
+                    let two1 = match get_dtype(&self.nodes, x) {
+                        DType::F16 => self.store([f16::ONE + f16::ONE]),
+                        DType::F32 => self.store([2f32]),
+                        DType::F64 => self.store([2f64]),
+                        DType::I32 => self.store([2i32]),
+                    }?;
+                    let two2 = self.push(Node::Expand(two1, x_shape))?;
+                    self.release(two1)?;
+                    let x_temp = self.push(Node::Mul(two2, nid))?;
+                    self.release(two2)?;
+                    let grad = self.push(Node::Div(grad, x_temp))?;
+                    self.release(x_temp)?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Cast(x, _) => {
+                    let grad = self.push(Node::Cast(grad, get_dtype(&self.nodes, x)))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Neg(x) => {
+                    let grad = self.push(Node::Neg(grad))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Tanh(x) => {
+                    // 1 - tanh^2(x)
+                    let shape = get_shape(&self.nodes, x).clone();
+                    let (two1, one1) = match get_dtype(&self.nodes, x) {
+                        DType::F16 => (self.store([f16::ONE + f16::ONE])?, self.store([f16::ONE])?),
+                        DType::F32 => (self.store([2f32])?, self.store([1f32])?),
+                        DType::F64 => (self.store([2f64])?, self.store([1f64])?),
+                        DType::I32 => (self.store([2i32])?, self.store([1i32])?),
+                    };
+                    let two2 = self.push(Node::Expand(two1, shape.clone()))?;
+                    self.release(two1)?;
+                    let two = self.push(Node::Pow(nid, two2))?;
+                    self.release(two2)?;
+                    let one2 = self.push(Node::Expand(one1, shape))?;
+                    self.release(one1)?;
+                    let one = self.push(Node::Sub(one2, two))?;
+                    self.release(one2)?;
+                    self.release(two)?;
+                    let grad = self.push(Node::Mul(one, grad))?;
+                    self.release(one)?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Reshape(x, ..) => {
+                    let grad = self.push(Node::Reshape(grad, get_shape(&self.nodes, x).clone()))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Expand(x, ref sh) => {
+                    let org_shape = get_shape(&self.nodes, x).clone();
+                    let axes = org_shape.expand_axes(sh);
+                    let temp = self.push(Node::Sum(grad, axes, org_shape.clone()))?;
+                    let grad = self.push(Node::Reshape(temp, org_shape))?;
+                    self.release(temp)?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Permute(x, ref axes, _) => {
+                    let shape = get_shape(&self.nodes, x);
+                    let grad = self.push(Node::Permute(grad, axes.argsort(), shape.clone()))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Pad(x, ref padding, _) => {
+                    let sh = get_shape(&self.nodes, x).clone();
+                    let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
+                    let grad = self.push(Node::Pad(grad, inv_padding, sh))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Sum(x, ..) => {
+                    let grad = self.push(Node::Expand(grad, get_shape(&self.nodes, x).clone()))?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+                Node::Max(x, ..) => {
+                    // x_grad = (1 - (x < z.expand(x.shape()))) * grad
+                    let x_shape = get_shape(&self.nodes, x).clone();
+                    let z_temp = self.push(Node::Expand(nid, x_shape.clone()))?;
+                    let cmp_t = self.push(Node::Cmplt(x, z_temp))?;
+                    self.release(z_temp)?;
+                    let one1 = match get_dtype(&self.nodes, x) {
+                        DType::F16 => self.store([f16::ONE]),
+                        DType::F32 => self.store([1f32]),
+                        DType::F64 => self.store([1f64]),
+                        DType::I32 => self.store([1i32]),
+                    }?;
+                    let one2 = self.push(Node::Expand(one1, x_shape))?;
+                    self.release(one1)?;
+                    let max_1s = self.push(Node::Sub(one2, cmp_t))?;
+                    self.release(one2)?;
+                    self.release(cmp_t)?;
+                    let grad = self.push(Node::Mul(max_1s, grad))?;
+                    self.release(max_1s)?;
+                    insert_or_add_grad(self, &mut grads, x, grad)?;
+                }
+            }
+        }
+        let mut res = BTreeMap::new();
+        for (k, v) in grads.into_iter() {
+            if sources.contains(&k) {
+                res.insert(k, v);
+            } else {
+                self.release(v);
+            }
+        }
+        return Ok(res);
     }
 }

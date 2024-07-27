@@ -288,8 +288,14 @@ impl View {
 
     pub(super) fn index(&self) -> Index {
         // TODO add index for padded views
-        Index::Strided {
-            dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
+        if self.is_contiguous() {
+            Index::Contiguous {
+                dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
+            }
+        } else {
+            Index::Strided {
+                dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
+            }
         }
     }
 
