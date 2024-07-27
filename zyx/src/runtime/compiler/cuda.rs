@@ -502,21 +502,6 @@ impl Compiler for CUDARuntime {
                         }
                     }
                 },
-                IROp::AssignMem { z, x } => {
-                    let (zt, z) = z.to_str(0);
-                    if !zt.is_empty() {
-                        for idx in zt.into_iter() {
-                            source += &f!("{indent}t0 = {idx};\n");
-                        }
-                    }
-                    let (xt, x) = x.to_str(1);
-                    if !xt.is_empty() {
-                        for idx in xt.into_iter() {
-                            source += &f!("{indent}t1 = {idx};\n");
-                        }
-                    }
-                    source += &f!("{indent}{z} = {x};\n");
-                }
                 IROp::Unary { z, x, ops } => {
                     let (zt, z) = z.to_str(0);
                     if !zt.is_empty() {

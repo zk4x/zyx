@@ -1,14 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-  "zyx",
-  "zyx-nn",
-  "zyx-io",
-  "zyx-optim",
-  "zyx-derive",
-  "zyx-examples",
-  "zyx-py", "zyx-io",
-]
+members = ["zyx", "zyx-nn", "zyx-optim", "zyx-derive", "zyx-examples", "zyx-py"]
 
 [workspace.package]
 version = "0.13.0"
@@ -16,7 +8,6 @@ edition = "2021"
 
 [workspace.dependencies]
 zyx = { version = "0.13.0", path = "./zyx", default-features = false }
-zyx-io = { version = "0.1.0", path = "./zyx-io", default-features = false }
 zyx-nn = { version = "0.2.0", path = "./zyx-nn", default-features = false }
 zyx-optim = { version = "0.2.0", path = "./zyx-optim", default-features = false }
 zyx-derive = { version = "0.2.0", path = "./zyx-derive", default-features = false }
