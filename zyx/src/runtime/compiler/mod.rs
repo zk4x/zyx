@@ -352,7 +352,7 @@ impl Kernel {
                             axes.iter().copied().chain(axes.len()..n).collect();
                         view.permute(&all_axes);
                     } else {
-                        view.permute(&axes[..n]);
+                        view.permute(&axes);
                     }
                 }
                 VOp::Store { strides, .. } => {
