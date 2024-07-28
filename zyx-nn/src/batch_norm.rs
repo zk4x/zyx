@@ -1,9 +1,11 @@
 use zyx::{DType, Tensor};
+use zyx_derive::Module;
 
 /// Batch norm
 ///
 /// By default this module has learnable affine parameters,
 /// set weight and bias to None to remove them.
+#[derive(Module)]
 pub struct BatchNorm {
     /// a value added to the denominator for numerical stability. Default: 1e-5
     pub eps: f32,
@@ -25,45 +27,19 @@ pub struct BatchNorm {
     pub num_batches_tracked: Tensor,
 }
 
-impl<'a> IntoIterator for &'a BatchNorm {
-    type Item = &'a Tensor;
-    type IntoIter = alloc::vec::IntoIter<&'a Tensor>;
-    fn into_iter(self) -> Self::IntoIter {
-        match (&self.weight, &self.bias) {
-            (Some(w), Some(b)) => alloc::vec![w, b].into_iter(),
-            (Some(w), None) => alloc::vec![w].into_iter(),
-            (None, Some(b)) => alloc::vec![b].into_iter(),
-            (None, None) => alloc::vec![].into_iter(),
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a mut BatchNorm {
-    type Item = &'a mut Tensor;
-    type IntoIter = alloc::vec::IntoIter<Self::Item>;
-    fn into_iter(self) -> Self::IntoIter {
-        match (&mut self.weight, &mut self.bias) {
-            (Some(w), Some(b)) => alloc::vec![w, b].into_iter(),
-            (Some(w), None) => alloc::vec![w].into_iter(),
-            (None, Some(b)) => alloc::vec![b].into_iter(),
-            (None, None) => alloc::vec![].into_iter(),
-        }
-    }
-}
-
 impl BatchNorm {
     /// Initilize layer_norm layer in device self
-    pub fn new(self, num_features: usize) -> BatchNorm {
+    pub fn new(self, num_features: usize, dtype: DType) -> BatchNorm {
         BatchNorm {
             eps: 1e-5,
             momentum: 0.1,
             track_running_stats: true,
-            weight: Some(Tensor::ones(num_features, DType::F32)),
-            bias: Some(Tensor::zeros(num_features, DType::F32)),
-            running_mean: Tensor::zeros(num_features, DType::F32),
-            running_var: Tensor::ones(num_features, DType::F32),
+            weight: Some(Tensor::ones(num_features, dtype)),
+            bias: Some(Tensor::zeros(num_features, dtype)),
+            running_mean: Tensor::zeros(num_features, dtype),
+            running_var: Tensor::ones(num_features, dtype),
             training: true,
-            num_batches_tracked: Tensor::zeros(1, DType::F32),
+            num_batches_tracked: Tensor::zeros(1, dtype),
         }
     }
 

@@ -20,11 +20,16 @@ extern crate alloc;
 mod linear;
 pub use linear::Linear;
 
+// Normalization layers
 mod layer_norm;
 pub use layer_norm::LayerNorm;
 
 mod batch_norm;
 pub use batch_norm::BatchNorm;
 
+mod rms_norm;
+pub use rms_norm::RMSNorm;
+
+// Recurrent layers
 mod rnn_cell;
 pub use rnn_cell::RNNCell;

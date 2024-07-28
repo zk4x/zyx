@@ -1322,6 +1322,7 @@ name = "zyx-nn"
 version = "0.2.0"
 dependencies = [
  "zyx",
+ "zyx-derive",
 ]
 
 [[package]]

@@ -207,15 +207,11 @@ impl Tensor {
             #[cfg(feature = "half")]
             DType::F16 => todo!(),
             DType::F32 => {
-                let data: Vec<f32> = (0..n)
-                    .map(|_| rng.sample(Standard))
-                    .collect();
+                let data: Vec<f32> = (0..n).map(|_| rng.sample(Standard)).collect();
                 rt.store(data, shape).unwrap()
             }
             DType::F64 => {
-                let data: Vec<f64> = (0..n)
-                    .map(|_| rng.sample(Standard))
-                    .collect();
+                let data: Vec<f64> = (0..n).map(|_| rng.sample(Standard)).collect();
                 rt.store(data, shape).unwrap()
             }
             #[cfg(feature = "complex")]
@@ -240,8 +236,8 @@ impl Tensor {
         shape: impl IntoShape,
         range: impl core::ops::RangeBounds<T>,
     ) -> Tensor {
-        use rand::{Rng, SeedableRng, distributions::Uniform};
         use core::ops::Bound;
+        use rand::{distributions::Uniform, Rng, SeedableRng};
         let mut rt = RT.lock();
         let shape: Vec<usize> = shape.into_shape().collect();
         let n = shape.iter().product();
@@ -262,7 +258,7 @@ impl Tensor {
                 let uniform_dist = Uniform::new(start.cast::<f32>(), end.cast::<f32>());
                 let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
                 let id = rt.store(data, shape).unwrap();
-                return Tensor { id }
+                return Tensor { id };
             }
             _ => todo!(),
         };
@@ -271,10 +267,7 @@ impl Tensor {
     /// Create tensor sampled from kaiming uniform distribution.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn kaiming_uniform<T: Scalar>(
-        shape: impl IntoShape,
-        a: T,
-    ) -> Tensor {
+    pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, a: T) -> Tensor {
         let n = T::from_i64(shape.clone().into_shape().skip(1).product::<usize>() as i64);
         // bound = math.sqrt(3.0) * math.sqrt(2.0 / (1 + a ** 2)) / math.sqrt(prod(argfix(*shape)[1:]))
         let one = T::one();
@@ -549,12 +542,18 @@ impl Tensor {
     // reduce
     #[must_use]
     pub fn ln_softmax(&self, axes: impl IntoAxes) -> Tensor {
-        let m = self - self.max(axes.clone());
-        &m - m.exp().sum(axes).ln()
+        let m = self - self.max_kd(axes.clone());
+        &m - m.exp().sum_kd(axes).ln()
     }
 
     #[must_use]
     pub fn max(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
+        todo!()
+    }
+
+    #[must_use]
+    pub fn max_kd(&self, axes: impl IntoAxes) -> Tensor {
         let _ = axes;
         todo!()
     }
@@ -566,8 +565,9 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn norm(&self, axes: impl IntoAxes, p: impl Scalar) -> Tensor {
-        self.pow(p.clone()).sum(axes).pow(p.reciprocal())
+    pub fn mean_kd(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
+        todo!()
     }
 
     #[must_use]
@@ -578,6 +578,11 @@ impl Tensor {
     #[must_use]
     pub fn std(&self, axes: impl IntoAxes) -> Tensor {
         self.var(axes).sqrt()
+    }
+
+    #[must_use]
+    pub fn std_kd(&self, axes: impl IntoAxes) -> Tensor {
+        self.var_kd(axes).sqrt()
     }
 
     /// Sum reduce. Removes tensor dimensions.
@@ -616,12 +621,18 @@ impl Tensor {
 
     #[must_use]
     pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
-        let e = (self - self.max(axes.clone())).exp();
-        &e / e.sum(axes)
+        let e = (self - self.max_kd(axes.clone())).exp();
+        &e / e.sum_kd(axes)
     }
 
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor {
+        let _ = axes;
+        todo!()
+    }
+
+    #[must_use]
+    pub fn var_kd(&self, axes: impl IntoAxes) -> Tensor {
         let _ = axes;
         todo!()
     }

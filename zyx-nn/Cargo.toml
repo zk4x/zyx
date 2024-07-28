@@ -17,3 +17,7 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx = { workspace = true, features = ["rand"] }
+zyx-derive = { workspace = true }
+
+[features]
+std = ["zyx/std", "zyx-derive/std"]

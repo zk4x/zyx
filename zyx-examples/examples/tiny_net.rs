@@ -2,6 +2,8 @@ use zyx::{DType, Tensor};
 use zyx_derive::Module;
 use zyx_nn::Linear;
 
+extern crate alloc;
+
 #[derive(Module)]
 struct TinyNet {
     l0: Linear,

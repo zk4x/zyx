@@ -31,9 +31,6 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
-#[cfg(feature = "debug1")]
-use std::println;
-
 #[cfg(any(
     feature = "cuda",
     feature = "opencl",
@@ -922,6 +919,5 @@ impl Runtime {
             }
         }
         return Ok(res);
-        //todo!()
     }
 }
