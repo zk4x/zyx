@@ -197,7 +197,6 @@ impl Tensor {
         use rand::distributions::Standard;
         use rand::SeedableRng;
         let mut rt = RT.lock();
-        rt.set_default_device_best();
         let shape: Vec<usize> = shape.into_shape().collect();
         let n = shape.iter().product();
         rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
