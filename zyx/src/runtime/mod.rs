@@ -232,6 +232,9 @@ impl Runtime {
                     true
                 }
             }
+            _ => {
+                panic!("Zyx was compiled without support for this device.");
+            }
         }
     }
 
@@ -252,6 +255,9 @@ impl Runtime {
                 #[cfg(feature = "wgsl")]
                 Device::WGSL => self.wgsl.as_mut().unwrap().remove(x)?,
                 Device::CPU => self.cpu.as_mut().unwrap().remove(x)?,
+                _ => {
+                    panic!("Zyx was compiled without support for this device.");
+                }
             }
         }
         return Ok(());
@@ -513,6 +519,9 @@ impl Runtime {
                 let dev = self.cpu.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
+            _ => {
+                panic!("Zyx was compiled without support for this device.");
+            }
         }
         return Ok(tensor_id);
     }
@@ -558,6 +567,9 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.cpu.as_mut().unwrap().load(x, length)?)
             }
+            _ => {
+                panic!("Zyx was compiled without support for this device.");
+            }
         };
     }
 
@@ -586,6 +598,9 @@ impl Runtime {
             Device::CPU => self
                 .graph
                 .realize_graph(&tensors, |id| self.cpu.as_ref().unwrap().is_realized(id)),
+            _ => {
+                panic!("Zyx was compiled without support for this device.");
+            }
         };
         match device {
             #[cfg(feature = "cuda")]
@@ -621,6 +636,9 @@ impl Runtime {
                     .unwrap()
                     .interpret_graph(graph, &tensors)?;
                 return Ok(());
+            }
+            _ => {
+                panic!("Zyx was compiled without support for this device.");
             }
         }
     }

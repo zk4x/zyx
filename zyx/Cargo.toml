@@ -25,9 +25,20 @@ num-complex = { version = "0.4.6", default-features = false, optional = true }
 hsa = { version = "0.1.0", default-features = false, optional = true }
 wgpu = { version = "0.20.1", default-features = false, optional = true }
 nostd_async = { version = "0.6.1", default-features = false, optional = true }
+pyo3 = { version = "0.22.2", optional = true }
+
+[lib]
+crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["debug1", "opencl", "rand", "complex", "half"] # TODO remove default from release build
+default = [
+    "debug1",
+    "opencl",
+    "rand",
+    "complex",
+    "half",
+    "py",
+] # TODO remove default from release build
 
 # Debug, prints GPU kernels
 debug1 = ["std"]
@@ -55,3 +66,6 @@ opencl = []
 
 # Enables wgpu device
 wgsl = ["dep:wgpu", "dep:nostd_async"]
+
+# Enables us to create python bindings with pyo3, annotates structs with pyclass
+py = ["dep:pyo3", "opencl", "half", "rand", "complex", "std"]

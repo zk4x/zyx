@@ -27,6 +27,7 @@ use rand::Rng;
 
 pub(crate) type TensorId = u64;
 
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {
     id: TensorId,
 }

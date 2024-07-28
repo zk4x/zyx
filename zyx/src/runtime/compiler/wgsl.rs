@@ -120,7 +120,7 @@ impl Compiler for WGSLRuntime {
     fn store_memory<T: Scalar>(
         &mut self,
         buffer: &mut Self::Buffer,
-        data: &[T],
+        data: Vec<T>,
     ) -> Result<(), CompilerError> {
         let queue = self.queue()?;
         let mut view = queue
@@ -133,7 +133,7 @@ impl Compiler for WGSLRuntime {
         match T::dtype() {
             DType::F32 => {
                 for i in 0..data.len() {
-                    let [a, b, c, d] = data[i].clone().into_f32().to_ne_bytes();
+                    let [a, b, c, d] = data[i].cast::<f32>().to_ne_bytes();
                     view.as_mut()[i * 4] = a;
                     view.as_mut()[i * 4 + 1] = b;
                     view.as_mut()[i * 4 + 2] = c;

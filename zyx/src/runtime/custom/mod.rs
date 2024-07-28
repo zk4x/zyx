@@ -4,7 +4,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use super::graph::Graph;
-use super::node::{BOp, ROp, UOp};
 
 pub(super) mod cpu;
 

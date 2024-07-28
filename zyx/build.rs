@@ -36,7 +36,7 @@ pub fn find_cuda2() -> Vec<PathBuf> {
 }
 
 #[cfg(feature = "cuda")]
-fn find_cuda() -> PathBuf {
+fn find_cuda() -> Option<PathBuf> {
     let cuda_env = env::var("CUDA_LIBRARY_PATH")
         .ok()
         .unwrap_or(String::from(""));
@@ -45,10 +45,10 @@ fn find_cuda() -> PathBuf {
     paths.push(PathBuf::from("/opt/cuda"));
     for path in paths {
         if path.join("include/nvrtc.h").is_file() {
-            return path;
+            return Some(path);
         }
     }
-    panic!("Cannot find CUDA NVRTC libraries");
+    None
 }
 
 pub fn read_env() -> Vec<PathBuf> {
@@ -124,7 +124,11 @@ fn main() {
     if cfg!(target_os = "windows") {
         cuda_path = find_cuda_windows()
     } else {
-        cuda_path = find_cuda();
+        if let Some(cp) = find_cuda() {
+            cuda_path = cp;
+        } else {
+            return;
+        }
     };
 
     // Check for Windows

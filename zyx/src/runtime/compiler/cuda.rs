@@ -238,20 +238,21 @@ impl DType {
     fn cuda(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
-            DType::BF16 => "BF16 is not native to OpenCL, workaround is WIP.",
+            DType::BF16 => "BF16 is not native to CUDA, workaround is WIP.",
             #[cfg(feature = "half")]
             DType::F16 => "half",
             DType::F32 => "float",
             DType::F64 => "double",
             #[cfg(feature = "complex")]
-            DType::CF32 => "Not native to OpenCL, workaround is WIP",
+            DType::CF32 => "Not native to CUDA, workaround is WIP",
             #[cfg(feature = "complex")]
-            DType::CF64 => "Not native to OpenCL, workaround is WIP",
+            DType::CF64 => "Not native to CUDA, workaround is WIP",
             DType::U8 => "unsigned char",
             DType::I8 => "char",
             DType::I16 => "short",
             DType::I32 => "int",
             DType::I64 => "long",
+            DType::Bool => "bool",
         };
     }
 }
@@ -529,6 +530,8 @@ impl Compiler for CUDARuntime {
                             UOp::Sqrt => f!("sqrt({inner_op})"),
                             UOp::ReLU => f!("max({inner_op}, 0)"),
                             UOp::Tanh => f!("tanh({inner_op})"),
+                            UOp::Not => f!("(!{inner_op})"),
+                            UOp::Nonzero => f!("({inner_op} != 0)"),
                         };
                     }
                     source += &f!("{indent}{z} = {inner_op};\n");

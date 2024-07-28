@@ -10,6 +10,8 @@ use crate::runtime::Runtime;
 mod device;
 mod dtype;
 mod mutex;
+#[cfg(feature = "py")]
+mod python_bindings;
 mod runtime;
 mod scalar;
 mod shape;
@@ -17,10 +19,10 @@ mod tensor;
 
 pub use device::Device;
 pub use dtype::DType;
-pub use runtime::ZyxError;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
+//pub use runtime::ZyxError;
 //pub use shape::IntoAxes;
 
 #[cfg(feature = "rand")]

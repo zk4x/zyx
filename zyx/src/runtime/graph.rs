@@ -1,13 +1,11 @@
+use super::{
+    node::{BOp, Node, UOp},
+    TensorId,
+};
+use crate::{DType, Device};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
-};
-
-use crate::{runtime::node::UOp, DType, Device};
-
-use super::{
-    node::{BOp, Node},
-    TensorId, ZyxError,
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]

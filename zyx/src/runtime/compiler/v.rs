@@ -489,7 +489,7 @@ pub(super) fn generate_kernels(
                     panic!()
                 }
             }
-            Node::Pad { x, pad, .. } => {
+            Node::Pad { x, pad, shape } => {
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
                 todo!()

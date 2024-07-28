@@ -35,22 +35,22 @@ impl Display for Constant {
                 return f.write_fmt(format_args!("{}", unsafe { t::<_, f16>(*value) }));
             }
             Constant::F32(value) => {
-                return f.write_fmt(format_args!("{}", unsafe {
-                    t::<_, f32>(*value)
-                }));
+                return f.write_fmt(format_args!("{}", unsafe { t::<_, f32>(*value) }));
             }
             Constant::F64(value) => {
-                return f.write_fmt(format_args!("{}", unsafe {
-                    t::<_, f64>(*value)
-                }));
+                return f.write_fmt(format_args!("{}", unsafe { t::<_, f64>(*value) }));
             }
             #[cfg(feature = "complex")]
             Constant::CF32(re, im) => {
-                return unsafe { f.write_fmt(format_args!("{}+{}i", t::<_, f32>(*re), t::<_, f32>(*im))) };
+                return unsafe {
+                    f.write_fmt(format_args!("{}+{}i", t::<_, f32>(*re), t::<_, f32>(*im)))
+                };
             }
             #[cfg(feature = "complex")]
             Constant::CF64(re, im) => {
-                return unsafe { f.write_fmt(format_args!("{}+{}i", t::<_, f64>(*re), t::<_, f64>(*im))) };
+                return unsafe {
+                    f.write_fmt(format_args!("{}+{}i", t::<_, f64>(*re), t::<_, f64>(*im)))
+                };
             }
             Constant::U8(value) => {
                 return f.write_fmt(format_args!("{}", value));
@@ -74,6 +74,7 @@ impl Display for Constant {
     }
 }
 
+#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
     #[cfg(feature = "half")]
