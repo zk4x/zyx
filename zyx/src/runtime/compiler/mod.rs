@@ -216,6 +216,13 @@ impl<C: Compiler> CompiledBackend<C> {
                 .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
                 .unwrap();
 
+            // If this is full reduce kernel
+            if num_loops == 0 {
+                // this should never happen, because we should use local and register memory
+                // and always spread work across multiple threads
+                todo!("Full reduce")
+            }
+
             // If there is more loops than 3, pick first three loops as global loops,
             // rest is register loops.
             // So nothing needs to be done.

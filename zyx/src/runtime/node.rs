@@ -26,6 +26,8 @@ pub(crate) enum UOp {
     Sqrt,
     Sin,
     Cos,
+    Not,
+    Nonzero,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -92,15 +94,10 @@ pub(crate) enum Node {
         y: TensorId,
         bop: BOp,
     },
-    Where {
-        x: TensorId,
-        y: TensorId,
-        z: TensorId,
-    },
 }
 
 pub(crate) struct NodeParametersIterator {
-    parameters: [TensorId; 3],
+    parameters: [TensorId; 2],
     len: u8,
     idx: u8,
 }
@@ -122,7 +119,7 @@ impl Node {
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         return match self {
             Node::Leaf { .. } => NodeParametersIterator {
-                parameters: [0, 0, 0],
+                parameters: [0, 0],
                 idx: 0,
                 len: 0,
             },
@@ -137,19 +134,14 @@ impl Node {
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
             | Node::Reduce { x, .. } => NodeParametersIterator {
-                parameters: [*x, 0, 0],
+                parameters: [*x, 0],
                 idx: 0,
                 len: 1,
             },
             Node::Binary { x, y, .. } => NodeParametersIterator {
-                parameters: [*x, *y, 0],
+                parameters: [*x, *y],
                 idx: 0,
                 len: 2,
-            },
-            Node::Where { x, y, z } => NodeParametersIterator {
-                parameters: [*x, *y, *z],
-                idx: 0,
-                len: 3,
             },
         };
     }

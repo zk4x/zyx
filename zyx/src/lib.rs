@@ -71,10 +71,16 @@ fn t2() {
         .expand([2, 3, 2, 1]);
     //println!("{y}");
     let z = (&x + &y).expand([2, 3, 2, 2]).sum([3, 0]);
-    let z = z.exp().ln().permute([1, 0]).sum(1);
+    let z = z.exp().ln().permute([1, 0]).sum(0);
     //Tensor::realize([&x, &y, &z]);
     //println!("{x}\n{y}\n{z}");
     println!("{z}");
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
+}
+
+#[test]
+fn t3() {
+    let x = Tensor::randn([1024, 1024], DType::F32).expand([1024, 1024, 1024]);
+    Tensor::realize([&x]);
 }

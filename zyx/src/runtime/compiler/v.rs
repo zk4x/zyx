@@ -509,17 +509,17 @@ pub(super) fn generate_kernels(
                         .filter(|a| !axes.contains(a))
                         .chain(axes.iter().copied())
                         .collect();
-                    println!("Permute axes in reduce: {permute_axes:?}");
+                    //println!("Permute axes in reduce: {permute_axes:?}");
                     kernel.permute(&permute_axes);
 
                     // We can also just merge these reduce loops into single loop, since it gets removed
                     // from the resulting shape either way, but only if there are no ops between those loops.
 
                     // Add accumulator
-                    let max_axis: usize = *axes.iter().max().unwrap();
+                    let num_axes = graph.shape(*x).len();
                     let mut looped_axes: BTreeSet<usize> =
-                        (max_axis + 1 - axes.len()..max_axis + 1).collect();
-                    println!("Looped axes: {looped_axes:?}");
+                        (num_axes - axes.len()..num_axes).collect();
+                    //println!("Looped axes: {looped_axes:?}");
                     let acc_id = kernel.ops.len()
                         - kernel
                             .ops
@@ -527,15 +527,13 @@ pub(super) fn generate_kernels(
                             .rev()
                             .position(|op| {
                                 if let VOp::Loop { axis, .. } = op {
-                                    if looped_axes.remove(axis) {
-                                        println!("Dropping {axis}");
-                                    }
+                                    looped_axes.remove(axis);
                                 }
                                 looped_axes.is_empty()
                             })
                             .unwrap()
                         - 1;
-                    println!("Acc id: {acc_id}");
+                    //println!("Acc id: {acc_id}");
                     kernel
                         .ops
                         .insert(acc_id, VOp::Accumulator { z: nid, rop: *rop });
@@ -657,9 +655,6 @@ pub(super) fn generate_kernels(
                     panic!()
                 }
             }
-            Node::Where { x, y, z } => {
-                todo!()
-            }
         }
         if to_eval.contains(&nid) {
             if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {
@@ -710,7 +705,19 @@ fn shape_to_strides(shape: &[usize]) -> Vec<usize> {
 
 // Checks if kernel_x depends on kernel_y
 fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
-    // TODO
-    //todo!()
+    let mut kernel_x_inputs = kernels[kernel_x_id].inputs.clone();
+    let kernel_y_outputs = &kernels[kernel_y_id].outputs;
+    while let Some(x) = kernel_x_inputs.pop_last() {
+        if kernel_y_outputs.contains(&x) {
+            return true;
+        } else {
+            for kernel in kernels.iter().rev() {
+                if kernel.outputs.contains(&x) {
+                    kernel_x_inputs.extend(kernel.inputs.clone());
+                    break;
+                }
+            }
+        }
+    }
     false
 }

@@ -7,7 +7,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::ops::{
-    Add, Div, Mul, Neg, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub,
+    Add, Div, Mul, Neg, Not, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
+    RangeToInclusive, Sub,
 };
 
 use crate::runtime::ZyxError;
@@ -668,6 +669,7 @@ impl Tensor {
         todo!()
     }
 
+    #[must_use]
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, exponent);
         return Tensor {
@@ -675,14 +677,22 @@ impl Tensor {
         };
     }
 
+    /// Returns ones where self is true and zeros where it is false.
+    #[must_use]
+    pub fn nonzero(&self) -> Tensor {
+        return Tensor {
+            id: RT.lock().nonzero(self.id),
+        };
+    }
+
     // ternary
+    #[must_use]
     pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, if_true);
         let (x, z) = Tensor::broadcast(x, if_false);
         let (y, z) = Tensor::broadcast(y, z);
-        return Tensor {
-            id: RT.lock().where_(x.id, y.id, z.id),
-        };
+        let x_nonzero = x.nonzero();
+        return &x_nonzero * y + !x_nonzero * z;
     }
 
     // loss functions
@@ -1535,6 +1545,24 @@ impl Neg for &Tensor {
     fn neg(self) -> Self::Output {
         Tensor {
             id: RT.lock().neg(self.id),
+        }
+    }
+}
+
+impl Not for Tensor {
+    type Output = Tensor;
+    fn not(self) -> Self::Output {
+        Tensor {
+            id: RT.lock().not(self.id),
+        }
+    }
+}
+
+impl Not for &Tensor {
+    type Output = Tensor;
+    fn not(self) -> Self::Output {
+        Tensor {
+            id: RT.lock().not(self.id),
         }
     }
 }

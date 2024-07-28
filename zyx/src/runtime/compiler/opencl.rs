@@ -719,7 +719,7 @@ impl Compiler for OpenCLRuntime {
                         inner_op = match uop {
                             UOp::Noop => inner_op,
                             UOp::Cast(dtype) => f!("({}){inner_op}", dtype.ocl()),
-                            UOp::Neg => f!("-({inner_op})"),
+                            UOp::Neg => f!("(-{inner_op})"),
                             UOp::Inv => f!("1/{inner_op}"),
                             UOp::Sin => f!("sin({inner_op})"),
                             UOp::Cos => f!("cos({inner_op})"),
@@ -728,6 +728,8 @@ impl Compiler for OpenCLRuntime {
                             UOp::Sqrt => f!("sqrt({inner_op})"),
                             UOp::ReLU => f!("max({inner_op}, 0)"),
                             UOp::Tanh => f!("tanh({inner_op})"),
+                            UOp::Not => f!("!{inner_op}"),
+                            UOp::Nonzero => f!("({inner_op} != 0)"),
                         };
                     }
                     source += &f!("{indent}{z} = {inner_op};\n");

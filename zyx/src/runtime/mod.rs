@@ -375,6 +375,17 @@ impl Runtime {
         return self.graph.push(Node::Unary { x, uop: UOp::Tanh });
     }
 
+    pub(crate) fn nonzero(&mut self, x: TensorId) -> TensorId {
+        return self.graph.push(Node::Unary {
+            x,
+            uop: UOp::Nonzero,
+        });
+    }
+
+    pub(crate) fn not(&mut self, x: TensorId) -> TensorId {
+        return self.graph.push(Node::Unary { x, uop: UOp::Not });
+    }
+
     pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         return self.graph.push(Node::Reshape { x, shape });
     }
@@ -444,10 +455,6 @@ impl Runtime {
             y,
             bop: BOp::Cmplt,
         });
-    }
-
-    pub(crate) fn where_(&mut self, x: TensorId, y: TensorId, z: TensorId) -> TensorId {
-        return self.graph.push(Node::Where { x, y, z });
     }
 }
 
@@ -770,23 +777,6 @@ impl Runtime {
                         todo!("Max backward.");
                     }
                 },
-                Node::Where { x, y, z } => {
-                    //return None, \
-                    //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None, \
-                    //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
-                    if req_grad.contains(&y) {
-                        let zeros = self.zeros(self.shape(x).into(), self.dtype(x))?;
-                        let y_grad = self.where_(x, grad, zeros);
-                        self.release(zeros).unwrap();
-                        insert_or_add_grad(self, &mut grads, y, y_grad);
-                    }
-                    if req_grad.contains(&z) {
-                        let zeros = self.zeros(self.shape(x).into(), self.dtype(x))?;
-                        let z_grad = self.where_(x, zeros, grad);
-                        self.release(zeros)?;
-                        insert_or_add_grad(self, &mut grads, z, z_grad);
-                    }
-                }
                 Node::Unary { x, uop } => match uop {
                     UOp::Noop => {
                         panic!()
@@ -854,6 +844,14 @@ impl Runtime {
                         self.release(tanh_x_2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
+                    UOp::Not => {
+                        todo!("Not backward")
+                        //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None,
+                        //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
+                    }
+                    UOp::Nonzero => {
+                        todo!("Nonzero backward")
+                    }
                 },
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());
@@ -864,11 +862,12 @@ impl Runtime {
                     while vec.len() < shape.len() {
                         vec.insert(0, 1);
                     }
-                    let expand_axes: Vec<usize> = vec.into_iter()
-                            .zip(shape)
-                            .enumerate()
-                            .filter_map(|(a, (d, e))| if d == *e { None } else { Some(a) })
-                            .collect();
+                    let expand_axes: Vec<usize> = vec
+                        .into_iter()
+                        .zip(shape)
+                        .enumerate()
+                        .filter_map(|(a, (d, e))| if d == *e { None } else { Some(a) })
+                        .collect();
                     let temp = self.sum(grad, expand_axes);
                     let grad = self.reshape(temp, self.shape(x).into());
                     self.release(temp).unwrap();
