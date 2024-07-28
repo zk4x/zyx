@@ -27,6 +27,16 @@ impl Scalar for Complex<f32> {
         todo!()
     }
 
+    fn from_cf32(t: Complex<f32>) -> Self {
+        let _ = t;
+        todo!()
+    }
+
+    fn from_cf64(t: Complex<f64>) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_u8(t: u8) -> Self {
         let _ = t;
         todo!()
@@ -52,6 +62,11 @@ impl Scalar for Complex<f32> {
         todo!()
     }
 
+    fn from_bool(t: bool) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_le_bytes(bytes: &[u8]) -> Self {
         Complex::<f32>::new(
             f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -72,18 +87,6 @@ impl Scalar for Complex<f32> {
     }
 
     fn byte_size() -> usize {
-        todo!()
-    }
-
-    fn into_f32(self) -> f32 {
-        todo!()
-    }
-
-    fn into_f64(self) -> f64 {
-        todo!()
-    }
-
-    fn into_i32(self) -> i32 {
         todo!()
     }
 

@@ -2,6 +2,8 @@ use crate::dtype::DType;
 use crate::scalar::Scalar;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
+#[cfg(feature = "complex")]
+use num_complex::Complex;
 
 impl Scalar for i64 {
     #[cfg(feature = "half")]
@@ -24,6 +26,16 @@ impl Scalar for i64 {
         t as Self
     }
 
+    #[cfg(feature = "complex")]
+    fn from_cf32(t: Complex<f32>) -> Self {
+        t.re as Self
+    }
+
+    #[cfg(feature = "complex")]
+    fn from_cf64(t: Complex<f64>) -> Self {
+        t.re as Self
+    }
+
     fn from_u8(t: u8) -> Self {
         t.into()
     }
@@ -42,6 +54,10 @@ impl Scalar for i64 {
 
     fn from_i64(t: i64) -> Self {
         t
+    }
+
+    fn from_bool(t: bool) -> Self {
+        t as i64
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -64,18 +80,6 @@ impl Scalar for i64 {
 
     fn byte_size() -> usize {
         4
-    }
-
-    fn into_f32(self) -> f32 {
-        self as f32
-    }
-
-    fn into_f64(self) -> f64 {
-        self as f64
-    }
-
-    fn into_i32(self) -> i32 {
-        self.try_into().unwrap()
     }
 
     fn abs(self) -> Self {

@@ -1,4 +1,6 @@
 use core::fmt::Display;
+#[cfg(feature = "half")]
+use half::{bf16, f16};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Constant {
@@ -9,9 +11,9 @@ pub(crate) enum Constant {
     F32(u32),
     F64(u64),
     #[cfg(feature = "complex")]
-    CF32(u64),
+    CF32(u32, u32),
     #[cfg(feature = "complex")]
-    CF64(u128),
+    CF64(u64, u64),
     U8(u8),
     I8(i8),
     I16(i16),
@@ -22,32 +24,33 @@ pub(crate) enum Constant {
 
 impl Display for Constant {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use core::mem::transmute as t;
         match self {
             #[cfg(feature = "half")]
             Constant::BF16(value) => {
-                todo!()
+                return f.write_fmt(format_args!("{}", unsafe { t::<_, bf16>(*value) }));
             }
             #[cfg(feature = "half")]
             Constant::F16(value) => {
-                todo!()
+                return f.write_fmt(format_args!("{}", unsafe { t::<_, f16>(*value) }));
             }
             Constant::F32(value) => {
                 return f.write_fmt(format_args!("{}", unsafe {
-                    core::mem::transmute::<_, f32>(*value)
+                    t::<_, f32>(*value)
                 }));
             }
             Constant::F64(value) => {
                 return f.write_fmt(format_args!("{}", unsafe {
-                    core::mem::transmute::<_, f64>(*value)
+                    t::<_, f64>(*value)
                 }));
             }
             #[cfg(feature = "complex")]
-            Constant::CF32(value) => {
-                todo!()
+            Constant::CF32(re, im) => {
+                return unsafe { f.write_fmt(format_args!("{}+{}i", t::<_, f32>(*re), t::<_, f32>(*im))) };
             }
             #[cfg(feature = "complex")]
-            Constant::CF64(value) => {
-                todo!()
+            Constant::CF64(re, im) => {
+                return unsafe { f.write_fmt(format_args!("{}+{}i", t::<_, f64>(*re), t::<_, f64>(*im))) };
             }
             Constant::U8(value) => {
                 return f.write_fmt(format_args!("{}", value));

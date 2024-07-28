@@ -25,6 +25,12 @@ use compiler::{CompiledBackend, CompilerError};
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
 
+#[cfg(feature = "half")]
+use half::{bf16, f16};
+
+#[cfg(feature = "complex")]
+use num_complex::Complex;
+
 #[cfg(feature = "debug1")]
 use std::println;
 
@@ -289,15 +295,15 @@ impl Runtime {
     pub(crate) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
         return match dtype {
             #[cfg(feature = "half")]
-            DType::BF16 => self.full(shape, todo!()),
+            DType::BF16 => self.full(shape, bf16::ONE),
             #[cfg(feature = "half")]
-            DType::F16 => self.full(shape, todo!()),
+            DType::F16 => self.full(shape, f16::ONE),
             DType::F32 => self.full(shape, 1f32),
             DType::F64 => self.full(shape, 1f64),
             #[cfg(feature = "complex")]
-            DType::CF32 => self.full(shape, todo!()),
+            DType::CF32 => self.full(shape, Complex::new(1f32, 0.)),
             #[cfg(feature = "complex")]
-            DType::CF64 => self.full(shape, todo!()),
+            DType::CF64 => self.full(shape, Complex::new(1f64, 0.)),
             DType::U8 => self.full(shape, 1u8),
             DType::I8 => self.full(shape, 1i8),
             DType::I16 => self.full(shape, 1i16),
@@ -310,15 +316,15 @@ impl Runtime {
     pub(crate) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
         return match dtype {
             #[cfg(feature = "half")]
-            DType::BF16 => self.full(shape, todo!()),
+            DType::BF16 => self.full(shape, bf16::ZERO),
             #[cfg(feature = "half")]
-            DType::F16 => self.full(shape, todo!()),
+            DType::F16 => self.full(shape, f16::ZERO),
             DType::F32 => self.full(shape, 0f32),
             DType::F64 => self.full(shape, 0f64),
             #[cfg(feature = "complex")]
-            DType::CF32 => self.full(shape, todo!()),
+            DType::CF32 => self.full(shape, Complex::new(0f32, 0.)),
             #[cfg(feature = "complex")]
-            DType::CF64 => self.full(shape, todo!()),
+            DType::CF64 => self.full(shape, Complex::new(0f64, 0.)),
             DType::U8 => self.full(shape, 0u8),
             DType::I8 => self.full(shape, 0i8),
             DType::I16 => self.full(shape, 0i16),
@@ -912,7 +918,7 @@ impl Runtime {
             if sources.contains(&k) {
                 res.insert(k, v);
             } else {
-                self.release(v);
+                self.release(v)?;
             }
         }
         return Ok(res);

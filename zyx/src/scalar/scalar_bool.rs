@@ -1,11 +1,35 @@
 use super::Scalar;
+#[cfg(feature = "half")]
+use half::{bf16, f16};
+#[cfg(feature = "complex")]
+use num_complex::Complex;
 
 impl Scalar for bool {
+    #[cfg(feature = "half")]
+    fn from_bf16(t: bf16) -> Self {
+        todo!()
+    }
+
+    #[cfg(feature = "half")]
+    fn from_f16(t: f16) -> Self {
+        todo!()
+    }
+
     fn from_f32(t: f32) -> Self {
         todo!()
     }
 
     fn from_f64(t: f64) -> Self {
+        todo!()
+    }
+
+    #[cfg(feature = "complex")]
+    fn from_cf32(t: Complex<f32>) -> Self {
+        todo!()
+    }
+
+    #[cfg(feature = "complex")]
+    fn from_cf64(t: Complex<f64>) -> Self {
         todo!()
     }
 
@@ -29,6 +53,10 @@ impl Scalar for bool {
         todo!()
     }
 
+    fn from_bool(t: bool) -> Self {
+        todo!()
+    }
+
     fn from_le_bytes(bytes: &[u8]) -> Self {
         todo!()
     }
@@ -46,18 +74,6 @@ impl Scalar for bool {
     }
 
     fn byte_size() -> usize {
-        todo!()
-    }
-
-    fn into_f32(self) -> f32 {
-        todo!()
-    }
-
-    fn into_f64(self) -> f64 {
-        todo!()
-    }
-
-    fn into_i32(self) -> i32 {
         todo!()
     }
 

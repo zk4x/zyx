@@ -133,12 +133,12 @@ impl Tensor {
                 #[cfg(feature = "half")]
                 DType::BF16 => {
                     let data = rt.load::<bf16>(self.id).unwrap();
-                    rt.store(&data, shape)
+                    rt.store(data, shape)
                 }
                 #[cfg(feature = "half")]
                 DType::F16 => {
                     let data = rt.load::<f16>(self.id).unwrap();
-                    rt.store(&data, shape)
+                    rt.store(data, shape)
                 }
                 DType::F32 => {
                     let data = rt.load::<f32>(self.id).unwrap();
@@ -151,12 +151,12 @@ impl Tensor {
                 #[cfg(feature = "complex")]
                 DType::CF32 => {
                     let data = rt.load::<Complex<f32>>(self.id).unwrap();
-                    rt.store(&data, shape)
+                    rt.store(data, shape)
                 }
                 #[cfg(feature = "complex")]
                 DType::CF64 => {
                     let data = rt.load::<Complex<f64>>(self.id).unwrap();
-                    rt.store(&data, shape)
+                    rt.store(data, shape)
                 }
                 DType::U8 => {
                     let data = rt.load::<u8>(self.id).unwrap();
@@ -207,15 +207,15 @@ impl Tensor {
             #[cfg(feature = "half")]
             DType::F16 => todo!(),
             DType::F32 => {
-                let data = (0..n)
-                    .map(move |_| rng.sample(Standard))
-                    .collect::<Vec<f32>>();
+                let data: Vec<f32> = (0..n)
+                    .map(|_| rng.sample(Standard))
+                    .collect();
                 rt.store(data, shape).unwrap()
             }
             DType::F64 => {
-                let data = (0..n)
-                    .map(move |_| rng.sample(Standard))
-                    .collect::<Vec<f64>>();
+                let data: Vec<f64> = (0..n)
+                    .map(|_| rng.sample(Standard))
+                    .collect();
                 rt.store(data, shape).unwrap()
             }
             #[cfg(feature = "complex")]
@@ -233,16 +233,39 @@ impl Tensor {
     }
 
     /// Create tensor sampled from uniform distribution
+    /// Start of the range must be less than the end of the range.
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn uniform<T: Scalar>(
         shape: impl IntoShape,
         range: impl core::ops::RangeBounds<T>,
     ) -> Tensor {
-        let _ = shape;
-        let _ = range;
-        RT.lock().set_default_device_best();
-        todo!()
+        use rand::{Rng, SeedableRng, distributions::Uniform};
+        use core::ops::Bound;
+        let mut rt = RT.lock();
+        let shape: Vec<usize> = shape.into_shape().collect();
+        let n = shape.iter().product();
+        rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
+        let rng = rt.rng.get_mut().unwrap();
+        let start: T = if let Bound::Included(value) = range.start_bound() {
+            *value
+        } else {
+            T::min_value()
+        };
+        let end: T = if let Bound::Included(value) = range.end_bound() {
+            *value
+        } else {
+            T::max_value()
+        };
+        match T::dtype() {
+            DType::F32 => {
+                let uniform_dist = Uniform::new(start.cast::<f32>(), end.cast::<f32>());
+                let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                let id = rt.store(data, shape).unwrap();
+                return Tensor { id }
+            }
+            _ => todo!(),
+        };
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
@@ -250,12 +273,17 @@ impl Tensor {
     #[must_use]
     pub fn kaiming_uniform<T: Scalar>(
         shape: impl IntoShape,
-        range: impl core::ops::RangeBounds<T>,
+        a: T,
     ) -> Tensor {
-        let _ = shape;
-        let _ = range;
-        RT.lock().set_default_device_best();
-        todo!()
+        let n = T::from_i64(shape.clone().into_shape().skip(1).product::<usize>() as i64);
+        // bound = math.sqrt(3.0) * math.sqrt(2.0 / (1 + a ** 2)) / math.sqrt(prod(argfix(*shape)[1:]))
+        let one = T::one();
+        let x = Scalar::add(one, Scalar::mul(a, a));
+        let two = Scalar::add(one, one);
+        let three = Scalar::add(two, one);
+        let x = Scalar::div(two, x).sqrt();
+        let bound = Scalar::mul(three.sqrt(), Scalar::div(x, n));
+        return Tensor::uniform(shape, bound.neg()..bound);
     }
 
     /// Create tensor filled with zeros.

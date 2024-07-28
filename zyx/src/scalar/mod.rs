@@ -15,6 +15,9 @@ mod scalar_i64;
 mod scalar_i8;
 mod scalar_u8;
 
+#[cfg(feature = "complex")]
+use num_complex::Complex;
+
 #[cfg(feature = "half")]
 use half::{bf16, f16};
 
@@ -32,6 +35,12 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     fn from_f32(t: f32) -> Self;
     /// From f64
     fn from_f64(t: f64) -> Self;
+    /// From complex f32
+    #[cfg(feature = "complex")]
+    fn from_cf32(t: Complex<f32>) -> Self;
+    /// From complex f64
+    #[cfg(feature = "complex")]
+    fn from_cf64(t: Complex<f64>) -> Self;
     /// From u8
     fn from_u8(t: u8) -> Self;
     /// From i8
@@ -42,6 +51,8 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     fn from_i32(t: i32) -> Self;
     /// From i64
     fn from_i64(t: i64) -> Self;
+    /// From bool
+    fn from_bool(t: bool) -> Self;
     /// From little endian bytes
     fn from_le_bytes(bytes: &[u8]) -> Self;
     /// Get dtype of Self
@@ -52,12 +63,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     fn one() -> Self;
     /// Bute size of Self
     fn byte_size() -> usize;
-    /// Convert self into f32
-    fn into_f32(self) -> f32;
-    /// Convert self into f64
-    fn into_f64(self) -> f64;
-    /// Convert self into i32
-    fn into_i32(self) -> i32;
     /// Absolute value of self
     fn abs(self) -> Self;
     /// 1/self
@@ -104,4 +109,25 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     /// Comparison for scalars,
     /// if they are floats, this checks for diffs > Self::epsilon()
     fn is_equal(self, rhs: Self) -> bool;
+    fn cast<T: Scalar>(self) -> T {
+        use core::mem::transmute_copy as t;
+        return unsafe { match Self::dtype() {
+            #[cfg(feature = "half")]
+            DType::BF16 => T::from_bf16(t(&self)),
+            #[cfg(feature = "half")]
+            DType::F16 => T::from_f16(t(&self)),
+            DType::F32 => T::from_f32(t(&self)),
+            DType::F64 => T::from_f64(t(&self)),
+            #[cfg(feature = "complex")]
+            DType::CF32 => T::from_cf32(t(&self)),
+            #[cfg(feature = "complex")]
+            DType::CF64 => T::from_cf64(t(&self)),
+            DType::U8 => T::from_u8(t(&self)),
+            DType::I8 => T::from_i8(t(&self)),
+            DType::I16 => T::from_i16(t(&self)),
+            DType::I32 => T::from_i32(t(&self)),
+            DType::I64 => T::from_i64(t(&self)),
+            DType::Bool => T::from_bool(t(&self)),
+        }};
+    }
 }

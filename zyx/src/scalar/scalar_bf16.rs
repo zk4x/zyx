@@ -1,6 +1,7 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use half::{bf16, f16};
+use num_complex::Complex;
 
 impl Scalar for bf16 {
     fn from_bf16(t: bf16) -> Self {
@@ -19,24 +20,36 @@ impl Scalar for bf16 {
         bf16::from_f64(t)
     }
 
+    fn from_cf32(t: Complex<f32>) -> Self {
+        bf16::from_f32(t.re)
+    }
+
+    fn from_cf64(t: Complex<f64>) -> Self {
+        bf16::from_f64(t.re)
+    }
+
     fn from_u8(t: u8) -> Self {
-        bf16::from_f32(t.into_f32())
+        bf16::from_f32(t as f32)
     }
 
     fn from_i8(t: i8) -> Self {
-        bf16::from_f32(t.into_f32())
+        bf16::from_f32(t as f32)
     }
 
     fn from_i16(t: i16) -> Self {
-        bf16::from_f32(t.into_f32())
+        bf16::from_f32(t as f32)
     }
 
     fn from_i32(t: i32) -> Self {
-        bf16::from_f32(t.into_f32())
+        bf16::from_f32(t as f32)
     }
 
     fn from_i64(t: i64) -> Self {
-        bf16::from_f32(t.into_f32())
+        bf16::from_f32(t as f32)
+    }
+
+    fn from_bool(t: bool) -> Self {
+        bf16::from_f32(t as i32 as f32)
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -57,18 +70,6 @@ impl Scalar for bf16 {
 
     fn byte_size() -> usize {
         2
-    }
-
-    fn into_f32(self) -> f32 {
-        self.into()
-    }
-
-    fn into_f64(self) -> f64 {
-        self.into()
-    }
-
-    fn into_i32(self) -> i32 {
-        self.into_f32().into_i32()
     }
 
     fn abs(self) -> Self {
@@ -131,8 +132,8 @@ impl Scalar for bf16 {
         self / rhs
     }
 
-    fn pow(self, rhs: Self) -> Self {
-        bf16::from_f32(self.into_f32().pow(rhs.into_f32()))
+    fn pow(self, _rhs: Self) -> Self {
+        todo!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {
