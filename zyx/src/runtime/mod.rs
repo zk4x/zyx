@@ -5,7 +5,6 @@ use crate::tensor::TensorId;
 use alloc::vec;
 use alloc::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
-    string::String,
     vec::Vec,
 };
 use custom::{
@@ -102,7 +101,7 @@ pub(crate) struct Runtime {
     pub(crate) default_device_set_by_user: bool,
     #[cfg(feature = "rand")]
     rng: core::cell::OnceCell<SmallRng>,
-    training: bool,
+    pub(crate) training: bool,
 }
 
 impl Runtime {
@@ -265,19 +264,23 @@ impl Runtime {
     }
 
     /// Creates dot plot of graph between given tensors
+    #[cfg(feature = "std")]
     #[must_use]
-    pub(crate) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
+    pub(crate) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> alloc::string::String {
         self.graph.plot_dot_graph(tensors)
     }
 
+    #[must_use]
     pub(crate) fn shape(&self, x: TensorId) -> &[usize] {
         return self.graph.shape(x);
     }
 
+    #[must_use]
     pub(crate) fn dtype(&self, x: TensorId) -> DType {
         return self.graph.dtype(x);
     }
 
+    #[must_use]
     pub(crate) fn device(&self, x: TensorId) -> Device {
         return self.graph.device(x);
     }
@@ -461,7 +464,12 @@ impl Runtime {
     }
 
     pub(crate) fn pad(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
-        let shape = vec![];
+        let shape: Vec<usize> = self
+            .shape(x)
+            .iter()
+            .zip(padding.iter())
+            .map(|(d, (lp, rp))| *d + *lp as usize + *rp as usize)
+            .collect();
         return self.graph.push(Node::Pad { x, padding, shape });
     }
 

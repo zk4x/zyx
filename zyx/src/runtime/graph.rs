@@ -204,13 +204,26 @@ impl Graph {
         //std::println!("Execution order: {order:?}");
         // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
+        #[cfg(feature = "std")]
+        for nid in &order {
+            std::println!("{nid} -> {:?}", self.nodes[nid]);
+        }
         let mut node_swap = true;
         while node_swap {
             node_swap = false;
-            for nid in order.iter().take(order.len() - 1) {
-                if self.nodes[nid].1.is_movement() && self.nodes[&(nid + 1)].1.is_unary() {
-                    //libc_print::libc_println!("Reordering movement and unary ops, swap {} and {}", nid, nid+1);
-                    self.swap_nodes(*nid, nid + 1);
+            for (nid, nid1) in order.iter().zip(order.iter().skip(1)) {
+                if self.nodes[nid].1.is_movement()
+                    && self.nodes[nid1].1.is_unary()
+                    && self.nodes[nid].0 == 1
+                    && self.nodes[nid1].0 == 1
+                {
+                    #[cfg(feature = "std")]
+                    std::println!(
+                        "Reordering movement and unary ops, swap {} and {}",
+                        nid,
+                        nid1
+                    );
+                    self.swap_nodes(*nid, *nid1);
                     node_swap = true;
                 }
             }
@@ -343,6 +356,7 @@ impl Graph {
     }
 
     /// Plot dot graph in dot format between given nodes
+    #[cfg(feature = "std")]
     #[must_use]
     pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> alloc::string::String {
         // Make a list of visited nodes and their reference counts.

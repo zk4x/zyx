@@ -95,3 +95,13 @@ fn t4() {
     let z = (x * y).sum(2);
     Tensor::realize([&z]);
 }
+
+#[test]
+fn t5() {
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]);
+    let y = x.transpose();
+    let z = x.exp();
+    //Tensor::plot_dot_graph([&y, &z], "graph1");
+    Tensor::realize([&y, &z]);
+    std::println!("{y}\n{z}");
+}

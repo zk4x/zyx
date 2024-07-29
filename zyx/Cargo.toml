@@ -27,8 +27,8 @@ wgpu = { version = "0.20.1", default-features = false, optional = true }
 nostd_async = { version = "0.6.1", default-features = false, optional = true }
 pyo3 = { version = "0.22.2", optional = true }
 
-[lib]
-crate-type = ["lib", "cdylib"]
+#[lib]
+#crate-type = ["lib", "cdylib"]
 
 [features]
 default = [

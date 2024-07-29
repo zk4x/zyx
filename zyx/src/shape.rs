@@ -76,6 +76,16 @@ impl IntoAxes for isize {
     }
 }
 
+impl IntoAxes for Vec<isize> {
+    fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
+        return self.into_iter().map(move |a| to_axis(a, rank));
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+}
+
 impl<const N: usize> IntoAxes for [isize; N] {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         return self.into_iter().map(move |a| to_axis(a, rank));
@@ -103,5 +113,15 @@ impl IntoAxes for RangeInclusive<isize> {
 
     fn len(&self) -> usize {
         (self.end() - self.start() + 1) as usize
+    }
+}
+
+pub trait IntoPadding {
+    fn into_padding(self) -> Vec<(isize, isize)>;
+}
+
+impl<I: IntoIterator<Item = (isize, isize)>> IntoPadding for I {
+    fn into_padding(self) -> Vec<(isize, isize)> {
+        self.into_iter().collect()
     }
 }

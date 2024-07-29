@@ -561,6 +561,11 @@ pub(super) fn generate_kernels(
             }
             Node::Unary { x, uop } => {
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    if kernel.shape != graph.shape(*x) {
+                        // create new kernel using already predefined store
+                    } else {
+                        // remove existing store and merge with older kernel
+                    }
                     kernel.ops.push(VOp::Unary {
                         z: nid,
                         x: *x,

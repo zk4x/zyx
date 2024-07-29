@@ -352,12 +352,13 @@ impl<C: Compiler> CompiledBackend<C> {
                 1000_000_000_000.. => (60_000_000_000, "min"),
             };
 
+            let (fs, f_us) = value_unit(f * 1000_000_000 / nanos);
+            let (brs, br_us) = value_unit(br * 1000_000_000 / nanos);
+            let (bws, bw_us) = value_unit(bw * 1000_000_000 / nanos);
+
             println!(
-            "Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B written, took {} {t_u} ~ {} {f_u}FLOP/s, {} {br_u}B/s read, {} {bw_u}B/s write.",
+            "Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B written, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.",
             nanos/t_d,
-            f*1000_000_000/nanos,
-            br*1000_000_000/nanos,
-            bw*1000_000_000/nanos,
             );
         }
 

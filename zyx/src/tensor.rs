@@ -1,7 +1,7 @@
 use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use crate::shape::{IntoAxes, IntoShape};
+use crate::shape::{IntoAxes, IntoPadding, IntoShape};
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -19,11 +19,6 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-
-#[cfg(feature = "rand")]
-use rand::rngs::SmallRng;
-#[cfg(feature = "rand")]
-use rand::Rng;
 
 pub(crate) type TensorId = u64;
 
@@ -79,6 +74,18 @@ impl Tensor {
         } else {
             let _ = std::fs::remove_file(format!("{name}.dot"));
         }
+    }
+
+    /// Is zyx in training mode?
+    #[must_use]
+    pub fn training() -> bool {
+        RT.lock().training
+    }
+
+    /// Set training mode
+    #[must_use]
+    pub fn set_training(training: bool) {
+        RT.lock().training = training;
     }
 
     /// Set default device used for new tensors.
@@ -299,16 +306,10 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
-        /*let mut rt = RT.lock();
-        let ones = Tensor {
-            id: rt.ones(vec![1, n], dtype).unwrap(),
+        /*let ones = Tensor {
+            id: RT.lock().ones(vec![1, n], dtype).unwrap(),
         };
-        let zeros = Tensor {
-            id: rt.zeros(vec![n, n+1], dtype).unwrap(),
-        };
-        core::mem::drop(rt);
-        let x = zeros + ones;
-        x.pad();
+        ones.pad();
         return x;*/
         todo!()
     }
@@ -508,13 +509,127 @@ impl Tensor {
         };
     }
 
+    /// Constant padding
+    ///
+    /// This can both add and remove values from tensor. Negative padding removes values, positive padding
+    /// adds values.
+    ///
+    /// Pad last dimension by (1, 2)
+    /// ```rust
+    /// use zyx_opencl;
+    /// let dev = zyx_opencl::device()?;
+    /// let x = dev.tensor([[2, 3],
+    ///                     [4, 1]]);
+    /// let z = x.pad([(1, 2)], 0);
+    /// std::println!("{}", z);
+    /// assert_eq!(z, [[0, 2, 3, 0, 0],
+    ///                [0, 4, 1, 0, 0]]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
+    /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
+    /// ```rust
+    /// # use zyx_opencl;
+    /// # let dev = zyx_opencl::device()?;
+    /// # let x = dev.tensor([[2, 3],
+    /// #                     [4, 1]]);
+    /// let z = x.pad([(2, -1), (1, 1)], 0);
+    /// println!("z: {z}");
+    /// assert_eq!(z, [[0, 0, 0],
+    ///                [0, 0, 2],
+    ///                [0, 0, 4],
+    ///                [0, 0, 0]]);
+    /// # Ok::<(), zyx_opencl::ZyxError>(())
+    /// ```
+    ///
+    /// # Panics
+    /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
     #[must_use]
-    pub fn pad(&self, padding: impl IntoPadding, value: impl Scalar) -> Tensor {
-        let _ = padding;
-        let _ = value;
-        // TODO add nonzero padding
-        //return Tensor { id: RT.lock().pad(self.id, padding) }
-        todo!()
+    pub fn pad(&self, padding: impl IntoPadding, value: impl Into<Tensor>) -> Tensor {
+        let dtype = self.dtype();
+        let value: Tensor = value.into();
+        debug_assert_eq!(
+            value.dtype(),
+            dtype,
+            "Cannot pad tensor with dtype {} with value of dtype {}",
+            dtype,
+            value.dtype()
+        );
+        let padding = padding.into_padding();
+        let sh = self.shape();
+        debug_assert!(
+            padding.len() <= sh.rank()
+                && padding
+                    .iter()
+                    .zip(sh.iter().rev())
+                    .all(|((lp, rp), d)| if *lp < 0 {
+                        ((-*lp) as usize) <= *d
+                    } else {
+                        true
+                    } && if *rp < 0 {
+                        ((-*rp) as usize) <= *d
+                    } else {
+                        true
+                    }),
+            "Cannot pad tensor with shape {sh:?} with padding {padding:?}"
+        );
+        let t0 = Tensor {
+            id: RT.lock().pad(self.id, padding.clone()),
+        };
+        if value.numel() == 1
+            && match dtype {
+                #[cfg(feature = "half")]
+                DType::BF16 => {
+                    let x: bf16 = value.clone().try_into().unwrap();
+                    x == 0.
+                }
+                #[cfg(feature = "half")]
+                DType::F16 => {
+                    let x: f16 = value.clone().try_into().unwrap();
+                    x == 0.
+                }
+                DType::F32 => {
+                    let x: f32 = value.clone().try_into().unwrap();
+                    x == 0.
+                }
+                DType::F64 => {
+                    let x: f64 = value.clone().try_into().unwrap();
+                    x == 0.
+                }
+                DType::U8 => {
+                    let x: u8 = value.clone().try_into().unwrap();
+                    x == 0
+                }
+                DType::I8 => {
+                    let x: i8 = value.clone().try_into().unwrap();
+                    x == 0
+                }
+                DType::I16 => {
+                    let x: i16 = value.clone().try_into().unwrap();
+                    x == 0
+                }
+                DType::I32 => {
+                    let x: i32 = value.clone().try_into().unwrap();
+                    x == 0
+                }
+                DType::I64 => {
+                    let x: i64 = value.clone().try_into().unwrap();
+                    x == 0
+                }
+                DType::Bool => {
+                    let x: bool = value.clone().try_into().unwrap();
+                    x == false
+                }
+            }
+        {
+            t0
+        } else {
+            let ones = Tensor::ones(sh.clone(), dtype);
+            let zeros = Tensor::zeros(sh, self.dtype());
+            t0 + Tensor {
+                id: RT.lock().pad(ones.id, padding),
+            }
+            .where_(zeros, value)
+        }
     }
 
     #[must_use]
@@ -534,7 +649,17 @@ impl Tensor {
 
     #[must_use]
     pub fn transpose(&self) -> Tensor {
-        todo!()
+        let mut rank = self.rank();
+        let x = if rank == 1 {
+            let n = self.numel();
+            rank = 2;
+            self.reshape([1, n])
+        } else {
+            self.clone()
+        };
+        let mut axes: Vec<isize> = (0..rank as isize).collect();
+        axes.swap(rank - 1, rank - 2);
+        x.permute(axes)
     }
 
     // reduce
@@ -638,15 +763,46 @@ impl Tensor {
     // index
     #[must_use]
     pub fn get(&self, index: impl IntoIndex) -> Tensor {
-        let _ = index;
-        todo!()
+        let shape = self.shape();
+        let padding: Vec<(isize, isize)> = index
+            .into_index()
+            .into_iter()
+            .zip(shape.iter())
+            .map(|(r, d)| {
+                (
+                    if r.start >= 0 {
+                        -r.start
+                    } else {
+                        -r.start - *d as isize
+                    },
+                    if r.end == isize::MAX {
+                        0
+                    } else if r.end > 0 {
+                        -(*d as isize - r.end)
+                    } else {
+                        r.end
+                    },
+                )
+            })
+            .collect();
+        //std::println!("Get padding: {padding:?}");
+        let n = shape.rank() - padding.len();
+        self.pad(
+            padding
+                .into_iter()
+                .chain(core::iter::repeat((0, 0)).take(n))
+                .collect::<Vec<(isize, isize)>>()
+                .into_iter()
+                .rev(),
+            0,
+        )
     }
 
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
         let n = *self.shape().last().unwrap();
         self.flatten(..)
-            .pad([(0, n as i64)], 0)
+            .pad([(0, n as isize)], 0)
             .reshape([n, n + 1])
             .get((.., 0))
     }
@@ -744,21 +900,43 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: i64) -> Tensor {
+    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
+        let tensors: Vec<&Tensor> = tensors.into_iter().collect();
+        let shape = tensors[0].shape();
+        let rank = shape.rank();
+        let dim = if dim < 0 { dim + rank as isize } else { dim } as usize;
+        // Dimension check
+        for tensor in &tensors {
+            for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
+                if i != dim {
+                    debug_assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
+                }
+            }
+        }
+        let mut offset = 0isize;
+        let mut res = Tensor::zeros(tensors[0].shape(), tensors[0].dtype());
+        for tensor in tensors {
+            res = res
+                + tensor.pad(
+                    core::iter::repeat((0isize, 0isize))
+                        .take(rank - dim - 1)
+                        .chain([(offset, 0isize)]),
+                    0,
+                );
+            offset += tensor.shape()[dim] as isize;
+        }
+        res
+    }
+
+    #[must_use]
+    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
         let _ = tensors;
         let _ = dim;
         todo!()
     }
 
     #[must_use]
-    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: i64) -> Tensor {
-        let _ = tensors;
-        let _ = dim;
-        todo!()
-    }
-
-    #[must_use]
-    pub fn split(&self, sizes: &[usize], dim: i64) -> Vec<Tensor> {
+    pub fn split(&self, sizes: &[usize], dim: isize) -> Vec<Tensor> {
         let _ = sizes;
         let _ = dim;
         todo!()
@@ -845,9 +1023,9 @@ impl Tensor {
 }
 
 #[cfg(feature = "half")]
-impl TryFrom<&Tensor> for bf16 {
+impl TryFrom<Tensor> for bf16 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -857,9 +1035,9 @@ impl TryFrom<&Tensor> for bf16 {
 }
 
 #[cfg(feature = "half")]
-impl TryFrom<&Tensor> for f16 {
+impl TryFrom<Tensor> for f16 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -868,9 +1046,9 @@ impl TryFrom<&Tensor> for f16 {
     }
 }
 
-impl TryFrom<&Tensor> for f32 {
+impl TryFrom<Tensor> for f32 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -879,21 +1057,9 @@ impl TryFrom<&Tensor> for f32 {
     }
 }
 
-impl TryFrom<&Tensor> for f64 {
+impl TryFrom<Tensor> for f64 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
-    }
-}
-
-#[cfg(feature = "complex")]
-impl TryFrom<&Tensor> for Complex<f32> {
-    type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -903,9 +1069,9 @@ impl TryFrom<&Tensor> for Complex<f32> {
 }
 
 #[cfg(feature = "complex")]
-impl TryFrom<&Tensor> for Complex<f64> {
+impl TryFrom<Tensor> for Complex<f32> {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -914,9 +1080,10 @@ impl TryFrom<&Tensor> for Complex<f64> {
     }
 }
 
-impl TryFrom<&Tensor> for u8 {
+#[cfg(feature = "complex")]
+impl TryFrom<Tensor> for Complex<f64> {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -925,9 +1092,9 @@ impl TryFrom<&Tensor> for u8 {
     }
 }
 
-impl TryFrom<&Tensor> for i8 {
+impl TryFrom<Tensor> for u8 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -936,9 +1103,9 @@ impl TryFrom<&Tensor> for i8 {
     }
 }
 
-impl TryFrom<&Tensor> for i16 {
+impl TryFrom<Tensor> for i8 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -947,9 +1114,9 @@ impl TryFrom<&Tensor> for i16 {
     }
 }
 
-impl TryFrom<&Tensor> for i32 {
+impl TryFrom<Tensor> for i16 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -958,9 +1125,9 @@ impl TryFrom<&Tensor> for i32 {
     }
 }
 
-impl TryFrom<&Tensor> for i64 {
+impl TryFrom<Tensor> for i32 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock()
             .load(value.id)?
             .first()
@@ -969,9 +1136,31 @@ impl TryFrom<&Tensor> for i64 {
     }
 }
 
-impl<T: Scalar> TryFrom<&Tensor> for Vec<T> {
+impl TryFrom<Tensor> for i64 {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl TryFrom<Tensor> for bool {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        RT.lock()
+            .load(value.id)?
+            .first()
+            .copied()
+            .ok_or(ZyxError::EmptyTensor)
+    }
+}
+
+impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock().load(value.id)
     }
 }
@@ -993,35 +1182,77 @@ impl core::fmt::Display for Tensor {
         };
         let res = match self.dtype() {
             #[cfg(feature = "half")]
+            DType::BF16 => {
+                let data: Result<Vec<bf16>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("f16 tensor failed to realize {e:?}"),
+                }
+            }
+            #[cfg(feature = "half")]
             DType::F16 => {
-                let data: Result<Vec<f16>, _> = self.try_into();
+                let data: Result<Vec<f16>, _> = self.clone().try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => alloc::format!("f16 tensor failed to realize {e:?}"),
                 }
             }
             DType::F32 => {
-                let data: Result<Vec<f32>, _> = self.try_into();
+                let data: Result<Vec<f32>, _> = self.clone().try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => alloc::format!("f32 tensor failed to realize {e:?}"),
                 }
             }
             DType::F64 => {
-                let data: Result<Vec<f64>, _> = self.try_into();
+                let data: Result<Vec<f64>, _> = self.clone().try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => alloc::format!("f64 tensor failed to realize {e:?}"),
                 }
             }
-            DType::I32 => {
-                let data: Result<Vec<i32>, _> = self.try_into();
+            DType::U8 => {
+                let data: Result<Vec<u8>, _> = self.clone().try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
                 }
             }
-            _ => todo!(),
+            DType::I8 => {
+                let data: Result<Vec<i8>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::I16 => {
+                let data: Result<Vec<i16>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::I32 => {
+                let data: Result<Vec<i32>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::I64 => {
+                let data: Result<Vec<i64>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::Bool => {
+                let data: Result<Vec<bool>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("i32 tensor failed to realize {e:?}"),
+                }
+            }
         };
         f.write_fmt(format_args!(
             "Tensor {:?} {}\n{res}",
@@ -1096,47 +1327,47 @@ fn tensor_to_string<T: core::fmt::Display>(
 /// Into i64 range, used for indexing
 pub trait IntoRange: Clone {
     /// Convert self to range i64, if it is scalar, it gets converted to x..x+1
-    fn into_range(self) -> Range<i64>;
+    fn into_range(self) -> Range<isize>;
 }
 
 impl IntoRange for RangeFull {
-    fn into_range(self) -> Range<i64> {
-        0..i64::MAX
+    fn into_range(self) -> Range<isize> {
+        0..isize::MAX
     }
 }
 
-impl IntoRange for RangeFrom<i64> {
-    fn into_range(self) -> Range<i64> {
-        self.start..i64::MAX
+impl IntoRange for RangeFrom<isize> {
+    fn into_range(self) -> Range<isize> {
+        self.start..isize::MAX
     }
 }
 
-impl IntoRange for RangeTo<i64> {
-    fn into_range(self) -> Range<i64> {
+impl IntoRange for RangeTo<isize> {
+    fn into_range(self) -> Range<isize> {
         0..self.end
     }
 }
 
-impl IntoRange for RangeInclusive<i64> {
-    fn into_range(self) -> Range<i64> {
+impl IntoRange for RangeInclusive<isize> {
+    fn into_range(self) -> Range<isize> {
         *self.start()..*self.end() + 1
     }
 }
 
-impl IntoRange for RangeToInclusive<i64> {
-    fn into_range(self) -> Range<i64> {
+impl IntoRange for RangeToInclusive<isize> {
+    fn into_range(self) -> Range<isize> {
         0..self.end + 1
     }
 }
 
-impl IntoRange for Range<i64> {
-    fn into_range(self) -> Range<i64> {
+impl IntoRange for Range<isize> {
+    fn into_range(self) -> Range<isize> {
         self
     }
 }
 
-impl IntoRange for i64 {
-    fn into_range(self) -> Range<i64> {
+impl IntoRange for isize {
+    fn into_range(self) -> Range<isize> {
         self..self + 1
     }
 }
@@ -1144,29 +1375,29 @@ impl IntoRange for i64 {
 /// Implemented for objects that can be used to index tensors.
 pub trait IntoIndex {
     /// Convert self to tensor index.
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>>;
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>>;
 }
 
 impl<I: IntoRange> IntoIndex for &[I] {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         self.iter().cloned().map(IntoRange::into_range)
     }
 }
 
 impl<I0: IntoRange> IntoIndex for I0 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [self.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange> IntoIndex for (I0, I1) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [self.0.into_range(), self.1.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange> IntoIndex for (I0, I1, I2) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -1177,7 +1408,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange> IntoIndex for (I0, I1, I2) {
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (I0, I1, I2, I3) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -1191,7 +1422,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> IntoIndex
     for (I0, I1, I2, I3, I4)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -1206,7 +1437,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange>
     IntoIndex for (I0, I1, I2, I3, I4, I5)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -1229,7 +1460,7 @@ impl<
         I6: IntoRange,
     > IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -1254,7 +1485,7 @@ impl<
         I7: IntoRange,
     > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<i64>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -1320,16 +1551,6 @@ impl FlattenAxes for RangeToInclusive<i64> {
 impl FlattenAxes for RangeFull {
     fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
         0..rank as i64
-    }
-}
-
-pub trait IntoPadding {
-    fn into_padding(self) -> Vec<(i64, i64)>;
-}
-
-impl<const N: usize> IntoPadding for [(i64, i64); N] {
-    fn into_padding(self) -> Vec<(i64, i64)> {
-        self.into()
     }
 }
 
