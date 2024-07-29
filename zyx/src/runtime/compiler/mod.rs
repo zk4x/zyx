@@ -94,8 +94,9 @@ impl<C: Compiler> Drop for CompiledBackend<C> {
 pub(super) struct CompiledGraph<Program> {
     // Ordered programs and arguments to them
     programs: Vec<(Vec<TensorId>, Program)>,
-    //flop: usize,
-    //bytes: usize,
+    flop: u128,
+    bytes_read: u128,
+    bytes_written: u128,
 }
 
 #[derive(Debug)]
@@ -200,7 +201,7 @@ impl<C: Compiler> CompiledBackend<C> {
             return Ok(());
         }
         let mut graph = org_graph.clone();
-        let order = graph.execution_order(&to_eval);
+        let (order, flop, bytes_read, bytes_written) = graph.execution_order(&to_eval);
         let mut kernels = v::generate_kernels(&graph, &order, &to_eval);
 
         let mut programs = Vec::new();
@@ -293,8 +294,9 @@ impl<C: Compiler> CompiledBackend<C> {
             org_graph.clone(),
             CompiledGraph {
                 programs,
-                //flop: 0,
-                //bytes: 0,
+                flop: flop as u128,
+                bytes_read: bytes_read as u128,
+                bytes_written: bytes_written as u128,
             },
         );
 
@@ -303,6 +305,9 @@ impl<C: Compiler> CompiledBackend<C> {
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), CompilerError> {
         let graph = self.compiled_graphs.get(graph).unwrap();
+
+        #[cfg(feature = "debug1")]
+        let begin = std::time::Instant::now();
 
         for (args, program) in &graph.programs {
             let mut buffers = Vec::with_capacity(args.len());
@@ -315,6 +320,45 @@ impl<C: Compiler> CompiledBackend<C> {
             for arg in args.iter().copied().rev() {
                 self.buffers.insert(arg, buffers.pop().unwrap());
             }
+        }
+
+        #[cfg(feature = "debug1")]
+        {
+            let duration = begin.elapsed();
+            let nanos = duration.as_nanos();
+
+            fn value_unit(x: u128) -> (u128, &'static str) {
+                match x {
+                    0..1000 => (x, ""),
+                    1000..1000000 => (x / 1000, "k"),
+                    1000_000..1000000000 => (x / 1000_000, "M"),
+                    1000_000_000..1000_000_000_000 => (x / 1000_000_000, "G"),
+                    1000_000_000_000..1000_000_000_000_000 => (x / 1000_000_000_000, "T"),
+                    1000_000_000_000_000..1000_000_000_000_000_000 => {
+                        (x / 1000_000_000_000_000, "P")
+                    }
+                    1000_000_000_000_000_000.. => (x / 1000_000_000_000_000_000, "E"),
+                }
+            }
+
+            let (f, f_u) = value_unit(graph.flop);
+            let (br, br_u) = value_unit(graph.bytes_read);
+            let (bw, bw_u) = value_unit(graph.bytes_written);
+            let (t_d, t_u) = match nanos {
+                0..1000 => (1, "ns"),
+                1000..1000_000 => (1000, "μs"),
+                1000_000..1000_000_000 => (1000_000, "ms"),
+                1000_000_000..1000_000_000_000 => (1000_000_000, "s"),
+                1000_000_000_000.. => (60_000_000_000, "min"),
+            };
+
+            println!(
+            "Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B written, took {} {t_u} ~ {} {f_u}FLOP/s, {} {br_u}B/s read, {} {bw_u}B/s write.",
+            nanos/t_d,
+            f*1000_000_000/nanos,
+            br*1000_000_000/nanos,
+            bw*1000_000_000/nanos,
+            );
         }
 
         return Ok(());

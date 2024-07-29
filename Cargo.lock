@@ -1332,11 +1332,3 @@ version = "0.2.0"
 dependencies = [
  "zyx",
 ]
-
-[[package]]
-name = "zyx-py"
-version = "0.1.0"
-dependencies = [
- "pyo3",
- "zyx",
-]

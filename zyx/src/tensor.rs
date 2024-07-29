@@ -58,6 +58,29 @@ impl Tensor {
         RT.lock().default_device
     }
 
+    /// Write graph of operations between tensors as png image with given filename
+    /// Expects dot program to be in the path. Otherwise create dot graph file
+    /// without converting it to png.
+    #[cfg(feature = "std")]
+    pub fn plot_dot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) {
+        use std::format;
+        let graph = RT
+            .lock()
+            .plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
+        std::fs::write(format!("{name}.dot"), graph).unwrap();
+        let output = std::process::Command::new("dot")
+            .arg("-Tpng")
+            .arg(format!("{name}.dot"))
+            .arg("-o")
+            .arg(format!("{name}.png"))
+            .output();
+        if let Err(err) = output {
+            std::println!("Graph png could not be created: {err}");
+        } else {
+            let _ = std::fs::remove_file(format!("{name}.dot"));
+        }
+    }
+
     /// Set default device used for new tensors.
     /// Returns true if the device initialized successfully.
     /// Returns false if the device failed to initialize.
@@ -196,38 +219,12 @@ impl Tensor {
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
-        use rand::distributions::Standard;
-        use rand::SeedableRng;
-        let mut rt = RT.lock();
-        let shape: Vec<usize> = shape.into_shape().collect();
-        let n = shape.iter().product();
-        rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
-        let rng = rt.rng.get_mut().unwrap();
-        let tensor_id = match dtype {
-            #[cfg(feature = "half")]
-            DType::BF16 => todo!(),
-            #[cfg(feature = "half")]
-            DType::F16 => todo!(),
-            DType::F32 => {
-                let data: Vec<f32> = (0..n).map(|_| rng.sample(Standard)).collect();
-                rt.store(data, shape).unwrap()
-            }
-            DType::F64 => {
-                let data: Vec<f64> = (0..n).map(|_| rng.sample(Standard)).collect();
-                rt.store(data, shape).unwrap()
-            }
-            #[cfg(feature = "complex")]
-            DType::CF32 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF64 => todo!(),
-            DType::U8 => todo!(),
-            DType::I8 => todo!(),
-            DType::I16 => todo!(),
-            DType::I32 => todo!(),
-            DType::I64 => todo!(),
-            DType::Bool => todo!(),
+        return Tensor {
+            id: RT
+                .lock()
+                .randn(shape.into_shape().collect(), dtype)
+                .unwrap(),
         };
-        return Tensor { id: tensor_id };
     }
 
     /// Create tensor sampled from uniform distribution
@@ -239,12 +236,6 @@ impl Tensor {
         range: impl core::ops::RangeBounds<T>,
     ) -> Tensor {
         use core::ops::Bound;
-        use rand::{distributions::Uniform, Rng, SeedableRng};
-        let mut rt = RT.lock();
-        let shape: Vec<usize> = shape.into_shape().collect();
-        let n = shape.iter().product();
-        rt.rng.get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
-        let rng = rt.rng.get_mut().unwrap();
         let start: T = if let Bound::Included(value) = range.start_bound() {
             *value
         } else {
@@ -255,14 +246,11 @@ impl Tensor {
         } else {
             T::max_value()
         };
-        match T::dtype() {
-            DType::F32 => {
-                let uniform_dist = Uniform::new(start.cast::<f32>(), end.cast::<f32>());
-                let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                let id = rt.store(data, shape).unwrap();
-                return Tensor { id };
-            }
-            _ => todo!(),
+        return Tensor {
+            id: RT
+                .lock()
+                .uniform(shape.into_shape().collect(), start, end)
+                .unwrap(),
         };
     }
 
@@ -311,9 +299,17 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
-        let _ = n;
-        let _ = dtype;
-        RT.lock().set_default_device_best();
+        /*let mut rt = RT.lock();
+        let ones = Tensor {
+            id: rt.ones(vec![1, n], dtype).unwrap(),
+        };
+        let zeros = Tensor {
+            id: rt.zeros(vec![n, n+1], dtype).unwrap(),
+        };
+        core::mem::drop(rt);
+        let x = zeros + ones;
+        x.pad();
+        return x;*/
         todo!()
     }
 

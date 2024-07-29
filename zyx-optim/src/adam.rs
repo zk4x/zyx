@@ -88,7 +88,7 @@ impl Adam {
                         self.vm.push(vh);
                     }
                     // Cast since learning_rate is f32, but parameters can have different precision.
-                    // Can this cast be somehow avoided? Is it better to always work with original dtype?
+                    // Is it better to always work with original dtype?
                     *param = (&*param - mh / ((self.vm[i].sqrt() + self.eps) * self.learning_rate))
                         .cast(param.dtype());
                 } else {

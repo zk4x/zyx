@@ -352,6 +352,11 @@ pub(super) fn generate_kernels(
                 // Expand increases axes with dimension of 1 to bigger dimension
                 // and sets strides in those axes to 0 for both loads and stores
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    // TODO if reference count of nid is more than one, we have to add store in here,
+                    // so that it can be used by other ops.
+                    // At the same time we have to check if we are using kernel with the same shape,
+                    // then we can remove global store and use merge this op directly, otherwise
+                    // we have to create new kernel.
                     //println!("Expanding {kernel:?}");
                     assert_eq!(kernel.shape.len(), shape.len());
                     let mut expand_axes = BTreeSet::new();
@@ -489,10 +494,12 @@ pub(super) fn generate_kernels(
                     panic!()
                 }
             }
-            Node::Pad { x, pad, shape } => {
+            Node::Pad { x, padding, shape } => {
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
-                todo!()
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(x)) {
+                    todo!()
+                }
             }
             Node::Reduce {
                 x,

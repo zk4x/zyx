@@ -35,9 +35,8 @@ default = [
     "debug1",
     "opencl",
     "rand",
-    "complex",
-    "half",
-    "py",
+    #"complex",
+    #"half",
 ] # TODO remove default from release build
 
 # Debug, prints GPU kernels

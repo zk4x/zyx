@@ -76,7 +76,7 @@ pub(crate) enum Node {
     },
     Pad {
         x: TensorId,
-        pad: Vec<(isize, isize)>,
+        padding: Vec<(isize, isize)>,
         shape: Vec<usize>,
     },
     Reduce {
@@ -144,5 +144,16 @@ impl Node {
                 len: 2,
             },
         };
+    }
+
+    pub(crate) fn is_movement(&self) -> bool {
+        matches!(
+            self,
+            Node::Pad { .. } | Node::Reshape { .. } | Node::Expand { .. } | Node::Permute { .. }
+        )
+    }
+
+    pub(crate) fn is_unary(&self) -> bool {
+        matches!(self, Node::Unary { .. })
     }
 }

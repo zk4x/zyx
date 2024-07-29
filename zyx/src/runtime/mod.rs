@@ -5,6 +5,7 @@ use crate::tensor::TensorId;
 use alloc::vec;
 use alloc::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    string::String,
     vec::Vec,
 };
 use custom::{
@@ -100,7 +101,7 @@ pub(crate) struct Runtime {
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
     #[cfg(feature = "rand")]
-    pub(crate) rng: core::cell::OnceCell<SmallRng>,
+    rng: core::cell::OnceCell<SmallRng>,
     training: bool,
 }
 
@@ -263,13 +264,11 @@ impl Runtime {
         return Ok(());
     }
 
-    /*#[cfg(feature = "debug1")]
-    pub(crate) fn debug_graph(&self) {
-        use libc_print::std_name::println;
-        for (id, node) in self.graph.nodes.iter().enumerate() {
-            println!("{id:>5} x{:>3} -> {node:?}", self.graph.rcs[id]);
-        }
-    }*/
+    /// Creates dot plot of graph between given tensors
+    #[must_use]
+    pub(crate) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
+        self.graph.plot_dot_graph(tensors)
+    }
 
     pub(crate) fn shape(&self, x: TensorId) -> &[usize] {
         return self.graph.shape(x);
@@ -281,6 +280,62 @@ impl Runtime {
 
     pub(crate) fn device(&self, x: TensorId) -> Device {
         return self.graph.device(x);
+    }
+
+    #[cfg(feature = "rand")]
+    pub(crate) fn randn(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
+        use rand;
+        use rand::{distributions::Standard, Rng, SeedableRng};
+        let n = shape.iter().product();
+        self.rng
+            .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
+        let rng = self.rng.get_mut().unwrap();
+        return match dtype {
+            #[cfg(feature = "half")]
+            DType::BF16 => todo!(),
+            #[cfg(feature = "half")]
+            DType::F16 => todo!(),
+            DType::F32 => {
+                let data: Vec<f32> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            DType::F64 => {
+                let data: Vec<f64> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            #[cfg(feature = "complex")]
+            DType::CF32 => todo!(),
+            #[cfg(feature = "complex")]
+            DType::CF64 => todo!(),
+            DType::U8 => todo!(),
+            DType::I8 => todo!(),
+            DType::I16 => todo!(),
+            DType::I32 => todo!(),
+            DType::I64 => todo!(),
+            DType::Bool => todo!(),
+        };
+    }
+
+    #[cfg(feature = "rand")]
+    pub(crate) fn uniform<T: Scalar>(
+        &mut self,
+        shape: Vec<usize>,
+        lower: T,
+        upper: T,
+    ) -> Result<TensorId, ZyxError> {
+        use rand::{distributions::Uniform, Rng, SeedableRng};
+        let n = shape.iter().product();
+        self.rng
+            .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
+        let rng = self.rng.get_mut().unwrap();
+        return match T::dtype() {
+            DType::F32 => {
+                let uniform_dist = Uniform::new(lower.cast::<f32>(), upper.cast::<f32>());
+                let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            _ => todo!(),
+        };
     }
 
     // Initialization
@@ -403,6 +458,11 @@ impl Runtime {
     pub(crate) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = permute(self.shape(x), &axes);
         return self.graph.push(Node::Permute { x, axes, shape });
+    }
+
+    pub(crate) fn pad(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
+        let shape = vec![];
+        return self.graph.push(Node::Pad { x, padding, shape });
     }
 
     pub(crate) fn sum(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
@@ -729,7 +789,7 @@ impl Runtime {
                     }
                     BOp::Mul => {
                         if req_grad.contains(&x) {
-                            let graph = self.mul(y, grad);
+                            let grad = self.mul(y, grad);
                             insert_or_add_grad(self, &mut grads, x, grad);
                         }
                         if req_grad.contains(&y) {
@@ -801,10 +861,9 @@ impl Runtime {
                     }
                     UOp::Inv => {
                         // -1/(x*x)
-                        let x_2 = self.mul(x, x);
-                        let x_2_inv = self.reciprocal(x_2);
-                        self.release(x_2).unwrap();
-                        let x_grad = self.neg(x_2);
+                        let x_2_inv = self.mul(nid, nid);
+                        let x_grad = self.neg(x_2_inv);
+                        self.release(x_2_inv).unwrap();
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::ReLU => {
@@ -898,12 +957,10 @@ impl Runtime {
                     let grad = self.permute(grad, argsort_axes);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Pad { x, ref pad, .. } => {
-                    todo!("Padding backward");
-                    /*let sh = get_shape(&self.nodes, x).clone();
+                Node::Pad { x, ref padding, .. } => {
                     let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
-                    let grad = self.push(Node::Pad(grad, inv_padding, sh))?;
-                    insert_or_add_grad(self, &mut grads, x, grad)?;*/
+                    let grad = self.pad(grad, inv_padding);
+                    insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Reduce { x, rop, .. } => match rop {
                     ROp::Sum => {

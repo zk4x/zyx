@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["zyx", "zyx-nn", "zyx-optim", "zyx-derive", "zyx-examples", "zyx-py"]
+members = ["zyx", "zyx-nn", "zyx-optim", "zyx-derive", "zyx-examples"]
 
 [workspace.package]
 version = "0.13.0"

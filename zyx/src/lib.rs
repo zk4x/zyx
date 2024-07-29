@@ -74,6 +74,7 @@ fn t2() {
     //println!("{y}");
     let z = (&x + &y).expand([2, 3, 2, 2]).sum([3, 0]);
     let z = z.exp().ln().permute([1, 0]).sum(0);
+    //Tensor::plot_dot_graph([&x, &y, &z], "graph0");
     //Tensor::realize([&x, &y, &z]);
     //println!("{x}\n{y}\n{z}");
     println!("{z}");
@@ -85,4 +86,12 @@ fn t2() {
 fn t3() {
     let x = Tensor::randn([1024, 1024], DType::F32).expand([1024, 1024, 1024]);
     Tensor::realize([&x]);
+}
+
+#[test]
+fn t4() {
+    let x = Tensor::randn([1, 1024, 1024], DType::F32);
+    let y = Tensor::randn([1024, 1, 1024], DType::F32);
+    let z = (x * y).sum(2);
+    Tensor::realize([&z]);
 }

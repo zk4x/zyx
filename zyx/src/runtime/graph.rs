@@ -47,11 +47,13 @@ impl Graph {
         for nid in node.parameters() {
             self.nodes.get_mut(&nid).unwrap().0 += 1;
         }
-        let id = if let Some((id, _)) = self.nodes.last_key_value() {
-            id + 1
-        } else {
-            1
-        };
+        let mut id = 0;
+        loop {
+            id += 1;
+            if !self.nodes.contains_key(&id) {
+                break;
+            }
+        }
         self.nodes.insert(id, (1, node));
         return id;
     }
@@ -165,43 +167,104 @@ impl Graph {
         todo!()
     }
 
-    // Calculates execution order and optimizes graph:
+    // Calculates execution order, flop, bytes read and written and optimizes graph:
     // 1. moves all unary ops before movement ops
-    // 2. removes unnecessary ops (like exp followed by ln)
+    // 2. removes unnecessary ops (like exp followed by ln), adding 0, multiply by 0, divide by 1, etc.
     // This function should be pretty fast, because it's also used by the interpreter, which does not do any caching
-    pub(super) fn execution_order(&mut self, to_eval: &BTreeSet<TensorId>) -> Vec<TensorId> {
-        let _ = to_eval;
-        // TODO actual calculation of execution order once we no longer just use from lowest id to highest id order
-        self.nodes.keys().copied().collect()
+    pub(super) fn execution_order(
+        &mut self,
+        to_eval: &BTreeSet<TensorId>,
+    ) -> (Vec<TensorId>, usize, usize, usize) {
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                params.extend(self.nodes[&nid].1.parameters());
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(rc) = rcs.get(&nid) {
+                if *rc
+                    == *internal_rcs
+                        .entry(nid)
+                        .and_modify(|rc| *rc += 1)
+                        .or_insert(1)
+                {
+                    order.push(nid);
+                    params.extend(self.nodes[&nid].1.parameters());
+                }
+            }
+        }
+        order.reverse();
+        //std::println!("Execution order: {order:?}");
         // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
-        /*let mut node_swap = true;
+        let mut node_swap = true;
         while node_swap {
             node_swap = false;
             for nid in order.iter().take(order.len() - 1) {
-                if graph.nodes[nid].is_movement() && graph.nodes[&(nid + 1)].is_unary() {
+                if self.nodes[nid].1.is_movement() && self.nodes[&(nid + 1)].1.is_unary() {
                     //libc_print::libc_println!("Reordering movement and unary ops, swap {} and {}", nid, nid+1);
-                    graph.swap_nodes(*nid, nid + 1);
+                    self.swap_nodes(*nid, nid + 1);
                     node_swap = true;
                 }
             }
-        }*/
+        }
+        let mut flop = 0;
+        let mut bytes_read = 0;
+        for nid in &order {
+            match &self.nodes[nid].1 {
+                Node::Leaf { shape, dtype, .. } => {
+                    bytes_read += shape.iter().product::<usize>() * dtype.byte_size();
+                }
+                Node::Unary { x, .. } => {
+                    flop += self.shape(*x).iter().product::<usize>();
+                }
+                Node::Binary { x, .. } => {
+                    flop += self.shape(*x).iter().product::<usize>() * 2;
+                }
+                Node::Reduce { x, axes, .. } => {
+                    flop += self
+                        .shape(*x)
+                        .iter()
+                        .enumerate()
+                        .map(|(a, d)| {
+                            if axes.contains(&a) {
+                                if d - 1 > 0 {
+                                    d - 1
+                                } else {
+                                    1
+                                }
+                            } else {
+                                *d
+                            }
+                        })
+                        .product::<usize>();
+                }
+                Node::Expand { .. }
+                | Node::Permute { .. }
+                | Node::Reshape { .. }
+                | Node::Pad { .. } => {}
+            }
+        }
+        let mut bytes_written = 0;
+        for nid in to_eval {
+            bytes_written +=
+                self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
+        }
+        return (order, flop, bytes_read, bytes_written);
     }
 
     // Swap movement and unary op
     // first and second tensors must have rc == 1!
-    #[cfg(any(
-        feature = "cuda",
-        feature = "hsa",
-        feature = "opencl",
-        feature = "wgsl",
-    ))]
     fn swap_nodes(&mut self, first: TensorId, second: TensorId) {
-        let _ = first;
-        let _ = second;
-        todo!()
-        /*let temp;
-        match self.nodes.get_mut(&first).unwrap() {
+        let temp;
+        match &mut self.nodes.get_mut(&first).unwrap().1 {
             Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Pad { x, .. }
@@ -211,16 +274,8 @@ impl Graph {
             }
             _ => panic!("First op must be movement"),
         }
-        match self.nodes.get_mut(&second).unwrap() {
-            Node::Cast { x, .. }
-            | Node::Neg { x, .. }
-            | Node::Inv { x, .. }
-            | Node::ReLU { x, .. }
-            | Node::Exp { x, .. }
-            | Node::Ln { x, .. }
-            | Node::Sin { x, .. }
-            | Node::Cos { x, .. }
-            | Node::Sqrt { x, .. } => {
+        match &mut self.nodes.get_mut(&second).unwrap().1 {
+            Node::Unary { x, .. } => {
                 *x = temp;
             }
             _ => panic!("Second op must be unary"),
@@ -229,7 +284,7 @@ impl Graph {
         let first_value = self.nodes.remove(&first).unwrap();
         let second_value = self.nodes.remove(&second).unwrap();
         self.nodes.insert(first, second_value);
-        self.nodes.insert(second, first_value);*/
+        self.nodes.insert(second, first_value);
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {
@@ -286,6 +341,106 @@ impl Graph {
         topo.reverse();
         topo
     }
+
+    /// Plot dot graph in dot format between given nodes
+    #[must_use]
+    pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> alloc::string::String {
+        // Make a list of visited nodes and their reference counts.
+        let mut params: Vec<TensorId> = ids.iter().copied().collect();
+        let mut rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                params.extend(self.nodes[&nid].1.parameters());
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
+        let mut params: Vec<TensorId> = ids.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if rcs[&nid]
+                == *internal_rcs
+                    .entry(nid)
+                    .and_modify(|rc| *rc += 1)
+                    .or_insert(1)
+            {
+                order.push(nid);
+                if rcs.contains_key(&nid) {
+                    params.extend(self.nodes[&nid].1.parameters());
+                }
+            }
+        }
+        let mut topo: BTreeSet<TensorId> = ids.iter().copied().collect();
+        for nid in order.into_iter().rev() {
+            for p in self.nodes[&nid].1.parameters() {
+                if topo.contains(&p) {
+                    topo.insert(nid);
+                }
+            }
+        }
+
+        /// Puts graph of nodes into dot language for visualization
+        use alloc::{format as f, string::String};
+        use core::fmt::Write;
+        let mut user_rc: BTreeMap<TensorId, u32> =
+            self.nodes.iter().map(|(k, (rc, _))| (*k, *rc)).collect();
+        for (_, node) in self.nodes.values() {
+            for param in node.parameters() {
+                *user_rc.get_mut(&param).unwrap() -= 1;
+            }
+        }
+        //std::println!("User {:?}", user_rc);
+        let mut res =
+            String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
+        let mut add_node = |i: &TensorId, text: &str, shape: &str| {
+            let fillcolor = if user_rc[i] > 0 { "lightblue" } else { "grey" };
+            /*if let Some(label) = labels.get(&NodeId::new(id)) {
+                write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
+                    label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
+            } else {*/
+            write!(
+                res,
+                "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled]",
+                i,
+                rcs[i],
+                text,
+                self.shape(*i),
+                shape,
+                fillcolor
+            )
+            .unwrap();
+            writeln!(res).unwrap();
+        };
+        let mut edges = String::new();
+        for id in &topo {
+            let node = &self.nodes[id].1;
+            match node {
+                Node::Leaf {
+                    shape,
+                    dtype,
+                    device,
+                } => add_node(id, &f!("Leaf({shape:?}, {dtype}, {device:?})"), "box"),
+                Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
+                Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
+                Node::Reshape { x, .. } => add_node(id, &f!("Reshape({x})"), "oval"),
+                Node::Permute { x, axes, .. } => {
+                    add_node(id, &f!("Permute({x}, {axes:?})"), "oval")
+                }
+                Node::Expand { x, .. } => add_node(id, &f!("Expand({x})"), "oval"),
+                Node::Pad { x, padding, .. } => add_node(id, &f!("Pad({x}, {padding:?})"), "oval"),
+                Node::Reduce { x, axes, rop, .. } => {
+                    add_node(id, &f!("{rop:?}({x}, {axes:?})"), "oval")
+                }
+            }
+            for param in node.parameters() {
+                writeln!(edges, "  {} -> {id}", param).unwrap();
+            }
+        }
+        res = res.replace("NL", "\n");
+        write!(res, "{edges}}}").unwrap();
+        res
+    }
 }
 
 impl core::ops::Index<TensorId> for Graph {
@@ -294,59 +449,3 @@ impl core::ops::Index<TensorId> for Graph {
         &self.nodes.get(&index).unwrap().1
     }
 }
-
-/*
-fn calculate_graph_rcs(
-    subgraph: &Subgraph,
-    to_eval: &BTreeSet<TensorId>,
-) -> BTreeMap<TensorId, u32> {
-    // Depth first search through graph. Number of visits of each node are reference counts.
-    let mut visited_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-    let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-    params.reserve(100);
-    while let Some(nid) = params.pop() {
-        //std::println!("{nid} is evaluated: {}", self.runtime_backend.is_evaluated(nid));
-        visited_rcs
-            .entry(nid)
-            .and_modify(|rc| *rc += 1)
-            .or_insert_with(|| {
-                params.extend(subgraph[nid].parameters());
-                1
-            });
-    }
-    //println!("Temp: {visited_rcs:?}");
-    return visited_rcs;
-}
-
-fn calculate_graph_execution_order(
-    graph: &Subgraph,
-    to_eval: &BTreeSet<TensorId>,
-    temp_rcs: &BTreeMap<TensorId, u32>,
-) -> Vec<TensorId> {
-    // Calculates dependency graph of nodes and viable execution order, which is not currently
-    // optimized. It is depth first search. On each visit of the node, rc is increased. Once
-    // rc of the node A reaches A's rc in the whole graph, then A gets added to the order,
-    // that is, there are no more nodes that node A depends on, i.e. there are no nodes that
-    // need to be evaluated before A.
-    let mut order = Vec::new();
-    let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-    let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-    params.reserve(100);
-    while let Some(nid) = params.pop() {
-        if let Some(temp_rc) = temp_rcs.get(&nid) {
-            let rc = rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-            if *temp_rc == *rc {
-                order.push(nid);
-                params.extend(graph[nid].parameters());
-            }
-        }
-    }
-    order.reverse();
-    return order;
-    }*/
-
-//println!("{subgraph:?}");
-//println!("{hw_info:?}");
-// Find the best order of execution of nodes
-//let rcs = calculate_graph_rcs(&graph, &to_eval);
-//let mut order = calculate_graph_execution_order(&graph, &to_eval, &rcs);
