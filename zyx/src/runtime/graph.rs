@@ -117,6 +117,10 @@ impl Graph {
         panic!("Shape of {x} could not be found. This is internal bug.")
     }
 
+    pub(crate) fn rc(&self, x: TensorId) -> u32 {
+        self.nodes[&x].0
+    }
+
     pub(crate) fn realize_graph(
         &self,
         tensors: &BTreeSet<TensorId>,
@@ -145,7 +149,7 @@ impl Graph {
                         id,
                         if leafs.contains(&id) {
                             (
-                                1,
+                                self.nodes[&id].0,
                                 Node::Leaf {
                                     shape: self.shape(id).into(),
                                     dtype: self.dtype(id),
@@ -159,12 +163,6 @@ impl Graph {
                 })
                 .collect(),
         };
-    }
-
-    // Compares two graphs and returns overlapping nodes (that are in both graphs).
-    // These nodes are then realized which gives us constant folding.
-    pub(crate) fn get_overlapping_nodes(&self, other: &Self) -> BTreeSet<TensorId> {
-        todo!()
     }
 
     // Calculates execution order, flop, bytes read and written and optimizes graph:
