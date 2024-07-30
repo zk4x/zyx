@@ -28,7 +28,7 @@ pub(super) mod opencl;
 pub(super) mod wgsl;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Scope {
+pub(crate) enum Scope {
     Global,
     Local,
     Register,

@@ -41,6 +41,7 @@ mod compiler;
 mod custom;
 mod graph;
 mod node;
+mod view;
 
 fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
     axes.iter().map(|a| shape[*a]).collect()

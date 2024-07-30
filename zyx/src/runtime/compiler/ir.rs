@@ -1,6 +1,7 @@
 use crate::dtype::Constant;
 use crate::runtime::graph::Graph;
 use crate::runtime::node::{BOp, ROp, UOp};
+use crate::runtime::view::View;
 use crate::tensor::TensorId;
 use crate::DType;
 use alloc::collections::BTreeMap;
@@ -31,14 +32,13 @@ pub(super) struct IRArg {
 #[derive(Debug, Clone)]
 pub(super) enum IRMem {
     Const(Constant),
-    Var { id: u64, scope: Scope, index: Index },
+    Var { id: u64, scope: Scope, view: View },
 }
 
 impl IRMem {
-    pub(super) fn to_str(&self, _temp_id: u32) -> (Vec<String>, String) {
-        match self {
-            IRMem::Const(value) => {
-                return (
+    pub(super) fn to_str(&self, temp_id: u8) -> (Vec<String>, String) {
+        return match self {
+            IRMem::Const(value) => (
                     Vec::new(),
                     match value {
                         Constant::F32(value) => {
@@ -47,76 +47,8 @@ impl IRMem {
                         Constant::I32(value) => f!("{}", value),
                         _ => todo!(),
                     },
-                )
-            }
-            IRMem::Var { id, scope, index } => match index {
-                Index::Contiguous { dims } | Index::Strided { dims } => {
-                    //std::println!("Using contiguous or strided index");
-                    let mut res = String::new();
-                    for (id, mul) in dims {
-                        res += &f!("i{id}*{mul}+");
-                    }
-                    res.pop();
-                    return (Vec::new(), f!("{}{}[{res}]", scope, id));
-                }
-                Index::Padded { dims } => {
-                    //std::println!("Using padded index");
-                    let mut res = String::new();
-                    // When the padding does not apply
-                    let mut padding_condition = String::new();
-                    for (id, (dim, mul, lp, rp)) in dims {
-                        //std::println!("Padding {id} with {lp}, {rp}");
-                        if *lp > 0 {
-                            padding_condition += &f!("i{id} < {lp} || ");
-                            res += &f!("(i{id}-{lp})*{mul}+");
-                        } else {
-                            let lp = -lp;
-                            res += &f!("(i{id}+{lp})*{mul}+");
-                        }
-                        // rp negative does essentially nothing, we only care if it's positive
-                        if *rp > 0 {
-                            padding_condition += &f!("i{id} > {} || ", *dim as isize - lp - rp);
-                        }
-                    }
-                    res.pop();
-                    return (
-                        Vec::new(),
-                        if padding_condition.is_empty() {
-                            f!("{}{}[{res}]", scope, id)
-                        } else {
-                            f!(
-                                "{} ? 0 : {}{}[{res}]",
-                                &padding_condition[..padding_condition.len() - 4],
-                                scope,
-                                id
-                            )
-                        },
-                    );
-                }
-                /*Index::Reshaped { dims, reshapes, .. } => {
-                let mut res = String::new();
-                for (id, mul) in dims {
-                    res += &f!("i{id}*{mul}+");
-                }
-                res.pop();
-                let mut res = vec![res];
-                for reshape in reshapes[..reshapes.len() - 1].iter() {
-                    let mut idx = String::new();
-                    for (div, m, mul) in reshape.iter() {
-                        idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-                    }
-                    idx.pop();
-                    res.push(idx);
-                }
-                let mut idx = String::new();
-                for (div, m, mul) in reshapes.last().unwrap().iter() {
-                    idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-                }
-                idx.pop();
-                return (res, f!("{}{}[{idx}]", scope, id));
-                }*/
-                Index::None => return (Vec::new(), f!("{}{}", scope, id)),
-            },
+                ),
+            IRMem::Var { id, scope, view } => view.to_str(*id, *scope, temp_id),
         }
     }
 }
@@ -207,29 +139,27 @@ pub(super) fn compile_ir(
                     z: IRMem::Var {
                         id: *z,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     x: IRMem::Var {
                         id: *x,
                         scope: Scope::Global,
-                        index: view.index(),
+                        view: view.clone(),
                     },
                     ops: vec![UOp::Noop],
                 });
             }
-            VOp::Store { z, strides } => {
+            VOp::Store { z, view } => {
                 ops.push(IROp::Unary {
                     z: IRMem::Var {
                         id: *z,
                         scope: Scope::Global,
-                        index: Index::Strided {
-                            dims: strides.iter().copied().enumerate().collect(),
-                        },
+                        view: view.clone(),
                     },
                     x: IRMem::Var {
                         id: *z,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     ops: vec![UOp::Noop],
                 });
@@ -263,14 +193,14 @@ pub(super) fn compile_ir(
                 let z_var = IRMem::Var {
                     id: *z,
                     scope: Scope::Register,
-                    index: Index::None,
+                    view: View::None,
                 };
                 ops.push(IROp::Binary {
                     z: z_var.clone(),
                     x: IRMem::Var {
                         id: *x,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     y: z_var,
                     op: match rop {
@@ -295,12 +225,12 @@ pub(super) fn compile_ir(
                     z: IRMem::Var {
                         id: *z,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     x: IRMem::Var {
                         id: *x,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     ops: vec![*uop],
                 });
@@ -318,17 +248,17 @@ pub(super) fn compile_ir(
                     z: IRMem::Var {
                         id: *z,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     x: IRMem::Var {
                         id: *x,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     y: IRMem::Var {
                         id: *y,
                         scope: Scope::Register,
-                        index: Index::None,
+                        view: View::None,
                     },
                     op: *bop,
                 });
@@ -375,42 +305,4 @@ pub(super) fn compile_ir(
         ops,
         args,
     };
-}
-
-// With this representation of index, we can find repeating
-// multipliers and extract them out into common factors.
-// However this would be a bit of micro-optimization, as OpenCL, CUDA, WGPU
-// and most other compilers extract them automatically.
-// This will be needed if we want to directly generate SPIR or PTX IR.
-
-/// Virtual representation of index into view
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Index {
-    /// For variables that only have single element (scalars),
-    /// such as most register variables.
-    None,
-    /// Pairs of index id and multiplier.
-    /// Can use wide loads directly with pointer casts.
-    Contiguous {
-        /// Dimension and multiplier
-        dims: BTreeMap<usize, usize>,
-        // When should the padding get applied?
-        //padding_condition: String,
-    },
-    /// Expanded and/or permuted
-    /// Pairs of index id and multiplier.
-    /// Wide loads are possible only if we can transpose it in the kernel
-    Strided {
-        /// Dimension and multiplier
-        dims: BTreeMap<usize, usize>,
-        // When should the padding get applied?
-        //padding_condition: String,
-    },
-    // Expanded, permuted and/or padded
-    // Only if reshape could not be merged.
-    Padded {
-        /// Multiple dimension and multipliers
-        // Axis, (dim, multiplier, left pad, right pad)
-        dims: BTreeMap<usize, (usize, usize, isize, isize)>,
-    },
 }

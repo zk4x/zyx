@@ -1,15 +1,10 @@
 use crate::runtime::node::{BOp, Node, ROp, UOp};
+use crate::runtime::view::{Axis, Dimension, View};
 use crate::{runtime::graph::Graph, tensor::TensorId};
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use super::ir::Index;
-
 use std::println;
-
-type Axis = usize;
-type Dimension = usize;
-type Stride = usize;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum VOp {
@@ -20,7 +15,7 @@ pub(super) enum VOp {
     },
     Store {
         z: TensorId,
-        strides: Vec<Stride>,
+        view: View,
     },
     Loop {
         axis: Axis,
@@ -93,7 +88,7 @@ impl Kernel {
     fn store(&mut self, z: TensorId, graph: &Graph) {
         let store_op = VOp::Store {
             z,
-            strides: shape_to_strides(graph.shape(z)),
+            view: View::new(graph.shape(z)),
         };
         if self.ops.last().unwrap() != &store_op {
             self.ops.push(store_op);
@@ -119,7 +114,7 @@ impl Kernel {
                         }
                     }
                 }
-                VOp::Load { view, .. } => {
+                VOp::Load { view, .. } | VOp::Store { view, .. } => {
                     let n = view.rank();
                     let all_axes: Vec<usize> = if axes.len() < n {
                         axes.iter().copied().chain(axes.len()..n).collect()
@@ -127,15 +122,6 @@ impl Kernel {
                         axes.iter().copied().filter(|a| *a < n).collect()
                     };
                     view.permute(&all_axes);
-                }
-                VOp::Store { strides, .. } => {
-                    let n = strides.len();
-                    let all_axes: Vec<usize> = if axes.len() < n {
-                        axes.iter().copied().chain(axes.len()..n).collect()
-                    } else {
-                        axes.iter().copied().filter(|a| *a < n).collect()
-                    };
-                    *strides = all_axes.iter().map(|axis| strides[*axis]).collect();
                 }
                 _ => {}
             }
@@ -183,33 +169,9 @@ impl Kernel {
                 // loop in the same way.
                 VOp::Load { view, .. } => {
                     //println!("Splitting {view:?}");
-                    let mut stride = view.0[axis].stride;
-                    let ViewDim { lp, rp, .. } = view.0.remove(axis);
-                    let mut temp_axis = axis + dimensions.len();
-                    for dim in dimensions.iter().copied().rev() {
-                        temp_axis -= 1;
-                        view.0.insert(
-                            axis,
-                            ViewDim {
-                                axis: temp_axis,
-                                dim,
-                                stride,
-                                // TODO
-                                lp: 0,
-                                rp: 0,
-                            },
-                        );
-                        stride *= dim;
-                    }
-                    // TODO do proper padding on splitted dimension
-                    view.0[axis].lp = lp;
-                    view.0[axis].rp = rp;
-                    // Rename all following axes
-                    for a in axis + dimensions.len()..view.0.len() {
-                        view.0[a].axis += dimensions.len() - 1;
-                    }
+                    view.split_axis(axis, dimensions);
                 }
-                VOp::Store { strides, .. } => {
+                VOp::Store { view, .. } => {
                     // Example of axis split
                     // shape
                     //  2, 6,    2
@@ -217,18 +179,14 @@ impl Kernel {
                     // strides
                     // 12, 2,    1
                     // 12, 4, 2, 1
-                    let mut stride = strides[axis];
-                    for dim in dimensions[1..].iter().rev() {
-                        strides.insert(axis, stride);
-                        stride *= dim;
-                    }
+                    view.split_axis(axis, dimensions);
                 }
                 _ => {}
             }
         }
     }
 
-    fn merge_axes(&mut self, op_id: usize, num_loops: usize) {
+    /*fn merge_axes(&mut self, op_id: usize, num_loops: usize) {
         // Merges multiple consecutive loops (beginning with loop at op_id) into single loop
         // This function does not change shape of the kernel
         // When there are loads and stores with expanded strides in merged axes,
@@ -275,88 +233,7 @@ impl Kernel {
                 _ => {}
             }
         }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct View(Vec<ViewDim>);
-
-impl View {
-    fn new(shape: &[usize]) -> Self {
-        let mut stride = 1;
-        let mut view: Vec<ViewDim> = shape
-            .iter()
-            .enumerate()
-            .rev()
-            .map(|(axis, dim)| {
-                let temp = stride;
-                stride *= dim;
-                ViewDim {
-                    axis,
-                    stride: temp,
-                    dim: *dim,
-                    lp: 0,
-                    rp: 0,
-                }
-            })
-            .collect();
-        view.reverse();
-        return Self(view);
-    }
-
-    fn shape(&self) -> Vec<usize> {
-        self.0.iter().map(|dim| dim.dim).collect()
-    }
-
-    fn rank(&self) -> usize {
-        self.0.len()
-    }
-
-    /*fn numel(&self) -> usize {
-        self.0.iter().map(|dim| dim.dim).product()
     }*/
-
-    fn permute(&mut self, axes: &[usize]) {
-        assert_eq!(self.0.len(), axes.len());
-        self.0 = axes.iter().map(|axis| self.0[*axis]).collect();
-        for (a, dim) in self.0.iter_mut().enumerate() {
-            dim.axis = a;
-        }
-    }
-
-    pub(super) fn index(&self) -> Index {
-        // TODO add index for padded views
-        if self.is_contiguous() {
-            Index::Contiguous {
-                dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
-            }
-        } else if self.0.iter().all(|dim| dim.lp == 0 && dim.rp == 0) {
-            Index::Strided {
-                dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
-            }
-        } else {
-            Index::Padded {
-                dims: self
-                    .0
-                    .iter()
-                    .map(|dim| (dim.axis, (dim.dim, dim.stride, dim.lp, dim.rp)))
-                    .collect(),
-            }
-        }
-    }
-
-    fn is_contiguous(&self) -> bool {
-        &View::new(&self.shape()) == self
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ViewDim {
-    axis: Axis,
-    dim: Dimension,
-    stride: Stride,
-    lp: isize,
-    rp: isize,
 }
 
 pub(super) fn generate_kernels(
@@ -415,17 +292,16 @@ pub(super) fn generate_kernels(
                         VOp::Load { view, .. } => {
                             // Done expanding marks which loops are behind us,
                             // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
-                            for a in expand_axes.difference(&done_expanding) {
-                                view.0[*a].dim = shape[*a];
-                                view.0[*a].stride = 0;
-                            }
+                            //view.expand_axes(&expand_axes.difference(&done_expanding).collect());
+                            view.expand(&[]);
                         }
-                        VOp::Store { strides, .. } => {
-                            for a in expand_axes.difference(&done_expanding) {
+                        VOp::Store { view, .. } => {
+                            view.expand(&[]);
+                            /*for a in expand_axes.difference(&done_expanding) {
                                 // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
                                 // perhaps doing only single write during the whole loop
                                 strides[*a] = 0;
-                            }
+                            }*/
                         }
                         _ => {}
                     }
@@ -456,8 +332,7 @@ pub(super) fn generate_kernels(
                 // and stores, we can remove old loops and replace them with new loops.
                 if kernel.ops.iter().all(|op| match op {
                     VOp::Loop { .. } | VOp::Unary { .. } | VOp::Binary { .. } => true,
-                    VOp::Load { view, .. } => view.is_contiguous(),
-                    VOp::Store { strides, .. } => strides == &shape_to_strides(&kernel.shape),
+                    VOp::Load { view, .. } | VOp::Store { view, .. } => view.is_contiguous(),
                     _ => false,
                 }) {
                     // Remove old loops
@@ -471,11 +346,8 @@ pub(super) fn generate_kernels(
                     // Change Reshape loads and stores
                     for op in &mut kernel.ops {
                         match op {
-                            VOp::Load { view, .. } => {
+                            VOp::Load { view, .. } | VOp::Store { view, .. } => {
                                 *view = View::new(shape);
-                            }
-                            VOp::Store { strides, .. } => {
-                                *strides = shape_to_strides(shape);
                             }
                             _ => {}
                         }
@@ -551,18 +423,7 @@ pub(super) fn generate_kernels(
                         }
                         VOp::Load { view, .. } => {
                             let n = view.rank();
-                            let all_axes: BTreeSet<usize> =
-                                axes.iter().copied().filter(|a| *a < n).collect();
-                            //println!("All axes padding: {all_axes:?}");
-                            for (a, (lp, rp)) in all_axes
-                                .iter()
-                                .copied()
-                                .zip(padding.iter().skip(shape.len() - n))
-                            {
-                                view.0[a].dim = (view.0[a].dim as isize + lp + rp) as usize;
-                                view.0[a].lp = *lp;
-                                view.0[a].rp = *rp;
-                            }
+                            view.pad(&padding[shape.len() - n..]);
                         }
                         _ => {}
                     }
