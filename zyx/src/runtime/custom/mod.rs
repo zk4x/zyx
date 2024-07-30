@@ -87,6 +87,7 @@ impl<I: Custom> InterpretedBackend<I> {
         to_eval: &BTreeSet<TensorId>,
     ) -> Result<(), CustomError> {
         let order = graph.execution_order(to_eval);
+        let _ = order;
         todo!()
     }
 }

@@ -356,7 +356,7 @@ impl<C: Compiler> CompiledBackend<C> {
             let (bws, bw_us) = value_unit(graph.bytes_written * 1000_000_000 / nanos);
 
             println!(
-            "Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B written, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.",
+            "Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.",
             nanos/t_d,
             );
         }

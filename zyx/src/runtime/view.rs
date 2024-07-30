@@ -6,14 +6,14 @@ pub(crate) type Dimension = usize;
 pub(crate) type Stride = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StridedDim {
+pub(crate) struct StridedDim {
     axis: Axis,
     dim: Dimension,
     stride: Stride,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PaddedDim {
+pub(crate) struct PaddedDim {
     axis: Axis,
     dim: Dimension,
     stride: Stride,

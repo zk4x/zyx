@@ -41,6 +41,12 @@ mod compiler;
 mod custom;
 mod graph;
 mod node;
+#[cfg(any(
+    feature = "cuda",
+    feature = "opencl",
+    feature = "wgsl",
+    feature = "hsa"
+))]
 mod view;
 
 fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
@@ -499,13 +505,23 @@ impl Runtime {
         return self.graph.push(Node::Pad { x, padding, shape });
     }
 
-    pub(crate) fn sum(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+    pub(crate) fn sum_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
         return self.graph.push(Node::Reduce {
             x,
             axes,
             shape,
             rop: ROp::Sum,
+        });
+    }
+
+    pub(crate) fn max_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+        let shape = reduce(self.shape(x), &axes);
+        return self.graph.push(Node::Reduce {
+            x,
+            axes,
+            shape,
+            rop: ROp::Max,
         });
     }
 
@@ -554,6 +570,14 @@ impl Runtime {
             x,
             y,
             bop: BOp::Cmplt,
+        });
+    }
+
+    pub(crate) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        return self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Max,
         });
     }
 }
@@ -890,6 +914,12 @@ impl Runtime {
                     }
                 },
                 Node::Unary { x, uop } => match uop {
+                    #[cfg(any(
+                        feature = "cuda",
+                        feature = "opencl",
+                        feature = "wgsl",
+                        feature = "hsa"
+                    ))]
                     UOp::Noop => {
                         panic!()
                     }
@@ -979,7 +1009,7 @@ impl Runtime {
                         .enumerate()
                         .filter_map(|(a, (d, e))| if d == *e { None } else { Some(a) })
                         .collect();
-                    let temp = self.sum(grad, expand_axes);
+                    let temp = self.sum_reduce(grad, expand_axes);
                     let grad = self.reshape(temp, self.shape(x).into());
                     self.release(temp).unwrap();
                     insert_or_add_grad(self, &mut grads, x, grad);

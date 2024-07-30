@@ -638,21 +638,6 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
         .collect()
 }
 
-fn shape_to_strides(shape: &[usize]) -> Vec<usize> {
-    let mut stride = 1;
-    let mut strides: Vec<usize> = shape
-        .iter()
-        .rev()
-        .map(|d| {
-            let temp = stride;
-            stride *= d;
-            temp
-        })
-        .collect();
-    strides.reverse();
-    return strides;
-}
-
 // Checks if kernel_x depends on kernel_y
 fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
     let mut kernel_x_inputs = kernels[kernel_x_id].inputs.clone();

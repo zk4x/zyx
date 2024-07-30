@@ -15,6 +15,12 @@ pub(crate) enum BOp {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum UOp {
+    #[cfg(any(
+        feature = "cuda",
+        feature = "opencl",
+        feature = "wgsl",
+        feature = "hsa"
+    ))]
     Noop,
     Cast(DType),
     ReLU,

@@ -346,10 +346,10 @@ impl Tensor {
     /// Each channel will be zeroed out independently on every forward call.
     /// Furthermore, the outputs are scaled by a factor of 11−p1−p1​ during training.
     /// This means that during evaluation the module simply computes an identity function.
+    #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
-        let _ = probability;
-        todo!()
+        Tensor::from(probability).cmplt(Tensor::uniform(self.shape(), 0f32..1.0)).cast(self.dtype()) * self
     }
 
     #[must_use]
@@ -681,26 +681,33 @@ impl Tensor {
 
     #[must_use]
     pub fn max(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        let rank = self.rank();
+        let axes: Vec<usize> = axes.into_axes(rank).collect();
+        {
+            let mut unique = alloc::collections::BTreeSet::new();
+            for a in &axes {
+                assert!(unique.insert(a), "Axes contain duplicates.");
+            }
+        }
+        return Tensor {
+            id: RT.lock().max_reduce(self.id, axes),
+        };
     }
 
     #[must_use]
     pub fn max_kd(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        self.max(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        let shape = self.shape();
+        self.sum(axes.clone()) / axes.into_axes(shape.rank()).map(|a| shape[a]).product::<usize>() as i64
     }
 
     #[must_use]
     pub fn mean_kd(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        self.mean(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
     #[must_use]
@@ -715,7 +722,7 @@ impl Tensor {
 
     #[must_use]
     pub fn std_kd(&self, axes: impl IntoAxes) -> Tensor {
-        self.var_kd(axes).sqrt()
+        self.std(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
     /// Sum reduce. Removes tensor dimensions.
@@ -735,7 +742,7 @@ impl Tensor {
             }
         }
         return Tensor {
-            id: RT.lock().sum(self.id, axes),
+            id: RT.lock().sum_reduce(self.id, axes),
         };
     }
 
@@ -744,11 +751,7 @@ impl Tensor {
     /// Equivalent to pytorch sum(axes, keepdim=True)
     #[must_use]
     pub fn sum_kd(&self, axes: impl IntoAxes) -> Tensor {
-        let mut shape = self.shape();
-        for a in axes.clone().into_axes(shape.len()) {
-            shape[a] = 1;
-        }
-        self.sum(axes).reshape(shape)
+        self.sum(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
     #[must_use]
@@ -759,14 +762,12 @@ impl Tensor {
 
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        (self - self.mean(axes.clone())).pow(2).sum(axes)
     }
 
     #[must_use]
     pub fn var_kd(&self, axes: impl IntoAxes) -> Tensor {
-        let _ = axes;
-        todo!()
+        self.var(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
     // index
@@ -821,6 +822,14 @@ impl Tensor {
         let (x, y) = Tensor::broadcast(self, rhs);
         return Tensor {
             id: RT.lock().cmplt(x.id, y.id),
+        };
+    }
+
+    #[must_use]
+    pub fn maximum(&self, rhs: impl Into<Tensor>) -> Tensor {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        return Tensor {
+            id: RT.lock().maximum(x.id, y.id),
         };
     }
 
@@ -1058,6 +1067,14 @@ impl Tensor {
             y = y.expand(eshape);
         }
         return (x, y);
+    }
+
+    fn reduce_kd_shape(&self, axes: impl IntoAxes) -> Vec<usize> {
+        let mut shape = self.shape();
+        for a in axes.clone().into_axes(shape.len()) {
+            shape[a] = 1;
+        }
+        shape
     }
 }
 

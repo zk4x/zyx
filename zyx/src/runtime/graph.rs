@@ -117,6 +117,12 @@ impl Graph {
         panic!("Shape of {x} could not be found. This is internal bug.")
     }
 
+    #[cfg(any(
+        feature = "cuda",
+        feature = "opencl",
+        feature = "wgsl",
+        feature = "hsa"
+    ))]
     pub(crate) fn rc(&self, x: TensorId) -> u32 {
         self.nodes[&x].0
     }
