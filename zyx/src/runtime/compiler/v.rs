@@ -292,16 +292,17 @@ pub(super) fn generate_kernels(
                         VOp::Load { view, .. } => {
                             // Done expanding marks which loops are behind us,
                             // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
-                            //view.expand_axes(&expand_axes.difference(&done_expanding).collect());
-                            view.expand(&[]);
+                            for a in expand_axes.difference(&done_expanding) {
+                                view.expand(*a, shape[*a]);
+                            }
                         }
                         VOp::Store { view, .. } => {
-                            view.expand(&[]);
-                            /*for a in expand_axes.difference(&done_expanding) {
-                                // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
-                                // perhaps doing only single write during the whole loop
-                                strides[*a] = 0;
-                            }*/
+                            // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
+                            // perhaps doing only single write during the whole loop using if condition, but that could also be added
+                            // to View in VOp::Store as optimization when converting to IROps
+                            for a in expand_axes.difference(&done_expanding) {
+                                view.expand(*a, shape[*a]);
+                            }
                         }
                         _ => {}
                     }
@@ -423,7 +424,11 @@ pub(super) fn generate_kernels(
                         }
                         VOp::Load { view, .. } => {
                             let n = view.rank();
-                            view.pad(&padding[shape.len() - n..]);
+                            let mut a = n;
+                            for (lp, rp) in &padding[shape.len() - n..] {
+                                a -= 1;
+                                view.pad(a, *lp, *rp);
+                            }
                         }
                         _ => {}
                     }
