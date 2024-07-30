@@ -73,6 +73,7 @@ pub enum ZyxError {
     CompilerError(CompilerError),
     CustomError(CustomError),
     EmptyTensor,
+    WrongDType(&'static str),
 }
 
 #[cfg(any(
@@ -357,12 +358,64 @@ impl Runtime {
             .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
         let rng = self.rng.get_mut().unwrap();
         return match T::dtype() {
+            #[cfg(feature = "half")]
+            DType::BF16 => {
+                let uniform_dist = Uniform::new(lower.cast::<bf16>(), upper.cast::<bf16>());
+                let data: Vec<bf16> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            #[cfg(feature = "half")]
+            DType::F16 => {
+                let uniform_dist = Uniform::new(lower.cast::<f16>(), upper.cast::<f16>());
+                let data: Vec<f16> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
             DType::F32 => {
                 let uniform_dist = Uniform::new(lower.cast::<f32>(), upper.cast::<f32>());
                 let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
                 self.store(data, shape)
             }
-            _ => todo!(),
+            DType::F64 => {
+                let uniform_dist = Uniform::new(lower.cast::<f64>(), upper.cast::<f64>());
+                let data: Vec<f64> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            #[cfg(feature = "complex")]
+            DType::CF32 => Err(ZyxError::WrongDType(
+                "Cannot sample cf32 from uniform distribution",
+            )),
+            #[cfg(feature = "complex")]
+            DType::CF64 => Err(ZyxError::WrongDType(
+                "Cannot sample cf64 from uniform distribution",
+            )),
+            DType::U8 => {
+                let uniform_dist = Uniform::new(lower.cast::<u8>(), upper.cast::<u8>());
+                let data: Vec<u8> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            DType::I8 => {
+                let uniform_dist = Uniform::new(lower.cast::<i8>(), upper.cast::<i8>());
+                let data: Vec<i8> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            DType::I16 => {
+                let uniform_dist = Uniform::new(lower.cast::<i16>(), upper.cast::<i16>());
+                let data: Vec<i16> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            DType::I32 => {
+                let uniform_dist = Uniform::new(lower.cast::<i32>(), upper.cast::<i32>());
+                let data: Vec<i32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            DType::I64 => {
+                let uniform_dist = Uniform::new(lower.cast::<i64>(), upper.cast::<i64>());
+                let data: Vec<i64> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
+                self.store(data, shape)
+            }
+            DType::Bool => Err(ZyxError::WrongDType(
+                "Cannot sample booleans from uniform distribution",
+            )),
         };
     }
 
@@ -422,6 +475,10 @@ impl Runtime {
 
     // Unary ops
     pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
+        if dtype == self.dtype(x) {
+            self.retain(x);
+            return x;
+        }
         return self.graph.push(Node::Unary {
             x,
             uop: UOp::Cast(dtype),
@@ -476,10 +533,18 @@ impl Runtime {
     }
 
     pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        if &shape == self.shape(x) {
+            self.retain(x);
+            return x;
+        }
         return self.graph.push(Node::Reshape { x, shape });
     }
 
     pub(crate) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        if &shape == self.shape(x) {
+            self.retain(x);
+            return x;
+        }
         return self.graph.push(Node::Expand { x, shape });
     }
 

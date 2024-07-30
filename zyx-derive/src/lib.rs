@@ -39,10 +39,13 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
-extern crate proc_macro;
+extern crate alloc;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
+
+#[cfg(feature = "std")]
+extern crate std;
 
 /// # Procedural macro Module
 ///
@@ -97,10 +100,18 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
-            field_iterators = quote! {
-                #field_iterators
-                __MarkerStructRef::<&#field_ty>::__iterate_by_ref(&__MarkerStructRef(&self.#field_name), &mut res);
-            };
+            use alloc::string::ToString;
+            if quote! { #field_ty }.to_string() == "Tensor" {
+                field_iterators = quote! {
+                    #field_iterators
+                    res.push(&self.#field_name);
+                }
+            } else {
+                field_iterators = quote! {
+                    #field_iterators
+                    __MarkerStructRef::<&#field_ty>::__iterate_by_ref(&__MarkerStructRef(&self.#field_name), &mut res);
+                };
+            }
         }
     }
 
@@ -175,10 +186,18 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
-            field_iterators = quote! {
-                #field_iterators
-                __MarkerStructMut::<&#field_ty>::__iterate_by_mut(__MarkerStructMut(&mut self.#field_name), &mut res);
-            };
+            use alloc::string::ToString;
+            if quote! { #field_ty }.to_string() == "Tensor" {
+                field_iterators = quote! {
+                    #field_iterators
+                    res.push(&mut self.#field_name);
+                }
+            } else {
+                field_iterators = quote! {
+                    #field_iterators
+                    __MarkerStructMut::<&#field_ty>::__iterate_by_mut(__MarkerStructMut(&mut self.#field_name), &mut res);
+                };
+            }
         }
     }
 

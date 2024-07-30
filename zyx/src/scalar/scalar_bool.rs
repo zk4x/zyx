@@ -1,3 +1,5 @@
+use crate::DType;
+
 use super::Scalar;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
@@ -7,161 +9,164 @@ use num_complex::Complex;
 impl Scalar for bool {
     #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
-        todo!()
+        t != bf16::ZERO
     }
 
     #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self {
-        todo!()
+        t != f16::ZERO
     }
 
     fn from_f32(t: f32) -> Self {
-        todo!()
+        t != 0.
     }
 
     fn from_f64(t: f64) -> Self {
-        todo!()
+        t != 0.
     }
 
     #[cfg(feature = "complex")]
     fn from_cf32(t: Complex<f32>) -> Self {
-        todo!()
+        t != Complex::new(0., 0.)
     }
 
     #[cfg(feature = "complex")]
     fn from_cf64(t: Complex<f64>) -> Self {
-        todo!()
+        t != Complex::new(0., 0.)
     }
 
     fn from_u8(t: u8) -> Self {
-        todo!()
+        t != 0
     }
 
     fn from_i8(t: i8) -> Self {
-        todo!()
+        t != 0
     }
 
     fn from_i16(t: i16) -> Self {
-        todo!()
+        t != 0
     }
 
     fn from_i32(t: i32) -> Self {
-        todo!()
+        t != 0
     }
 
     fn from_i64(t: i64) -> Self {
-        todo!()
+        t != 0
     }
 
     fn from_bool(t: bool) -> Self {
-        todo!()
+        t
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        todo!()
+        bytes[0] != 0
     }
 
-    fn dtype() -> crate::DType {
-        todo!()
+    fn dtype() -> DType {
+        DType::Bool
     }
 
     fn zero() -> Self {
-        todo!()
+        false
     }
 
     fn one() -> Self {
-        todo!()
+        true
     }
 
     fn byte_size() -> usize {
-        todo!()
+        1
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self
     }
 
     fn reciprocal(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn floor(self) -> Self {
-        todo!()
+        self
     }
 
     fn neg(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn relu(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn sin(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn cos(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn ln(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn exp(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn tanh(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn sqrt(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn add(self, rhs: Self) -> Self {
-        todo!()
+        self | rhs
     }
 
     fn sub(self, rhs: Self) -> Self {
-        todo!()
+        let _ = rhs;
+        panic!()
     }
 
     fn mul(self, rhs: Self) -> Self {
-        todo!()
+        self & rhs
     }
 
     fn div(self, rhs: Self) -> Self {
-        todo!()
+        let _ = rhs;
+        panic!()
     }
 
     fn pow(self, rhs: Self) -> Self {
-        todo!()
+        let _ = rhs;
+        panic!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        todo!()
+        self < rhs
     }
 
     fn max(self, rhs: Self) -> Self {
-        todo!()
+        <bool as Ord>::max(self, rhs)
     }
 
     fn max_value() -> Self {
-        todo!()
+        true
     }
 
     fn min_value() -> Self {
-        todo!()
+        false
     }
 
     fn epsilon() -> Self {
-        todo!()
+        false
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        todo!()
+        self == rhs
     }
 }

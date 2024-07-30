@@ -243,15 +243,15 @@ impl Tensor {
         range: impl core::ops::RangeBounds<T>,
     ) -> Tensor {
         use core::ops::Bound;
-        let start: T = if let Bound::Included(value) = range.start_bound() {
-            *value
-        } else {
-            T::min_value()
+        let start = match range.start_bound() {
+            Bound::Included(value) => *value,
+            Bound::Excluded(value) => *value,
+            Bound::Unbounded => T::min_value(),
         };
-        let end: T = if let Bound::Included(value) = range.end_bound() {
-            *value
-        } else {
-            T::max_value()
+        let end = match range.end_bound() {
+            Bound::Included(value) => *value,
+            Bound::Excluded(value) => *value,
+            Bound::Unbounded => T::max_value(),
         };
         return Tensor {
             id: RT
@@ -349,7 +349,10 @@ impl Tensor {
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
-        Tensor::from(probability).cmplt(Tensor::uniform(self.shape(), 0f32..1.0)).cast(self.dtype()) * self
+        Tensor::from(probability)
+            .cmplt(Tensor::uniform(self.shape(), 0f32..1.0))
+            .cast(self.dtype())
+            * self
     }
 
     #[must_use]
@@ -593,12 +596,12 @@ impl Tensor {
                 #[cfg(feature = "half")]
                 DType::BF16 => {
                     let x: bf16 = value.clone().try_into().unwrap();
-                    x == 0.
+                    x == bf16::ZERO
                 }
                 #[cfg(feature = "half")]
                 DType::F16 => {
                     let x: f16 = value.clone().try_into().unwrap();
-                    x == 0.
+                    x == f16::ZERO
                 }
                 DType::F32 => {
                     let x: f32 = value.clone().try_into().unwrap();
@@ -607,6 +610,16 @@ impl Tensor {
                 DType::F64 => {
                     let x: f64 = value.clone().try_into().unwrap();
                     x == 0.
+                }
+                #[cfg(feature = "complex")]
+                DType::CF32 => {
+                    let x: Complex<f32> = value.clone().try_into().unwrap();
+                    x == Complex::new(0., 0.)
+                }
+                #[cfg(feature = "complex")]
+                DType::CF64 => {
+                    let x: Complex<f64> = value.clone().try_into().unwrap();
+                    x == Complex::new(0., 0.)
                 }
                 DType::U8 => {
                     let x: u8 = value.clone().try_into().unwrap();
@@ -702,7 +715,11 @@ impl Tensor {
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
         let shape = self.shape();
-        self.sum(axes.clone()) / axes.into_axes(shape.rank()).map(|a| shape[a]).product::<usize>() as i64
+        self.sum(axes.clone())
+            / axes
+                .into_axes(shape.rank())
+                .map(|a| shape[a])
+                .product::<usize>() as i64
     }
 
     #[must_use]
@@ -1262,6 +1279,22 @@ impl core::fmt::Display for Tensor {
             }
             DType::F64 => {
                 let data: Result<Vec<f64>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("f64 tensor failed to realize {e:?}"),
+                }
+            }
+            #[cfg(feature = "complex")]
+            DType::CF32 => {
+                let data: Result<Vec<Complex<f32>>, _> = self.clone().try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => alloc::format!("f32 tensor failed to realize {e:?}"),
+                }
+            }
+            #[cfg(feature = "complex")]
+            DType::CF64 => {
+                let data: Result<Vec<Complex<f64>>, _> = self.clone().try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => alloc::format!("f64 tensor failed to realize {e:?}"),
@@ -1866,9 +1899,9 @@ impl_trait!(Add for f16, add);
 impl_trait!(Add for f32, add);
 impl_trait!(Add for f64, add);
 #[cfg(feature = "complex")]
-impl_trait!(Add for cf32, add);
+impl_trait!(Add for Complex<f32>, add);
 #[cfg(feature = "complex")]
-impl_trait!(Add for cf64, add);
+impl_trait!(Add for Complex<f64>, add);
 impl_trait!(Add for u8, add);
 impl_trait!(Add for i8, add);
 impl_trait!(Add for i16, add);
@@ -1883,9 +1916,9 @@ impl_trait!(Sub for f16, sub);
 impl_trait!(Sub for f32, sub);
 impl_trait!(Sub for f64, sub);
 #[cfg(feature = "complex")]
-impl_trait!(Sub for cf32, sub);
+impl_trait!(Sub for Complex<f32>, sub);
 #[cfg(feature = "complex")]
-impl_trait!(Sub for cf64, sub);
+impl_trait!(Sub for Complex<f64>, sub);
 impl_trait!(Sub for u8, sub);
 impl_trait!(Sub for i8, sub);
 impl_trait!(Sub for i16, sub);
@@ -1900,9 +1933,9 @@ impl_trait!(Mul for f16, mul);
 impl_trait!(Mul for f32, mul);
 impl_trait!(Mul for f64, mul);
 #[cfg(feature = "complex")]
-impl_trait!(Mul for cf32, mul);
+impl_trait!(Mul for Complex<f32>, mul);
 #[cfg(feature = "complex")]
-impl_trait!(Mul for cf64, mul);
+impl_trait!(Mul for Complex<f64>, mul);
 impl_trait!(Mul for u8, mul);
 impl_trait!(Mul for i8, mul);
 impl_trait!(Mul for i16, mul);
@@ -1917,9 +1950,9 @@ impl_trait!(Div for f16, div);
 impl_trait!(Div for f32, div);
 impl_trait!(Div for f64, div);
 #[cfg(feature = "complex")]
-impl_trait!(Div for cf32, div);
+impl_trait!(Div for Complex<f32>, div);
 #[cfg(feature = "complex")]
-impl_trait!(Div for cf64, divj);
+impl_trait!(Div for Complex<f64>, div);
 impl_trait!(Div for u8, div);
 impl_trait!(Div for i8, div);
 impl_trait!(Div for i16, div);

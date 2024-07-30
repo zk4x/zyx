@@ -165,6 +165,7 @@ impl Scalar for f32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
+        let _ = rhs;
         //libm::powf(self, rhs)
         todo!()
     }

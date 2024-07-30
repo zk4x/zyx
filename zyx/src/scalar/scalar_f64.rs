@@ -147,6 +147,7 @@ impl Scalar for f64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
+        let _ = rhs;
         //libm::pow(self, rhs)
         todo!()
     }

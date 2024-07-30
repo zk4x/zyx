@@ -1,6 +1,8 @@
 use zyx::{DType, Tensor};
+use zyx_derive::Module;
 
 /// Linear layer
+#[derive(Module)]
 pub struct Linear {
     /// weight
     pub weight: Tensor,
@@ -28,29 +30,5 @@ impl Linear {
             return x + bias;
         }
         return x;
-    }
-}
-
-impl<'a> IntoIterator for &'a Linear {
-    type Item = &'a Tensor;
-    type IntoIter = alloc::vec::IntoIter<&'a Tensor>;
-    fn into_iter(self) -> Self::IntoIter {
-        if let Some(bias) = &self.bias {
-            alloc::vec![&self.weight, bias].into_iter()
-        } else {
-            alloc::vec![&self.weight].into_iter()
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a mut Linear {
-    type Item = &'a mut Tensor;
-    type IntoIter = alloc::vec::IntoIter<&'a mut Tensor>;
-    fn into_iter(self) -> Self::IntoIter {
-        if let Some(bias) = &mut self.bias {
-            alloc::vec![&mut self.weight, bias].into_iter()
-        } else {
-            alloc::vec![&mut self.weight].into_iter()
-        }
     }
 }

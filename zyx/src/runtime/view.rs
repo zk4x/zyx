@@ -123,7 +123,6 @@ impl View {
                 } in dims.iter_mut()
                 {
                     if *paxis == axis {
-                        assert_eq!(*dim, 1);
                         *lp += left_pad;
                         *rp += right_pad;
                         *dim = (*dim as isize + left_pad + right_pad) as usize;
@@ -169,7 +168,6 @@ impl View {
                             axis: temp_axis,
                             dim,
                             stride,
-                            // TODO
                             lp: 0,
                             rp: 0,
                         },

@@ -4,6 +4,7 @@ use crate::{runtime::graph::Graph, tensor::TensorId};
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
+#[cfg(feature = "debug1")]
 use std::println;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -619,12 +620,15 @@ pub(super) fn generate_kernels(
         }
     }
 
-    println!("\nPrinting kernels");
-    for kernel in &kernels {
-        for op in &kernel.ops {
-            println!("{op:?}");
+    #[cfg(feature = "debug1")]
+    {
+        println!("\nPrinting kernels");
+        for kernel in &kernels {
+            for op in &kernel.ops {
+                println!("{op:?}");
+            }
+            println!();
         }
-        println!();
     }
     return kernels;
 }

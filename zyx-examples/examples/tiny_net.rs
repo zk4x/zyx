@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor};
+use zyx::{DType, Device, Tensor};
 use zyx_derive::Module;
 use zyx_nn::Linear;
 
@@ -7,18 +7,28 @@ extern crate alloc;
 #[derive(Module)]
 struct TinyNet {
     l0: Linear,
-    lr: f32,
     l1: Linear,
+    lr: f32,
 }
 
 fn main() {
+    Tensor::set_default_device(Device::OpenCL);
     let tiny_net = TinyNet {
-        l0: Linear::new(128, 128, DType::F32),
+        l0: Linear::new(1, 128, DType::F32),
+        l1: Linear::new(1, 128, DType::F32),
         lr: 0.0,
-        l1: Linear::new(128, 128, DType::F32),
     };
 
-    let x = Tensor::uniform([2, 3], 0..2);
+    for x in tiny_net.into_iter() {
+        println!("{x}");
+    }
 
-    let _grads = x.backward(&tiny_net);
+    //let x = Tensor::uniform([2, 3], 0..2);
+
+    //tiny_net.save("file.safetensors");
+    //let tiny_net: TinyNet = Tensor::load("file.safetensors").collect();
+
+    //let y = tiny_net.forward();
+    //let loss = x.mse_loss(target);
+    //let _grads = loss.backward(&tiny_net);
 }

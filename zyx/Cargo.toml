@@ -35,8 +35,8 @@ default = [
     "debug1",
     "opencl",
     "rand",
-    #"complex",
-    #"half",
+    "complex",
+    "half",
 ] # TODO remove default from release build
 
 # Debug, prints GPU kernels
@@ -46,7 +46,7 @@ debug1 = ["std"]
 std = []
 
 # Enables random number generation for randn, uniform ...
-rand = ["dep:rand"]
+rand = ["dep:rand", "num-complex/rand", "half/rand_distr"]
 
 # Enables f16 and bf16 dtypes
 half = ["dep:half"]
