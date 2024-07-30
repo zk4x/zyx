@@ -310,12 +310,30 @@ impl Runtime {
             DType::CF32 => todo!(),
             #[cfg(feature = "complex")]
             DType::CF64 => todo!(),
-            DType::U8 => todo!(),
-            DType::I8 => todo!(),
-            DType::I16 => todo!(),
-            DType::I32 => todo!(),
-            DType::I64 => todo!(),
-            DType::Bool => todo!(),
+            DType::U8 => {
+                let data: Vec<u8> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            DType::I8 => {
+                let data: Vec<i8> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            DType::I16 => {
+                let data: Vec<i16> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            DType::I32 => {
+                let data: Vec<i32> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            DType::I64 => {
+                let data: Vec<i64> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
+            DType::Bool => {
+                let data: Vec<bool> = (0..n).map(|_| rng.sample(Standard)).collect();
+                self.store(data, shape)
+            }
         };
     }
 
@@ -463,20 +481,20 @@ impl Runtime {
         return self.graph.push(Node::Permute { x, axes, shape });
     }
 
-    pub(crate) fn pad(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
+    pub(crate) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
         let shape = self.shape(x);
-        let n = shape.len();
-        let shape: Vec<usize> = shape
+        let mut shape: Vec<usize> = shape
             .iter()
             .copied()
             .rev()
             .zip(
                 core::iter::repeat((0isize, 0isize))
-                    .take(n - padding.len())
+                    .take(shape.len() - padding.len())
                     .chain(padding.iter().copied()),
             )
             .map(|(d, (lp, rp))| d + lp as usize + rp as usize)
             .collect();
+        shape.reverse();
         return self.graph.push(Node::Pad { x, padding, shape });
     }
 
@@ -974,7 +992,7 @@ impl Runtime {
                 }
                 Node::Pad { x, ref padding, .. } => {
                     let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
-                    let grad = self.pad(grad, inv_padding);
+                    let grad = self.pad_zeros(grad, inv_padding);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Reduce { x, rop, .. } => match rop {

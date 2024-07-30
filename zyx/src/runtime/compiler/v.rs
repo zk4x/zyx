@@ -511,9 +511,7 @@ pub(super) fn generate_kernels(
                 // then it creates new kernel
                 let mut kernel = get_kernel(*x, &mut kernels, graph);
                 let axes: BTreeSet<usize> = (shape.len() - padding.len()..shape.len()).collect();
-
-                println!("Shape: {shape:?}, padding: {padding:?}, axes: {axes:?}");
-
+                //println!("Shape: {shape:?}, padding: {padding:?}, axes: {axes:?}");
                 let mut padded_loops: BTreeSet<usize> = axes.clone();
                 let mut padding_possible = true;
                 'ops_loop: for op in kernel.ops.iter_mut().rev() {
@@ -755,9 +753,8 @@ pub(super) fn generate_kernels(
         }
     }
 
-    println!("Printing kernels");
+    println!("\nPrinting kernels");
     for kernel in &kernels {
-        println!();
         for op in &kernel.ops {
             println!("{op:?}");
         }

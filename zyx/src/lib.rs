@@ -108,6 +108,9 @@ fn t5() {
 
 #[test]
 fn t6() {
-    let x = Tensor::from([[2, 3], [4, 5]]).pad_zeros([(1, 3)]);
+    //let x = Tensor::from([[2, 3], [4, 5]]).pad_zeros([(1, 3)]);
+
+    let x = Tensor::randn([14, 16], DType::U8);
+    let x = x.get((.., 8..-2));
     std::println!("{x}");
 }

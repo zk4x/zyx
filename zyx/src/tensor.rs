@@ -520,7 +520,7 @@ impl Tensor {
 
     pub fn pad_zeros(&self, padding: impl IntoPadding) -> Tensor {
         return Tensor {
-            id: RT.lock().pad(self.id, padding.into_padding()),
+            id: RT.lock().pad_zeros(self.id, padding.into_padding()),
         };
     }
 
@@ -794,24 +794,23 @@ impl Tensor {
                 )
             })
             .collect();
-        //std::println!("Get padding: {padding:?}");
         let n = shape.rank() - padding.len();
-        self.pad(
-            padding
-                .into_iter()
-                .chain(core::iter::repeat((0, 0)).take(n))
-                .collect::<Vec<(isize, isize)>>()
-                .into_iter()
-                .rev(),
-            0,
-        )
+        let padding: Vec<(isize, isize)> = padding
+            .into_iter()
+            .chain(core::iter::repeat((0, 0)).take(n))
+            .collect::<Vec<(isize, isize)>>()
+            .into_iter()
+            .rev()
+            .collect();
+        //std::println!("Get padding: {padding:?}");
+        self.pad_zeros(padding)
     }
 
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
         let n = *self.shape().last().unwrap();
         self.flatten(..)
-            .pad([(0, n as isize)], 0)
+            .pad_zeros([(0, n as isize)])
             .reshape([n, n + 1])
             .get((.., 0))
     }
@@ -958,11 +957,10 @@ impl Tensor {
         let mut res = Tensor::zeros(tensors[0].shape(), tensors[0].dtype());
         for tensor in tensors {
             res = res
-                + tensor.pad(
+                + tensor.pad_zeros(
                     core::iter::repeat((0isize, 0isize))
                         .take(rank - dim - 1)
                         .chain([(offset, 0isize)]),
-                    0,
                 );
             offset += tensor.shape()[dim] as isize;
         }

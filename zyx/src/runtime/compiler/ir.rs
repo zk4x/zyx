@@ -51,7 +51,7 @@ impl IRMem {
             }
             IRMem::Var { id, scope, index } => match index {
                 Index::Contiguous { dims } | Index::Strided { dims } => {
-                    std::println!("Using contiguous or strided index");
+                    //std::println!("Using contiguous or strided index");
                     let mut res = String::new();
                     for (id, mul) in dims {
                         res += &f!("i{id}*{mul}+");
@@ -60,12 +60,12 @@ impl IRMem {
                     return (Vec::new(), f!("{}{}[{res}]", scope, id));
                 }
                 Index::Padded { dims } => {
-                    std::println!("Using padded index");
+                    //std::println!("Using padded index");
                     let mut res = String::new();
                     // When the padding does not apply
                     let mut padding_condition = String::new();
                     for (id, (dim, mul, lp, rp)) in dims {
-                        std::println!("Padding {id} with {lp}, {rp}");
+                        //std::println!("Padding {id} with {lp}, {rp}");
                         if *lp > 0 {
                             padding_condition += &f!("i{id} < {lp} || ");
                             res += &f!("(i{id}-{lp})*{mul}+");
@@ -120,6 +120,19 @@ impl IRMem {
         }
     }
 }
+
+// TODO later we need to rewrite IROp to something like this
+// to make PTX/HSAIL/SPIR-V generation easier.
+// Global and local memory will be declared in IRKernel
+/*pub(super) enum IROpv2 {
+    InitAcc { z: u8, len: usize },
+    Unary { z: u8, x: u8, uop: UOp },
+    Binary { z: u8, x: u8, y: u8, bop: BOp },
+    IdxMAdd { z: u8, x: u8, y: u8, a: u8 },
+    Loop { id: u8, len: usize },
+    EndLoop,
+    Barrier { scope: Scope },
+}*/
 
 /// IROp for direct translation to hardware kernels
 #[derive(Debug, Clone)]
