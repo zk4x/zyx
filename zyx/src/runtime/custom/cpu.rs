@@ -106,7 +106,7 @@ impl Custom for CPU {
         buffer: &Self::Buffer,
         length: usize,
     ) -> Result<Vec<T>, CustomError> {
-        debug_assert_eq!(buffer.len(), length);
+        assert_eq!(buffer.len(), length);
         if T::dtype() != buffer.dtype() {
             return Err(CustomError::BufferDoesNotExist);
         }

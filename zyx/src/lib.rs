@@ -105,3 +105,9 @@ fn t5() {
     Tensor::realize([&y, &z]);
     std::println!("{y}\n{z}");
 }
+
+#[test]
+fn t6() {
+    let x = Tensor::from([[2, 3], [4, 5]]).pad_zeros([(1, 3)]);
+    std::println!("{x}");
+}

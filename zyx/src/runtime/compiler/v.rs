@@ -1,7 +1,6 @@
 use crate::runtime::node::{BOp, Node, ROp, UOp};
 use crate::{runtime::graph::Graph, tensor::TensorId};
 use alloc::collections::BTreeSet;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::ir::Index;
@@ -50,6 +49,16 @@ pub(super) enum VOp {
     },
 }
 
+impl VOp {
+    fn noop(z: TensorId, x: TensorId) -> VOp {
+        VOp::Unary {
+            z,
+            x,
+            uop: UOp::Noop,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct Kernel {
     // Current shape of the kernel after all current ops
@@ -81,6 +90,17 @@ impl Kernel {
         }
     }
 
+    fn store(&mut self, z: TensorId, graph: &Graph) {
+        let store_op = VOp::Store {
+            z,
+            strides: shape_to_strides(graph.shape(z)),
+        };
+        if self.ops.last().unwrap() != &store_op {
+            self.ops.push(store_op);
+            self.outputs.insert(z);
+        }
+    }
+
     fn permute(&mut self, axes: &[usize]) {
         if axes.iter().zip(0..axes.len()).all(|(a, ca)| *a == ca) {
             // no permute
@@ -101,25 +121,21 @@ impl Kernel {
                 }
                 VOp::Load { view, .. } => {
                     let n = view.rank();
-                    if axes.len() < n {
-                        let all_axes: Vec<usize> =
-                            axes.iter().copied().chain(axes.len()..n).collect();
-                        view.permute(&all_axes);
+                    let all_axes: Vec<usize> = if axes.len() < n {
+                        axes.iter().copied().chain(axes.len()..n).collect()
                     } else {
-                        let axes: Vec<usize> = axes.iter().copied().filter(|a| *a < n).collect();
-                        view.permute(&axes);
-                    }
+                        axes.iter().copied().filter(|a| *a < n).collect()
+                    };
+                    view.permute(&all_axes);
                 }
                 VOp::Store { strides, .. } => {
                     let n = strides.len();
-                    if axes.len() < n {
-                        let all_axes: Vec<usize> =
-                            axes.iter().copied().chain(axes.len()..n).collect();
-                        *strides = all_axes.iter().map(|axis| strides[*axis]).collect();
+                    let all_axes: Vec<usize> = if axes.len() < n {
+                        axes.iter().copied().chain(axes.len()..n).collect()
                     } else {
-                        let axes: Vec<usize> = axes.iter().copied().filter(|a| *a < n).collect();
-                        *strides = axes.iter().map(|axis| strides[*axis]).collect();
-                    }
+                        axes.iter().copied().filter(|a| *a < n).collect()
+                    };
+                    *strides = all_axes.iter().map(|axis| strides[*axis]).collect();
                 }
                 _ => {}
             }
@@ -168,7 +184,7 @@ impl Kernel {
                 VOp::Load { view, .. } => {
                     //println!("Splitting {view:?}");
                     let mut stride = view.0[axis].stride;
-                    view.0.remove(axis);
+                    let ViewDim { lp, rp, .. } = view.0.remove(axis);
                     let mut temp_axis = axis + dimensions.len();
                     for dim in dimensions.iter().copied().rev() {
                         temp_axis -= 1;
@@ -178,12 +194,16 @@ impl Kernel {
                                 axis: temp_axis,
                                 dim,
                                 stride,
-                                len: dim,
-                                shift: dim,
+                                // TODO
+                                lp: 0,
+                                rp: 0,
                             },
                         );
                         stride *= dim;
                     }
+                    // TODO do proper padding on splitted dimension
+                    view.0[axis].lp = lp;
+                    view.0[axis].rp = rp;
                     // Rename all following axes
                     for a in axis + dimensions.len()..view.0.len() {
                         view.0[a].axis += dimensions.len() - 1;
@@ -275,8 +295,8 @@ impl View {
                     axis,
                     stride: temp,
                     dim: *dim,
-                    len: *dim,
-                    shift: *dim,
+                    lp: 0,
+                    rp: 0,
                 }
             })
             .collect();
@@ -310,9 +330,17 @@ impl View {
             Index::Contiguous {
                 dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
             }
-        } else {
+        } else if self.0.iter().all(|dim| dim.lp == 0 && dim.rp == 0) {
             Index::Strided {
                 dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
+            }
+        } else {
+            Index::Padded {
+                dims: self
+                    .0
+                    .iter()
+                    .map(|dim| (dim.axis, (dim.dim, dim.stride, dim.lp, dim.rp)))
+                    .collect(),
             }
         }
     }
@@ -327,8 +355,8 @@ struct ViewDim {
     axis: Axis,
     dim: Dimension,
     stride: Stride,
-    len: usize,
-    shift: usize,
+    lp: isize,
+    rp: isize,
 }
 
 pub(super) fn generate_kernels(
@@ -402,11 +430,7 @@ pub(super) fn generate_kernels(
                         _ => {}
                     }
                 }
-                kernel.ops.push(VOp::Unary {
-                    z: nid,
-                    x: *x,
-                    uop: UOp::Noop,
-                });
+                kernel.ops.push(VOp::noop(nid, *x));
                 kernel.vars.insert(nid);
             }
             Node::Permute { x, axes, .. } => {
@@ -416,11 +440,7 @@ pub(super) fn generate_kernels(
                 // TODO but what if it is permute after reduce?
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.permute(&axes);
-                kernel.ops.push(VOp::Unary {
-                    z: nid,
-                    x: *x,
-                    uop: UOp::Noop,
-                });
+                kernel.ops.push(VOp::noop(nid, *x));
                 kernel.vars.insert(nid);
             }
             Node::Reshape { x, shape } => {
@@ -460,12 +480,8 @@ pub(super) fn generate_kernels(
                             _ => {}
                         }
                     }
-                    kernel.ops.push(VOp::Unary {
-                        z: nid,
-                        x: *x,
-                        uop: UOp::Noop,
-                    });
                     kernel.shape = shape.clone();
+                    kernel.ops.push(VOp::noop(nid, *x));
                     kernel.vars.insert(nid);
                 } else {
                     // TODO
@@ -473,9 +489,7 @@ pub(super) fn generate_kernels(
                     // If last axes are unsqueezes with ones, add new loops to the end of the kernel.
 
                     // else create new kernel after storing results of previous kernel
-                    let strides = shape_to_strides(graph.shape(*x));
-                    kernel.ops.push(VOp::Store { z: *x, strides });
-                    kernel.outputs.insert(*x);
+                    kernel.store(*x, graph);
                     let mut ops = shape_to_loops(shape);
                     ops.push(VOp::Load {
                         z: nid,
@@ -495,7 +509,69 @@ pub(super) fn generate_kernels(
             Node::Pad { x, padding, shape } => {
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
-                let kernel = get_kernel(*x, &mut kernels, graph);
+                let mut kernel = get_kernel(*x, &mut kernels, graph);
+                let axes: BTreeSet<usize> = (shape.len() - padding.len()..shape.len()).collect();
+
+                println!("Shape: {shape:?}, padding: {padding:?}, axes: {axes:?}");
+
+                let mut padded_loops: BTreeSet<usize> = axes.clone();
+                let mut padding_possible = true;
+                'ops_loop: for op in kernel.ops.iter_mut().rev() {
+                    match op {
+                        VOp::Loop { axis, .. } => {
+                            if axes.contains(axis) {
+                                padded_loops.remove(axis);
+                                if padded_loops.is_empty() {
+                                    break 'ops_loop;
+                                }
+                            }
+                        }
+                        VOp::Store { .. } => {
+                            padding_possible = false;
+                            break 'ops_loop;
+                        }
+                        _ => {}
+                    }
+                }
+                //println!("Padding possible: {padding_possible}");
+                if !padding_possible {
+                    kernel.store(*x, graph);
+                    kernels.push(Kernel::load(graph, *x));
+                    kernel = kernels.last_mut().unwrap();
+                }
+                let mut padded_loops: BTreeSet<usize> = axes.clone();
+                'ops_loop: for op in kernel.ops.iter_mut().rev() {
+                    match op {
+                        VOp::Loop { axis, dimension } => {
+                            if axes.contains(axis) {
+                                *dimension = shape[*axis];
+                                padded_loops.remove(axis);
+                                if padded_loops.is_empty() {
+                                    break 'ops_loop;
+                                }
+                            }
+                        }
+                        VOp::Load { view, .. } => {
+                            let n = view.rank();
+                            let all_axes: BTreeSet<usize> =
+                                axes.iter().copied().filter(|a| *a < n).collect();
+                            //println!("All axes padding: {all_axes:?}");
+                            for (a, (lp, rp)) in all_axes
+                                .iter()
+                                .copied()
+                                .zip(padding.iter().skip(shape.len() - n))
+                            {
+                                view.0[a].dim = (view.0[a].dim as isize + lp + rp) as usize;
+                                view.0[a].lp = *lp;
+                                view.0[a].rp = *rp;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                kernel.shape = shape.clone();
+                kernel.ops.push(VOp::noop(nid, *x));
+                kernel.vars.insert(nid);
             }
             Node::Reduce {
                 x,
@@ -548,6 +624,7 @@ pub(super) fn generate_kernels(
                 });
                 kernel.vars.insert(nid);
                 kernel.shape = shape.clone();
+                // Optionally merge axes (if possible) for potentially better performance
                 //kernel.merge_axes(acc_id + 1, axes.len());
             }
             Node::Unary { x, uop } => {
@@ -653,16 +730,31 @@ pub(super) fn generate_kernels(
         }
         if to_eval.contains(&nid) || graph.rc(nid) > 1 {
             if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {
-                kernel.ops.push(VOp::Store {
-                    z: nid,
-                    strides: shape_to_strides(graph.shape(nid)),
-                });
-                kernel.outputs.insert(nid);
+                kernel.store(nid, graph);
             } else {
                 panic!()
             }
         }
     }
+    // Remove unnecessary stores not for tensors moved across kernels
+    // and not in to_eval that were inserted for rc > 1, but ops got merged,
+    // and these stores were not used.
+    let mut necessary_stores = to_eval.clone();
+    for kernel in &kernels {
+        necessary_stores.extend(kernel.inputs.iter());
+    }
+    for kernel in &mut kernels {
+        let mut i = 0;
+        while i < kernel.ops.len() {
+            if let VOp::Store { z, .. } = kernel.ops[i] {
+                if !necessary_stores.contains(&z) {
+                    kernel.ops.remove(i);
+                }
+            }
+            i += 1;
+        }
+    }
+
     println!("Printing kernels");
     for kernel in &kernels {
         println!();
@@ -722,12 +814,12 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         .iter_mut()
         .position(|kernel| kernel.vars.contains(&x))
     {
-        if kernels[id].shape == graph.shape(x) {
-            &mut kernels[id]
-        } else {
+        if kernels[id].shape != graph.shape(x) {
             // create new kernel using already predefined store
             kernels.push(Kernel::load(graph, x));
             kernels.last_mut().unwrap()
+        } else {
+            &mut kernels[id]
         }
     } else {
         panic!()

@@ -202,16 +202,18 @@ impl Graph {
         //std::println!("Execution order: {order:?}");
         // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
-        #[cfg(feature = "std")]
+        /*#[cfg(feature = "std")]
         for nid in &order {
             std::println!("{nid} -> {:?}", self.nodes[nid]);
-        }
+            }*/
         let mut node_swap = true;
         while node_swap {
             node_swap = false;
             for (nid, nid1) in order.iter().zip(order.iter().skip(1)) {
                 if self.nodes[nid].1.is_movement()
                     && self.nodes[nid1].1.is_unary()
+                    && !to_eval.contains(nid)
+                    && !to_eval.contains(nid1)
                     && self.nodes[nid].0 == 1
                     && self.nodes[nid1].0 == 1
                 {

@@ -464,11 +464,18 @@ impl Runtime {
     }
 
     pub(crate) fn pad(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
-        let shape: Vec<usize> = self
-            .shape(x)
+        let shape = self.shape(x);
+        let n = shape.len();
+        let shape: Vec<usize> = shape
             .iter()
-            .zip(padding.iter())
-            .map(|(d, (lp, rp))| *d + *lp as usize + *rp as usize)
+            .copied()
+            .rev()
+            .zip(
+                core::iter::repeat((0isize, 0isize))
+                    .take(n - padding.len())
+                    .chain(padding.iter().copied()),
+            )
+            .map(|(d, (lp, rp))| d + lp as usize + rp as usize)
             .collect();
         return self.graph.push(Node::Pad { x, padding, shape });
     }

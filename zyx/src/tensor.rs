@@ -306,19 +306,17 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
-        /*let ones = Tensor {
-            id: RT.lock().ones(vec![1, n], dtype).unwrap(),
-        };
-        ones.pad();
-        return x;*/
-        todo!()
+        return Tensor::ones(vec![1, n], dtype)
+            .pad_zeros([(0, n as isize)])
+            .reshape([n + 1, n])
+            .get((..-1, ..));
     }
 
     // unary
     /// Computes the absolute value of each element in self.
     #[must_use]
     pub fn abs(&self) -> Tensor {
-        todo!()
+        self.relu() + (-self).relu()
     }
 
     /// Casts self to [dtype](crate::DType).
@@ -355,8 +353,8 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn elu(&self) -> Tensor {
-        todo!()
+    pub fn elu(&self, alpha: impl Scalar) -> Tensor {
+        self.relu() - (Tensor::ones(1, self.dtype()) - self.exp()).relu() * alpha
     }
 
     #[must_use]
@@ -368,12 +366,15 @@ impl Tensor {
 
     #[must_use]
     pub fn gelu(&self) -> Tensor {
-        todo!()
+        self * 0.5f32
+            * (((self + self.pow(3f32) * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt())
+                .tanh()
+                + 1f32)
     }
 
     #[must_use]
-    pub fn leaky_relu(&self) -> Tensor {
-        todo!()
+    pub fn leaky_relu(&self, neg_slope: impl Scalar) -> Tensor {
+        self.relu() - (self * (-Tensor::from(neg_slope))).relu()
     }
 
     #[must_use]
@@ -385,12 +386,12 @@ impl Tensor {
 
     #[must_use]
     pub fn mish(&self) -> Tensor {
-        todo!()
+        self * self.softplus(1, 20).tanh()
     }
 
     #[must_use]
     pub fn quick_gelu(&self) -> Tensor {
-        todo!()
+        self * (1.702f32 * self).sigmoid()
     }
 
     #[must_use]
@@ -409,17 +410,23 @@ impl Tensor {
 
     #[must_use]
     pub fn rsqrt(&self) -> Tensor {
-        todo!()
+        self.reciprocal().sqrt()
     }
 
     #[must_use]
     pub fn selu(&self) -> Tensor {
-        todo!()
+        1.0507009873554804934193349852946f32
+            * (self.relu()
+                - (1.6732632423543772848170429916717f32
+                    * (Tensor::ones(1, self.dtype()) - self.exp()))
+                .relu())
     }
 
     #[must_use]
     pub fn sigmoid(&self) -> Tensor {
-        todo!()
+        let one = Tensor::ones(1, self.dtype());
+        let exp_x = self.exp();
+        return &exp_x / (&one + &exp_x);
     }
 
     #[must_use]
@@ -430,8 +437,10 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn softplus(&self) -> Tensor {
-        todo!()
+    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor {
+        let x = self * beta;
+        x.cmplt(threshold)
+            .where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
     }
 
     #[must_use]
@@ -443,12 +452,12 @@ impl Tensor {
 
     #[must_use]
     pub fn swish(&self) -> Tensor {
-        todo!()
+        self * self.sigmoid()
     }
 
     #[must_use]
     pub fn tan(&self) -> Tensor {
-        todo!()
+        self.sin() / self.cos()
     }
 
     #[must_use]
@@ -509,6 +518,12 @@ impl Tensor {
         };
     }
 
+    pub fn pad_zeros(&self, padding: impl IntoPadding) -> Tensor {
+        return Tensor {
+            id: RT.lock().pad(self.id, padding.into_padding()),
+        };
+    }
+
     /// Constant padding
     ///
     /// This can both add and remove values from tensor. Negative padding removes values, positive padding
@@ -547,7 +562,7 @@ impl Tensor {
     pub fn pad(&self, padding: impl IntoPadding, value: impl Into<Tensor>) -> Tensor {
         let dtype = self.dtype();
         let value: Tensor = value.into();
-        debug_assert_eq!(
+        assert_eq!(
             value.dtype(),
             dtype,
             "Cannot pad tensor with dtype {} with value of dtype {}",
@@ -556,7 +571,7 @@ impl Tensor {
         );
         let padding = padding.into_padding();
         let sh = self.shape();
-        debug_assert!(
+        assert!(
             padding.len() <= sh.rank()
                 && padding
                     .iter()
@@ -572,9 +587,7 @@ impl Tensor {
                     }),
             "Cannot pad tensor with shape {sh:?} with padding {padding:?}"
         );
-        let t0 = Tensor {
-            id: RT.lock().pad(self.id, padding.clone()),
-        };
+        let t0 = self.pad_zeros(padding.clone());
         if value.numel() == 1
             && match dtype {
                 #[cfg(feature = "half")]
@@ -625,17 +638,14 @@ impl Tensor {
         } else {
             let ones = Tensor::ones(sh.clone(), dtype);
             let zeros = Tensor::zeros(sh, self.dtype());
-            t0 + Tensor {
-                id: RT.lock().pad(ones.id, padding),
-            }
-            .where_(zeros, value)
+            t0 + ones.pad_zeros(padding).where_(zeros, value)
         }
     }
 
     #[must_use]
     pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
         let shape: Vec<usize> = shape.into_shape().collect();
-        debug_assert_eq!(
+        assert_eq!(
             shape.iter().product::<usize>(),
             self.numel(),
             "Invalid reshape {:?} into {:?}",
@@ -715,14 +725,13 @@ impl Tensor {
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
-        #[cfg(debug_assertions)]
         {
             // We can add checks for axes being less than rank and axes not containing duplicates
             let mut unique = alloc::collections::BTreeSet::new();
             for a in &axes {
-                debug_assert!(unique.insert(a), "Axes contain duplicates.");
+                assert!(unique.insert(a), "Axes contain duplicates.");
                 // This is checked by into_axes function
-                //debug_assert!(a < rank, "Axes are too high");
+                //assert!(a < rank, "Axes are too high");
             }
         }
         return Tensor {
@@ -818,8 +827,40 @@ impl Tensor {
 
     #[must_use]
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Tensor {
-        let _ = rhs;
-        todo!()
+        let y = rhs.into().transpose();
+        let xshape = self.shape();
+        let yshape = y.shape();
+        let xrank = xshape.rank();
+        let yrank = yshape.rank();
+        assert_eq!(
+            xshape[xrank - 1],
+            yshape[yrank - 1],
+            //yshape[-(yrank.min(2) as i64)],
+            "Cannot dot tensors with shapes {xshape:?} and {yshape:?}"
+        );
+        let x_shape = xshape[..xrank - 1]
+            .iter()
+            .copied()
+            .chain([1])
+            .chain([xshape[xrank - 1]])
+            .collect::<Vec<usize>>();
+        let y_shape = yshape[0..yrank - 2]
+            .iter()
+            .copied()
+            .chain([1])
+            .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
+            .collect::<Vec<usize>>();
+        //std::println!("{x_shape:?}");
+        //std::println!("{y_shape:?}");
+        (self.reshape(x_shape) * y.reshape(y_shape))
+            .sum(-1)
+            .reshape(
+                xshape[0..xshape.len() - 1]
+                    .iter()
+                    .copied()
+                    .chain([yshape[yshape.len() - 2]])
+                    .collect::<Vec<usize>>(),
+            )
     }
 
     #[must_use]
@@ -909,7 +950,7 @@ impl Tensor {
         for tensor in &tensors {
             for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
                 if i != dim {
-                    debug_assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
+                    assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
                 }
             }
         }
@@ -984,7 +1025,7 @@ impl Tensor {
 
         for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
-                debug_assert!(
+                assert!(
                     *x == 1 || *y == 1,
                     "Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}"
                 );
@@ -1508,7 +1549,7 @@ pub trait FlattenAxes {
 
 impl FlattenAxes for RangeFrom<i64> {
     fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        debug_assert!(
+        assert!(
             if self.start > 0 {
                 (self.start as usize) < rank
             } else {
@@ -1522,7 +1563,7 @@ impl FlattenAxes for RangeFrom<i64> {
 
 impl FlattenAxes for RangeTo<i64> {
     fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        debug_assert!(
+        assert!(
             if self.end > 0 {
                 (self.end as usize) < rank
             } else {
@@ -1536,7 +1577,7 @@ impl FlattenAxes for RangeTo<i64> {
 
 impl FlattenAxes for RangeToInclusive<i64> {
     fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        debug_assert!(
+        assert!(
             if self.end > 0 {
                 (self.end as usize) < rank
             } else {
@@ -1784,3 +1825,89 @@ impl Not for &Tensor {
         }
     }
 }
+
+macro_rules! impl_trait {
+    ($trait:ident for $type:ty, $fn_name:ident) => {
+        impl $trait<Tensor> for $type {
+            type Output = Tensor;
+            fn $fn_name(self, rhs: Tensor) -> Self::Output {
+                rhs * self
+            }
+        }
+
+        impl $trait<&Tensor> for $type {
+            type Output = Tensor;
+            fn $fn_name(self, rhs: &Tensor) -> Self::Output {
+                rhs * self
+            }
+        }
+    };
+}
+
+#[cfg(feature = "half")]
+impl_trait!(Add for bf16, add);
+#[cfg(feature = "half")]
+impl_trait!(Add for f16, add);
+impl_trait!(Add for f32, add);
+impl_trait!(Add for f64, add);
+#[cfg(feature = "complex")]
+impl_trait!(Add for cf32, add);
+#[cfg(feature = "complex")]
+impl_trait!(Add for cf64, add);
+impl_trait!(Add for u8, add);
+impl_trait!(Add for i8, add);
+impl_trait!(Add for i16, add);
+impl_trait!(Add for i32, add);
+impl_trait!(Add for i64, add);
+impl_trait!(Add for bool, add);
+
+#[cfg(feature = "half")]
+impl_trait!(Sub for bf16, sub);
+#[cfg(feature = "half")]
+impl_trait!(Sub for f16, sub);
+impl_trait!(Sub for f32, sub);
+impl_trait!(Sub for f64, sub);
+#[cfg(feature = "complex")]
+impl_trait!(Sub for cf32, sub);
+#[cfg(feature = "complex")]
+impl_trait!(Sub for cf64, sub);
+impl_trait!(Sub for u8, sub);
+impl_trait!(Sub for i8, sub);
+impl_trait!(Sub for i16, sub);
+impl_trait!(Sub for i32, sub);
+impl_trait!(Sub for i64, sub);
+impl_trait!(Sub for bool, sub);
+
+#[cfg(feature = "half")]
+impl_trait!(Mul for bf16, mul);
+#[cfg(feature = "half")]
+impl_trait!(Mul for f16, mul);
+impl_trait!(Mul for f32, mul);
+impl_trait!(Mul for f64, mul);
+#[cfg(feature = "complex")]
+impl_trait!(Mul for cf32, mul);
+#[cfg(feature = "complex")]
+impl_trait!(Mul for cf64, mul);
+impl_trait!(Mul for u8, mul);
+impl_trait!(Mul for i8, mul);
+impl_trait!(Mul for i16, mul);
+impl_trait!(Mul for i32, mul);
+impl_trait!(Mul for i64, mul);
+impl_trait!(Mul for bool, mul);
+
+#[cfg(feature = "half")]
+impl_trait!(Div for bf16, div);
+#[cfg(feature = "half")]
+impl_trait!(Div for f16, div);
+impl_trait!(Div for f32, div);
+impl_trait!(Div for f64, div);
+#[cfg(feature = "complex")]
+impl_trait!(Div for cf32, div);
+#[cfg(feature = "complex")]
+impl_trait!(Div for cf64, divj);
+impl_trait!(Div for u8, div);
+impl_trait!(Div for i8, div);
+impl_trait!(Div for i16, div);
+impl_trait!(Div for i32, div);
+impl_trait!(Div for i64, div);
+impl_trait!(Div for bool, div);

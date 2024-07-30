@@ -51,12 +51,47 @@ impl IRMem {
             }
             IRMem::Var { id, scope, index } => match index {
                 Index::Contiguous { dims } | Index::Strided { dims } => {
+                    std::println!("Using contiguous or strided index");
                     let mut res = String::new();
                     for (id, mul) in dims {
                         res += &f!("i{id}*{mul}+");
                     }
                     res.pop();
                     return (Vec::new(), f!("{}{}[{res}]", scope, id));
+                }
+                Index::Padded { dims } => {
+                    std::println!("Using padded index");
+                    let mut res = String::new();
+                    // When the padding does not apply
+                    let mut padding_condition = String::new();
+                    for (id, (dim, mul, lp, rp)) in dims {
+                        std::println!("Padding {id} with {lp}, {rp}");
+                        if *lp > 0 {
+                            padding_condition += &f!("i{id} < {lp} || ");
+                            res += &f!("(i{id}-{lp})*{mul}+");
+                        } else {
+                            let lp = -lp;
+                            res += &f!("(i{id}+{lp})*{mul}+");
+                        }
+                        // rp negative does essentially nothing, we only care if it's positive
+                        if *rp > 0 {
+                            padding_condition += &f!("i{id} > {} || ", *dim as isize - lp - rp);
+                        }
+                    }
+                    res.pop();
+                    return (
+                        Vec::new(),
+                        if padding_condition.is_empty() {
+                            f!("{}{}[{res}]", scope, id)
+                        } else {
+                            f!(
+                                "{} ? 0 : {}{}[{res}]",
+                                &padding_condition[..padding_condition.len() - 4],
+                                scope,
+                                id
+                            )
+                        },
+                    );
                 }
                 /*Index::Reshaped { dims, reshapes, .. } => {
                 let mut res = String::new();
@@ -360,10 +395,9 @@ pub enum Index {
     },
     // Expanded, permuted and/or padded
     // Only if reshape could not be merged.
-    /*Padded {
-    /// Multiple dimension and multipliers
-    dims: BTreeMap<usize, usize>,
-    /// When should the padding get applied?
-    padding_condition: String,
-    },*/
+    Padded {
+        /// Multiple dimension and multipliers
+        // Axis, (dim, multiplier, left pad, right pad)
+        dims: BTreeMap<usize, (usize, usize, isize, isize)>,
+    },
 }

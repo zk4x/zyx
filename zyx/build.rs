@@ -100,7 +100,7 @@ fn find_cuda_windows() -> PathBuf {
         }
 
         // Sanity check that the second component of 'target' is "pc"
-        debug_assert_eq!(
+        assert_eq!(
             "pc", target_components[1],
             "Expected a Windows target to have the second component be 'pc'. Target: {}",
             target

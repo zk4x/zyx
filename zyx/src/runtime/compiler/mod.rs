@@ -312,7 +312,6 @@ impl<C: Compiler> CompiledBackend<C> {
         for (args, program) in &graph.programs {
             let mut buffers = Vec::with_capacity(args.len());
             for arg in args {
-                //libc_print::libc_println!("Argument: {arg}");
                 let buffer = self.buffers.remove(arg).unwrap();
                 buffers.push(buffer);
             }
@@ -352,9 +351,9 @@ impl<C: Compiler> CompiledBackend<C> {
                 1000_000_000_000.. => (60_000_000_000, "min"),
             };
 
-            let (fs, f_us) = value_unit(f * 1000_000_000 / nanos);
-            let (brs, br_us) = value_unit(br * 1000_000_000 / nanos);
-            let (bws, bw_us) = value_unit(bw * 1000_000_000 / nanos);
+            let (fs, f_us) = value_unit(graph.flop * 1000_000_000 / nanos);
+            let (brs, br_us) = value_unit(graph.bytes_read * 1000_000_000 / nanos);
+            let (bws, bw_us) = value_unit(graph.bytes_written * 1000_000_000 / nanos);
 
             println!(
             "Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B written, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.",
