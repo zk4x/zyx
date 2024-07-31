@@ -1,12 +1,9 @@
 #![allow(non_camel_case_types)]
-
 #![allow(dead_code)]
 
 use super::{Compiler, HWInfo};
-use alloc::vec;
-use alloc::{string::String, vec::Vec};
-use core::ffi::{c_char, c_int, c_void};
-use core::ptr;
+use alloc::{string::String, vec, vec::Vec, format as f};
+use core::{ffi::{c_char, c_void}, ptr};
 
 #[cfg(feature = "debug1")]
 use std::println;
@@ -47,8 +44,7 @@ fn check(status: HSAStatus, info: &str) -> Result<(), HSAError> {
             info: info.into(),
         });
     } else {
-
-    return Ok(());
+        return Ok(());
     }
 }
 
@@ -56,6 +52,21 @@ impl Drop for HSARuntime {
     fn drop(&mut self) {
         check(unsafe { hsa_shut_down() }, "hsa_shut_down").unwrap();
     }
+}
+
+fn hsa_get_vec<T>(func: unsafe extern "C" fn(extern "C" fn(T, *mut c_void) -> HSAStatus, *mut c_void) -> HSAStatus) -> Result<Vec<T>, HSAError> {
+    extern "C" fn callback<T>(data: T, vec: *mut c_void) -> HSAStatus {
+        unsafe { (*(vec as *mut Vec<T>)).push(data) };
+        return HSAStatus::HSA_STATUS_SUCCESS;
+    }
+    let mut vec: Vec<T> = Vec::new();
+    check(
+        unsafe {
+            func(callback::<T>, &mut vec as *mut _ as *mut c_void)
+        },
+        "hsa_get_vec",
+    )?;
+    return Ok(vec);
 }
 
 impl Compiler for HSARuntime {
@@ -66,30 +77,28 @@ impl Compiler for HSARuntime {
     fn initialize() -> Result<Self, HSAError> {
         check(unsafe { hsa_init() }, "hsa_init")?;
 
-        extern "C" fn agent_list_callback(agent: Agent, data: *mut c_void) -> HSAStatus {
-            unsafe { (*(data as *mut Vec<Agent>)).push(agent) };
-            return HSAStatus::HSA_STATUS_SUCCESS;
-        }
-
-        let mut agents: Vec<Agent> = Vec::new();
-        check(unsafe { hsa_iterate_agents(agent_list_callback, &mut agents as *mut _ as *mut c_void) }, "hsa_iterate_agents").unwrap();
+        let mut agents = hsa_get_vec(hsa_iterate_agents)?;
         println!("Agents:\n{agents:?}");
-        let agent = agents[1];
+        let mut agent = agents.pop().unwrap();
 
-        let mut device: DeviceType = unsafe { core::mem::zeroed() };
-        check(unsafe { hsa_agent_get_info(agent, AgentInfo::Device, &mut device as *mut _ as *mut c_void) }, "hsa_agent_get_info").unwrap();
+        let device: DeviceType = agent.get_info(AgentInfo::Device)?;
         println!("Device: {device:?}");
 
-        extern "C" fn region_list_callback(region: Region, data: *mut c_void) -> HSAStatus {
-            unsafe { (*(data as *mut Vec<Region>)).push(region) };
-            return HSAStatus::HSA_STATUS_SUCCESS;
+        let mem_region: Region = agent.get_vec(hsa_agent_iterate_regions)?[0];
+        let isas = agent.get_vec(hsa_agent_iterate_isas)?;
+        println!("Supported isas: {isas:?}");
+
+        let segment = mem_region.get_info::<RegionSegment>(RegionInfo::Segment)?;
+        println!("Region segment: {:?}", segment);
+        println!("Region global flags: {:?}", mem_region.get_info::<RegionGlobalFlag>(RegionInfo::GlobalFlags)?);
+        println!("Region size bytes: {:?}", mem_region.get_info::<usize>(RegionInfo::Size)?);
+        println!("Region alloc max size: {}", mem_region.get_info::<usize>(RegionInfo::AllocMaxSize)?);
+        if segment == RegionSegment::Private {
+            println!("Region alloc max private workgroup size: {:?}", mem_region.get_info::<u32>(RegionInfo::AllocMaxPrivateWorkgroupSize)?);
         }
-
-        let mut regions: Vec<Region> = Vec::new();
-        let p: *mut c_void = &mut regions as *mut _ as *mut c_void;
-        check(unsafe { hsa_agent_iterate_regions(agent, region_list_callback, p) }, "hsa_agent_iterate_regions").unwrap();
-
-        let mem_region = regions[0];
+        println!("Region runtime alloc allowed: {:?}", mem_region.get_info::<bool>(RegionInfo::RuntimeAllocAllowed)?);
+        println!("Region runtime alloc granule: {:?}", mem_region.get_info::<usize>(RegionInfo::RuntimeAllocGranule)?);
+        println!("Region runtime alloc alignment: {:?}", mem_region.get_info::<usize>(RegionInfo::RuntimeAllocAlignment)?);
 
         Ok(Self { agent, mem_region })
     }
@@ -114,8 +123,12 @@ impl Compiler for HSARuntime {
 
     fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, HSAError> {
         println!("HSA Allocating {byte_size} B");
-        let memory = ptr::null_mut();
-        check(unsafe { hsa_memory_allocate(self.mem_region, byte_size, &memory) }, "hsa_memory_allocate").unwrap();
+        let mut memory: *mut c_void = ptr::null_mut();
+        check(
+            unsafe { hsa_memory_allocate(self.mem_region, byte_size, &mut memory) },
+            "hsa_memory_allocate",
+        )
+        .unwrap();
         return Ok(HSABuffer { memory });
     }
 
@@ -125,7 +138,18 @@ impl Compiler for HSARuntime {
         data: Vec<T>,
     ) -> Result<(), HSAError> {
         println!("HSA Storing {} B", data.len() * T::dtype().byte_size());
-        check(unsafe { hsa_memory_copy(&mut buffer.memory as *mut _ as *mut c_void, data.as_ptr().cast(), data.len() * T::dtype().byte_size()) }, "hsa memory copy store").unwrap();
+        //hsa_memory_assign_agent(ptr, agent, access)
+        check(
+            unsafe {
+                hsa_memory_copy(
+                    &mut buffer.memory as *mut _ as *mut c_void,
+                    data.as_ptr() as *const c_void,
+                    data.len() * T::dtype().byte_size(),
+                )
+            },
+            "hsa memory copy store",
+        )
+        .unwrap();
         return Ok(());
     }
 
@@ -135,95 +159,100 @@ impl Compiler for HSARuntime {
         length: usize,
     ) -> Result<alloc::vec::Vec<T>, HSAError> {
         let mut data: Vec<T> = Vec::with_capacity(length);
-        check(unsafe { hsa_memory_copy(data.as_mut_ptr() as *mut c_void, &buffer.memory as *const _ as *const c_void, data.len() * T::dtype().byte_size()) }, "hsa_memory_copy load").unwrap();
+        check(
+            unsafe {
+                hsa_memory_copy(
+                    data.as_mut_ptr() as *mut c_void,
+                    //&mut data.as_mut_ptr() as *mut _ as *mut c_void,
+                    //buffer.memory as *const c_void,
+                    &buffer.memory as *const _ as *const c_void,
+                    data.len() * T::dtype().byte_size(),
+                )
+            },
+            "hsa_memory_copy load",
+        )
+        .unwrap();
         unsafe { data.set_len(length) };
         return Ok(data);
     }
 
     fn deallocate_memory(&mut self, mut buffer: Self::Buffer) -> Result<(), HSAError> {
         // TODO
-        check(unsafe { hsa_memory_free(&mut buffer.memory as *mut _ as *mut c_void ) }, "hsa_memory_free").unwrap();
+        check(
+            unsafe { hsa_memory_free(&mut buffer.memory as *mut _ as *mut c_void) },
+            "hsa_memory_free",
+        )?;
         return Ok(());
     }
 
-    fn compile_program(
-        &mut self,
-        kernel: &super::IRKernel,
-    ) -> Result<Self::Program, HSAError> {
+    fn compile_program(&mut self, _kernel: &super::IRKernel) -> Result<Self::Program, HSAError> {
         todo!()
     }
 
     fn launch_program(
         &mut self,
-        program: &Self::Program,
-        args: &mut [Self::Buffer],
+        _program: &Self::Program,
+        _args: &mut [Self::Buffer],
     ) -> Result<(), HSAError> {
         todo!()
     }
 
-    fn release_program(&mut self, program: Self::Program) -> Result<(), HSAError> {
+    fn release_program(&mut self, _program: Self::Program) -> Result<(), HSAError> {
         // TODO
         return Ok(());
     }
 }
 
-
-
-
-
-
-
-
 #[link(name = "hsa-runtime64")]
 extern "C" {
     // 2.1 Initialization and shut down
-    pub fn hsa_init() -> HSAStatus;
-    pub fn hsa_shut_down() -> HSAStatus;
+    fn hsa_init() -> HSAStatus;
+    fn hsa_shut_down() -> HSAStatus;
 
     // 2.2 Runtime notifications
-    pub fn hsa_status_string(status: HSAStatus, status_string: &*const c_char) -> HSAStatus;
+    fn hsa_status_string(status: HSAStatus, status_string: &*const c_char) -> HSAStatus;
 
     // 2.3 System and agent information
-    pub fn hsa_system_get_info(attribute: SystemInfo, value: *mut c_void) -> HSAStatus;
-    pub fn hsa_extension_get_name(extension: Extension, name: &*const c_char) -> HSAStatus;
-    pub fn hsa_system_extension_supported(
+    fn hsa_system_get_info(attribute: SystemInfo, value: *mut c_void) -> HSAStatus;
+    fn hsa_extension_get_name(extension: Extension, name: &*const c_char) -> HSAStatus;
+    fn hsa_system_extension_supported(
         extension: Extension,
         version_major: u16,
         version_minor: u16,
         result: *mut bool,
     ) -> HSAStatus;
-    pub fn hsa_system_major_extension_supported(
+    fn hsa_system_major_extension_supported(
         extension: Extension,
         version_major: u16,
         version_minor: *mut u16,
         result: *mut bool,
     ) -> HSAStatus;
-    pub fn hsa_system_get_major_extension_table(
+    fn hsa_system_get_major_extension_table(
         extension: Extension,
         version_major: u16,
         table_length: usize,
         table: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_agent_get_info(agent: Agent, attribute: AgentInfo, value: *mut c_void) -> HSAStatus;
-    pub fn hsa_iterate_agents(
+    fn hsa_agent_get_info(agent: Agent, attribute: AgentInfo, value: *mut c_void) -> HSAStatus;
+    fn hsa_iterate_agents(
         callback: extern "C" fn(Agent, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_cache_get_info(cache: Cache, attribute: CacheInfo, value: *mut c_void) -> HSAStatus;
-    pub fn hsa_agent_iterate_caches(
+    fn hsa_cache_get_info(cache: Cache, attribute: CacheInfo, value: *mut c_void) -> HSAStatus;
+    fn hsa_agent_iterate_caches(
         agent: Agent,
         callback: extern "C" fn(Cache, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_agent_extension_supported(
+    fn hsa_agent_extension_supported(
         extension: Extension,
         agent: Agent,
         version_major: u16,
         version_minor: u16,
         result: *mut bool,
     ) -> HSAStatus;
-    pub fn hsa_agent_major_extension_supported(
+    fn hsa_agent_major_extension_supported(
         extension: Extension,
         agent: Agent,
         version_major: u16,
@@ -232,130 +261,129 @@ extern "C" {
     ) -> HSAStatus;
 
     // 2.4 Signals
-    pub fn hsa_signal_create(
+    fn hsa_signal_create(
         initial_value: SignalValue,
         num_consumers: u32,
         consumers: *const Agent,
         signal: &SignalHandle,
     ) -> HSAStatus;
-    pub fn hsa_signal_destroy(signal: SignalHandle) -> HSAStatus;
-    pub fn hsa_signal_load_scacquire(signal: SignalHandle) -> SignalValue;
-    pub fn hsa_signal_load_relaxed(signal: SignalHandle) -> SignalValue;
+    fn hsa_signal_destroy(signal: SignalHandle) -> HSAStatus;
+    fn hsa_signal_load_scacquire(signal: SignalHandle) -> SignalValue;
+    fn hsa_signal_load_relaxed(signal: SignalHandle) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_load_acquire(signal: SignalHandle) -> SignalValue;
-    pub fn hsa_signal_store_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_store_screlease(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_load_acquire(signal: SignalHandle) -> SignalValue;
+    fn hsa_signal_store_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_store_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_store_release(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_silent_store_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_silent_store_screlease(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_exchange_scacq_screl(signal: SignalHandle, value: SignalValue)
-        -> SignalValue;
-    pub fn hsa_signal_exchange_scacquire(signal: SignalHandle, value: SignalValue) -> SignalValue;
-    pub fn hsa_signal_exchange_relaxed(signal: SignalHandle, value: SignalValue) -> SignalValue;
-    pub fn hsa_signal_exchange_screlease(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_store_release(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_silent_store_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_silent_store_screlease(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_exchange_scacq_screl(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_exchange_scacquire(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_exchange_relaxed(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_exchange_screlease(signal: SignalHandle, value: SignalValue) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_exchange_acq_rel(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_exchange_acq_rel(signal: SignalHandle, value: SignalValue) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_exchange_acquire(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_exchange_acquire(signal: SignalHandle, value: SignalValue) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_exchange_release(signal: SignalHandle, value: SignalValue) -> SignalValue;
-    pub fn hsa_signal_cas_scacq_screl(
+    fn hsa_signal_exchange_release(signal: SignalHandle, value: SignalValue) -> SignalValue;
+    fn hsa_signal_cas_scacq_screl(
         signal: SignalHandle,
         expected: SignalValue,
         value: SignalValue,
     ) -> SignalValue;
-    pub fn hsa_signal_cas_scacquire(
+    fn hsa_signal_cas_scacquire(
         signal: SignalHandle,
         expected: SignalValue,
         value: SignalValue,
     ) -> SignalValue;
-    pub fn hsa_signal_cas_relaxed(
+    fn hsa_signal_cas_relaxed(
         signal: SignalHandle,
         expected: SignalValue,
         value: SignalValue,
     ) -> SignalValue;
-    pub fn hsa_signal_cas_screlease(
-        signal: SignalHandle,
-        expected: SignalValue,
-        value: SignalValue,
-    ) -> SignalValue;
-    //#[deprecated]
-    pub fn hsa_signal_cas_acq_rel(
+    fn hsa_signal_cas_screlease(
         signal: SignalHandle,
         expected: SignalValue,
         value: SignalValue,
     ) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_cas_acquire(
+    fn hsa_signal_cas_acq_rel(
         signal: SignalHandle,
         expected: SignalValue,
         value: SignalValue,
     ) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_cas_release(
+    fn hsa_signal_cas_acquire(
         signal: SignalHandle,
         expected: SignalValue,
         value: SignalValue,
     ) -> SignalValue;
-    pub fn hsa_signal_add_scacq_screl(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_add_scacquire(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_add_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_add_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_add_acq_rel(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_cas_release(
+        signal: SignalHandle,
+        expected: SignalValue,
+        value: SignalValue,
+    ) -> SignalValue;
+    fn hsa_signal_add_scacq_screl(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_add_scacquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_add_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_add_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_add_acquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_add_acq_rel(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_add_release(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_subtract_scacq_screl(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_subtract_scacquire(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_subtract_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_subtract_screlease(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_add_acquire(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_subtract_acq_rel(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_add_release(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_scacq_screl(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_scacquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_subtract_acquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_acq_rel(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_subtract_release(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_and_scacq_screl(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_and_scacquire(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_and_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_and_screlease(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_acquire(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_and_acq_rel(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_subtract_release(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_scacq_screl(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_scacquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_and_acquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_acq_rel(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_and_release(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_or_scacq_screl(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_or_scacquire(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_or_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_or_screlease(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_acquire(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_or_acq_rel(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_and_release(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_scacq_screl(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_scacquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_or_acquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_acq_rel(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_or_release(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_xor_scacq_screl(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_xor_scacquire(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_xor_relaxed(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_xor_screlease(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_acquire(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_xor_acq_rel(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_or_release(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_xor_scacq_screl(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_xor_scacquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_xor_relaxed(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_xor_screlease(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_xor_acquire(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_xor_acq_rel(signal: SignalHandle, value: SignalValue);
     //#[deprecated]
-    pub fn hsa_signal_xor_release(signal: SignalHandle, value: SignalValue);
-    pub fn hsa_signal_wait_scacquire(
+    fn hsa_signal_xor_acquire(signal: SignalHandle, value: SignalValue);
+    //#[deprecated]
+    fn hsa_signal_xor_release(signal: SignalHandle, value: SignalValue);
+    fn hsa_signal_wait_scacquire(
         signal: SignalHandle,
         condition: SignalCondition,
         compare_value: SignalValue,
         timeout_hint: u64,
         wait_state_hint: WaitState,
     ) -> SignalValue;
-    pub fn hsa_signal_wait_relaxed(
+    fn hsa_signal_wait_relaxed(
         signal: SignalHandle,
         condition: SignalCondition,
         compare_value: SignalValue,
@@ -363,22 +391,22 @@ extern "C" {
         wait_state_hint: WaitState,
     ) -> SignalValue;
     //#[deprecated]
-    pub fn hsa_signal_wait_acquire(
+    fn hsa_signal_wait_acquire(
         signal: SignalHandle,
         condition: SignalCondition,
         compare_value: SignalValue,
         timeout_hint: u64,
         wait_state_hint: WaitState,
     ) -> SignalValue;
-    pub fn hsa_signal_group_create(
+    fn hsa_signal_group_create(
         num_signals: u32,
         signals: *const SignalHandle,
         num_consumers: u32,
         consumers: *const Agent,
         signal_group: &SignalGroupHandle,
     ) -> HSAStatus;
-    pub fn hsa_signal_group_destroy(signal_group: SignalGroupHandle) -> HSAStatus;
-    pub fn hsa_signal_group_wait_any_scacquire(
+    fn hsa_signal_group_destroy(signal_group: SignalGroupHandle) -> HSAStatus;
+    fn hsa_signal_group_wait_any_scacquire(
         signal_group: SignalGroupHandle,
         conditions: *const SignalCondition,
         compare_values: *const SignalValue,
@@ -386,7 +414,7 @@ extern "C" {
         signal: &SignalHandle,
         value: &SignalValue,
     ) -> HSAStatus;
-    pub fn hsa_signal_group_wait_any_relaxed(
+    fn hsa_signal_group_wait_any_relaxed(
         signal_group: SignalGroupHandle,
         conditions: *const SignalCondition,
         compare_values: *const SignalValue,
@@ -396,7 +424,7 @@ extern "C" {
     ) -> HSAStatus;
 
     // 2.5 Queues
-    pub fn hsa_queue_create(
+    fn hsa_queue_create(
         agent: Agent,
         size: u32,
         typ: QueueType,
@@ -406,7 +434,7 @@ extern "C" {
         group_segment_size: u32,
         queue: &*const QueueHandle,
     ) -> HSAStatus;
-    pub fn hsa_soft_queue_create(
+    fn hsa_soft_queue_create(
         region: Region,
         size: u32,
         typ: QueueType,
@@ -414,197 +442,193 @@ extern "C" {
         doorbell_signal: SignalHandle,
         queue: &*const QueueHandle,
     ) -> HSAStatus;
-    pub fn hsa_queue_destroy(queue: *const QueueHandle) -> HSAStatus;
-    pub fn hsa_queue_inactivate(queue: *const QueueHandle) -> HSAStatus;
-    pub fn hsa_queue_load_read_index_scacquire(queue: *const QueueHandle) -> u64;
-    pub fn hsa_queue_load_read_index_relaxed(queue: *const QueueHandle) -> u64;
+    fn hsa_queue_destroy(queue: *const QueueHandle) -> HSAStatus;
+    fn hsa_queue_inactivate(queue: *const QueueHandle) -> HSAStatus;
+    fn hsa_queue_load_read_index_scacquire(queue: *const QueueHandle) -> u64;
+    fn hsa_queue_load_read_index_relaxed(queue: *const QueueHandle) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_load_read_index_acquire(queue: *const QueueHandle) -> u64;
-    pub fn hsa_queue_load_write_index_scacquire(queue: *const QueueHandle) -> u64;
-    pub fn hsa_queue_load_write_index_relaxed(queue: *const QueueHandle) -> u64;
+    fn hsa_queue_load_read_index_acquire(queue: *const QueueHandle) -> u64;
+    fn hsa_queue_load_write_index_scacquire(queue: *const QueueHandle) -> u64;
+    fn hsa_queue_load_write_index_relaxed(queue: *const QueueHandle) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_load_write_index_acquire(queue: *const QueueHandle) -> u64;
-    pub fn hsa_queue_store_write_index_relaxed(queue: *const QueueHandle, value: u64);
-    pub fn hsa_queue_store_write_index_screlease(queue: *const QueueHandle, value: u64);
+    fn hsa_queue_load_write_index_acquire(queue: *const QueueHandle) -> u64;
+    fn hsa_queue_store_write_index_relaxed(queue: *const QueueHandle, value: u64);
+    fn hsa_queue_store_write_index_screlease(queue: *const QueueHandle, value: u64);
     //#[deprecated]
-    pub fn hsa_queue_store_write_index_release(queue: *const QueueHandle, value: u64);
-    pub fn hsa_queue_cas_write_index_scacq_screl(
+    fn hsa_queue_store_write_index_release(queue: *const QueueHandle, value: u64);
+    fn hsa_queue_cas_write_index_scacq_screl(
         queue: *const QueueHandle,
         expected: u64,
         value: u64,
     ) -> u64;
-    pub fn hsa_queue_cas_write_index_scacquire(
+    fn hsa_queue_cas_write_index_scacquire(
         queue: *const QueueHandle,
         expected: u64,
         value: u64,
     ) -> u64;
-    pub fn hsa_queue_cas_write_index_relaxed(
+    fn hsa_queue_cas_write_index_relaxed(
         queue: *const QueueHandle,
         expected: u64,
         value: u64,
     ) -> u64;
-    pub fn hsa_queue_cas_write_index_screlease(
-        queue: *const QueueHandle,
-        expected: u64,
-        value: u64,
-    ) -> u64;
-    //#[deprecated]
-    pub fn hsa_queue_cas_write_index_acq_rel(
+    fn hsa_queue_cas_write_index_screlease(
         queue: *const QueueHandle,
         expected: u64,
         value: u64,
     ) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_cas_write_index_acquire(
+    fn hsa_queue_cas_write_index_acq_rel(
         queue: *const QueueHandle,
         expected: u64,
         value: u64,
     ) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_cas_write_index_release(
+    fn hsa_queue_cas_write_index_acquire(
         queue: *const QueueHandle,
         expected: u64,
         value: u64,
     ) -> u64;
-    pub fn hsa_queue_add_write_index_scacq_screl(queue: *const QueueHandle, value: u64) -> u64;
-    pub fn hsa_queue_add_write_index_scacquire(queue: *const QueueHandle, value: u64) -> u64;
-    pub fn hsa_queue_add_write_index_relaxed(queue: *const QueueHandle, value: u64) -> u64;
-    pub fn hsa_queue_add_write_index_screlease(queue: *const QueueHandle, value: u64) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_add_write_index_acq_rel(queue: *const QueueHandle, value: u64) -> u64;
+    fn hsa_queue_cas_write_index_release(
+        queue: *const QueueHandle,
+        expected: u64,
+        value: u64,
+    ) -> u64;
+    fn hsa_queue_add_write_index_scacq_screl(queue: *const QueueHandle, value: u64) -> u64;
+    fn hsa_queue_add_write_index_scacquire(queue: *const QueueHandle, value: u64) -> u64;
+    fn hsa_queue_add_write_index_relaxed(queue: *const QueueHandle, value: u64) -> u64;
+    fn hsa_queue_add_write_index_screlease(queue: *const QueueHandle, value: u64) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_add_write_index_acquire(queue: *const QueueHandle, value: u64) -> u64;
+    fn hsa_queue_add_write_index_acq_rel(queue: *const QueueHandle, value: u64) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_add_write_index_release(queue: *const QueueHandle, value: u64) -> u64;
-    pub fn hsa_queue_store_read_index_relaxed(queue: *const QueueHandle, value: u64);
-    pub fn hsa_queue_store_read_index_screlease(queue: *const QueueHandle, value: u64);
+    fn hsa_queue_add_write_index_acquire(queue: *const QueueHandle, value: u64) -> u64;
     //#[deprecated]
-    pub fn hsa_queue_store_read_index_release(queue: *const QueueHandle, value: u64);
+    fn hsa_queue_add_write_index_release(queue: *const QueueHandle, value: u64) -> u64;
+    fn hsa_queue_store_read_index_relaxed(queue: *const QueueHandle, value: u64);
+    fn hsa_queue_store_read_index_screlease(queue: *const QueueHandle, value: u64);
+    //#[deprecated]
+    fn hsa_queue_store_read_index_release(queue: *const QueueHandle, value: u64);
 
     // 2.7 Memory
-    pub fn hsa_region_get_info(
-        region: Region,
-        attribute: RegionInfo,
-        value: *mut c_void,
-    ) -> HSAStatus;
-    pub fn hsa_agent_iterate_regions(
+    fn hsa_region_get_info(region: Region, attribute: RegionInfo, value: *mut c_void) -> HSAStatus;
+    fn hsa_agent_iterate_regions(
         agent: Agent,
         callback: extern "C" fn(Region, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_memory_allocate(region: Region, size: usize, ptr: &*mut c_void) -> HSAStatus;
-    pub fn hsa_memory_free(ptr: *mut c_void) -> HSAStatus;
-    pub fn hsa_memory_copy(dst: *mut c_void, src: *const c_void, size: usize) -> HSAStatus;
-    pub fn hsa_memory_assign_agent(
+    fn hsa_memory_allocate(region: Region, size: usize, ptr: &*mut c_void) -> HSAStatus;
+    fn hsa_memory_free(ptr: *mut c_void) -> HSAStatus;
+    fn hsa_memory_copy(dst: *mut c_void, src: *const c_void, size: usize) -> HSAStatus;
+    fn hsa_memory_assign_agent(
         ptr: *mut c_void,
         agent: Agent,
         access: AccessPermission,
     ) -> HSAStatus;
-    pub fn hsa_memory_register(ptr: *mut c_void, size: usize) -> HSAStatus;
-    pub fn hsa_memory_deregister(ptr: *mut c_void, size: usize) -> HSAStatus;
+    fn hsa_memory_register(ptr: *mut c_void, size: usize) -> HSAStatus;
+    fn hsa_memory_deregister(ptr: *mut c_void, size: usize) -> HSAStatus;
 
     // 2.8 Code object loading
-    pub fn hsa_isa_from_name(name: *const c_char, isa: &ISA) -> HSAStatus;
-    pub fn hsa_agent_iterate_isas(
+    fn hsa_isa_from_name(name: *const c_char, isa: &ISA) -> HSAStatus;
+    fn hsa_agent_iterate_isas(
         agent: Agent,
         callback: extern "C" fn(ISA, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
     /*#[deprecated]
-    pub fn hsa_isa_get_info(
+    fn hsa_isa_get_info(
         isa: ISA,
         attribute: ISAInfo,
         index: u32,
         value: *mut c_void,
     ) -> HSAStatus;*/
-    pub fn hsa_isa_get_info_alt(isa: ISA, attribute: ISAInfo, value: *mut c_void) -> HSAStatus;
-    pub fn hsa_isa_get_exception_policies(isa: ISA, profile: Profile, mask: &mut u16) -> HSAStatus;
-    pub fn hsa_isa_get_round_method(
+    fn hsa_isa_get_info_alt(isa: ISA, attribute: ISAInfo, value: *mut c_void) -> HSAStatus;
+    fn hsa_isa_get_exception_policies(isa: ISA, profile: Profile, mask: &mut u16) -> HSAStatus;
+    fn hsa_isa_get_round_method(
         isa: ISA,
         fp_type: FpType,
         flush_mode: FlushMode,
         round_method: &RoundMethod,
     ) -> HSAStatus;
-    pub fn hsa_wavefront_get_info(
+    fn hsa_wavefront_get_info(
         wavefront: Wavefront,
         attribute: WavefrontInfo,
         value: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_isa_iterate_wavefronts(
+    fn hsa_isa_iterate_wavefronts(
         isa: ISA,
         callback: extern "C" fn(Wavefront, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
     /*#[deprecated]
-    pub fn hsa_isa_compatible(code_object_isa: ISA, agent_isa: ISA, result: &bool) -> HSAStatus;*/
-    /*pub fn hsa_code_object_reader_create_from_file(
+    fn hsa_isa_compatible(code_object_isa: ISA, agent_isa: ISA, result: &bool) -> HSAStatus;*/
+    /*fn hsa_code_object_reader_create_from_file(
         file: HSAFile,
         code_object_reader: &CodeObjectReader,
     ) -> HSAStatus;
-    pub fn hsa_code_object_reader_create_from_memory(
+    fn hsa_code_object_reader_create_from_memory(
         code_object: *const c_void,
         size: usize,
         code_object_reader: &CodeObjectReader,
     ) -> HSAStatus;
-    pub fn hsa_code_object_reader_destroy(code_object_reader: CodeObjectReader) -> HSAStatus;
+    fn hsa_code_object_reader_destroy(code_object_reader: CodeObjectReader) -> HSAStatus;
     #[deprecated]
-    pub fn hsa_executable_create(
+    fn hsa_executable_create(
         profile: Profile,
         executable_state: ExecutableState,
         options: *const c_char,
         executable: &Executable,
     ) -> HSAStatus;*/
-    pub fn hsa_executable_create_alt(
+    fn hsa_executable_create_alt(
         profile: Profile,
         default_float_rouding_mode: DefaultFloatRoundingMode,
         options: *const c_char,
         executable: &Executable,
     ) -> HSAStatus;
-    pub fn hsa_executable_destroy(executable: Executable) -> HSAStatus;
-    /*pub fn hsa_executable_load_program_code_object(
+    fn hsa_executable_destroy(executable: Executable) -> HSAStatus;
+    /*fn hsa_executable_load_program_code_object(
         executable: Executable,
         code_object_reader: CodeObjectReader,
         options: *const c_char,
         loaded_code_object: &LoadedCodeObject,
     ) -> HSAStatus;
-    pub fn hsa_executable_load_agent_code_object(
+    fn hsa_executable_load_agent_code_object(
         executable: Executable,
         agent: Agent,
         code_object_reader: CodeObjectReader,
         options: *const c_void,
         loaded_code_object: &LoadedCodeObject,
     ) -> HSAStatus;*/
-    pub fn hsa_executable_freeze(executable: Executable, options: *const c_char) -> HSAStatus;
-    pub fn hsa_executable_get_info(
+    fn hsa_executable_freeze(executable: Executable, options: *const c_char) -> HSAStatus;
+    fn hsa_executable_get_info(
         executable: Executable,
         attribute: ExecutableInfo,
         value: *mut c_void,
     ) -> HSAStatus;
-    /*pub fn hsa_executable_global_variable_define(
+    /*fn hsa_executable_global_variable_define(
         executable: Executable,
         variable_name: *const c_char,
         address: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_executable_agent_global_variable_define(
-        executable: Executable,
-        agent: Agent,
-        variable_name: *const c_char,
-        address: *mut c_void,
-    ) -> HSAStatus;
-    pub fn hsa_executable_readonly_variable_define(
+    fn hsa_executable_agent_global_variable_define(
         executable: Executable,
         agent: Agent,
         variable_name: *const c_char,
         address: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_executable_validate(executable: Executable, result: *mut u32) -> HSAStatus;
-    pub fn hsa_executable_validate_alt(
+    fn hsa_executable_readonly_variable_define(
+        executable: Executable,
+        agent: Agent,
+        variable_name: *const c_char,
+        address: *mut c_void,
+    ) -> HSAStatus;
+    fn hsa_executable_validate(executable: Executable, result: *mut u32) -> HSAStatus;
+    fn hsa_executable_validate_alt(
         executable: Executable,
         options: *const c_char,
         result: *mut u32,
     ) -> HSAStatus;*/
     //#[deprecated]
-    pub fn hsa_executable_get_symbol(
+    fn hsa_executable_get_symbol(
         executable: Executable,
         module_name: *const c_char,
         symbol_name: *const c_char,
@@ -613,42 +637,42 @@ extern "C" {
         symbol: &ExecutableSymbol,
     ) -> HSAStatus;
     /*#[deprecated]
-    pub fn hsa_executable_get_symbol_by_name(
+    fn hsa_executable_get_symbol_by_name(
         executable: Executable,
         symbol_name: *const c_char,
         agent: &Agent,
         symbol: &ExecutableSymbol,
     ) -> HSAStatus;
-    pub fn hsa_executable_get_symbol_by_linker_name(
+    fn hsa_executable_get_symbol_by_linker_name(
         executable: Executable,
         linker_name: *const c_void,
         agent: &Agent,
         symbol: &ExecutableSymbol,
     ) -> HSAStatus;*/
-    pub fn hsa_executable_symbol_get_info(
+    fn hsa_executable_symbol_get_info(
         executable_symbol: ExecutableSymbol,
         attribute: ExecutableSymbolInfo,
         value: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_executable_iterate_agent_symbols(
+    fn hsa_executable_iterate_agent_symbols(
         executable: Executable,
         agent: Agent,
         callback: extern "C" fn(Executable, Agent, ExecutableSymbol, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_executable_iterate_program_symbols(
+    fn hsa_executable_iterate_program_symbols(
         executable: Executable,
         callback: extern "C" fn(Executable, ExecutableSymbol, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_executable_iterate_symbols(
+    fn hsa_executable_iterate_symbols(
         executable: Executable,
         callback: extern "C" fn(Executable, ExecutableSymbol, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
     /*#[deprecated]
-    pub fn hsa_code_object_serialize(
+    fn hsa_code_object_serialize(
         code_object_reader: CodeObject,
         alloc_callback: extern "C" fn(size: usize, data: CallbackData, address: *mut *mut c_void)
                                       -> HSAStatus,
@@ -658,110 +682,110 @@ extern "C" {
         serialized_code_object_size: *mut usize,
     ) -> HSAStatus;
     #[deprecated]
-    pub fn hsa_code_object_deserialize(
+    fn hsa_code_object_deserialize(
         serialized_code_object: *mut c_void,
         serialized_code_object_size: usize,
         options: *const c_char,
         code_object: CodeObject,
     ) -> HSAStatus;*/
     //#[deprecated]
-    pub fn hsa_code_object_destroy(code_object: CodeObject) -> HSAStatus;
+    fn hsa_code_object_destroy(code_object: CodeObject) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_code_object_get_info(
+    fn hsa_code_object_get_info(
         code_object: CodeObject,
         attribute: CodeObjectInfo,
         value: *mut c_void,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_executable_load_code_object(
+    fn hsa_executable_load_code_object(
         executable: Executable,
         agent: Agent,
         code_object: CodeObject,
         options: *const c_char,
     ) -> HSAStatus;
     //#[deprecated]
-    /*pub fn hsa_code_object_get_symbol(
+    /*fn hsa_code_object_get_symbol(
         code_object: CodeObject,
         symbol_name: *const c_char,
         symbol: &CodeSymbol,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_code_object_get_symbol_from_name(
+    fn hsa_code_object_get_symbol_from_name(
         code_object: CodeObject,
         module_name: *const c_char,
         symbol_name: *const c_char,
         symbol: &CodeSymbol,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_code_symbol_get_info(
+    fn hsa_code_symbol_get_info(
         code_symbol: CodeSymbol,
         attribute: CodeSymbolInfo,
         value: *mut c_void,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_code_object_iterate_symbols(
+    fn hsa_code_object_iterate_symbols(
         code_object: CodeObject,
         callback: extern "C" fn(CodeObject, CodeSymbol, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;*/
 
     // 3.2 HSAIL finalization (Extension)
-    /*pub fn hsa_ext_finalizer_iterate_isa(
+    /*fn hsa_ext_finalizer_iterate_isa(
         callback: extern "C" fn(ISA, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_ext_isa_from_name(name: *const c_char, isa: &mut ISA) -> HSAStatus;
+    fn hsa_ext_isa_from_name(name: *const c_char, isa: &mut ISA) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_ext_isa_get_info(
+    fn hsa_ext_isa_get_info(
         isa: ISA,
         attribute: ISAInfo,
         index: u32,
         value: *mut c_void,
     ) -> HSAStatus;
-    pub fn hsa_ext_code_object_writer_create_from_file(
+    fn hsa_ext_code_object_writer_create_from_file(
         file: HSAFile,
         code_object_writer: &ExtCodeObjectWriterHandle,
     ) -> HSAStatus;*/
-    pub fn hsa_ext_code_object_writer_create_from_memory(
+    fn hsa_ext_code_object_writer_create_from_memory(
         memory_allocate: extern "C" fn(usize, usize, *mut *mut c_void, *mut c_void) -> HSAStatus,
         data: *mut c_void,
         code_object_writer: &ExtCodeObjectWriterHandle,
     ) -> HSAStatus;
-    pub fn hsa_ext_code_object_writer_destroy(
+    fn hsa_ext_code_object_writer_destroy(
         code_object_writer: ExtCodeObjectWriterHandle,
     ) -> HSAStatus;
-    pub fn hsa_ext_program_create(
+    fn hsa_ext_program_create(
         machine_model: MachineModel,
         profile: Profile,
         default_float_rouding_mode: DefaultFloatRoundingMode,
         options: *const c_char,
         program: &ExtProgramHandle,
     ) -> HSAStatus;
-    pub fn hsa_ext_program_destroy(program: ExtProgramHandle) -> HSAStatus;
-    pub fn hsa_ext_program_add_module(program: ExtProgramHandle, module: ExtModule) -> HSAStatus;
-    /*pub fn hsa_ext_program_iterate_modules(
+    fn hsa_ext_program_destroy(program: ExtProgramHandle) -> HSAStatus;
+    fn hsa_ext_program_add_module(program: ExtProgramHandle, module: ExtModule) -> HSAStatus;
+    /*fn hsa_ext_program_iterate_modules(
         program: ExtProgramHandle,
         callback: extern "C" fn(ExtProgramHandle, ExtModule, *mut c_void) -> HSAStatus,
         data: *mut c_void,
     ) -> HSAStatus;*/
-    pub fn hsa_ext_program_get_info(
+    fn hsa_ext_program_get_info(
         program: ExtProgramHandle,
         attribute: ExtProgramInfo,
         value: *mut c_void,
     ) -> HSAStatus;
-    /*pub fn hsa_ext_program_code_object_finalize(
+    /*fn hsa_ext_program_code_object_finalize(
         program: ExtProgramHandle,
         options: *const c_char,
         code_object_writer: &ExtCodeObjectWriterHandle,
     ) -> HSAStatus;*/
-    pub fn hsa_ext_agent_code_object_finalize(
+    fn hsa_ext_agent_code_object_finalize(
         program: ExtProgramHandle,
         isa: ISA,
         options: *const c_char,
         code_object_writer: &ExtCodeObjectWriterHandle,
     ) -> HSAStatus;
     //#[deprecated]
-    pub fn hsa_ext_program_finalize(
+    fn hsa_ext_program_finalize(
         program: ExtProgramHandle,
         isa: ISA,
         call_convention: i32,
@@ -776,28 +800,28 @@ extern "C" {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum Endianness {
+enum Endianness {
     Little = 0,
     Big = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 #[repr(C)]
-pub enum MachineModel {
+enum MachineModel {
     Small = 0,
     Large = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 #[repr(C)]
-pub enum Profile {
+enum Profile {
     Base = 0,
     Full = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum SystemInfo {
+enum SystemInfo {
     VersionMajor = 0,
     VersionMinor = 1,
     Timestamp = 2,
@@ -810,7 +834,7 @@ pub enum SystemInfo {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(u16)]
-pub enum Extension {
+enum Extension {
     Finalizer = 0,
     Images = 1,
     PerformanceCounters = 2,
@@ -819,20 +843,53 @@ pub enum Extension {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct Agent {
+struct Agent {
     handle: u64,
+}
+
+impl Agent {
+    fn get_vec<T>(&mut self, func: unsafe extern "C" fn(Agent, extern "C" fn(T, *mut c_void) -> HSAStatus, *mut c_void) -> HSAStatus) -> Result<Vec<T>, HSAError> {
+        extern "C" fn callback<T>(data: T, vec: *mut c_void) -> HSAStatus {
+            unsafe { (*(vec as *mut Vec<T>)).push(data) };
+            return HSAStatus::HSA_STATUS_SUCCESS;
+        }
+        let mut vec: Vec<T> = Vec::new();
+        check(
+            unsafe {
+                func(*self, callback::<T>, &mut vec as *mut _ as *mut c_void)
+            },
+            "hsa_agent_get_vec",
+        )?;
+        return Ok(vec);
+    }
+
+    fn get_info<T: Default>(&mut self, attribute: AgentInfo) -> Result<T, HSAError> {
+        let mut info = T::default();
+        check(
+            unsafe {
+                hsa_agent_get_info(
+                    *self,
+                    attribute,
+                    &mut info as *mut _ as *mut c_void,
+                )
+            },
+            "hsa_agent_get_info",
+        )?;
+        return Ok(info);
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum AgentFeature {
+enum AgentFeature {
     KernelDispatch = 1,
     AgentDispatch = 2,
 }
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug, Default)]
 #[repr(C)]
-pub enum DeviceType {
+enum DeviceType {
+    #[default]
     CPU = 0,
     GPU = 1,
     DSP = 2,
@@ -840,7 +897,7 @@ pub enum DeviceType {
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 #[repr(C)]
-pub enum DefaultFloatRoundingMode {
+enum DefaultFloatRoundingMode {
     Default = 0,
     Zero = 1,
     Near = 2,
@@ -848,7 +905,7 @@ pub enum DefaultFloatRoundingMode {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum AgentInfo {
+enum AgentInfo {
     Name = 0,
     VendorName = 1,
     Feature = 2,
@@ -878,20 +935,20 @@ pub enum AgentInfo {
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 #[repr(C)]
-pub enum ExceptionPolicy {
+enum ExceptionPolicy {
     Break = 1,
     Detect = 2,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct Cache {
+struct Cache {
     handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum CacheInfo {
+enum CacheInfo {
     // NameLength = 0, // not unsed
     Name = 1,
     Level = 2,
@@ -901,20 +958,20 @@ pub enum CacheInfo {
 // 2.4 Signals
 
 #[cfg(target_pointer_width = "32")]
-pub type SignalValue = i32;
+type SignalValue = i32;
 
 #[cfg(target_pointer_width = "64")]
-pub type SignalValue = i64;
+type SignalValue = i64;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct SignalHandle {
-    pub handle: u64,
+struct SignalHandle {
+    handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum SignalCondition {
+enum SignalCondition {
     Eq = 0,
     Ne = 1,
     Lt = 2,
@@ -923,40 +980,40 @@ pub enum SignalCondition {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum WaitState {
+enum WaitState {
     Blocked = 0,
     Active = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct SignalGroupHandle {
-    pub handle: u64,
+struct SignalGroupHandle {
+    handle: u64,
 }
 
 // 2.5 Queues
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum QueueType {
+enum QueueType {
     Multi = 0,
     Single = 1,
 }
 
-pub type QueueType32 = u32;
+type QueueType32 = u32;
 
 #[derive(Clone, Debug)]
 #[repr(C)]
-pub struct QueueHandle {
+struct QueueHandle {
     typ: QueueType32,
     features: QueueFeature,
-    pub base_address: *const c_void,
+    base_address: *const c_void,
 
     #[cfg(target_pointer_width = "32")]
     reserved0: u32,
 
-    pub doorbell_signal: SignalHandle,
-    pub size: u32,
+    doorbell_signal: SignalHandle,
+    size: u32,
     reserved1: u32,
     id: u64,
 }
@@ -964,7 +1021,7 @@ pub struct QueueHandle {
 #[allow(dead_code)]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(u32)]
-pub enum QueueFeature {
+enum QueueFeature {
     KernelDispatch = 1,
     AgentDispatch = 2,
 }
@@ -973,7 +1030,7 @@ pub enum QueueFeature {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum PacketType {
+enum PacketType {
     VendorSpecific = 0,
     Invalid = 1,
     KernelDispatch = 2,
@@ -984,7 +1041,7 @@ pub enum PacketType {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum FenceScope {
+enum FenceScope {
     None = 0,
     Agent = 1,
     System = 2,
@@ -992,7 +1049,7 @@ pub enum FenceScope {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum PacketHeader {
+enum PacketHeader {
     Type = 0,
     Barrier = 8,
     ScacquireFenceScope = 9,
@@ -1000,14 +1057,14 @@ pub enum PacketHeader {
 }
 #[allow(non_upper_case_globals)]
 impl PacketHeader {
-    pub const AcquireFenceScope: PacketHeader = PacketHeader::ScacquireFenceScope;
-    pub const ReleaseFenceScope: PacketHeader = PacketHeader::ScreleaseFenceScope;
+    const AcquireFenceScope: PacketHeader = PacketHeader::ScacquireFenceScope;
+    const ReleaseFenceScope: PacketHeader = PacketHeader::ScreleaseFenceScope;
 }
 
 /*
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum PacketHeaderWidth {
+enum PacketHeaderWidth {
     Type = 8,
     Barrier = 1,
     ScacquireFenceScope = 2,
@@ -1015,51 +1072,51 @@ pub enum PacketHeaderWidth {
 
 #[allow(non_upper_case_globals)]
 impl PacketHeaderWidth {
-    pub const AcquireFenceScope: PacketHeaderWidth = PacketHeaderWidth::ScacquireFenceScope;
-    pub const ScreleaseFenceScope: PacketHeaderWidth = PacketHeaderWidth::ScacquireFenceScope;
-    pub const ReleaseFenceScope: PacketHeaderWidth = PacketHeaderWidth::ScacquireFenceScope;
+    const AcquireFenceScope: PacketHeaderWidth = PacketHeaderWidth::ScacquireFenceScope;
+    const ScreleaseFenceScope: PacketHeaderWidth = PacketHeaderWidth::ScacquireFenceScope;
+    const ReleaseFenceScope: PacketHeaderWidth = PacketHeaderWidth::ScacquireFenceScope;
 }
 */
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum KernelDispatchPacketSetup {
+enum KernelDispatchPacketSetup {
     Dimensions = 0,
 }
 
 /*
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum KernelDispatchPacketSetupWidth {
+enum KernelDispatchPacketSetupWidth {
     Dimensions = 0,
 }
 */
 
 #[derive(Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct KernelDispatchPacket {
-    pub header: u16,
-    pub setup: u16,
-    pub workgroup_size_x: u16,
-    pub workgroup_size_y: u16,
-    pub workgroup_size_z: u16,
+struct KernelDispatchPacket {
+    header: u16,
+    setup: u16,
+    workgroup_size_x: u16,
+    workgroup_size_y: u16,
+    workgroup_size_z: u16,
     reserved0: u16,
-    pub grid_size_x: u32,
-    pub grid_size_y: u32,
-    pub grid_size_z: u32,
-    pub private_segment_size: u32,
-    pub group_segment_size: u32,
-    pub kernel_object: u64,
-    pub kernarg_address: *const c_void,
+    grid_size_x: u32,
+    grid_size_y: u32,
+    grid_size_z: u32,
+    private_segment_size: u32,
+    group_segment_size: u32,
+    kernel_object: u64,
+    kernarg_address: *const c_void,
     #[cfg(target_pointer_width = "32")]
     reserved1: u32,
     reserved2: u64,
-    pub completion_signal: SignalHandle,
+    completion_signal: SignalHandle,
 }
 
 #[derive(Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct AgentDispatchPacket {
+struct AgentDispatchPacket {
     header: u16,
     typ: u16,
     reserved0: u32,
@@ -1073,7 +1130,7 @@ pub struct AgentDispatchPacket {
 
 #[derive(Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct BarrierAndPacket {
+struct BarrierAndPacket {
     header: u16,
     reserved0: u16,
     reserved1: u32,
@@ -1084,7 +1141,7 @@ pub struct BarrierAndPacket {
 
 #[derive(Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct BarrierOrPacket {
+struct BarrierOrPacket {
     header: u16,
     reserved0: u16,
     reserved1: u32,
@@ -1096,23 +1153,36 @@ pub struct BarrierOrPacket {
 // 2.7 Memory
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct Region {
-    pub handle: u64,
+struct Region {
+    handle: u64,
 }
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+impl Region {
+    fn get_info<T: Default>(&self, info: RegionInfo) -> Result<T, HSAError> {
+        let mut value: T = T::default();
+        check(
+            unsafe { hsa_region_get_info(*self, info, &mut value as *mut _ as *mut c_void) },
+            "hsa_region_get_info",
+        )?;
+        return Ok(value);
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Debug, Default)]
 #[repr(C)]
-pub enum RegionSegment {
+enum RegionSegment {
     Global = 0,
     ReadOnly = 1,
+    #[default]
     Private = 2,
     Group = 3,
     KernArg = 4,
 }
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Default)]
 #[repr(C)]
-pub enum RegionGlobalFlag {
+enum RegionGlobalFlag {
+    #[default]
     KernArg = 1,
     FineGrained = 2,
     CoarseGrained = 4,
@@ -1120,7 +1190,7 @@ pub enum RegionGlobalFlag {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum RegionInfo {
+enum RegionInfo {
     Segment = 0,
     GlobalFlags = 1,
     Size = 2,
@@ -1135,13 +1205,13 @@ pub enum RegionInfo {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct ISA {
+struct ISA {
     handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum ISAInfo {
+enum ISAInfo {
     NameLength = 0,
     Name = 1,
     CallConvertionCount = 2,
@@ -1161,7 +1231,7 @@ pub enum ISAInfo {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum FpType {
+enum FpType {
     Fp16 = 1,
     Fp32 = 2,
     Fp64 = 4,
@@ -1169,58 +1239,58 @@ pub enum FpType {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum FlushMode {
+enum FlushMode {
     Ftz = 1,
     NonFtz = 2,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum RoundMethod {
+enum RoundMethod {
     Single = 1,
     Double = 2,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct Wavefront {
+struct Wavefront {
     handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum WavefrontInfo {
+enum WavefrontInfo {
     Size = 0,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct CodeObjectReader {
+struct CodeObjectReader {
     handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct Executable {
-    pub handle: u64,
+struct Executable {
+    handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum ExecutableState {
+enum ExecutableState {
     Unfrozen = 0,
     Frozen = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct LoadedCodeObject {
+struct LoadedCodeObject {
     handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum ExecutableInfo {
+enum ExecutableInfo {
     Profile = 1,
     State = 2,
     DefaultFloatRoundingMode = 3,
@@ -1228,13 +1298,13 @@ pub enum ExecutableInfo {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct ExecutableSymbol {
+struct ExecutableSymbol {
     handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum SymbolKind {
+enum SymbolKind {
     Variable = 0,
     Kernel = 1,
     IndirectFunction = 2,
@@ -1243,28 +1313,28 @@ pub enum SymbolKind {
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum SymbolKindLinkage {
+enum SymbolKindLinkage {
     Module = 0,
     Program = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum VariableAllocation {
+enum VariableAllocation {
     Agent = 0,
     Program = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum VariableSegment {
+enum VariableSegment {
     Global = 0,
     ReadOnly = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum ExecutableSymbolInfo {
+enum ExecutableSymbolInfo {
     Type = 0,
     NameLength = 1,
     Name = 2,
@@ -1295,28 +1365,28 @@ pub enum ExecutableSymbolInfo {
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct CodeObject {
+struct CodeObject {
     handle: u64,
 }
 
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct CallbackData {
+struct CallbackData {
     handle: u64,
 }
 
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum CodeObjectType {
+enum CodeObjectType {
     Program = 0,
 }
 
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum CodeObjectInfo {
+enum CodeObjectInfo {
     Version = 0,
     Type = 1,
     ISA = 2,
@@ -1328,7 +1398,7 @@ pub enum CodeObjectInfo {
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct CodeSymbol {
+struct CodeSymbol {
     handle: u64,
 }
 
@@ -1336,7 +1406,7 @@ pub struct CodeSymbol {
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum CodeSymbolInfo {
+enum CodeSymbolInfo {
     Type = 0,
     NameLength = 1,
     Name = 2,
@@ -1363,7 +1433,7 @@ pub enum CodeSymbolInfo {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct Dim3 {
+struct Dim3 {
     x: u32,
     y: u32,
     z: u32,
@@ -1371,33 +1441,33 @@ pub struct Dim3 {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum AccessPermission {
+enum AccessPermission {
     RO = 1,
     WO = 2,
     RW = 3,
 }
 
-//pub type HSAFile = c_int;
+//type HSAFile = c_int;
 
 // 3.2 HSAIL finalization (Extension)
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct ExtCodeObjectWriterHandle {
-    pub handle: u64,
+struct ExtCodeObjectWriterHandle {
+    handle: u64,
 }
 
-pub type ExtModule = *const c_void; //BrigModule
+type ExtModule = *const c_void; //BrigModule
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub struct ExtProgramHandle {
-    pub handle: u64,
+struct ExtProgramHandle {
+    handle: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum ExtProgramInfo {
+enum ExtProgramInfo {
     MachineModel = 0,
     Profile = 1,
     DefaultFloatRoundingMode = 2,
@@ -1407,14 +1477,14 @@ pub enum ExtProgramInfo {
 #[deprecated]
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
-pub enum ExtFinalizerCallConvention {
+enum ExtFinalizerCallConvention {
     Auto = -1,
 }
 */
 
 #[deprecated]
 #[repr(C)]
-pub struct ExtControlDirectives {
+struct ExtControlDirectives {
     control_directives_mask: u64,
     break_exceptions_mask: u16,
     detect_exceptions_mask: u16,
@@ -1429,14 +1499,15 @@ pub struct ExtControlDirectives {
 }
 
 #[repr(C)]
-pub struct ExtFinalizer1 {
-    pub create: fn(MachineModel,
-                   Profile,
-                   DefaultFloatRoundingMode,
-                   *const c_char,
-                   &ExtProgramHandle)
-                   -> HSAStatus,
-    pub destroy: fn(ExtProgramHandle) -> HSAStatus,
+struct ExtFinalizer1 {
+    create: fn(
+        MachineModel,
+        Profile,
+        DefaultFloatRoundingMode,
+        *const c_char,
+        &ExtProgramHandle,
+    ) -> HSAStatus,
+    destroy: fn(ExtProgramHandle) -> HSAStatus,
     _0: fn() -> HSAStatus,
     _1: fn() -> HSAStatus,
     _2: fn() -> HSAStatus,
@@ -1452,149 +1523,149 @@ pub struct ExtFinalizer1 {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(C)]
 enum HSAStatus {
-  /**
-   * The function has been executed successfully.
-   */
-  HSA_STATUS_SUCCESS = 0x0,
-  /**
-   * A traversal over a list of elements has been interrupted by the
-   * application before completing.
-   */
-  HSA_STATUS_INFO_BREAK = 0x1,
-  /**
-   * A generic error has occurred.
-   */
-  HSA_STATUS_ERROR = 0x1000,
-  /**
-   * One of the actual arguments does not meet a precondition stated in the
-   * documentation of the corresponding formal argument.
-   */
-  HSA_STATUS_ERROR_INVALID_ARGUMENT = 0x1001,
-  /**
-   * The requested queue creation is not valid.
-   */
-  HSA_STATUS_ERROR_INVALID_QUEUE_CREATION = 0x1002,
-  /**
-   * The requested allocation is not valid.
-   */
-  HSA_STATUS_ERROR_INVALID_ALLOCATION = 0x1003,
-  /**
-   * The agent is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_AGENT = 0x1004,
-  /**
-   * The memory region is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_REGION = 0x1005,
-  /**
-   * The signal is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_SIGNAL = 0x1006,
-  /**
-   * The queue is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_QUEUE = 0x1007,
-  /**
-   * The HSA runtime failed to allocate the necessary resources. This error
-   * may also occur when the HSA runtime needs to spawn threads or create
-   * internal OS-specific events.
-   */
-  HSA_STATUS_ERROR_OUT_OF_RESOURCES = 0x1008,
-  /**
-   * The AQL packet is malformed.
-   */
-  HSA_STATUS_ERROR_INVALID_PACKET_FORMAT = 0x1009,
-  /**
-   * An error has been detected while releasing a resource.
-   */
-  HSA_STATUS_ERROR_RESOURCE_FREE = 0x100A,
-  /**
-   * An API other than ::hsa_init has been invoked while the reference count
-   * of the HSA runtime is 0.
-   */
-  HSA_STATUS_ERROR_NOT_INITIALIZED = 0x100B,
-  /**
-   * The maximum reference count for the object has been reached.
-   */
-  HSA_STATUS_ERROR_REFCOUNT_OVERFLOW = 0x100C,
-  /**
-   * The arguments passed to a functions are not compatible.
-   */
-  HSA_STATUS_ERROR_INCOMPATIBLE_ARGUMENTS = 0x100D,
-  /**
-   * The index is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_INDEX = 0x100E,
-  /**
-   * The instruction set architecture is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_ISA = 0x100F,
-  /**
-   * The instruction set architecture name is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_ISA_NAME = 0x1017,
-  /**
-   * The code object is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_CODE_OBJECT = 0x1010,
-  /**
-   * The executable is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_EXECUTABLE = 0x1011,
-  /**
-   * The executable is frozen.
-   */
-  HSA_STATUS_ERROR_FROZEN_EXECUTABLE = 0x1012,
-  /**
-   * There is no symbol with the given name.
-   */
-  HSA_STATUS_ERROR_INVALID_SYMBOL_NAME = 0x1013,
-  /**
-   * The variable is already defined.
-   */
-  HSA_STATUS_ERROR_VARIABLE_ALREADY_DEFINED = 0x1014,
-  /**
-   * The variable is undefined.
-   */
-  HSA_STATUS_ERROR_VARIABLE_UNDEFINED = 0x1015,
-  /**
-   * An HSAIL operation resulted in a hardware exception.
-   */
-  HSA_STATUS_ERROR_EXCEPTION = 0x1016,
-  /**
-   * The code object symbol is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_CODE_SYMBOL = 0x1018,
-  /**
-   * The executable symbol is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_EXECUTABLE_SYMBOL = 0x1019,
-  /**
-   * The file descriptor is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_FILE = 0x1020,
-  /**
-   * The code object reader is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_CODE_OBJECT_READER = 0x1021,
-  /**
-   * The cache is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_CACHE = 0x1022,
-  /**
-   * The wavefront is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_WAVEFRONT = 0x1023,
-  /**
-   * The signal group is invalid.
-   */
-  HSA_STATUS_ERROR_INVALID_SIGNAL_GROUP = 0x1024,
-  /**
-   * The HSA runtime is not in the configuration state.
-   */
-  HSA_STATUS_ERROR_INVALID_RUNTIME_STATE = 0x1025,
-  /**
-  * The queue received an error that may require process termination.
-  */
-  HSA_STATUS_ERROR_FATAL = 0x1026
+    /**
+     * The function has been executed successfully.
+     */
+    HSA_STATUS_SUCCESS = 0x0,
+    /**
+     * A traversal over a list of elements has been interrupted by the
+     * application before completing.
+     */
+    HSA_STATUS_INFO_BREAK = 0x1,
+    /**
+     * A generic error has occurred.
+     */
+    HSA_STATUS_ERROR = 0x1000,
+    /**
+     * One of the actual arguments does not meet a precondition stated in the
+     * documentation of the corresponding formal argument.
+     */
+    HSA_STATUS_ERROR_INVALID_ARGUMENT = 0x1001,
+    /**
+     * The requested queue creation is not valid.
+     */
+    HSA_STATUS_ERROR_INVALID_QUEUE_CREATION = 0x1002,
+    /**
+     * The requested allocation is not valid.
+     */
+    HSA_STATUS_ERROR_INVALID_ALLOCATION = 0x1003,
+    /**
+     * The agent is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_AGENT = 0x1004,
+    /**
+     * The memory region is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_REGION = 0x1005,
+    /**
+     * The signal is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_SIGNAL = 0x1006,
+    /**
+     * The queue is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_QUEUE = 0x1007,
+    /**
+     * The HSA runtime failed to allocate the necessary resources. This error
+     * may also occur when the HSA runtime needs to spawn threads or create
+     * internal OS-specific events.
+     */
+    HSA_STATUS_ERROR_OUT_OF_RESOURCES = 0x1008,
+    /**
+     * The AQL packet is malformed.
+     */
+    HSA_STATUS_ERROR_INVALID_PACKET_FORMAT = 0x1009,
+    /**
+     * An error has been detected while releasing a resource.
+     */
+    HSA_STATUS_ERROR_RESOURCE_FREE = 0x100A,
+    /**
+     * An API other than ::hsa_init has been invoked while the reference count
+     * of the HSA runtime is 0.
+     */
+    HSA_STATUS_ERROR_NOT_INITIALIZED = 0x100B,
+    /**
+     * The maximum reference count for the object has been reached.
+     */
+    HSA_STATUS_ERROR_REFCOUNT_OVERFLOW = 0x100C,
+    /**
+     * The arguments passed to a functions are not compatible.
+     */
+    HSA_STATUS_ERROR_INCOMPATIBLE_ARGUMENTS = 0x100D,
+    /**
+     * The index is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_INDEX = 0x100E,
+    /**
+     * The instruction set architecture is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_ISA = 0x100F,
+    /**
+     * The instruction set architecture name is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_ISA_NAME = 0x1017,
+    /**
+     * The code object is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_CODE_OBJECT = 0x1010,
+    /**
+     * The executable is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_EXECUTABLE = 0x1011,
+    /**
+     * The executable is frozen.
+     */
+    HSA_STATUS_ERROR_FROZEN_EXECUTABLE = 0x1012,
+    /**
+     * There is no symbol with the given name.
+     */
+    HSA_STATUS_ERROR_INVALID_SYMBOL_NAME = 0x1013,
+    /**
+     * The variable is already defined.
+     */
+    HSA_STATUS_ERROR_VARIABLE_ALREADY_DEFINED = 0x1014,
+    /**
+     * The variable is undefined.
+     */
+    HSA_STATUS_ERROR_VARIABLE_UNDEFINED = 0x1015,
+    /**
+     * An HSAIL operation resulted in a hardware exception.
+     */
+    HSA_STATUS_ERROR_EXCEPTION = 0x1016,
+    /**
+     * The code object symbol is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_CODE_SYMBOL = 0x1018,
+    /**
+     * The executable symbol is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_EXECUTABLE_SYMBOL = 0x1019,
+    /**
+     * The file descriptor is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_FILE = 0x1020,
+    /**
+     * The code object reader is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_CODE_OBJECT_READER = 0x1021,
+    /**
+     * The cache is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_CACHE = 0x1022,
+    /**
+     * The wavefront is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_WAVEFRONT = 0x1023,
+    /**
+     * The signal group is invalid.
+     */
+    HSA_STATUS_ERROR_INVALID_SIGNAL_GROUP = 0x1024,
+    /**
+     * The HSA runtime is not in the configuration state.
+     */
+    HSA_STATUS_ERROR_INVALID_RUNTIME_STATE = 0x1025,
+    /**
+     * The queue received an error that may require process termination.
+     */
+    HSA_STATUS_ERROR_FATAL = 0x1026,
 }

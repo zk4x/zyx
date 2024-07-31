@@ -61,6 +61,7 @@ impl DType {
     }
 }
 
+#[allow(dead_code)] // Rust for some reason thinks these fields are unused
 #[derive(Debug)]
 pub struct OpenCLError {
     info: String,

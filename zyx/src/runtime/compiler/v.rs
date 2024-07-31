@@ -33,10 +33,10 @@ pub(super) enum VOp {
         view: View,
     },
     Reduce {
-        num_axes: usize,
-        rop: ROp,
         z: TensorId,
         x: TensorId,
+        num_axes: usize,
+        rop: ROp,
     },
     Unary {
         z: TensorId,

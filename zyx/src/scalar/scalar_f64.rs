@@ -126,8 +126,10 @@ impl Scalar for f64 {
     }
 
     fn sqrt(self) -> Self {
-        //libm::sqrt(self)
-        todo!()
+        #[cfg(feature = "std")]
+        return self.sqrt();
+        #[cfg(not(feature = "std"))]
+        todo!("sqrt in nostd");
     }
 
     fn add(self, rhs: Self) -> Self {

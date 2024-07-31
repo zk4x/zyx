@@ -82,12 +82,14 @@ fn t2() {
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
 }
 
+#[cfg(feature = "rand")]
 #[test]
 fn t3() {
     let x = Tensor::randn([1024, 1024], DType::F32).expand([1024, 1024, 1024]);
     Tensor::realize([&x]);
 }
 
+#[cfg(feature = "rand")]
 #[test]
 fn t4() {
     Tensor::set_default_device(Device::OpenCL);
@@ -107,6 +109,7 @@ fn t5() {
     std::println!("{y}\n{z}");
 }
 
+#[cfg(feature = "rand")]
 #[test]
 fn t6() {
     //let x = Tensor::from([[2, 3], [4, 5]]).pad_zeros([(1, 3)]);

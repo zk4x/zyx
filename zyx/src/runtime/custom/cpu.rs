@@ -10,6 +10,7 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CPUError {
     info: String,

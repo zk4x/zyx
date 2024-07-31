@@ -196,8 +196,9 @@ impl<C: Compiler> CompiledBackend<C> {
         org_graph: &Graph,
         to_eval: BTreeSet<TensorId>,
     ) -> Result<(), C::Error> {
+        //println!("{:#?}", self.hwinfo);
         //#[cfg(feature = "debug1")]
-        //libc_print::libc_println!("Evaluating {to_eval:?}");
+        //println!("Evaluating {to_eval:?}");
         if self.compiled_graphs.contains_key(&org_graph) {
             return Ok(());
         }
@@ -241,7 +242,6 @@ impl<C: Compiler> CompiledBackend<C> {
             // Reshape kernels to 6d (global, local) with some register loops
             // should be shape: [gws[0], lws[0], gws[1], lws[1], gws[2], lws[2]]
             let mut gws = [1; 3];
-            let lws = [1; 3]; // TODO
             for op in &kernel.ops {
                 if let VOp::Loop { axis, dimension } = op {
                     if *axis > 2 {
@@ -251,18 +251,23 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
             }
 
+            // Determine the best possible work size
+            let lws = best_local_work_size(gws, self.hwinfo.max_work_group_size);
+            gws[0] /= lws[0];
+            gws[1] /= lws[1];
+            gws[2] /= lws[2];
+
             kernel.split_axis(0, &[gws[0], lws[0]]);
             kernel.split_axis(2, &[gws[1], lws[1]]);
             kernel.split_axis(4, &[gws[2], lws[2]]);
 
-            /*#[cfg(feature = "debug1")]
+            println!("Kernel in virtual ops");
+            #[cfg(feature = "debug1")]
             {
-                println!();
                 for op in &kernel.ops {
                     println!("{op:?}");
                 }
-                println!();
-            }*/
+            }
 
             let ir_kernel = ir::compile_ir(
                 &graph,
@@ -364,4 +369,38 @@ impl<C: Compiler> CompiledBackend<C> {
 
         return Ok(());
     }
+}
+
+// Takes global work size (gws) and maximum work group size (mwgs)
+fn best_local_work_size(mut gws: [usize; 3], mwgs: usize) -> [usize; 3] {
+    let mut lws = [1; 3];
+    println!("Max {mwgs:?}");
+    let rwgs = (mwgs as i64).sqrt() as usize;
+    println!("Root {rwgs:?}");
+
+    let mut total = 1;
+    let mut n = 1;
+    while gws[1] % (n * 2) == 0 && n * 2 <= rwgs {
+        n *= 2;
+    }
+    gws[1] /= n;
+    lws[1] *= n;
+    total *= n;
+    // put the rest into third dimension
+    let mut n = 1;
+    while gws[2] % (n * 2) == 0 && n * 2 * total <= mwgs {
+        n *= 2;
+    }
+    gws[2] /= n;
+    lws[2] *= n;
+    total *= n;
+    // if third dimension was too small, put the rest into second dimension
+    let mut n = 1;
+    while gws[1] % (n * 2) == 0 && n * 2 * total <= mwgs {
+        n *= 2;
+    }
+    gws[1] /= n;
+    lws[1] *= n;
+
+    return lws;
 }
