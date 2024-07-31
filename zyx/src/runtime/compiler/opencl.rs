@@ -109,11 +109,42 @@ enum OpenCLStatus {
 
 impl OpenCLStatus {
     fn new(status: cl_int) -> Self {
-        unsafe { core::mem::transmute(status) }
-        /*if status in Self {
-        } else {
-            Self::UNKNOWN_ERROR
-        }*/
+        match status {
+            -4 => Self::CL_MEM_OBJECT_ALLOCATION_FAILURE,
+            -5 => Self::CL_OUT_OF_RESOURCES,
+            -6 => Self::CL_OUT_OF_HOST_MEMORY,
+            -10 => Self::CL_IMAGE_FORMAT_NOT_SUPPORTED,
+            -13 => Self::CL_MISALIGNED_SUB_BUFFER_OFFSET,
+            -14 => Self::CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST,
+            -30 => Self::CL_INVALID_VALUE,
+            -33 => Self::CL_INVALID_DEVICE_QUEUE,
+            -34 => Self::CL_INVALID_CONTEXT,
+            -36 => Self::CL_INVALID_COMMAND_QUEUE,
+            -38 => Self::CL_INVALID_MEM_OBJECT,
+            -40 => Self::CL_INVALID_IMAGE_SIZE,
+            -41 => Self::CL_INVALID_SAMPLER,
+            -44 => Self::CL_INVALID_PROGRAM,
+            -45 => Self::CL_INVALID_PROGRAM_EXECUTABLE,
+            -46 => Self::CL_INVALID_KERNEL_NAME,
+            -47 => Self::CL_INVALID_KERNEL_DEFINITION,
+            -48 => Self::CL_INVALID_KERNEL,
+            -49 => Self::CL_INVALID_ARG_INDEX,
+            -50 => Self::CL_INVALID_ARG_VALUE,
+            -51 => Self::CL_INVALID_ARG_SIZE,
+            -52 => Self::CL_INVALID_KERNEL_ARGS,
+            -53 => Self::CL_INVALID_WORK_DIMENSION,
+            -54 => Self::CL_INVALID_WORK_GROUP_SIZE,
+            -55 => Self::CL_INVALID_WORK_ITEM_SIZE,
+            -56 => Self::CL_INVALID_GLOBAL_OFFSET,
+            -57 => Self::CL_INVALID_EVENT_WAIT_LIST,
+            -58 => Self::CL_INVALID_EVENT,
+            -59 => Self::CL_INVALID_OPERATION,
+            -61 => Self::CL_INVALID_BUFFER_SIZE,
+            -63 => Self::CL_INVALID_GLOBAL_WORK_SIZE,
+            -64 => Self::CL_INVALID_PROPERTY,
+            -72 => Self::CL_MAX_SIZE_RESTRICTION_EXCEEDED,
+            _ => Self::UNKNOWN,
+        }
     }
 }
 

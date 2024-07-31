@@ -50,8 +50,8 @@ fn t0() {
 #[test]
 fn t1() {
     use std::println;
-    Tensor::set_default_device(Device::HSA);
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]);
+    Tensor::set_default_device(Device::OpenCL);
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp() + 1f32;
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }
@@ -90,6 +90,7 @@ fn t3() {
 
 #[test]
 fn t4() {
+    Tensor::set_default_device(Device::OpenCL);
     let x = Tensor::randn([1, 1024, 1024], DType::F32);
     let y = Tensor::randn([1024, 1, 1024], DType::F32);
     let z = (x * y).sum(2);

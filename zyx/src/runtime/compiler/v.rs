@@ -268,7 +268,9 @@ pub(super) fn generate_kernels(
                     kernel.inputs.insert(nid);
                     kernel.vars.insert(nid);
                 } else {
-                    kernels.push(Kernel { shape: alloc::vec![1], inputs: BTreeSet::new(), outputs: BTreeSet::new(), vars: BTreeSet::from([nid]), ops: alloc::vec![const_op] })
+                    let mut ops = shape_to_loops(&[1]);
+                    ops.push(const_op);
+                    kernels.push(Kernel { shape: alloc::vec![1], inputs: BTreeSet::new(), outputs: BTreeSet::new(), vars: BTreeSet::from([nid]), ops })
                 }
             }
             Node::Leaf { shape, .. } => {
