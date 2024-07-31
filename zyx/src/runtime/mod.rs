@@ -1,5 +1,5 @@
 use crate::device::Device;
-use crate::dtype::DType;
+use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::tensor::TensorId;
 use alloc::vec;
@@ -8,19 +8,11 @@ use alloc::{
     vec::Vec,
 };
 use custom::{
-    cpu::CPU,
-    {CustomError, InterpretedBackend},
+    cpu::CPURuntime,
+    InterpretedBackend,
 };
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
-
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
-use compiler::{CompiledBackend, CompilerError};
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -64,47 +56,64 @@ fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
 
 #[derive(Debug)]
 pub enum ZyxError {
-    #[cfg(any(
-        feature = "cuda",
-        feature = "opencl",
-        feature = "wgsl",
-        feature = "hsa"
-    ))]
-    CompilerError(CompilerError),
-    CustomError(CustomError),
     EmptyTensor,
     WrongDType(&'static str),
+    #[cfg(feature = "cuda")]
+    CUDAError(compiler::cuda::CUDAError),
+    #[cfg(feature = "hsa")]
+    HSAError(compiler::hsa::HSAError),
+    #[cfg(feature = "opencl")]
+    OpenCLError(compiler::opencl::OpenCLError),
+    #[cfg(feature = "wgsl")]
+    WGSLError(compiler::opencl::WGSLError),
+    CPUError(custom::cpu::CPUError),
 }
 
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
-impl From<CompilerError> for ZyxError {
-    fn from(value: CompilerError) -> Self {
-        Self::CompilerError(value)
+#[cfg(feature = "cuda")]
+impl From<compiler::cuda::CUDAError> for ZyxError {
+    fn from(value: compiler::cuda::CUDAError) -> Self {
+        Self::CUDAError(value)
     }
 }
 
-impl From<CustomError> for ZyxError {
-    fn from(value: CustomError) -> Self {
-        Self::CustomError(value)
+#[cfg(feature = "hsa")]
+impl From<compiler::hsa::HSAError> for ZyxError {
+    fn from(value: compiler::hsa::HSAError) -> Self {
+        Self::HSAError(value)
+    }
+}
+
+#[cfg(feature = "opencl")]
+impl From<compiler::opencl::OpenCLError> for ZyxError {
+    fn from(value: compiler::opencl::OpenCLError) -> Self {
+        Self::OpenCLError(value)
+    }
+}
+
+#[cfg(feature = "wgsl")]
+impl From<compiler::wgsl::WGSLError> for ZyxError {
+    fn from(value: compiler::wgsl::WGSLError) -> Self {
+        Self::WGSLError(value)
+    }
+}
+
+impl From<custom::cpu::CPUError> for ZyxError {
+    fn from(value: custom::cpu::CPUError) -> Self {
+        Self::CPUError(value)
     }
 }
 
 pub(crate) struct Runtime {
     graph: Graph,
     #[cfg(feature = "cuda")]
-    cuda: Option<CompiledBackend<compiler::cuda::CUDARuntime>>,
+    cuda: Option<compiler::CompiledBackend<compiler::cuda::CUDARuntime>>,
     #[cfg(feature = "hsa")]
-    hsa: Option<CompiledBackend<compiler::hsa::HSARuntime>>,
+    hsa: Option<compiler::CompiledBackend<compiler::hsa::HSARuntime>>,
     #[cfg(feature = "opencl")]
-    opencl: Option<CompiledBackend<compiler::opencl::OpenCLRuntime>>,
+    opencl: Option<compiler::CompiledBackend<compiler::opencl::OpenCLRuntime>>,
     #[cfg(feature = "wgsl")]
-    wgsl: Option<CompiledBackend<compiler::wgsl::WGSLRuntime>>,
-    cpu: Option<InterpretedBackend<CPU>>,
+    wgsl: Option<compiler::CompiledBackend<compiler::wgsl::WGSLRuntime>>,
+    cpu: Option<InterpretedBackend<CPURuntime>>,
     pub(crate) default_device: Device,
     pub(crate) default_device_set_by_user: bool,
     #[cfg(feature = "rand")]
@@ -179,7 +188,7 @@ impl Runtime {
             #[cfg(feature = "cuda")]
             Device::CUDA => {
                 if self.cuda.is_none() {
-                    if let Ok(cuda) = CompiledBackend::initialize() {
+                    if let Ok(cuda) = compiler::CompiledBackend::initialize() {
                         self.cuda = Some(cuda);
                         true
                     } else {
@@ -192,7 +201,7 @@ impl Runtime {
             #[cfg(feature = "hsa")]
             Device::HSA => {
                 if self.hsa.is_none() {
-                    if let Ok(hsa) = CompiledBackend::initialize() {
+                    if let Ok(hsa) = compiler::CompiledBackend::initialize() {
                         self.hsa = Some(hsa);
                         true
                     } else {
@@ -205,7 +214,7 @@ impl Runtime {
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if self.opencl.is_none() {
-                    if let Ok(opencl) = CompiledBackend::initialize() {
+                    if let Ok(opencl) = compiler::CompiledBackend::initialize() {
                         self.opencl = Some(opencl);
                         true
                     } else {
@@ -218,7 +227,7 @@ impl Runtime {
             #[cfg(feature = "wgsl")]
             Device::WGSL => {
                 if self.wgsl.is_none() {
-                    if let Ok(wgsl) = CompiledBackend::initialize() {
+                    if let Ok(wgsl) = compiler::CompiledBackend::initialize() {
                         self.wgsl = Some(wgsl);
                         true
                     } else {
@@ -653,6 +662,10 @@ impl Runtime {
         data: Vec<T>,
         shape: Vec<usize>,
     ) -> Result<TensorId, ZyxError> {
+        assert_eq!(data.len(), shape.iter().product());
+        if data.len() == 1 {
+            return Ok(self.graph.push(Node::Const { value: Constant::new(data[0]) }));
+        }
         self.set_default_device_best();
         let device = self.default_device;
         //#[cfg(feature = "debug1")]
@@ -666,7 +679,7 @@ impl Runtime {
             #[cfg(feature = "cuda")]
             Device::CUDA => {
                 if self.cuda.is_none() {
-                    self.cuda = Some(CompiledBackend::initialize()?);
+                    self.cuda = Some(compiler::CompiledBackend::initialize()?);
                 }
                 let dev = self.cuda.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
@@ -674,7 +687,7 @@ impl Runtime {
             #[cfg(feature = "hsa")]
             Device::HSA => {
                 if self.hsa.is_none() {
-                    self.hsa = Some(CompiledBackend::initialize()?);
+                    self.hsa = Some(compiler::CompiledBackend::initialize()?);
                 }
                 let dev = self.hsa.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
@@ -682,7 +695,7 @@ impl Runtime {
             #[cfg(feature = "opencl")]
             Device::OpenCL => {
                 if self.opencl.is_none() {
-                    self.opencl = Some(CompiledBackend::initialize()?);
+                    self.opencl = Some(compiler::CompiledBackend::initialize()?);
                 }
                 let dev = self.opencl.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
@@ -690,7 +703,7 @@ impl Runtime {
             #[cfg(feature = "wgsl")]
             Device::WGSL => {
                 if self.wgsl.is_none() {
-                    self.wgsl = Some(CompiledBackend::initialize()?);
+                    self.wgsl = Some(compiler::CompiledBackend::initialize()?);
                 }
                 let dev = self.wgsl.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
@@ -888,7 +901,7 @@ impl Runtime {
             let grad = grads[&nid];
             match self.graph[nid] {
                 //Node::Const(..) | Node::Detach(..) => {}
-                Node::Leaf { .. } => {}
+                Node::Const { .. } | Node::Leaf { .. } => {}
                 Node::Binary { x, y, bop } => match bop {
                     BOp::Add => {
                         if req_grad.contains(&x) {

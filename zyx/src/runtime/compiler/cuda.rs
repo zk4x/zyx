@@ -2,7 +2,7 @@
 #![allow(non_camel_case_types)]
 
 use super::IRKernel;
-use super::{Compiler, CompilerError, HWInfo};
+use super::{Compiler, HWInfo};
 use crate::runtime::compiler::{IRArg, IROp, Scope};
 use crate::runtime::node::{BOp, UOp};
 use crate::{DType, Scalar};
@@ -204,7 +204,7 @@ extern "system" {
     ) -> CUresult;
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 #[repr(C)]
 enum nvrtcResult {
     NVRTC_SUCCESS = 0,
@@ -222,16 +222,29 @@ enum nvrtcResult {
     NVRTC_ERROR_TIME_FILE_WRITE_FAILED = 12,
 }
 
+#[derive(Debug)]
+pub struct CUDAError {
+    info: String,
+    cuda_status: CUresult,
+    nvrtc_status: nvrtcResult,
+}
+
 use std::println;
 
-fn handle_status(status: CUresult, msg: &str) -> Result<(), CompilerError> {
-    // TODO return proper compiler error
+fn check(status: CUresult, info: &str) -> Result<(), CUDAError> {
     if status != CUresult::CUDA_SUCCESS {
-        #[cfg(feature = "debug1")]
-        println!("CUDA error: {status:?}, {msg}");
-        return Err(CompilerError::GeneralExecutionError(""));
+        return Err(CUDAError { info: info.into(), cuda_status: status, nvrtc_status: nvrtcResult::NVRTC_SUCCESS });
+    } else {
+        return Ok(());
     }
-    Ok(())
+}
+
+fn check_nvrtc(status: nvrtcResult, info: &str) -> Result<(), CUDAError> {
+    if status != nvrtcResult::NVRTC_SUCCESS {
+        return Err(CUDAError { info: info.into(), cuda_status: CUresult::CUDA_SUCCESS, nvrtc_status: status });
+    } else {
+        return Ok(());
+    }
 }
 
 impl DType {
@@ -288,11 +301,12 @@ impl Drop for CUDARuntime {
 impl Compiler for CUDARuntime {
     type Buffer = CUDABuffer;
     type Program = CUDAProgram;
+    type Error = CUDAError;
 
-    fn initialize() -> Result<Self, CompilerError> {
-        handle_status(unsafe { cuInit(0) }, "Failed to init CUDA")?;
+    fn initialize() -> Result<Self, CUDAError> {
+        check(unsafe { cuInit(0) }, "Failed to init CUDA")?;
         let mut driver_version = 0;
-        handle_status(
+        check(
             unsafe { cuDriverGetVersion(&mut driver_version) },
             "Failed to get CUDA driver version",
         )?;
@@ -302,19 +316,19 @@ impl Compiler for CUDARuntime {
             (driver_version - (driver_version / 1000 * 1000)) / 10
         );
         let mut num_devices = 0;
-        handle_status(
+        check(
             unsafe { cuDeviceGetCount(&mut num_devices) },
             "Failed to get CUDA device count",
         )?;
         println!("Number of devices: {num_devices}");
         assert!(num_devices > 0, "No available cuda device.");
         let mut device = 0;
-        handle_status(
+        check(
             unsafe { cuDeviceGet(&mut device, 0) },
             "Failed to access CUDA device",
         )?;
         let mut device_name = [0; 100];
-        handle_status(
+        check(
             unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) },
             "Failed to get CUDA device name",
         )?;
@@ -323,13 +337,13 @@ impl Compiler for CUDARuntime {
         });
         let mut major = 0;
         let mut minor = 0;
-        handle_status(
+        check(
             unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) },
             "Failed to get CUDA device compute capability.",
         )?;
         println!("Device compute capability: {major}.{minor}");
         let mut context: CUcontext = ptr::null_mut();
-        handle_status(
+        check(
             unsafe { cuCtxCreate_v2(&mut context, 0, device) },
             "Unable to create CUDA context.",
         )?;
@@ -341,7 +355,7 @@ impl Compiler for CUDARuntime {
         });
     }
 
-    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
+    fn hardware_information(&mut self) -> Result<HWInfo, CUDAError> {
         return Ok(HWInfo {
             max_work_item_sizes: vec![1024, 1024, 1024],
             max_work_group_size: 256,
@@ -359,9 +373,9 @@ impl Compiler for CUDARuntime {
         });
     }
 
-    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
+    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CUDAError> {
         let mut dptr = 0;
-        handle_status(
+        check(
             unsafe { cuMemAlloc_v2(&mut dptr, byte_size) },
             "Failed to allocate memory",
         )?;
@@ -372,8 +386,8 @@ impl Compiler for CUDARuntime {
         &mut self,
         buffer: &mut Self::Buffer,
         data: Vec<T>,
-    ) -> Result<(), CompilerError> {
-        handle_status(
+    ) -> Result<(), CUDAError> {
+        check(
             unsafe {
                 cuMemcpyHtoD_v2(
                     buffer.mem,
@@ -390,9 +404,9 @@ impl Compiler for CUDARuntime {
         &mut self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<Vec<T>, CompilerError> {
+    ) -> Result<Vec<T>, CUDAError> {
         let mut res: Vec<T> = Vec::with_capacity(length);
-        handle_status(
+        check(
             unsafe {
                 cuMemcpyDtoH_v2(
                     res.as_mut_ptr().cast(),
@@ -406,15 +420,15 @@ impl Compiler for CUDARuntime {
         return Ok(res);
     }
 
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
-        handle_status(
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CUDAError> {
+        check(
             unsafe { cuMemFree_v2(buffer.mem) },
             "Failed to deallocate memory",
         )?;
         return Ok(());
     }
 
-    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
+    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CUDAError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -605,9 +619,9 @@ impl Compiler for CUDARuntime {
         &mut self,
         program: &Self::Program,
         args: &mut [Self::Buffer],
-    ) -> Result<(), CompilerError> {
+    ) -> Result<(), CUDAError> {
         let mut function = ptr::null_mut();
-        handle_status(
+        check(
             unsafe {
                 cuModuleGetFunction(&mut function, program.module, program.name.as_ptr().cast())
             },
@@ -621,7 +635,7 @@ impl Compiler for CUDARuntime {
             kernel_params.push(ptr.cast());
         }
 
-        handle_status(
+        check(
             unsafe {
                 cuLaunchKernel(
                     function,
@@ -642,7 +656,7 @@ impl Compiler for CUDARuntime {
         Ok(())
     }
 
-    fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
+    fn release_program(&mut self, program: Self::Program) -> Result<(), CUDAError> {
         let _ = program;
         todo!()
     }
@@ -656,7 +670,7 @@ impl CUDAProgram {
         local_work_size: [usize; 3],
         args_read_only: Vec<bool>,
         compute_capability: &str,
-    ) -> Result<Self, CompilerError> {
+    ) -> Result<Self, CUDAError> {
         let name = f!(
             "k__{}_{}__{}_{}__{}_{}",
             global_work_size[0],
@@ -700,7 +714,7 @@ impl CUDAProgram {
         }
         type nvrtcProgram = *mut _nvrtcProgram;
         let mut program = ptr::null_mut();
-        unsafe {
+        check_nvrtc(unsafe {
             nvrtcCreateProgram(
                 &mut program as *mut nvrtcProgram,
                 (&f!("{source}\0")).as_ptr() as *const c_char,
@@ -709,22 +723,22 @@ impl CUDAProgram {
                 ptr::null_mut(),
                 ptr::null_mut(),
             )
-        };
+        }, "nvrtcCreateProgram")?;
         let df = f!("--gpu-architecture=compute_{compute_capability}\0");
         let opts = [df.as_str()];
-        unsafe { nvrtcCompileProgram(program, 1, opts.as_ptr().cast()) };
+        check_nvrtc(unsafe { nvrtcCompileProgram(program, 1, opts.as_ptr().cast()) }, "nvrtcCompileProgram")?;
         let mut ptx_size: usize = 0;
-        unsafe { nvrtcGetPTXSize(program, &mut ptx_size) };
+        check_nvrtc(unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }, "nvrtcGetPTXSize")?;
         let mut ptx_vec: Vec<u8> = Vec::with_capacity(ptx_size);
-        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr() as *mut i8) };
+        check_nvrtc(unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr() as *mut i8) }, "nvrtcGetPTX")?;
         unsafe { ptx_vec.set_len(ptx_size) };
         //let ptx_c = unsafe { CString::from_vec_unchecked(ptx_vec.clone()) };
 
         let mut program_log_size: usize = 0;
-        unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) };
+        check_nvrtc(unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }, "nvrtcGetProgramLogSize")?;
         let mut program_log: Vec<u8> = Vec::with_capacity(program_log_size);
-        unsafe { nvrtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) };
-        unsafe { nvrtcDestroyProgram(&mut program) };
+        check_nvrtc(unsafe { nvrtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) }, "nvrtcGetProgramLog")?;
+        check_nvrtc(unsafe { nvrtcDestroyProgram(&mut program) }, "nvrtcDestoyProgram")?;
         unsafe { program_log.set_len(program_log_size) };
         /*let program_log = unsafe {
             String::from_raw_parts(program_log.as_mut_ptr(), program_log_size, program_log_size)
@@ -741,7 +755,7 @@ impl CUDAProgram {
         println!("{cubin_c:?}");*/
 
         let mut module = ptr::null_mut();
-        handle_status(
+        check(
             unsafe {
                 cuModuleLoadDataEx(
                     &mut module,

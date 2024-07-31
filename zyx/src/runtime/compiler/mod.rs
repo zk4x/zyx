@@ -27,6 +27,7 @@ pub(super) mod opencl;
 #[cfg(feature = "wgsl")]
 pub(super) mod wgsl;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Scope {
     Global,
@@ -47,27 +48,28 @@ impl Display for Scope {
 pub(super) trait Compiler: Sized {
     type Buffer;
     type Program;
-    fn initialize() -> Result<Self, CompilerError>;
-    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError>;
-    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError>;
+    type Error: core::fmt::Debug;
+    fn initialize() -> Result<Self, Self::Error>;
+    fn hardware_information(&mut self) -> Result<HWInfo, Self::Error>;
+    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, Self::Error>;
     fn store_memory<T: Scalar>(
         &mut self,
         buffer: &mut Self::Buffer,
         data: Vec<T>,
-    ) -> Result<(), CompilerError>;
+    ) -> Result<(), Self::Error>;
     fn load_memory<T: Scalar>(
         &mut self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<Vec<T>, CompilerError>;
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError>;
-    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError>;
+    ) -> Result<Vec<T>, Self::Error>;
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), Self::Error>;
+    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, Self::Error>;
     fn launch_program(
         &mut self,
         program: &Self::Program,
         args: &mut [Self::Buffer],
-    ) -> Result<(), CompilerError>;
-    fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError>;
+    ) -> Result<(), Self::Error>;
+    fn release_program(&mut self, program: Self::Program) -> Result<(), Self::Error>;
 }
 
 pub(super) struct CompiledBackend<C: Compiler> {
@@ -99,7 +101,7 @@ pub(super) struct CompiledGraph<Program> {
     bytes_written: u128,
 }
 
-#[derive(Debug)]
+/*#[derive(Debug)]
 pub enum CompilerError {
     InitializationFailure(&'static str),
     OutOfDeviceMemory(&'static str),
@@ -107,7 +109,7 @@ pub enum CompilerError {
     BufferDoesNotExist(&'static str),
     // For all unknown errors
     GeneralExecutionError(&'static str),
-}
+}*/
 
 /// Hardware information needed for applying optimizations
 #[allow(unused)]
@@ -142,7 +144,7 @@ pub struct HWInfo {
 }
 
 impl<C: Compiler> CompiledBackend<C> {
-    pub(super) fn initialize() -> Result<Self, CompilerError> {
+    pub(super) fn initialize() -> Result<Self, C::Error> {
         let mut compiler = C::initialize()?;
         Ok(Self {
             hwinfo: compiler.hardware_information()?,
@@ -160,7 +162,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: TensorId,
         data: Vec<T>,
-    ) -> Result<(), CompilerError> {
+    ) -> Result<(), C::Error> {
         let mut buffer = self.compiler.allocate_memory(data.len() * T::byte_size())?;
         self.compiler.store_memory(&mut buffer, data)?;
         self.buffers.insert(x, buffer);
@@ -172,17 +174,16 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: TensorId,
         length: usize,
-    ) -> Result<Vec<T>, CompilerError> {
+    ) -> Result<Vec<T>, C::Error> {
         //println!("Attempting to load buffer with id {x}");
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_memory(buffer, length);
+        } else {
+            panic!("Buffer with given id does not exist. Internal bug.");
         }
-        return Err(CompilerError::BufferDoesNotExist(
-            "Buffer with given id does not exist.",
-        ));
     }
 
-    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), CompilerError> {
+    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), C::Error> {
         if let Some(buffer) = self.buffers.remove(&x) {
             return self.compiler.deallocate_memory(buffer);
         }
@@ -194,7 +195,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         org_graph: &Graph,
         to_eval: BTreeSet<TensorId>,
-    ) -> Result<(), CompilerError> {
+    ) -> Result<(), C::Error> {
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("Evaluating {to_eval:?}");
         if self.compiled_graphs.contains_key(&org_graph) {
@@ -303,7 +304,7 @@ impl<C: Compiler> CompiledBackend<C> {
         return Ok(());
     }
 
-    pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), CompilerError> {
+    pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), C::Error> {
         let graph = self.compiled_graphs.get(graph).unwrap();
 
         #[cfg(feature = "debug1")]
@@ -315,7 +316,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 let buffer = self.buffers.remove(arg).unwrap();
                 buffers.push(buffer);
             }
-            self.compiler.launch_program(&program, &mut buffers)?; // graph.flop, graph.bytes)
+            self.compiler.launch_program(&program, &mut buffers)?;
             for arg in args.iter().copied().rev() {
                 self.buffers.insert(arg, buffers.pop().unwrap());
             }

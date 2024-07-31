@@ -144,14 +144,14 @@ fn main() {
         );
     }
 
-    #[cfg(feature = "static")]
-    {
+    //#[cfg(feature = "static")]
+    /*{
         println!("cargo:rustc-link-lib=static=nvrtc_static");
         println!("cargo:rustc-link-lib=static=nvrtc-builtins_static");
         println!("cargo:rustc-link-lib=static=nvptxcompiler_static");
-    }
+    }*/
 
-    #[cfg(not(feature = "static"))]
+    //#[cfg(not(feature = "static"))]
     println!("cargo:rustc-link-lib=dylib=nvrtc");
 
     println!("cargo:rerun-if-changed=build.rs");

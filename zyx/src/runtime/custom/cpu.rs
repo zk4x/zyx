@@ -1,7 +1,8 @@
 use crate::dtype::DType;
-use crate::runtime::custom::{Custom, CustomError};
+use crate::runtime::custom::Custom;
 use crate::scalar::Scalar;
 use alloc::vec::Vec;
+use alloc::string::String;
 
 #[cfg(feature = "half")]
 use half::{bf16, f16};
@@ -9,7 +10,12 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
-pub(crate) struct CPU {}
+#[derive(Debug)]
+pub struct CPUError {
+    info: String,
+}
+
+pub(crate) struct CPURuntime {}
 
 pub(crate) enum CPUBuffer {
     #[cfg(feature = "half")]
@@ -74,13 +80,14 @@ impl CPUBuffer {
     }
 }
 
-impl Custom for CPU {
+impl Custom for CPURuntime {
     type Buffer = CPUBuffer;
-    fn initialize() -> Result<Self, CustomError> {
+    type Error = CPUError;
+    fn initialize() -> Result<Self, CPUError> {
         Ok(Self {})
     }
 
-    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, CustomError> {
+    fn store_mem<T: Scalar>(&self, data: Vec<T>) -> Result<Self::Buffer, CPUError> {
         Ok(match T::dtype() {
             #[cfg(feature = "half")]
             DType::BF16 => CPUBuffer::BF16(unsafe { core::mem::transmute(data) }),
@@ -105,10 +112,10 @@ impl Custom for CPU {
         &self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<Vec<T>, CustomError> {
+    ) -> Result<Vec<T>, CPUError> {
         assert_eq!(buffer.len(), length);
         if T::dtype() != buffer.dtype() {
-            return Err(CustomError::BufferDoesNotExist);
+            return Err(CPUError { info: "Wrong buffer dtype".into() });
         }
         let data: &Vec<T> = match buffer {
             #[cfg(feature = "half")]
@@ -131,7 +138,7 @@ impl Custom for CPU {
         return Ok(data.clone());
     }
 
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CustomError> {
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CPUError> {
         // or nothing at all, but lets be explicit
         core::mem::drop(buffer);
         Ok(())

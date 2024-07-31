@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{tensor::TensorId, DType, Device};
+use crate::{dtype::Constant, tensor::TensorId, DType, Device};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum BOp {
@@ -49,13 +49,9 @@ type Dimension = usize;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(crate) enum Node {
     // TODO later add constant nodes
-    /*Const {
-        value: enum {
-            F32(u32),
-            I32(i32),
-            I64(i64),
-        },
-    },*/
+    Const {
+        value: Constant,
+    },
     Leaf {
         shape: Vec<Dimension>,
         dtype: DType,
@@ -124,7 +120,7 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         return match self {
-            Node::Leaf { .. } => NodeParametersIterator {
+            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
                 parameters: [0, 0],
                 idx: 0,
                 len: 0,

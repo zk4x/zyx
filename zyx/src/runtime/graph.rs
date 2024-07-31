@@ -65,6 +65,7 @@ impl Graph {
             let node = &self.nodes[&tensor_id].1;
             //libc_print::libc_println!("{tensor_id}, {node:?}");
             match node {
+                Node::Const { value, .. } => return value.dtype(),
                 Node::Leaf { dtype, .. } => return *dtype,
                 Node::Unary { x, uop } => {
                     if let UOp::Cast(dtype) = uop {
@@ -82,12 +83,14 @@ impl Graph {
     }
 
     pub(crate) fn device(&self, tensor_id: TensorId) -> Device {
+        // TODO now that we have const we need better search algorithm
         let mut x = tensor_id;
         let mut i = 0;
         while i < 1000000 {
             //libc_print::libc_println!("Id: {x}, nodes: {:?}", self.nodes);
             let node = &self.nodes[&x].1;
             match node {
+                Node::Const { .. } => return Device::OpenCL,
                 Node::Leaf { device, .. } => return *device,
                 // TODO | Node::ToDevice { device, .. }
                 _ => x = node.parameters().next().unwrap(),
@@ -103,7 +106,7 @@ impl Graph {
         while i < 10000 {
             let node = &self.nodes[&x].1;
             match node {
-                //Node::Const { .. } => return &[1],
+                Node::Const { .. } => return &[1],
                 Node::Leaf { shape, .. }
                 | Node::Reshape { shape, .. }
                 | Node::Pad { shape, .. }
@@ -238,6 +241,7 @@ impl Graph {
         let mut bytes_read = 0;
         for nid in &order {
             match &self.nodes[nid].1 {
+                Node::Const { .. } => {}
                 Node::Leaf { shape, dtype, .. } => {
                     bytes_read += shape.iter().product::<usize>() * dtype.byte_size();
                 }
@@ -436,6 +440,9 @@ impl Graph {
         for id in &topo {
             let node = &self.nodes[id].1;
             match node {
+                Node::Const {
+                    value,
+                } => add_node(id, &f!("Const({value:?})"), "box"),
                 Node::Leaf {
                     shape,
                     dtype,

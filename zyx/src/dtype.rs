@@ -2,6 +2,8 @@ use core::fmt::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
 
+use crate::Scalar;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Constant {
     #[cfg(feature = "half")]
@@ -20,6 +22,35 @@ pub(crate) enum Constant {
     I32(i32),
     I64(i64),
     Bool(bool),
+}
+
+impl Constant {
+    pub(crate) fn new<T: Scalar>(x: T) -> Constant {
+        use core::mem::transmute_copy as t;
+        match T::dtype() {
+            DType::F32 => Constant::F32(unsafe {t(&x)}),
+            DType::F64 => Constant::F64(unsafe {t(&x)}),
+            DType::U8 => Constant::U8(unsafe {t(&x)}),
+            DType::I8 => Constant::I8(unsafe {t(&x)}),
+            DType::I16 => Constant::I16(unsafe {t(&x)}),
+            DType::I32 => Constant::I32(unsafe {t(&x)}),
+            DType::I64 => Constant::I64(unsafe {t(&x)}),
+            DType::Bool => Constant::Bool(unsafe {t(&x)}),
+        }
+    }
+
+    pub(crate) fn dtype(&self) -> DType {
+        match self {
+            Constant::F32(_) => DType::F32,
+            Constant::F64(_) => DType::F64,
+            Constant::U8(_) => DType::U8,
+            Constant::I8(_) => DType::I8,
+            Constant::I16(_) => DType::I16,
+            Constant::I32(_) => DType::I32,
+            Constant::I64(_) => DType::I64,
+            Constant::Bool(_) => DType::Bool,
+        }
+    }
 }
 
 impl Display for Constant {

@@ -1,3 +1,4 @@
+use crate::dtype::Constant;
 use crate::runtime::node::{BOp, Node, ROp, UOp};
 use crate::runtime::view::{Axis, Dimension, View};
 use crate::{runtime::graph::Graph, tensor::TensorId};
@@ -9,6 +10,10 @@ use std::println;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum VOp {
+    Const {
+        z: TensorId,
+        value: Constant,
+    },
     Load {
         z: TensorId,
         x: TensorId,
@@ -25,6 +30,7 @@ pub(super) enum VOp {
     Accumulator {
         z: TensorId,
         rop: ROp,
+        view: View,
     },
     Reduce {
         num_axes: usize,
@@ -250,7 +256,21 @@ pub(super) fn generate_kernels(
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
+        println!("{node:?}");
         match node {
+            Node::Const { value } => {
+                let const_op = VOp::Const {
+                        z: nid,
+                        value: *value,
+                    };
+                if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.shape == [1]) {
+                    kernel.ops.push(const_op);
+                    kernel.inputs.insert(nid);
+                    kernel.vars.insert(nid);
+                } else {
+                    kernels.push(Kernel { shape: alloc::vec![1], inputs: BTreeSet::new(), outputs: BTreeSet::new(), vars: BTreeSet::from([nid]), ops: alloc::vec![const_op] })
+                }
+            }
             Node::Leaf { shape, .. } => {
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| &kernel.shape == shape) {
                     kernel.ops.push(VOp::Load {
@@ -479,7 +499,7 @@ pub(super) fn generate_kernels(
                 //println!("Acc id: {acc_id}");
                 kernel
                     .ops
-                    .insert(acc_id, VOp::Accumulator { z: nid, rop: *rop });
+                    .insert(acc_id, VOp::Accumulator { z: nid, rop: *rop, view: View::None });
                 // End loops
                 kernel.ops.push(VOp::Reduce {
                     num_axes: axes.len(), // Now we are merging them, without merging its axes.len(),

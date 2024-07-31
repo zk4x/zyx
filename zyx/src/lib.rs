@@ -40,7 +40,7 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 #[test]
 fn t0() {
     use std::println;
-    Tensor::set_default_device(Device::CPU);
+    Tensor::set_default_device(Device::HSA);
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -50,8 +50,8 @@ fn t0() {
 #[test]
 fn t1() {
     use std::println;
-    Tensor::set_default_device(Device::OpenCL);
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
+    Tensor::set_default_device(Device::HSA);
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }

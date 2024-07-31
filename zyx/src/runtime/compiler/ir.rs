@@ -6,7 +6,6 @@ use crate::tensor::TensorId;
 use crate::DType;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
-use alloc::format as f;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -31,14 +30,14 @@ pub(super) struct IRArg {
 
 #[derive(Debug, Clone)]
 pub(super) enum IRMem {
-    Const(Constant),
+    //Const(Constant),
     Var { id: u64, scope: Scope, view: View },
 }
 
 impl IRMem {
     pub(super) fn to_str(&self, temp_id: u8) -> (Vec<String>, String) {
         return match self {
-            IRMem::Const(value) => (
+            /*IRMem::Const(value) => (
                     Vec::new(),
                     match value {
                         Constant::F32(value) => {
@@ -47,7 +46,7 @@ impl IRMem {
                         Constant::I32(value) => f!("{}", value),
                         _ => todo!(),
                     },
-                ),
+                ),*/
             IRMem::Var { id, scope, view } => view.to_str(*id, *scope, temp_id),
         }
     }
@@ -67,6 +66,7 @@ impl IRMem {
 }*/
 
 /// IROp for direct translation to hardware kernels
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(super) enum IROp {
     // All variables are 1d, so that it is easier for implementors
@@ -126,6 +126,16 @@ pub(super) fn compile_ir(
     // Remove first 6 loops, these are global loops.
     for vop in &vops[6..] {
         match vop {
+            VOp::Const { z, value, .. } => {
+                ops.push(IROp::DeclareMem {
+                    id: *z,
+                    scope: Scope::Register,
+                    dtype: graph.dtype(*z),
+                    read_only: false,
+                    len: 0,
+                    init: Some(*value),
+                });
+            }
             VOp::Load { z, x, view } => {
                 ops.push(IROp::DeclareMem {
                     id: *z,
@@ -170,14 +180,14 @@ pub(super) fn compile_ir(
                     len: *dimension,
                 });
             }
-            VOp::Accumulator { z, rop } => {
+            VOp::Accumulator { z, rop, view } => {
                 let dtype = graph.dtype(*z);
                 ops.push(IROp::DeclareMem {
                     id: *z,
                     scope: Scope::Register,
                     dtype,
                     read_only: false,
-                    len: 0,
+                    len: view.numel(),
                     init: Some(match rop {
                         ROp::Sum => dtype.zero_constant(),
                         ROp::Max => dtype.min_constant(),

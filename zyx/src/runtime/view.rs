@@ -251,6 +251,14 @@ impl View {
         }
     }*/
 
+    pub(crate) fn numel(&self) -> usize {
+        match self {
+            View::None => 0,
+            View::Strided(dims) => dims.iter().map(|dim| dim.dim).product(),
+            View::Padded(dims) => dims.iter().map(|dim| dim.dim).product(),
+        }
+    }
+
     pub(crate) fn is_contiguous(&self) -> bool {
         &View::new(&self.shape()) == self
     }
