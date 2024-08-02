@@ -12,23 +12,36 @@ pub(crate) struct StridedDim {
     stride: Stride,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PaddedDim {
-    axis: Axis,
-    dim: Dimension,
-    stride: Stride,
-    lp: isize,
-    rp: isize,
-}
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum View {
     None,
     //Contiguous(Vec<StridedDim>), // TODO perhaps later, mainly for cpu and perhaps wide loads on gpu
     Strided(Vec<StridedDim>),
-    Padded(Vec<PaddedDim>),
+    // First is typical strided, second is group of axes and their padding. Very ugly, but works.
+    // If you can make it nicer, please do.
+    Padded(Vec<StridedDim>, PaddedAxes),
     //Reshaped(), // TODO perhaps for some weird optimizations, but it may actually reduce performace
     // since then loads are very unpredictable
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct PaddedAxes {
+    axes: Vec<(Vec<Axis>, (isize, isize))>,
+}
+
+impl PaddedAxes {
+    fn new(axis: Axis, left_pad: isize, right_pad: isize) -> Self {
+        Self { axes: vec![(vec![axis], (left_pad, right_pad))] }
+    }
+
+    fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+        if let Some((_, (lp, rp))) = self.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
+            *lp += left_pad;
+            *rp += right_pad;
+        } else {
+            self.axes.push((vec![axis], (left_pad, right_pad)));
+        }
+    }
 }
 
 impl View {
@@ -56,7 +69,7 @@ impl View {
         match self {
             View::None => vec![1],
             View::Strided(dims) => dims.iter().map(|dim| dim.dim).collect(),
-            View::Padded(dims) => dims.iter().map(|dim| dim.dim).collect(),
+            View::Padded(dims, _) => dims.iter().map(|dim| dim.dim).collect(),
         }
     }
 
@@ -64,7 +77,7 @@ impl View {
         match self {
             View::None => 1,
             View::Strided(dims) => dims.len(),
-            View::Padded(dims) => dims.len(),
+            View::Padded(dims, _) => dims.len(),
         }
     }
 
@@ -82,10 +95,12 @@ impl View {
                     dim.axis = a;
                 }
             }
-            View::Padded(dims) => {
+            View::Padded(dims, padding) => {
                 *dims = axes.iter().map(|axis| dims[*axis]).collect();
                 for (a, dim) in dims.iter_mut().enumerate() {
                     dim.axis = a;
+                    // TODO permute padded dimensions
+                    todo!()
                 }
             }
         }
@@ -95,39 +110,13 @@ impl View {
         match self {
             View::None => {}
             View::Strided(dims) => {
-                *self = View::Padded(
-                    dims.iter()
-                        .map(
-                            |StridedDim {
-                                 axis: paxis,
-                                 dim,
-                                 stride,
-                             }| PaddedDim {
-                                axis: *paxis,
-                                dim: *dim,
-                                stride: *stride,
-                                lp: if axis == *paxis { left_pad } else { 0 },
-                                rp: if axis == *paxis { right_pad } else { 0 },
-                            },
-                        )
-                        .collect(),
-                )
+                let mut dims = dims.clone();
+                dims[axis].dim = (dims[axis].dim as isize + left_pad + right_pad) as usize;
+                *self = View::Padded(dims, PaddedAxes::new(axis, left_pad, right_pad));
             }
-            View::Padded(dims) => {
-                for PaddedDim {
-                    axis: paxis,
-                    dim,
-                    lp,
-                    rp,
-                    ..
-                } in dims.iter_mut()
-                {
-                    if *paxis == axis {
-                        *lp += left_pad;
-                        *rp += right_pad;
-                        *dim = (*dim as isize + left_pad + right_pad) as usize;
-                    }
-                }
+            View::Padded(dims, padding) => {
+                dims[axis].dim = (dims[axis].dim as isize + left_pad + right_pad) as usize;
+                padding.pad(axis, left_pad, right_pad);
             }
         }
     }
@@ -156,39 +145,40 @@ impl View {
                     dims[a].axis += dimensions.len() - 1;
                 }
             }
-            View::Padded(dims) => {
+            View::Padded(dims, padding) => {
+                let dim_len = dimensions.len();
                 let mut stride = dims[axis].stride;
-                let PaddedDim { lp, rp, .. } = dims.remove(axis);
-                let mut temp_axis = axis + dimensions.len();
+                dims.remove(axis);
+                let mut temp_axis = axis + dim_len;
                 for dim in dimensions.iter().copied().rev() {
                     temp_axis -= 1;
                     dims.insert(
                         axis,
-                        PaddedDim {
+                        StridedDim {
                             axis: temp_axis,
                             dim,
                             stride,
-                            lp: 0,
-                            rp: 0,
                         },
                     );
                     stride *= dim;
                 }
-                // TODO do proper padding on splitted dimension
-                let mut padding_fits = false;
-                for (i, d) in dimensions.iter().enumerate() {
-                    if *d as isize + lp + rp > 0 {
-                        padding_fits = true;
-                        dims[axis + i].lp = lp;
-                        dims[axis + i].rp = rp;
+                // Split padding
+                if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
+                    for a in axis..axis + dim_len {
+                        axes.push(a);
                     }
                 }
-                if !padding_fits {
-                    todo!("Split axis with large padding");
-                }
                 // Rename all following axes
-                for a in axis + dimensions.len()..dims.len() {
-                    dims[a].axis += dimensions.len() - 1;
+                for a in (axis + dim_len..dims.len()).rev() {
+                    dims[a].axis += dim_len - 1;
+                }
+                // If key in padding axes is greater than axis, then add dim_len - 1 to it
+                for (axes, _) in padding.axes.iter_mut() {
+                    for a in axes {
+                        if *a > axis+dim_len {
+                            *a += dim_len - 1;
+                        }
+                    }
                 }
             }
         }
@@ -212,8 +202,8 @@ impl View {
                     }
                 }
             }
-            View::Padded(dims) => {
-                for PaddedDim {
+            View::Padded(dims, _) => {
+                for StridedDim {
                     axis: paxis,
                     dim,
                     stride,
@@ -255,7 +245,7 @@ impl View {
         match self {
             View::None => 0,
             View::Strided(dims) => dims.iter().map(|dim| dim.dim).product(),
-            View::Padded(dims) => dims.iter().map(|dim| dim.dim).product(),
+            View::Padded(dims, _) => dims.iter().map(|dim| dim.dim).product(),
         }
     }
 
@@ -298,30 +288,40 @@ impl View {
                 res.pop();
                 return (Vec::new(), f!("{}{}[{res}]", scope, id));
             }
-            View::Padded(dims) => {
+            View::Padded(dims, padding) => {
                 //std::println!("Using padded index");
                 let mut res = String::new();
                 // When the padding does not apply
                 let mut padding_condition = String::new();
-                for PaddedDim {
+                for StridedDim {
                     axis,
                     dim,
                     stride,
-                    lp,
-                    rp,
                 } in dims
                 {
-                    //std::println!("Padding {id} with {lp}, {rp}");
-                    if *lp > 0 {
-                        padding_condition += &f!("i{axis} < {lp} || ");
-                        res += &f!("(i{axis}-{lp})*{stride}+");
+                    if let Some((axes, (lp, rp))) = padding.axes.iter().find(|(axes, _)| axes.iter().max().unwrap() == axis) {
+                        //std::println!("Padding {id} with {lp}, {rp}");
+                        let mut idx = String::new();
+                        for (i, axis) in axes.iter().enumerate() {
+                            let st = dims[axis-i].stride;
+                            idx += &f!("i{axis}*{}+", if st > 0 { st/stride } else { st });
+                        }
+                        idx.pop();
+                        if *lp > 0 {
+                            padding_condition += &f!("{idx} < {lp} || ");
+                            res += &f!("(i{axis}-{lp})*{stride}+");
+                        } else if *lp < 0 {
+                            let lp = -lp;
+                            res += &f!("(i{axis}+{lp})*{stride}+");
+                        } else {
+                            res += &f!("i{axis}*{stride}+");
+                        }
+                        // rp negative does essentially nothing, we only care if it's positive
+                        if *rp > 0 {
+                            padding_condition += &f!("{idx} > {} || ", *dim as isize - lp - rp);
+                        }
                     } else {
-                        let lp = -lp;
-                        res += &f!("(i{axis}+{lp})*{stride}+");
-                    }
-                    // rp negative does essentially nothing, we only care if it's positive
-                    if *rp > 0 {
-                        padding_condition += &f!("i{id} > {} || ", *dim as isize - lp - rp);
+                        res += &f!("i{axis}*{stride}+");
                     }
                 }
                 res.pop();

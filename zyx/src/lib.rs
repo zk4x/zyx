@@ -93,9 +93,10 @@ fn t3() {
 #[test]
 fn t4() {
     Tensor::set_default_device(Device::OpenCL);
-    let x = Tensor::randn([1, 1024, 1024], DType::F32);
-    let y = Tensor::randn([1024, 1, 1024], DType::F32);
-    let z = (x * y).sum(2);
+    let x = Tensor::randn([1024, 1024], DType::F32);
+    let y = Tensor::randn([1024, 1024], DType::F32);
+    //let z = (x * y).sum(2);
+    let z = x.dot(y);
     Tensor::realize([&z]);
 }
 
@@ -117,4 +118,20 @@ fn t6() {
     let x = Tensor::randn([14, 16], DType::U8);
     let x = x.get((.., 8..-2));
     std::println!("{x}");
+}
+
+#[test]
+fn t7() {
+    let x = Tensor::from([[2, 3], [4, 5]]);
+    let x = x.pad_zeros([(4, 3), (1, 2)]);
+    //Tensor::plot_dot_graph([], "graph0");
+    std::println!("{x}")
+}
+
+#[test]
+fn t8() {
+    use std::println;
+    let x = Tensor::ones([2, 3], DType::F32);
+    println!("{x}");
+    println!("{:?}", Tensor::default_device());
 }

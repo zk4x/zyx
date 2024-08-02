@@ -238,9 +238,7 @@ impl<C: Compiler> CompiledBackend<C> {
                 kernel.split_axis(0, &dims);
             }
 
-            // Then split those first three loops into global and local loops.
-            // Reshape kernels to 6d (global, local) with some register loops
-            // should be shape: [gws[0], lws[0], gws[1], lws[1], gws[2], lws[2]]
+            // Split first three loops into global and local loops.
             let mut gws = [1; 3];
             for op in &kernel.ops {
                 if let VOp::Loop { axis, dimension } = op {
@@ -250,6 +248,11 @@ impl<C: Compiler> CompiledBackend<C> {
                     gws[*axis] = *dimension;
                 }
             }
+
+            // Reorder global loops from smallest to largest
+            //gws.sort();
+            // Get sort indices and permute both kernel and gws
+            // by those indices
 
             // Determine the best possible work size
             let lws = best_local_work_size(gws, self.hwinfo.max_work_group_size);
@@ -374,9 +377,9 @@ impl<C: Compiler> CompiledBackend<C> {
 // Takes global work size (gws) and maximum work group size (mwgs)
 fn best_local_work_size(mut gws: [usize; 3], mwgs: usize) -> [usize; 3] {
     let mut lws = [1; 3];
-    println!("Max {mwgs:?}");
+    //println!("Max {mwgs:?}");
     let rwgs = (mwgs as i64).sqrt() as usize;
-    println!("Root {rwgs:?}");
+    //println!("Root {rwgs:?}");
 
     let mut total = 1;
     let mut n = 1;
@@ -404,3 +407,7 @@ fn best_local_work_size(mut gws: [usize; 3], mwgs: usize) -> [usize; 3] {
 
     return lws;
 }
+
+//fn local_memory_tiles(ops: &mut Vec<VOp>) {}
+
+//fn more_work_per_thread(ops: &mut Vec<VOp>, gws: &mut [usize; 3]) {}

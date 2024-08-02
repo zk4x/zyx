@@ -12,12 +12,16 @@ use alloc::{
 pub(super) struct Graph {
     // First value is reference count, second is node
     nodes: BTreeMap<TensorId, (u32, Node)>,
+    pub(super) default_device: Device,
+    pub(super) default_device_set_by_user: bool,
 }
 
 impl Graph {
     pub(crate) const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
+            default_device: Device::CPU,
+            default_device_set_by_user: false,
         }
     }
 
@@ -84,20 +88,21 @@ impl Graph {
 
     pub(crate) fn device(&self, tensor_id: TensorId) -> Device {
         // TODO now that we have const we need better search algorithm
-        let mut x = tensor_id;
         let mut i = 0;
-        while i < 1000000 {
-            //libc_print::libc_println!("Id: {x}, nodes: {:?}", self.nodes);
-            let node = &self.nodes[&x].1;
+        let mut params = alloc::vec![tensor_id];
+        while let Some(param) = params.pop() {
+            let node = &self.nodes[&param].1;
             match node {
-                Node::Const { .. } => return Device::OpenCL,
                 Node::Leaf { device, .. } => return *device,
                 // TODO | Node::ToDevice { device, .. }
-                _ => x = node.parameters().next().unwrap(),
+                _ => params.extend(node.parameters()),
             }
             i += 1;
+            if i > 1000000 {
+                panic!("Device of {tensor_id} could not be found. This is internal bug.")
+            }
         }
-        panic!("Device of {x} could not be found. This is internal bug.")
+        return self.default_device;
     }
 
     pub(crate) fn shape(&self, tensor_id: TensorId) -> &[usize] {
@@ -149,7 +154,9 @@ impl Graph {
                     params.extend(self.nodes[&param].1.parameters());
                 }
             }
+
         }
+        let device = self.device(*visited.last().unwrap());
         return Graph {
             nodes: visited
                 .into_iter()
@@ -162,7 +169,7 @@ impl Graph {
                                 Node::Leaf {
                                     shape: self.shape(id).into(),
                                     dtype: self.dtype(id),
-                                    device: self.device(id),
+                                    device,
                                 },
                             )
                         } else {
@@ -171,10 +178,12 @@ impl Graph {
                     )
                 })
                 .collect(),
+            default_device: device,
+            default_device_set_by_user: false, // does not matter here
         };
     }
 
-    // Calculates execution order, flop, bytes read and written and optimizes graph:
+    // Calculates execution order, recalculates rcs, flop, bytes read and written and optimizes graph:
     // 1. moves all unary ops before movement ops
     // 2. removes unnecessary ops (like exp followed by ln), adding 0, multiply by 0, divide by 1, etc.
     // This function should be pretty fast, because it's also used by the interpreter, which does not do any caching
@@ -208,6 +217,13 @@ impl Graph {
             }
         }
         order.reverse();
+        // Recalculate reference counts
+        for (id, (rc, _)) in &mut self.nodes {
+            *rc = rcs[id];
+        }
+        for id in to_eval {
+            self.nodes.get_mut(id).unwrap().0 += 1;
+        }
         //std::println!("Execution order: {order:?}");
         // Reorder nodes in such a way, that movement ops are as late as possible,
         // after all unary ops just before reduce ops. (Do not reorder it after binary ops though.)
@@ -369,6 +385,11 @@ impl Graph {
     #[cfg(feature = "std")]
     #[must_use]
     pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> alloc::string::String {
+        let ids: BTreeSet<TensorId> = if ids.is_empty() {
+            self.nodes.keys().copied().collect()
+        } else {
+            ids.clone()
+        };
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
         let mut rcs: BTreeMap<TensorId, u8> = BTreeMap::new();

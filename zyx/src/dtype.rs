@@ -28,8 +28,22 @@ impl Constant {
     pub(crate) fn new<T: Scalar>(x: T) -> Constant {
         use core::mem::transmute_copy as t;
         match T::dtype() {
+            #[cfg(feature = "half")]
+            DType::BF16 => Constant::BF16(unsafe {t(&x)}),
+            #[cfg(feature = "half")]
+            DType::F16 => Constant::F16(unsafe {t(&x)}),
             DType::F32 => Constant::F32(unsafe {t(&x)}),
             DType::F64 => Constant::F64(unsafe {t(&x)}),
+            #[cfg(feature = "complex")]
+            DType::CF32 => {
+                let x: num_complex::Complex<f32> = x.cast();
+                unsafe { Constant::CF32(t(&x.re), t(&x.re)) }
+            },
+            #[cfg(feature = "complex")]
+            DType::CF64 => {
+                let x: num_complex::Complex<f64> = x.cast();
+                unsafe { Constant::CF64(t(&x.re), t(&x.re)) }
+            }
             DType::U8 => Constant::U8(unsafe {t(&x)}),
             DType::I8 => Constant::I8(unsafe {t(&x)}),
             DType::I16 => Constant::I16(unsafe {t(&x)}),
@@ -41,8 +55,16 @@ impl Constant {
 
     pub(crate) fn dtype(&self) -> DType {
         match self {
+            #[cfg(feature = "half")]
+            Constant::BF16(_) => DType::BF16,
+            #[cfg(feature = "half")]
+            Constant::F16(_) => DType::F16,
             Constant::F32(_) => DType::F32,
             Constant::F64(_) => DType::F64,
+            #[cfg(feature = "complex")]
+            Constant::CF32(..) => DType::CF32,
+            #[cfg(feature = "complex")]
+            Constant::CF64(..) => DType::CF64,
             Constant::U8(_) => DType::U8,
             Constant::I8(_) => DType::I8,
             Constant::I16(_) => DType::I16,

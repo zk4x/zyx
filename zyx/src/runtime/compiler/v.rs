@@ -137,6 +137,7 @@ impl Kernel {
     }
 
     pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
+        println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
         let VOp::Loop { axis, dimension } = &mut self.ops[op_id] else {
             panic!()
@@ -157,7 +158,12 @@ impl Kernel {
             )
         }
         let mut num_loops = 0;
-        //println!("Splitting {op_id} into {dimensions:?}");
+        // Update shape
+        self.shape.remove(axis);
+        for dim in dimensions {
+            self.shape.insert(axis, *dim);
+        }
+        // Update loops, loads and stores
         for i in id + 1..self.ops.len() {
             match &mut self.ops[i] {
                 // Then change axis ids for all following loops
@@ -253,10 +259,11 @@ pub(super) fn generate_kernels(
     // The aim is to sort nodes in such a way, that maximum performance is attained.
     // These kernels mostly keep shapes of original nodes.
     // Further optimization is done in optimize kernels function.
+    println!("Eval: {to_eval:?}");
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!("{node:?}");
+        println!("{} x {node:?}", graph.rc(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {
@@ -293,6 +300,12 @@ pub(super) fn generate_kernels(
                 // Expand increases axes with dimension of 1 to bigger dimension
                 // and sets strides in those axes to 0 for both loads and stores
                 //println!("Expanding {kernel:?}");
+                assert!(shape.len() >= kernel.shape.len());
+                if shape.len() > kernel.shape.len() {
+                    let mut dimensions: Vec<usize> = core::iter::repeat(1).take(shape.len() - kernel.shape.len()).collect();
+                    dimensions.push(kernel.shape[0]);
+                    kernel.split_axis(0, &dimensions);
+                }
                 assert_eq!(kernel.shape.len(), shape.len());
                 let mut expand_axes = BTreeSet::new();
                 for a in 0..kernel.shape.len() {
@@ -332,6 +345,7 @@ pub(super) fn generate_kernels(
                 }
                 kernel.ops.push(VOp::noop(nid, *x));
                 kernel.vars.insert(nid);
+                kernel.shape = shape.clone();
             }
             Node::Permute { x, axes, .. } => {
                 // Permute shuffles load and store strides
@@ -525,12 +539,22 @@ pub(super) fn generate_kernels(
             }
             Node::Binary { x, y, bop } => {
                 // Binary ops may allow us to join two kernels together
-                if let Some(kernel) = kernels
+                if let Some(id) = kernels
                     .iter_mut()
-                    .find(|kernel| kernel.vars.contains(x) && kernel.vars.contains(y))
+                    .position(|kernel| kernel.vars.is_superset(&[*x, *y].into()))
                 {
                     // If both inputs are in the same kernel
-                    //println!("Both inputs are in the same kernel.");
+                    let kernel = if kernels[id].shape != graph.shape(*x) {
+                        // create new kernel using already predefined stores of both x and y
+                        let mut kernel = Kernel::load(graph, *x);
+                        kernel.ops.push(VOp::Load { z: *y, x: *y, view: View::new(graph.shape(*y)) });
+                        kernel.vars.insert(*y);
+                        kernel.inputs.insert(*y);
+                        kernels.push(kernel);
+                        kernels.last_mut().unwrap()
+                    } else {
+                        &mut kernels[id]
+                    };
                     kernel.ops.push(VOp::Binary {
                         z: nid,
                         x: *x,
@@ -546,7 +570,6 @@ pub(super) fn generate_kernels(
                     {
                         //println!("Both inputs are in different kernels.");
                         // Two separate kernels contain our inputs, so we join them together
-                        // TODO do some checks that this join is always valid
 
                         // We can not join kernels if say kernel x depends on kernel a
                         // and kernel a depends on kernel y. In that case we have to create a new kernel.
@@ -571,6 +594,17 @@ pub(super) fn generate_kernels(
                             (false, false) => {
                                 // Nothing needs to be done
                             }
+                        }
+
+                        let shape = graph.shape(*x);
+                        if kernels[kernel_x_id].shape != shape {
+                            kernels.push(Kernel::load(graph, *x));
+                            kernel_x_id = kernels.len() - 1;
+                        }
+
+                        if kernels[kernel_y_id].shape != shape {
+                            kernels.push(Kernel::load(graph, *y));
+                            kernel_y_id = kernels.len() -1
                         }
 
                         // We know that kernel_y is the latest kernel,
@@ -615,7 +649,7 @@ pub(super) fn generate_kernels(
                 }
             }
         }
-        if to_eval.contains(&nid) || graph.rc(nid) > 1 {
+        if to_eval.contains(&nid) || (graph.rc(nid) > 1 && !matches!(graph[nid], Node::Leaf { .. } | Node::Const { .. })) {
             if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {
                 kernel.store(nid, graph);
             } else {
@@ -668,14 +702,17 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
 fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
     let mut kernel_x_inputs = kernels[kernel_x_id].inputs.clone();
     let kernel_y_outputs = &kernels[kernel_y_id].outputs;
+    let mut visited = BTreeSet::new();
     while let Some(x) = kernel_x_inputs.pop_last() {
-        if kernel_y_outputs.contains(&x) {
-            return true;
-        } else {
-            for kernel in kernels.iter().rev() {
-                if kernel.outputs.contains(&x) {
-                    kernel_x_inputs.extend(kernel.inputs.clone());
-                    break;
+        if visited.insert(x) {
+            if kernel_y_outputs.contains(&x) {
+                return true;
+            } else {
+                for kernel in kernels.iter().rev() {
+                    if kernel.outputs.contains(&x) {
+                        kernel_x_inputs.extend(kernel.inputs.clone());
+                        break;
+                    }
                 }
             }
         }

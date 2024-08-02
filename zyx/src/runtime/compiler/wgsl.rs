@@ -1,15 +1,19 @@
 use crate::DType;
 use crate::Scalar;
 
-use super::{Compiler, CompilerError, HWInfo};
-use alloc::vec;
-use alloc::{boxed::Box, vec::Vec};
+use super::{Compiler, HWInfo};
+use alloc::{boxed::Box, vec::Vec, vec, string::String};
 use wgpu::{
     Backends, BufferDescriptor, BufferSize, BufferUsages, Device, DeviceDescriptor, Dx12Compiler,
     Features, Gles3MinorVersion, Instance, InstanceDescriptor, InstanceFlags, Limits, Queue,
 };
 
 use super::IRKernel;
+
+#[derive(Debug)]
+pub struct WGSLError {
+    info: String,
+}
 
 pub(crate) struct WGSLBuffer {
     memory: wgpu::Buffer,
@@ -27,7 +31,7 @@ pub(crate) struct WGSLRuntime {
 }
 
 impl WGSLRuntime {
-    fn queue(&mut self) -> Result<&Queue, CompilerError> {
+    fn queue(&mut self) -> Result<&Queue, WGSLError> {
         let res = &self.queues[self.queue_id];
         self.queue_size[self.queue_id] += 1;
         // Blocks and waits for queue to finish execution so that
@@ -51,8 +55,9 @@ impl WGSLRuntime {
 impl Compiler for WGSLRuntime {
     type Buffer = WGSLBuffer;
     type Program = WGSLProgram;
+    type Error = WGSLError;
 
-    fn initialize() -> Result<Self, CompilerError> {
+    fn initialize() -> Result<Self, WGSLError> {
         let instance = Instance::new(InstanceDescriptor {
             backends: Backends::VULKAN,
             flags: InstanceFlags::empty(),
@@ -62,7 +67,7 @@ impl Compiler for WGSLRuntime {
 
         // For now we will support only single device
         let adapter = instance.enumerate_adapters(Backends::VULKAN).pop().ok_or(
-            CompilerError::InitializationFailure("No adapters found in WGSL backend."),
+            WGSLError { info: "No adapters found in WGSL backend.".into() },
         )?;
         let runtime = nostd_async::Runtime::new();
         let mut task = nostd_async::Task::new(adapter.request_device(
@@ -75,7 +80,7 @@ impl Compiler for WGSLRuntime {
         ));
         let handle = task.spawn(&runtime);
         let (device, queue) = handle.join().map_err(|_| {
-            CompilerError::InitializationFailure("No devices found in WGSL backend.")
+            WGSLError { info: "No devices found in WGSL backend.".into() }
         })?;
 
         return Ok(Self {
@@ -88,7 +93,7 @@ impl Compiler for WGSLRuntime {
         });
     }
 
-    fn hardware_information(&mut self) -> Result<HWInfo, CompilerError> {
+    fn hardware_information(&mut self) -> Result<HWInfo, WGSLError> {
         return Ok(HWInfo {
             max_work_item_sizes: vec![1024, 1024, 1024],
             max_work_group_size: 256,
@@ -106,7 +111,7 @@ impl Compiler for WGSLRuntime {
         });
     }
 
-    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, CompilerError> {
+    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, WGSLError> {
         Ok(WGSLBuffer {
             memory: self.device.create_buffer(&BufferDescriptor {
                 label: None,
@@ -121,7 +126,7 @@ impl Compiler for WGSLRuntime {
         &mut self,
         buffer: &mut Self::Buffer,
         data: Vec<T>,
-    ) -> Result<(), CompilerError> {
+    ) -> Result<(), WGSLError> {
         let queue = self.queue()?;
         let mut view = queue
             .write_buffer_with(
@@ -150,18 +155,18 @@ impl Compiler for WGSLRuntime {
         &mut self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<Vec<T>, CompilerError> {
+    ) -> Result<Vec<T>, WGSLError> {
         let _ = buffer;
         let _ = length;
         todo!()
     }
 
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), CompilerError> {
+    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), WGSLError> {
         let _ = buffer;
         todo!()
     }
 
-    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, CompilerError> {
+    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, WGSLError> {
         let _ = kernel;
         todo!()
     }
@@ -170,13 +175,13 @@ impl Compiler for WGSLRuntime {
         &mut self,
         program: &Self::Program,
         args: &mut [Self::Buffer],
-    ) -> Result<(), CompilerError> {
+    ) -> Result<(), WGSLError> {
         let _ = program;
         let _ = args;
         todo!()
     }
 
-    fn release_program(&mut self, program: Self::Program) -> Result<(), CompilerError> {
+    fn release_program(&mut self, program: Self::Program) -> Result<(), WGSLError> {
         let _ = program;
         todo!()
     }

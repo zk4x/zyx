@@ -65,7 +65,7 @@ pub enum ZyxError {
     #[cfg(feature = "opencl")]
     OpenCLError(compiler::opencl::OpenCLError),
     #[cfg(feature = "wgsl")]
-    WGSLError(compiler::opencl::WGSLError),
+    WGSLError(compiler::wgsl::WGSLError),
     CPUError(custom::cpu::CPUError),
 }
 
@@ -114,14 +114,13 @@ pub(crate) struct Runtime {
     #[cfg(feature = "wgsl")]
     wgsl: Option<compiler::CompiledBackend<compiler::wgsl::WGSLRuntime>>,
     cpu: Option<InterpretedBackend<CPURuntime>>,
-    pub(crate) default_device: Device,
-    pub(crate) default_device_set_by_user: bool,
     #[cfg(feature = "rand")]
     rng: core::cell::OnceCell<SmallRng>,
     pub(crate) training: bool,
 }
 
 impl Runtime {
+    #[must_use]
     pub(crate) const fn new() -> Self {
         Runtime {
             graph: Graph::new(),
@@ -134,12 +133,19 @@ impl Runtime {
             #[cfg(feature = "wgsl")]
             wgsl: None,
             cpu: None,
-            default_device: Device::CPU,
-            default_device_set_by_user: false,
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             training: false,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn default_device(&mut self) -> &mut Device {
+        &mut self.graph.default_device
+    }
+
+    pub(crate) fn default_device_set_by_user(&mut self) {
+        self.graph.default_device_set_by_user = true;
     }
 
     /// If default device was not set by the user, this function
@@ -152,7 +158,7 @@ impl Runtime {
     /// If they all fail to initialize, then default_device
     /// is set to CPU.
     pub(crate) fn set_default_device_best(&mut self) {
-        if self.default_device_set_by_user {
+        if self.graph.default_device_set_by_user {
             return;
         }
         #[cfg(feature = "cuda")]
@@ -162,21 +168,21 @@ impl Runtime {
         }
         #[cfg(feature = "hsa")]
         if self.initialize_device(Device::HSA) {
-            self.default_device = Device::HSA;
+            self.graph.default_device = Device::HSA;
             return;
         }
         #[cfg(feature = "opencl")]
         if self.initialize_device(Device::OpenCL) {
-            self.default_device = Device::OpenCL;
+            self.graph.default_device = Device::OpenCL;
             return;
         }
         #[cfg(feature = "wgsl")]
         if self.initialize_device(Device::WGSL) {
-            self.default_device = Device::WGSL;
+            self.graph.default_device = Device::WGSL;
             return;
         }
         if self.initialize_device(Device::CPU) {
-            self.default_device = Device::CPU;
+            self.graph.default_device = Device::CPU;
             return;
         }
     }
@@ -249,6 +255,7 @@ impl Runtime {
                     true
                 }
             }
+            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
             _ => {
                 panic!("Zyx was compiled without support for this device.");
             }
@@ -272,6 +279,7 @@ impl Runtime {
                 #[cfg(feature = "wgsl")]
                 Device::WGSL => self.wgsl.as_mut().unwrap().remove(x)?,
                 Device::CPU => self.cpu.as_mut().unwrap().remove(x)?,
+                #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
                 _ => {
                     panic!("Zyx was compiled without support for this device.");
                 }
@@ -368,17 +376,13 @@ impl Runtime {
         let rng = self.rng.get_mut().unwrap();
         return match T::dtype() {
             #[cfg(feature = "half")]
-            DType::BF16 => {
-                let uniform_dist = Uniform::new(lower.cast::<bf16>(), upper.cast::<bf16>());
-                let data: Vec<bf16> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
+            DType::BF16 => Err(ZyxError::WrongDType(
+                "Cannot sample bf16 from uniform distribution",
+            )),
             #[cfg(feature = "half")]
-            DType::F16 => {
-                let uniform_dist = Uniform::new(lower.cast::<f16>(), upper.cast::<f16>());
-                let data: Vec<f16> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
+            DType::F16 => Err(ZyxError::WrongDType(
+                "Cannot sample f16 from uniform distribution",
+            )),
             DType::F32 => {
                 let uniform_dist = Uniform::new(lower.cast::<f32>(), upper.cast::<f32>());
                 let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
@@ -563,19 +567,13 @@ impl Runtime {
     }
 
     pub(crate) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
-        let shape = self.shape(x);
-        let mut shape: Vec<usize> = shape
-            .iter()
-            .copied()
-            .rev()
-            .zip(
-                core::iter::repeat((0isize, 0isize))
-                    .take(shape.len() - padding.len())
-                    .chain(padding.iter().copied()),
-            )
-            .map(|(d, (lp, rp))| d + lp as usize + rp as usize)
-            .collect();
-        shape.reverse();
+        let mut shape: Vec<usize> = self.shape(x).into();
+        let mut i = 0;
+        for d in shape.iter_mut().rev() {
+            *d = (*d as isize + padding[i].0 + padding[i].1) as usize;
+            i += 1;
+        }
+
         return self.graph.push(Node::Pad { x, padding, shape });
     }
 
@@ -663,11 +661,11 @@ impl Runtime {
         shape: Vec<usize>,
     ) -> Result<TensorId, ZyxError> {
         assert_eq!(data.len(), shape.iter().product());
+        self.set_default_device_best();
         if data.len() == 1 {
             return Ok(self.graph.push(Node::Const { value: Constant::new(data[0]) }));
         }
-        self.set_default_device_best();
-        let device = self.default_device;
+        let device = self.graph.default_device;
         //#[cfg(feature = "debug1")]
         //println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
         let tensor_id = self.graph.push(Node::Leaf {
@@ -715,6 +713,7 @@ impl Runtime {
                 let dev = self.cpu.as_mut().unwrap();
                 dev.store(tensor_id, data)?;
             }
+            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
             _ => {
                 panic!("Zyx was compiled without support for this device.");
             }
@@ -763,6 +762,7 @@ impl Runtime {
                 let length = self.shape(x).iter().product();
                 Ok(self.cpu.as_mut().unwrap().load(x, length)?)
             }
+            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
             _ => {
                 panic!("Zyx was compiled without support for this device.");
             }
@@ -794,6 +794,7 @@ impl Runtime {
             Device::CPU => self
                 .graph
                 .realize_graph(&tensors, |id| self.cpu.as_ref().unwrap().is_realized(id)),
+            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
             _ => {
                 panic!("Zyx was compiled without support for this device.");
             }
@@ -833,6 +834,7 @@ impl Runtime {
                     .interpret_graph(graph, &tensors)?;
                 return Ok(());
             }
+            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
             _ => {
                 panic!("Zyx was compiled without support for this device.");
             }

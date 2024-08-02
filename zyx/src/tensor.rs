@@ -36,21 +36,16 @@ impl Clone for Tensor {
 
 impl Drop for Tensor {
     fn drop(&mut self) {
-        //println!("dropping");
+        //std::println!("dropping");
         RT.lock().release(self.id).unwrap();
     }
 }
 
 impl Tensor {
-    /*#[cfg(feature = "debug1")]
-    pub fn debug_graph() {
-        RT.lock().debug_graph()
-    }*/
-
     /// Get default device used for new tensors.
     #[must_use]
     pub fn default_device() -> Device {
-        RT.lock().default_device
+        *RT.lock().default_device()
     }
 
     /// Write graph of operations between tensors as png image with given filename
@@ -83,7 +78,6 @@ impl Tensor {
     }
 
     /// Set training mode
-    #[must_use]
     pub fn set_training(training: bool) {
         RT.lock().training = training;
     }
@@ -93,8 +87,8 @@ impl Tensor {
     /// Returns false if the device failed to initialize.
     pub fn set_default_device(device: Device) -> bool {
         let mut g = RT.lock();
-        g.default_device = device;
-        g.default_device_set_by_user = true;
+        *g.default_device() = device;
+        g.default_device_set_by_user();
         g.initialize_device(device)
     }
 
@@ -157,8 +151,8 @@ impl Tensor {
     #[must_use]
     pub fn to(self, device: Device) -> Tensor {
         let mut rt = RT.lock();
-        let default_device = rt.default_device;
-        rt.default_device = device;
+        let default_device = *rt.default_device();
+        *rt.default_device() = device;
         let shape = rt.shape(self.id).to_vec();
         let tensor = Tensor {
             id: match self.dtype() {
@@ -217,7 +211,7 @@ impl Tensor {
             }
             .unwrap(),
         };
-        rt.default_device = default_device;
+        *rt.default_device() = default_device;
         return tensor;
     }
 
