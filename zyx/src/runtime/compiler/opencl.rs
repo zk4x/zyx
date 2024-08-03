@@ -39,7 +39,7 @@ const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
 const CL_SUCCESS: cl_int = 0;
 
 impl DType {
-    fn ocl(&self) -> &str {
+    pub(crate) fn ocl(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
             DType::BF16 => "BF16 is not native to OpenCL, workaround is WIP.",
@@ -382,7 +382,8 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
                     .unwrap(),
             ) as usize,
             num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
-            native_mm16x16_support: false,
+            wmma: false,
+            tensor_cores: false,
         });
     }
 

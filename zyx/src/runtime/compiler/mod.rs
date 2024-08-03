@@ -13,6 +13,7 @@ use super::node::{BOp, UOp};
 
 mod ir;
 use ir::{IRArg, IRKernel, IROp};
+mod ir2;
 mod v;
 
 #[cfg(feature = "cuda")]
@@ -140,7 +141,9 @@ pub struct HWInfo {
     /// Number of registers per thread
     pub num_registers: usize,
     /// Does this hardware support native matmul of 16x16 local tiles?
-    pub native_mm16x16_support: bool,
+    pub wmma: bool,
+    /// Does this hardware have tensor cores?
+    pub tensor_cores: bool,
 }
 
 impl<C: Compiler> CompiledBackend<C> {
@@ -271,6 +274,10 @@ impl<C: Compiler> CompiledBackend<C> {
                     println!("{op:?}");
                 }
             }
+
+            let ir_kernel = ir2::vops_to_ir(&kernel.ops, &graph, &self.hwinfo);
+            let str_kernel = ir2::to_str_kernel(&ir_kernel);
+            println!("\n\n{str_kernel}\n\n");
 
             let ir_kernel = ir::compile_ir(
                 &graph,

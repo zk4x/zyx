@@ -52,19 +52,6 @@ impl IRMem {
     }
 }
 
-// TODO later we need to rewrite IROp to something like this
-// to make PTX/HSAIL/SPIR-V generation easier.
-// Global and local memory will be declared in IRKernel
-/*pub(super) enum IROpv2 {
-    InitAcc { z: u8, len: usize },
-    Unary { z: u8, x: u8, uop: UOp },
-    Binary { z: u8, x: u8, y: u8, bop: BOp },
-    IdxMAdd { z: u8, x: u8, y: u8, a: u8 },
-    Loop { id: u8, len: usize },
-    EndLoop,
-    Barrier { scope: Scope },
-}*/
-
 /// IROp for direct translation to hardware kernels
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -289,6 +276,7 @@ pub(super) fn compile_ir(
         ops.push(IROp::EndLoop);
     }
 
+    // Get kernel arguments
     let mut args = BTreeMap::new();
     for x in inputs {
         args.insert(

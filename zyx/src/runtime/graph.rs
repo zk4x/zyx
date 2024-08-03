@@ -265,7 +265,7 @@ impl Graph {
                     flop += self.shape(*x).iter().product::<usize>();
                 }
                 Node::Binary { x, .. } => {
-                    flop += self.shape(*x).iter().product::<usize>() * 2;
+                    flop += self.shape(*x).iter().product::<usize>();
                 }
                 Node::Reduce { x, axes, .. } => {
                     flop += self

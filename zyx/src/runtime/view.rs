@@ -7,9 +7,9 @@ pub(crate) type Stride = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StridedDim {
-    axis: Axis,
-    dim: Dimension,
-    stride: Stride,
+    pub(crate) axis: Axis,
+    pub(crate) dim: Dimension,
+    pub(crate) stride: Stride,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -162,12 +162,6 @@ impl View {
                     );
                     stride *= dim;
                 }
-                // Split padding
-                if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
-                    for a in axis..axis + dim_len {
-                        axes.push(a);
-                    }
-                }
                 // Rename all following axes
                 for a in (axis + dim_len..dims.len()).rev() {
                     dims[a].axis += dim_len - 1;
@@ -175,10 +169,21 @@ impl View {
                 // If key in padding axes is greater than axis, then add dim_len - 1 to it
                 for (axes, _) in padding.axes.iter_mut() {
                     for a in axes {
-                        if *a > axis+dim_len {
+                        if *a > axis {
                             *a += dim_len - 1;
                         }
                     }
+                }
+                // Split padding
+                if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
+                    std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
+                    for a in axis+1..axis + dim_len {
+                        //if !axes.contains(&a) {
+                        //}
+                        axes.push(a);
+                    }
+                    // Would not be needed on btreeset
+                    axes.sort();
                 }
             }
         }
@@ -295,16 +300,19 @@ impl View {
                 let mut padding_condition = String::new();
                 for StridedDim {
                     axis,
-                    dim,
                     stride,
+                    ..
                 } in dims
                 {
                     if let Some((axes, (lp, rp))) = padding.axes.iter().find(|(axes, _)| axes.iter().max().unwrap() == axis) {
                         //std::println!("Padding {id} with {lp}, {rp}");
                         let mut idx = String::new();
-                        for (i, axis) in axes.iter().enumerate() {
-                            let st = dims[axis-i].stride;
-                            idx += &f!("i{axis}*{}+", if st > 0 { st/stride } else { st });
+                        let mut st = 1;
+                        let mut dim = 1;
+                        for axis in axes.iter().rev() {
+                            idx = f!("i{axis}*{st}+{idx}");
+                            st *= dims[*axis].dim;
+                            dim *= dims[*axis].dim;
                         }
                         idx.pop();
                         if *lp > 0 {
@@ -317,8 +325,9 @@ impl View {
                             res += &f!("i{axis}*{stride}+");
                         }
                         // rp negative does essentially nothing, we only care if it's positive
+                        std::println!("dim: {dim}, paddding {lp}, {rp}");
                         if *rp > 0 {
-                            padding_condition += &f!("{idx} > {} || ", *dim as isize - lp - rp);
+                            padding_condition += &f!("{idx} > {} || ", dim as isize - rp - 1);
                         }
                     } else {
                         res += &f!("i{axis}*{stride}+");
