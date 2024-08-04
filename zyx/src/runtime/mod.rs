@@ -1,4 +1,3 @@
-use crate::device::Device;
 use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::tensor::TensorId;
@@ -23,22 +22,10 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
 mod compiler;
 mod custom;
 mod graph;
 mod node;
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
 mod view;
 
 fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
@@ -58,42 +45,27 @@ fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
 pub enum ZyxError {
     EmptyTensor,
     WrongDType(&'static str),
-    #[cfg(feature = "cuda")]
     CUDAError(compiler::cuda::CUDAError),
-    #[cfg(feature = "hsa")]
     HSAError(compiler::hsa::HSAError),
-    #[cfg(feature = "opencl")]
     OpenCLError(compiler::opencl::OpenCLError),
-    #[cfg(feature = "wgsl")]
-    WGSLError(compiler::wgsl::WGSLError),
     CPUError(custom::cpu::CPUError),
 }
 
-#[cfg(feature = "cuda")]
 impl From<compiler::cuda::CUDAError> for ZyxError {
     fn from(value: compiler::cuda::CUDAError) -> Self {
         Self::CUDAError(value)
     }
 }
 
-#[cfg(feature = "hsa")]
 impl From<compiler::hsa::HSAError> for ZyxError {
     fn from(value: compiler::hsa::HSAError) -> Self {
         Self::HSAError(value)
     }
 }
 
-#[cfg(feature = "opencl")]
 impl From<compiler::opencl::OpenCLError> for ZyxError {
     fn from(value: compiler::opencl::OpenCLError) -> Self {
         Self::OpenCLError(value)
-    }
-}
-
-#[cfg(feature = "wgsl")]
-impl From<compiler::wgsl::WGSLError> for ZyxError {
-    fn from(value: compiler::wgsl::WGSLError) -> Self {
-        Self::WGSLError(value)
     }
 }
 
@@ -105,14 +77,9 @@ impl From<custom::cpu::CPUError> for ZyxError {
 
 pub(crate) struct Runtime {
     graph: Graph,
-    #[cfg(feature = "cuda")]
     cuda: Option<compiler::CompiledBackend<compiler::cuda::CUDARuntime>>,
-    #[cfg(feature = "hsa")]
     hsa: Option<compiler::CompiledBackend<compiler::hsa::HSARuntime>>,
-    #[cfg(feature = "opencl")]
     opencl: Option<compiler::CompiledBackend<compiler::opencl::OpenCLRuntime>>,
-    #[cfg(feature = "wgsl")]
-    wgsl: Option<compiler::CompiledBackend<compiler::wgsl::WGSLRuntime>>,
     cpu: Option<InterpretedBackend<CPURuntime>>,
     #[cfg(feature = "rand")]
     rng: core::cell::OnceCell<SmallRng>,
@@ -124,14 +91,9 @@ impl Runtime {
     pub(crate) const fn new() -> Self {
         Runtime {
             graph: Graph::new(),
-            #[cfg(feature = "cuda")]
             cuda: None,
-            #[cfg(feature = "hsa")]
             hsa: None,
-            #[cfg(feature = "opencl")]
             opencl: None,
-            #[cfg(feature = "wgsl")]
-            wgsl: None,
             cpu: None,
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),

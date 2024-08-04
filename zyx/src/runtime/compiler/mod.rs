@@ -16,17 +16,11 @@ use ir::{IRArg, IRKernel, IROp};
 mod ir2;
 mod v;
 
-#[cfg(feature = "cuda")]
 pub(super) mod cuda;
 
-#[cfg(feature = "hsa")]
 pub(super) mod hsa;
 
-#[cfg(feature = "opencl")]
 pub(super) mod opencl;
-
-#[cfg(feature = "wgsl")]
-pub(super) mod wgsl;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,16 +96,6 @@ pub(super) struct CompiledGraph<Program> {
     bytes_written: u128,
 }
 
-/*#[derive(Debug)]
-pub enum CompilerError {
-    InitializationFailure(&'static str),
-    OutOfDeviceMemory(&'static str),
-    OutOfHostMemory(&'static str),
-    BufferDoesNotExist(&'static str),
-    // For all unknown errors
-    GeneralExecutionError(&'static str),
-}*/
-
 /// Hardware information needed for applying optimizations
 #[allow(unused)]
 #[derive(Debug)]
@@ -140,6 +124,8 @@ pub struct HWInfo {
     pub local_mem_size: usize,
     /// Number of registers per thread
     pub num_registers: usize,
+    /// Does this device have local memory?
+    pub local_memory: bool,
     /// Does this hardware support native matmul of 16x16 local tiles?
     pub wmma: bool,
     /// Does this hardware have tensor cores?
@@ -161,11 +147,19 @@ impl<C: Compiler> CompiledBackend<C> {
         self.buffers.contains_key(&x)
     }
 
+    // TODO no point in this. Just create arena allocator and use offset to access different buffers
+    // But we have to be able to work with multiple memory pools, because max buffer size is usually
+    // about quarter of gpu memory.
+    // With multiple memory pools we can also make it work for multiple devices.
+    // But if we can't make sure that the next allocation is next to previous one,
+    // then we need to allocate in large chunks, which may not be optimal.
+    // More research needed before making changes.
     pub(super) fn store<T: Scalar>(
         &mut self,
         x: TensorId,
         data: Vec<T>,
     ) -> Result<(), C::Error> {
+        println!("Memory alignment: {}", self.hwinfo.page_size);
         let mut buffer = self.compiler.allocate_memory(data.len() * T::byte_size())?;
         self.compiler.store_memory(&mut buffer, data)?;
         self.buffers.insert(x, buffer);

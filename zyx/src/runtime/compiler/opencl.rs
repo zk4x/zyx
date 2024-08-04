@@ -375,6 +375,7 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
                     .unwrap(),
             ) as usize
                 / 8,
+            local_memory: true,
             local_mem_size: u64::from_ne_bytes(
                 get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE)
                     .unwrap()

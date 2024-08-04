@@ -7,7 +7,6 @@ extern crate alloc;
 
 use crate::runtime::Runtime;
 
-mod device;
 mod dtype;
 mod mutex;
 #[cfg(feature = "py")]
@@ -17,7 +16,6 @@ mod scalar;
 mod shape;
 mod tensor;
 
-pub use device::Device;
 pub use dtype::DType;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
@@ -40,7 +38,6 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 #[test]
 fn t0() {
     use std::println;
-    Tensor::set_default_device(Device::HSA);
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -50,7 +47,6 @@ fn t0() {
 #[test]
 fn t1() {
     use std::println;
-    Tensor::set_default_device(Device::OpenCL);
     let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp() + 1f32;
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -60,7 +56,6 @@ fn t1() {
 fn t2() {
     use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
-    Tensor::set_default_device(Device::OpenCL);
     let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
         .expand([2, 3, 2])
         .exp()
@@ -92,7 +87,6 @@ fn t3() {
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
-    Tensor::set_default_device(Device::OpenCL);
     let x = Tensor::randn([1024, 1024], DType::F32);
     let y = Tensor::randn([1024, 1024], DType::F32);
     //let z = (x * y).sum(2);
@@ -133,5 +127,4 @@ fn t8() {
     use std::println;
     let x = Tensor::ones([2, 3], DType::F32);
     println!("{x}");
-    println!("{:?}", Tensor::default_device());
 }

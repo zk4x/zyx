@@ -16,14 +16,17 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
+# Loading is used to access all the available devices
+loading = { version = "*", default-features = false }
+
 # Optional dependencies
 rand = { version = "0.8.5", default-features = false, features = [
     "small_rng",
 ], optional = true }
 half = { version = "2.4.1", default-features = false, optional = true }
 num-complex = { version = "0.4.6", default-features = false, optional = true }
-wgpu = { version = "0.20.1", default-features = false, optional = true }
-nostd_async = { version = "0.6.1", default-features = false, optional = true }
+
+# Pyo3 is used only for python bindings
 pyo3 = { version = "0.22.2", optional = true }
 
 [lib]
@@ -33,9 +36,8 @@ crate-type = ["lib", "cdylib"]
 default = [
     "debug1",
     "rand",
-    "opencl",
-    #"hsa",
-    #"cuda",
+    #"complex",
+    #"half",
     #"py",
 ] # TODO remove default from release build
 
@@ -55,16 +57,13 @@ half = ["dep:half"]
 complex = ["dep:num-complex"]
 
 # Enables cuda device
-cuda = []
+#cuda = []
 
 # Enables hsa device
-hsa = []
+#hsa = []
 
 # Enables opencl device
-opencl = []
-
-# Enables wgpu device
-wgsl = ["dep:wgpu", "dep:nostd_async"]
+#opencl = []
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
-py = ["dep:pyo3", "std", "half", "rand", "complex", "opencl", "hsa", "wgsl"]
+py = ["dep:pyo3", "std", "half", "rand", "complex"]

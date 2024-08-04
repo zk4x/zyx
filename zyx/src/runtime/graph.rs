@@ -2,26 +2,25 @@ use super::{
     node::{BOp, Node, UOp},
     TensorId,
 };
-use crate::{DType, Device};
+use crate::DType;
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     vec::Vec,
 };
 
+// TODO implement PartialOrd such that tensor id does not matter
+// This is probably not very high priority. It probably works fine
+// even this way.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(super) struct Graph {
     // First value is reference count, second is node
     nodes: BTreeMap<TensorId, (u32, Node)>,
-    pub(super) default_device: Device,
-    pub(super) default_device_set_by_user: bool,
 }
 
 impl Graph {
     pub(crate) const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
-            default_device: Device::CPU,
-            default_device_set_by_user: false,
         }
     }
 
@@ -30,7 +29,7 @@ impl Graph {
     }
 
     /// Returns which tensors should be deallocated
-    pub(crate) fn release(&mut self, x: TensorId) -> BTreeSet<(TensorId, Device)> {
+    pub(crate) fn release(&mut self, x: TensorId) -> BTreeSet<TensorId> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         let mut to_remove = BTreeSet::new();
@@ -39,7 +38,7 @@ impl Graph {
             node.0 -= 1;
             if node.0 == 0 {
                 params.extend(node.1.parameters());
-                to_remove.insert((x, self.device(x)));
+                to_remove.insert(x);
                 self.nodes.remove(&x);
             }
         }
@@ -86,7 +85,7 @@ impl Graph {
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
 
-    pub(crate) fn device(&self, tensor_id: TensorId) -> Device {
+    /*pub(crate) fn device(&self, tensor_id: TensorId) -> Device {
         // TODO now that we have const we need better search algorithm
         let mut i = 0;
         let mut params = alloc::vec![tensor_id];
@@ -103,7 +102,7 @@ impl Graph {
             }
         }
         return self.default_device;
-    }
+    }*/
 
     pub(crate) fn shape(&self, tensor_id: TensorId) -> &[usize] {
         let mut x = tensor_id;
@@ -125,12 +124,6 @@ impl Graph {
         panic!("Shape of {x} could not be found. This is internal bug.")
     }
 
-    #[cfg(any(
-        feature = "cuda",
-        feature = "opencl",
-        feature = "wgsl",
-        feature = "hsa"
-    ))]
     pub(crate) fn rc(&self, x: TensorId) -> u32 {
         self.nodes[&x].0
     }
@@ -156,7 +149,7 @@ impl Graph {
             }
 
         }
-        let device = self.device(*visited.last().unwrap());
+        //let device = self.device(*visited.last().unwrap());
         return Graph {
             nodes: visited
                 .into_iter()
@@ -169,7 +162,7 @@ impl Graph {
                                 Node::Leaf {
                                     shape: self.shape(id).into(),
                                     dtype: self.dtype(id),
-                                    device,
+                                    //device,
                                 },
                             )
                         } else {
@@ -178,8 +171,8 @@ impl Graph {
                     )
                 })
                 .collect(),
-            default_device: device,
-            default_device_set_by_user: false, // does not matter here
+            //default_device: device,
+            //default_device_set_by_user: false, // does not matter here
         };
     }
 
@@ -467,8 +460,8 @@ impl Graph {
                 Node::Leaf {
                     shape,
                     dtype,
-                    device,
-                } => add_node(id, &f!("Leaf({shape:?}, {dtype}, {device:?})"), "box"),
+                    //device,
+                } => add_node(id, &f!("Leaf({shape:?}, {dtype})"), "box"),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
                 Node::Reshape { x, .. } => add_node(id, &f!("Reshape({x})"), "oval"),

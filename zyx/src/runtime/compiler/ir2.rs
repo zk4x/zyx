@@ -265,6 +265,9 @@ impl VarMap {
     }
 
     fn get_empty_id(&mut self, dtype: IRDType) -> usize {
+        // This finds variable with the same dtype, however
+        // we often can use registers that can hold variables of different dtypes,
+        // so the dtype equality check will be disabled for some devices.
         if let Some(id) = self.vars.iter().position(|(rc, _, _, vdtype)| *rc == 0 && *vdtype == dtype) {
             id
         } else {

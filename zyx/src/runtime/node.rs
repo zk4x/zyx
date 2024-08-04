@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{dtype::Constant, tensor::TensorId, DType, Device};
+use crate::{dtype::Constant, tensor::TensorId, DType};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum BOp {
@@ -55,7 +55,6 @@ pub(crate) enum Node {
     Leaf {
         shape: Vec<Dimension>,
         dtype: DType,
-        device: Device,
     },
     // Can be later added for moving between devices
     /*ToDevice {

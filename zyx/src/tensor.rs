@@ -1,4 +1,3 @@
-use crate::device::Device;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoPadding, IntoShape};
@@ -42,12 +41,6 @@ impl Drop for Tensor {
 }
 
 impl Tensor {
-    /// Get default device used for new tensors.
-    #[must_use]
-    pub fn default_device() -> Device {
-        *RT.lock().default_device()
-    }
-
     /// Write graph of operations between tensors as png image with given filename
     /// Expects dot program to be in the path. Otherwise create dot graph file
     /// without converting it to png.
@@ -80,16 +73,6 @@ impl Tensor {
     /// Set training mode
     pub fn set_training(training: bool) {
         RT.lock().training = training;
-    }
-
-    /// Set default device used for new tensors.
-    /// Returns true if the device initialized successfully.
-    /// Returns false if the device failed to initialize.
-    pub fn set_default_device(device: Device) -> bool {
-        let mut g = RT.lock();
-        *g.default_device() = device;
-        g.default_device_set_by_user();
-        g.initialize_device(device)
     }
 
     /// Returns gradients of self derived w.r.t. sources
@@ -141,13 +124,29 @@ impl Tensor {
         RT.lock().dtype(self.id)
     }
 
-    /// Returns on which devices is this tensor stored or where it will be stored once evaluated
-    #[must_use]
+    // Get default device used for new tensors.
+    /*#[must_use]
+    pub fn default_device() -> Device {
+        *RT.lock().default_device()
+    }*/
+
+    // Set default device used for new tensors.
+    // Returns true if the device initialized successfully.
+    // Returns false if the device failed to initialize.
+    /*pub fn set_default_device(device: Device) -> bool {
+        let mut g = RT.lock();
+        *g.default_device() = device;
+        g.default_device_set_by_user();
+        g.initialize_device(device)
+    }*/
+
+    // Returns on which devices is this tensor stored or where it will be stored once evaluated
+    /*#[must_use]
     pub fn device(&self) -> Device {
         RT.lock().device(self.id)
     }
 
-    /// Copy tensor to different [device](crate::Device).
+    // Copy tensor to different [device](crate::Device).
     #[must_use]
     pub fn to(self, device: Device) -> Tensor {
         let mut rt = RT.lock();
@@ -213,7 +212,7 @@ impl Tensor {
         };
         *rt.default_device() = default_device;
         return tensor;
-    }
+    }*/
 
     // Initializers
     /// Create tensor sampled from standard distribution.
@@ -528,29 +527,25 @@ impl Tensor {
     ///
     /// Pad last dimension by (1, 2)
     /// ```rust
-    /// use zyx_opencl;
-    /// let dev = zyx_opencl::device()?;
-    /// let x = dev.tensor([[2, 3],
-    ///                     [4, 1]]);
+    /// use zyx::Tensor;
+    /// let x = Tensor::from([[2, 3],
+    ///                       [4, 1]]);
     /// let z = x.pad([(1, 2)], 0);
     /// std::println!("{}", z);
     /// assert_eq!(z, [[0, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);
-    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
     /// ```rust
-    /// # use zyx_opencl;
-    /// # let dev = zyx_opencl::device()?;
-    /// # let x = dev.tensor([[2, 3],
-    /// #                     [4, 1]]);
+    /// # use zyx::Tensor;
+    /// # let x = Tensor::from([[2, 3],
+    /// #                       [4, 1]]);
     /// let z = x.pad([(2, -1), (1, 1)], 0);
     /// println!("z: {z}");
     /// assert_eq!(z, [[0, 0, 0],
     ///                [0, 0, 2],
     ///                [0, 0, 4],
     ///                [0, 0, 0]]);
-    /// # Ok::<(), zyx_opencl::ZyxError>(())
     /// ```
     ///
     /// # Panics
