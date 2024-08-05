@@ -1,17 +1,16 @@
 use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::tensor::TensorId;
-use alloc::vec;
-use alloc::{
+use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    vec,
     vec::Vec,
 };
-use custom::{
-    cpu::CPURuntime,
-    InterpretedBackend,
-};
+use allocator::{MemoryError, Allocator, MemoryHandle};
+use executor::{ExecError, Executor};
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
+
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -21,69 +20,28 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
+use view::Dimension;
 
-mod compiler;
-mod custom;
+mod executor;
+mod allocator;
 mod graph;
 mod node;
 mod view;
-
-fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    axes.iter().map(|a| shape[*a]).collect()
-}
-
-fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    shape
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
-        .collect()
-}
-
-#[derive(Debug)]
-pub enum ZyxError {
-    EmptyTensor,
-    WrongDType(&'static str),
-    CUDAError(compiler::cuda::CUDAError),
-    HSAError(compiler::hsa::HSAError),
-    OpenCLError(compiler::opencl::OpenCLError),
-    CPUError(custom::cpu::CPUError),
-}
-
-impl From<compiler::cuda::CUDAError> for ZyxError {
-    fn from(value: compiler::cuda::CUDAError) -> Self {
-        Self::CUDAError(value)
-    }
-}
-
-impl From<compiler::hsa::HSAError> for ZyxError {
-    fn from(value: compiler::hsa::HSAError) -> Self {
-        Self::HSAError(value)
-    }
-}
-
-impl From<compiler::opencl::OpenCLError> for ZyxError {
-    fn from(value: compiler::opencl::OpenCLError) -> Self {
-        Self::OpenCLError(value)
-    }
-}
-
-impl From<custom::cpu::CPUError> for ZyxError {
-    fn from(value: custom::cpu::CPUError) -> Self {
-        Self::CPUError(value)
-    }
-}
+mod v;
+mod ir;
 
 pub(crate) struct Runtime {
+    // Graph with nodes
     graph: Graph,
-    cuda: Option<compiler::CompiledBackend<compiler::cuda::CUDARuntime>>,
-    hsa: Option<compiler::CompiledBackend<compiler::hsa::HSARuntime>>,
-    opencl: Option<compiler::CompiledBackend<compiler::opencl::OpenCLRuntime>>,
-    cpu: Option<InterpretedBackend<CPURuntime>>,
+    // Random number generator
     #[cfg(feature = "rand")]
     rng: core::cell::OnceCell<SmallRng>,
+    // Are we in training mode?
     pub(crate) training: bool,
+    // Allocates memory on physical devices
+    allocator: Allocator,
+    // Executes kernels on physical devices
+    executor: Executor,
 }
 
 impl Runtime {
@@ -91,136 +49,11 @@ impl Runtime {
     pub(crate) const fn new() -> Self {
         Runtime {
             graph: Graph::new(),
-            cuda: None,
-            hsa: None,
-            opencl: None,
-            cpu: None,
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             training: false,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn default_device(&mut self) -> &mut Device {
-        &mut self.graph.default_device
-    }
-
-    pub(crate) fn default_device_set_by_user(&mut self) {
-        self.graph.default_device_set_by_user = true;
-    }
-
-    /// If default device was not set by the user, this function
-    /// tries to initialize all devices and set the first
-    /// successfully initialized device as the default_device in this order:
-    /// 1. CUDA
-    /// 2. HSA
-    /// 3. OpenCL
-    /// 4. WGSL
-    /// If they all fail to initialize, then default_device
-    /// is set to CPU.
-    pub(crate) fn set_default_device_best(&mut self) {
-        if self.graph.default_device_set_by_user {
-            return;
-        }
-        #[cfg(feature = "cuda")]
-        if self.initialize_device(Device::CUDA) {
-            self.default_device = Device::CUDA;
-            return;
-        }
-        #[cfg(feature = "hsa")]
-        if self.initialize_device(Device::HSA) {
-            self.graph.default_device = Device::HSA;
-            return;
-        }
-        #[cfg(feature = "opencl")]
-        if self.initialize_device(Device::OpenCL) {
-            self.graph.default_device = Device::OpenCL;
-            return;
-        }
-        #[cfg(feature = "wgsl")]
-        if self.initialize_device(Device::WGSL) {
-            self.graph.default_device = Device::WGSL;
-            return;
-        }
-        if self.initialize_device(Device::CPU) {
-            self.graph.default_device = Device::CPU;
-            return;
-        }
-    }
-
-    /// Returns true on successfull initialization or if device
-    /// was already initialized.
-    pub(crate) fn initialize_device(&mut self, device: Device) -> bool {
-        match device {
-            #[cfg(feature = "cuda")]
-            Device::CUDA => {
-                if self.cuda.is_none() {
-                    if let Ok(cuda) = compiler::CompiledBackend::initialize() {
-                        self.cuda = Some(cuda);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            }
-            #[cfg(feature = "hsa")]
-            Device::HSA => {
-                if self.hsa.is_none() {
-                    if let Ok(hsa) = compiler::CompiledBackend::initialize() {
-                        self.hsa = Some(hsa);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            }
-            #[cfg(feature = "opencl")]
-            Device::OpenCL => {
-                if self.opencl.is_none() {
-                    if let Ok(opencl) = compiler::CompiledBackend::initialize() {
-                        self.opencl = Some(opencl);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL => {
-                if self.wgsl.is_none() {
-                    if let Ok(wgsl) = compiler::CompiledBackend::initialize() {
-                        self.wgsl = Some(wgsl);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            }
-            Device::CPU => {
-                if self.cpu.is_none() {
-                    if let Ok(cpu) = InterpretedBackend::initialize() {
-                        self.cpu = Some(cpu);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                }
-            }
-            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
-            _ => {
-                panic!("Zyx was compiled without support for this device.");
-            }
+            allocator: Allocator::new(),
+            executor: Executor::new(),
         }
     }
 
@@ -230,30 +63,20 @@ impl Runtime {
 
     pub(crate) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
-        for (x, device) in to_remove {
+        /*for (x, device) in to_remove {
             match device {
-                #[cfg(feature = "cuda")]
                 Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
-                #[cfg(feature = "hsa")]
                 Device::HSA => self.hsa.as_mut().unwrap().remove(x)?,
-                #[cfg(feature = "opencl")]
                 Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
-                #[cfg(feature = "wgsl")]
-                Device::WGSL => self.wgsl.as_mut().unwrap().remove(x)?,
-                Device::CPU => self.cpu.as_mut().unwrap().remove(x)?,
-                #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
-                _ => {
-                    panic!("Zyx was compiled without support for this device.");
-                }
+                Device::CPU => self.x86_64.as_mut().unwrap().remove(x)?,
             }
-        }
+        }*/
         return Ok(());
     }
 
     /// Creates dot plot of graph between given tensors
-    #[cfg(feature = "std")]
     #[must_use]
-    pub(crate) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> alloc::string::String {
+    pub(crate) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
         self.graph.plot_dot_graph(tensors)
     }
 
@@ -267,61 +90,9 @@ impl Runtime {
         return self.graph.dtype(x);
     }
 
-    #[must_use]
-    pub(crate) fn device(&self, x: TensorId) -> Device {
-        return self.graph.device(x);
-    }
-
     #[cfg(feature = "rand")]
     pub(crate) fn randn(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
-        use rand;
-        use rand::{distributions::Standard, Rng, SeedableRng};
-        let n = shape.iter().product();
-        self.rng
-            .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
-        let rng = self.rng.get_mut().unwrap();
-        return match dtype {
-            #[cfg(feature = "half")]
-            DType::BF16 => todo!(),
-            #[cfg(feature = "half")]
-            DType::F16 => todo!(),
-            DType::F32 => {
-                let data: Vec<f32> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            DType::F64 => {
-                let data: Vec<f64> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            #[cfg(feature = "complex")]
-            DType::CF32 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF64 => todo!(),
-            DType::U8 => {
-                let data: Vec<u8> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            DType::I8 => {
-                let data: Vec<i8> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            DType::I16 => {
-                let data: Vec<i16> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            DType::I32 => {
-                let data: Vec<i32> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            DType::I64 => {
-                let data: Vec<i64> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-            DType::Bool => {
-                let data: Vec<bool> = (0..n).map(|_| rng.sample(Standard)).collect();
-                self.store(data, shape)
-            }
-        };
+        todo!()
     }
 
     #[cfg(feature = "rand")]
@@ -332,66 +103,18 @@ impl Runtime {
         upper: T,
     ) -> Result<TensorId, ZyxError> {
         use rand::{distributions::Uniform, Rng, SeedableRng};
-        let n = shape.iter().product();
+        let n: usize = shape.iter().product();
         self.rng
             .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
         let rng = self.rng.get_mut().unwrap();
-        return match T::dtype() {
-            #[cfg(feature = "half")]
-            DType::BF16 => Err(ZyxError::WrongDType(
-                "Cannot sample bf16 from uniform distribution",
-            )),
-            #[cfg(feature = "half")]
-            DType::F16 => Err(ZyxError::WrongDType(
-                "Cannot sample f16 from uniform distribution",
-            )),
-            DType::F32 => {
-                let uniform_dist = Uniform::new(lower.cast::<f32>(), upper.cast::<f32>());
-                let data: Vec<f32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            DType::F64 => {
-                let uniform_dist = Uniform::new(lower.cast::<f64>(), upper.cast::<f64>());
-                let data: Vec<f64> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            #[cfg(feature = "complex")]
-            DType::CF32 => Err(ZyxError::WrongDType(
-                "Cannot sample cf32 from uniform distribution",
-            )),
-            #[cfg(feature = "complex")]
-            DType::CF64 => Err(ZyxError::WrongDType(
-                "Cannot sample cf64 from uniform distribution",
-            )),
-            DType::U8 => {
-                let uniform_dist = Uniform::new(lower.cast::<u8>(), upper.cast::<u8>());
-                let data: Vec<u8> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            DType::I8 => {
-                let uniform_dist = Uniform::new(lower.cast::<i8>(), upper.cast::<i8>());
-                let data: Vec<i8> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            DType::I16 => {
-                let uniform_dist = Uniform::new(lower.cast::<i16>(), upper.cast::<i16>());
-                let data: Vec<i16> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            DType::I32 => {
-                let uniform_dist = Uniform::new(lower.cast::<i32>(), upper.cast::<i32>());
-                let data: Vec<i32> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            DType::I64 => {
-                let uniform_dist = Uniform::new(lower.cast::<i64>(), upper.cast::<i64>());
-                let data: Vec<i64> = (0..n).map(|_| rng.sample(uniform_dist)).collect();
-                self.store(data, shape)
-            }
-            DType::Bool => Err(ZyxError::WrongDType(
-                "Cannot sample booleans from uniform distribution",
-            )),
-        };
+
+        Ok(self.graph.push(Node::Uniform { shape, low: Constant::new(lower), high: Constant::new(upper) }))
+    }
+
+    pub(crate) fn temp<T: Scalar>(&mut self, shape: Vec<Dimension>, data: &[T]) -> Result<TensorId, MemoryError> {
+        let id = self.graph.push(Node::Leaf { shape, dtype: T::dtype() });
+        self.allocator.store_host(data, id)?;
+        return Ok(id);
     }
 
     // Initialization
@@ -399,14 +122,14 @@ impl Runtime {
         &mut self,
         shape: Vec<usize>,
         value: impl Scalar,
-    ) -> Result<TensorId, ZyxError> {
-        let one = self.store(vec![value], vec![1])?;
+    ) -> TensorId {
+        let one = self.graph.push(Node::Const { value: Constant::new(value) });
         let expanded = self.expand(one, shape);
-        self.release(one)?;
-        return Ok(expanded);
+        self.release(one).unwrap();
+        return expanded;
     }
 
-    pub(crate) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
+    pub(crate) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         return match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.full(shape, bf16::ONE),
@@ -427,7 +150,7 @@ impl Runtime {
         };
     }
 
-    pub(crate) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
+    pub(crate) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         return match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.full(shape, bf16::ZERO),
@@ -617,190 +340,19 @@ impl Runtime {
 }
 
 impl Runtime {
-    pub(crate) fn store<T: Scalar>(
-        &mut self,
-        data: Vec<T>,
-        shape: Vec<usize>,
-    ) -> Result<TensorId, ZyxError> {
-        assert_eq!(data.len(), shape.iter().product());
-        self.set_default_device_best();
-        if data.len() == 1 {
-            return Ok(self.graph.push(Node::Const { value: Constant::new(data[0]) }));
-        }
-        let device = self.graph.default_device;
-        //#[cfg(feature = "debug1")]
-        //println!("Storing {data:?} to {device:?} device with shape {shape:?}.");
-        let tensor_id = self.graph.push(Node::Leaf {
-            shape,
-            dtype: T::dtype(),
-            device,
-        });
-        match device {
-            #[cfg(feature = "cuda")]
-            Device::CUDA => {
-                if self.cuda.is_none() {
-                    self.cuda = Some(compiler::CompiledBackend::initialize()?);
-                }
-                let dev = self.cuda.as_mut().unwrap();
-                dev.store(tensor_id, data)?;
-            }
-            #[cfg(feature = "hsa")]
-            Device::HSA => {
-                if self.hsa.is_none() {
-                    self.hsa = Some(compiler::CompiledBackend::initialize()?);
-                }
-                let dev = self.hsa.as_mut().unwrap();
-                dev.store(tensor_id, data)?;
-            }
-            #[cfg(feature = "opencl")]
-            Device::OpenCL => {
-                if self.opencl.is_none() {
-                    self.opencl = Some(compiler::CompiledBackend::initialize()?);
-                }
-                let dev = self.opencl.as_mut().unwrap();
-                dev.store(tensor_id, data)?;
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL => {
-                if self.wgsl.is_none() {
-                    self.wgsl = Some(compiler::CompiledBackend::initialize()?);
-                }
-                let dev = self.wgsl.as_mut().unwrap();
-                dev.store(tensor_id, data)?;
-            }
-            Device::CPU => {
-                if self.cpu.is_none() {
-                    self.cpu = Some(InterpretedBackend::initialize()?);
-                }
-                let dev = self.cpu.as_mut().unwrap();
-                dev.store(tensor_id, data)?;
-            }
-            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
-            _ => {
-                panic!("Zyx was compiled without support for this device.");
-            }
-        }
-        return Ok(tensor_id);
-    }
-
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
-        return match self.device(x) {
-            #[cfg(feature = "cuda")]
-            Device::CUDA => {
-                if !self.cuda.as_ref().unwrap().is_realized(x) {
-                    self.realize(BTreeSet::from_iter([x]))?;
-                }
-                let length = self.shape(x).iter().product();
-                Ok(self.cuda.as_mut().unwrap().load(x, length)?)
-            }
-            #[cfg(feature = "hsa")]
-            Device::HSA => {
-                if !self.hsa.as_ref().unwrap().is_realized(x) {
-                    self.realize(BTreeSet::from_iter([x]))?;
-                }
-                let length = self.shape(x).iter().product();
-                Ok(self.hsa.as_mut().unwrap().load(x, length)?)
-            }
-            #[cfg(feature = "opencl")]
-            Device::OpenCL => {
-                if !self.opencl.as_ref().unwrap().is_realized(x) {
-                    self.realize(BTreeSet::from_iter([x]))?;
-                }
-                let length = self.shape(x).iter().product();
-                Ok(self.opencl.as_mut().unwrap().load(x, length)?)
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL => {
-                if !self.wgsl.as_ref().unwrap().is_realized(x) {
-                    self.realize(BTreeSet::from_iter([x]))?;
-                }
-                let length = self.shape(x).iter().product();
-                Ok(self.wgsl.as_mut().unwrap().load(x, length)?)
-            }
-            Device::CPU => {
-                if !self.cpu.as_ref().unwrap().is_realized(x) {
-                    self.realize(BTreeSet::from_iter([x]))?;
-                }
-                let length = self.shape(x).iter().product();
-                Ok(self.cpu.as_mut().unwrap().load(x, length)?)
-            }
-            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
-            _ => {
-                panic!("Zyx was compiled without support for this device.");
-            }
-        };
+        todo!()
     }
 
     pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         if tensors.len() == 0 {
             return Ok(());
         }
-        let device = self.device(*tensors.first().unwrap());
-        let graph = match device {
-            #[cfg(feature = "cuda")]
-            Device::CUDA => self
-                .graph
-                .realize_graph(&tensors, |id| self.cuda.as_ref().unwrap().is_realized(id)),
-            #[cfg(feature = "hsa")]
-            Device::HSA => self
-                .graph
-                .realize_graph(&tensors, |id| self.hsa.as_ref().unwrap().is_realized(id)),
-            #[cfg(feature = "opencl")]
-            Device::OpenCL => self
-                .graph
-                .realize_graph(&tensors, |id| self.opencl.as_ref().unwrap().is_realized(id)),
-            #[cfg(feature = "wgsl")]
-            Device::WGSL => self
-                .graph
-                .realize_graph(&tensors, |id| self.wgsl.as_ref().unwrap().is_realized(id)),
-            Device::CPU => self
-                .graph
-                .realize_graph(&tensors, |id| self.cpu.as_ref().unwrap().is_realized(id)),
-            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
-            _ => {
-                panic!("Zyx was compiled without support for this device.");
-            }
-        };
-        match device {
-            #[cfg(feature = "cuda")]
-            Device::CUDA => {
-                self.cuda.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.cuda.as_mut().unwrap().launch_graph(&graph)?;
-                return Ok(());
-            }
-            #[cfg(feature = "hsa")]
-            Device::HSA => {
-                self.hsa.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.hsa.as_mut().unwrap().launch_graph(&graph)?;
-                return Ok(());
-            }
-            #[cfg(feature = "opencl")]
-            Device::OpenCL => {
-                self.opencl
-                    .as_mut()
-                    .unwrap()
-                    .compile_graph(&graph, tensors)?;
-                self.opencl.as_mut().unwrap().launch_graph(&graph)?;
-                return Ok(());
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL => {
-                self.wgsl.as_mut().unwrap().compile_graph(&graph, tensors)?;
-                self.wgsl.as_mut().unwrap().launch_graph(&graph)?;
-                return Ok(());
-            }
-            Device::CPU => {
-                self.cpu
-                    .as_mut()
-                    .unwrap()
-                    .interpret_graph(graph, &tensors)?;
-                return Ok(());
-            }
-            #[cfg(not(all(feature = "cuda", feature = "hsa", feature = "opencl", feature = "wgsl")))]
-            _ => {
-                panic!("Zyx was compiled without support for this device.");
-            }
-        }
+        // create graph
+        //self.graph.realize_graph(tensors, is_realized)
+        // compile graph (if needed)
+        // launch graph
+        return Ok(());
     }
 
     pub(crate) fn backward(
@@ -819,7 +371,7 @@ impl Runtime {
         // Node -> Grad
         let mut grads: BTreeMap<TensorId, TensorId> = BTreeMap::new();
         // Initial gradient of ones
-        let grad1 = self.ones(vec![1], self.dtype(x))?;
+        let grad1 = self.ones(vec![1], self.dtype(x));
         let sh = self.shape(x).into();
         grads.insert(
             x,
@@ -864,7 +416,6 @@ impl Runtime {
         for nid in topo {
             let grad = grads[&nid];
             match self.graph[nid] {
-                //Node::Const(..) | Node::Detach(..) => {}
                 Node::Const { .. } | Node::Leaf { .. } => {}
                 Node::Binary { x, y, bop } => match bop {
                     BOp::Add => {
@@ -905,7 +456,7 @@ impl Runtime {
                         if req_grad.contains(&y) {
                             // -grad*x/(y^2)
                             let dtype = self.dtype(y);
-                            let two_temp = self.ones(vec![1], dtype)?;
+                            let two_temp = self.ones(vec![1], dtype);
                             let two = self.add(two_temp, two_temp);
                             self.release(two_temp).unwrap();
                             let two_e = self.expand(two, self.shape(y).into());
@@ -925,7 +476,7 @@ impl Runtime {
                     BOp::Pow => {
                         if req_grad.contains(&x) {
                             // grad * y * x.pow(y-1)
-                            let ones = self.ones(self.shape(y).into(), self.dtype(y))?;
+                            let ones = self.ones(self.shape(y).into(), self.dtype(y));
                             let y_1 = self.sub(y, ones);
                             self.release(ones).unwrap();
                             let pow_y_1 = self.pow(x, y_1);
@@ -956,15 +507,6 @@ impl Runtime {
                     }
                 },
                 Node::Unary { x, uop } => match uop {
-                    #[cfg(any(
-                        feature = "cuda",
-                        feature = "opencl",
-                        feature = "wgsl",
-                        feature = "hsa"
-                    ))]
-                    UOp::Noop => {
-                        panic!()
-                    }
                     UOp::Inv => {
                         // -1/(x*x)
                         let x_2_inv = self.mul(nid, nid);
@@ -973,7 +515,7 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::ReLU => {
-                        let zeros = self.zeros(self.shape(x).into(), self.dtype(x))?;
+                        let zeros = self.zeros(self.shape(x).into(), self.dtype(x));
                         let zl = self.cmplt(zeros, x);
                         self.release(zeros).unwrap();
                         let x_grad = self.mul(zl, grad);
@@ -1021,7 +563,7 @@ impl Runtime {
                     UOp::Tanh => {
                         // 1 - tanh^2(x)
                         let tanh_x_2 = self.mul(nid, nid);
-                        let ones = self.ones(self.shape(x).into(), self.dtype(x))?;
+                        let ones = self.ones(self.shape(x).into(), self.dtype(x));
                         let grad = self.sub(ones, tanh_x_2);
                         self.release(ones).unwrap();
                         self.release(tanh_x_2).unwrap();
@@ -1079,7 +621,7 @@ impl Runtime {
                         let z_temp = self.expand(nid, x_shape.clone());
                         let cmp_t = self.cmplt(x, z_temp);
                         self.release(z_temp).unwrap();
-                        let ones = self.zeros(x_shape, self.dtype(x))?;
+                        let ones = self.zeros(x_shape, self.dtype(x));
                         let max_1s = self.sub(ones, cmp_t);
                         self.release(ones).unwrap();
                         self.release(cmp_t).unwrap();
@@ -1088,6 +630,7 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                 },
+                _ => todo!(),
             }
         }
         let mut res = BTreeMap::new();
@@ -1099,5 +642,38 @@ impl Runtime {
             }
         }
         return Ok(res);
+    }
+}
+
+fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    axes.iter().map(|a| shape[*a]).collect()
+}
+
+fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    shape
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
+        .collect()
+}
+
+#[derive(Debug)]
+pub enum ZyxError {
+    EmptyTensor,
+    WrongDType(&'static str),
+    AllocError(MemoryError),
+    ExecError(ExecError),
+}
+
+impl From<MemoryError> for ZyxError {
+    fn from(value: MemoryError) -> Self {
+        Self::AllocError(value)
+    }
+}
+
+impl From<ExecError> for ZyxError {
+    fn from(value: ExecError) -> Self {
+        Self::ExecError(value)
     }
 }

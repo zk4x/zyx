@@ -1,20 +1,16 @@
 #![allow(non_camel_case_types)]
 
-use super::{BOp, Compiler, HWInfo, IRArg, IRKernel, IROp, Scope, UOp};
 use crate::dtype::DType;
+use crate::runtime::ir::IRKernel;
+use crate::runtime::scheduler::HWInfo;
 use crate::scalar::Scalar;
-
-use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
-use alloc::ffi::CString;
-use alloc::format as f;
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
+use std::format as f;
+use std::collections::BTreeSet;
+use std::ffi::CString;
 
-#[cfg(feature = "debug1")]
-use std::println;
+use super::Executor;
 
 type cl_int = i32;
 type cl_uint = u32;
@@ -162,7 +158,7 @@ pub(crate) struct OpenCLProgram {
     args_read_only: Vec<bool>,
 }
 
-pub(crate) struct OpenCLRuntime {
+pub(crate) struct OpenCLExecutor {
     context: *mut c_void,
     devices: BTreeSet<*mut c_void>,
     queues: Box<[*mut c_void]>,
@@ -173,11 +169,11 @@ pub(crate) struct OpenCLRuntime {
 // TODO we must ensure that this is OK
 // Pointers in these structs are OpenCL pointers,
 // so they should stay valid no matter the thread.
-unsafe impl Send for OpenCLRuntime {}
+unsafe impl Send for OpenCLExecutor {}
 unsafe impl Send for OpenCLBuffer {}
 unsafe impl Send for OpenCLProgram {}
 
-impl OpenCLRuntime {
+impl OpenCLExecutor {
     fn queue(&mut self) -> Result<*mut c_void, OpenCLError> {
         let res = self.queues[self.queue_id];
         self.queue_size[self.queue_id] += 1;
@@ -199,7 +195,7 @@ impl OpenCLRuntime {
     }
 }
 
-impl Drop for OpenCLRuntime {
+impl Drop for OpenCLExecutor {
     fn drop(&mut self) {
         /*#[cfg(feature = "CL_VERSION_1_2")]
         for device in &mut self.devices {
@@ -211,7 +207,7 @@ impl Drop for OpenCLRuntime {
     }
 }
 
-impl Compiler for OpenCLRuntime {
+impl Executor for OpenCLExecutor {
     type Buffer = OpenCLBuffer;
     type Program = OpenCLProgram;
     type Error = OpenCLError;
@@ -298,7 +294,7 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
         return Ok(Self {
             context,
             devices,
-            queue_size: alloc::vec![0; queues.len()].into_boxed_slice(),
+            queue_size: vec![0; queues.len()].into_boxed_slice(),
             queues: queues.into_boxed_slice(),
             queue_id: 0,
         });
@@ -499,21 +495,6 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
-        // Transpile kernel args
-        let mut args_read_only = Vec::new();
-        for (id, IRArg { dtype, read_only }) in kernel.args.iter() {
-            source += &f!(
-                "{indent}__global {}{}* g{id},\n",
-                if *read_only { "const " } else { "" },
-                dtype.ocl()
-            );
-            if *read_only {
-                args_read_only.push(true);
-            } else {
-                args_read_only.push(false);
-            }
-        }
-
         source.pop();
         source.pop();
         source += "\n) {\n";
@@ -521,165 +502,37 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
         // Add indices for global and local loops
         source += &f!(
             "  unsigned int i0 = get_group_id(0);   /* 0..{} */\n",
-            kernel.global_work_size[0]
+            todo!()
         );
         source += &f!(
             "  unsigned int i1 = get_local_id(0);   /* 0..{} */\n",
-            kernel.local_work_size[0]
+            todo!()
         );
         source += &f!(
             "  unsigned int i2 = get_group_id(1);   /* 0..{} */\n",
-            kernel.global_work_size[1]
+            todo!()
         );
         source += &f!(
             "  unsigned int i3 = get_local_id(1);   /* 0..{} */\n",
-            kernel.local_work_size[1]
+            todo!()
         );
         source += &f!(
             "  unsigned int i4 = get_group_id(2);   /* 0..{} */\n",
-            kernel.global_work_size[2]
+            todo!()
         );
         source += &f!(
             "  unsigned int i5 = get_local_id(2);   /* 0..{} */\n",
-            kernel.local_work_size[2]
+            todo!()
         );
         //source += "  unsigned int t0, t1, t2;\n";
-
-        // Transpile kernel ops, skip ends of global and local loops
-        for op in &kernel.ops {
-            match op {
-                IROp::DeclareMem {
-                    id,
-                    scope,
-                    read_only,
-                    len,
-                    dtype,
-                    init,
-                } => match scope {
-                    Scope::Global => {}
-                    Scope::Local => {
-                        let read_only = if *read_only { "const " } else { "" };
-                        let size = if *len > 0 {
-                            f!("[{len}]")
-                        } else {
-                            String::new()
-                        };
-                        source += &f!(
-                            "{indent}__local {read_only}{} l{id}{};\n",
-                            dtype.ocl(),
-                            size,
-                        );
-                    }
-                    Scope::Register => {
-                        let read_only = if *read_only { "const " } else { "" };
-                        let size = if *len > 0 {
-                            f!("[{len}]")
-                        } else {
-                            String::new()
-                        };
-                        source += &f!("{indent}{read_only}{} r{id}{}", dtype.ocl(), size);
-                        if let Some(init) = init {
-                            source += &f!(" = {{{}}};\n", init);
-                        } else {
-                            source += ";\n";
-                        }
-                    }
-                },
-                IROp::Unary { z, x, ops } => {
-                    let (zt, z) = z.to_str(0);
-                    if !zt.is_empty() {
-                        for idx in zt.into_iter() {
-                            source += &f!("{indent}t0 = {idx};\n");
-                        }
-                    }
-                    let (xt, x) = x.to_str(1);
-                    if !xt.is_empty() {
-                        for idx in xt.into_iter() {
-                            source += &f!("{indent}t1 = {idx};\n");
-                        }
-                    }
-                    let mut inner_op = f!("{x}");
-                    for uop in ops {
-                        inner_op = match uop {
-                            UOp::Noop => inner_op,
-                            UOp::Cast(dtype) => f!("({}){inner_op}", dtype.ocl()),
-                            UOp::Neg => f!("(-{inner_op})"),
-                            UOp::Inv => f!("1/{inner_op}"),
-                            UOp::Sin => f!("sin({inner_op})"),
-                            UOp::Cos => f!("cos({inner_op})"),
-                            UOp::Exp => f!("exp({inner_op})"),
-                            UOp::Ln => f!("log({inner_op})"),
-                            UOp::Sqrt => f!("sqrt({inner_op})"),
-                            UOp::ReLU => f!("max({inner_op}, 0)"),
-                            UOp::Tanh => f!("tanh({inner_op})"),
-                            UOp::Not => f!("!{inner_op}"),
-                            UOp::Nonzero => f!("({inner_op} != 0)"),
-                        };
-                    }
-                    source += &f!("{indent}{z} = {inner_op};\n");
-                }
-                IROp::Binary { z, x, y, op } => {
-                    let (zt, z) = z.to_str(0);
-                    if !zt.is_empty() {
-                        for idx in zt.into_iter() {
-                            source += &f!("{indent}t0 = {idx};\n");
-                        }
-                    }
-                    let (xt, x) = x.to_str(1);
-                    if !xt.is_empty() {
-                        for idx in xt.into_iter() {
-                            source += &f!("{indent}t1 = {idx};\n");
-                        }
-                    }
-                    let (yt, y) = y.to_str(2);
-                    if !yt.is_empty() {
-                        for idx in yt.into_iter() {
-                            source += &f!("{indent}t2 = {idx};\n");
-                        }
-                    }
-                    source += &f!(
-                        "{indent}{z} = {};\n",
-                        match op {
-                            BOp::Add => f!("{x}+{y}"),
-                            BOp::Sub => f!("{x}-{y}"),
-                            BOp::Mul => f!("{x}*{y}"),
-                            BOp::Div => f!("{x}/{y}"),
-                            BOp::Pow => f!("powf({x}, {y})"),
-                            BOp::Max => f!("max({x}, {y})"),
-                            BOp::Cmplt => f!("{x}<{y}"),
-                        }
-                    );
-                }
-                IROp::Loop { id, len } => {
-                    source +=
-                        &f!("{indent}for (unsigned int i{id} = 0; i{id} < {len}; i{id}++) {{   /* 0..{len} */\n");
-                    indent += "  ";
-                }
-                IROp::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    source += &f!("{indent}}}\n");
-                }
-                IROp::Barrier { scope } => {
-                    let scope = match scope {
-                        Scope::Register => panic!(),
-                        Scope::Local => "LOCAL",
-                        Scope::Global => "GLOBAL",
-                    };
-                    source += &f!("{indent}barrier(CLK_{scope}_MEM_FENCE);\n");
-                }
-            }
-        }
-
-        source += "}";
 
         return OpenCLProgram::compile_from_source(
             &source,
             self.context,
             &self.devices,
-            kernel.global_work_size,
-            kernel.local_work_size,
-            args_read_only,
+            todo!(),
+            todo!(),
+            todo!(),
         );
     }
 

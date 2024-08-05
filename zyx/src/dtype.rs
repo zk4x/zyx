@@ -193,12 +193,6 @@ impl DType {
         };
     }
 
-    #[cfg(any(
-        feature = "cuda",
-        feature = "hsa",
-        feature = "opencl",
-        feature = "wgsl"
-    ))]
     pub(super) fn zero_constant(&self) -> Constant {
         return match self {
             #[cfg(feature = "half")]
@@ -220,12 +214,6 @@ impl DType {
         };
     }
 
-    #[cfg(any(
-        feature = "cuda",
-        feature = "hsa",
-        feature = "opencl",
-        feature = "wgsl"
-    ))]
     pub(super) fn min_constant(&self) -> Constant {
         todo!()
     }

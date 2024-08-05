@@ -11,13 +11,6 @@ use crate::{DType, Device, Tensor};
 #[pymethods]
 impl Tensor {
     #[staticmethod]
-    #[must_use]
-    #[pyo3(name = "default_device")]
-    pub fn default_device_py() -> Device {
-        return Tensor::default_device()
-    }
-
-    #[staticmethod]
     #[pyo3(name = "plot_dot_graph")]
     pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) {
         let tensors: Vec<Tensor> = tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
@@ -35,12 +28,6 @@ impl Tensor {
     #[pyo3(name = "set_training")]
     pub fn set_training_py(training: bool) {
         Tensor::set_training(training);
-    }
-
-    #[staticmethod]
-    #[pyo3(name = "set_default_device")]
-    pub fn set_default_device_py(device: Device) -> bool {
-        return Tensor::set_default_device(device);
     }
 
     #[must_use]
@@ -79,18 +66,6 @@ impl Tensor {
     #[pyo3(name = "dtype")]
     pub fn dtype_py(&self) -> DType {
         self.dtype()
-    }
-
-    #[must_use]
-    #[pyo3(name = "device")]
-    pub fn device_py(&self) -> Device {
-        self.device()
-    }
-
-    #[must_use]
-    #[pyo3(name = "to")]
-    pub fn to_py(&self, device: Device) -> Tensor {
-        return self.clone().to(device);
     }
 
     #[staticmethod]
@@ -185,7 +160,6 @@ impl Tensor {
 fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Tensor>()?;
     m.add_class::<DType>()?;
-    m.add_class::<Device>()?;
     //m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
 }

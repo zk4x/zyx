@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use crate::{dtype::Constant, tensor::TensorId, DType};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -15,13 +13,6 @@ pub(crate) enum BOp {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum UOp {
-    #[cfg(any(
-        feature = "cuda",
-        feature = "opencl",
-        feature = "wgsl",
-        feature = "hsa"
-    ))]
-    Noop,
     Cast(DType),
     ReLU,
     Neg,
@@ -48,19 +39,26 @@ type Dimension = usize;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(crate) enum Node {
-    // TODO later add constant nodes
-    Const {
-        value: Constant,
+    // Tensor stored in disk
+    Disk {
+        shape: Vec<Dimension>,
+        dtype: DType,
     },
+    // Uniform random tensor generator
+    Uniform {
+        shape: Vec<Dimension>,
+        low: Constant,
+        high: Constant,
+    },
+    // Tensor stored on device
     Leaf {
         shape: Vec<Dimension>,
         dtype: DType,
     },
-    // Can be later added for moving between devices
-    /*ToDevice {
-        x: TensorId,
-        device: Device,
-    },*/
+    // Constant tensor baked into kernels
+    Const {
+        value: Constant,
+    },
     Expand {
         x: TensorId,
         shape: Vec<Dimension>,
@@ -119,7 +117,7 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         return match self {
-            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
+            Node::Const { .. } | Node::Leaf { .. } | Node::Uniform { .. } | Node::Disk { .. } => NodeParametersIterator {
                 parameters: [0, 0],
                 idx: 0,
                 len: 0,
@@ -145,6 +143,13 @@ impl Node {
                 len: 2,
             },
         };
+    }
+
+    pub(crate) fn is_leaf(&self) -> bool {
+        matches!(
+            self,
+            Node::Uniform { .. } | Node::Leaf { .. } | Node::Const { .. } | Node::Disk { .. }
+        )
     }
 
     pub(crate) fn is_movement(&self) -> bool {

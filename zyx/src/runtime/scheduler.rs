@@ -1,80 +1,17 @@
-use crate::runtime::TensorId;
+use crate::runtime::v::{self, VOp};
+use crate::runtime::{ir, TensorId};
 use crate::scalar::Scalar;
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
-use core::fmt::{Display, Formatter};
-use v::VOp;
-
-#[cfg(feature = "debug1")]
-use std::println;
-
+use std::collections::{BTreeMap, BTreeSet};
 use super::graph::Graph;
-use super::node::{BOp, UOp};
+use super::executor::Executor;
 
-mod ir;
-use ir::{IRArg, IRKernel, IROp};
-mod ir2;
-mod v;
-
-pub(super) mod cuda;
-
-pub(super) mod hsa;
-
-pub(super) mod opencl;
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Scope {
-    Global,
-    Local,
-    Register,
+pub(super) struct Backend<P: Executor> {
+    compiler: P,
+    buffers: BTreeMap<TensorId, P::Buffer>,
+    compiled_graphs: BTreeMap<Graph, CompiledGraph<P::Program>>,
 }
 
-impl Display for Scope {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::Global => "g",
-            Self::Local => "l",
-            Self::Register => "r",
-        })
-    }
-}
-
-pub(super) trait Compiler: Sized {
-    type Buffer;
-    type Program;
-    type Error: core::fmt::Debug;
-    fn initialize() -> Result<Self, Self::Error>;
-    fn hardware_information(&mut self) -> Result<HWInfo, Self::Error>;
-    fn allocate_memory(&mut self, byte_size: usize) -> Result<Self::Buffer, Self::Error>;
-    fn store_memory<T: Scalar>(
-        &mut self,
-        buffer: &mut Self::Buffer,
-        data: Vec<T>,
-    ) -> Result<(), Self::Error>;
-    fn load_memory<T: Scalar>(
-        &mut self,
-        buffer: &Self::Buffer,
-        length: usize,
-    ) -> Result<Vec<T>, Self::Error>;
-    fn deallocate_memory(&mut self, buffer: Self::Buffer) -> Result<(), Self::Error>;
-    fn compile_program(&mut self, kernel: &IRKernel) -> Result<Self::Program, Self::Error>;
-    fn launch_program(
-        &mut self,
-        program: &Self::Program,
-        args: &mut [Self::Buffer],
-    ) -> Result<(), Self::Error>;
-    fn release_program(&mut self, program: Self::Program) -> Result<(), Self::Error>;
-}
-
-pub(super) struct CompiledBackend<C: Compiler> {
-    compiler: C,
-    buffers: BTreeMap<TensorId, C::Buffer>,
-    compiled_graphs: BTreeMap<Graph, CompiledGraph<C::Program>>,
-    hwinfo: HWInfo,
-}
-
-impl<C: Compiler> Drop for CompiledBackend<C> {
+impl<C: Executor> Drop for Backend<C> {
     fn drop(&mut self) {
         while let Some((_, buffer)) = self.buffers.pop_last() {
             self.compiler.deallocate_memory(buffer).unwrap();
@@ -96,45 +33,9 @@ pub(super) struct CompiledGraph<Program> {
     bytes_written: u128,
 }
 
-/// Hardware information needed for applying optimizations
-#[allow(unused)]
-#[derive(Debug)]
-pub struct HWInfo {
-    /// Biggest kernel dimensions
-    pub max_work_item_sizes: Vec<usize>,
-    /// Maximum local work size threads
-    pub max_work_group_size: usize,
-    /// Preferred vector size in bytes
-    pub preferred_vector_size: usize,
-    /// Is half supported?
-    pub f16_support: bool,
-    /// Is double supported?
-    pub f64_support: bool,
-    /// Is fused multiply add supported?
-    pub fmadd: bool,
-    /// Global (VRAM, RAM) memory size in bytes
-    pub global_mem_size: usize,
-    /// Maximum memory allocation for single buffer in bytes
-    pub max_mem_alloc: usize,
-    /// Alignment for data types in bytes
-    pub mem_align: usize,
-    /// Page size (base address alignment) in bytes
-    pub page_size: usize,
-    /// Local memory size in bytes
-    pub local_mem_size: usize,
-    /// Number of registers per thread
-    pub num_registers: usize,
-    /// Does this device have local memory?
-    pub local_memory: bool,
-    /// Does this hardware support native matmul of 16x16 local tiles?
-    pub wmma: bool,
-    /// Does this hardware have tensor cores?
-    pub tensor_cores: bool,
-}
-
-impl<C: Compiler> CompiledBackend<C> {
-    pub(super) fn initialize() -> Result<Self, C::Error> {
-        let mut compiler = C::initialize()?;
+impl<P: Executor> Backend<P> {
+    pub(super) fn initialize() -> Result<Self, P::Error> {
+        let mut compiler = P::initialize()?;
         Ok(Self {
             hwinfo: compiler.hardware_information()?,
             compiler,
@@ -158,8 +59,8 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: TensorId,
         data: Vec<T>,
-    ) -> Result<(), C::Error> {
-        println!("Memory alignment: {}", self.hwinfo.page_size);
+    ) -> Result<(), P::Error> {
+        //std::println!("Memory alignment: {}", self.hwinfo.page_size);
         let mut buffer = self.compiler.allocate_memory(data.len() * T::byte_size())?;
         self.compiler.store_memory(&mut buffer, data)?;
         self.buffers.insert(x, buffer);
@@ -171,7 +72,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         x: TensorId,
         length: usize,
-    ) -> Result<Vec<T>, C::Error> {
+    ) -> Result<Vec<T>, P::Error> {
         //println!("Attempting to load buffer with id {x}");
         if let Some(buffer) = self.buffers.get(&x) {
             return self.compiler.load_memory(buffer, length);
@@ -180,7 +81,7 @@ impl<C: Compiler> CompiledBackend<C> {
         }
     }
 
-    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), C::Error> {
+    pub(super) fn remove(&mut self, x: TensorId) -> Result<(), P::Error> {
         if let Some(buffer) = self.buffers.remove(&x) {
             return self.compiler.deallocate_memory(buffer);
         }
@@ -192,7 +93,7 @@ impl<C: Compiler> CompiledBackend<C> {
         &mut self,
         org_graph: &Graph,
         to_eval: BTreeSet<TensorId>,
-    ) -> Result<(), C::Error> {
+    ) -> Result<(), P::Error> {
         //println!("{:#?}", self.hwinfo);
         //#[cfg(feature = "debug1")]
         //println!("Evaluating {to_eval:?}");
@@ -261,7 +162,7 @@ impl<C: Compiler> CompiledBackend<C> {
             kernel.split_axis(2, &[gws[1], lws[1]]);
             kernel.split_axis(4, &[gws[2], lws[2]]);
 
-            println!("Kernel in virtual ops");
+            //println!("Kernel in virtual ops");
             #[cfg(feature = "debug1")]
             {
                 for op in &kernel.ops {
@@ -269,21 +170,11 @@ impl<C: Compiler> CompiledBackend<C> {
                 }
             }
 
-            let ir_kernel = ir2::vops_to_ir(&kernel.ops, &graph, &self.hwinfo);
-            let str_kernel = ir2::to_str_kernel(&ir_kernel);
-            println!("\n\n{str_kernel}\n\n");
+            let ir_kernel = ir::vops_to_ir(&kernel.ops, &graph, &self.hwinfo);
+            let str_kernel = ir::to_str_kernel(&ir_kernel);
+            //println!("\n\n{str_kernel}\n\n");
 
-            let ir_kernel = ir::compile_ir(
-                &graph,
-                gws,
-                lws,
-                &kernel.inputs,
-                &kernel.outputs,
-                &kernel.ops,
-                &self.hwinfo,
-            );
-
-            let args: Vec<TensorId> = ir_kernel.args.keys().copied().collect();
+            /*let args: Vec<TensorId> = ir_kernel.args.keys().copied().collect();
             programs.push((args.clone(), self.compiler.compile_program(&ir_kernel)?));
 
             // Allocate memory for intermediate args and results
@@ -297,7 +188,7 @@ impl<C: Compiler> CompiledBackend<C> {
                         )?,
                     );
                 }
-            }
+            }*/
         }
 
         self.compiled_graphs.insert(
@@ -313,7 +204,7 @@ impl<C: Compiler> CompiledBackend<C> {
         return Ok(());
     }
 
-    pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), C::Error> {
+    pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), P::Error> {
         let graph = self.compiled_graphs.get(graph).unwrap();
 
         #[cfg(feature = "debug1")]

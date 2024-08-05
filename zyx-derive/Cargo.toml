@@ -21,6 +21,3 @@ quote = { version = "1.0.35" }
 
 [lib]
 proc-macro = true
-
-[features]
-std = ["zyx/std"]

@@ -1,12 +1,9 @@
+use std::collections::BTreeSet;
+
 use crate::dtype::Constant;
 use crate::runtime::node::{BOp, Node, ROp, UOp};
 use crate::runtime::view::{Axis, Dimension, View};
 use crate::{runtime::graph::Graph, tensor::TensorId};
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
-
-#[cfg(feature = "debug1")]
-use std::println;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum VOp {
@@ -38,6 +35,10 @@ pub(super) enum VOp {
         num_axes: usize,
         rop: ROp,
     },
+    Noop {
+        z: TensorId,
+        x: TensorId,
+    },
     Unary {
         z: TensorId,
         x: TensorId,
@@ -49,16 +50,6 @@ pub(super) enum VOp {
         y: TensorId,
         bop: BOp,
     },
-}
-
-impl VOp {
-    fn noop(z: TensorId, x: TensorId) -> VOp {
-        VOp::Unary {
-            z,
-            x,
-            uop: UOp::Noop,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -137,7 +128,7 @@ impl Kernel {
     }
 
     pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
-        println!("Splitting {op_id} into {dimensions:?}");
+        //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
         let VOp::Loop { axis, dimension } = &mut self.ops[op_id] else {
             panic!()
@@ -259,11 +250,11 @@ pub(super) fn generate_kernels(
     // The aim is to sort nodes in such a way, that maximum performance is attained.
     // These kernels mostly keep shapes of original nodes.
     // Further optimization is done in optimize kernels function.
-    println!("Eval: {to_eval:?}");
+    //println!("Eval: {to_eval:?}");
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!("{} x {node:?}", graph.rc(nid));
+        //println!("{} x {node:?}", graph.rc(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {
@@ -277,7 +268,7 @@ pub(super) fn generate_kernels(
                 } else {
                     let mut ops = shape_to_loops(&[1]);
                     ops.push(const_op);
-                    kernels.push(Kernel { shape: alloc::vec![1], inputs: BTreeSet::new(), outputs: BTreeSet::new(), vars: BTreeSet::from([nid]), ops })
+                    kernels.push(Kernel { shape: vec![1], inputs: BTreeSet::new(), outputs: BTreeSet::new(), vars: BTreeSet::from([nid]), ops })
                 }
             }
             Node::Leaf { shape, .. } => {
@@ -343,7 +334,7 @@ pub(super) fn generate_kernels(
                         _ => {}
                     }
                 }
-                kernel.ops.push(VOp::noop(nid, *x));
+                kernel.ops.push(VOp::Noop { z: nid, x: *x });
                 kernel.vars.insert(nid);
                 kernel.shape = shape.clone();
             }
@@ -354,7 +345,7 @@ pub(super) fn generate_kernels(
                 // TODO but what if it is permute after reduce?
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.permute(&axes);
-                kernel.ops.push(VOp::noop(nid, *x));
+                kernel.ops.push(VOp::Noop { z: nid, x: *x });
                 kernel.vars.insert(nid);
             }
             Node::Reshape { x, shape } => {
@@ -391,7 +382,7 @@ pub(super) fn generate_kernels(
                         }
                     }
                     kernel.shape = shape.clone();
-                    kernel.ops.push(VOp::noop(nid, *x));
+                    kernel.ops.push(VOp::Noop { z: nid, x: *x });
                     kernel.vars.insert(nid);
                 } else {
                     // TODO
@@ -471,7 +462,7 @@ pub(super) fn generate_kernels(
                     }
                 }
                 kernel.shape = shape.clone();
-                kernel.ops.push(VOp::noop(nid, *x));
+                kernel.ops.push(VOp::Noop { z: nid, x: *x });
                 kernel.vars.insert(nid);
             }
             Node::Reduce {
@@ -648,6 +639,7 @@ pub(super) fn generate_kernels(
                     panic!()
                 }
             }
+            _ => todo!(),
         }
         if to_eval.contains(&nid) || (graph.rc(nid) > 1 && !matches!(graph[nid], Node::Leaf { .. } | Node::Const { .. })) {
             if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {

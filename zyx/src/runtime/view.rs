@@ -1,5 +1,4 @@
-use alloc::vec;
-use alloc::vec::Vec;
+use super::ir::Scope;
 
 pub(crate) type Axis = usize;
 pub(crate) type Dimension = usize;
@@ -176,7 +175,7 @@ impl View {
                 }
                 // Split padding
                 if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
-                    std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
+                    //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
                     for a in axis+1..axis + dim_len {
                         //if !axes.contains(&a) {
                         //}
@@ -259,27 +258,8 @@ impl View {
     }
 }
 
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
-use super::compiler::Scope;
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
-use alloc::{format as f, string::String};
+use std::format as f;
 
-#[cfg(any(
-    feature = "cuda",
-    feature = "opencl",
-    feature = "wgsl",
-    feature = "hsa"
-))]
 impl View {
     pub(crate) fn to_str(&self, id: u64, scope: Scope, _temp_id: u8) -> (Vec<String>, String) {
         match self {
@@ -325,7 +305,7 @@ impl View {
                             res += &f!("i{axis}*{stride}+");
                         }
                         // rp negative does essentially nothing, we only care if it's positive
-                        std::println!("dim: {dim}, paddding {lp}, {rp}");
+                        //std::println!("dim: {dim}, paddding {lp}, {rp}");
                         if *rp > 0 {
                             padding_condition += &f!("{idx} > {} || ", dim as isize - rp - 1);
                         }

@@ -1,9 +1,5 @@
-#![no_std]
-
 // This is just a personal preference
 //#![deny(clippy::implicit_return)]
-
-extern crate alloc;
 
 use crate::runtime::Runtime;
 
@@ -25,9 +21,6 @@ pub use tensor::Tensor;
 
 #[cfg(feature = "rand")]
 const SEED: u64 = 69420;
-
-#[cfg(feature = "std")]
-extern crate std;
 
 //#[cfg(not(feature = "std"))]
 static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());

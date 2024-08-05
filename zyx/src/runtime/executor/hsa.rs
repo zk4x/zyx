@@ -1,12 +1,15 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
-use super::{Compiler, HWInfo};
-use alloc::{string::String, vec, vec::Vec, format as f};
+use std::{string::String, vec, vec::Vec};
 use core::{ffi::{c_char, c_void}, ptr};
 
 #[cfg(feature = "debug1")]
 use std::println;
+
+use crate::runtime::{ir::IRKernel, scheduler::HWInfo};
+
+use super::Executor;
 
 #[derive(Debug)]
 pub struct HSAError {
@@ -26,7 +29,7 @@ pub(crate) struct HSAProgram {
     program: *mut c_void,
 }
 
-pub(crate) struct HSARuntime {
+pub(crate) struct HSAExecutor {
     agent: Agent,
     mem_region: Region,
 }
@@ -35,7 +38,7 @@ pub(crate) struct HSARuntime {
 // the device from different thread
 unsafe impl Send for HSABuffer {}
 unsafe impl Send for HSAProgram {}
-unsafe impl Send for HSARuntime {}
+unsafe impl Send for HSAExecutor {}
 
 fn check(status: HSAStatus, info: &str) -> Result<(), HSAError> {
     if status != HSAStatus::HSA_STATUS_SUCCESS {
@@ -48,7 +51,7 @@ fn check(status: HSAStatus, info: &str) -> Result<(), HSAError> {
     }
 }
 
-impl Drop for HSARuntime {
+impl Drop for HSAExecutor {
     fn drop(&mut self) {
         check(unsafe { hsa_shut_down() }, "hsa_shut_down").unwrap();
     }
@@ -69,7 +72,7 @@ fn hsa_get_vec<T>(func: unsafe extern "C" fn(extern "C" fn(T, *mut c_void) -> HS
     return Ok(vec);
 }
 
-impl Compiler for HSARuntime {
+impl Executor for HSAExecutor {
     type Buffer = HSABuffer;
     type Program = HSAProgram;
     type Error = HSAError;
@@ -117,7 +120,9 @@ impl Compiler for HSARuntime {
             page_size: 1024,
             local_mem_size: 1024 * 1024,
             num_registers: 96,
-            native_mm16x16_support: false,
+            local_memory: true,
+            wmma: false,
+            tensor_cores: false,
         })
     }
 
@@ -157,7 +162,7 @@ impl Compiler for HSARuntime {
         &mut self,
         buffer: &Self::Buffer,
         length: usize,
-    ) -> Result<alloc::vec::Vec<T>, HSAError> {
+    ) -> Result<Vec<T>, HSAError> {
         let mut data: Vec<T> = Vec::with_capacity(length);
         check(
             unsafe {
@@ -185,7 +190,7 @@ impl Compiler for HSARuntime {
         return Ok(());
     }
 
-    fn compile_program(&mut self, _kernel: &super::IRKernel) -> Result<Self::Program, HSAError> {
+    fn compile_program(&mut self, _kernel: &IRKernel) -> Result<Self::Program, HSAError> {
         todo!()
     }
 

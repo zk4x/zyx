@@ -24,7 +24,6 @@
 //! For README, quick tutorial and source code, please visit `<https://www.github.com/zk4x/zyx>`.
 //!
 //! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
-#![no_std]
 #![forbid(unsafe_code)]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
@@ -39,13 +38,9 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
-extern crate alloc;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
-
-#[cfg(feature = "std")]
-extern crate std;
 
 /// # Procedural macro Module
 ///
@@ -56,7 +51,6 @@ extern crate std;
 pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
-    #[cfg(feature = "std")]
     let mut field_iterators = quote! {
         trait __MarkerTraitRef<'a> {
             fn __iterate_by_ref(&self, res: &mut std::vec::Vec<&'a zyx::Tensor>) {}
@@ -74,24 +68,6 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
 
         let mut res = std::vec::Vec::<&zyx::Tensor>::new();
     };
-    #[cfg(not(feature = "std"))]
-    let mut field_iterators = quote! {
-        trait __MarkerTraitRef<'a> {
-            fn __iterate_by_ref(&self, res: &mut alloc::vec::Vec<&'a zyx::Tensor>) {}
-        }
-
-        struct __MarkerStructRef<T: Copy>(T);
-
-        impl<'a, T: IntoIterator<Item = &'a zyx::Tensor> + Copy> __MarkerStructRef<T> {
-            fn __iterate_by_ref(&self, res: &mut alloc::vec::Vec<&'a zyx::Tensor>) {
-                res.extend(self.0.into_iter());
-            }
-        }
-
-        impl<'a, T: Copy> __MarkerTraitRef<'a> for __MarkerStructRef<T>{}
-
-        let mut res = alloc::vec::Vec::<&zyx::Tensor>::new();
-    };
 
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {
         for field in fields.iter() {
@@ -100,7 +76,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
-            use alloc::string::ToString;
+            use std::string::ToString;
             if quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
@@ -115,7 +91,6 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
         }
     }
 
-    #[cfg(feature = "std")]
     let expanded = quote! {
         impl<'a> IntoIterator for &'a #struct_name {
             type Item = &'a zyx::Tensor;
@@ -128,20 +103,6 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
         }
     };
 
-    #[cfg(not(feature = "std"))]
-    let expanded = quote! {
-        impl<'a> IntoIterator for &'a #struct_name {
-            type Item = &'a zyx::Tensor;
-            type IntoIter = alloc::vec::IntoIter<&'a zyx::Tensor>;
-
-            fn into_iter(self) -> Self::IntoIter {
-                #field_iterators
-                res.into_iter()
-            }
-        }
-    };
-
-    #[cfg(feature = "std")]
     let mut field_iterators = quote! {
         trait __MarkerTraitMut<'a>: Sized {
             fn __iterate_by_mut(mut self, res: &mut std::vec::Vec<&'a mut zyx::Tensor>) {}
@@ -160,25 +121,6 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
         let mut res = alloc::vec::Vec::<&mut zyx::Tensor>::new();
     };
 
-    #[cfg(not(feature = "std"))]
-    let mut field_iterators = quote! {
-        trait __MarkerTraitMut<'a>: Sized {
-            fn __iterate_by_mut(mut self, res: &mut alloc::vec::Vec<&'a mut zyx::Tensor>) {}
-        }
-
-        struct __MarkerStructMut<T>(T);
-
-        impl<'a, T: IntoIterator<Item = &'a mut zyx::Tensor>> __MarkerStructMut<T> {
-            fn __iterate_by_mut(mut self, res: &mut alloc::vec::Vec<&'a mut zyx::Tensor>) {
-                res.extend(self.0.into_iter());
-            }
-        }
-
-        impl<'a, T> __MarkerTraitMut<'a> for __MarkerStructMut<T>{}
-
-        let mut res = alloc::vec::Vec::<&mut zyx::Tensor>::new();
-    };
-
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {
         for field in fields.iter() {
             let field_name = match &field.ident {
@@ -186,7 +128,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
-            use alloc::string::ToString;
+            use std::string::ToString;
             if quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
@@ -201,28 +143,12 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
         }
     }
 
-    #[cfg(feature = "std")]
     let expanded = quote! {
         #expanded
 
         impl<'a> IntoIterator for &'a mut #struct_name {
             type Item = &'a mut zyx::Tensor;
             type IntoIter = std::vec::IntoIter<&'a mut zyx::Tensor>;
-
-            fn into_iter(self) -> Self::IntoIter {
-                #field_iterators
-                res.into_iter()
-            }
-        }
-    };
-
-    #[cfg(not(feature = "std"))]
-    let expanded = quote! {
-        #expanded
-
-        impl<'a> IntoIterator for &'a mut #struct_name {
-            type Item = &'a mut zyx::Tensor;
-            type IntoIter = alloc::vec::IntoIter<&'a mut zyx::Tensor>;
 
             fn into_iter(self) -> Self::IntoIter {
                 #field_iterators

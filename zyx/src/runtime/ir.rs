@@ -1,10 +1,8 @@
 use core::fmt::Display;
-use std::string::ToString;
-
+use std::{collections::BTreeMap, string::ToString};
+use std::format as f;
 use crate::{dtype::Constant, runtime::{graph::Graph, node::{BOp, ROp, UOp}, view::{Axis, StridedDim, View}}, tensor::TensorId, DType};
-use super::{v::VOp, HWInfo, Scope};
-use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
+use super::{executor::HWInfo, v::VOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Var {
@@ -12,8 +10,25 @@ enum Var {
     Const(Constant),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Scope {
+    Global,
+    Local,
+    Register,
+}
+
+impl Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Global => "g",
+            Self::Local => "l",
+            Self::Register => "r",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
-pub(super) enum IROp {
+pub(crate) enum IROp {
     Set { z: u8, len: usize, value: Constant },
     Load { z: Var, x: Var, at: Var, dtype: IRDType },
     Store { z: Var, x: Var, at: Var, dtype: IRDType },
@@ -27,7 +42,7 @@ pub(super) enum IROp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum IRDType {
+pub(crate) enum IRDType {
     #[cfg(feature = "half")]
     BF16,
     #[cfg(feature = "half")]
@@ -49,7 +64,7 @@ pub(super) enum IRDType {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct IRVar {
+pub(crate) struct IRVar {
     dtype: IRDType,
     scope: Scope,
     read_only: bool,
@@ -58,7 +73,7 @@ pub(super) struct IRVar {
 }
 
 #[derive(Debug)]
-pub(super) struct IRKernel {
+pub(crate) struct IRKernel {
     // Index of var is it's Id
     pub(super) vars: Vec<IRVar>,
     pub(super) ops: Vec<IROp>,
@@ -95,6 +110,9 @@ pub(super) fn vops_to_ir(
         match vop {
             VOp::Const { z, value } => {
                 vars.add_const(*z, *value);
+            },
+            VOp::Noop { z, x } => {
+                todo!()
             },
             VOp::Load { z, x, view } => {
                 let dtype = graph.dtype(*z).into();
@@ -311,9 +329,6 @@ impl Display for Var {
         }
     }
 }
-
-use alloc::string::String;
-use alloc::format as f;
 
 pub(super) fn to_str_kernel(ir_kernel: &IRKernel) -> String {
     let mut res = String::new();

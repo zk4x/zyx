@@ -3,10 +3,33 @@ use super::{
     TensorId,
 };
 use crate::DType;
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
-};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+enum MemoryKind {
+    RAM,
+    Disk,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+struct MemoryPool {
+    kind: MemoryKind,
+    size: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+enum ExecutorKind {
+    X86_64,
+    HSA,
+    OpenCL,
+    CUDA,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+struct Executor {
+    kind: ExecutorKind,
+    performance: usize, // say in flop/s
+}
 
 // TODO implement PartialOrd such that tensor id does not matter
 // This is probably not very high priority. It probably works fine
@@ -15,12 +38,20 @@ use alloc::{
 pub(super) struct Graph {
     // First value is reference count, second is node
     nodes: BTreeMap<TensorId, (u32, Node)>,
+    // Memory pools where tensors are stored
+    memory_pools: Vec<MemoryPool>,
+    // Each platform can have multiple executors
+    executors: Vec<Executor>,
+    // each tensor can be spread across multiple memory pools and multiple executors
+    // may be able to access it
 }
 
 impl Graph {
     pub(crate) const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
+            memory_pools: Vec::new(),
+            executors: Vec::new(),
         }
     }
 
@@ -171,8 +202,8 @@ impl Graph {
                     )
                 })
                 .collect(),
-            //default_device: device,
-            //default_device_set_by_user: false, // does not matter here
+            memory_pools: todo!(),
+            executors: todo!(),
         };
     }
 
@@ -235,12 +266,7 @@ impl Graph {
                     && self.nodes[nid].0 == 1
                     && self.nodes[nid1].0 == 1
                 {
-                    #[cfg(feature = "std")]
-                    std::println!(
-                        "Reordering movement and unary ops, swap {} and {}",
-                        nid,
-                        nid1
-                    );
+                    //println!("Reordering movement and unary ops, swap {nid} and {nid1}");
                     self.swap_nodes(*nid, *nid1);
                     node_swap = true;
                 }
@@ -282,6 +308,7 @@ impl Graph {
                 | Node::Permute { .. }
                 | Node::Reshape { .. }
                 | Node::Pad { .. } => {}
+                _ => todo!(),
             }
         }
         let mut bytes_written = 0;
@@ -321,7 +348,7 @@ impl Graph {
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {
         // Make a list of visited nodes and their reference counts.
-        let mut params: Vec<TensorId> = alloc::vec![x];
+        let mut params: Vec<TensorId> = vec![x];
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
@@ -343,7 +370,7 @@ impl Graph {
         // Order them using rcs reference counts
         let mut order = Vec::new();
         let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-        let mut params: Vec<TensorId> = alloc::vec![x];
+        let mut params: Vec<TensorId> = vec![x];
         while let Some(nid) = params.pop() {
             if let Some(rc) = rcs.get(&nid) {
                 if *rc
@@ -375,9 +402,8 @@ impl Graph {
     }
 
     /// Plot dot graph in dot format between given nodes
-    #[cfg(feature = "std")]
     #[must_use]
-    pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> alloc::string::String {
+    pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> String {
         let ids: BTreeSet<TensorId> = if ids.is_empty() {
             self.nodes.keys().copied().collect()
         } else {
@@ -419,8 +445,8 @@ impl Graph {
         }
 
         /// Puts graph of nodes into dot language for visualization
-        use alloc::{format as f, string::String};
         use core::fmt::Write;
+        use std::format as f;
         let mut user_rc: BTreeMap<TensorId, u32> =
             self.nodes.iter().map(|(k, (rc, _))| (*k, *rc)).collect();
         for (_, node) in self.nodes.values() {
@@ -473,6 +499,7 @@ impl Graph {
                 Node::Reduce { x, axes, rop, .. } => {
                     add_node(id, &f!("{rop:?}({x}, {axes:?})"), "oval")
                 }
+                _ => todo!(),
             }
             for param in node.parameters() {
                 writeln!(edges, "  {} -> {id}", param).unwrap();

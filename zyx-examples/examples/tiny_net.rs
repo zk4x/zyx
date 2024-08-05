@@ -1,4 +1,4 @@
-use zyx::{DType, Device, Tensor};
+use zyx::{DType, Tensor};
 use zyx_derive::Module;
 use zyx_nn::Linear;
 
@@ -12,7 +12,6 @@ struct TinyNet {
 }
 
 fn main() {
-    Tensor::set_default_device(Device::OpenCL);
     let tiny_net = TinyNet {
         l0: Linear::new(1, 128, DType::F32),
         l1: Linear::new(1, 128, DType::F32),

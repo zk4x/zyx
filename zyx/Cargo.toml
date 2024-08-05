@@ -42,10 +42,7 @@ default = [
 ] # TODO remove default from release build
 
 # Debug, prints GPU kernels
-debug1 = ["std"]
-
-# Necessary for HSA, no need to enable manually
-std = []
+debug1 = []
 
 # Enables random number generation for randn, uniform ...
 rand = ["dep:rand"]
@@ -66,4 +63,4 @@ complex = ["dep:num-complex"]
 #opencl = []
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
-py = ["dep:pyo3", "std", "half", "rand", "complex"]
+py = ["dep:pyo3", "half", "rand", "complex"]

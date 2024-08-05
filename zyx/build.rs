@@ -1,4 +1,4 @@
-use std::env;
+/*use std::env;
 use std::path::PathBuf;
 
 // Use https://github.com/rust-cuda/cuda-sys/blob/cuda-bindgen/cuda-bindgen/src/main.rs
@@ -35,7 +35,6 @@ pub fn find_cuda2() -> Vec<PathBuf> {
     valid_paths
 }
 
-#[cfg(feature = "cuda")]
 fn find_cuda() -> Option<PathBuf> {
     let cuda_env = env::var("CUDA_LIBRARY_PATH")
         .ok()
@@ -66,7 +65,6 @@ pub fn read_env() -> Vec<PathBuf> {
     }
 }
 
-#[cfg(feature = "cuda")]
 fn find_cuda_windows() -> PathBuf {
     let paths = read_env();
     if !paths.is_empty() {
@@ -115,10 +113,6 @@ fn find_cuda_windows() -> PathBuf {
     panic!("Cannot find CUDA NVRTC libraries");
 }
 
-#[cfg(not(feature = "cuda"))]
-fn main() {}
-
-#[cfg(feature = "cuda")]
 fn main() {
     let cuda_path;
     if cfg!(target_os = "windows") {
@@ -169,4 +163,6 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=cuda");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CUDA_LIBRARY_PATH");
-}
+}*/
+
+fn main() {}

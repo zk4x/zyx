@@ -10,8 +10,11 @@ use alloc::format as f;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_int, c_ulonglong, CStr};
+use core::ffi::{c_char, c_int, c_ulonglong};
 use core::ptr;
+
+#[cfg(feature = "debug1")]
+use std::println;
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -144,6 +147,7 @@ enum CUjit_option {
     CU_JIT_GLOBAL_SYMBOL_COUNT = 19,
     CU_JIT_NUM_OPTIONS = 20,
 }
+
 extern "system" {
     fn cuCtxCreate_v2(
         pctx: *mut CUcontext,
@@ -228,8 +232,6 @@ pub struct CUDAError {
     cuda_status: CUresult,
     nvrtc_status: nvrtcResult,
 }
-
-use std::println;
 
 fn check(status: CUresult, info: &str) -> Result<(), CUDAError> {
     if status != CUresult::CUDA_SUCCESS {
@@ -369,7 +371,9 @@ impl Compiler for CUDARuntime {
             page_size: 1024,
             local_mem_size: 1024 * 1024,
             num_registers: 96,
-            native_mm16x16_support: false,
+            local_memory: true,
+            wmma: false,
+            tensor_cores: false,
         });
     }
 
