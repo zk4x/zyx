@@ -6,11 +6,10 @@ use std::{
     vec,
     vec::Vec,
 };
-use allocator::{MemoryError, Allocator, MemoryHandle};
+use memory::{MemoryError, Memory};
 use executor::{ExecError, Executor};
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
-
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -23,7 +22,7 @@ use num_complex::Complex;
 use view::Dimension;
 
 mod executor;
-mod allocator;
+mod memory;
 mod graph;
 mod node;
 mod view;
@@ -39,7 +38,7 @@ pub(crate) struct Runtime {
     // Are we in training mode?
     pub(crate) training: bool,
     // Allocates memory on physical devices
-    allocator: Allocator,
+    memory: Memory,
     // Executes kernels on physical devices
     executor: Executor,
 }
@@ -52,7 +51,7 @@ impl Runtime {
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             training: false,
-            allocator: Allocator::new(),
+            memory: Memory::new(),
             executor: Executor::new(),
         }
     }
@@ -112,9 +111,14 @@ impl Runtime {
     }
 
     pub(crate) fn temp<T: Scalar>(&mut self, shape: Vec<Dimension>, data: &[T]) -> Result<TensorId, MemoryError> {
-        let id = self.graph.push(Node::Leaf { shape, dtype: T::dtype() });
-        self.allocator.store_host(data, id)?;
-        return Ok(id);
+        assert_eq!(shape.iter().product::<usize>(), data.len());
+        if data.len() == 1 {
+            Ok(self.graph.push(Node::Leaf { shape, dtype: T::dtype() }))
+        } else {
+            let id = self.graph.push(Node::Leaf { shape, dtype: T::dtype() });
+            self.memory.store_host(data, id)?;
+            Ok(id)
+        }
     }
 
     // Initialization
@@ -341,7 +345,10 @@ impl Runtime {
 
 impl Runtime {
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
-        todo!()
+        if !self.memory.is_stored(x) {
+            self.realize(BTreeSet::from([x]))?;
+        }
+        Ok(self.memory.load(x))
     }
 
     pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {

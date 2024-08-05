@@ -16,8 +16,10 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-# Loading is used to access all the available devices
-loading = { version = "*", default-features = false }
+# Sysinfo is used to get information about the host
+sysinfo = { version = "0.31.2", default-features = false, features = ["system"] }
+# Loading is used to access cuda, opencl and hsa runtimes
+libloading = { version = "0.8.5", default-features = false }
 
 # Optional dependencies
 rand = { version = "0.8.5", default-features = false, features = [
@@ -34,15 +36,22 @@ crate-type = ["lib", "cdylib"]
 
 [features]
 default = [
-    "debug1",
+    "debug_perf",
+    "debug_v",
     "rand",
     #"complex",
     #"half",
     #"py",
 ] # TODO remove default from release build
 
-# Debug, prints GPU kernels
-debug1 = []
+# Debug, prints execution performance of graphs
+debug_perf = []
+# Debug, prints kernels in virtual representation before scheduling
+debug_v = []
+# Debug, prints kernels in IR
+debug_ir = []
+# Debug, prints kernels in native assembly
+debug_asm = []
 
 # Enables random number generation for randn, uniform ...
 rand = ["dep:rand"]
@@ -52,15 +61,6 @@ half = ["dep:half"]
 
 # Enables complex f32 and complex f64 dtypes
 complex = ["dep:num-complex"]
-
-# Enables cuda device
-#cuda = []
-
-# Enables hsa device
-#hsa = []
-
-# Enables opencl device
-#opencl = []
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
 py = ["dep:pyo3", "half", "rand", "complex"]

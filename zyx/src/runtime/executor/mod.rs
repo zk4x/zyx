@@ -1,4 +1,4 @@
-use super::{allocator::MemoryHandle, ir::IRKernel};
+use super::{memory::Buffer, ir::IRKernel};
 
 pub(super) mod cuda;
 //pub(super) mod hsa;
@@ -27,7 +27,7 @@ impl Executor {
         todo!()
     }
 
-    pub(super) fn launch_program(&mut self, program: &Program, args: &mut [MemoryHandle]) -> Result<(), ExecError> {
+    pub(super) fn launch_program(&mut self, program: &Program, args: &mut [Buffer]) -> Result<(), ExecError> {
         todo!()
     }
 

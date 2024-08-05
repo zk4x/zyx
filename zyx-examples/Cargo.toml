@@ -15,7 +15,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { workspace = true, features = ["debug1"] }
+zyx = { workspace = true }
 zyx-nn = { workspace = true }
 zyx-optim = { workspace = true }
 zyx-derive = { workspace = true }
