@@ -1,7 +1,7 @@
+use crate::shape::{Axis, Dimension};
+
 use super::ir::Scope;
 
-pub(crate) type Axis = usize;
-pub(crate) type Dimension = usize;
 pub(crate) type Stride = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

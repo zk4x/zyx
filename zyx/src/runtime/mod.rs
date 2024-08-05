@@ -1,12 +1,13 @@
 use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
+use crate::shape::Dimension;
 use crate::tensor::TensorId;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-use memory::{MemoryError, Memory};
+use memory::{MemoryError, MemoryPool};
 use executor::{ExecError, Executor};
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
@@ -19,29 +20,31 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use view::Dimension;
+use scheduler::CompiledGraph;
 
 mod executor;
 mod memory;
 mod graph;
 mod node;
-mod view;
-mod v;
-mod ir;
+mod scheduler;
 
 pub(crate) struct Runtime {
-    // Graph with nodes
+    // Current graph of tensor operations as nodes
     graph: Graph,
     // Random number generator
     #[cfg(feature = "rand")]
     rng: core::cell::OnceCell<SmallRng>,
     // Are we in training mode?
     pub(crate) training: bool,
-    // Allocates memory on physical devices
-    memory: Memory,
-    // Executes kernels on physical devices
-    executor: Executor,
+    // Allocate memory on physical devices
+    memory_pools: Vec<MemoryPool>,
+    // Execute kernels on physical devices
+    executors: Vec<Executor>,
+    compiled_graphs: BTreeMap<Graph, CompiledGraph>,
 }
+
+type MemoryPoolId = usize;
+const HOST_MEMORY: MemoryPoolId = 0;
 
 impl Runtime {
     #[must_use]
@@ -51,8 +54,9 @@ impl Runtime {
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             training: false,
-            memory: Memory::new(),
-            executor: Executor::new(),
+            memory_pools: Vec::new(),
+            executors: Vec::new(),
+            compiled_graphs: BTreeMap::new(),
         }
     }
 
@@ -116,7 +120,8 @@ impl Runtime {
             Ok(self.graph.push(Node::Leaf { shape, dtype: T::dtype() }))
         } else {
             let id = self.graph.push(Node::Leaf { shape, dtype: T::dtype() });
-            self.memory.store_host(data, id)?;
+            todo!();
+            //self.memory.store_host(data, id)?;
             Ok(id)
         }
     }
@@ -343,20 +348,32 @@ impl Runtime {
     }
 }
 
+struct DeviceInitParameters {}
+
 impl Runtime {
+    // Initializes all available devices, creating an executor for each compute
+    // device and a memory pool for each physical memory.
+    fn initialize_devices(&mut self, parameters: DeviceInitParameters) {
+        // list all memory devices and create memory pools
+
+        // list all compute devices and create compute pools
+    }
+
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
-        if !self.memory.is_stored(x) {
+        /*if !self.memory.is_stored(x) {
             self.realize(BTreeSet::from([x]))?;
         }
-        Ok(self.memory.load(x))
+        Ok(self.memory.load(x))*/
+        todo!()
     }
 
     pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         if tensors.len() == 0 {
             return Ok(());
         }
+        // TODO
         // create graph
-        //self.graph.realize_graph(tensors, is_realized)
+        //let graph = self.graph.realize_graph(&tensors, |x| self.memory_pools.is_stored(x));
         // compile graph (if needed)
         // launch graph
         return Ok(());
@@ -366,7 +383,8 @@ impl Runtime {
         &mut self,
         x: TensorId,
         sources: BTreeSet<TensorId>,
-    ) -> Result<BTreeMap<TensorId, TensorId>, ZyxError> {
+    ) -> BTreeMap<TensorId, TensorId> {
+        // Does not allocate new tensors, only constant and op nodes
         let topo = self.graph.build_topo(x, &sources);
         //std::println!("Topo: {topo:?}");
 
@@ -387,7 +405,7 @@ impl Runtime {
                 shape: sh,
             }),
         );
-        self.release(grad1)?;
+        self.release(grad1).unwrap();
         //std::println!("{:?}", self.nodes.last().unwrap());
 
         fn insert_or_add_grad(
@@ -645,10 +663,10 @@ impl Runtime {
             if sources.contains(&k) {
                 res.insert(k, v);
             } else {
-                self.release(v)?;
+                self.release(v);
             }
         }
-        return Ok(res);
+        return res;
     }
 }
 
@@ -669,13 +687,13 @@ fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
 pub enum ZyxError {
     EmptyTensor,
     WrongDType(&'static str),
-    AllocError(MemoryError),
+    MemoryError(MemoryError),
     ExecError(ExecError),
 }
 
 impl From<MemoryError> for ZyxError {
     fn from(value: MemoryError) -> Self {
-        Self::AllocError(value)
+        Self::MemoryError(value)
     }
 }
 

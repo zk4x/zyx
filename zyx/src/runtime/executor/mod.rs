@@ -1,5 +1,3 @@
-use super::{memory::Buffer, ir::IRKernel};
-
 pub(super) mod cuda;
 //pub(super) mod hsa;
 //pub(super) mod opencl;
@@ -12,9 +10,14 @@ pub enum ExecError {}
 pub enum Program {}
 
 // Each platform serves both as allocator and executor
-pub(super) struct Executor {}
+pub(super) enum Executor {
+    CUDA(),
+    HSA(),
+    OpenCL(),
+    X86_64(),
+}
 
-impl Executor {
+/*impl HSAExecutor {
     pub(super) const fn new() -> Self {
         Self {}
     }
@@ -27,19 +30,18 @@ impl Executor {
         todo!()
     }
 
-    pub(super) fn launch_program(&mut self, program: &Program, args: &mut [Buffer]) -> Result<(), ExecError> {
+    pub(super) fn launch_program(&mut self, program: &Program, memory_pool: &HSAMemoryPool) -> Result<(), ExecError> {
         todo!()
     }
 
     pub(super) fn release_program(&mut self, program: Program) -> Result<(), ExecError> {
         todo!()
     }
-}
+}*/
 
 /// Hardware information needed for applying optimizations
-#[allow(unused)]
 #[derive(Debug)]
-pub struct HWInfo {
+pub struct ExecutorInfo {
     /// Biggest kernel dimensions
     pub max_work_item_sizes: Vec<usize>,
     /// Maximum local work size threads
@@ -52,20 +54,14 @@ pub struct HWInfo {
     pub f64_support: bool,
     /// Is fused multiply add supported?
     pub fmadd: bool,
-    /// Global (VRAM, RAM) memory size in bytes
-    pub global_mem_size: usize,
-    /// Maximum memory allocation for single buffer in bytes
-    pub max_mem_alloc: usize,
-    /// Alignment for data types in bytes
-    pub mem_align: usize,
     /// Page size (base address alignment) in bytes
     pub page_size: usize,
+    /// Does this device have local memory?
+    pub local_memory: bool,
     /// Local memory size in bytes
     pub local_mem_size: usize,
     /// Number of registers per thread
     pub num_registers: usize,
-    /// Does this device have local memory?
-    pub local_memory: bool,
     /// Does this hardware support native matmul of 16x16 local tiles?
     pub wmma: bool,
     /// Does this hardware have tensor cores?

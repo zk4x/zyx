@@ -1,13 +1,16 @@
 use core::fmt::Debug;
 use core::ops::{Add, Range, RangeInclusive};
 
+pub(crate) type Dimension = usize;
+pub(crate) type Axis = usize;
+
 pub trait IntoShape: Clone + Debug {
-    fn into_shape(self) -> impl Iterator<Item = usize>;
+    fn into_shape(self) -> impl Iterator<Item = Dimension>;
     fn rank(&self) -> usize;
 }
 
 impl IntoShape for usize {
-    fn into_shape(self) -> impl Iterator<Item = usize> {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
         return [self].into_iter();
     }
 
@@ -16,8 +19,8 @@ impl IntoShape for usize {
     }
 }
 
-impl<const N: usize> IntoShape for [usize; N] {
-    fn into_shape(self) -> impl Iterator<Item = usize> {
+impl<const N: usize> IntoShape for [Dimension; N] {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
         return self.into_iter();
     }
 
@@ -26,8 +29,8 @@ impl<const N: usize> IntoShape for [usize; N] {
     }
 }
 
-impl IntoShape for &[usize] {
-    fn into_shape(self) -> impl Iterator<Item = usize> {
+impl IntoShape for &[Dimension] {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
         return self.into_iter().copied();
     }
 
@@ -36,8 +39,8 @@ impl IntoShape for &[usize] {
     }
 }
 
-impl IntoShape for Vec<usize> {
-    fn into_shape(self) -> impl Iterator<Item = usize> {
+impl IntoShape for Vec<Dimension> {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
         return self.into_iter();
     }
 

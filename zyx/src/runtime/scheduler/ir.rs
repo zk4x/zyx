@@ -1,8 +1,11 @@
 use core::fmt::Display;
 use std::{collections::BTreeMap, string::ToString};
 use std::format as f;
-use crate::{dtype::Constant, runtime::{graph::Graph, node::{BOp, ROp, UOp}, view::{Axis, StridedDim, View}}, tensor::TensorId, DType};
-use super::{executor::HWInfo, v::VOp};
+use crate::runtime::executor::ExecutorInfo;
+use crate::shape::Axis;
+use crate::{dtype::Constant, runtime::{graph::Graph, node::{BOp, ROp, UOp}}, tensor::TensorId, DType};
+use super::view::{StridedDim, View};
+use super::VOp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Var {
@@ -82,7 +85,7 @@ pub(crate) struct IRKernel {
 pub(super) fn vops_to_ir(
     vops: &[VOp],
     graph: &Graph,
-    hwinfo: &HWInfo,
+    hwinfo: &ExecutorInfo,
 ) -> IRKernel {
     let _ = hwinfo;
     let mut ops = Vec::new();

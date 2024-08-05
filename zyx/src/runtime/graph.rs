@@ -163,7 +163,7 @@ impl Graph {
         &self,
         tensors: &BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
-    ) -> Self {
+    ) -> Graph {
         // First topo search for minimum number of required nodes and create graph from it
         // Then replace all realized nodes with Node::Leaf
         // topo search

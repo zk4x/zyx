@@ -1,9 +1,18 @@
 use std::collections::BTreeSet;
-
 use crate::dtype::Constant;
 use crate::runtime::node::{BOp, Node, ROp, UOp};
-use crate::runtime::view::{Axis, Dimension, View};
+use crate::shape::{Axis, Dimension};
 use crate::{runtime::graph::Graph, tensor::TensorId};
+use view::View;
+
+pub(crate) use ir::IRKernel;
+
+mod view;
+mod ir;
+
+pub(super) struct Scheduler {
+    kernels: Vec<Kernel>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum VOp {
@@ -240,11 +249,12 @@ impl Kernel {
     }*/
 }
 
+impl Scheduler {
 pub(super) fn generate_kernels(
     graph: &Graph,
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
-) -> Vec<Kernel> {
+) -> Scheduler {
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
     // This function defines loops, loads, stores and elementwise ops.
     // The aim is to sort nodes in such a way, that maximum performance is attained.
@@ -668,7 +678,7 @@ pub(super) fn generate_kernels(
         }
     }
 
-    #[cfg(feature = "debug1")]
+    #[cfg(feature = "debug_sched")]
     {
         println!("\nPrinting kernels");
         for kernel in &kernels {
@@ -678,7 +688,8 @@ pub(super) fn generate_kernels(
             println!();
         }
     }
-    return kernels;
+    return Scheduler { kernels };
+}
 }
 
 fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
@@ -727,4 +738,32 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
     } else {
         panic!()
     }
+}
+
+type ExecutorId = u32;
+
+// In which order
+pub(super) struct CompiledGraph {
+    programs: Vec<Program>,
+}
+
+// Programs are launched by executors
+struct Program {
+    executor: ExecutorId,
+    native: NativeProgram,
+}
+
+enum NativeProgram {
+    PTX,
+    HSAIL,
+    OpenCL,
+    X86_64,
+}
+
+pub(crate) struct OpenCLProgram {
+    name: String,
+    program: *mut u8,
+    global_work_size: [usize; 3],
+    local_work_size: [usize; 3],
+    args_read_only: Vec<bool>,
 }

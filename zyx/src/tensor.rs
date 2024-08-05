@@ -81,8 +81,7 @@ impl Tensor {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
         let grads: BTreeMap<TensorId, TensorId> = RT
             .lock()
-            .backward(self.id, sources.iter().copied().collect())
-            .unwrap();
+            .backward(self.id, sources.iter().copied().collect());
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())
