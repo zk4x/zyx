@@ -408,19 +408,20 @@ impl Runtime {
         Ok(())
     }
 
-    fn store<T: Scalar>(&mut self, id: TensorId, data: &[T]) -> Result<(), ZyxError> {
+    fn store<T: Scalar>(&mut self, tensor_id: TensorId, data: &[T]) -> Result<(), ZyxError> {
         self.initialize_backends(DeviceParameters {})?;
         if let Some(opencl) = self.opencl.as_mut() {
             let bytes = data.len() * T::byte_size();
             let memory_pool = 0;
             let id = opencl.allocate_memory(bytes, memory_pool)?;
-            let buffer = Buffer {
+            let mut buffer = Buffer {
                 id,
                 memory_pool,
                 kind: MemoryKind::OpenCL,
             };
             let ptr: *const u8 = data.as_ptr().cast();
-            opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, buffer)?;
+            opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, &mut buffer)?;
+            self.buffers.insert((tensor_id, View::new(self.shape(tensor_id))), buffer);
         } else {
             panic!()
         }
@@ -437,13 +438,14 @@ impl Runtime {
             if *tensor_id == x {
                 if view.numel() == n {
                     let slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n*T::byte_size()) };
-                    self.opencl.as_mut().unwrap().opencl_to_host(buffer.clone(), slice)?;
+                    self.opencl.as_mut().unwrap().opencl_to_host(&buffer, slice)?;
                     break
                 } else {
                     todo!()
                 }
             }
         }
+        unsafe { data.set_len(n) };
         // for each device where tensor is stored load it
         Ok(data)
     }

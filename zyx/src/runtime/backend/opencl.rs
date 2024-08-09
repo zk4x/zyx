@@ -165,7 +165,7 @@ impl OpenCLBackend {
         Ok(())
     }
 
-    pub(crate) fn host_to_opencl(&mut self, src: &[u8], dst: Buffer) -> Result<(), OpenCLError> {
+    pub(crate) fn host_to_opencl(&mut self, src: &[u8], dst: &mut Buffer) -> Result<(), OpenCLError> {
         let mut event = ptr::null_mut();
         let ptr = self.memory_pools[dst.memory_pool].buffers[dst.id].ptr;
         let status = unsafe {
@@ -184,17 +184,18 @@ impl OpenCLBackend {
         check(status, "Unable to write buffer.")?;
         // Immediattely synchronize because we do not know the lifetime of data
         let status = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
-        check(status, "Unable to finish buffer write event.")
+        check(status, "Unable to finish buffer write event.")?;
+        Ok(())
     }
 
     // Perhaps this can be done directly, for now we go through host
     //pub(crate) fn cuda_to_opencl(&mut self, src: Buffer, dst: Buffer) -> Result<(), OpenCLError> {}
 
-    pub(crate) fn opencl_to_opencl(&mut self, src: Buffer, dst: Buffer) -> Result<(), OpenCLError> {
+    pub(crate) fn opencl_to_opencl(&mut self, src: &Buffer, dst: &mut Buffer) -> Result<(), OpenCLError> {
         todo!()
     }
 
-    pub(crate) fn opencl_to_host(&mut self, src: Buffer, dst: &mut [u8]) -> Result<(), OpenCLError> {
+    pub(crate) fn opencl_to_host(&mut self, src: &Buffer, dst: &mut [u8]) -> Result<(), OpenCLError> {
         let src = self.memory_pools[src.memory_pool].buffers[src.id].ptr;
         assert!(
             !src.is_null(),
