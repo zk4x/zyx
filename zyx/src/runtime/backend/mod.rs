@@ -1,23 +1,12 @@
-pub(super) mod cuda;
-//pub(super) mod hsa;
-//pub(super) mod opencl;
-pub(super) mod x86_64;
+pub(super) use opencl::OpenCLBackend;
+pub use opencl::OpenCLError;
 
-#[derive(Debug)]
-pub enum ExecError {}
+mod opencl;
 
-#[derive(Debug)]
-pub enum Program {}
+// Probably we will simply have two traits: Allocator trait and Executor trait
+// Each backend can implement both or only one of them.
 
-// Each platform serves both as allocator and executor
-pub(super) enum Executor {
-    CUDA(),
-    HSA(),
-    OpenCL(),
-    X86_64(),
-}
-
-/*impl HSAExecutor {
+/*impl HSADevice {
     pub(super) const fn new() -> Self {
         Self {}
     }
@@ -41,7 +30,7 @@ pub(super) enum Executor {
 
 /// Hardware information needed for applying optimizations
 #[derive(Debug)]
-pub struct ExecutorInfo {
+pub struct DeviceInfo {
     /// Biggest kernel dimensions
     pub max_work_item_sizes: Vec<usize>,
     /// Maximum local work size threads
@@ -66,4 +55,15 @@ pub struct ExecutorInfo {
     pub wmma: bool,
     /// Does this hardware have tensor cores?
     pub tensor_cores: bool,
+}
+
+pub(super) struct MemoryInfo {
+    /// Global (VRAM, RAM) memory size in bytes
+    pub total_memory: usize,
+    /// Maximum memory allocation for single buffer in bytes
+    pub max_alloc_size: usize,
+    /// Page size, minimum allocatable size
+    pub page_size: usize,
+    /// Alignment for data types in bytes
+    pub alignment: usize,
 }

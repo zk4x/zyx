@@ -2,15 +2,15 @@ use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
+use backend::{OpenCLBackend, OpenCLError};
+use graph::Graph;
+use node::{BOp, Node, ROp, UOp};
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-use memory::{MemoryError, MemoryPool};
-use executor::{ExecError, Executor};
-use graph::Graph;
-use node::{BOp, Node, ROp, UOp};
+use view::View;
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -22,11 +22,35 @@ use half::{bf16, f16};
 use num_complex::Complex;
 use scheduler::CompiledGraph;
 
-mod executor;
-mod memory;
+mod backend;
 mod graph;
 mod node;
 mod scheduler;
+mod view;
+
+type MemoryPoolId = usize;
+type BufferId = usize;
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+enum MemoryKind {
+    RAM,
+    Disk,
+    OpenCL,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+struct MemoryPool {
+    kind: MemoryKind,
+    total_bytes: usize,
+    free_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+struct Buffer {
+    id: BufferId,
+    memory_pool: MemoryPoolId,
+    kind: MemoryKind,
+}
 
 pub(crate) struct Runtime {
     // Current graph of tensor operations as nodes
@@ -36,15 +60,10 @@ pub(crate) struct Runtime {
     rng: core::cell::OnceCell<SmallRng>,
     // Are we in training mode?
     pub(crate) training: bool,
-    // Allocate memory on physical devices
-    memory_pools: Vec<MemoryPool>,
-    // Execute kernels on physical devices
-    executors: Vec<Executor>,
     compiled_graphs: BTreeMap<Graph, CompiledGraph>,
+    buffers: BTreeMap<(TensorId, View), Buffer>,
+    opencl: Option<OpenCLBackend>,
 }
-
-type MemoryPoolId = usize;
-const HOST_MEMORY: MemoryPoolId = 0;
 
 impl Runtime {
     #[must_use]
@@ -54,9 +73,9 @@ impl Runtime {
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             training: false,
-            memory_pools: Vec::new(),
-            executors: Vec::new(),
             compiled_graphs: BTreeMap::new(),
+            buffers: BTreeMap::new(),
+            opencl: None,
         }
     }
 
@@ -111,28 +130,42 @@ impl Runtime {
             .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
         let rng = self.rng.get_mut().unwrap();
 
-        Ok(self.graph.push(Node::Uniform { shape, low: Constant::new(lower), high: Constant::new(upper) }))
+        Ok(self.graph.push(Node::Uniform {
+            shape,
+            low: Constant::new(lower),
+            high: Constant::new(upper),
+        }))
     }
 
-    pub(crate) fn temp<T: Scalar>(&mut self, shape: Vec<Dimension>, data: &[T]) -> Result<TensorId, MemoryError> {
+    pub(crate) fn temp<T: Scalar>(
+        &mut self,
+        shape: Vec<Dimension>,
+        data: &[T],
+    ) -> Result<TensorId, ZyxError> {
         assert_eq!(shape.iter().product::<usize>(), data.len());
         if data.len() == 1 {
-            Ok(self.graph.push(Node::Leaf { shape, dtype: T::dtype() }))
+            Ok(self.graph.push(Node::Leaf {
+                shape,
+                dtype: T::dtype(),
+            }))
         } else {
-            let id = self.graph.push(Node::Leaf { shape, dtype: T::dtype() });
-            todo!();
-            //self.memory.store_host(data, id)?;
+            let id = self.graph.push(Node::Leaf {
+                shape,
+                dtype: T::dtype(),
+            });
+            // TODO Just store it to memory pool that is least used, in case of a tie
+            // just use the one with highest capacity
+            // Later we can replace it with better heuristic
+            self.store(id, data)?;
             Ok(id)
         }
     }
 
     // Initialization
-    pub(crate) fn full(
-        &mut self,
-        shape: Vec<usize>,
-        value: impl Scalar,
-    ) -> TensorId {
-        let one = self.graph.push(Node::Const { value: Constant::new(value) });
+    pub(crate) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> TensorId {
+        let one = self.graph.push(Node::Const {
+            value: Constant::new(value),
+        });
         let expanded = self.expand(one, shape);
         self.release(one).unwrap();
         return expanded;
@@ -348,34 +381,92 @@ impl Runtime {
     }
 }
 
-struct DeviceInitParameters {}
+struct DeviceParameters {}
 
 impl Runtime {
     // Initializes all available devices, creating an executor for each compute
     // device and a memory pool for each physical memory.
-    fn initialize_devices(&mut self, parameters: DeviceInitParameters) {
-        // list all memory devices and create memory pools
+    // Does nothing if devices were already initialized.
+    // Returns error if all devices failed to initialize
+    // DeviceParameters allows to disable some devices if requested
+    fn initialize_backends(&mut self, parameters: DeviceParameters) -> Result<(), ZyxError> {
+        if self.opencl.is_some()
+        /* || self.cuda.is_some() */
+        {
+            return Ok(());
+        }
 
-        // list all compute devices and create compute pools
+        if let Ok(opencl) = OpenCLBackend::new() {
+            self.opencl = Some(opencl);
+        }
+
+        if self.opencl.is_none()
+        /* && self.cuda.is_none() */
+        {
+            return Err(ZyxError::NoBackendAvailable);
+        }
+        Ok(())
+    }
+
+    fn store<T: Scalar>(&mut self, id: TensorId, data: &[T]) -> Result<(), ZyxError> {
+        self.initialize_backends(DeviceParameters {})?;
+        if let Some(opencl) = self.opencl.as_mut() {
+            let bytes = data.len() * T::byte_size();
+            let memory_pool = 0;
+            let id = opencl.allocate_memory(bytes, memory_pool)?;
+            let buffer = Buffer {
+                id,
+                memory_pool,
+                kind: MemoryKind::OpenCL,
+            };
+            let ptr: *const u8 = data.as_ptr().cast();
+            opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, buffer)?;
+        } else {
+            panic!()
+        }
+        Ok(())
     }
 
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
-        /*if !self.memory.is_stored(x) {
-            self.realize(BTreeSet::from([x]))?;
+        // Check if tensor is evaluated
+        // If at least part of tensor exists in some device, there must be
+        // the rest of the tensor in other devices
+        let n: usize = self.shape(x).iter().product();
+        let mut data: Vec<T> = Vec::with_capacity(n);
+        for ((tensor_id, view), buffer)  in &self.buffers {
+            if *tensor_id == x {
+                if view.numel() == n {
+                    let slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n*T::byte_size()) };
+                    self.opencl.as_mut().unwrap().opencl_to_host(buffer.clone(), slice)?;
+                    break
+                } else {
+                    todo!()
+                }
+            }
         }
-        Ok(self.memory.load(x))*/
-        todo!()
+        // for each device where tensor is stored load it
+        Ok(data)
     }
 
     pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         if tensors.len() == 0 {
             return Ok(());
         }
+        if self.opencl.is_none()
+        /* TODO && self.cuda.is_none() && self.hsa.is_none() */
+        {
+            self.initialize_backends(DeviceParameters {})?;
+        }
         // TODO
         // create graph
         //let graph = self.graph.realize_graph(&tensors, |x| self.memory_pools.is_stored(x));
         // compile graph (if needed)
+        // if !self.compiled_graphs.contains(&graph) {
+        //     let compiled_graph = Scheduler::compile_graph(graph);
+        //     self.compiled_grpahs.insert(graph, compiled_graph);
+        // }
         // launch graph
+        // self.compiled_graphs[&graph].launch();
         return Ok(());
     }
 
@@ -663,7 +754,7 @@ impl Runtime {
             if sources.contains(&k) {
                 res.insert(k, v);
             } else {
-                self.release(v);
+                self.release(v).unwrap();
             }
         }
         return res;
@@ -687,18 +778,12 @@ fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
 pub enum ZyxError {
     EmptyTensor,
     WrongDType(&'static str),
-    MemoryError(MemoryError),
-    ExecError(ExecError),
+    NoBackendAvailable,
+    OpenCLError(OpenCLError),
 }
 
-impl From<MemoryError> for ZyxError {
-    fn from(value: MemoryError) -> Self {
-        Self::MemoryError(value)
-    }
-}
-
-impl From<ExecError> for ZyxError {
-    fn from(value: ExecError) -> Self {
-        Self::ExecError(value)
+impl From<OpenCLError> for ZyxError {
+    fn from(value: OpenCLError) -> Self {
+        ZyxError::OpenCLError(value)
     }
 }

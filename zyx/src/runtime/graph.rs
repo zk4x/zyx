@@ -6,18 +6,6 @@ use crate::DType;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-enum MemoryKind {
-    RAM,
-    Disk,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-struct MemoryPool {
-    kind: MemoryKind,
-    size: usize,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 enum ExecutorKind {
     X86_64,
     HSA,
@@ -38,20 +26,12 @@ struct Executor {
 pub(super) struct Graph {
     // First value is reference count, second is node
     nodes: BTreeMap<TensorId, (u32, Node)>,
-    // Memory pools where tensors are stored
-    memory_pools: Vec<MemoryPool>,
-    // Each platform can have multiple executors
-    executors: Vec<Executor>,
-    // each tensor can be spread across multiple memory pools and multiple executors
-    // may be able to access it
 }
 
 impl Graph {
     pub(crate) const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
-            memory_pools: Vec::new(),
-            executors: Vec::new(),
         }
     }
 
@@ -178,7 +158,6 @@ impl Graph {
                     params.extend(self.nodes[&param].1.parameters());
                 }
             }
-
         }
         //let device = self.device(*visited.last().unwrap());
         return Graph {
@@ -202,8 +181,6 @@ impl Graph {
                     )
                 })
                 .collect(),
-            memory_pools: todo!(),
-            executors: todo!(),
         };
     }
 
@@ -480,9 +457,7 @@ impl Graph {
         for id in &topo {
             let node = &self.nodes[id].1;
             match node {
-                Node::Const {
-                    value,
-                } => add_node(id, &f!("Const({value:?})"), "box"),
+                Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
                 Node::Leaf {
                     shape,
                     dtype,

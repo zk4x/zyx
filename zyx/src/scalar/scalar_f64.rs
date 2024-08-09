@@ -81,7 +81,7 @@ impl Scalar for f64 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self.abs()
     }
 
     fn reciprocal(self) -> Self {
@@ -89,7 +89,7 @@ impl Scalar for f64 {
     }
 
     fn floor(self) -> Self {
-        todo!()
+        self.floor()
     }
 
     fn neg(self) -> Self {
@@ -101,35 +101,27 @@ impl Scalar for f64 {
     }
 
     fn sin(self) -> Self {
-        //libm::sin(self)
-        todo!()
+        self.sin()
     }
 
     fn cos(self) -> Self {
-        //libm::cos(self)
-        todo!()
+        self.cos()
     }
 
     fn ln(self) -> Self {
-        //libm::log(self)
-        todo!()
+        self.ln()
     }
 
     fn exp(self) -> Self {
-        //libm::exp(self)
-        todo!()
+        self.exp()
     }
 
     fn tanh(self) -> Self {
-        //libm::tanh(self)
-        todo!()
+        self.tanh()
     }
 
     fn sqrt(self) -> Self {
-        #[cfg(feature = "std")]
         return self.sqrt();
-        #[cfg(not(feature = "std"))]
-        todo!("sqrt in nostd");
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -149,9 +141,7 @@ impl Scalar for f64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //libm::pow(self, rhs)
-        todo!()
+        self.powf(rhs)
     }
 
     fn cmplt(self, rhs: Self) -> Self {

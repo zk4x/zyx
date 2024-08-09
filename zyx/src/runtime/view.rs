@@ -1,17 +1,15 @@
 use crate::shape::{Axis, Dimension};
 
-use super::ir::Scope;
-
 pub(crate) type Stride = usize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StridedDim {
     pub(crate) axis: Axis,
     pub(crate) dim: Dimension,
     pub(crate) stride: Stride,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub(crate) enum View {
     None,
     //Contiguous(Vec<StridedDim>), // TODO perhaps later, mainly for cpu and perhaps wide loads on gpu
@@ -23,14 +21,16 @@ pub(crate) enum View {
     // since then loads are very unpredictable
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub(crate) struct PaddedAxes {
     axes: Vec<(Vec<Axis>, (isize, isize))>,
 }
 
 impl PaddedAxes {
     fn new(axis: Axis, left_pad: isize, right_pad: isize) -> Self {
-        Self { axes: vec![(vec![axis], (left_pad, right_pad))] }
+        Self {
+            axes: vec![(vec![axis], (left_pad, right_pad))],
+        }
     }
 
     fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
@@ -176,7 +176,7 @@ impl View {
                 // Split padding
                 if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
                     //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
-                    for a in axis+1..axis + dim_len {
+                    for a in axis + 1..axis + dim_len {
                         //if !axes.contains(&a) {
                         //}
                         axes.push(a);
@@ -258,7 +258,23 @@ impl View {
     }
 }
 
-use std::format as f;
+use std::{fmt::Display, format as f};
+
+enum Scope {
+    Global,
+    Local,
+    Register,
+}
+
+impl Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Scope::Global => "g",
+            Scope::Local => "l",
+            Scope::Register => "r",
+        })
+    }
+}
 
 impl View {
     pub(crate) fn to_str(&self, id: u64, scope: Scope, _temp_id: u8) -> (Vec<String>, String) {
@@ -278,13 +294,12 @@ impl View {
                 let mut res = String::new();
                 // When the padding does not apply
                 let mut padding_condition = String::new();
-                for StridedDim {
-                    axis,
-                    stride,
-                    ..
-                } in dims
-                {
-                    if let Some((axes, (lp, rp))) = padding.axes.iter().find(|(axes, _)| axes.iter().max().unwrap() == axis) {
+                for StridedDim { axis, stride, .. } in dims {
+                    if let Some((axes, (lp, rp))) = padding
+                        .axes
+                        .iter()
+                        .find(|(axes, _)| axes.iter().max().unwrap() == axis)
+                    {
                         //std::println!("Padding {id} with {lp}, {rp}");
                         let mut idx = String::new();
                         let mut st = 1;

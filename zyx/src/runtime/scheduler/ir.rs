@@ -1,11 +1,18 @@
-use core::fmt::Display;
-use std::{collections::BTreeMap, string::ToString};
-use std::format as f;
-use crate::runtime::executor::ExecutorInfo;
-use crate::shape::Axis;
-use crate::{dtype::Constant, runtime::{graph::Graph, node::{BOp, ROp, UOp}}, tensor::TensorId, DType};
-use super::view::{StridedDim, View};
 use super::VOp;
+use crate::runtime::view::{StridedDim, View};
+use crate::shape::Axis;
+use crate::{
+    dtype::Constant,
+    runtime::{
+        graph::Graph,
+        node::{BOp, ROp, UOp},
+    },
+    tensor::TensorId,
+    DType,
+};
+use core::fmt::Display;
+use std::format as f;
+use std::{collections::BTreeMap, string::ToString};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Var {
@@ -32,16 +39,52 @@ impl Display for Scope {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum IROp {
-    Set { z: u8, len: usize, value: Constant },
-    Load { z: Var, x: Var, at: Var, dtype: IRDType },
-    Store { z: Var, x: Var, at: Var, dtype: IRDType },
-    Unary { z: Var, x: Var, uop: UOp, dtype: IRDType },
-    Binary { z: Var, x: Var, y: Var, bop: BOp, dtype: IRDType },
+    Set {
+        z: u8,
+        len: usize,
+        value: Constant,
+    },
+    Load {
+        z: Var,
+        x: Var,
+        at: Var,
+        dtype: IRDType,
+    },
+    Store {
+        z: Var,
+        x: Var,
+        at: Var,
+        dtype: IRDType,
+    },
+    Unary {
+        z: Var,
+        x: Var,
+        uop: UOp,
+        dtype: IRDType,
+    },
+    Binary {
+        z: Var,
+        x: Var,
+        y: Var,
+        bop: BOp,
+        dtype: IRDType,
+    },
     // z = a * b + c
-    MAdd { z: Var, a: Var, b: Var, c: Var, dtype: IRDType },
-    Loop { id: u8, len: usize },
+    MAdd {
+        z: Var,
+        a: Var,
+        b: Var,
+        c: Var,
+        dtype: IRDType,
+    },
+    Loop {
+        id: u8,
+        len: usize,
+    },
     EndLoop,
-    Barrier { scope: Scope },
+    Barrier {
+        scope: Scope,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,9 +128,8 @@ pub(crate) struct IRKernel {
 pub(super) fn vops_to_ir(
     vops: &[VOp],
     graph: &Graph,
-    hwinfo: &ExecutorInfo,
+    //hwinfo: &DeviceInfo,
 ) -> IRKernel {
-    let _ = hwinfo;
     let mut ops = Vec::new();
     let mut vars: VarMap = VarMap::new();
     let mut args = Vec::new();
@@ -100,10 +142,22 @@ pub(super) fn vops_to_ir(
     for vop in vops {
         match vop {
             VOp::Load { x, view, .. } => {
-                let _ = vars.add_var(*x, view.numel(), Scope::Global, graph.rc(*x), graph.dtype(*x).into());
+                let _ = vars.add_var(
+                    *x,
+                    view.numel(),
+                    Scope::Global,
+                    graph.rc(*x),
+                    graph.dtype(*x).into(),
+                );
             }
             VOp::Store { z, view } => {
-                let _ = vars.add_var(*z, view.numel(), Scope::Global, graph.rc(*z), graph.dtype(*z).into());
+                let _ = vars.add_var(
+                    *z,
+                    view.numel(),
+                    Scope::Global,
+                    graph.rc(*z),
+                    graph.dtype(*z).into(),
+                );
             }
             _ => {}
         }
@@ -113,41 +167,71 @@ pub(super) fn vops_to_ir(
         match vop {
             VOp::Const { z, value } => {
                 vars.add_const(*z, *value);
-            },
+            }
             VOp::Noop { z, x } => {
                 todo!()
-            },
+            }
             VOp::Load { z, x, view } => {
                 let dtype = graph.dtype(*z).into();
                 let idx = vars.generate_idx(view, &mut ops);
                 let x = vars.get(*x, Scope::Global);
                 let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into());
-                ops.push(IROp::Load { z, x, at: idx, dtype });
+                ops.push(IROp::Load {
+                    z,
+                    x,
+                    at: idx,
+                    dtype,
+                });
                 vars.remove_var(idx);
-            },
+            }
             VOp::Store { z, view } => {
                 let dtype = graph.dtype(*z).into();
                 let idx = vars.generate_idx(view, &mut ops);
                 let x = vars.get(*z, Scope::Register);
                 let z = vars.get(*z, Scope::Global);
-                ops.push(IROp::Store { z, x, at: idx, dtype });
+                ops.push(IROp::Store {
+                    z,
+                    x,
+                    at: idx,
+                    dtype,
+                });
                 vars.remove_var(idx);
-            },
+            }
             VOp::Loop { axis, dimension } => {
                 let id = vars.add_axis(*axis);
-                ops.push(IROp::Loop { id, len: *dimension });
+                ops.push(IROp::Loop {
+                    id,
+                    len: *dimension,
+                });
                 max_axis += 1;
-            },
+            }
             VOp::Accumulator { z, rop, view } => {
                 let dtype: DType = graph.dtype(*z).into();
                 let len = view.numel();
-                let Var::Id(z) = vars.add_var(*z, len, Scope::Register, graph.rc(*z), graph.dtype(*z).into()) else {panic!()};
-                ops.push(IROp::Set { z, len, value: match *rop {
-                    ROp::Sum => dtype.zero_constant(),
-                    ROp::Max => dtype.min_constant(),
-                }});
-            },
-            VOp::Reduce { z, x, num_axes, rop } => {
+                let Var::Id(z) = vars.add_var(
+                    *z,
+                    len,
+                    Scope::Register,
+                    graph.rc(*z),
+                    graph.dtype(*z).into(),
+                ) else {
+                    panic!()
+                };
+                ops.push(IROp::Set {
+                    z,
+                    len,
+                    value: match *rop {
+                        ROp::Sum => dtype.zero_constant(),
+                        ROp::Max => dtype.min_constant(),
+                    },
+                });
+            }
+            VOp::Reduce {
+                z,
+                x,
+                num_axes,
+                rop,
+            } => {
                 let x_tensor = *x;
                 let z_tensor = *z;
                 let dtype = graph.dtype(*z).into();
@@ -157,7 +241,13 @@ pub(super) fn vops_to_ir(
                     ROp::Sum => BOp::Add,
                     ROp::Max => BOp::Max,
                 };
-                ops.push(IROp::Binary { z, x, y: z, bop, dtype });
+                ops.push(IROp::Binary {
+                    z,
+                    x,
+                    y: z,
+                    bop,
+                    dtype,
+                });
                 vars.remove(x_tensor);
                 vars.remove(z_tensor);
                 for _ in 0..*num_axes {
@@ -165,15 +255,20 @@ pub(super) fn vops_to_ir(
                     vars.remove_axis(max_axis);
                     max_axis -= 1;
                 }
-            },
+            }
             VOp::Unary { z, x, uop } => {
                 let x_tensor = *x;
                 let dtype = graph.dtype(*z).into();
                 let x = vars.get(*x, Scope::Register);
                 let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into());
-                ops.push(IROp::Unary { z, x, uop: *uop, dtype });
+                ops.push(IROp::Unary {
+                    z,
+                    x,
+                    uop: *uop,
+                    dtype,
+                });
                 vars.remove(x_tensor);
-            },
+            }
             VOp::Binary { z, x, y, bop } => {
                 let x_tensor = *x;
                 let y_tensor = *y;
@@ -181,10 +276,16 @@ pub(super) fn vops_to_ir(
                 let x = vars.get(*x, Scope::Register);
                 let y = vars.get(*y, Scope::Register);
                 let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into());
-                ops.push(IROp::Binary { z, x, y, bop: *bop, dtype });
+                ops.push(IROp::Binary {
+                    z,
+                    x,
+                    y,
+                    bop: *bop,
+                    dtype,
+                });
                 vars.remove(x_tensor);
                 vars.remove(y_tensor);
-            },
+            }
         }
     }
 
@@ -240,16 +341,26 @@ impl VarMap {
             View::None => Var::Const(Constant::I64(0)),
             View::Strided(dims) => {
                 let z = self.add_index();
-                ops.push(IROp::Set { z, len: 0, value: Constant::I64(0) });
+                ops.push(IROp::Set {
+                    z,
+                    len: 0,
+                    value: Constant::I64(0),
+                });
                 let z = Var::Id(z);
                 for StridedDim { axis, stride, .. } in dims {
                     if *stride != 0 {
                         let a = self.get_axis(*axis);
-                        ops.push(IROp::MAdd { z, a, b: Var::Const(Constant::I64(*stride as i64)), c: z, dtype: IRDType::Idx });
+                        ops.push(IROp::MAdd {
+                            z,
+                            a,
+                            b: Var::Const(Constant::I64(*stride as i64)),
+                            c: z,
+                            dtype: IRDType::Idx,
+                        });
                     }
                 }
                 z
-            },
+            }
             View::Padded(_, _) => todo!(),
         }
     }
@@ -289,7 +400,11 @@ impl VarMap {
         // This finds variable with the same dtype, however
         // we often can use registers that can hold variables of different dtypes,
         // so the dtype equality check will be disabled for some devices.
-        if let Some(id) = self.vars.iter().position(|(rc, _, _, vdtype)| *rc == 0 && *vdtype == dtype) {
+        if let Some(id) = self
+            .vars
+            .iter()
+            .position(|(rc, _, _, vdtype)| *rc == 0 && *vdtype == dtype)
+        {
             id
         } else {
             if self.vars.len() == 255 {
@@ -335,27 +450,36 @@ impl Display for Var {
 
 pub(super) fn to_str_kernel(ir_kernel: &IRKernel) -> String {
     let mut res = String::new();
-    let mut indent  = f!("  ");
+    let mut indent = f!("  ");
     for op in &ir_kernel.ops {
         match op {
             IROp::Set { z, len, value } => {
-                res += &f!("{indent}r{}{} = {};\n", *z, if *len > 0 { f!("[{len}]") } else { String::new() }, value);
+                res += &f!(
+                    "{indent}r{}{} = {};\n",
+                    *z,
+                    if *len > 0 {
+                        f!("[{len}]")
+                    } else {
+                        String::new()
+                    },
+                    value
+                );
             }
             IROp::Load { z, x, at, .. } => {
                 res += &f!("{indent}{z} = {x}[{at}];\n");
-            },
+            }
             IROp::Store { z, x, at, .. } => {
                 res += &f!("{indent}{z}[{at}] = {x};\n");
-            },
+            }
             IROp::Unary { z, x, uop, .. } => {
                 res += &f!("{indent}{z} = {uop:?}({x});\n");
             }
             IROp::Binary { z, x, y, bop, .. } => {
                 res += &f!("{indent}{z} = {bop:?}({x}, {y});\n");
-            },
+            }
             IROp::MAdd { z, a, b, c, .. } => {
                 res += &f!("{indent}{z} = {a} * {b} + {c};\n");
-            },
+            }
             IROp::Loop { id, len } => {
                 res += &f!("{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n");
                 indent += "  ";
@@ -366,11 +490,14 @@ pub(super) fn to_str_kernel(ir_kernel: &IRKernel) -> String {
                 res += &f!("{indent}}}\n");
             }
             IROp::Barrier { scope } => {
-                res += &f!("{indent}barrier(CLK_{}AL_MEM_FENCE);\n", match scope {
-                    Scope::Global => "GLOB",
-                    Scope::Local => "LOC",
-                    Scope::Register => panic!(),
-                });
+                res += &f!(
+                    "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                    match scope {
+                        Scope::Global => "GLOB",
+                        Scope::Local => "LOC",
+                        Scope::Register => panic!(),
+                    }
+                );
             }
         }
     }

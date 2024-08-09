@@ -53,20 +53,20 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     let struct_name = &input.ident;
     let mut field_iterators = quote! {
         trait __MarkerTraitRef<'a> {
-            fn __iterate_by_ref(&self, res: &mut std::vec::Vec<&'a zyx::Tensor>) {}
+            fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx::Tensor>) {}
         }
 
         struct __MarkerStructRef<T: Copy>(T);
 
         impl<'a, T: IntoIterator<Item = &'a zyx::Tensor> + Copy> __MarkerStructRef<T> {
-            fn __iterate_by_ref(&self, res: &mut std::vec::Vec<&'a zyx::Tensor>) {
+            fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx::Tensor>) {
                 res.extend(self.0.into_iter());
             }
         }
 
         impl<'a, T: Copy> __MarkerTraitRef<'a> for __MarkerStructRef<T>{}
 
-        let mut res = std::vec::Vec::<&zyx::Tensor>::new();
+        let mut res = Vec::<&zyx::Tensor>::new();
     };
 
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {
@@ -118,7 +118,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
 
         impl<'a, T> __MarkerTraitMut<'a> for __MarkerStructMut<T>{}
 
-        let mut res = alloc::vec::Vec::<&mut zyx::Tensor>::new();
+        let mut res = Vec::<&mut zyx::Tensor>::new();
     };
 
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {

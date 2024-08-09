@@ -1,16 +1,12 @@
 #![allow(non_camel_case_types)]
 
 use crate::dtype::DType;
-use crate::runtime::ir::IRKernel;
-use crate::runtime::scheduler::HWInfo;
 use crate::scalar::Scalar;
 use core::ffi::c_void;
 use core::ptr;
-use std::format as f;
 use std::collections::BTreeSet;
 use std::ffi::CString;
-
-use super::Executor;
+use std::format as f;
 
 type cl_int = i32;
 type cl_uint = u32;
@@ -158,7 +154,7 @@ pub(crate) struct OpenCLProgram {
     args_read_only: Vec<bool>,
 }
 
-pub(crate) struct OpenCLExecutor {
+pub(crate) struct OpenCLDevice {
     context: *mut c_void,
     devices: BTreeSet<*mut c_void>,
     queues: Box<[*mut c_void]>,
@@ -169,11 +165,11 @@ pub(crate) struct OpenCLExecutor {
 // TODO we must ensure that this is OK
 // Pointers in these structs are OpenCL pointers,
 // so they should stay valid no matter the thread.
-unsafe impl Send for OpenCLExecutor {}
+unsafe impl Send for OpenCLDevice {}
 unsafe impl Send for OpenCLBuffer {}
 unsafe impl Send for OpenCLProgram {}
 
-impl OpenCLExecutor {
+impl OpenCLDevice {
     fn queue(&mut self) -> Result<*mut c_void, OpenCLError> {
         let res = self.queues[self.queue_id];
         self.queue_size[self.queue_id] += 1;
@@ -184,10 +180,7 @@ impl OpenCLExecutor {
         // of the queues, but is it really necessary?.
         if self.queue_size[self.queue_id] == 2 {
             let status = unsafe { clFinish(res) };
-            check(
-                status,
-                "Unable to finish execution of command queue.",
-            )?;
+            check(status, "Unable to finish execution of command queue.")?;
             self.queue_size[self.queue_id] = 0;
         }
         self.queue_id = (self.queue_id + 1) % self.queues.len();
@@ -195,7 +188,7 @@ impl OpenCLExecutor {
     }
 }
 
-impl Drop for OpenCLExecutor {
+impl Drop for OpenCLDevice {
     fn drop(&mut self) {
         /*#[cfg(feature = "CL_VERSION_1_2")]
         for device in &mut self.devices {
@@ -207,7 +200,7 @@ impl Drop for OpenCLExecutor {
     }
 }
 
-impl Executor for OpenCLExecutor {
+impl Device for OpenCLDevice {
     type Buffer = OpenCLBuffer;
     type Program = OpenCLProgram;
     type Error = OpenCLError;
@@ -234,10 +227,9 @@ impl Executor for OpenCLExecutor {
         };
         let Some(platform) = platform_ids.get(platform_id) else {
             return Err(OpenCLError {
-status: OpenCLStatus::NO_PLATFORM,
+                status: OpenCLStatus::NO_PLATFORM,
                 info: "There are no available OpenCL platforms.".into(),
-            })
-            ;
+            });
         };
         let platform = *platform;
         #[cfg(feature = "debug1")]
@@ -245,7 +237,8 @@ status: OpenCLStatus::NO_PLATFORM,
             "Using OpenCL platform: {}",
             String::from_utf8(get_platform_data(platform, CL_PLATFORM_NAME)?).unwrap()
         );
-        let device_ids = get_device_ids(platform, CL_DEVICE_TYPE_ALL).map_err(|err| check(err, "Unable to get OpenCL device ids").err().unwrap())?;
+        let device_ids = get_device_ids(platform, CL_DEVICE_TYPE_ALL)
+            .map_err(|err| check(err, "Unable to get OpenCL device ids").err().unwrap())?;
         #[cfg(feature = "debug1")]
         println!("Using devices:");
         #[cfg(feature = "debug1")]
@@ -253,7 +246,9 @@ status: OpenCLStatus::NO_PLATFORM,
             println!(
                 "{}",
                 String::from_utf8(get_device_data(*dev, CL_DEVICE_NAME).map_err(|err| {
-check(err, "Unable to get OpenCL device name.").err().unwrap()
+                    check(err, "Unable to get OpenCL device name.")
+                        .err()
+                        .unwrap()
                 })?)
                 .unwrap()
             );
@@ -395,10 +390,7 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
                 &mut status,
             )
         };
-        check(
-            status,
-            "Unable to allocate memory.",
-        )?;
+        check(status, "Unable to allocate memory.")?;
         Ok(Self::Buffer {
             memory,
             event: ptr::null_mut(),
@@ -427,16 +419,10 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
                 &mut buffer.event,
             )
         };
-        check(
-            status,
-            "Unable to write buffer.",
-        )?;
+        check(status, "Unable to write buffer.")?;
         // Immediattely synchronize because we do not know the lifetime of data
         let status = unsafe { clWaitForEvents(1, (&[buffer.event]).as_ptr().cast()) };
-        return check(
-            status,
-            "Unable to finish buffer write event.",
-        );
+        return check(status, "Unable to finish buffer write event.");
     }
 
     fn load_memory<T: Scalar>(
@@ -469,10 +455,7 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
                 &mut event,
             )
         };
-        check(
-            status,
-            "Unable to read buffer.",
-        )?;
+        check(status, "Unable to read buffer.")?;
         cl_wait_for_events(&[event])?;
         // We are now done reading, so the vec is initialized
         unsafe { data.set_len(length) }
@@ -548,10 +531,7 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
         let mut status = CL_SUCCESS;
         let kernel =
             unsafe { clCreateKernel(program.program, program_name.as_ptr().cast(), &mut status) };
-        check(
-            status,
-            "Unable to create kernel.",
-        )?;
+        check(status, "Unable to create kernel.")?;
         let mut events = Vec::new();
         let mut i = 0;
         for arg in &mut *args {
@@ -564,10 +544,7 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
             status = unsafe {
                 clSetKernelArg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
             };
-            check(
-                status,
-                "Unable to set kernel arg.",
-            )?;
+            check(status, "Unable to set kernel arg.")?;
             i += 1;
         }
         let mut global_work_size = program.global_work_size;
@@ -594,17 +571,11 @@ check(err, "Unable to get OpenCL device name.").err().unwrap()
                 &mut event,
             )
         };
-        check(
-            status,
-            "Unable to enqueue kernel.",
-        )?;
+        check(status, "Unable to enqueue kernel.")?;
         #[cfg(feature = "debug1")]
         {
             let status = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
-            check(
-                status,
-                "Unable to finish kernel execution event.",
-            )?;
+            check(status, "Unable to finish kernel execution event.")?;
             /*let elapsed_nanos = begin.elapsed().as_nanos();
             let elapsed_millis = elapsed_nanos as f64 / 1000000.;
             println!(
@@ -687,10 +658,7 @@ impl OpenCLProgram {
             let build_log = get_program_build_data(program, devices[0], CL_PROGRAM_BUILD_LOG);
             match build_log {
                 Ok(build_log) => panic!("{}", String::from_utf8_lossy(&build_log)),
-                Err(status) => check(
-                    status,
-                    "Unable to get info about failed compilation.",
-                )?,
+                Err(status) => check(status, "Unable to get info about failed compilation.")?,
             }
         }
         Ok(Self {
@@ -705,10 +673,7 @@ impl OpenCLProgram {
 
 fn cl_wait_for_events(events: &[*mut c_void]) -> Result<(), OpenCLError> {
     let status = unsafe { clWaitForEvents(1, events.as_ptr().cast()) };
-    return check(
-        status,
-        "Unable to finish buffer read event.",
-    );
+    return check(status, "Unable to finish buffer read event.");
 }
 
 fn get_program_build_data(
@@ -866,14 +831,14 @@ fn get_platform_data(platform: *mut c_void, param_name: cl_uint) -> Result<Vec<u
     }
 }
 
-fn check(
-    status: cl_int,
-    info: &str,
-) -> Result<(), OpenCLError> {
+fn check(status: cl_int, info: &str) -> Result<(), OpenCLError> {
     if status == CL_SUCCESS {
         return Ok(());
     } else {
-        return Err(OpenCLError { info: info.into(), status: OpenCLStatus::new(status) })
+        return Err(OpenCLError {
+            info: info.into(),
+            status: OpenCLStatus::new(status),
+        });
     }
 }
 

@@ -1,6 +1,3 @@
-// This is just a personal preference
-//#![deny(clippy::implicit_return)]
-
 use crate::runtime::Runtime;
 
 mod dtype;

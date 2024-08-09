@@ -7,7 +7,7 @@ pub struct CUDAError {
 }
 
 #[derive(Debug)]
-pub struct CUDAExecutor {}
+pub struct CUDADevice {}
 
 #[derive(Debug)]
 pub struct CUDAProgram {}
