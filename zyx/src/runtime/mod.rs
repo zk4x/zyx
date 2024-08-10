@@ -20,7 +20,7 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use scheduler::CompiledGraph;
+use scheduler::{CompiledGraph, Scheduler};
 
 mod backend;
 mod graph;
@@ -144,9 +144,8 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         assert_eq!(shape.iter().product::<usize>(), data.len());
         if data.len() == 1 {
-            Ok(self.graph.push(Node::Leaf {
-                shape,
-                dtype: T::dtype(),
+            Ok(self.graph.push(Node::Const {
+                value: Constant::new(data[0]),
             }))
         } else {
             let id = self.graph.push(Node::Leaf {
@@ -430,6 +429,9 @@ impl Runtime {
 
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
+        if self.buffers.iter().all(|((id, _), _)| *id != x) {
+            self.realize(BTreeSet::from([x]))?;
+        }
         // If at least part of tensor exists in some device, there must be
         // the rest of the tensor in other devices
         let n: usize = self.shape(x).iter().product();
@@ -461,14 +463,14 @@ impl Runtime {
         }
         // TODO
         // create graph
-        //let graph = self.graph.realize_graph(&tensors, |x| self.memory_pools.is_stored(x));
+        let graph = self.graph.realize_graph(&tensors, |x| self.buffers.iter().any(|((id, _), _)| *id == x));
         // compile graph (if needed)
-        // if !self.compiled_graphs.contains(&graph) {
-        //     let compiled_graph = Scheduler::compile_graph(graph);
-        //     self.compiled_grpahs.insert(graph, compiled_graph);
-        // }
+        if !self.compiled_graphs.contains_key(&graph) {
+            let compiled_graph = Scheduler::compile_graph(graph.clone(), &tensors);
+            self.compiled_graphs.insert(graph, compiled_graph);
+        }
         // launch graph
-        // self.compiled_graphs[&graph].launch();
+        //self.compiled_graphs[&graph].launch();
         return Ok(());
     }
 

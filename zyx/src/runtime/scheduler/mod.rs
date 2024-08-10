@@ -15,10 +15,20 @@ pub(super) struct Scheduler {
 
 impl Scheduler {
     // TODO this function could take &mut Runtime
-    fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>) -> CompiledGraph {
+    pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>) -> CompiledGraph {
         let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
         // create vop representation
         let mut kernels = Self::generate_kernels(&graph, &order, &to_eval);
+        #[cfg(feature = "debug_sched")]
+        {
+            println!("\nPrinting kernels");
+            for kernel in &kernels {
+                for op in &kernel.ops {
+                    println!("{op:?}");
+                }
+                println!();
+            }
+        }
         // create graph of kernels, sharding tensors across devices, shard also kernels appropriatelly
         let mut kernel_graph: Vec<SchedulerOp> = Vec::new();
         // Tensors that are being evaluated on devices, but still not finished
@@ -399,7 +409,7 @@ impl Scheduler {
         let mut kernels: Vec<Kernel> = Vec::new();
         for nid in order.iter().copied() {
             let node = &graph[nid];
-            //println!("{} x {node:?}", graph.rc(nid));
+            println!("ID({nid})x{}: {node:?}", graph.rc(nid));
             match node {
                 Node::Const { value } => {
                     let const_op = VOp::Const {
@@ -512,10 +522,10 @@ impl Scheduler {
                     let kernel = get_kernel(*x, &mut kernels, graph);
                     // If this is just a reshape of kernel with only unary ops and contiguous loads
                     // and stores, we can remove old loops and replace them with new loops.
-                    if kernel.ops.iter().all(|op| match op {
-                        VOp::Loop { .. } | VOp::Unary { .. } | VOp::Binary { .. } => true,
+                    if kernel.ops.iter().all(|op| match op { 
+                        VOp::Loop { .. } | VOp::Unary { .. } | VOp::Binary { .. } | VOp::Const { .. } | VOp::Noop { .. } => true,
                         VOp::Load { view, .. } | VOp::Store { view, .. } => view.is_contiguous(),
-                        _ => false,
+                        VOp::Accumulator { .. } | VOp::Reduce { .. } => false,
                     }) {
                         // Remove old loops
                         for _ in 0..kernel.shape.len() {
@@ -832,17 +842,6 @@ impl Scheduler {
                     }
                 }
                 i += 1;
-            }
-        }
-
-        #[cfg(feature = "debug_sched")]
-        {
-            println!("\nPrinting kernels");
-            for kernel in &kernels {
-                for op in &kernel.ops {
-                    println!("{op:?}");
-                }
-                println!();
             }
         }
         kernels
