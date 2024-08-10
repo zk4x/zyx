@@ -20,7 +20,7 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use scheduler::{CompiledGraph, Scheduler};
+use scheduler::{CompiledGraph, compile_graph};
 
 mod backend;
 mod graph;
@@ -50,6 +50,22 @@ struct Buffer {
     id: BufferId,
     memory_pool: MemoryPoolId,
     kind: MemoryKind,
+}
+
+type DeviceId = usize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DeviceKind {
+    Host,
+    OpenCL,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Device {
+    id: DeviceId,
+    kind: DeviceKind,
+    // Compute in FLOPS
+    compute: usize,
 }
 
 pub(crate) struct Runtime {
@@ -383,7 +399,7 @@ impl Runtime {
 struct DeviceParameters {}
 
 impl Runtime {
-    // Initializes all available devices, creating an executor for each compute
+    // Initializes all available devices, creating a device for each compute
     // device and a memory pool for each physical memory.
     // Does nothing if devices were already initialized.
     // Returns error if all devices failed to initialize
@@ -466,7 +482,11 @@ impl Runtime {
         let graph = self.graph.realize_graph(&tensors, |x| self.buffers.iter().any(|((id, _), _)| *id == x));
         // compile graph (if needed)
         if !self.compiled_graphs.contains_key(&graph) {
-            let compiled_graph = Scheduler::compile_graph(graph.clone(), &tensors);
+            let mut unoccupied_devices = BTreeSet::from([]);
+            if let Some(opencl) = self.opencl.as_ref() {
+                unoccupied_devices.extend(opencl.unoccupied_devices())
+            }
+            let compiled_graph = compile_graph(graph.clone(), &tensors, unoccupied_devices);
             self.compiled_graphs.insert(graph, compiled_graph);
         }
         // launch graph

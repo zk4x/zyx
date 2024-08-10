@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, ffi::c_void, ptr};
 
 use crate::{
-    runtime::{Buffer, BufferId, MemoryKind, MemoryPool, MemoryPoolId},
+    runtime::{Buffer, BufferId, Device, DeviceKind, MemoryKind, MemoryPool, MemoryPoolId},
     DType,
 };
 
@@ -133,6 +133,10 @@ impl OpenCLBackend {
                 free_bytes: mp.free_bytes,
             })
             .collect()
+    }
+
+    pub(crate) fn unoccupied_devices(&self) -> Vec<Device> {
+        self.devices.iter().enumerate().map(|(id, dev)| Device { id, kind: DeviceKind::OpenCL, compute: 1024*1024*1024*1024 }).collect()
     }
 
     pub(crate) fn allocate_memory(

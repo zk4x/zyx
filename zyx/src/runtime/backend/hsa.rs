@@ -9,8 +9,6 @@ use std::println;
 
 use crate::runtime::{ir::IRKernel, scheduler::HWInfo};
 
-use super::Executor;
-
 #[derive(Debug)]
 pub struct HSAError {
     status: HSAStatus,
@@ -29,7 +27,7 @@ pub(crate) struct HSAProgram {
     program: *mut c_void,
 }
 
-pub(crate) struct HSAExecutor {
+pub(crate) struct HSABackend {
     agent: Agent,
     mem_region: Region,
 }
@@ -38,7 +36,7 @@ pub(crate) struct HSAExecutor {
 // the device from different thread
 unsafe impl Send for HSABuffer {}
 unsafe impl Send for HSAProgram {}
-unsafe impl Send for HSAExecutor {}
+unsafe impl Send for HSABackend {}
 
 fn check(status: HSAStatus, info: &str) -> Result<(), HSAError> {
     if status != HSAStatus::HSA_STATUS_SUCCESS {
@@ -51,7 +49,7 @@ fn check(status: HSAStatus, info: &str) -> Result<(), HSAError> {
     }
 }
 
-impl Drop for HSAExecutor {
+impl Drop for HSABackend {
     fn drop(&mut self) {
         check(unsafe { hsa_shut_down() }, "hsa_shut_down").unwrap();
     }
@@ -72,12 +70,8 @@ fn hsa_get_vec<T>(func: unsafe extern "C" fn(extern "C" fn(T, *mut c_void) -> HS
     return Ok(vec);
 }
 
-impl Executor for HSAExecutor {
-    type Buffer = HSABuffer;
-    type Program = HSAProgram;
-    type Error = HSAError;
-
-    fn initialize() -> Result<Self, HSAError> {
+impl HSABackend {
+    fn new() -> Result<Self, HSAError> {
         check(unsafe { hsa_init() }, "hsa_init")?;
 
         let mut agents = hsa_get_vec(hsa_iterate_agents)?;

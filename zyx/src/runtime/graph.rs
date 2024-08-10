@@ -5,20 +5,6 @@ use super::{
 use crate::DType;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-enum ExecutorKind {
-    X86_64,
-    HSA,
-    OpenCL,
-    CUDA,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-struct Executor {
-    kind: ExecutorKind,
-    performance: usize, // say in flop/s
-}
-
 // TODO implement PartialOrd such that tensor id does not matter
 // This is probably not very high priority. It probably works fine
 // even this way.

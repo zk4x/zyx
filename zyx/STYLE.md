@@ -65,3 +65,11 @@ Just use arenas to group allocations for high performance code. For low performa
 
 The default way to do things should be the way that is shortest to write and many parameters can be implicit. Later options for more explicitness should be added. The underlying code should be however written in such a way, that at last API for high performance usage can be easily added.
 This is top down approach in API design. First write high level API that is succint and later add more detailed API for high performance users.
+
+## Interfacing with hardware
+
+Interfaces to hardware should be done in very specific places. In zyx each backend is fully interfaced with in single file. Putting function calls through FFI
+to different files would make it very messy. This is important rule and makes refactoring fast (keeps the code flexible under changing requirements).
+This rule seems obvious and intuitive. It is usually uphold in the first draft of the file structure of the project, but in later stages it is often
+carelessly broken. This is the reason why many projects are hard to get working with different hardware even though the hardware fullfills virtually
+the same role as the hardware the software was written for in the first place.
