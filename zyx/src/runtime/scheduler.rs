@@ -6,16 +6,15 @@ use crate::{
     tensor::TensorId,
 };
 use std::collections::BTreeSet;
-
-mod ir;
+use super::{backend::{opencl::OpenCLBackend, DeviceInfo}, ZyxError};
 
 // TODO this function could take &mut Runtime
-pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unoccupied_devices: BTreeSet<Device>) -> CompiledGraph {
+pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unoccupied_devices: BTreeSet<Device>, mut opencl: Option<&mut OpenCLBackend>) -> Result<CompiledGraph, ZyxError> {
     let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
     // create vop representation
     let mut kernels = generate_kernels(&graph, &order, &to_eval);
     // create graph of kernels, sharding tensors across devices, shard also kernels appropriatelly
-    let mut kernel_graph: Vec<SchedulerOp> = Vec::new();
+    let mut sched_graph: Vec<SchedulerOp> = Vec::new();
     // Tensors that are being evaluated on devices, but still not finished
     // Each device can calculate only small part of the tensor
     // KernelId points into kernel in kernels
@@ -23,12 +22,12 @@ pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unocc
     let mut kid = 0;
     while kid < kernels.len() {
         // check which kernels (if any) must be finished before launchibng the next kernel
-        for i in (0..kernel_graph.len()).rev() {
-            if let SchedulerOp::Launch(lkid, dev) = kernel_graph[i] {
+        for i in (0..sched_graph.len()).rev() {
+            if let SchedulerOp::Launch(lkid, dev) = sched_graph[i] {
                 if !kernels[lkid].outputs.is_disjoint(&kernels[kid].inputs)
                     && !finished_kernels.contains(&lkid)
                 {
-                    kernel_graph.push(SchedulerOp::Finish(lkid));
+                    sched_graph.push(SchedulerOp::Finish(lkid));
                     finished_kernels.insert(lkid);
                     unoccupied_devices.insert(dev);
                 }
@@ -53,6 +52,7 @@ pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unocc
                 let sharded_kernel_ids: Vec<KernelId> =
                     shard_kernels(&mut kernels, kid, axis, shard_sizes);
                 // check which memory needs to be moved around
+                // TODO and add tensor movement ops between devices to keep everything working
                 /*kernel_graph.push(SchedulerOp::MemCopy {
                     tensor: (),
                     src: (),
@@ -64,7 +64,7 @@ pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unocc
                     .zip(unoccupied_devices.iter())
                 {
                     // launch the kernel
-                    kernel_graph.push(SchedulerOp::Launch(skid, *dev));
+                    sched_graph.push(SchedulerOp::Launch(skid, *dev));
                 }
                 unoccupied_devices.clear();
             } else {
@@ -85,21 +85,21 @@ pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unocc
                 .max_by(|x, y| x.compute.cmp(&y.compute))
                 .unwrap();
             // launch the kernel
-            kernel_graph.push(SchedulerOp::Launch(kid, dev));
+            sched_graph.push(SchedulerOp::Launch(kid, dev));
             unoccupied_devices.remove(&dev);
         }
         kid += 1;
     }
     for kernel_id in (0..kernels.len()).collect::<BTreeSet<KernelId>>().difference(&finished_kernels) {
-        kernel_graph.push(SchedulerOp::Finish(*kernel_id));
+        sched_graph.push(SchedulerOp::Finish(*kernel_id));
     }
 
     #[cfg(feature = "debug_sched")]
-    for sched_op in kernel_graph {
+    for sched_op in &sched_graph {
         match sched_op {
             SchedulerOp::Launch(kernel_id, device) => {
-                println!("Launch kernel for {device:?}");
-                for op in &kernels[kernel_id].ops {
+                println!("Launch kernel {kernel_id} for {device:?}");
+                for op in &kernels[*kernel_id].ops {
                     println!("{op:?}");
                 }
                 println!();
@@ -108,13 +108,25 @@ pub(super) fn compile_graph(mut graph: Graph, to_eval: &BTreeSet<u64>, mut unocc
             SchedulerOp::MemCopy { tensor, src, dst, view } => println!("Copying tensor {tensor} from {src:?} to {dst:?}"),
         }
     }
-    // and add tensor movement ops between devices to keep everything working
-    // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels
-    // compile down to ir
-    // compile from ir to native (returns program ids)
-    // put it all into compiled graph
-    // return compiled graph
-    todo!()
+
+    let mut programs = Vec::new();
+    for sched_op in &sched_graph {
+        if let SchedulerOp::Launch(kernel_id, dev) = sched_op {
+            let dev_info = match dev.kind {
+                super::DeviceKind::Host => todo!(),
+                super::DeviceKind::OpenCL => &opencl.as_mut().unwrap().device_info()[dev.id],
+            };
+            kernels[*kernel_id].optimize(dev_info);
+            let ir_kernel = kernels[*kernel_id].to_ir(&graph);
+            let program = match dev.kind {
+                super::DeviceKind::Host => todo!(),
+                super::DeviceKind::OpenCL => Program { device_id: dev.id, program_id: opencl.as_mut().unwrap().compile_program(&ir_kernel, dev.id)? },
+            };
+            programs.push(program);
+        }
+    }
+
+    Ok(CompiledGraph { sched_graph, programs })
 }
 
 type KernelId = usize;
@@ -375,6 +387,95 @@ impl Kernel {
         // Since we do not locally cache axis 0, we can for now always just return that
         Some((0, self.shape[0]))
     }
+
+    fn optimize(&mut self, dev_info: &DeviceInfo) {
+        // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels
+        // Get the number of loops before any other operation
+        let num_loops = self
+            .ops
+            .iter()
+            .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
+            .unwrap();
+
+        // If this is full reduce kernel
+        if num_loops == 0 {
+            // this should never happen, because we should use local and register memory
+            // and always spread work across multiple threads
+            todo!("Full reduce")
+        }
+
+        // If there is more loops than 3, pick first three loops as global loops,
+        // rest is register loops.
+        // So nothing needs to be done.
+        // If there is less than three loops, add loops with dimension 1
+        if num_loops < 3 {
+            let dims: Vec<usize> = core::iter::repeat(1)
+                .take(3 - num_loops)
+                .chain([self.shape[0]])
+                .collect();
+            self.split_axis(0, &dims);
+        }
+
+        // Split first three loops into global and local loops.
+        let mut gws = [1; 3];
+        for op in &self.ops {
+            if let VOp::Loop { axis, dimension } = op {
+                if *axis > 2 {
+                    break;
+                }
+                gws[*axis] = *dimension;
+            }
+        }
+
+        // Reorder global loops from smallest to largest
+        //gws.sort();
+        // Get sort indices and permute both kernel and gws
+        // by those indices
+
+        // Determine the best possible work size
+        let lws = best_local_work_size(gws, dev_info.max_work_group_size);
+        gws[0] /= lws[0];
+        gws[1] /= lws[1];
+        gws[2] /= lws[2];
+
+        self.split_axis(0, &[gws[0], lws[0]]);
+        self.split_axis(2, &[gws[1], lws[1]]);
+        self.split_axis(4, &[gws[2], lws[2]]);
+    }
+}
+
+// Takes global work size (gws) and maximum work group size (mwgs)
+fn best_local_work_size(mut gws: [usize; 3], mwgs: usize) -> [usize; 3] {
+    let mut lws = [1; 3];
+    //println!("Max {mwgs:?}");
+    let rwgs = (mwgs as f64).sqrt() as usize;
+    //println!("Root {rwgs:?}");
+
+    let mut total = 1;
+    let mut n = 1;
+    while gws[1] % (n * 2) == 0 && n * 2 <= rwgs {
+        n *= 2;
+    }
+    gws[1] /= n;
+    lws[1] *= n;
+    total *= n;
+    // put the rest into third dimension
+    let mut n = 1;
+    while gws[2] % (n * 2) == 0 && n * 2 * total <= mwgs {
+        n *= 2;
+    }
+    gws[2] /= n;
+    lws[2] *= n;
+    total *= n;
+    // if third dimension was too small, put the rest into second dimension
+    let mut n = 1;
+    while gws[1] % (n * 2) == 0 && n * 2 * total <= mwgs {
+        n *= 2;
+    }
+    gws[1] /= n;
+    lws[1] *= n;
+
+    return lws;
 }
 
 fn shard_kernels(
@@ -888,26 +989,14 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
 
 // In which order
 pub(super) struct CompiledGraph {
+    sched_graph: Vec<SchedulerOp>,
     programs: Vec<Program>,
 }
 
+pub(crate) type ProgramId = usize;
+
 // Programs are launched by devices
 struct Program {
-    device: DeviceId,
-    native: NativeProgram,
-}
-
-enum NativeProgram {
-    PTX,
-    HSAIL,
-    OpenCL,
-    X86_64,
-}
-
-pub(crate) struct OpenCLProgram {
-    name: String,
-    program: *mut u8,
-    global_work_size: [usize; 3],
-    local_work_size: [usize; 3],
-    args_read_only: Vec<bool>,
+    device_id: DeviceId,
+    program_id: ProgramId,
 }

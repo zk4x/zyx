@@ -1,7 +1,4 @@
-pub(super) use opencl::OpenCLBackend;
-pub use opencl::OpenCLError;
-
-mod opencl;
+pub(crate) mod opencl;
 
 /// Hardware information needed for applying optimizations
 #[derive(Debug)]

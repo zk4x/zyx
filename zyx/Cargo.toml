@@ -41,6 +41,7 @@ default = [
     "debug_dev",
     "debug_perf",
     "debug_sched",
+    "debug_asm",
     "rand",
     #"complex",
     #"half",

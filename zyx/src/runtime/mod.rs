@@ -2,7 +2,7 @@ use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::{OpenCLBackend, OpenCLError};
+use backend::opencl::{OpenCLBackend, OpenCLError};
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
 use std::{
@@ -26,6 +26,7 @@ mod backend;
 mod graph;
 mod node;
 mod scheduler;
+mod ir;
 mod view;
 
 type MemoryPoolId = usize;
@@ -486,8 +487,24 @@ impl Runtime {
             if let Some(opencl) = self.opencl.as_ref() {
                 unoccupied_devices.extend(opencl.unoccupied_devices())
             }
-            let compiled_graph = compile_graph(graph.clone(), &tensors, unoccupied_devices);
+            let compiled_graph = compile_graph(graph.clone(), &tensors, unoccupied_devices, self.opencl.as_mut())?;
             self.compiled_graphs.insert(graph, compiled_graph);
+
+            /*let args: Vec<TensorId> = ir_kernel.args.keys().copied().collect();
+            programs.push((args.clone(), self.compiler.compile_program(&ir_kernel)?));
+
+            // Allocate memory for intermediate args and results
+            for arg in args.iter().copied() {
+                if !self.buffers.contains_key(&arg) {
+                    self.buffers.insert(
+                        arg,
+                        self.compiler.allocate_memory(
+                            graph.shape(arg).iter().product::<usize>()
+                                * graph.dtype(arg).byte_size(),
+                        )?,
+                    );
+                }
+            }*/
         }
         // launch graph
         //self.compiled_graphs[&graph].launch();
