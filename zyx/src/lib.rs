@@ -118,3 +118,14 @@ fn t8() {
     let x = Tensor::ones([2, 3], DType::F32);
     println!("{x}");
 }
+
+#[test]
+fn t9() {
+    use std::println;
+    let mut x = Tensor::ones([1024, 1024], DType::F32);
+    let y = Tensor::ones([1024, 1024], DType::F32);
+    for _ in 0..10 {
+        x = x.dot(&y);
+    }
+    println!("{x}");
+}

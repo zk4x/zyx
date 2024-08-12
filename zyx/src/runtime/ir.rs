@@ -16,7 +16,7 @@ use super::scheduler::{Kernel, VOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Var {
-    Id(u8),
+    Id(u8, Scope),
     Const(Constant),
 }
 
@@ -109,19 +109,19 @@ pub(crate) enum IRDType {
     Idx,
 }
 
-#[derive(Debug, Clone, Copy)]
+/*#[derive(Debug, Clone, Copy)]
 pub(crate) struct IRVar {
     pub(crate) dtype: IRDType,
-    pub(crate) scope: Scope,
     pub(crate) read_only: bool,
     pub(crate) len: usize,
     // TODO perhaps add offset when we do custom memory allocators: offset: usize,
-}
+}*/
 
 #[derive(Debug)]
 pub(crate) struct IRKernel {
     // Index of var is it's Id
-    pub(super) vars: Vec<IRVar>,
+    pub(super) addressables: Vec<(usize, IRDType, bool)>,
+    pub(super) registers: Vec<(IRDType, bool)>,
     pub(super) ops: Vec<IROp>,
 }
 
@@ -132,23 +132,21 @@ impl Kernel {
         //hwinfo: &DeviceInfo,
     ) -> IRKernel {
         let mut ops = Vec::new();
+
         let mut vars: VarMap = VarMap::new();
-        let mut args = Vec::new();
-
         let mut max_axis = 0;
-
-        // TODO get rid of noops
 
         // Get all global args and set them first
         for vop in &self.ops {
             match &vop {
                 &VOp::Load { x, view, .. } => {
+                    let dtype = graph.dtype(*x).into();
                     let _ = vars.add_var(
                         *x,
                         view.numel(),
                         Scope::Global,
                         graph.rc(*x),
-                        graph.dtype(*x).into(),
+                        dtype,
                     );
                 }
                 VOp::Store { z, view } => {
@@ -209,7 +207,7 @@ impl Kernel {
                 VOp::Accumulator { z, rop, view } => {
                     let dtype: DType = graph.dtype(*z).into();
                     let len = view.numel();
-                    let Var::Id(z) = vars.add_var(
+                    let Var::Id(z, _) = vars.add_var(
                         *z,
                         len,
                         Scope::Register,
@@ -290,13 +288,15 @@ impl Kernel {
             }
         }
 
-        IRKernel { vars: args, ops }
+        IRKernel { addressables: vars.addressables, registers: vars.registers.into_iter().map(|(_, dtype, read_only)| (dtype, read_only)).collect(), ops }
     }
 }
 
 struct VarMap {
-    // Ref count, length, scope
-    vars: Vec<(u32, usize, Scope, IRDType)>,
+    // length, dtype, read_only
+    addressables: Vec<(usize, IRDType, bool)>,
+    // Ref count, dtype, read_only
+    registers: Vec<(u32, IRDType, bool)>,
     var_map: BTreeMap<(TensorId, Scope), Var>,
     axis_map: BTreeMap<Axis, Var>,
 }
@@ -304,7 +304,8 @@ struct VarMap {
 impl VarMap {
     fn new() -> VarMap {
         VarMap {
-            vars: Vec::new(),
+            addressables: Vec::new(),
+            registers: Vec::new(),
             var_map: BTreeMap::new(),
             axis_map: BTreeMap::new(),
         }
@@ -320,8 +321,13 @@ impl VarMap {
 
     /// Decrease ref count if it isn't constant
     fn remove(&mut self, tensor_id: TensorId) {
-        if let Some(Var::Id(id, ..)) = self.var_map.get(&(tensor_id, Scope::Register)) {
-            self.vars[*id as usize].0 -= 1;
+        if let Some(Var::Id(id, scope)) = self.var_map.get(&(tensor_id, Scope::Register)) {
+            match scope {
+                Scope::Global | Scope::Local => {}
+                Scope::Register => {
+                    self.registers[*id as usize].0 -= 1;
+                }
+            }
         }
     }
 
@@ -335,9 +341,8 @@ impl VarMap {
         /*if let Some(var) = self.var_map.get(&x) {
             return *var;
         }*/
-        let id = self.get_empty_id(dtype);
-        self.vars[id] = (rc, len, scope, dtype);
-        let var = Var::Id(id as u8);
+        let id = self.get_empty_id(rc, len, dtype, scope);
+        let var = Var::Id(id as u8, scope);
         self.var_map.insert((x, scope), var);
         return var;
     }
@@ -352,7 +357,7 @@ impl VarMap {
                     len: 0,
                     value: Constant::I64(0),
                 });
-                let z = Var::Id(z);
+                let z = Var::Id(z, Scope::Register);
                 for StridedDim { axis, stride, .. } in dims {
                     if *stride != 0 {
                         let a = self.get_axis(*axis);
@@ -372,10 +377,8 @@ impl VarMap {
     }
 
     fn add_axis(&mut self, axis: Axis) -> u8 {
-        let id = self.get_empty_id(IRDType::Idx);
-        self.vars[id] = (1, 0, Scope::Register, IRDType::Idx);
-        let id = id as u8;
-        let var = Var::Id(id);
+        let id = self.get_empty_id(1, 0, IRDType::Idx, Scope::Register) as u8;
+        let var = Var::Id(id, Scope::Register);
         self.axis_map.insert(axis, var);
         return id;
     }
@@ -386,38 +389,51 @@ impl VarMap {
 
     fn remove_axis(&mut self, axis: Axis) {
         if let Some(Var::Id(id, ..)) = self.axis_map.get(&axis) {
-            self.vars[*id as usize].0 -= 1;
+            self.registers[*id as usize].0 -= 1;
         }
     }
 
     fn remove_var(&mut self, var: Var) {
-        if let Var::Id(id, ..) = var {
-            self.vars[id as usize].0 -= 1;
+        if let Var::Id(id, scope) = var {
+            match scope {
+                Scope::Global | Scope::Local => {
+                    self.addressables[id as usize].0 -= 1;
+                }
+                Scope::Register => {
+                    self.registers[id as usize].0 -= 1;
+                }
+            }
         }
     }
 
     fn add_index(&mut self) -> u8 {
-        let id = self.get_empty_id(IRDType::Idx);
-        self.vars[id] = (1, 0, Scope::Register, IRDType::Idx);
-        return id as u8;
+        self.get_empty_id(1, 0, IRDType::Idx, Scope::Register) as u8
     }
 
-    fn get_empty_id(&mut self, dtype: IRDType) -> usize {
+    fn get_empty_id(&mut self, rc: u32, len: usize, dtype: IRDType, scope: Scope) -> usize {
         // This finds variable with the same dtype, however
         // we often can use registers that can hold variables of different dtypes,
         // so the dtype equality check will be disabled for some devices.
-        if let Some(id) = self
-            .vars
-            .iter()
-            .position(|(rc, _, _, vdtype)| *rc == 0 && *vdtype == dtype)
-        {
-            id
-        } else {
-            if self.vars.len() == 255 {
-                panic!("Too many variables for one kernel.");
+        match scope {
+            Scope::Global | Scope::Local => {
+                self.addressables.push((len, dtype, false));
+                self.addressables.len() - 1
             }
-            self.vars.push((0, 0, Scope::Register, dtype));
-            self.vars.len() - 1
+            Scope::Register => {
+                if let Some(id) = self
+                    .registers
+                    .iter()
+                    .position(|(rc, vdtype, _)| *rc == 0 && *vdtype == dtype)
+                {
+                    id
+                } else {
+                    if self.registers.len() == 255 {
+                        panic!("Too many variables for one kernel.");
+                    }
+                    self.registers.push((rc, dtype, false));
+                    self.registers.len() - 1
+                }
+            }
         }
     }
 }
@@ -448,7 +464,7 @@ impl From<DType> for IRDType {
 impl Display for Var {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Var::Id(id) => f.write_fmt(format_args!("r{id}")),
+            Var::Id(id, scope) => f.write_fmt(format_args!("{scope}{id}")),
             Var::Const(value) => f.write_fmt(format_args!("{}", value.to_string())),
         }
     }

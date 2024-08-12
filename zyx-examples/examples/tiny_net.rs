@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor};
+use zyx::DType;
 use zyx_derive::Module;
 use zyx_nn::Linear;
 

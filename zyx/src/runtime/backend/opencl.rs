@@ -1,11 +1,8 @@
 use crate::runtime::{
-    ir::{IRDType, IRKernel, IROp, Scope},
-    scheduler::ProgramId,
-    Buffer, BufferId, Device, DeviceId, DeviceKind, MemoryKind, MemoryPool, MemoryPoolId,
+    ir::{IRDType, IRKernel, IROp, Scope}, node::{BOp, UOp}, scheduler::ProgramId, Buffer, BufferId, Device, DeviceId, DeviceKind, MemoryKind, MemoryPool, MemoryPoolId
 };
 use std::{
-    ffi::{c_void, CString},
-    ptr,
+    ffi::{c_void, CString}, fmt::format, ptr
 };
 
 use super::DeviceInfo;
@@ -348,45 +345,47 @@ impl OpenCLBackend {
         }
 
         // Declare global variables
-        for (id, var) in kernel.vars.iter().enumerate() {
-            println!("Var {var:?}");
-            if let Scope::Global = var.scope {
-                source += &format!(
-                    "{indent}__global {}{}* g{},\n",
-                    if var.read_only { "const " } else { "" },
-                    var.dtype.ocl(),
-                    id
-                );
-            }
+        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
+            source += &format!(
+                "{indent}__global {}{}* g{},\n",
+                if *read_only { "const " } else { "" },
+                dtype.ocl(),
+                id
+            );
         }
 
         source.pop();
         source.pop();
         source += "\n) {\n";
 
+        // Declare register variables
+        for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
+            source += &format!("{indent}{}{} r{id};\n", if *read_only { "const " } else { "" }, dtype.ocl());
+        }
+
         // Add indices for global and local loops
         source += &format!(
-            "  unsigned int i0 = get_group_id(0);   /* 0..{} */\n",
+            "  r0 = get_group_id(0);   /* 0..{} */\n",
             global_work_size[0]
         );
         source += &format!(
-            "  unsigned int i1 = get_local_id(0);   /* 0..{} */\n",
+            "  r1 = get_local_id(0);   /* 0..{} */\n",
             local_work_size[0]
         );
         source += &format!(
-            "  unsigned int i2 = get_group_id(1);   /* 0..{} */\n",
+            "  r2 = get_group_id(1);   /* 0..{} */\n",
             global_work_size[1]
         );
         source += &format!(
-            "  unsigned int i3 = get_local_id(1);   /* 0..{} */\n",
+            "  r3 = get_local_id(1);   /* 0..{} */\n",
             local_work_size[1]
         );
         source += &format!(
-            "  unsigned int i4 = get_group_id(2);   /* 0..{} */\n",
+            "  r4 = get_group_id(2);   /* 0..{} */\n",
             global_work_size[2]
         );
         source += &format!(
-            "  unsigned int i5 = get_local_id(2);   /* 0..{} */\n",
+            "  r5 = get_local_id(2);   /* 0..{} */\n",
             local_work_size[2]
         );
 
@@ -395,7 +394,7 @@ impl OpenCLBackend {
         for op in kernel.ops[6..].iter().copied() {
             match op {
                 IROp::Set { z, len, value } => {
-                    source += &format!("{indent}r{z} = {value}");
+                    source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, x, at, dtype } => {
                     source += &format!("{indent}{z} = {x}[{at}];\n");
@@ -404,18 +403,39 @@ impl OpenCLBackend {
                     source += &format!("{indent}{z}[{at}] = {x};\n");
                 }
                 IROp::Unary { z, x, uop, dtype } => {
-                    source += &format!("{indent}{z} = {uop:?}({x});\n");
+                    source += &format!("{indent}{z} = {};\n", match uop {
+                        UOp::Cast(_) => format!("({}){x}", dtype.ocl()),
+                        UOp::ReLU => format!("max({x}, 0)"),
+                        UOp::Neg => format!("-{x}"),
+                        UOp::Exp => format!("exp({x})"),
+                        UOp::Ln => format!("log({x})"),
+                        UOp::Tanh => format!("tanh({x})"),
+                        UOp::Inv => format!("1/{x}"),
+                        UOp::Sqrt => format!("sqrt({x})"),
+                        UOp::Sin => format!("sin({x})"),
+                        UOp::Cos => format!("cos({x})"),
+                        UOp::Not => format!("!{x}"),
+                        UOp::Nonzero => format!("{x} != 0"),
+                    });
                 }
                 IROp::Binary {
                     z,
                     x,
                     y,
                     bop,
-                    dtype,
+                    dtype: _,
                 } => {
-                    source += &format!("{indent}{z} = {bop:?}({x}, {y});\n");
+                    source += &format!("{indent}{z} = {};\n", match bop {
+                        BOp::Add => format!("{x} + {y}"),
+                        BOp::Sub => format!("{x} - {y}"),
+                        BOp::Mul => format!("{x} * {y}"),
+                        BOp::Div => format!("{x} / {y}"),
+                        BOp::Pow => format!("pow({x}, {y})"),
+                        BOp::Cmplt => format!("{x} < {y}"),
+                        BOp::Max => format!("max({x}, {y})"),
+                    });
                 }
-                IROp::MAdd { z, a, b, c, dtype } => {
+                IROp::MAdd { z, a, b, c, dtype: _ } => {
                     source += &format!("{indent}{z} = {a} * {b} + {c};\n");
                 }
                 IROp::Loop { id, len } => {
@@ -441,6 +461,7 @@ impl OpenCLBackend {
                 }
             }
         }
+        source += "}\n";
 
         self.programs.push(OpenCLProgram::compile_from_source(
             &source,
