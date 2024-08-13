@@ -2,7 +2,7 @@ use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::opencl::{OpenCLBackend, OpenCLError};
+use backend::opencl::{OpenCLBackend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram};
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
 use std::{
@@ -20,7 +20,7 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use scheduler::{CompiledGraph, compile_graph};
+use scheduler::CompiledGraph;
 
 mod backend;
 mod graph;
@@ -29,44 +29,33 @@ mod scheduler;
 mod ir;
 mod view;
 
-type MemoryPoolId = usize;
-type BufferId = usize;
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-enum MemoryKind {
-    RAM,
-    Disk,
-    OpenCL,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-struct MemoryPool {
-    kind: MemoryKind,
-    total_bytes: usize,
-    free_bytes: usize,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-struct Buffer {
-    id: BufferId,
-    memory_pool: MemoryPoolId,
-    kind: MemoryKind,
-}
-
 type DeviceId = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum DeviceKind {
-    Host,
-    OpenCL,
+struct BufferId {
+    memory_pool_id: usize,
+    buffer_id: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Device {
-    id: DeviceId,
-    kind: DeviceKind,
-    // Compute in FLOPS
-    compute: usize,
+struct ProgramId {
+    device_id: usize,
+    program_id: usize,
+}
+
+#[derive(Debug)]
+enum Device {
+    OpenCL {
+        device: OpenCLDevice,
+        programs: Vec<OpenCLProgram>,
+    }
+}
+
+enum MemoryPool {
+    OpenCL {
+        memory_pool: OpenCLMemoryPool,
+        buffers: Vec<OpenCLBuffer>
+    },
 }
 
 pub(crate) struct Runtime {
@@ -78,8 +67,10 @@ pub(crate) struct Runtime {
     // Are we in training mode?
     pub(crate) training: bool,
     compiled_graphs: BTreeMap<Graph, CompiledGraph>,
-    buffers: BTreeMap<(TensorId, View), Buffer>,
     opencl: Option<OpenCLBackend>,
+    devices: Vec<Device>,
+    memory_pools: Vec<MemoryPool>,
+    tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>, // (MemoryPoolId, BufferId)
 }
 
 impl Runtime {
@@ -91,8 +82,10 @@ impl Runtime {
             rng: core::cell::OnceCell::new(),
             training: false,
             compiled_graphs: BTreeMap::new(),
-            buffers: BTreeMap::new(),
             opencl: None,
+            devices: Vec::new(),
+            memory_pools: Vec::new(),
+            tensor_buffer_map: BTreeMap::new(),
         }
     }
 
@@ -102,6 +95,7 @@ impl Runtime {
 
     pub(crate) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
+        let _ = to_remove;
         /*for (x, device) in to_remove {
             match device {
                 Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
@@ -129,31 +123,6 @@ impl Runtime {
         return self.graph.dtype(x);
     }
 
-    #[cfg(feature = "rand")]
-    pub(crate) fn randn(&mut self, shape: Vec<usize>, dtype: DType) -> Result<TensorId, ZyxError> {
-        todo!()
-    }
-
-    #[cfg(feature = "rand")]
-    pub(crate) fn uniform<T: Scalar>(
-        &mut self,
-        shape: Vec<usize>,
-        lower: T,
-        upper: T,
-    ) -> Result<TensorId, ZyxError> {
-        use rand::{distributions::Uniform, Rng, SeedableRng};
-        let n: usize = shape.iter().product();
-        self.rng
-            .get_or_init(|| SmallRng::seed_from_u64(crate::SEED));
-        let rng = self.rng.get_mut().unwrap();
-
-        Ok(self.graph.push(Node::Uniform {
-            shape,
-            low: Constant::new(lower),
-            high: Constant::new(upper),
-        }))
-    }
-
     pub(crate) fn temp<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,
@@ -169,10 +138,29 @@ impl Runtime {
                 shape,
                 dtype: T::dtype(),
             });
-            // TODO Just store it to memory pool that is least used, in case of a tie
-            // just use the one with highest capacity
-            // Later we can replace it with better heuristic
-            self.store(id, data)?;
+            self.initialize_backends(DeviceParameters {})?;
+            if let Some(opencl) = self.opencl.as_mut() {
+                let bytes = data.len() * T::byte_size();
+
+                // Search for first memory pool where we can put this tensor
+                let buffer_id = if let Some((memory_pool_id, mp)) = self.memory_pools.iter_mut().enumerate().find(|(_, mp)| mp.free_bytes() > bytes) {
+                    match mp {
+                        MemoryPool::OpenCL { memory_pool, buffers } => {
+                            buffers.push(opencl.allocate_memory(bytes, memory_pool)?);
+                            let buffer_id = buffers.len() - 1;
+                            let ptr: *const u8 = data.as_ptr().cast();
+                            opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, &mut buffers[buffer_id])?;
+                            BufferId { memory_pool_id, buffer_id }
+                        }
+                    }
+                } else {
+                    return Err(ZyxError::AllocationError)
+                };
+
+                self.tensor_buffer_map.insert((id, View::new(self.shape(id))), buffer_id);
+            } else {
+                panic!()
+            }
             Ok(id)
         }
     }
@@ -406,14 +394,17 @@ impl Runtime {
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
     fn initialize_backends(&mut self, parameters: DeviceParameters) -> Result<(), ZyxError> {
+        let _ = parameters;
         if self.opencl.is_some()
         /* || self.cuda.is_some() */
         {
             return Ok(());
         }
 
-        if let Ok(opencl) = OpenCLBackend::new() {
+        if let Ok((opencl, memory_pools, devices)) = OpenCLBackend::new() {
             self.opencl = Some(opencl);
+            self.memory_pools.extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL { memory_pool: m, buffers: Vec::new() }));
+            self.devices.extend(devices.into_iter().map(|d| Device::OpenCL { device: d, programs: Vec::new() }));
         }
 
         if self.opencl.is_none()
@@ -424,40 +415,24 @@ impl Runtime {
         Ok(())
     }
 
-    fn store<T: Scalar>(&mut self, tensor_id: TensorId, data: &[T]) -> Result<(), ZyxError> {
-        self.initialize_backends(DeviceParameters {})?;
-        if let Some(opencl) = self.opencl.as_mut() {
-            let bytes = data.len() * T::byte_size();
-            let memory_pool = 0;
-            let id = opencl.allocate_memory(bytes, memory_pool)?;
-            let mut buffer = Buffer {
-                id,
-                memory_pool,
-                kind: MemoryKind::OpenCL,
-            };
-            let ptr: *const u8 = data.as_ptr().cast();
-            opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, &mut buffer)?;
-            self.buffers.insert((tensor_id, View::new(self.shape(tensor_id))), buffer);
-        } else {
-            panic!()
-        }
-        Ok(())
-    }
-
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
-        if self.buffers.iter().all(|((id, _), _)| *id != x) {
+        if self.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
             self.realize(BTreeSet::from([x]))?;
         }
         // If at least part of tensor exists in some device, there must be
         // the rest of the tensor in other devices
         let n: usize = self.shape(x).iter().product();
         let mut data: Vec<T> = Vec::with_capacity(n);
-        for ((tensor_id, view), buffer)  in &self.buffers {
+        for ((tensor_id, view), buffer_id)  in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
                     let slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n*T::byte_size()) };
-                    self.opencl.as_mut().unwrap().opencl_to_host(&buffer, slice)?;
+                    match &self.memory_pools[buffer_id.memory_pool_id] {
+                        MemoryPool::OpenCL { memory_pool: _, buffers } => {
+                            self.opencl.as_mut().unwrap().opencl_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                        }
+                    }
                     break
                 } else {
                     todo!()
@@ -480,31 +455,11 @@ impl Runtime {
         }
         // TODO
         // create graph
-        let graph = self.graph.realize_graph(&tensors, |x| self.buffers.iter().any(|((id, _), _)| *id == x));
+        let graph = self.graph.realize_graph(&tensors, |x| self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x));
         // compile graph (if needed)
         if !self.compiled_graphs.contains_key(&graph) {
-            let mut unoccupied_devices = BTreeSet::from([]);
-            if let Some(opencl) = self.opencl.as_ref() {
-                unoccupied_devices.extend(opencl.unoccupied_devices())
-            }
-            let compiled_graph = compile_graph(graph.clone(), &tensors, unoccupied_devices, self.opencl.as_mut())?;
+            let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
             self.compiled_graphs.insert(graph, compiled_graph);
-
-            /*let args: Vec<TensorId> = ir_kernel.args.keys().copied().collect();
-            programs.push((args.clone(), self.compiler.compile_program(&ir_kernel)?));
-
-            // Allocate memory for intermediate args and results
-            for arg in args.iter().copied() {
-                if !self.buffers.contains_key(&arg) {
-                    self.buffers.insert(
-                        arg,
-                        self.compiler.allocate_memory(
-                            graph.shape(arg).iter().product::<usize>()
-                                * graph.dtype(arg).byte_size(),
-                        )?,
-                    );
-                }
-            }*/
         }
         // launch graph
         //self.compiled_graphs[&graph].launch();
@@ -787,7 +742,6 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                 },
-                _ => todo!(),
             }
         }
         let mut res = BTreeMap::new();
@@ -799,6 +753,14 @@ impl Runtime {
             }
         }
         return res;
+    }
+}
+
+impl MemoryPool {
+    fn free_bytes(&self) -> usize {
+        match self {
+            MemoryPool::OpenCL { memory_pool, buffers: _ } => memory_pool.free_bytes(),
+        }
     }
 }
 
@@ -820,6 +782,7 @@ pub enum ZyxError {
     EmptyTensor,
     WrongDType(&'static str),
     NoBackendAvailable,
+    AllocationError,
     OpenCLError(OpenCLError),
 }
 

@@ -125,12 +125,11 @@ impl Tensor {
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
-        return Tensor {
-            id: RT
-                .lock()
-                .randn(shape.into_shape().collect(), dtype)
-                .unwrap(),
-        };
+        // This can be generated from uniform or just generate on cpu
+        // and pass into device whole buffer
+        let _ = shape;
+        let _ = dtype;
+        todo!();
     }
 
     /// Create tensor sampled from uniform distribution
@@ -152,12 +151,12 @@ impl Tensor {
             Bound::Excluded(value) => *value,
             Bound::Unbounded => T::max_value(),
         };
-        return Tensor {
-            id: RT
-                .lock()
-                .uniform(shape.into_shape().collect(), start, end)
-                .unwrap(),
-        };
+        let _ = shape;
+        let _ = start;
+        let _ = end;
+        // Pass in few numbers generated randomly on cpu and then add
+        // some nodes for bitshifts and such.
+        todo!();
     }
 
     /// Create tensor sampled from kaiming uniform distribution.

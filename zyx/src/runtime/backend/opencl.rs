@@ -1,34 +1,43 @@
+#![allow(non_camel_case_types)]
+
 use crate::runtime::{
-    ir::{IRDType, IRKernel, IROp, Scope}, node::{BOp, UOp}, scheduler::ProgramId, Buffer, BufferId, Device, DeviceId, DeviceKind, MemoryKind, MemoryPool, MemoryPoolId
+    ir::{IRDType, IRKernel, IROp, Scope}, node::{BOp, UOp}
 };
 use std::{
-    ffi::{c_void, CString}, fmt::format, ptr
+    ffi::{c_void, CString}, ptr
 };
 
 use super::DeviceInfo;
 
+#[derive(Debug)]
 pub(crate) struct OpenCLBackend {
     context: *mut c_void,
-    devices: Vec<*mut c_void>,
     queues: Box<[*mut c_void]>,
     queue_size: Box<[u8]>,
     queue_id: usize,
-    memory_pools: Vec<OpenCLMemoryPool>,
     device_info: Vec<DeviceInfo>,
-    programs: Vec<OpenCLProgram>,
-    events: Vec<*mut c_void>,
 }
 
-struct OpenCLMemoryPool {
-    buffers: Vec<OpenCLBuffer>,
+// OpenCL does not have the concept of memory pools,
+// so we simply say it is all in one memory pool
+#[derive(Debug)]
+pub(crate) struct OpenCLMemoryPool {
     total_bytes: usize,
     free_bytes: usize,
 }
 
-struct OpenCLBuffer {
+#[derive(Debug)]
+pub(crate) struct OpenCLBuffer {
+    ptr: *mut c_void,
+    byte_size: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct OpenCLDevice {
     ptr: *mut c_void,
 }
 
+#[derive(Debug)]
 pub(crate) struct OpenCLProgram {
     name: String,
     program: *mut c_void,
@@ -37,12 +46,21 @@ pub(crate) struct OpenCLProgram {
     //args_read_only: Vec<bool>,
 }
 
+// Event associated with program launch
+#[derive(Debug)]
+pub(crate) struct OpenCLEvent {
+    ptr: *mut c_void,
+}
+
 unsafe impl Send for OpenCLBackend {}
+unsafe impl Send for OpenCLMemoryPool {}
 unsafe impl Send for OpenCLBuffer {}
+unsafe impl Send for OpenCLDevice {}
 unsafe impl Send for OpenCLProgram {}
+unsafe impl Send for OpenCLEvent {}
 
 impl OpenCLBackend {
-    pub(crate) fn new() -> Result<Self, OpenCLError> {
+    pub(crate) fn new() -> Result<(Self, Vec<OpenCLMemoryPool>, Vec<OpenCLDevice>), OpenCLError> {
         let platform_id = 0;
         let queues_per_device = 8;
         let platform_ids = {
@@ -83,12 +101,7 @@ impl OpenCLBackend {
         for dev in &devices {
             println!(
                 "{}",
-                String::from_utf8(get_device_data(*dev, CL_DEVICE_NAME).map_err(|err| {
-                    check(err, "Unable to get OpenCL device name.")
-                        .err()
-                        .unwrap()
-                })?)
-                .unwrap()
+                String::from_utf8(get_device_data(*dev, CL_DEVICE_NAME)?).unwrap()
             );
         }
         let mut status = CL_SUCCESS;
@@ -121,14 +134,14 @@ impl OpenCLBackend {
             check(status, "Unable to create command queue")?;
         }
         let mut device_info = Vec::new();
+        let mut total_bytes = 0;
         for dev in devices.iter().copied() {
             let max_work_item_dims = u32::from_ne_bytes(
-                get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)
-                    .unwrap()
+                get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?
                     .try_into()
                     .unwrap(),
             ) as usize;
-            let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES).unwrap();
+            let mwis = get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
             let mut max_work_item_sizes = Vec::with_capacity(max_work_item_dims);
             for i in 0..max_work_item_dims {
                 let max_dim_size: usize = unsafe {
@@ -149,14 +162,12 @@ impl OpenCLBackend {
             device_info.push(DeviceInfo {
                 max_work_item_sizes,
                 max_work_group_size: usize::from_ne_bytes(
-                    get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE)
-                        .unwrap()
+                    get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE)?
                         .try_into()
                         .unwrap(),
                 ),
                 preferred_vector_size: u32::from_ne_bytes(
-                    get_device_data(dev, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)
-                        .unwrap()
+                    get_device_data(dev, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?
                         .try_into()
                         .unwrap(),
                 ) as usize
@@ -165,42 +176,36 @@ impl OpenCLBackend {
                 f64_support: true,
                 fmadd: true,
                 page_size: u32::from_ne_bytes(
-                    get_device_data(dev, CL_DEVICE_MEM_BASE_ADDR_ALIGN)
-                        .unwrap()
+                    get_device_data(dev, CL_DEVICE_MEM_BASE_ADDR_ALIGN)?
                         .try_into()
                         .unwrap(),
                 ) as usize
                     / 8,
                 local_memory: true,
                 local_mem_size: u64::from_ne_bytes(
-                    get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE)
-                        .unwrap()
-                        .try_into()
+                    get_device_data(dev, CL_DEVICE_LOCAL_MEM_SIZE)?.try_into()
                         .unwrap(),
                 ) as usize,
                 num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
                 wmma: false,
                 tensor_cores: false,
             });
+            total_bytes += u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE)?.try_into().unwrap()) as usize;
         }
-        return Ok(Self {
+        let devices = devices.iter().copied().map(|ptr| OpenCLDevice { ptr }).collect();
+        return Ok((Self {
             context,
-            devices,
             queue_size: vec![0; queues.len()].into_boxed_slice(),
             queues: queues.into_boxed_slice(),
             queue_id: 0,
-            memory_pools: vec![OpenCLMemoryPool {
-                buffers: Vec::new(),
-                total_bytes: 4 * 1024 * 1024 * 1024,
-                free_bytes: 4 * 1024 * 1024 * 1024,
-            }],
             device_info,
-            programs: Vec::new(),
-            events: Vec::new(),
-        });
+        }, vec![OpenCLMemoryPool {
+            total_bytes,
+            free_bytes: total_bytes,
+        }], devices));
     }
 
-    pub(crate) fn memory_pools(&self) -> Vec<MemoryPool> {
+    /*pub(crate) fn memory_pools(&self) -> Vec<MemoryPool> {
         self.memory_pools
             .iter()
             .map(|mp| MemoryPool {
@@ -209,19 +214,7 @@ impl OpenCLBackend {
                 free_bytes: mp.free_bytes,
             })
             .collect()
-    }
-
-    pub(crate) fn unoccupied_devices(&self) -> Vec<Device> {
-        self.devices
-            .iter()
-            .enumerate()
-            .map(|(id, dev)| Device {
-                id,
-                kind: DeviceKind::OpenCL,
-                compute: 1024 * 1024 * 1024 * 1024,
-            })
-            .collect()
-    }
+    }*/
 
     pub(crate) fn device_info(&self) -> &[DeviceInfo] {
         &self.device_info
@@ -230,8 +223,8 @@ impl OpenCLBackend {
     pub(crate) fn allocate_memory(
         &mut self,
         byte_size: usize,
-        memory_pool: MemoryPoolId,
-    ) -> Result<BufferId, OpenCLError> {
+        memory_pool: &mut OpenCLMemoryPool,
+    ) -> Result<OpenCLBuffer, OpenCLError> {
         let mut status = CL_SUCCESS;
         let ptr = unsafe {
             clCreateBuffer(
@@ -243,31 +236,27 @@ impl OpenCLBackend {
             )
         };
         check(status, "Unable to allocate memory.")?;
-        let id = self.memory_pools[memory_pool].buffers.len();
-        self.memory_pools[memory_pool]
-            .buffers
-            .push(OpenCLBuffer { ptr });
-        Ok(id)
+        memory_pool.free_bytes -= byte_size;
+        Ok(OpenCLBuffer { ptr, byte_size })
     }
 
-    pub(crate) fn deallocate_memory(&mut self, buffer: Buffer) -> Result<(), OpenCLError> {
-        let ptr = self.memory_pools[buffer.memory_pool].buffers[buffer.id].ptr;
-        let status = unsafe { clReleaseMemObject(ptr) };
+    pub(crate) fn deallocate_memory(&mut self, memory_pool: &mut OpenCLMemoryPool, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
+        let status = unsafe { clReleaseMemObject(buffer.ptr) };
         check(status, "Unable to free allocated memory")?;
+        memory_pool.free_bytes += buffer.byte_size;
         Ok(())
     }
 
     pub(crate) fn host_to_opencl(
         &mut self,
         src: &[u8],
-        dst: &mut Buffer,
+        dst: &mut OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
         let mut event = ptr::null_mut();
-        let ptr = self.memory_pools[dst.memory_pool].buffers[dst.id].ptr;
         let status = unsafe {
             clEnqueueWriteBuffer(
                 self.queue()?,
-                ptr,
+                dst.ptr,
                 CL_NON_BLOCKING,
                 0,
                 src.len(),
@@ -289,24 +278,25 @@ impl OpenCLBackend {
 
     pub(crate) fn opencl_to_opencl(
         &mut self,
-        src: &Buffer,
-        dst: &mut Buffer,
+        src: &OpenCLBuffer,
+        dst: &mut OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
-        todo!()
+        let _ = src;
+        let _ = dst;
+        Ok(())
     }
 
     pub(crate) fn opencl_to_host(
         &mut self,
-        src: &Buffer,
+        src: &OpenCLBuffer,
         dst: &mut [u8],
     ) -> Result<(), OpenCLError> {
-        let src = self.memory_pools[src.memory_pool].buffers[src.id].ptr;
-        assert!(!src.is_null(), "Trying to read null memory. Internal bug.");
+        assert!(!src.ptr.is_null(), "Trying to read null memory. Internal bug.");
         let mut event: *mut c_void = ptr::null_mut();
         let status = unsafe {
             clEnqueueReadBuffer(
                 self.queue()?,
-                src,
+                src.ptr,
                 CL_NON_BLOCKING,
                 0,
                 dst.len(),
@@ -324,24 +314,22 @@ impl OpenCLBackend {
     pub(crate) fn compile_program(
         &mut self,
         kernel: &IRKernel,
-        device_id: DeviceId,
-    ) -> Result<ProgramId, OpenCLError> {
+        device: &mut OpenCLDevice,
+    ) -> Result<OpenCLProgram, OpenCLError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        let mut i = 0;
         for op in &kernel.ops[..6] {
             if let IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = *len;
+                if id % 2 == 0 {
+                    global_work_size[*id as usize / 2] = *len;
                 } else {
-                    local_work_size[i / 2] = *len;
+                    local_work_size[*id as usize / 2] = *len;
                 }
             }
-            i += 1;
         }
 
         // Declare global variables
@@ -393,13 +381,13 @@ impl OpenCLBackend {
 
         for op in kernel.ops[6..].iter().copied() {
             match op {
-                IROp::Set { z, len, value } => {
+                IROp::Set { z, len: _, value } => {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
-                IROp::Load { z, x, at, dtype } => {
+                IROp::Load { z, x, at, dtype: _ } => {
                     source += &format!("{indent}{z} = {x}[{at}];\n");
                 }
-                IROp::Store { z, x, at, dtype } => {
+                IROp::Store { z, x, at, dtype: _ } => {
                     source += &format!("{indent}{z}[{at}] = {x};\n");
                 }
                 IROp::Unary { z, x, uop, dtype } => {
@@ -463,23 +451,20 @@ impl OpenCLBackend {
         }
         source += "}\n";
 
-        self.programs.push(OpenCLProgram::compile_from_source(
+        Ok(OpenCLProgram::compile_from_source(
             &source,
             self.context,
-            &[self.devices[device_id]],
+            &[device.ptr],
             global_work_size,
             local_work_size,
-        )?);
-
-        Ok(self.programs.len() - 1)
+        )?)
     }
 
     pub(crate) fn launch_program(
         &mut self,
-        program_id: ProgramId,
-        args: &[Buffer],
-    ) -> Result<(), OpenCLError> {
-        let program = &self.programs[program_id];
+        program: &mut OpenCLProgram,
+        args: &mut [OpenCLBuffer],
+    ) -> Result<OpenCLEvent, OpenCLError> {
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[0], 4).unwrap());
         //#[cfg(not(feature = "debug1"))]
@@ -491,7 +476,7 @@ impl OpenCLBackend {
         let mut i = 0;
         for arg in args {
             // This is POINTER MAGIC. Be careful.
-            let ptr: *const _ = &self.memory_pools[arg.memory_pool].buffers[arg.id].ptr;
+            let ptr: *const _ = &arg.ptr;
             status = unsafe {
                 clSetKernelArg(kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
             };
@@ -518,12 +503,11 @@ impl OpenCLBackend {
             )
         };
         check(status, "Unable to enqueue kernel.")?;
-        self.events.push(event);
-        return Ok(());
+        return Ok(OpenCLEvent { ptr: event });
     }
 
-    pub(crate) fn finish_program(&mut self, program_id: ProgramId) -> Result<(), OpenCLError> {
-        let status = unsafe { clWaitForEvents(1, (&[self.events[program_id]]).as_ptr().cast()) };
+    pub(crate) fn finish_event(&mut self, event: OpenCLEvent) -> Result<(), OpenCLError> {
+        let status = unsafe { clWaitForEvents(1, (&[event]).as_ptr().cast()) };
         check(status, "Unable to finish program.")?;
         Ok(())
     }
@@ -576,13 +560,23 @@ impl IRDType {
     }
 }
 
+impl OpenCLMemoryPool {
+    pub(crate) fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+
+    pub(crate) fn free_bytes(&self) -> usize {
+        self.free_bytes
+    }
+}
+
 fn check(status: cl_int, info: &str) -> Result<(), OpenCLError> {
     if status == CL_SUCCESS {
         return Ok(());
     } else {
         return Err(OpenCLError {
             info: info.into(),
-            status: OpenCLStatus::new(status),
+            status: status.into(),
         });
     }
 }
@@ -714,12 +708,12 @@ fn get_program_build_data(
     return get_vector(program, device, param_name, size);
 }
 
-fn get_device_data(device: *mut c_void, param_name: cl_uint) -> Result<Vec<u8>, cl_int> {
-    fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, cl_int> {
+fn get_device_data(device: *mut c_void, param_name: cl_uint) -> Result<Vec<u8>, OpenCLError> {
+    fn get_size(object: *mut c_void, param_name: cl_uint) -> Result<usize, OpenCLError> {
         let mut size: usize = 0;
         let status = unsafe { clGetDeviceInfo(object, param_name, 0, ptr::null_mut(), &mut size) };
         if CL_SUCCESS != status {
-            return Err(status);
+            return Err(OpenCLError { status: status.into(), info: format!("Unable to get device info {param_name}") });
         } else {
             return Ok(size);
         }
@@ -729,7 +723,7 @@ fn get_device_data(device: *mut c_void, param_name: cl_uint) -> Result<Vec<u8>, 
         object: *mut c_void,
         param_name: cl_uint,
         size: usize,
-    ) -> Result<Vec<u8>, cl_int> {
+    ) -> Result<Vec<u8>, OpenCLError> {
         if 0 < size {
             let count = size / core::mem::size_of::<u8>();
             let mut data: Vec<u8> = Vec::with_capacity(count);
@@ -744,7 +738,7 @@ fn get_device_data(device: *mut c_void, param_name: cl_uint) -> Result<Vec<u8>, 
                 )
             };
             if CL_SUCCESS != status {
-                return Err(status);
+                return Err(OpenCLError { status: status.into(), info: format!("Unable to get {param_name}") });
             } else {
                 return Ok(data);
             }
@@ -885,8 +879,8 @@ enum OpenCLStatus {
     UNKNOWN,
 }
 
-impl OpenCLStatus {
-    fn new(status: cl_int) -> Self {
+impl From<cl_int> for OpenCLStatus {
+    fn from(status: cl_int) -> Self {
         match status {
             -4 => Self::CL_MEM_OBJECT_ALLOCATION_FAILURE,
             -5 => Self::CL_OUT_OF_RESOURCES,

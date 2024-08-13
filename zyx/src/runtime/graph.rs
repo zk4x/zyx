@@ -271,7 +271,6 @@ impl Graph {
                 | Node::Permute { .. }
                 | Node::Reshape { .. }
                 | Node::Pad { .. } => {}
-                _ => todo!(),
             }
         }
         let mut bytes_written = 0;
@@ -460,7 +459,6 @@ impl Graph {
                 Node::Reduce { x, axes, rop, .. } => {
                     add_node(id, &f!("{rop:?}({x}, {axes:?})"), "oval")
                 }
-                _ => todo!(),
             }
             for param in node.parameters() {
                 writeln!(edges, "  {} -> {id}", param).unwrap();

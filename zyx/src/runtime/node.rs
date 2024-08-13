@@ -39,17 +39,6 @@ type Dimension = usize;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(crate) enum Node {
-    // Tensor stored in disk
-    Disk {
-        shape: Vec<Dimension>,
-        dtype: DType,
-    },
-    // Uniform random tensor generator
-    Uniform {
-        shape: Vec<Dimension>,
-        low: Constant,
-        high: Constant,
-    },
     // Tensor stored on device
     Leaf {
         shape: Vec<Dimension>,
@@ -117,7 +106,7 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         return match self {
-            Node::Const { .. } | Node::Leaf { .. } | Node::Uniform { .. } | Node::Disk { .. } => NodeParametersIterator {
+            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
                 parameters: [0, 0],
                 idx: 0,
                 len: 0,
@@ -148,7 +137,7 @@ impl Node {
     pub(crate) fn is_leaf(&self) -> bool {
         matches!(
             self,
-            Node::Uniform { .. } | Node::Leaf { .. } | Node::Const { .. } | Node::Disk { .. }
+            Node::Leaf { .. } | Node::Const { .. }
         )
     }
 
