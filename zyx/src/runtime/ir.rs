@@ -124,13 +124,13 @@ impl Kernel {
         // Get all global args and set them first
         for vop in &self.ops {
             match &vop {
-                &VOp::Load { z, x, view } => {
+                &VOp::Load { z: _, x, view } => {
                     let dtype = graph.dtype(*x).into();
                     let _ = vars.add_var(
-                        *z,
+                        *x,
                         view.numel(),
                         Scope::Global,
-                        graph.rc(*z),
+                        graph.rc(*x),
                         dtype,
                         Some(*x),
                     );
@@ -155,7 +155,7 @@ impl Kernel {
                     vars.add_const(*z, *value);
                 }
                 VOp::Noop { z, x } => {
-                    vars.noop(*z, *x);
+                    vars.noop(*z, *x, graph.rc(*z));
                 }
                 VOp::Load { z, x, view } => {
                     let dtype = graph.dtype(*z).into();
@@ -168,7 +168,6 @@ impl Kernel {
                         at,
                         dtype,
                     });
-                    //println!("{at:?}, {vars:?}");
                     vars.remove_var(at);
                 }
                 VOp::Store { z, view } => {
@@ -182,7 +181,6 @@ impl Kernel {
                         at,
                         dtype,
                     });
-                    //println!("{at:?}, {vars:?}");
                     vars.remove_var(at);
                 }
                 VOp::Loop { axis, dimension } => {
@@ -221,24 +219,21 @@ impl Kernel {
                     num_axes,
                     rop,
                 } => {
-                    let x_tensor = *x;
-                    let z_tensor = *z;
                     let dtype = graph.dtype(*z).into();
-                    let x = vars.get(*x, Scope::Register);
-                    let z = vars.get(*z, Scope::Register);
                     let bop = match *rop {
                         ROp::Sum => BOp::Add,
                         ROp::Max => BOp::Max,
                     };
+                    let z_var = vars.get(*z, Scope::Register);
                     ops.push(IROp::Binary {
-                        z,
-                        x,
-                        y: z,
+                        z: z_var,
+                        x: vars.get(*x, Scope::Register),
+                        y: z_var,
                         bop,
                         dtype,
                     });
-                    vars.remove(x_tensor);
-                    vars.remove(z_tensor);
+                    vars.remove(*x);
+                    //vars.remove(*z);
                     for _ in 0..*num_axes {
                         ops.push(IROp::EndLoop);
                         vars.remove_axis(max_axis);
@@ -309,8 +304,11 @@ impl VarMap {
         }
     }
 
-    fn noop(&mut self, z: TensorId, x: TensorId) {
-        self.var_map.insert((z, Scope::Register), self.var_map[&(x, Scope::Register)]);
+    fn noop(&mut self, z: TensorId, x: TensorId, z_rc: u32) {
+        let var = self.var_map[&(x, Scope::Register)];
+        self.var_map.insert((z, Scope::Register), var);
+        let Var::Id(id, _) = var else { panic!() };
+        self.registers[id as usize].0 += z_rc - 1;
     }
 
     fn get(&self, tensor_id: TensorId, scope: Scope) -> Var {
@@ -417,7 +415,7 @@ impl VarMap {
                 if let Some(id) = self
                     .registers
                     .iter()
-                    .position(|(rc, vdtype, _)| *rc == 0 && *vdtype == dtype)
+                    .position(|(rc_, vdtype, _)| *rc_ == 0 && *vdtype == dtype)
                 {
                     self.registers[id] = (rc, dtype, false);
                     id

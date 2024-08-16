@@ -5,7 +5,7 @@ use crate::{
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Display};
 
 use super::{BufferId, Device, MemoryPool, MemoryPoolId, ProgramId};
 
@@ -99,6 +99,12 @@ impl Runtime {
                         // TODO make more efficient use of global variables by reusing the same allocation
                         // for temporary global variables which are not used through the whole running of the
                         // kernel (rc drops to 0)
+                        println!();
+                        #[cfg(feature = "debug_sched")]
+                        for vop in &kernels[kernel_id].ops {
+                            println!("{vop}");
+                        }
+                        println!();
 
                         // Move inputs to the device
                         for input in &kernels[kernel_id].inputs {
@@ -163,21 +169,21 @@ impl Runtime {
         for sched_op in &self.compiled_graphs[graph].sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
-                    Device::OpenCL { device, memory_pool_id, programs } => {
+                    Device::OpenCL { device: _, memory_pool_id, programs } => {
                         let (program, args) = &mut programs[program_id.program_id];
-                        let MemoryPool::OpenCL { memory_pool, buffers } = &mut self.memory_pools[*memory_pool_id];
                         let args: Vec<usize> = args.iter().map(|arg| self.tensor_buffer_map[arg].buffer_id).collect();
+                        let MemoryPool::OpenCL { buffers, .. } = &mut self.memory_pools[*memory_pool_id];
                         events.insert(*program_id, self.opencl.as_mut().unwrap().launch_program(program, buffers, &args)?);
                     }
                 }
                 SchedulerOp::Finish(program_id) => {
                     match &self.devices[program_id.device_id] {
-                        Device::OpenCL { device, memory_pool_id, programs } => {
+                        Device::OpenCL { .. } => {
                             self.opencl.as_mut().unwrap().finish_event(events.remove(&program_id).unwrap())?;
                         },
                     }
                 },
-                SchedulerOp::MemCopy { tensor_id: tensor, src, dst, view } => todo!(),
+                SchedulerOp::MemCopy { tensor_id, src, dst, view } => todo!(),
                 SchedulerOp::Allocate { tensor_id, memory_pool_id, bytes, view } => match &mut self.memory_pools[*memory_pool_id] {
                     MemoryPool::OpenCL { memory_pool, buffers } => {
                         let buffer = self.opencl.as_mut().unwrap().allocate_memory(*bytes, memory_pool)?;
@@ -185,7 +191,7 @@ impl Runtime {
                         self.tensor_buffer_map.insert((*tensor_id, view.clone()), BufferId { memory_pool_id: *memory_pool_id, buffer_id });
                     }
                 }
-                SchedulerOp::Deallocate { tensor_id: tensor, memory_pool_id: memory_pool, bytes, view } => todo!(),
+                SchedulerOp::Deallocate { tensor_id, memory_pool_id: memory_pool, bytes, view } => todo!(),
             }
         }
         Ok(())
@@ -1063,5 +1069,23 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         }
     } else {
         panic!()
+    }
+}
+
+#[cfg(feature = "debug_sched")]
+impl Display for VOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use inline_colorization::*;
+        match self {
+            VOp::Const { z, value } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}")),
+            VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}")),
+            VOp::Store { z, view } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}")),
+            VOp::Loop { axis, dimension } => f.write_fmt(format_args!("{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}")),
+            VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!("{color_blue}Accum{color_reset}.{rop:?}   {z} {:?}", view.shape())),
+            VOp::Reduce { z, x, num_axes, rop } => f.write_fmt(format_args!("{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}")),
+            VOp::Noop { z, x } => f.write_fmt(format_args!("{color_white}Noop{color_reset}        {z} <- {x}")),
+            VOp::Unary { z, x, uop } => f.write_fmt(format_args!("{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}", core::iter::repeat(" ").take(5-format!("{uop:?}").len()).collect::<String>())),
+            VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!("{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}")),
+        }
     }
 }

@@ -73,3 +73,31 @@ to different files would make it very messy. This is important rule and makes re
 This rule seems obvious and intuitive. It is usually uphold in the first draft of the file structure of the project, but in later stages it is often
 carelessly broken. This is the reason why many projects are hard to get working with different hardware even though the hardware fullfills virtually
 the same role as the hardware the software was written for in the first place.
+
+## On state
+
+There is a consensus that the complexity of software comes from existence of state. Functional programming only allows for mutation by passing variables to functions and returning new variables.
+This is a nice property, but functional languages are inherently slow and borderline useless due to this. Highly complex optimizations can be applied to make functional languages just as fast
+as procedural/oop languages. All software in the world can also be written in functional programming languages, but without persistent state and mutations it gets annoying to write. Most software
+is shorter (as in LOC) when it is written in procedural/oop way.
+What I advocate for is transparent stateful programming. That is all state should be stored in very few places, ideally in one place and should be easily accessible for debugging. Functions
+operate on this state and they do not have side effects except for changing the state. In zyx, everything is stored in runtime, so the whole state of zyx can be debugged at any point and all
+functions do local contained calculations. Nodes are added to graph by calling function on runtime. Backpropagation adds necessary nodes to graph and nothing else. Realization evaluates required
+tensors and nothing else. Realization has multiple steps where it creates kernels, schedules them to devices and compiles kernels first to ir and then to assembly, but in the end there is only
+program stored on device and all intermediate state (such as IRKernel and VOps) is deleted.
+One improvement for programming languages could be a simpler way to document which state is changed by each function. For example many functions take self as argument, which gives them access
+to the whole struct even if they only need to access part of it. It would be nice if each function could limit it's access only to certain fields of struct.
+OOP tries to push many small structs instead of one big one. This makes debugging and state management difficult. Instead it makes memory leaks hard to spot. Memory leaks in zyx can be simply found
+by logging the size of each field in runtime struct. That is size of the graph, number of compiled programs and such (FFI can cause memory leaks which are hardest to spot, so we limit FFI to single file
+per each backend).
+
+So the approach should be small number of statefull structs with well defined APIs. Collections of objects should be preferrably stored in those structs (preffer SOA instead of AOS) both for performance,
+but mainly for ease of debugging.
+
+Structs themeselves should be written with debugging in mind. The representation of state should be human readable.
+
+Basically there is no point in drawing UML diagram of single struct. Just read the declaration of the struct and it's fields. Since programmers do not like drawing UML diagrams
+and there is almost no way to guarantee that UML diagram is accurate representation of the code (other than automatically generating UML diagrams from code), it is better
+to write code in such a way that UML diagrams are not needed to understand the whole program.
+
+If all programs stored their whole state in single struct, they would be very transparent. As a side effect this makes maintaining software and dealing with changing requirements surprisingly easy.
