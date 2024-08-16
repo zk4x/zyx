@@ -1,14 +1,18 @@
-use super::{
-    backend::DeviceInfo, Runtime, ZyxError
-};
 use crate::{
     dtype::Constant,
-    runtime::node::{BOp, Node, ROp, UOp},
-    runtime::{graph::Graph, view::View, Device, DeviceId},
+    runtime::{node::{BOp, Node, ROp, UOp}, backend::DeviceInfo, Runtime, ZyxError},
+    runtime::{graph::Graph, view::View, DeviceId},
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{BufferId, Device, MemoryPool, MemoryPoolId, ProgramId};
+
+// In which order
+pub(super) struct CompiledGraph {
+    sched_graph: Vec<SchedulerOp>,
+}
 
 // TODO this function could take &mut Runtime
 impl Runtime {
@@ -16,11 +20,9 @@ impl Runtime {
         &mut self,
         #[allow(unused_mut)]
         mut graph: Graph,
-        to_eval: &BTreeSet<u64>,
+        to_eval: &BTreeSet<TensorId>,
     ) -> Result<CompiledGraph, ZyxError> {
-        let _ = graph;
-        let _ = to_eval;
-        /*let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
+        let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
         // create vop representation
         let mut kernels = generate_kernels(&graph, &order, &to_eval);
         // create graph of kernels, sharding tensors across devices, shard also kernels appropriatelly
@@ -28,18 +30,24 @@ impl Runtime {
         // Tensors that are being evaluated on devices, but still not finished
         // Each device can calculate only small part of the tensor
         // KernelId points into kernel in kernels
-        let mut finished_kernels: BTreeSet<KernelId> = BTreeSet::new();
-        let mut kid = 0;
-        while kid < kernels.len() {
+        let mut finished_programs: BTreeSet<ProgramId> = BTreeSet::new();
+        let mut all_programs: BTreeSet<ProgramId> = BTreeSet::new();
+        // All leafs are allocated in some memory pool (can be disk)
+        let mut allocated_tensors: BTreeSet<TensorId> = order.iter().filter_map(|t| if let Node::Leaf { .. } = graph[*t] { Some(*t) } else { None }).collect();
+        let mut unoccupied_devices: BTreeSet<usize> = (0..self.devices.len()).collect();
+        let mut program_kernel_map: BTreeMap<ProgramId, usize> = BTreeMap::new();
+        let mut kernel_id = 0;
+        while kernel_id < kernels.len() {
             // check which kernels (if any) must be finished before launchibng the next kernel
             for i in (0..sched_graph.len()).rev() {
-                if let SchedulerOp::Launch(lkid, dev) = sched_graph[i] {
-                    if !kernels[lkid].outputs.is_disjoint(&kernels[kid].inputs)
-                        && !finished_kernels.contains(&lkid)
+                if let SchedulerOp::Launch(program_id) = sched_graph[i] {
+                    if !kernels[program_kernel_map[&program_id]].outputs.is_disjoint(&kernels[kernel_id].inputs)
+                        && !finished_programs.contains(&program_id)
                     {
-                        sched_graph.push(SchedulerOp::Finish(lkid));
-                        finished_kernels.insert(lkid);
-                        unoccupied_devices.insert(dev);
+                        sched_graph.push(SchedulerOp::Finish(program_id));
+                        finished_programs.insert(program_id);
+                        unoccupied_devices.insert(program_id.device_id);
+                        // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
                     }
                 }
             }
@@ -50,132 +58,137 @@ impl Runtime {
             // TODO also check if it even makes sense to shard. That is if we have at least
             // two devices and if flop required to realize the kernel is not less than
             // the time taken to launch the kernel and time needed to copy memory
-            if unoccupied_devices.len() > 1 {
-                if let Some((axis, dimension)) = kernels[kid].shard_axis() {
-                    // dimension is size of the sharded dimension
-                    let unoccupied_compute: usize =
-                        unoccupied_devices.iter().map(|dev| dev.compute).sum();
-                    let shard_sizes: Vec<Dimension> = unoccupied_devices
-                        .iter()
-                        .map(|dev| dimension * dev.compute / unoccupied_compute)
-                        .collect();
-                    let sharded_kernel_ids: Vec<KernelId> =
-                        shard_kernels(&mut kernels, kid, axis, shard_sizes);
-                    // check which memory needs to be moved around
-                    // TODO and add tensor movement ops between devices to keep everything working
-                    /*kernel_graph.push(SchedulerOp::MemCopy {
-                        tensor: (),
-                        src: (),
-                        dst: (),
-                        view: (),
-                    });*/
-                    for (skid, dev) in sharded_kernel_ids
-                        .into_iter()
-                        .zip(unoccupied_devices.iter())
-                    {
-                        // launch the kernel
-                        sched_graph.push(SchedulerOp::Launch(skid, *dev));
-                    }
-                    unoccupied_devices.clear();
+            let shard = if unoccupied_devices.len() > 1 {
+                if let Some((axis, dimension)) = kernels[kernel_id].shard_axis() {
+                    Some((axis, dimension))
                 } else {
-                    // TODO also do not shard
-                    todo!()
+                    None
                 }
             } else {
-                // check which memory needs to be moved around
-                /*kernel_graph.push(SchedulerOp::MemCopy {
-                    tensor: (),
-                    src: (),
-                    dst: (),
-                    view: (),
-                });*/
-                // Find the fastest out of unoccupied devices
-                let dev = *unoccupied_devices
+                None
+            };
+
+            if let Some((axis, dimension)) = shard {
+                // dimension is size of the sharded dimension
+                let unoccupied_compute: usize =
+                    unoccupied_devices.iter().map(|dev_id| self.devices[*dev_id].compute()).sum();
+                let shard_sizes: Vec<Dimension> = unoccupied_devices
                     .iter()
-                    .max_by(|x, y| x.compute.cmp(&y.compute))
+                    .map(|dev_id| dimension * self.devices[*dev_id].compute() / unoccupied_compute)
+                    .collect();
+                let sharded_kernel_ids: Vec<KernelId> =
+                    shard_kernels(&mut kernels, kernel_id, axis, shard_sizes);
+                for (skid, dev) in sharded_kernel_ids
+                    .into_iter()
+                    .zip(unoccupied_devices.iter())
+                {
+                    // launch the kernel
+                    sched_graph.push(SchedulerOp::Launch(ProgramId { device_id: *dev, program_id: skid }));
+                }
+                unoccupied_devices.clear();
+            } else {
+                // Find the fastest out of unoccupied devices
+                let device_id = *unoccupied_devices
+                    .iter()
+                    .max_by(|x, y| self.devices[**x].compute().cmp(&self.devices[**y].compute()))
                     .unwrap();
                 // launch the kernel
-                sched_graph.push(SchedulerOp::Launch(kid, dev));
-                unoccupied_devices.remove(&dev);
-            }
-            kid += 1;
-        }
-        for kernel_id in (0..kernels.len())
-            .collect::<BTreeSet<KernelId>>()
-            .difference(&finished_kernels)
-        {
-            sched_graph.push(SchedulerOp::Finish(*kernel_id));
-        }
+                let program_id = match &mut self.devices[device_id] {
+                    Device::OpenCL { device, memory_pool_id, programs } => {
+                        kernels[kernel_id].optimize(device.info());
+                        // TODO make more efficient use of global variables by reusing the same allocation
+                        // for temporary global variables which are not used through the whole running of the
+                        // kernel (rc drops to 0)
 
-        let mut programs = Vec::new();
-        for sched_op in &sched_graph {
-            if let SchedulerOp::Launch(kernel_id, dev) = sched_op {
-                let dev_info = match dev.kind {
-                    super::DeviceKind::Host => todo!(),
-                    super::DeviceKind::OpenCL => &opencl.as_mut().unwrap().device_info()[dev.id],
+                        // Move inputs to the device
+                        for input in &kernels[kernel_id].inputs {
+                            // move from device to this device if the device is not the same
+                            // check on which memory pool it is stored
+                            // TODO
+                        }
+                        // Allocate memory for outputs
+                        for output in &kernels[kernel_id].outputs {
+                            if !allocated_tensors.contains(output) {
+                                let shape = graph.shape(*output);
+                                sched_graph.push(SchedulerOp::Allocate { tensor_id: *output, memory_pool_id: *memory_pool_id, bytes: shape.iter().product::<usize>() * graph.dtype(*output).byte_size(), view: View::new(shape) });
+                                allocated_tensors.insert(*output);
+                            }
+                        }
+                        let (ir_kernel, args) = kernels[kernel_id].to_ir(&graph);
+                        let program = self.opencl.as_mut().unwrap().compile_program(&ir_kernel, &device)?;
+                        // Since it is not sharded, sharding view is contiguous
+                        programs.push((program, args.into_iter().map(|arg| (arg, View::new(graph.shape(arg)))).collect()));
+                        programs.len() - 1
+                    }
                 };
-                kernels[*kernel_id].optimize(dev_info);
-                // TODO make more efficient use of global variables by reusing the same allocation
-                // for temporary global variables which are not used through the whole running of the
-                // kernel (rc drops to 0)
-
-                // Move inputs to the device
-                for input in &kernels[*kernel_id].inputs {
-                    // move from device to this device if the device is not the same
-                    // check on which memory pool it is stored
-                    todo!()
-                }
-                // Allocate memory for outputs
-                for output in &kernels[*kernel_id].outputs {
-                    todo!()
-                }
-
-                let ir_kernel = kernels[*kernel_id].to_ir(&graph);
-                let program = match dev.kind {
-                    super::DeviceKind::Host => todo!(),
-                    super::DeviceKind::OpenCL => Program {
-                        device_id: dev.id,
-                        program_id: opencl
-                            .as_mut()
-                            .unwrap()
-                            .compile_program(&ir_kernel, dev.id)?,
-                    },
-                };
-                programs.push(program);
+                let program_id = ProgramId { device_id, program_id };
+                sched_graph.push(SchedulerOp::Launch(program_id));
+                all_programs.insert(program_id);
+                program_kernel_map.insert(program_id, kernel_id);
+                unoccupied_devices.remove(&device_id);
             }
+            kernel_id += 1;
+        }
+        for program_id in all_programs.difference(&finished_programs) {
+            sched_graph.push(SchedulerOp::Finish(*program_id));
         }
 
         #[cfg(feature = "debug_sched")]
         for sched_op in &sched_graph {
             match sched_op {
-                SchedulerOp::Launch(kernel_id, device) => {
-                    println!("Launch kernel {kernel_id} for {device:?}");
-                    for op in &kernels[*kernel_id].ops {
-                        println!("{op:?}");
-                    }
-                    println!();
-                }
-                SchedulerOp::Finish(kernel_id) => println!("Finish kernel {kernel_id}"),
+                SchedulerOp::Launch(program_id) => println!("Launch kernel {:?}", self.devices[program_id.device_id]),
+                SchedulerOp::Finish(program_id) => println!("Finish kernel {program_id:?}"),
                 SchedulerOp::MemCopy {
-                    tensor,
+                    tensor_id: tensor,
                     src,
                     dst,
                     view,
                 } => println!("Copy tensor {tensor} from {src:?} to {dst:?} with {view:?}"),
-                SchedulerOp::Allocate { tensor, dev, bytes } => {
-                    println!("Allocate tensor {tensor} on {dev:?} with size {bytes:?} B")
+                SchedulerOp::Allocate { tensor_id, bytes, memory_pool_id, view } => {
+                    println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
                 }
-                SchedulerOp::Deallocate { tensor, dev } => {
-                    println!("Allocate tensor {tensor} on {dev:?}")
+                SchedulerOp::Deallocate { tensor_id, memory_pool_id, bytes, view } => {
+                    println!("Allocate tensor {tensor_id} on {memory_pool_id:?}")
                 }
             }
         }
 
         Ok(CompiledGraph {
             sched_graph,
-            programs,
-        })*/
-        todo!()
+        })
+    }
+
+    pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
+        let mut events = BTreeMap::new();
+        for sched_op in &self.compiled_graphs[graph].sched_graph {
+            match sched_op {
+                SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
+                    Device::OpenCL { device, memory_pool_id, programs } => {
+                        let (program, args) = &mut programs[program_id.program_id];
+                        let MemoryPool::OpenCL { memory_pool, buffers } = &mut self.memory_pools[*memory_pool_id];
+                        let args: Vec<usize> = args.iter().map(|arg| self.tensor_buffer_map[arg].buffer_id).collect();
+                        events.insert(*program_id, self.opencl.as_mut().unwrap().launch_program(program, buffers, &args)?);
+                    }
+                }
+                SchedulerOp::Finish(program_id) => {
+                    match &self.devices[program_id.device_id] {
+                        Device::OpenCL { device, memory_pool_id, programs } => {
+                            self.opencl.as_mut().unwrap().finish_event(events.remove(&program_id).unwrap())?;
+                        },
+                    }
+                },
+                SchedulerOp::MemCopy { tensor_id: tensor, src, dst, view } => todo!(),
+                SchedulerOp::Allocate { tensor_id, memory_pool_id, bytes, view } => match &mut self.memory_pools[*memory_pool_id] {
+                    MemoryPool::OpenCL { memory_pool, buffers } => {
+                        let buffer = self.opencl.as_mut().unwrap().allocate_memory(*bytes, memory_pool)?;
+                        let buffer_id = buffers.push(buffer);
+                        self.tensor_buffer_map.insert((*tensor_id, view.clone()), BufferId { memory_pool_id: *memory_pool_id, buffer_id });
+                    }
+                }
+                SchedulerOp::Deallocate { tensor_id: tensor, memory_pool_id: memory_pool, bytes, view } => todo!(),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -183,26 +196,29 @@ type KernelId = usize;
 
 enum SchedulerOp {
     // Async launch kernel on device
-    Launch(KernelId, Device),
+    Launch(ProgramId),
     // Block for kernel to finish execution
-    Finish(KernelId),
+    Finish(ProgramId),
     // Copy part of tensor between devices
     // This is used for sharding, but can be used for other purposes too,
     // if found usefull
     MemCopy {
-        tensor: TensorId,
-        src: Device,
-        dst: Device,
+        tensor_id: TensorId,
+        src: DeviceId,
+        dst: DeviceId,
         view: View,
     },
     Allocate {
-        tensor: TensorId,
-        dev: Device,
+        tensor_id: TensorId,
+        memory_pool_id: MemoryPoolId,
         bytes: usize,
+        view: View,
     },
     Deallocate {
-        tensor: TensorId,
-        dev: Device,
+        tensor_id: TensorId,
+        memory_pool_id: MemoryPoolId,
+        bytes: usize,
+        view: View,
     },
 }
 
@@ -1048,18 +1064,4 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
     } else {
         panic!()
     }
-}
-
-// In which order
-pub(super) struct CompiledGraph {
-    sched_graph: Vec<SchedulerOp>,
-    programs: Vec<Program>,
-}
-
-pub(crate) type ProgramId = usize;
-
-// Programs are launched by devices
-struct Program {
-    device_id: DeviceId,
-    program_id: ProgramId,
 }

@@ -1,8 +1,8 @@
 #![allow(non_camel_case_types)]
 
-use crate::runtime::{
+use crate::{index_map::IndexMap, runtime::{
     ir::{IRDType, IRKernel, IROp, Scope}, node::{BOp, UOp}
-};
+}};
 use std::{
     ffi::{c_void, CString}, ptr
 };
@@ -15,7 +15,6 @@ pub(crate) struct OpenCLBackend {
     queues: Box<[*mut c_void]>,
     queue_size: Box<[u8]>,
     queue_id: usize,
-    device_info: Vec<DeviceInfo>,
 }
 
 // OpenCL does not have the concept of memory pools,
@@ -35,6 +34,8 @@ pub(crate) struct OpenCLBuffer {
 #[derive(Debug)]
 pub(crate) struct OpenCLDevice {
     ptr: *mut c_void,
+    compute: usize,
+    dev_info: DeviceInfo,
 }
 
 #[derive(Debug)]
@@ -58,6 +59,21 @@ unsafe impl Send for OpenCLBuffer {}
 unsafe impl Send for OpenCLDevice {}
 unsafe impl Send for OpenCLProgram {}
 unsafe impl Send for OpenCLEvent {}
+
+impl OpenCLDevice {
+    pub(crate) fn compute(&self) -> usize {
+        self.compute
+    }
+
+    pub(crate) fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
+
+    // Memory pool id out of OpenCLMemoryPools
+    pub(crate) fn memory_pool_id(&self) -> usize {
+        0
+    }
+}
 
 impl OpenCLBackend {
     pub(crate) fn new() -> Result<(Self, Vec<OpenCLMemoryPool>, Vec<OpenCLDevice>), OpenCLError> {
@@ -93,12 +109,12 @@ impl OpenCLBackend {
             "Using OpenCL platform: {}",
             String::from_utf8(get_platform_data(platform, CL_PLATFORM_NAME)?).unwrap()
         );
-        let devices = get_device_ids(platform, CL_DEVICE_TYPE_ALL)
+        let device_ids = get_device_ids(platform, CL_DEVICE_TYPE_ALL)
             .map_err(|err| check(err, "Unable to get OpenCL device ids").err().unwrap())?;
         #[cfg(feature = "debug_dev")]
         println!("Using devices:");
         #[cfg(feature = "debug_dev")]
-        for dev in &devices {
+        for dev in &device_ids {
             println!(
                 "{}",
                 String::from_utf8(get_device_data(*dev, CL_DEVICE_NAME)?).unwrap()
@@ -108,8 +124,8 @@ impl OpenCLBackend {
         let context = unsafe {
             clCreateContext(
                 ptr::null(),
-                devices.len() as cl_uint,
-                devices.as_ptr(),
+                device_ids.len() as cl_uint,
+                device_ids.as_ptr(),
                 None,
                 ptr::null_mut(),
                 &mut status,
@@ -124,7 +140,7 @@ impl OpenCLBackend {
         println!("Using {queues_per_device} queues per device.");
         let (queues, errs): (Vec<*mut c_void>, Vec<cl_int>) = (0..queues_per_device)
             .flat_map(|_| {
-                devices.iter().map(move |dev| {
+                device_ids.iter().map(move |dev| {
                     let queue = unsafe { clCreateCommandQueue(context, *dev, 0, &mut status) };
                     (queue, status)
                 })
@@ -133,9 +149,9 @@ impl OpenCLBackend {
         for status in errs {
             check(status, "Unable to create command queue")?;
         }
-        let mut device_info = Vec::new();
         let mut total_bytes = 0;
-        for dev in devices.iter().copied() {
+        let mut devices = Vec::new();
+        for dev in device_ids.iter().copied() {
             let max_work_item_dims = u32::from_ne_bytes(
                 get_device_data(dev, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?
                     .try_into()
@@ -159,7 +175,9 @@ impl OpenCLBackend {
                 max_work_item_sizes.push(max_dim_size);
             }
             //libc_print::libc_println!("Max work item sizes: {max_work_item_sizes:?}");
-            device_info.push(DeviceInfo {
+            total_bytes += u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE)?.try_into().unwrap()) as usize;
+
+            let dev_info = DeviceInfo {
                 max_work_item_sizes,
                 max_work_group_size: usize::from_ne_bytes(
                     get_device_data(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE)?
@@ -189,35 +207,19 @@ impl OpenCLBackend {
                 num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
                 wmma: false,
                 tensor_cores: false,
-            });
-            total_bytes += u64::from_ne_bytes(get_device_data(dev, CL_DEVICE_GLOBAL_MEM_SIZE)?.try_into().unwrap()) as usize;
+            };
+            let compute = 1024*1024*1024*1024; // 1 TFLOPs
+            devices.push(OpenCLDevice { ptr: dev, compute, dev_info });
         }
-        let devices = devices.iter().copied().map(|ptr| OpenCLDevice { ptr }).collect();
         return Ok((Self {
             context,
             queue_size: vec![0; queues.len()].into_boxed_slice(),
             queues: queues.into_boxed_slice(),
             queue_id: 0,
-            device_info,
         }, vec![OpenCLMemoryPool {
             total_bytes,
             free_bytes: total_bytes,
         }], devices));
-    }
-
-    /*pub(crate) fn memory_pools(&self) -> Vec<MemoryPool> {
-        self.memory_pools
-            .iter()
-            .map(|mp| MemoryPool {
-                kind: MemoryKind::OpenCL,
-                total_bytes: mp.total_bytes,
-                free_bytes: mp.free_bytes,
-            })
-            .collect()
-    }*/
-
-    pub(crate) fn device_info(&self) -> &[DeviceInfo] {
-        &self.device_info
     }
 
     pub(crate) fn allocate_memory(
@@ -314,7 +316,7 @@ impl OpenCLBackend {
     pub(crate) fn compile_program(
         &mut self,
         kernel: &IRKernel,
-        device: &mut OpenCLDevice,
+        device: &OpenCLDevice,
     ) -> Result<OpenCLProgram, OpenCLError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
@@ -460,10 +462,11 @@ impl OpenCLBackend {
         )?)
     }
 
-    pub(crate) fn launch_program(
+    pub(crate) fn launch_program<'a>(
         &mut self,
         program: &mut OpenCLProgram,
-        args: &mut [OpenCLBuffer],
+        buffers: &mut IndexMap<OpenCLBuffer>,
+        args: &[usize],
     ) -> Result<OpenCLEvent, OpenCLError> {
         //#[cfg(feature = "debug1")]
         //libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[0], 4).unwrap());
@@ -475,6 +478,7 @@ impl OpenCLBackend {
         check(status, "Unable to create kernel.")?;
         let mut i = 0;
         for arg in args {
+            let arg = &mut buffers[*arg];
             // This is POINTER MAGIC. Be careful.
             let ptr: *const _ = &arg.ptr;
             status = unsafe {

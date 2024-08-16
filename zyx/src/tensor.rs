@@ -17,7 +17,7 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
-pub(crate) type TensorId = u64;
+pub(crate) type TensorId = usize;
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {

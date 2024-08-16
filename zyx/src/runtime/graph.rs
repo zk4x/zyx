@@ -2,7 +2,7 @@ use super::{
     node::{BOp, Node, UOp},
     TensorId,
 };
-use crate::DType;
+use crate::{index_map::IndexMap, DType};
 use std::collections::{BTreeMap, BTreeSet};
 
 // TODO implement PartialOrd such that tensor id does not matter
@@ -11,18 +11,18 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(super) struct Graph {
     // First value is reference count, second is node
-    nodes: BTreeMap<TensorId, (u32, Node)>,
+    nodes: IndexMap<(u32, Node)>,
 }
 
 impl Graph {
     pub(crate) const fn new() -> Self {
         Self {
-            nodes: BTreeMap::new(),
+            nodes: IndexMap::new(),
         }
     }
 
     pub(crate) fn retain(&mut self, x: TensorId) {
-        self.nodes.get_mut(&x).unwrap().0 += 1;
+        self.nodes[x].0 += 1;
     }
 
     /// Returns which tensors should be deallocated
@@ -31,12 +31,12 @@ impl Graph {
         params.push(x);
         let mut to_remove = BTreeSet::new();
         while let Some(x) = params.pop() {
-            let node = self.nodes.get_mut(&x).unwrap();
+            let node = &mut self.nodes[x];
             node.0 -= 1;
             if node.0 == 0 {
                 params.extend(node.1.parameters());
                 to_remove.insert(x);
-                self.nodes.remove(&x);
+                self.nodes.remove(x);
             }
         }
         to_remove
@@ -45,24 +45,16 @@ impl Graph {
     pub(crate) fn push(&mut self, node: Node) -> TensorId {
         //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
-            self.nodes.get_mut(&nid).unwrap().0 += 1;
+            self.nodes[nid].0 += 1;
         }
-        let mut id = 0;
-        loop {
-            id += 1;
-            if !self.nodes.contains_key(&id) {
-                break;
-            }
-        }
-        self.nodes.insert(id, (1, node));
-        return id;
+        self.nodes.push((1, node))
     }
 
     pub(crate) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 1000000 {
-            let node = &self.nodes[&tensor_id].1;
+            let node = &self.nodes[tensor_id].1;
             //libc_print::libc_println!("{tensor_id}, {node:?}");
             match node {
                 Node::Const { value, .. } => return value.dtype(),
@@ -105,7 +97,7 @@ impl Graph {
         let mut x = tensor_id;
         let mut i = 0;
         while i < 10000 {
-            let node = &self.nodes[&x].1;
+            let node = &self.nodes[x].1;
             match node {
                 Node::Const { .. } => return &[1],
                 Node::Leaf { shape, .. }
@@ -122,7 +114,7 @@ impl Graph {
     }
 
     pub(crate) fn rc(&self, x: TensorId) -> u32 {
-        self.nodes[&x].0
+        self.nodes[x].0
     }
 
     pub(crate) fn realize_graph(
@@ -141,7 +133,7 @@ impl Graph {
                 if is_realized(param) {
                     leafs.insert(param);
                 } else {
-                    params.extend(self.nodes[&param].1.parameters());
+                    params.extend(self.nodes[param].1.parameters());
                 }
             }
         }
@@ -154,7 +146,7 @@ impl Graph {
                         id,
                         if leafs.contains(&id) {
                             (
-                                self.nodes[&id].0,
+                                self.nodes[id].0,
                                 Node::Leaf {
                                     shape: self.shape(id).into(),
                                     dtype: self.dtype(id),
@@ -162,7 +154,7 @@ impl Graph {
                                 },
                             )
                         } else {
-                            self.nodes[&id].clone()
+                            self.nodes[id].clone()
                         },
                     )
                 })
@@ -182,7 +174,7 @@ impl Graph {
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                params.extend(self.nodes[&nid].1.parameters());
+                params.extend(self.nodes[nid].1.parameters());
                 1
             });
         }
@@ -199,17 +191,17 @@ impl Graph {
                         .or_insert(1)
                 {
                     order.push(nid);
-                    params.extend(self.nodes[&nid].1.parameters());
+                    params.extend(self.nodes[nid].1.parameters());
                 }
             }
         }
         order.reverse();
         // Recalculate reference counts
         for (id, (rc, _)) in &mut self.nodes {
-            *rc = rcs[id];
+            *rc = rcs[&id];
         }
         for id in to_eval {
-            self.nodes.get_mut(id).unwrap().0 += 1;
+            self.nodes[*id].0 += 1;
         }
         //std::println!("Execution order: {order:?}");
         // Reorder nodes in such a way, that movement ops are as late as possible,
@@ -222,12 +214,12 @@ impl Graph {
         while node_swap {
             node_swap = false;
             for (nid, nid1) in order.iter().zip(order.iter().skip(1)) {
-                if self.nodes[nid].1.is_movement()
-                    && self.nodes[nid1].1.is_unary()
+                if self.nodes[*nid].1.is_movement()
+                    && self.nodes[*nid1].1.is_unary()
                     && !to_eval.contains(nid)
                     && !to_eval.contains(nid1)
-                    && self.nodes[nid].0 == 1
-                    && self.nodes[nid1].0 == 1
+                    && self.nodes[*nid].0 == 1
+                    && self.nodes[*nid1].0 == 1
                 {
                     //println!("Reordering movement and unary ops, swap {nid} and {nid1}");
                     self.swap_nodes(*nid, *nid1);
@@ -238,7 +230,7 @@ impl Graph {
         let mut flop = 0;
         let mut bytes_read = 0;
         for nid in &order {
-            match &self.nodes[nid].1 {
+            match &self.nodes[*nid].1 {
                 Node::Const { .. } => {}
                 Node::Leaf { shape, dtype, .. } => {
                     bytes_read += shape.iter().product::<usize>() * dtype.byte_size();
@@ -285,7 +277,7 @@ impl Graph {
     // first and second tensors must have rc == 1!
     fn swap_nodes(&mut self, first: TensorId, second: TensorId) {
         let temp;
-        match &mut self.nodes.get_mut(&first).unwrap().1 {
+        match &mut self.nodes[first].1 {
             Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Pad { x, .. }
@@ -295,15 +287,15 @@ impl Graph {
             }
             _ => panic!("First op must be movement"),
         }
-        match &mut self.nodes.get_mut(&second).unwrap().1 {
+        match &mut self.nodes[second].1 {
             Node::Unary { x, .. } => {
                 *x = temp;
             }
             _ => panic!("Second op must be unary"),
         }
         // swap the two nodes
-        let first_value = self.nodes.remove(&first).unwrap();
-        let second_value = self.nodes.remove(&second).unwrap();
+        let first_value = self.nodes.remove(first).unwrap().clone();
+        let second_value = self.nodes.remove(second).unwrap().clone();
         self.nodes.insert(first, second_value);
         self.nodes.insert(second, first_value);
     }
@@ -316,7 +308,7 @@ impl Graph {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
                     && !matches!(
-                        self.nodes[&nid].1,
+                        self.nodes[nid].1,
                         Node::Binary {
                             bop: BOp::Cmplt,
                             ..
@@ -324,7 +316,7 @@ impl Graph {
                     )
                 // or Node::Detach
                 {
-                    params.extend(self.nodes[&nid].1.parameters());
+                    params.extend(self.nodes[nid].1.parameters());
                 }
                 1
             });
@@ -342,7 +334,7 @@ impl Graph {
                         .or_insert(1)
                 {
                     order.push(nid);
-                    params.extend(self.nodes[&nid].1.parameters());
+                    params.extend(self.nodes[nid].1.parameters());
                 }
             }
         }
@@ -352,7 +344,7 @@ impl Graph {
         let mut req_grad = sources.clone();
         let mut visited = BTreeSet::new();
         for nid in order.into_iter().rev() {
-            for p in self.nodes[&nid].1.parameters() {
+            for p in self.nodes[nid].1.parameters() {
                 if req_grad.contains(&p) && visited.insert(nid) {
                     req_grad.insert(nid);
                     topo.push(nid);
@@ -367,7 +359,7 @@ impl Graph {
     #[must_use]
     pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> String {
         let ids: BTreeSet<TensorId> = if ids.is_empty() {
-            self.nodes.keys().copied().collect()
+            self.nodes.ids().collect()
         } else {
             ids.clone()
         };
@@ -376,7 +368,7 @@ impl Graph {
         let mut rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                params.extend(self.nodes[&nid].1.parameters());
+                params.extend(self.nodes[nid].1.parameters());
                 1
             });
         }
@@ -393,13 +385,13 @@ impl Graph {
             {
                 order.push(nid);
                 if rcs.contains_key(&nid) {
-                    params.extend(self.nodes[&nid].1.parameters());
+                    params.extend(self.nodes[nid].1.parameters());
                 }
             }
         }
         let mut topo: BTreeSet<TensorId> = ids.iter().copied().collect();
         for nid in order.into_iter().rev() {
-            for p in self.nodes[&nid].1.parameters() {
+            for p in self.nodes[nid].1.parameters() {
                 if topo.contains(&p) {
                     topo.insert(nid);
                 }
@@ -410,7 +402,7 @@ impl Graph {
         use core::fmt::Write;
         use std::format as f;
         let mut user_rc: BTreeMap<TensorId, u32> =
-            self.nodes.iter().map(|(k, (rc, _))| (*k, *rc)).collect();
+            self.nodes.iter().map(|(k, (rc, _))| (k, *rc)).collect();
         for (_, node) in self.nodes.values() {
             for param in node.parameters() {
                 *user_rc.get_mut(&param).unwrap() -= 1;
@@ -440,7 +432,7 @@ impl Graph {
         };
         let mut edges = String::new();
         for id in &topo {
-            let node = &self.nodes[id].1;
+            let node = &self.nodes[*id].1;
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
                 Node::Leaf {
@@ -473,6 +465,6 @@ impl Graph {
 impl core::ops::Index<TensorId> for Graph {
     type Output = Node;
     fn index(&self, index: TensorId) -> &Self::Output {
-        &self.nodes.get(&index).unwrap().1
+        &self.nodes[index].1
     }
 }

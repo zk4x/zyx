@@ -8,6 +8,7 @@ mod runtime;
 mod scalar;
 mod shape;
 mod tensor;
+mod index_map;
 
 pub use dtype::DType;
 pub use scalar::Scalar;
@@ -37,7 +38,7 @@ fn t0() {
 #[test]
 fn t1() {
     use std::println;
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp() + 1f32;
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }

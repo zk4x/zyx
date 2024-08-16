@@ -39,15 +39,15 @@ type Dimension = usize;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(crate) enum Node {
+    Const {
+        value: Constant,
+    },
     // Tensor stored on device
     Leaf {
         shape: Vec<Dimension>,
         dtype: DType,
     },
     // Constant tensor baked into kernels
-    Const {
-        value: Constant,
-    },
     Expand {
         x: TensorId,
         shape: Vec<Dimension>,
@@ -82,6 +82,12 @@ pub(crate) enum Node {
         y: TensorId,
         bop: BOp,
     },
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self::Const { value: Constant::Bool(false) }
+    }
 }
 
 pub(crate) struct NodeParametersIterator {
@@ -134,12 +140,12 @@ impl Node {
         };
     }
 
-    pub(crate) fn is_leaf(&self) -> bool {
+    /*pub(crate) fn is_leaf(&self) -> bool {
         matches!(
             self,
             Node::Leaf { .. } | Node::Const { .. }
         )
-    }
+    }*/
 
     pub(crate) fn is_movement(&self) -> bool {
         matches!(

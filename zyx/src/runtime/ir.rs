@@ -27,16 +27,6 @@ pub(crate) enum Scope {
     Register,
 }
 
-impl Display for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Global => "g",
-            Self::Local => "l",
-            Self::Register => "r",
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum IROp {
     Set {
@@ -105,32 +95,27 @@ pub(crate) enum IRDType {
     I32,
     I64,
     Bool,
-    // For indexing
+    // For indexing, usually u32
     Idx,
 }
-
-/*#[derive(Debug, Clone, Copy)]
-pub(crate) struct IRVar {
-    pub(crate) dtype: IRDType,
-    pub(crate) read_only: bool,
-    pub(crate) len: usize,
-    // TODO perhaps add offset when we do custom memory allocators: offset: usize,
-}*/
 
 #[derive(Debug)]
 pub(crate) struct IRKernel {
     // Index of var is it's Id
+    // len, dtype, read_only
     pub(super) addressables: Vec<(usize, IRDType, bool)>,
+    // dtype, read_only
     pub(super) registers: Vec<(IRDType, bool)>,
     pub(super) ops: Vec<IROp>,
 }
 
 impl Kernel {
+    /// Returns IRKernel and global arguments
     pub(super) fn to_ir(
         &self,
         graph: &Graph,
         //hwinfo: &DeviceInfo,
-    ) -> IRKernel {
+    ) -> (IRKernel, Vec<TensorId>) {
         let mut ops = Vec::new();
 
         let mut vars: VarMap = VarMap::new();
@@ -139,14 +124,15 @@ impl Kernel {
         // Get all global args and set them first
         for vop in &self.ops {
             match &vop {
-                &VOp::Load { x, view, .. } => {
+                &VOp::Load { z, x, view } => {
                     let dtype = graph.dtype(*x).into();
                     let _ = vars.add_var(
-                        *x,
+                        *z,
                         view.numel(),
                         Scope::Global,
-                        graph.rc(*x),
+                        graph.rc(*z),
                         dtype,
+                        Some(*x),
                     );
                 }
                 VOp::Store { z, view } => {
@@ -156,6 +142,7 @@ impl Kernel {
                         Scope::Global,
                         graph.rc(*z),
                         graph.dtype(*z).into(),
+                        Some(*z),
                     );
                 }
                 _ => {}
@@ -174,13 +161,14 @@ impl Kernel {
                     let dtype = graph.dtype(*z).into();
                     let at = vars.generate_idx(view, &mut ops);
                     let x = vars.get(*x, Scope::Global);
-                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into());
+                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None);
                     ops.push(IROp::Load {
                         z,
                         x,
                         at,
                         dtype,
                     });
+                    //println!("{at:?}, {vars:?}");
                     vars.remove_var(at);
                 }
                 VOp::Store { z, view } => {
@@ -194,6 +182,7 @@ impl Kernel {
                         at,
                         dtype,
                     });
+                    //println!("{at:?}, {vars:?}");
                     vars.remove_var(at);
                 }
                 VOp::Loop { axis, dimension } => {
@@ -213,6 +202,7 @@ impl Kernel {
                         Scope::Register,
                         graph.rc(*z),
                         graph.dtype(*z).into(),
+                        None,
                     ) else {
                         panic!()
                     };
@@ -259,7 +249,7 @@ impl Kernel {
                     let x_tensor = *x;
                     let dtype = graph.dtype(*z).into();
                     let x = vars.get(*x, Scope::Register);
-                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into());
+                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None);
                     ops.push(IROp::Unary {
                         z,
                         x,
@@ -274,7 +264,7 @@ impl Kernel {
                     let dtype = graph.dtype(*z).into();
                     let x = vars.get(*x, Scope::Register);
                     let y = vars.get(*y, Scope::Register);
-                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into());
+                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None);
                     ops.push(IROp::Binary {
                         z,
                         x,
@@ -288,13 +278,21 @@ impl Kernel {
             }
         }
 
-        IRKernel { addressables: vars.addressables, registers: vars.registers.into_iter().map(|(_, dtype, read_only)| (dtype, read_only)).collect(), ops }
+        let mut addressables = Vec::new();
+        let mut args = Vec::new();
+        for (len, dtype, read_only, tensor) in vars.addressables.into_iter() {
+            addressables.push((len, dtype, read_only));
+            args.push(tensor.unwrap());
+        }
+
+        (IRKernel { addressables, registers: vars.registers.into_iter().map(|(_, dtype, read_only)| (dtype, read_only)).collect(), ops }, args)
     }
 }
 
+#[derive(Debug)]
 struct VarMap {
     // length, dtype, read_only
-    addressables: Vec<(usize, IRDType, bool)>,
+    addressables: Vec<(usize, IRDType, bool, Option<TensorId>)>,
     // Ref count, dtype, read_only
     registers: Vec<(u32, IRDType, bool)>,
     var_map: BTreeMap<(TensorId, Scope), Var>,
@@ -337,11 +335,11 @@ impl VarMap {
         return var;
     }
 
-    fn add_var(&mut self, x: TensorId, len: usize, scope: Scope, rc: u32, dtype: IRDType) -> Var {
+    fn add_var(&mut self, x: TensorId, len: usize, scope: Scope, rc: u32, dtype: IRDType, tensor: Option<TensorId>) -> Var {
         /*if let Some(var) = self.var_map.get(&x) {
             return *var;
         }*/
-        let id = self.get_empty_id(rc, len, dtype, scope);
+        let id = self.get_empty_id(rc, len, dtype, scope, tensor);
         let var = Var::Id(id as u8, scope);
         self.var_map.insert((x, scope), var);
         return var;
@@ -351,7 +349,7 @@ impl VarMap {
         match view {
             View::None => Var::Const(Constant::I64(0)),
             View::Strided(dims) => {
-                let z = self.add_index();
+                let z = self.get_empty_id(1, 0, IRDType::Idx, Scope::Register, None) as u8;
                 ops.push(IROp::Set {
                     z,
                     len: 0,
@@ -377,7 +375,7 @@ impl VarMap {
     }
 
     fn add_axis(&mut self, axis: Axis) -> u8 {
-        let id = self.get_empty_id(1, 0, IRDType::Idx, Scope::Register) as u8;
+        let id = self.get_empty_id(1, 0, IRDType::Idx, Scope::Register, None) as u8;
         let var = Var::Id(id, Scope::Register);
         self.axis_map.insert(axis, var);
         return id;
@@ -406,17 +404,13 @@ impl VarMap {
         }
     }
 
-    fn add_index(&mut self) -> u8 {
-        self.get_empty_id(1, 0, IRDType::Idx, Scope::Register) as u8
-    }
-
-    fn get_empty_id(&mut self, rc: u32, len: usize, dtype: IRDType, scope: Scope) -> usize {
+    fn get_empty_id(&mut self, rc: u32, len: usize, dtype: IRDType, scope: Scope, tensor: Option<TensorId>) -> usize {
         // This finds variable with the same dtype, however
         // we often can use registers that can hold variables of different dtypes,
         // so the dtype equality check will be disabled for some devices.
         match scope {
             Scope::Global | Scope::Local => {
-                self.addressables.push((len, dtype, false));
+                self.addressables.push((len, dtype, false, tensor));
                 self.addressables.len() - 1
             }
             Scope::Register => {
@@ -425,6 +419,7 @@ impl VarMap {
                     .iter()
                     .position(|(rc, vdtype, _)| *rc == 0 && *vdtype == dtype)
                 {
+                    self.registers[id] = (rc, dtype, false);
                     id
                 } else {
                     if self.registers.len() == 255 {
@@ -467,5 +462,15 @@ impl Display for Var {
             Var::Id(id, scope) => f.write_fmt(format_args!("{scope}{id}")),
             Var::Const(value) => f.write_fmt(format_args!("{}", value.to_string())),
         }
+    }
+}
+
+impl Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Global => "g",
+            Self::Local => "l",
+            Self::Register => "r",
+        })
     }
 }

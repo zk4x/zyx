@@ -1,4 +1,5 @@
 use crate::dtype::{Constant, DType};
+use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
@@ -30,6 +31,7 @@ mod ir;
 mod view;
 
 type DeviceId = usize;
+type MemoryPoolId = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BufferId {
@@ -39,7 +41,7 @@ struct BufferId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ProgramId {
-    device_id: usize,
+    device_id: DeviceId,
     program_id: usize,
 }
 
@@ -47,14 +49,17 @@ struct ProgramId {
 enum Device {
     OpenCL {
         device: OpenCLDevice,
-        programs: Vec<OpenCLProgram>,
+        memory_pool_id: MemoryPoolId,
+        // Program and tensors passed as arguments
+        // for the program
+        programs: Vec<(OpenCLProgram, Vec<(TensorId, View)>)>,
     }
 }
 
 enum MemoryPool {
     OpenCL {
         memory_pool: OpenCLMemoryPool,
-        buffers: Vec<OpenCLBuffer>
+        buffers: IndexMap<OpenCLBuffer>
     },
 }
 
@@ -146,8 +151,7 @@ impl Runtime {
                 let buffer_id = if let Some((memory_pool_id, mp)) = self.memory_pools.iter_mut().enumerate().find(|(_, mp)| mp.free_bytes() > bytes) {
                     match mp {
                         MemoryPool::OpenCL { memory_pool, buffers } => {
-                            buffers.push(opencl.allocate_memory(bytes, memory_pool)?);
-                            let buffer_id = buffers.len() - 1;
+                            let buffer_id = buffers.push(opencl.allocate_memory(bytes, memory_pool)?);
                             let ptr: *const u8 = data.as_ptr().cast();
                             opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, &mut buffers[buffer_id])?;
                             BufferId { memory_pool_id, buffer_id }
@@ -403,8 +407,9 @@ impl Runtime {
 
         if let Ok((opencl, memory_pools, devices)) = OpenCLBackend::new() {
             self.opencl = Some(opencl);
-            self.memory_pools.extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL { memory_pool: m, buffers: Vec::new() }));
-            self.devices.extend(devices.into_iter().map(|d| Device::OpenCL { device: d, programs: Vec::new() }));
+            let n = self.memory_pools.len();
+            self.memory_pools.extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL { memory_pool: m, buffers: IndexMap::new() }));
+            self.devices.extend(devices.into_iter().map(|device| Device::OpenCL { memory_pool_id: device.memory_pool_id() + n, device, programs: Vec::new() }));
         }
 
         if self.opencl.is_none()
@@ -453,16 +458,12 @@ impl Runtime {
         {
             self.initialize_backends(DeviceParameters {})?;
         }
-        // TODO
-        // create graph
         let graph = self.graph.realize_graph(&tensors, |x| self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x));
-        // compile graph (if needed)
         if !self.compiled_graphs.contains_key(&graph) {
             let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
-            self.compiled_graphs.insert(graph, compiled_graph);
+            self.compiled_graphs.insert(graph.clone(), compiled_graph);
         }
-        // launch graph
-        //self.compiled_graphs[&graph].launch();
+        self.launch_graph(&graph)?;
         return Ok(());
     }
 
@@ -789,5 +790,13 @@ pub enum ZyxError {
 impl From<OpenCLError> for ZyxError {
     fn from(value: OpenCLError) -> Self {
         ZyxError::OpenCLError(value)
+    }
+}
+
+impl Device {
+    fn compute(&self) -> usize {
+        match self {
+            Device::OpenCL { device, memory_pool_id: _, programs: _ } => device.compute(),
+        }
     }
 }
