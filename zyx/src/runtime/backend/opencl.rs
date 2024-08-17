@@ -422,11 +422,19 @@ impl OpenCLBackend {
                         BOp::Div => format!("{x} / {y}"),
                         BOp::Pow => format!("pow({x}, {y})"),
                         BOp::Cmplt => format!("{x} < {y}"),
+                        BOp::Cmpgt => format!("{x} > {y}"),
                         BOp::Max => format!("max({x}, {y})"),
+                        BOp::Or => format!("{x} || {y}"),
                     });
                 }
                 IROp::MAdd { z, a, b, c, dtype: _ } => {
                     source += &format!("{indent}{z} = {a} * {b} + {c};\n");
+                }
+                IROp::AMAdd { z, a, b, c, d, dtype } => {
+                    source += &format!("{indent}{z} = ({a} + {b}) * {c} + {d};\n");
+                }
+                IROp::SMAdd { z, a, b, c, d, dtype } => {
+                    source += &format!("{indent}{z} = ({a} - {b}) * {c} + {d};\n");
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(

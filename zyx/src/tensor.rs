@@ -207,9 +207,9 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
-        return Tensor::ones(vec![1, n], dtype)
-            .pad_zeros([(0, 0), (0, n as isize)])
-            .reshape([n + 1, n])
+        return Tensor::ones(vec![n, 1], dtype)
+            .pad_zeros([(0, n as isize)])
+            .reshape([n+1, n])
             .get((..-1, ..));
     }
 

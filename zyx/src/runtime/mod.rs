@@ -347,6 +347,7 @@ impl Runtime {
 
     #[must_use]
     pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        println!("Reshaping to {shape:?}");
         if &shape == self.shape(x) {
             self.retain(x);
             return x;
@@ -711,13 +712,16 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
-                    BOp::Cmplt => {
+                    BOp::Cmplt | BOp::Cmpgt => {
                         panic!(
-                            "Compare less than (cmplt, operator <) is not a differentiable operation."
+                            "Comparison is not a differentiable operation."
                         );
                     }
                     BOp::Max => {
                         todo!("Max backward.");
+                    }
+                    BOp::Or => {
+                        todo!("Or backward.");
                     }
                 },
                 Node::Unary { x, uop } => match uop {

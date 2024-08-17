@@ -398,7 +398,7 @@ impl Kernel {
                         }
                     }
                 }
-                VOp::Load { view, .. } | VOp::Store { view, .. } => {
+                VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
                     let n = view.rank();
                     let all_axes: Vec<usize> = if axes.len() < n {
                         axes.iter().copied().chain(axes.len()..n).collect()
@@ -457,18 +457,7 @@ impl Kernel {
                 }
                 // Then change all load and store operations in this
                 // loop in the same way.
-                VOp::Load { view, .. } => {
-                    //println!("Splitting {view:?}");
-                    view.split_axis(axis, dimensions);
-                }
-                VOp::Store { view, .. } => {
-                    // Example of axis split
-                    // shape
-                    //  2, 6,    2
-                    //  2, 3, 2, 2
-                    // strides
-                    // 12, 2,    1
-                    // 12, 4, 2, 1
+                VOp::Load { view, .. } | VOp::Const { view, .. } | VOp::Store { view, .. } => {
                     view.split_axis(axis, dimensions);
                 }
                 _ => {}
@@ -505,7 +494,7 @@ impl Kernel {
                     *num_axes = 1;
                     break;
                 }
-                VOp::Load { view, .. } => {
+                VOp::Load { view, .. } | VOp::Const { view, .. } => {
                     let stride = view.0[axis_id + num_loops - 1].stride;
                     view.0[axis_id].dim = dim_size;
                     view.0[axis_id].stride = stride;
@@ -720,7 +709,7 @@ fn generate_kernels(
                                 *dimension = shape[*axis];
                             }
                         }
-                        VOp::Load { view, .. } => {
+                        VOp::Load { view, .. } | VOp::Const { view, .. } => {
                             // Done expanding marks which loops are behind us,
                             // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
                             for a in expand_axes.difference(&done_expanding) {
@@ -767,9 +756,8 @@ fn generate_kernels(
                     VOp::Loop { .. }
                     | VOp::Unary { .. }
                     | VOp::Binary { .. }
-                    | VOp::Const { .. }
                     | VOp::Noop { .. } => true,
-                    VOp::Load { view, .. } | VOp::Store { view, .. } => view.is_contiguous(),
+                    VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => view.is_contiguous(),
                     VOp::Accumulator { .. } | VOp::Reduce { .. } => false,
                 }) {
                     // Remove old loops
@@ -783,7 +771,7 @@ fn generate_kernels(
                     // Change Reshape loads and stores
                     for op in &mut kernel.ops {
                         match op {
-                            VOp::Load { view, .. } | VOp::Store { view, .. } => {
+                            VOp::Load { view, .. } | VOp::Const { view, .. } | VOp::Store { view, .. } => {
                                 *view = View::new(shape);
                             }
                             _ => {}

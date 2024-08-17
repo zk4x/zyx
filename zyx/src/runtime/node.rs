@@ -8,7 +8,9 @@ pub(crate) enum BOp {
     Div,
     Pow,
     Cmplt,
+    Cmpgt,
     Max,
+    Or,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]

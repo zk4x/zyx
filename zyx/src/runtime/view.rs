@@ -23,7 +23,7 @@ pub(crate) enum View {
 
 #[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub(crate) struct PaddedAxes {
-    axes: Vec<(Vec<Axis>, (isize, isize))>,
+    pub(crate) axes: Vec<(Vec<Axis>, (isize, isize))>,
 }
 
 impl PaddedAxes {
@@ -107,6 +107,7 @@ impl View {
     }
 
     pub(crate) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+        //println!("Padding view with {left_pad}, {right_pad}");
         match self {
             View::None => {}
             View::Strided(dims) => {
