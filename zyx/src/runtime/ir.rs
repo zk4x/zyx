@@ -153,8 +153,13 @@ impl Kernel {
 
         for vop in &self.ops {
             match vop {
-                VOp::Const { z, value } => {
-                    vars.add_const(*z, *value);
+                VOp::Const { z, value, view } => {
+                    if matches!(view, View::Padded(..)) {
+                        //vars.padding_for_const(view, &mut ops);
+                        todo!()
+                    } else {
+                        vars.add_const(*z, *value);
+                    }
                 }
                 VOp::Noop { z, x } => {
                     vars.noop(*z, *x, graph.rc(*z));

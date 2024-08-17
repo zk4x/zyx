@@ -14,8 +14,11 @@ type KernelId = usize;
 // In which order
 pub(super) struct CompiledGraph {
     sched_graph: Vec<SchedulerOp>,
+    #[cfg(feature = "debug_perf")]
     flop: u128,
+    #[cfg(feature = "debug_perf")]
     bytes_read: u128,
+    #[cfg(feature = "debug_perf")]
     bytes_written: u128,
 }
 
@@ -164,12 +167,20 @@ impl Runtime {
             }
         }
 
-        Ok(CompiledGraph {
+        #[cfg(feature = "debug_perf")]
+        return Ok(CompiledGraph {
             sched_graph,
             flop,
             bytes_read,
             bytes_written,
-        })
+        });
+        #[cfg(not(feature = "debug_perf"))]
+        {
+            let (_, _, _) = (flop, bytes_read, bytes_written);
+            return Ok(CompiledGraph {
+                sched_graph,
+            });
+        }
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
@@ -202,7 +213,13 @@ impl Runtime {
                         self.tensor_buffer_map.insert((*tensor_id, view.clone()), BufferId { memory_pool_id: *memory_pool_id, buffer_id });
                     }
                 }
-                SchedulerOp::Deallocate { tensor_id, memory_pool_id: memory_pool, bytes, view } => todo!(),
+                SchedulerOp::Deallocate { tensor_id, memory_pool_id, bytes, view } => match &mut self.memory_pools[*memory_pool_id] {
+                    MemoryPool::OpenCL { memory_pool, buffers } => {
+                        let _ = bytes;
+                        let BufferId { memory_pool_id: _, buffer_id } = self.tensor_buffer_map.remove(&(*tensor_id, view.clone())).unwrap();
+                        self.opencl.as_mut().unwrap().deallocate_memory(memory_pool, buffers.remove(buffer_id).unwrap())?;
+                    }
+                }
             }
         }
         #[cfg(feature = "debug_perf")]
@@ -278,6 +295,7 @@ pub(super) enum VOp {
     Const {
         z: TensorId,
         value: Constant,
+        view: View,
     },
     Load {
         z: TensorId,
@@ -637,6 +655,7 @@ fn generate_kernels(
                 let const_op = VOp::Const {
                     z: nid,
                     value: *value,
+                    view: View::new(&[1]),
                 };
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.shape == [1]) {
                     kernel.ops.push(const_op);
@@ -839,7 +858,7 @@ fn generate_kernels(
                                 }
                             }
                         }
-                        VOp::Load { view, .. } => {
+                        VOp::Load { view, .. } | VOp::Const { view, .. } => {
                             let n = view.rank();
                             let mut a = n;
                             for (lp, rp) in &padding[shape.len() - n..] {
@@ -1122,7 +1141,7 @@ impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
-            VOp::Const { z, value } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}")),
+            VOp::Const { z, value, view } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}")),
             VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}")),
             VOp::Store { z, view: _ } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}")),
             VOp::Loop { axis, dimension } => f.write_fmt(format_args!("{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}")),

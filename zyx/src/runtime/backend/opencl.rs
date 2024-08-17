@@ -242,7 +242,7 @@ impl OpenCLBackend {
         Ok(OpenCLBuffer { ptr, byte_size })
     }
 
-    pub(crate) fn deallocate_memory(&mut self, memory_pool: &mut OpenCLMemoryPool, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
+    pub(crate) fn deallocate_memory(&mut self, memory_pool: &mut OpenCLMemoryPool, buffer: &mut OpenCLBuffer) -> Result<(), OpenCLError> {
         let status = unsafe { clReleaseMemObject(buffer.ptr) };
         check(status, "Unable to free allocated memory")?;
         memory_pool.free_bytes += buffer.byte_size;
