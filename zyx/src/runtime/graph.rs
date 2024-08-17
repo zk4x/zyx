@@ -169,7 +169,7 @@ impl Graph {
     pub(super) fn execution_order(
         &mut self,
         to_eval: &BTreeSet<TensorId>,
-    ) -> (Vec<TensorId>, usize, usize, usize) {
+    ) -> (Vec<TensorId>, u128, u128, u128) {
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         while let Some(nid) = params.pop() {
@@ -270,7 +270,7 @@ impl Graph {
             bytes_written +=
                 self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
         }
-        return (order, flop, bytes_read, bytes_written);
+        return (order, flop as u128, bytes_read as u128, bytes_written as u128);
     }
 
     // Swap movement and unary op

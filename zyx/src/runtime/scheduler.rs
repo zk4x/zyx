@@ -14,9 +14,9 @@ type KernelId = usize;
 // In which order
 pub(super) struct CompiledGraph {
     sched_graph: Vec<SchedulerOp>,
-    flop: usize,
-    bytes_read: usize,
-    bytes_written: usize,
+    flop: u128,
+    bytes_read: u128,
+    bytes_written: u128,
 }
 
 // TODO this function could take &mut Runtime
@@ -174,8 +174,10 @@ impl Runtime {
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
         let mut events = BTreeMap::new();
-        let start = std::time::Instant::now();
-        for sched_op in &self.compiled_graphs[graph].sched_graph {
+        let compiled_graph = &self.compiled_graphs[graph];
+        #[cfg(feature = "debug_perf")]
+        let begin = std::time::Instant::now();
+        for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
                     Device::OpenCL { device: _, memory_pool_id, programs } => {
@@ -203,7 +205,42 @@ impl Runtime {
                 SchedulerOp::Deallocate { tensor_id, memory_pool_id: memory_pool, bytes, view } => todo!(),
             }
         }
-        let duration = start.elapsed();
+        #[cfg(feature = "debug_perf")]
+        {
+            let duration = begin.elapsed();
+            let nanos = duration.as_nanos();
+
+            fn value_unit(x: u128) -> (u128, &'static str) {
+                match x {
+                    0..1000 => (x, ""),
+                    1000..1000000 => (x / 1000, "k"),
+                    1000_000..1000000000 => (x / 1000_000, "M"),
+                    1000_000_000..1000_000_000_000 => (x / 1000_000_000, "G"),
+                    1000_000_000_000..1000_000_000_000_000 => (x / 1000_000_000_000, "T"),
+                    1000_000_000_000_000..1000_000_000_000_000_000 => {
+                        (x / 1000_000_000_000_000, "P")
+                    }
+                    1000_000_000_000_000_000.. => (x / 1000_000_000_000_000_000, "E"),
+                }
+            }
+
+            let (f, f_u) = value_unit(compiled_graph.flop);
+            let (br, br_u) = value_unit(compiled_graph.bytes_read);
+            let (bw, bw_u) = value_unit(compiled_graph.bytes_written);
+            let (t_d, t_u) = match nanos {
+                0..1000 => (1, "ns"),
+                1000..1000_000 => (1000, "μs"),
+                1000_000..1000_000_000 => (1000_000, "ms"),
+                1000_000_000..1000_000_000_000 => (1000_000_000, "s"),
+                1000_000_000_000.. => (60_000_000_000, "min"),
+            };
+
+            let (fs, f_us) = value_unit(compiled_graph.flop * 1000_000_000 / nanos);
+            let (brs, br_us) = value_unit(compiled_graph.bytes_read * 1000_000_000 / nanos);
+            let (bws, bw_us) = value_unit(compiled_graph.bytes_written * 1000_000_000 / nanos);
+
+            println!("Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.", nanos/t_d);
+        }
         Ok(())
     }
 }
