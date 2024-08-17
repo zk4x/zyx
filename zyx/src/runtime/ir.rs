@@ -109,6 +109,8 @@ pub(crate) struct IRKernel {
     pub(super) ops: Vec<IROp>,
 }
 
+// TODO do not use rcs from graph, because we only care about rcs in single kernel,
+// but graph contains rcs across multiple kernels
 impl Kernel {
     /// Returns IRKernel and global arguments
     pub(super) fn to_ir(
@@ -307,8 +309,9 @@ impl VarMap {
     fn noop(&mut self, z: TensorId, x: TensorId, z_rc: u32) {
         let var = self.var_map[&(x, Scope::Register)];
         self.var_map.insert((z, Scope::Register), var);
-        let Var::Id(id, _) = var else { panic!() };
-        self.registers[id as usize].0 += z_rc - 1;
+        if let Var::Id(id, _) = var {
+            self.registers[id as usize].0 += z_rc - 1;
+        }
     }
 
     fn get(&self, tensor_id: TensorId, scope: Scope) -> Var {

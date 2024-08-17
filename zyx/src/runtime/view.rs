@@ -98,7 +98,8 @@ impl View {
                 *dims = axes.iter().map(|axis| dims[*axis]).collect();
                 for (a, dim) in dims.iter_mut().enumerate() {
                     dim.axis = a;
-                    // TODO permute padded dimensions
+                    // If axes within single padding group are permuted, there is no change
+                    // If axes within different groups are flipped, then what?
                     todo!()
                 }
             }
@@ -258,7 +259,7 @@ impl View {
     }
 }
 
-use std::{fmt::Display, format as f};
+/*use std::{fmt::Display, format as f};
 
 pub(crate) enum Scope {
     Global,
@@ -274,9 +275,9 @@ impl Display for Scope {
             Scope::Register => "r",
         })
     }
-}
+}*/
 
-impl View {
+/*impl View {
     pub(crate) fn to_str(&self, id: u64, scope: Scope, _temp_id: u8) -> (Vec<String>, String) {
         match self {
             View::None => return (Vec::new(), f!("{}{}", scope, id)),
@@ -366,4 +367,4 @@ impl View {
               }*/
         }
     }
-}
+}*/

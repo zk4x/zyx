@@ -372,12 +372,16 @@ impl Runtime {
     #[must_use]
     pub(crate) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
         let mut shape: Vec<usize> = self.shape(x).into();
+        //println!("Self shape: {shape:?}, padding: {padding:?}");
         let mut i = 0;
         for d in shape.iter_mut().rev() {
             *d = (*d as isize + padding[i].0 + padding[i].1) as usize;
             i += 1;
+            if i >= padding.len() {
+                break
+            }
         }
-
+        //println!("Result {shape:?}");
         return self.graph.push(Node::Pad { x, padding, shape });
     }
 
