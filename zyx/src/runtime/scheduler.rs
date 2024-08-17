@@ -5,13 +5,18 @@ use crate::{
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
-use std::{collections::{BTreeMap, BTreeSet}, fmt::Display};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{BufferId, Device, MemoryPool, MemoryPoolId, ProgramId};
+
+type KernelId = usize;
 
 // In which order
 pub(super) struct CompiledGraph {
     sched_graph: Vec<SchedulerOp>,
+    flop: usize,
+    bytes_read: usize,
+    bytes_written: usize,
 }
 
 // TODO this function could take &mut Runtime
@@ -142,7 +147,7 @@ impl Runtime {
         #[cfg(feature = "debug_sched")]
         for sched_op in &sched_graph {
             match sched_op {
-                SchedulerOp::Launch(program_id) => println!("Launch kernel {:?}", self.devices[program_id.device_id]),
+                SchedulerOp::Launch(program_id) => println!("Launch kernel {}", self.devices[program_id.device_id]),
                 SchedulerOp::Finish(program_id) => println!("Finish kernel {program_id:?}"),
                 SchedulerOp::MemCopy {
                     tensor_id: tensor,
@@ -150,22 +155,26 @@ impl Runtime {
                     dst,
                     view,
                 } => println!("Copy tensor {tensor} from {src:?} to {dst:?} with {view:?}"),
-                SchedulerOp::Allocate { tensor_id, bytes, memory_pool_id, view } => {
+                SchedulerOp::Allocate { tensor_id, bytes, memory_pool_id, view: _ } => {
                     println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
                 }
-                SchedulerOp::Deallocate { tensor_id, memory_pool_id, bytes, view } => {
-                    println!("Allocate tensor {tensor_id} on {memory_pool_id:?}")
+                SchedulerOp::Deallocate { tensor_id, memory_pool_id, bytes, view: _ } => {
+                    println!("Deallocate tensor {tensor_id} on {memory_pool_id:?}, {bytes}")
                 }
             }
         }
 
         Ok(CompiledGraph {
             sched_graph,
+            flop,
+            bytes_read,
+            bytes_written,
         })
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
         let mut events = BTreeMap::new();
+        let start = std::time::Instant::now();
         for sched_op in &self.compiled_graphs[graph].sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
@@ -194,11 +203,10 @@ impl Runtime {
                 SchedulerOp::Deallocate { tensor_id, memory_pool_id: memory_pool, bytes, view } => todo!(),
             }
         }
+        let duration = start.elapsed();
         Ok(())
     }
 }
-
-type KernelId = usize;
 
 enum SchedulerOp {
     // Async launch kernel on device
@@ -1073,13 +1081,13 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
 }
 
 #[cfg(feature = "debug_sched")]
-impl Display for VOp {
+impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
             VOp::Const { z, value } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}")),
             VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}")),
-            VOp::Store { z, view } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}")),
+            VOp::Store { z, view: _ } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}")),
             VOp::Loop { axis, dimension } => f.write_fmt(format_args!("{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}")),
             VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!("{color_blue}Accum{color_reset}.{rop:?}   {z} {:?}", view.shape())),
             VOp::Reduce { z, x, num_axes, rop } => f.write_fmt(format_args!("{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}")),

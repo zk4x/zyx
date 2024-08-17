@@ -3,9 +3,12 @@ use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::opencl::{OpenCLBackend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram};
+use backend::opencl::{
+    OpenCLBackend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram,
+};
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
+use std::fmt::Display;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
@@ -25,9 +28,9 @@ use scheduler::CompiledGraph;
 
 mod backend;
 mod graph;
+mod ir;
 mod node;
 mod scheduler;
-mod ir;
 mod view;
 
 type DeviceId = usize;
@@ -53,13 +56,13 @@ enum Device {
         // Program and tensors passed as arguments
         // for the program
         programs: Vec<(OpenCLProgram, Vec<(TensorId, View)>)>,
-    }
+    },
 }
 
 enum MemoryPool {
     OpenCL {
         memory_pool: OpenCLMemoryPool,
-        buffers: IndexMap<OpenCLBuffer>
+        buffers: IndexMap<OpenCLBuffer>,
     },
 }
 
@@ -128,6 +131,37 @@ impl Runtime {
         return self.graph.dtype(x);
     }
 
+    #[cfg(feature = "rand")]
+    #[must_use]
+    pub(crate) fn uniform<T: Scalar>(
+        &mut self,
+        shape: Vec<Dimension>,
+        start: T,
+        end: T,
+    ) -> Result<TensorId, ZyxError> {
+        use rand::{distributions::Uniform, SeedableRng, Rng};
+        const SEED: u64 = 69420;
+        // Pass in few numbers generated randomly on cpu and then add
+        // some nodes for bitshifts and such.
+        let n: usize = shape.iter().product();
+        match T::dtype() {
+            DType::F32 => {
+                let range = Uniform::new(start.cast::<f32>(), end.cast::<f32>());
+                self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
+                let rng = self.rng.get_mut().unwrap();
+                let data: Vec<f32> = (0..n).map(|_| rng.sample(&range)).collect();
+                self.temp(shape, &data)
+            }
+            DType::F64 => todo!(),
+            DType::U8 => todo!(),
+            DType::I8 => todo!(),
+            DType::I16 => todo!(),
+            DType::I32 => todo!(),
+            DType::I64 => todo!(),
+            DType::Bool => todo!(),
+        }
+    }
+
     pub(crate) fn temp<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,
@@ -148,20 +182,36 @@ impl Runtime {
                 let bytes = data.len() * T::byte_size();
 
                 // Search for first memory pool where we can put this tensor
-                let buffer_id = if let Some((memory_pool_id, mp)) = self.memory_pools.iter_mut().enumerate().find(|(_, mp)| mp.free_bytes() > bytes) {
+                let buffer_id = if let Some((memory_pool_id, mp)) = self
+                    .memory_pools
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, mp)| mp.free_bytes() > bytes)
+                {
                     match mp {
-                        MemoryPool::OpenCL { memory_pool, buffers } => {
-                            let buffer_id = buffers.push(opencl.allocate_memory(bytes, memory_pool)?);
+                        MemoryPool::OpenCL {
+                            memory_pool,
+                            buffers,
+                        } => {
+                            let buffer_id =
+                                buffers.push(opencl.allocate_memory(bytes, memory_pool)?);
                             let ptr: *const u8 = data.as_ptr().cast();
-                            opencl.host_to_opencl(unsafe { std::slice::from_raw_parts(ptr, bytes) }, &mut buffers[buffer_id])?;
-                            BufferId { memory_pool_id, buffer_id }
+                            opencl.host_to_opencl(
+                                unsafe { std::slice::from_raw_parts(ptr, bytes) },
+                                &mut buffers[buffer_id],
+                            )?;
+                            BufferId {
+                                memory_pool_id,
+                                buffer_id,
+                            }
                         }
                     }
                 } else {
-                    return Err(ZyxError::AllocationError)
+                    return Err(ZyxError::AllocationError);
                 };
 
-                self.tensor_buffer_map.insert((id, View::new(self.shape(id))), buffer_id);
+                self.tensor_buffer_map
+                    .insert((id, View::new(self.shape(id))), buffer_id);
             } else {
                 panic!()
             }
@@ -170,6 +220,7 @@ impl Runtime {
     }
 
     // Initialization
+    #[must_use]
     pub(crate) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> TensorId {
         let one = self.graph.push(Node::Const {
             value: Constant::new(value),
@@ -179,6 +230,7 @@ impl Runtime {
         return expanded;
     }
 
+    #[must_use]
     pub(crate) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         return match dtype {
             #[cfg(feature = "half")]
@@ -200,6 +252,7 @@ impl Runtime {
         };
     }
 
+    #[must_use]
     pub(crate) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         return match dtype {
             #[cfg(feature = "half")]
@@ -222,6 +275,7 @@ impl Runtime {
     }
 
     // Unary ops
+    #[must_use]
     pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
         if dtype == self.dtype(x) {
             self.retain(x);
@@ -233,42 +287,52 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn reciprocal(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Inv });
     }
 
+    #[must_use]
     pub(crate) fn neg(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Neg });
     }
 
+    #[must_use]
     pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::ReLU });
     }
 
+    #[must_use]
     pub(crate) fn exp(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Exp });
     }
 
+    #[must_use]
     pub(crate) fn ln(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Ln });
     }
 
+    #[must_use]
     pub(crate) fn sin(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Sin });
     }
 
+    #[must_use]
     pub(crate) fn cos(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Cos });
     }
 
+    #[must_use]
     pub(crate) fn sqrt(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Sqrt });
     }
 
+    #[must_use]
     pub(crate) fn tanh(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Tanh });
     }
 
+    #[must_use]
     pub(crate) fn nonzero(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary {
             x,
@@ -276,10 +340,12 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn not(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Not });
     }
 
+    #[must_use]
     pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         if &shape == self.shape(x) {
             self.retain(x);
@@ -288,6 +354,7 @@ impl Runtime {
         return self.graph.push(Node::Reshape { x, shape });
     }
 
+    #[must_use]
     pub(crate) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         if &shape == self.shape(x) {
             self.retain(x);
@@ -296,11 +363,13 @@ impl Runtime {
         return self.graph.push(Node::Expand { x, shape });
     }
 
+    #[must_use]
     pub(crate) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = permute(self.shape(x), &axes);
         return self.graph.push(Node::Permute { x, axes, shape });
     }
 
+    #[must_use]
     pub(crate) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
         let mut shape: Vec<usize> = self.shape(x).into();
         let mut i = 0;
@@ -312,6 +381,7 @@ impl Runtime {
         return self.graph.push(Node::Pad { x, padding, shape });
     }
 
+    #[must_use]
     pub(crate) fn sum_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
         return self.graph.push(Node::Reduce {
@@ -322,6 +392,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn max_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
         return self.graph.push(Node::Reduce {
@@ -332,6 +403,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -340,6 +412,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -348,6 +421,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -356,6 +430,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -364,6 +439,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -372,6 +448,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -380,6 +457,7 @@ impl Runtime {
         });
     }
 
+    #[must_use]
     pub(crate) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
         return self.graph.push(Node::Binary {
             x,
@@ -408,8 +486,17 @@ impl Runtime {
         if let Ok((opencl, memory_pools, devices)) = OpenCLBackend::new() {
             self.opencl = Some(opencl);
             let n = self.memory_pools.len();
-            self.memory_pools.extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL { memory_pool: m, buffers: IndexMap::new() }));
-            self.devices.extend(devices.into_iter().map(|device| Device::OpenCL { memory_pool_id: device.memory_pool_id() + n, device, programs: Vec::new() }));
+            self.memory_pools
+                .extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL {
+                    memory_pool: m,
+                    buffers: IndexMap::new(),
+                }));
+            self.devices
+                .extend(devices.into_iter().map(|device| Device::OpenCL {
+                    memory_pool_id: device.memory_pool_id() + n,
+                    device,
+                    programs: Vec::new(),
+                }));
         }
 
         if self.opencl.is_none()
@@ -429,16 +516,24 @@ impl Runtime {
         // the rest of the tensor in other devices
         let n: usize = self.shape(x).iter().product();
         let mut data: Vec<T> = Vec::with_capacity(n);
-        for ((tensor_id, view), buffer_id)  in &self.tensor_buffer_map {
+        for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
-                    let slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n*T::byte_size()) };
+                    let slice = unsafe {
+                        std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n * T::byte_size())
+                    };
                     match &self.memory_pools[buffer_id.memory_pool_id] {
-                        MemoryPool::OpenCL { memory_pool: _, buffers } => {
-                            self.opencl.as_mut().unwrap().opencl_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                        MemoryPool::OpenCL {
+                            memory_pool: _,
+                            buffers,
+                        } => {
+                            self.opencl
+                                .as_mut()
+                                .unwrap()
+                                .opencl_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
                     }
-                    break
+                    break;
                 } else {
                     todo!()
                 }
@@ -458,7 +553,9 @@ impl Runtime {
         {
             self.initialize_backends(DeviceParameters {})?;
         }
-        let graph = self.graph.realize_graph(&tensors, |x| self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x));
+        let graph = self.graph.realize_graph(&tensors, |x| {
+            self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
+        });
         if !self.compiled_graphs.contains_key(&graph) {
             let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
             self.compiled_graphs.insert(graph.clone(), compiled_graph);
@@ -760,7 +857,10 @@ impl Runtime {
 impl MemoryPool {
     fn free_bytes(&self) -> usize {
         match self {
-            MemoryPool::OpenCL { memory_pool, buffers: _ } => memory_pool.free_bytes(),
+            MemoryPool::OpenCL {
+                memory_pool,
+                buffers: _,
+            } => memory_pool.free_bytes(),
         }
     }
 }
@@ -796,7 +896,25 @@ impl From<OpenCLError> for ZyxError {
 impl Device {
     fn compute(&self) -> usize {
         match self {
-            Device::OpenCL { device, memory_pool_id: _, programs: _ } => device.compute(),
+            Device::OpenCL {
+                device,
+                memory_pool_id: _,
+                programs: _,
+            } => device.compute(),
+        }
+    }
+}
+
+impl Display for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Device::OpenCL {
+                device: _,
+                memory_pool_id,
+                programs: _,
+            } => f.write_fmt(format_args!(
+                "Device {{ memory_pool_id: {memory_pool_id} }})"
+            )),
         }
     }
 }

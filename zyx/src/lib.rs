@@ -14,16 +14,8 @@ pub use dtype::DType;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
-//pub use runtime::ZyxError;
-//pub use shape::IntoAxes;
 
-#[cfg(feature = "rand")]
-const SEED: u64 = 69420;
-
-//#[cfg(not(feature = "std"))]
 static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
-//#[cfg(feature = "std")]
-//static RT: std::sync::Mutex<Runtime> = std::sync::Mutex::new(Runtime::new());
 
 // Load and save test
 #[test]

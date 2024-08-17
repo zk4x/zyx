@@ -1,12 +1,12 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{IntoAxes, IntoPadding, IntoShape};
-use std::collections::{BTreeMap, BTreeSet};
 use core::cmp::Ordering;
 use core::ops::{
     Add, Div, Mul, Neg, Not, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
     RangeToInclusive, Sub,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::ZyxError;
 use crate::RT;
@@ -127,9 +127,16 @@ impl Tensor {
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
         // This can be generated from uniform or just generate on cpu
         // and pass into device whole buffer
-        let _ = shape;
-        let _ = dtype;
-        todo!();
+        match dtype {
+            DType::F32 => Tensor::uniform(shape, 0f32..1f32),
+            DType::F64 => todo!(),
+            DType::U8 => todo!(),
+            DType::I8 => todo!(),
+            DType::I16 => todo!(),
+            DType::I32 => todo!(),
+            DType::I64 => todo!(),
+            DType::Bool => todo!(),
+        }
     }
 
     /// Create tensor sampled from uniform distribution
@@ -151,12 +158,11 @@ impl Tensor {
             Bound::Excluded(value) => *value,
             Bound::Unbounded => T::max_value(),
         };
-        let _ = shape;
-        let _ = start;
-        let _ = end;
-        // Pass in few numbers generated randomly on cpu and then add
-        // some nodes for bitshifts and such.
-        todo!();
+        Tensor {
+            id: RT
+                .lock()
+                .uniform(shape.into_shape().collect(), start, end).unwrap(),
+        }
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
@@ -178,9 +184,7 @@ impl Tensor {
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
         return Tensor {
-            id: RT
-                .lock()
-                .zeros(shape.into_shape().collect(), dtype)
+            id: RT.lock().zeros(shape.into_shape().collect(), dtype),
         };
     }
 
@@ -188,7 +192,7 @@ impl Tensor {
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
         return Tensor {
-            id: RT.lock().ones(shape.into_shape().collect(), dtype)
+            id: RT.lock().ones(shape.into_shape().collect(), dtype),
         };
     }
 
@@ -196,7 +200,7 @@ impl Tensor {
     #[must_use]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
         return Tensor {
-            id: RT.lock().full(shape.into_shape().collect(), value)
+            id: RT.lock().full(shape.into_shape().collect(), value),
         };
     }
 
@@ -1544,7 +1548,9 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        return Tensor { id: RT.lock().temp(vec![1], &[value]).unwrap() };
+        return Tensor {
+            id: RT.lock().temp(vec![1], &[value]).unwrap(),
+        };
     }
 }
 
@@ -1600,9 +1606,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
         return Tensor {
-            id: RT
-                .lock()
-                .temp(vec![D0, D1, D2, D3], data).unwrap(),
+            id: RT.lock().temp(vec![D0, D1, D2, D3], data).unwrap(),
         };
     }
 }

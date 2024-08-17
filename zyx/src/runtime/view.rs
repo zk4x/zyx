@@ -260,7 +260,7 @@ impl View {
 
 use std::{fmt::Display, format as f};
 
-enum Scope {
+pub(crate) enum Scope {
     Global,
     Local,
     Register,
