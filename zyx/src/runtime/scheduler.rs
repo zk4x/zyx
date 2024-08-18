@@ -321,9 +321,10 @@ pub(super) enum VOp {
         num_axes: usize,
         rop: ROp,
     },
-    Noop {
+    Move {
         z: TensorId,
         x: TensorId,
+        mop: MOp,
     },
     Unary {
         z: TensorId,
@@ -730,7 +731,7 @@ fn generate_kernels(
                         _ => {}
                     }
                 }
-                kernel.ops.push(VOp::Noop { z: nid, x: *x });
+                kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Expa });
                 kernel.vars.insert(nid);
                 kernel.shape = shape.clone();
             }
@@ -741,7 +742,7 @@ fn generate_kernels(
                 // TODO but what if it is permute after reduce?
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.permute(&axes);
-                kernel.ops.push(VOp::Noop { z: nid, x: *x });
+                kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Perm });
                 kernel.vars.insert(nid);
             }
             Node::Reshape { x, shape } => {
@@ -759,7 +760,7 @@ fn generate_kernels(
                     VOp::Loop { .. }
                     | VOp::Unary { .. }
                     | VOp::Binary { .. }
-                    | VOp::Noop { .. } => true,
+                    | VOp::Move { .. } => true,
                     VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => view.is_contiguous(),
                     VOp::Accumulator { .. } | VOp::Reduce { .. } => false,
                 }) {
@@ -781,7 +782,7 @@ fn generate_kernels(
                         }
                     }
                     kernel.shape = shape.clone();
-                    kernel.ops.push(VOp::Noop { z: nid, x: *x });
+                    kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Resh });
                     kernel.vars.insert(nid);
                 } else {
                     let mut split_possible = true;
@@ -806,7 +807,7 @@ fn generate_kernels(
                     }
 
                     // TODO remove this line
-                    split_possible = false;
+                    //split_possible = false;
                     if split_possible {
                         // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
                         let mut dimensions = Vec::new();
@@ -814,7 +815,7 @@ fn generate_kernels(
                         let mut i = prev_shape.len() - 1;
                         for d in shape.iter().rev() {
                             dim *= d;
-                            println!("d: {d}, dim: {dim}, i: {i}, dims: {dimensions:?}");
+                            //println!("d: {d}, dim: {dim}, i: {i}, dims: {dimensions:?}");
                             if dim > prev_shape[i] {
                                 let mut op_id = 0;
                                 for (id, vop) in kernel.ops.iter().enumerate().rev() {
@@ -844,17 +845,17 @@ fn generate_kernels(
                         kernel.split_axis(op_id, &dimensions);
 
                         kernel.shape = shape.clone();
-                        kernel.ops.push(VOp::Noop { z: nid, x: *x });
+                        kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Resh });
                         kernel.vars.insert(nid);
 
-                        #[cfg(feature = "debug_sched")]
+                        /*#[cfg(feature = "debug_sched")]
                         {
                             println!();
                             for op in &kernel.ops {
                                 println!("{op}");
                             }
                             println!();
-                        }
+                        }*/
 
                     } else {
                         // else create new kernel after storing results of previous kernel
@@ -931,7 +932,7 @@ fn generate_kernels(
                     }
                 }
                 kernel.shape = shape.clone();
-                kernel.ops.push(VOp::Noop { z: nid, x: *x });
+                kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Padd });
                 kernel.vars.insert(nid);
             }
             Node::Reduce {
@@ -1202,15 +1203,23 @@ impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
-            VOp::Const { z, value, view } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}, view: {view}")),
-            VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}, view: {view}")),
-            VOp::Store { z, view } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}, view: {view}")),
+            VOp::Const { z, value, view } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}, {view}")),
+            VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}, {view}")),
+            VOp::Store { z, view } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}, {view}")),
             VOp::Loop { axis, dimension } => f.write_fmt(format_args!("{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}")),
-            VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!("{color_blue}Accum{color_reset}.{rop:?}   {z} {:?}", view.shape())),
+            VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!("{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}", view.shape())),
             VOp::Reduce { z, x, num_axes, rop } => f.write_fmt(format_args!("{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}")),
-            VOp::Noop { z, x } => f.write_fmt(format_args!("{color_white}Noop{color_reset}        {z} <- {x}")),
+            VOp::Move { z, x, mop } => f.write_fmt(format_args!("{color_white}Move{color_reset}.{mop:?}   {z} <- {x}")),
             VOp::Unary { z, x, uop } => f.write_fmt(format_args!("{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}", core::iter::repeat(" ").take(5-format!("{uop:?}").len()).collect::<String>())),
             VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!("{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}")),
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MOp {
+    Expa,
+    Perm,
+    Resh,
+    Padd,
 }

@@ -179,7 +179,7 @@ impl Kernel {
                     };
                     vars.var_map.insert((*z, Scope::Register), var);
                 }
-                VOp::Noop { z, x } => {
+                VOp::Move { z, x, .. } => {
                     vars.noop(*z, *x, graph.rc(*z));
                 }
                 VOp::Load { z, x, view } => {
