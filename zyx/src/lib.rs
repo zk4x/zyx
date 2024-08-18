@@ -126,3 +126,13 @@ fn t10() {
     let x = Tensor::eye(8, DType::I32);
     println!("{x}");
 }
+
+#[test]
+fn t11() {
+    let x = Tensor::from([[2, 3, 1], [3, 4, 1]]);
+    let y = Tensor::from([[2, 3], [2, 1], [4, 1]]);
+    //let x = x.dot(y);
+    let x = x.reshape([2, 1, 3]) * y.transpose().reshape([1, 2, 3]);
+    let x = x.sum(2);
+    println!("{x}");
+}

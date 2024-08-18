@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use crate::shape::{Axis, Dimension};
 
 pub(crate) type Stride = usize;
@@ -369,3 +371,13 @@ impl Display for Scope {
         }
     }
 }*/
+
+impl Display for View {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            View::None => f.write_str("View::None"),
+            View::Strided(dims) => f.write_fmt(format_args!("View::Strided shape: {:?}, strides: {:?}", dims.iter().map(|d| d.dim).collect::<Vec<Dimension>>(), dims.iter().map(|d| d.stride).collect::<Vec<Stride>>())),
+            View::Padded(_, _) => todo!(),
+        }
+    }
+}

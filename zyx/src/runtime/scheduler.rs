@@ -441,22 +441,25 @@ impl Kernel {
             self.shape.insert(axis, *dim);
         }
         // Update loops, loads and stores
+        let mut reduce_end = false;
         for i in id + 1..self.ops.len() {
             match &mut self.ops[i] {
                 // Then change axis ids for all following loops
                 VOp::Loop { axis, .. } => {
+                    if reduce_end {
+                        break
+                    }
                     *axis += dimensions.len() - 1;
                     num_loops += 1;
                 }
-                VOp::Reduce { .. } => {
-                    num_loops -= 1;
+                VOp::Reduce { num_axes, .. } => {
                     if num_loops == 0 {
-                        break;
+                        *num_axes += dimensions.len() - 1;
+                        reduce_end = true;
                     }
-                    // TODO num_axes changes?
+                    num_loops -= *num_axes;
                 }
-                // Then change all load and store operations in this
-                // loop in the same way.
+                // Then change all load and store operations in this loop in the same way.
                 VOp::Load { view, .. } | VOp::Const { view, .. } | VOp::Store { view, .. } => {
                     view.split_axis(axis, dimensions);
                 }
@@ -638,7 +641,7 @@ fn generate_kernels(
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //println!("ID({nid})x{}: {node:?}", graph.rc(nid));
+        println!("ID({nid})x{}: {node:?}", graph.rc(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {
@@ -781,25 +784,95 @@ fn generate_kernels(
                     kernel.ops.push(VOp::Noop { z: nid, x: *x });
                     kernel.vars.insert(nid);
                 } else {
-                    // TODO
-                    // If we can split axes, split axes by replacing one loop with two loops.
-                    // If last axes are unsqueezes with ones, add new loops to the end of the kernel.
+                    let mut split_possible = true;
+                    let prev_shape = graph.shape(*x);
+                    if prev_shape.len() > shape.len() {
+                        split_possible = false;
+                        // TODO perhaps we could merge axes?
+                    } else {
+                        let mut dim = 1;
+                        let mut i = prev_shape.len() - 1;
+                        for d in shape.iter().rev() {
+                            if dim > prev_shape[i] {
+                                split_possible = false;
+                                break;
+                            }
+                            dim *= d;
+                            if dim > prev_shape[i] {
+                                dim = 1;
+                                i -= 1;
+                            }
+                        }
+                    }
 
-                    // else create new kernel after storing results of previous kernel
-                    kernel.store(*x, graph);
-                    let mut ops = shape_to_loops(shape);
-                    ops.push(VOp::Load {
-                        z: nid,
-                        x: *x,
-                        view: View::new(shape),
-                    });
-                    kernels.push(Kernel {
-                        shape: shape.clone(),
-                        inputs: BTreeSet::from([*x]),
-                        outputs: BTreeSet::new(),
-                        vars: BTreeSet::from([nid]),
-                        ops,
-                    });
+                    // TODO remove this line
+                    split_possible = false;
+                    if split_possible {
+                        // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
+                        let mut dimensions = Vec::new();
+                        let mut dim = 1;
+                        let mut i = prev_shape.len() - 1;
+                        for d in shape.iter().rev() {
+                            dim *= d;
+                            println!("d: {d}, dim: {dim}, i: {i}, dims: {dimensions:?}");
+                            if dim > prev_shape[i] {
+                                let mut op_id = 0;
+                                for (id, vop) in kernel.ops.iter().enumerate().rev() {
+                                    if let VOp::Loop { axis, dimension } = vop {
+                                        if *axis == i && *dimension == dim {
+                                            op_id = id;
+                                            break;
+                                        }
+                                    }
+                                }
+                                kernel.split_axis(op_id, &dimensions);
+                                dimensions.clear();
+                                dim = *d;
+                                i -= 1;
+                            }
+                            dimensions.insert(0, *d);
+                        }
+                        let mut op_id = 0;
+                        for (id, vop) in kernel.ops.iter().enumerate().rev() {
+                            if let VOp::Loop { axis, dimension } = vop {
+                                if *axis == i && *dimension == dim {
+                                    op_id = id;
+                                    break;
+                                }
+                            }
+                        }
+                        kernel.split_axis(op_id, &dimensions);
+
+                        kernel.shape = shape.clone();
+                        kernel.ops.push(VOp::Noop { z: nid, x: *x });
+                        kernel.vars.insert(nid);
+
+                        #[cfg(feature = "debug_sched")]
+                        {
+                            println!();
+                            for op in &kernel.ops {
+                                println!("{op}");
+                            }
+                            println!();
+                        }
+
+                    } else {
+                        // else create new kernel after storing results of previous kernel
+                        kernel.store(*x, graph);
+                        let mut ops = shape_to_loops(shape);
+                        ops.push(VOp::Load {
+                            z: nid,
+                            x: *x,
+                            view: View::new(shape),
+                        });
+                        kernels.push(Kernel {
+                            shape: shape.clone(),
+                            inputs: BTreeSet::from([*x]),
+                            outputs: BTreeSet::new(),
+                            vars: BTreeSet::from([nid]),
+                            ops,
+                        });
+                    }
                 }
                 //println!("\nKernels {kernels:?}\n");
             }
@@ -910,7 +983,7 @@ fn generate_kernels(
                 );
                 // End loops
                 kernel.ops.push(VOp::Reduce {
-                    num_axes: axes.len(), // Now we are merging them, without merging its axes.len(),
+                    num_axes: axes.len(),
                     rop: *rop,
                     z: nid,
                     x: *x,
@@ -1129,9 +1202,9 @@ impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
-            VOp::Const { z, value, view } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}")),
-            VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}")),
-            VOp::Store { z, view: _ } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}")),
+            VOp::Const { z, value, view } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}, view: {view}")),
+            VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}, view: {view}")),
+            VOp::Store { z, view } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}, view: {view}")),
             VOp::Loop { axis, dimension } => f.write_fmt(format_args!("{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}")),
             VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!("{color_blue}Accum{color_reset}.{rop:?}   {z} {:?}", view.shape())),
             VOp::Reduce { z, x, num_axes, rop } => f.write_fmt(format_args!("{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}")),

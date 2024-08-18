@@ -749,7 +749,9 @@ impl Tensor {
 
     #[must_use]
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Tensor {
-        let y = rhs.into().transpose();
+        let rhs = rhs.into();
+        let org_y_shape = rhs.shape();
+        let y = rhs.transpose();
         let xshape = self.shape();
         let yshape = y.shape();
         let xrank = xshape.rank();
@@ -758,7 +760,7 @@ impl Tensor {
             xshape[xrank - 1],
             yshape[yrank - 1],
             //yshape[-(yrank.min(2) as i64)],
-            "Cannot dot tensors with shapes {xshape:?} and {yshape:?}"
+            "Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}",
         );
         let x_shape = xshape[..xrank - 1]
             .iter()
