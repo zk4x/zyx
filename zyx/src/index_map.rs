@@ -69,8 +69,12 @@ impl<T> IndexMap<T> {
         self.values.iter()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
-        self.values.iter().enumerate()
+    pub(crate) fn iter<'a>(&'a self) -> impl Iterator<Item = (Id, &'a T)> {
+        self.values.iter().enumerate().skip_while(|(x, _)| self.empty.contains(x)).collect::<Vec<(Id, &'a T)>>().into_iter()
+    }
+
+    pub(crate) fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Id, &'a mut T)> {
+        self.values.iter_mut().enumerate().skip_while(|(x, _)| self.empty.contains(x)).collect::<Vec<(Id, &'a mut T)>>().into_iter()
     }
 }
 

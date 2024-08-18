@@ -136,3 +136,15 @@ fn t11() {
     let x = x.sum(2);
     println!("{x}");
 }
+
+#[test]
+fn t12() {
+    let mut x = Tensor::from([2, 3, 1]);
+    let w = Tensor::from([[2, 3, 2], [2, 1, 1], [4, 1, 4]]);
+    let b = Tensor::from([2, 3, 5]);
+    for _ in 0..10 {
+        x = x.dot(&w) + &b;
+        Tensor::realize([&x]);
+    }
+    println!("{x}");
+}
