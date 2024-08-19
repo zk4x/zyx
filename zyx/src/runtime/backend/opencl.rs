@@ -301,6 +301,7 @@ impl OpenCLBackend {
         src: &[u8],
         dst: &OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
+        //println!("Storing {src:?} to {dst:?}");
         let mut event = ptr::null_mut();
         let status = unsafe {
             clEnqueueWriteBuffer(
@@ -331,10 +332,12 @@ impl OpenCLBackend {
         dst: &OpenCLBuffer,
         bytes: usize,
     ) -> Result<(), OpenCLError> {
+        //println!("Moving from {src:?} to {dst:?}");
         // TODO going through host is slow
         let mut data: Vec<u8> = Vec::with_capacity(bytes);
         unsafe { data.set_len(bytes) };
         self.opencl_to_host(src, data.as_mut())?;
+        //println!("Copied data: {data:?}");
         self.host_to_opencl(&data, dst)?;
         Ok(())
     }

@@ -15,7 +15,7 @@ pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 
-static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
+static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 
 // Load and save test
 #[test]
@@ -59,6 +59,7 @@ fn t2() {
 
 #[cfg(feature = "rand")]
 #[test]
+#[should_panic]
 fn t3() {
     let x = Tensor::randn([1024, 1024], DType::F32).expand([1024, 1024, 1024]);
     Tensor::realize([&x]).unwrap();

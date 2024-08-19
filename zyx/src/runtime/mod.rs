@@ -66,9 +66,8 @@ enum Device {
     OpenCL {
         device: OpenCLDevice,
         memory_pool_id: MemoryPoolId,
-        // Program and tensors passed as arguments
-        // for the program
-        programs: Vec<(OpenCLProgram, Vec<(TensorId, View)>)>,
+        // Program and tensors passed as arguments for the program and if arguments are read only
+        programs: Vec<(OpenCLProgram, Vec<(TensorId, View, bool)>)>,
     },
 }
 
@@ -125,15 +124,20 @@ impl Runtime {
 
     pub(crate) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
-        let _ = to_remove;
-        /*for (x, device) in to_remove {
-            match device {
-                Device::CUDA => self.cuda.as_mut().unwrap().remove(x)?,
-                Device::HSA => self.hsa.as_mut().unwrap().remove(x)?,
-                Device::OpenCL => self.opencl.as_mut().unwrap().remove(x)?,
-                Device::CPU => self.x86_64.as_mut().unwrap().remove(x)?,
+        let mut buffers: Vec<BufferId> = Vec::new();
+        for tensor in to_remove {
+            for (_, buffer_id) in self.tensor_buffer_map.iter().filter(|((t, _), _)| *t == tensor) {
+                buffers.push(*buffer_id);
             }
-        }*/
+        }
+        for buffer in buffers {
+            match &mut self.memory_pools[buffer.memory_pool_id] {
+                MemoryPool::OpenCL { memory_pool, buffers } => {
+                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
+                    self.opencl.as_mut().unwrap().deallocate_memory(memory_pool, buffer)?;
+                }
+            }
+        }
         return Ok(());
     }
 

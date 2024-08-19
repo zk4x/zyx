@@ -6,5 +6,5 @@
 - [ ] more tests
 - [ ] local memory caching
 - [ ] bigger accumulators
-- [ ] scheduler cross device movement
+- [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
