@@ -1,0 +1,10 @@
+- [ ] check caching of compiled graphs
+- [ ] deallocation of memory
+- [ ] implement sharding
+- [ ] padded view permute
+- [ ] ptx compiler
+- [ ] more tests
+- [ ] local memory caching
+- [ ] bigger accumulators
+- [ ] scheduler cross device movement
+- [ ] disk memory pool implemented as backend without devices

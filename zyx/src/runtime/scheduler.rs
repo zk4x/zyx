@@ -1,7 +1,11 @@
 use crate::{
     dtype::Constant,
-    runtime::{node::{BOp, Node, ROp, UOp}, backend::DeviceInfo, Runtime, ZyxError},
-    runtime::{graph::Graph, view::View, DeviceId},
+    runtime::{
+        backend::DeviceInfo,
+        node::{BOp, Node, ROp, UOp},
+        Runtime, ZyxError,
+    },
+    runtime::{graph::Graph, view::View},
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
@@ -26,8 +30,7 @@ pub(super) struct CompiledGraph {
 impl Runtime {
     pub(super) fn compile_graph(
         &mut self,
-        #[allow(unused_mut)]
-        mut graph: Graph,
+        #[allow(unused_mut)] mut graph: Graph,
         to_eval: &BTreeSet<TensorId>,
     ) -> Result<CompiledGraph, ZyxError> {
         let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
@@ -41,7 +44,18 @@ impl Runtime {
         let mut finished_programs: BTreeSet<ProgramId> = BTreeSet::new();
         let mut all_programs: BTreeSet<ProgramId> = BTreeSet::new();
         // All leafs are allocated in some memory pool (can be disk)
-        let mut allocated_tensors: BTreeSet<TensorId> = order.iter().filter_map(|t| if let Node::Leaf { .. } = graph[*t] { Some(*t) } else { None }).collect();
+        let mut allocated_tensors: BTreeSet<TensorId> = order
+            .iter()
+            .filter_map(|t| {
+                if let Node::Leaf { .. } = graph[*t] {
+                    Some(*t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // TODO instead of unoccupied device use device occupation and launch up to 5 kernels per device
+        //let mut device_occupation
         let mut unoccupied_devices: BTreeSet<usize> = (0..self.devices.len()).collect();
         let mut program_kernel_map: BTreeMap<ProgramId, usize> = BTreeMap::new();
         let mut kernel_id = 0;
@@ -49,7 +63,9 @@ impl Runtime {
             // check which kernels (if any) must be finished before launchibng the next kernel
             for i in (0..sched_graph.len()).rev() {
                 if let SchedulerOp::Launch(program_id) = sched_graph[i] {
-                    if !kernels[program_kernel_map[&program_id]].outputs.is_disjoint(&kernels[kernel_id].inputs)
+                    if !kernels[program_kernel_map[&program_id]]
+                        .outputs
+                        .is_disjoint(&kernels[kernel_id].inputs)
                         && !finished_programs.contains(&program_id)
                     {
                         sched_graph.push(SchedulerOp::Finish(program_id));
@@ -76,13 +92,19 @@ impl Runtime {
                 None
             };
 
+            // If there are no unoccupied devices, then add some occupied device to unoccupied devices
+
             if let Some((axis, dimension)) = shard {
                 // dimension is size of the sharded dimension
-                let unoccupied_compute: usize =
-                    unoccupied_devices.iter().map(|dev_id| self.devices[*dev_id].compute()).sum();
+                let unoccupied_compute: u128 = unoccupied_devices
+                    .iter()
+                    .map(|dev_id| self.devices[*dev_id].compute())
+                    .sum();
                 let shard_sizes: Vec<Dimension> = unoccupied_devices
                     .iter()
-                    .map(|dev_id| dimension * self.devices[*dev_id].compute() / unoccupied_compute)
+                    .map(|dev_id| {
+                        dimension * (self.devices[*dev_id].compute() / unoccupied_compute) as usize
+                    })
                     .collect();
                 let sharded_kernel_ids: Vec<KernelId> =
                     shard_kernels(&mut kernels, kernel_id, axis, shard_sizes);
@@ -91,18 +113,31 @@ impl Runtime {
                     .zip(unoccupied_devices.iter())
                 {
                     // launch the kernel
-                    sched_graph.push(SchedulerOp::Launch(ProgramId { device_id: *dev, program_id: skid }));
+                    sched_graph.push(SchedulerOp::Launch(ProgramId {
+                        device_id: *dev,
+                        program_id: skid,
+                    }));
                 }
                 unoccupied_devices.clear();
             } else {
                 // Find the fastest out of unoccupied devices
                 let device_id = *unoccupied_devices
                     .iter()
-                    .max_by(|x, y| self.devices[**x].compute().cmp(&self.devices[**y].compute()))
+                    .max_by(|x, y| {
+                        self.devices[**x]
+                            .compute()
+                            .cmp(&self.devices[**y].compute())
+                    })
                     .unwrap();
+                println!("Dev id: {device_id}");
                 // launch the kernel
                 let program_id = match &mut self.devices[device_id] {
-                    Device::OpenCL { device, memory_pool_id, programs } => {
+                    Device::OpenCL {
+                        device,
+                        memory_pool_id,
+                        programs,
+                    } => {
+                        let memory_pool_id = *memory_pool_id;
                         kernels[kernel_id].optimize(device.info());
                         // TODO make more efficient use of global variables by reusing the same allocation
                         // for temporary global variables which are not used through the whole running of the
@@ -116,26 +151,53 @@ impl Runtime {
 
                         // Move inputs to the device
                         for input in &kernels[kernel_id].inputs {
+                            let view = View::new(graph.shape(*input));
                             // move from device to this device if the device is not the same
                             // check on which memory pool it is stored
                             // TODO
+                            let BufferId { memory_pool_id: buf_mpid, buffer_id } = self.tensor_buffer_map[&(*input, view.clone())];
+                            println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
+                            if buf_mpid != memory_pool_id {
+                                let bytes = view.numel() * graph.dtype(*input).byte_size();
+                                sched_graph.push(SchedulerOp::Allocate { tensor_id: *input, memory_pool_id, bytes, view: view.clone() });
+                                sched_graph.push(SchedulerOp::MemCopy { tensor_id: *input, src: BufferId { memory_pool_id: buf_mpid, buffer_id }, dst: memory_pool_id, view: view.clone() });
+                                sched_graph.push(SchedulerOp::Deallocate { tensor_id: *input, memory_pool_id: buf_mpid, bytes, view });
+                            }
                         }
                         // Allocate memory for outputs
                         for output in &kernels[kernel_id].outputs {
                             if !allocated_tensors.contains(output) {
                                 let shape = graph.shape(*output);
-                                sched_graph.push(SchedulerOp::Allocate { tensor_id: *output, memory_pool_id: *memory_pool_id, bytes: shape.iter().product::<usize>() * graph.dtype(*output).byte_size(), view: View::new(shape) });
+                                sched_graph.push(SchedulerOp::Allocate {
+                                    tensor_id: *output,
+                                    memory_pool_id,
+                                    bytes: shape.iter().product::<usize>()
+                                        * graph.dtype(*output).byte_size(),
+                                    view: View::new(shape),
+                                });
                                 allocated_tensors.insert(*output);
                             }
                         }
                         let (ir_kernel, args) = kernels[kernel_id].to_ir(&graph);
-                        let program = self.opencl.as_mut().unwrap().compile_program(&ir_kernel, &device)?;
+                        let program = self
+                            .opencl
+                            .as_mut()
+                            .unwrap()
+                            .compile_program(&ir_kernel, &device)?;
                         // Since it is not sharded, sharding view is contiguous
-                        programs.push((program, args.into_iter().map(|arg| (arg, View::new(graph.shape(arg)))).collect()));
+                        programs.push((
+                            program,
+                            args.into_iter()
+                                .map(|arg| (arg, View::new(graph.shape(arg))))
+                                .collect(),
+                        ));
                         programs.len() - 1
                     }
                 };
-                let program_id = ProgramId { device_id, program_id };
+                let program_id = ProgramId {
+                    device_id,
+                    program_id,
+                };
                 sched_graph.push(SchedulerOp::Launch(program_id));
                 all_programs.insert(program_id);
                 program_kernel_map.insert(program_id, kernel_id);
@@ -150,18 +212,30 @@ impl Runtime {
         #[cfg(feature = "debug_sched")]
         for sched_op in &sched_graph {
             match sched_op {
-                SchedulerOp::Launch(program_id) => println!("Launch kernel {}", self.devices[program_id.device_id]),
+                SchedulerOp::Launch(program_id) => {
+                    println!("Launch kernel {}", self.devices[program_id.device_id])
+                }
                 SchedulerOp::Finish(program_id) => println!("Finish kernel {program_id:?}"),
                 SchedulerOp::MemCopy {
                     tensor_id: tensor,
+                    view,
                     src,
                     dst,
-                    view,
-                } => println!("Copy tensor {tensor} from {src:?} to {dst:?} with {view:?}"),
-                SchedulerOp::Allocate { tensor_id, bytes, memory_pool_id, view: _ } => {
+                } => println!("Copy tensor {tensor} with {view} buffer {src:?} to {dst:?}"),
+                SchedulerOp::Allocate {
+                    tensor_id,
+                    bytes,
+                    memory_pool_id,
+                    view: _,
+                } => {
                     println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
                 }
-                SchedulerOp::Deallocate { tensor_id, memory_pool_id, bytes, view: _ } => {
+                SchedulerOp::Deallocate {
+                    tensor_id,
+                    memory_pool_id,
+                    bytes,
+                    view: _,
+                } => {
                     println!("Deallocate tensor {tensor_id} on {memory_pool_id:?}, {bytes}")
                 }
             }
@@ -177,9 +251,7 @@ impl Runtime {
         #[cfg(not(feature = "debug_perf"))]
         {
             let (_, _, _) = (flop, bytes_read, bytes_written);
-            return Ok(CompiledGraph {
-                sched_graph,
-            });
+            return Ok(CompiledGraph { sched_graph });
         }
     }
 
@@ -191,35 +263,104 @@ impl Runtime {
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
-                    Device::OpenCL { device: _, memory_pool_id, programs } => {
+                    Device::OpenCL {
+                        device: _,
+                        memory_pool_id,
+                        programs,
+                    } => {
                         let (program, args) = &mut programs[program_id.program_id];
-                        let args: Vec<usize> = args.iter().map(|arg| self.tensor_buffer_map[arg].buffer_id).collect();
-                        let MemoryPool::OpenCL { buffers, .. } = &mut self.memory_pools[*memory_pool_id];
-                        events.insert(*program_id, self.opencl.as_mut().unwrap().launch_program(program, buffers, &args)?);
-                    }
-                }
-                SchedulerOp::Finish(program_id) => {
-                    match &self.devices[program_id.device_id] {
-                        Device::OpenCL { .. } => {
-                            self.opencl.as_mut().unwrap().finish_event(events.remove(&program_id).unwrap())?;
-                        },
+                        let args: Vec<usize> = args
+                            .iter()
+                            .map(|arg| self.tensor_buffer_map[arg].buffer_id)
+                            .collect();
+                        let MemoryPool::OpenCL { buffers, .. } =
+                            &mut self.memory_pools[*memory_pool_id];
+                        events.insert(
+                            *program_id,
+                            self.opencl
+                                .as_mut()
+                                .unwrap()
+                                .launch_program(program, buffers, &args)?,
+                        );
                     }
                 },
-                SchedulerOp::MemCopy { tensor_id, src, dst, view } => todo!(),
-                SchedulerOp::Allocate { tensor_id, memory_pool_id, bytes, view } => match &mut self.memory_pools[*memory_pool_id] {
-                    MemoryPool::OpenCL { memory_pool, buffers } => {
-                        let buffer = self.opencl.as_mut().unwrap().allocate_memory(*bytes, memory_pool)?;
+                SchedulerOp::Finish(program_id) => match &self.devices[program_id.device_id] {
+                    Device::OpenCL { .. } => {
+                        self.opencl
+                            .as_mut()
+                            .unwrap()
+                            .finish_event(events.remove(&program_id).unwrap())?;
+                    }
+                },
+                SchedulerOp::MemCopy {
+                    tensor_id,
+                    view,
+                    src,
+                    dst,
+                } => {
+                    let bytes = view.numel() * graph.dtype(*tensor_id).byte_size();
+                    let BufferId { memory_pool_id, buffer_id } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
+                    match &self.memory_pools[memory_pool_id] {
+                        MemoryPool::OpenCL { buffers, .. } => {
+                            match &self.memory_pools[*dst] {
+                                MemoryPool::OpenCL { buffers: dst_buffers, .. } => {
+                                    self.opencl.as_mut().unwrap().opencl_to_opencl(&buffers[src.buffer_id], &dst_buffers[buffer_id], bytes)?;
+                                }
+                            }
+                        },
+                    }
+                }
+                SchedulerOp::Allocate {
+                    tensor_id,
+                    memory_pool_id,
+                    bytes,
+                    view,
+                } => match &mut self.memory_pools[*memory_pool_id] {
+                    MemoryPool::OpenCL {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let buffer = self
+                            .opencl
+                            .as_mut()
+                            .unwrap()
+                            .allocate_memory(*bytes, memory_pool)?;
                         let buffer_id = buffers.push(buffer);
-                        self.tensor_buffer_map.insert((*tensor_id, view.clone()), BufferId { memory_pool_id: *memory_pool_id, buffer_id });
+                        self.tensor_buffer_map.insert(
+                            (*tensor_id, view.clone()),
+                            BufferId {
+                                memory_pool_id: *memory_pool_id,
+                                buffer_id,
+                            },
+                        );
                     }
-                }
-                SchedulerOp::Deallocate { tensor_id, memory_pool_id, bytes, view } => match &mut self.memory_pools[*memory_pool_id] {
-                    MemoryPool::OpenCL { memory_pool, buffers } => {
+                },
+                SchedulerOp::Deallocate {
+                    tensor_id,
+                    memory_pool_id,
+                    bytes,
+                    view,
+                } => match &mut self.memory_pools[*memory_pool_id] {
+                    MemoryPool::OpenCL {
+                        memory_pool,
+                        buffers,
+                    } => {
                         let _ = bytes;
-                        let BufferId { memory_pool_id: _, buffer_id } = self.tensor_buffer_map.remove(&(*tensor_id, view.clone())).unwrap();
-                        self.opencl.as_mut().unwrap().deallocate_memory(memory_pool, buffers.remove(buffer_id).unwrap())?;
+                        let key = &(*tensor_id, view.clone());
+                        if let Some(BufferId {
+                            memory_pool_id: buf_mpid,
+                            ..
+                        }) = self.tensor_buffer_map.get(key) {
+                            if buf_mpid == memory_pool_id {
+                                let BufferId { buffer_id, .. } = self.tensor_buffer_map.remove(key).unwrap();
+                                self.opencl
+                                    .as_mut()
+                                    .unwrap()
+                                    .deallocate_memory(memory_pool, buffers.remove(buffer_id).unwrap())?;
+                            }
+                        }
                     }
-                }
+                },
             }
         }
         #[cfg(feature = "debug_perf")]
@@ -272,9 +413,9 @@ enum SchedulerOp {
     // if found usefull
     MemCopy {
         tensor_id: TensorId,
-        src: DeviceId,
-        dst: DeviceId,
         view: View,
+        src: BufferId,
+        dst: MemoryPoolId,
     },
     Allocate {
         tensor_id: TensorId,
@@ -448,7 +589,7 @@ impl Kernel {
                 // Then change axis ids for all following loops
                 VOp::Loop { axis, .. } => {
                     if reduce_end {
-                        break
+                        break;
                     }
                     *axis += dimensions.len() - 1;
                     num_loops += 1;
@@ -522,7 +663,8 @@ impl Kernel {
         // Shard axis is axis that is not gonna be locally cached,
         // which is usually the batch axis, but it can also be other axes.
         // Since we do not locally cache axis 0, we can for now always just return that
-        Some((0, self.shape[0]))
+        //Some((0, self.shape[0]))
+        None
     }
 
     fn optimize(&mut self, dev_info: &DeviceInfo) {
@@ -578,6 +720,25 @@ impl Kernel {
         self.split_axis(0, &[gws[0], lws[0]]);
         self.split_axis(2, &[gws[1], lws[1]]);
         self.split_axis(4, &[gws[2], lws[2]]);
+
+        // Split for bigger work per thread
+        // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
+        // So that will be 64 work items per thread
+        // Later we can search for best wpt_x and wpt_y
+        //let wpt_x = 8;
+        //let wpt_y = 8;
+
+        //self.split_axis(4, &[gws[2]/wpt_y, wpt_y]);
+        //self.split_axis(2, &[gws[1]/wpt_x, wpt_x]);
+
+        // Permute so that these two wpt loops are after global and local loops
+        //assert_eq!(self.shape.len(), 8);
+        //self.permute(&[0, 1, 2, 4, 5, 3, 6, 7]);
+
+        // All accumulators should now take advantage of wpt_x and wpt_y
+        // So make larger accumulators
+
+        // Add local caching for loads
     }
 }
 
@@ -731,7 +892,11 @@ fn generate_kernels(
                         _ => {}
                     }
                 }
-                kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Expa });
+                kernel.ops.push(VOp::Move {
+                    z: nid,
+                    x: *x,
+                    mop: MOp::Expa,
+                });
                 kernel.vars.insert(nid);
                 kernel.shape = shape.clone();
             }
@@ -742,7 +907,11 @@ fn generate_kernels(
                 // TODO but what if it is permute after reduce?
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.permute(&axes);
-                kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Perm });
+                kernel.ops.push(VOp::Move {
+                    z: nid,
+                    x: *x,
+                    mop: MOp::Perm,
+                });
                 kernel.vars.insert(nid);
             }
             Node::Reshape { x, shape } => {
@@ -761,7 +930,9 @@ fn generate_kernels(
                     | VOp::Unary { .. }
                     | VOp::Binary { .. }
                     | VOp::Move { .. } => true,
-                    VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => view.is_contiguous(),
+                    VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
+                        view.is_contiguous()
+                    }
                     VOp::Accumulator { .. } | VOp::Reduce { .. } => false,
                 }) {
                     // Remove old loops
@@ -775,14 +946,20 @@ fn generate_kernels(
                     // Change Reshape loads and stores
                     for op in &mut kernel.ops {
                         match op {
-                            VOp::Load { view, .. } | VOp::Const { view, .. } | VOp::Store { view, .. } => {
+                            VOp::Load { view, .. }
+                            | VOp::Const { view, .. }
+                            | VOp::Store { view, .. } => {
                                 *view = View::new(shape);
                             }
                             _ => {}
                         }
                     }
                     kernel.shape = shape.clone();
-                    kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Resh });
+                    kernel.ops.push(VOp::Move {
+                        z: nid,
+                        x: *x,
+                        mop: MOp::Resh,
+                    });
                     kernel.vars.insert(nid);
                 } else {
                     let mut split_possible = true;
@@ -806,8 +983,6 @@ fn generate_kernels(
                         }
                     }
 
-                    // TODO remove this line
-                    //split_possible = false;
                     if split_possible {
                         // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
                         let mut dimensions = Vec::new();
@@ -845,7 +1020,11 @@ fn generate_kernels(
                         kernel.split_axis(op_id, &dimensions);
 
                         kernel.shape = shape.clone();
-                        kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Resh });
+                        kernel.ops.push(VOp::Move {
+                            z: nid,
+                            x: *x,
+                            mop: MOp::Resh,
+                        });
                         kernel.vars.insert(nid);
 
                         /*#[cfg(feature = "debug_sched")]
@@ -856,7 +1035,6 @@ fn generate_kernels(
                             }
                             println!();
                         }*/
-
                     } else {
                         // else create new kernel after storing results of previous kernel
                         kernel.store(*x, graph);
@@ -932,7 +1110,11 @@ fn generate_kernels(
                     }
                 }
                 kernel.shape = shape.clone();
-                kernel.ops.push(VOp::Move { z: nid, x: *x, mop: MOp::Padd });
+                kernel.ops.push(VOp::Move {
+                    z: nid,
+                    x: *x,
+                    mop: MOp::Padd,
+                });
                 kernel.vars.insert(nid);
             }
             Node::Reduce {
@@ -1203,21 +1385,48 @@ impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
-            VOp::Const { z, value, view } => f.write_fmt(format_args!("{color_white}Const{color_reset}       {z} <- value: {value}, {view}")),
-            VOp::Load { z, x, view } => f.write_fmt(format_args!("{color_yellow}Load{color_reset}        {z} <- {x}, {view}")),
-            VOp::Store { z, view } => f.write_fmt(format_args!("{color_red}Store{color_reset}       {z}, {view}")),
-            VOp::Loop { axis, dimension } => f.write_fmt(format_args!("{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}")),
-            VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!("{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}", view.shape())),
-            VOp::Reduce { z, x, num_axes, rop } => f.write_fmt(format_args!("{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}")),
-            VOp::Move { z, x, mop } => f.write_fmt(format_args!("{color_white}Move{color_reset}.{mop:?}   {z} <- {x}")),
-            VOp::Unary { z, x, uop } => f.write_fmt(format_args!("{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}", core::iter::repeat(" ").take(5-format!("{uop:?}").len()).collect::<String>())),
-            VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!("{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}")),
+            VOp::Const { z, value, view } => f.write_fmt(format_args!(
+                "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"
+            )),
+            VOp::Load { z, x, view } => f.write_fmt(format_args!(
+                "{color_yellow}Load{color_reset}        {z} <- {x}, {view}"
+            )),
+            VOp::Store { z, view } => f.write_fmt(format_args!(
+                "{color_red}Store{color_reset}       {z}, {view}"
+            )),
+            VOp::Loop { axis, dimension } => f.write_fmt(format_args!(
+                "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"
+            )),
+            VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!(
+                "{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}",
+                view.shape()
+            )),
+            VOp::Reduce {
+                z,
+                x,
+                num_axes,
+                rop,
+            } => f.write_fmt(format_args!(
+                "{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}"
+            )),
+            VOp::Move { z, x, mop } => f.write_fmt(format_args!(
+                "{color_white}Move{color_reset}.{mop:?}   {z} <- {x}"
+            )),
+            VOp::Unary { z, x, uop } => f.write_fmt(format_args!(
+                "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
+                core::iter::repeat(" ")
+                    .take(5 - format!("{uop:?}").len())
+                    .collect::<String>()
+            )),
+            VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!(
+                "{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}"
+            )),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum MOp {
+pub(super) enum MOp {
     Expa,
     Perm,
     Resh,

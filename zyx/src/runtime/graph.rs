@@ -197,7 +197,7 @@ impl Graph {
         }
         order.reverse();
         // Recalculate reference counts
-        for (id, (rc, node)) in self.nodes.iter_mut().filter(|(rc, ..)| *rc == 0) {
+        for (id, (rc, _)) in self.nodes.iter_mut().filter(|(rc, ..)| *rc == 0) {
             *rc = rcs[&id];
         }
         for id in to_eval {

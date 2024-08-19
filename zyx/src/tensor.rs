@@ -8,7 +8,7 @@ use core::ops::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::runtime::ZyxError;
+use crate::runtime::{BackendConfig, ZyxError};
 use crate::RT;
 
 #[cfg(feature = "half")]
@@ -61,6 +61,10 @@ impl Tensor {
         }
     }
 
+    pub fn configure_backends(config: BackendConfig) -> Result<(), ZyxError> {
+        RT.lock().configure_backends(config)
+    }
+
     /// Is zyx in training mode?
     #[must_use]
     pub fn training() -> bool {
@@ -90,10 +94,9 @@ impl Tensor {
     }
 
     /// Immediatelly evaluate passed tensors
-    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) {
+    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         RT.lock()
             .realize(tensors.into_iter().map(|t| t.id).collect())
-            .unwrap();
     }
 
     /// Shape of tensor

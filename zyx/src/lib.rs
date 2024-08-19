@@ -20,7 +20,6 @@ static RT: mutex::Mutex<Runtime, 1000000> = mutex::Mutex::new(Runtime::new());
 // Load and save test
 #[test]
 fn t0() {
-    use std::println;
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -29,7 +28,6 @@ fn t0() {
 // Unary test
 #[test]
 fn t1() {
-    use std::println;
     let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
@@ -37,7 +35,6 @@ fn t1() {
 
 #[test]
 fn t2() {
-    use std::println;
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
     let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
         .expand([2, 3, 2])
@@ -64,7 +61,7 @@ fn t2() {
 #[test]
 fn t3() {
     let x = Tensor::randn([1024, 1024], DType::F32).expand([1024, 1024, 1024]);
-    Tensor::realize([&x]);
+    Tensor::realize([&x]).unwrap();
 }
 
 #[cfg(feature = "rand")]
@@ -74,7 +71,7 @@ fn t4() {
     let y = Tensor::randn([1024, 1024], DType::F32);
     //let z = (x * y).sum(2);
     let z = x.dot(y);
-    Tensor::realize([&z]);
+    Tensor::realize([&z]).unwrap();
 }
 
 #[test]
@@ -83,8 +80,8 @@ fn t5() {
     let y = x.transpose();
     let z = x.exp();
     //Tensor::plot_dot_graph([&y, &z], "graph1");
-    Tensor::realize([&y, &z]);
-    std::println!("{y}\n{z}");
+    Tensor::realize([&y, &z]).unwrap();
+    println!("{y}\n{z}");
 }
 
 #[cfg(feature = "rand")]
@@ -94,7 +91,7 @@ fn t6() {
 
     let x = Tensor::randn([14, 16], DType::U8);
     let x = x.get((.., 8..-2));
-    std::println!("{x}");
+    println!("{x}");
 }
 
 #[test]
@@ -102,7 +99,7 @@ fn t7() {
     let x = Tensor::from([[2, 3], [4, 5]]);
     let x = x.pad_zeros([(4, 3), (1, 2)]);
     //Tensor::plot_dot_graph([], "graph0");
-    std::println!("{x}")
+    println!("{x}")
 }
 
 #[test]
@@ -122,13 +119,13 @@ fn t9() {
 }
 
 #[test]
-fn t10() {
+fn t_10() {
     let x = Tensor::eye(8, DType::I32);
     println!("{x}");
 }
 
 #[test]
-fn t11() {
+fn t_11() {
     let x = Tensor::from([[2, 3, 1], [3, 4, 1]]);
     let y = Tensor::from([[2, 3], [2, 1], [4, 1]]);
     //let x = x.dot(y);
@@ -138,13 +135,13 @@ fn t11() {
 }
 
 #[test]
-fn t12() {
+fn t_12() {
     let mut x = Tensor::from([2, 3, 1]);
     let w = Tensor::from([[2, 3, 2], [2, 1, 1], [4, 1, 4]]);
     let b = Tensor::from([2, 3, 5]);
     for _ in 0..10 {
         x = x.dot(&w) + &b;
-        Tensor::realize([&x]);
+        Tensor::realize([&x]).unwrap();
     }
     println!("{x}");
 }

@@ -3,8 +3,9 @@ use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
+use backend::cuda::CUDABackend;
 use backend::opencl::{
-    OpenCLBackend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram,
+    OpenCLBackend, OpenCLBuffer, OpenCLConfig, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
 };
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
@@ -33,8 +34,20 @@ mod node;
 mod scheduler;
 mod view;
 
-type DeviceId = usize;
+pub struct BackendConfig {
+    opencl: OpenCLConfig,
+}
+
+impl Default for BackendConfig {
+    fn default() -> Self {
+        BackendConfig {
+            opencl: OpenCLConfig { platform_ids: None }
+        }
+    }
+}
+
 type MemoryPoolId = usize;
+type DeviceId = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BufferId {
@@ -76,6 +89,7 @@ pub(crate) struct Runtime {
     pub(crate) training: bool,
     compiled_graphs: BTreeMap<Graph, CompiledGraph>,
     opencl: Option<OpenCLBackend>,
+    cuda: Option<CUDABackend>,
     devices: Vec<Device>,
     memory_pools: Vec<MemoryPool>,
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>, // (MemoryPoolId, BufferId)
@@ -91,10 +105,18 @@ impl Runtime {
             training: false,
             compiled_graphs: BTreeMap::new(),
             opencl: None,
+            cuda: None,
             devices: Vec::new(),
             memory_pools: Vec::new(),
             tensor_buffer_map: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn configure_backends(&mut self, config: BackendConfig) -> Result<(), ZyxError> {
+        if self.opencl.is_some() || self.cuda.is_some() {
+            return Err(ZyxError::BackendConfig("Unable to configure backends after they were initialized."))
+        }
+        self.initialize_backends(config)
     }
 
     pub(crate) fn retain(&mut self, x: TensorId) {
@@ -177,7 +199,7 @@ impl Runtime {
                 shape,
                 dtype: T::dtype(),
             });
-            self.initialize_backends(DeviceParameters {})?;
+            self.initialize_backends(BackendConfig::default())?;
             if let Some(opencl) = self.opencl.as_mut() {
                 let bytes = data.len() * T::byte_size();
 
@@ -471,23 +493,18 @@ impl Runtime {
     }
 }
 
-struct DeviceParameters {}
-
 impl Runtime {
     // Initializes all available devices, creating a device for each compute
     // device and a memory pool for each physical memory.
     // Does nothing if devices were already initialized.
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
-    fn initialize_backends(&mut self, parameters: DeviceParameters) -> Result<(), ZyxError> {
-        let _ = parameters;
-        if self.opencl.is_some()
-        /* || self.cuda.is_some() */
-        {
+    fn initialize_backends(&mut self, backend_config: BackendConfig) -> Result<(), ZyxError> {
+        if self.opencl.is_some() || self.cuda.is_some() {
             return Ok(());
         }
 
-        if let Ok((opencl, memory_pools, devices)) = OpenCLBackend::new() {
+        if let Ok((opencl, memory_pools, devices)) = OpenCLBackend::new(backend_config.opencl) {
             self.opencl = Some(opencl);
             let n = self.memory_pools.len();
             self.memory_pools
@@ -503,9 +520,7 @@ impl Runtime {
                 }));
         }
 
-        if self.opencl.is_none()
-        /* && self.cuda.is_none() */
-        {
+        if self.opencl.is_none() && self.cuda.is_none() {
             return Err(ZyxError::NoBackendAvailable);
         }
         Ok(())
@@ -555,7 +570,7 @@ impl Runtime {
         if self.opencl.is_none()
         /* TODO && self.cuda.is_none() && self.hsa.is_none() */
         {
-            self.initialize_backends(DeviceParameters {})?;
+            self.initialize_backends(BackendConfig::default())?;
         }
         let graph = self.graph.realize_graph(&tensors, |x| {
             self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
@@ -888,6 +903,7 @@ fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
 #[derive(Debug)]
 pub enum ZyxError {
     EmptyTensor,
+    BackendConfig(&'static str),
     WrongDType(&'static str),
     NoBackendAvailable,
     AllocationError,
@@ -901,7 +917,7 @@ impl From<OpenCLError> for ZyxError {
 }
 
 impl Device {
-    fn compute(&self) -> usize {
+    fn compute(&self) -> u128 {
         match self {
             Device::OpenCL {
                 device,
