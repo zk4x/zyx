@@ -102,6 +102,7 @@ impl View {
                     dim.axis = a;
                     // If axes within single padding group are permuted, there is no change
                     // If axes within different groups are flipped, then what?
+                    // TODO probably we can just normally permute padding and it will be correct
                     todo!()
                 }
             }
