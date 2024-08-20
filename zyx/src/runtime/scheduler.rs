@@ -11,9 +11,9 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId};
-
-type KernelId = usize;
+use super::{
+    backend::opencl::OpenCLEvent, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId,
+};
 
 // In which order
 pub(super) struct CompiledGraph {
@@ -36,33 +36,41 @@ impl Runtime {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
         let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
         // create vop representation
-        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order, &to_eval);
+        let kernels: Vec<Kernel> = generate_kernels(&graph, &order, &to_eval);
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
         // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
-        let mut device_program_map: BTreeMap<DeviceId, Vec<ProgramId>> = BTreeMap::new();
+        let mut device_program_map: BTreeMap<DeviceId, Vec<usize>> = (0..self.devices.len())
+            .map(|device_id| (device_id, Vec::new()))
+            .collect();
         // Simulated tensor buffer map
-        let mut tensor_buffer_map: BTreeMap<(TensorId, View), BufferId> = self.tensor_buffer_map.clone();
+        let mut tensor_buffer_map: BTreeMap<(TensorId, View), MemoryPoolId> = self
+            .tensor_buffer_map
+            .iter()
+            .map(|(x, &BufferId { memory_pool_id, .. })| (x.clone(), memory_pool_id))
+            .collect();
 
         for mut kernel in kernels {
+            let mut program_wait_list = Vec::new();
             for i in (0..sched_graph.len()).rev() {
-                let mut finish = None;
                 if let SchedulerOp::Launch(program_id) = &sched_graph[i] {
-                    if device_program_map.values().any(|programs| programs.contains(program_id)) {
+                    if device_program_map.iter().any(|(device_id, programs)| {
+                        *device_id == program_id.device_id
+                            && programs.contains(&program_id.program_id)
+                    }) {
                         match &self.devices[program_id.device_id] {
                             Device::OpenCL { programs, .. } => {
                                 for (arg, _, read_only) in &programs[program_id.program_id].1 {
                                     if !read_only && kernel.inputs.contains(&arg) {
-                                        device_program_map.get_mut(&program_id.device_id).unwrap().retain(|pid| *pid != *program_id);
-                                        finish = Some(*program_id);
+                                        device_program_map
+                                            .get_mut(&program_id.device_id)
+                                            .unwrap()
+                                            .retain(|pid| *pid != program_id.program_id);
+                                        program_wait_list.push(*program_id);
                                     }
                                 }
-                            }
-                            // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
+                            } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
                         }
                     }
-                }
-                if let Some(program_id) = finish {
-                    sched_graph.push(SchedulerOp::Finish(program_id));
                 }
             }
             // Is this kernel shardable across multiple devices?
@@ -78,68 +86,113 @@ impl Runtime {
             if let Some((axis, dimension)) = shard {
                 todo!()
             } else {
-                // Find fastest device
-                let (device_id, _) = device_program_map
+                // Find fastest device out of least occupied ones
+                let min_programs = device_program_map
                     .iter()
+                    .min_by(|x, y| x.1.len().cmp(&y.1.len()))
+                    .unwrap()
+                    .1
+                    .len();
+                if min_programs > 5 {
+                    // Finish some program before proceding
+                    todo!()
+                }
+                let min_devs: Vec<usize> = device_program_map
+                    .iter()
+                    .filter_map(|(dev_id, p)| {
+                        if p.len() == min_programs {
+                            Some(*dev_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let device_id = *device_program_map
+                    .iter()
+                    .filter(|(dev_id, _)| min_devs.contains(dev_id))
                     .max_by(|x, y| {
                         self.devices[*x.0]
                             .compute()
                             .cmp(&self.devices[*y.0].compute())
                     })
-                    .unwrap();
-                let device_id = *device_id;
+                    .unwrap()
+                    .0;
+
                 let program_id = match &mut self.devices[device_id] {
-                    Device::OpenCL { device, memory_pool_id, programs } => {
+                    Device::OpenCL {
+                        device,
+                        memory_pool_id,
+                        programs,
+                    } => {
                         let memory_pool_id = *memory_pool_id;
                         kernel.optimize(device.info());
                         #[cfg(feature = "debug_sched")]
                         kernel.debug();
-                        for input in &kernel.inputs {
-                            let view = View::new(graph.shape(*input));
-                            let BufferId { memory_pool_id: buf_mpid, buffer_id } = tensor_buffer_map[&(*input, view.clone())];
-                            //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
-                            if buf_mpid != memory_pool_id {
-                                let bytes = view.numel() * graph.dtype(*input).byte_size();
-                                sched_graph.push(SchedulerOp::Allocate { tensor_id: *input, memory_pool_id, bytes, view: view.clone() });
-                                sched_graph.push(SchedulerOp::Move { tensor_id: *input, src: BufferId { memory_pool_id: buf_mpid, buffer_id }, view: view.clone() });
-                                sched_graph.push(SchedulerOp::Deallocate { tensor_id: *input, memory_pool_id: buf_mpid, bytes, view });
-                            }
-                        }
                         // Allocate memory for outputs
                         for output in &kernel.outputs {
-                            if !allocated_tensors.contains(output) {
+                            let key = (*output, View::new(graph.shape(*output)));
+                            if !tensor_buffer_map.contains_key(&key) {
                                 let shape = graph.shape(*output);
+                                let view = View::new(shape);
                                 sched_graph.push(SchedulerOp::Allocate {
                                     tensor_id: *output,
                                     memory_pool_id,
                                     bytes: shape.iter().product::<usize>()
                                         * graph.dtype(*output).byte_size(),
-                                    view: View::new(shape),
+                                    view: view.clone(),
                                 });
-                                allocated_tensors.insert(*output);
+                                tensor_buffer_map.insert((*output, view), memory_pool_id);
                             }
                         }
-                        let (ir_kernel, args) = kernels[kernel_id].to_ir(&graph);
-                        let program = self
-                            .opencl
-                            .as_mut()
-                            .unwrap()
-                            .compile_program(&ir_kernel, &device)?;
+                        // Move necessary inputs to memory pool associated with this device
+                        for input in &kernel.inputs {
+                            let view = View::new(graph.shape(*input));
+                            let buf_mpid =
+                                tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
+                            //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
+                            if buf_mpid != memory_pool_id {
+                                sched_graph.push(SchedulerOp::Move {
+                                    tensor_id: *input,
+                                    dst: memory_pool_id,
+                                    view: view.clone(),
+                                });
+                                tensor_buffer_map.insert((*input, view), memory_pool_id);
+                            }
+                        }
+                        for program_id in program_wait_list {
+                            sched_graph.push(SchedulerOp::Finish(program_id));
+                        }
+                        let (ir_kernel, args) = kernel.to_ir(&graph);
+                        let program = device.compile(&ir_kernel)?;
                         // Since it is not sharded, sharding view is contiguous
                         programs.push((
                             program,
                             args.into_iter()
-                                .map(|arg| (arg, View::new(graph.shape(arg))))
+                                .map(|(arg, read_only)| {
+                                    (arg, View::new(graph.shape(arg)), read_only)
+                                })
                                 .collect(),
                         ));
                         programs.len() - 1
                     }
                 };
+                device_program_map
+                    .get_mut(&device_id)
+                    .unwrap()
+                    .push(program_id);
+                sched_graph.push(SchedulerOp::Launch(ProgramId {
+                    device_id,
+                    program_id,
+                }));
+                // TODO deallocate kernel inputs that will not be used by other kernels
             }
         }
-        for programs in device_program_map.values_mut() {
+        for (device_id, programs) in device_program_map.iter_mut() {
             for program_id in &mut *programs {
-                sched_graph.push(SchedulerOp::Finish(*program_id));
+                sched_graph.push(SchedulerOp::Finish(ProgramId {
+                    device_id: *device_id,
+                    program_id: *program_id,
+                }));
             }
             programs.clear();
         }
@@ -190,7 +243,7 @@ impl Runtime {
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
-        let mut events = BTreeMap::new();
+        let mut events: BTreeMap<ProgramId, Event> = BTreeMap::new();
         let compiled_graph = &self.compiled_graphs[graph];
         #[cfg(feature = "debug_perf")]
         let begin = std::time::Instant::now();
@@ -209,46 +262,49 @@ impl Runtime {
                             .collect();
                         let MemoryPool::OpenCL { buffers, .. } =
                             &mut self.memory_pools[*memory_pool_id];
-                        events.insert(
-                            *program_id,
-                            self.opencl
-                                .as_mut()
-                                .unwrap()
-                                .launch_program(program, buffers, &args)?,
-                        );
+                        events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
                     }
                 },
-                SchedulerOp::Finish(program_id) => match &self.devices[program_id.device_id] {
-                    Device::OpenCL { .. } => {
-                        self.opencl
-                            .as_mut()
-                            .unwrap()
-                            .finish_event(events.remove(&program_id).unwrap())?;
-                    }
-                },
+                SchedulerOp::Finish(program_id) => {
+                    // Dropping event finishes it
+                    let _ = events.remove(&program_id).unwrap();
+                }
                 SchedulerOp::Move {
                     tensor_id,
                     view,
                     dst,
                 } => {
                     let bytes = view.numel() * graph.dtype(*tensor_id).byte_size();
-                    let BufferId { memory_pool_id, buffer_id } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
-                    match &self.memory_pools[src.memory_pool_id] {
-                        MemoryPool::OpenCL { buffers, .. } => {
-                            match &self.memory_pools[memory_pool_id] {
-                                MemoryPool::OpenCL { buffers: dst_buffers, .. } => {
-                                    self.opencl.as_mut().unwrap().opencl_to_opencl(&buffers[src.buffer_id], &dst_buffers[buffer_id], bytes)?;
-                                }
+                    let BufferId {
+                        memory_pool_id,
+                        buffer_id: src_bid,
+                    } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
+                    let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst);
+                    match &mut src_mps[memory_pool_id] {
+                        MemoryPool::OpenCL {
+                            memory_pool: src_mp,
+                            buffers: src_buffers,
+                        } => match &mut dst_mps[0] {
+                            MemoryPool::OpenCL {
+                                memory_pool: dst_mp,
+                                buffers: dst_buffers,
+                            } => {
+                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
+                                dst_mp.opencl_to_opencl(
+                                    &src_buffers[src_bid],
+                                    &dst_buffers[dst_bid],
+                                    bytes,
+                                )?;
+                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
+                                self.tensor_buffer_map.insert(
+                                    (*tensor_id, view.clone()),
+                                    BufferId {
+                                        memory_pool_id: *dst,
+                                        buffer_id: dst_bid,
+                                    },
+                                );
                             }
                         },
-                    }
-
-                    let bytes = view.numel() * graph.dtype(*tensor_id).byte_size();
-                    let BufferId { memory_pool_id, buffer_id } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
-                    match &self.memory_pools[memory_pool_id] {
-                        MemoryPool::OpenCL { memory_pool, buffers } => {
-                            memory_pool.allocate();
-                        }
                     }
                 }
                 SchedulerOp::Allocate {
@@ -261,11 +317,7 @@ impl Runtime {
                         memory_pool,
                         buffers,
                     } => {
-                        let buffer = self
-                            .opencl
-                            .as_mut()
-                            .unwrap()
-                            .allocate_memory(*bytes, memory_pool)?;
+                        let buffer = memory_pool.allocate(*bytes)?;
                         let buffer_id = buffers.push(buffer);
                         self.tensor_buffer_map.insert(
                             (*tensor_id, view.clone()),
@@ -291,13 +343,12 @@ impl Runtime {
                         if let Some(BufferId {
                             memory_pool_id: buf_mpid,
                             ..
-                        }) = self.tensor_buffer_map.get(key) {
+                        }) = self.tensor_buffer_map.get(key)
+                        {
                             if buf_mpid == memory_pool_id {
-                                let BufferId { buffer_id, .. } = self.tensor_buffer_map.remove(key).unwrap();
-                                self.opencl
-                                    .as_mut()
-                                    .unwrap()
-                                    .deallocate_memory(memory_pool, buffers.remove(buffer_id).unwrap())?;
+                                let BufferId { buffer_id, .. } =
+                                    self.tensor_buffer_map.remove(key).unwrap();
+                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
                             }
                         }
                     }
@@ -342,6 +393,10 @@ impl Runtime {
         }
         Ok(())
     }
+}
+
+enum Event {
+    OpenCL(OpenCLEvent),
 }
 
 enum SchedulerOp {
@@ -725,7 +780,7 @@ fn best_local_work_size(mut gws: [usize; 3], mwgs: usize) -> [usize; 3] {
     return lws;
 }
 
-fn shard_kernels(
+/*fn shard_kernels(
     kernels: &mut Vec<Kernel>,
     kid: KernelId,
     axis: Axis,
@@ -736,7 +791,7 @@ fn shard_kernels(
     let _ = axis;
     let _ = shard_sizes;
     todo!()
-}
+}*/
 
 fn generate_kernels(
     graph: &Graph,
@@ -932,7 +987,7 @@ fn generate_kernels(
                         }
                     }
 
-                    split_possible = false;
+                    //split_possible = false;
                     if split_possible {
                         // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
                         let mut dimensions = Vec::new();
