@@ -3,9 +3,8 @@ use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::cuda::CUDABackend;
 use backend::opencl::{
-    OpenCLBackend, OpenCLBuffer, OpenCLConfig, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
+    initialize_opencl_backend, OpenCLBuffer, OpenCLConfig, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
 };
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
@@ -87,8 +86,6 @@ pub(crate) struct Runtime {
     // Are we in training mode?
     pub(crate) training: bool,
     compiled_graphs: BTreeMap<Graph, CompiledGraph>,
-    opencl: Option<OpenCLBackend>,
-    cuda: Option<CUDABackend>,
     devices: Vec<Device>,
     memory_pools: Vec<MemoryPool>,
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>, // (MemoryPoolId, BufferId)
@@ -103,8 +100,6 @@ impl Runtime {
             rng: core::cell::OnceCell::new(),
             training: false,
             compiled_graphs: BTreeMap::new(),
-            opencl: None,
-            cuda: None,
             devices: Vec::new(),
             memory_pools: Vec::new(),
             tensor_buffer_map: BTreeMap::new(),
@@ -112,7 +107,7 @@ impl Runtime {
     }
 
     pub(crate) fn configure_backends(&mut self, config: BackendConfig) -> Result<(), ZyxError> {
-        if self.opencl.is_some() || self.cuda.is_some() {
+        if !self.devices.is_empty() {
             return Err(ZyxError::BackendConfig("Unable to configure backends after they were initialized."))
         }
         self.initialize_backends(config)
@@ -134,7 +129,7 @@ impl Runtime {
             match &mut self.memory_pools[buffer.memory_pool_id] {
                 MemoryPool::OpenCL { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
-                    self.opencl.as_mut().unwrap().deallocate_memory(memory_pool, buffer)?;
+                    memory_pool.deallocate(buffer)?;
                 }
             }
         }
@@ -204,43 +199,32 @@ impl Runtime {
                 dtype: T::dtype(),
             });
             self.initialize_backends(BackendConfig::default())?;
-            if let Some(opencl) = self.opencl.as_mut() {
-                let bytes = data.len() * T::byte_size();
-
+            let bytes = data.len() * T::byte_size();
+            if let Some((memory_pool_id, memory_pool)) = self.memory_pools.iter_mut().enumerate().find(|(_, mp)| mp.free_bytes() > bytes) {
                 // Search for first memory pool where we can put this tensor
-                let buffer_id = if let Some((memory_pool_id, mp)) = self
-                    .memory_pools
-                    .iter_mut()
-                    .enumerate()
-                    .find(|(_, mp)| mp.free_bytes() > bytes)
-                {
-                    match mp {
-                        MemoryPool::OpenCL {
-                            memory_pool,
-                            buffers,
-                        } => {
-                            let buffer_id =
-                                buffers.push(opencl.allocate_memory(bytes, memory_pool)?);
-                            let ptr: *const u8 = data.as_ptr().cast();
-                            opencl.host_to_opencl(
-                                unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                                &mut buffers[buffer_id],
-                            )?;
-                            BufferId {
-                                memory_pool_id,
-                                buffer_id,
-                            }
+                let buffer_id = match memory_pool {
+                    MemoryPool::OpenCL {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let buffer_id =
+                            buffers.push(memory_pool.allocate(bytes)?);
+                        let ptr: *const u8 = data.as_ptr().cast();
+                        memory_pool.host_to_opencl(
+                            unsafe { std::slice::from_raw_parts(ptr, bytes) },
+                            &mut buffers[buffer_id],
+                        )?;
+                        BufferId {
+                            memory_pool_id,
+                            buffer_id,
                         }
                     }
-                } else {
-                    return Err(ZyxError::AllocationError);
                 };
-
                 self.tensor_buffer_map
                     .insert((id, View::new(self.shape(id))), buffer_id);
             } else {
-                panic!()
-            }
+                return Err(ZyxError::AllocationError);
+            };
             Ok(id)
         }
     }
@@ -504,12 +488,11 @@ impl Runtime {
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
     fn initialize_backends(&mut self, backend_config: BackendConfig) -> Result<(), ZyxError> {
-        if self.opencl.is_some() || self.cuda.is_some() {
+        if !self.devices.is_empty() {
             return Ok(());
         }
 
-        if let Ok((opencl, memory_pools, devices)) = OpenCLBackend::new(backend_config.opencl) {
-            self.opencl = Some(opencl);
+        if let Ok((memory_pools, devices)) = initialize_opencl_backend(backend_config.opencl) {
             let n = self.memory_pools.len();
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL {
@@ -524,7 +507,7 @@ impl Runtime {
                 }));
         }
 
-        if self.opencl.is_none() && self.cuda.is_none() {
+        if self.devices.is_empty() {
             return Err(ZyxError::NoBackendAvailable);
         }
         Ok(())
@@ -545,15 +528,12 @@ impl Runtime {
                     let slice = unsafe {
                         std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n * T::byte_size())
                     };
-                    match &self.memory_pools[buffer_id.memory_pool_id] {
+                    match &mut self.memory_pools[buffer_id.memory_pool_id] {
                         MemoryPool::OpenCL {
-                            memory_pool: _,
+                            memory_pool,
                             buffers,
                         } => {
-                            self.opencl
-                                .as_mut()
-                                .unwrap()
-                                .opencl_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                            memory_pool.opencl_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
                     }
                     break;
@@ -571,9 +551,7 @@ impl Runtime {
         if tensors.len() == 0 {
             return Ok(());
         }
-        if self.opencl.is_none()
-        /* TODO && self.cuda.is_none() && self.hsa.is_none() */
-        {
+        if self.devices.is_empty() {
             self.initialize_backends(BackendConfig::default())?;
         }
         let graph = self.graph.realize_graph(&tensors, |x| {
