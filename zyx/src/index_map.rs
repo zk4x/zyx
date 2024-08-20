@@ -26,10 +26,11 @@ impl<T> IndexMap<T> {
         }
     }
 
-    pub(crate) fn remove(&mut self, id: Id) -> Option<&mut T> {
+    pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
         if self.values.len() > id && !self.empty.contains(&id) {
             self.empty.push(id);
-            self.values.get_mut(id)
+            self.values.push(unsafe { std::mem::zeroed() });
+            Some(self.values.swap_remove(id))
         } else {
             None
         }
