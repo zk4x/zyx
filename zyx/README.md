@@ -24,7 +24,6 @@ let b = Tensor::zeros([1024], DType::F16);
 let z = &x + &y;
 let z = (x.dot(&y), + b).gelu();
 let b_grad = z.backward([&b]);
-let x = x.to(Device::CUDA);
 ```
 
 ## Backends

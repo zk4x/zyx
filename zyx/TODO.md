@@ -1,10 +1,13 @@
 - [ ] check caching of compiled graphs
-- [ ] deallocation of memory
+- [x] deallocation of memory
 - [ ] implement sharding
 - [ ] padded view permute
+- [ ] test padded view permute
+- [ ] cuda backend
 - [ ] ptx compiler
 - [ ] more tests
 - [ ] local memory caching
 - [ ] bigger accumulators
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
+- [x] dynamic loading of backends at runtime

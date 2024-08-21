@@ -905,7 +905,7 @@ impl Device {
                 device,
                 memory_pool_id: _,
                 programs: _,
-            } => device.compute(),
+            } => device.info().compute,
         }
     }
 }

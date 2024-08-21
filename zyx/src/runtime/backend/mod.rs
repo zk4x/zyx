@@ -2,8 +2,10 @@ pub(crate) mod opencl;
 pub(crate) mod cuda;
 
 /// Hardware information needed for applying optimizations
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct DeviceInfo {
+    /// Device compute in flops
+    pub compute: u128,
     /// Biggest kernel dimensions
     pub max_work_item_sizes: Vec<usize>,
     /// Maximum local work size threads

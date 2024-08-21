@@ -12,11 +12,6 @@ cargo add zyx
 
 CUDA is toolkit for running code on NVIDIA gpus.
 
-In Cargo.toml
-```toml
-zyx = { version = "*", features = ["cuda"] }
-```
-
 To install cuda toolkit, please refer to Nvidia's official [website](https://developer.nvidia.com/cuda-downloads).
 
 Zyx uses only CUDA's driver API, so you don't need to install runtime API.
@@ -26,11 +21,6 @@ and above (GTX 465 and above).
 ## HSA
 
 HSA is runtime that for running code on AMD gpus.
-
-In Cargo.toml
-```toml
-zyx = { version = "*", features = ["cuda"] }
-```
 
 To install HSA, you should install [ROCM software](https://rocm.docs.amd.com/en/latest/) from AMD.
 
@@ -52,11 +42,6 @@ sudo pacman -S rocm-language-runtime
 ## OpenCL
 
 OpenCL is stable programming language that runs on large number of devices,
-
-In Cargo.toml
-```toml
-zyx = { version = "*", features = ["cuda"] }
-```
 
 You can use different runtimes for OpenCL.
 
@@ -99,7 +84,3 @@ sudo pacman -S pocl opencl-headers
 ```
 
 OpenCL also runs on FPGAs and many custom accelerators. Please raise an issue on github to add installation instructions here for your particular platform.
-
-## WGSL
-
-WGSL gets automatically installed by wgpu. It requires gpu driver with VULCAN support.

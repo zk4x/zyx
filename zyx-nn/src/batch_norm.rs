@@ -13,8 +13,6 @@ pub struct BatchNorm {
     pub momentum: f32,
     /// When set to True, this module tracks the running mean and variance, and when set to False, this module does not track such statistics, and initializes statistics buffers running_mean and running_var as None. When these buffers are None, this module always uses batch statistics
     pub track_running_stats: bool,
-    /// Is it training or inference? (for running mean and var)
-    pub training: bool,
     /// weight
     pub weight: Option<Tensor>,
     /// bias
@@ -38,7 +36,6 @@ impl BatchNorm {
             bias: Some(Tensor::zeros(num_features, dtype)),
             running_mean: Tensor::zeros(num_features, dtype),
             running_var: Tensor::ones(num_features, dtype),
-            training: true,
             num_batches_tracked: Tensor::zeros(1, dtype),
         }
     }
@@ -48,7 +45,7 @@ impl BatchNorm {
         let batch_mean;
         let batch_invstd;
 
-        if self.training {
+        if Tensor::training() {
             batch_mean = x.mean([0, 2, 3]);
             let y = x - batch_mean.reshape([1, batch_mean.numel(), 1, 1]);
             let batch_var = (&y * &y).mean([0, 2, 3]);
