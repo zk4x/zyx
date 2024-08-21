@@ -49,7 +49,7 @@ impl IntoShape for Vec<Dimension> {
     }
 }
 
-fn to_axis<T>(axis: T, rank: usize) -> usize
+pub(crate) fn to_axis<T>(axis: T, rank: usize) -> usize
 where
     usize: TryInto<T>,
     T: TryInto<usize>,

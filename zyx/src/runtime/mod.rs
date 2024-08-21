@@ -8,6 +8,7 @@ use backend::opencl::{
 };
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
+use std::cell::OnceCell;
 use std::fmt::Display;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -82,7 +83,7 @@ pub(crate) struct Runtime {
     graph: Graph,
     // Random number generator
     #[cfg(feature = "rand")]
-    rng: core::cell::OnceCell<SmallRng>,
+    rng: OnceCell<SmallRng>,
     // Are we in training mode?
     pub(crate) training: bool,
     compiled_graphs: BTreeMap<Graph, CompiledGraph>,
@@ -134,6 +135,12 @@ impl Runtime {
             }
         }
         return Ok(());
+    }
+
+    #[cfg(feature = "rand")]
+    pub(crate) fn manual_seed(&mut self, seed: u64) {
+        use rand::SeedableRng;
+        self.rng = OnceCell::from(SmallRng::seed_from_u64(seed));
     }
 
     /// Creates dot plot of graph between given tensors

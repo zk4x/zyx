@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{collections::BTreeMap, fmt::Display};
 
 use crate::shape::{Axis, Dimension};
 
@@ -100,10 +100,13 @@ impl View {
                 *dims = axes.iter().map(|axis| dims[*axis]).collect();
                 for (a, dim) in dims.iter_mut().enumerate() {
                     dim.axis = a;
-                    // If axes within single padding group are permuted, there is no change
-                    // If axes within different groups are flipped, then what?
-                    // TODO probably we can just normally permute padding and it will be correct
-                    todo!()
+                }
+                // TODO is this correct?
+                let axes_map: BTreeMap<usize, usize> = (0..axes.len()).zip(axes.iter().copied()).collect();
+                for (axes, _) in &mut padding.axes {
+                    for d in axes {
+                        *d = axes_map[d];
+                    }
                 }
             }
         }

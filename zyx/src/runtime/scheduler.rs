@@ -84,6 +84,8 @@ impl Runtime {
                 None
             };
             if let Some((axis, dimension)) = shard {
+                let _ = axis;
+                let _ = dimension;
                 todo!()
             } else {
                 // Find fastest device out of least occupied ones
@@ -987,7 +989,7 @@ fn generate_kernels(
                         }
                     }
 
-                    //split_possible = false;
+                    split_possible = false;
                     if split_possible {
                         // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
                         let mut dimensions = Vec::new();

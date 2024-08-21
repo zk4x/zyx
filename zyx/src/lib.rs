@@ -78,7 +78,7 @@ fn t4() {
 #[test]
 fn t5() {
     let x = Tensor::from([[2f32, 3.], [4., 5.]]);
-    let y = x.transpose();
+    let y = x.t();
     let z = x.exp();
     //Tensor::plot_dot_graph([&y, &z], "graph1");
     Tensor::realize([&y, &z]).unwrap();
@@ -130,7 +130,7 @@ fn t_11() {
     let x = Tensor::from([[2, 3, 1], [3, 4, 1]]);
     let y = Tensor::from([[2, 3], [2, 1], [4, 1]]);
     //let x = x.dot(y);
-    let x = x.reshape([2, 1, 3]) * y.transpose().reshape([1, 2, 3]);
+    let x = x.reshape([2, 1, 3]) * y.t().reshape([1, 2, 3]);
     let x = x.sum(2);
     println!("{x}");
 }

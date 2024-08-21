@@ -1,6 +1,6 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use crate::shape::{IntoAxes, IntoPadding, IntoShape};
+use crate::shape::{to_axis, IntoAxes, IntoPadding, IntoShape};
 use core::cmp::Ordering;
 use core::ops::{
     Add, Div, Mul, Neg, Not, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
@@ -63,6 +63,11 @@ impl Tensor {
 
     pub fn configure_backends(config: BackendConfig) -> Result<(), ZyxError> {
         RT.lock().configure_backends(config)
+    }
+
+    #[cfg(feature = "rand")]
+    pub fn manual_seed(seed: u64) {
+        RT.lock().manual_seed(seed);
     }
 
     /// Is zyx in training mode?
@@ -131,7 +136,7 @@ impl Tensor {
         // This can be generated from uniform or just generate on cpu
         // and pass into device whole buffer
         match dtype {
-            DType::F32 => Tensor::uniform(shape, 0f32..1f32),
+            DType::F32 => Tensor::uniform(shape.clone(), -1f32..1f32)/Tensor::uniform(shape, -1f32..1f32),
             DType::F64 => todo!(),
             DType::U8 => todo!(),
             DType::I8 => todo!(),
@@ -570,8 +575,10 @@ impl Tensor {
         }
     }
 
+    /// Transpose last two dimensions of this tensor.
+    /// If self.rank() == 1, returns tensor with shape [self.shape()[0], 1] (column tensor)
     #[must_use]
-    pub fn transpose(&self) -> Tensor {
+    pub fn t(&self) -> Tensor {
         let mut rank = self.rank();
         let x = if rank == 1 {
             let n = self.numel();
@@ -583,6 +590,15 @@ impl Tensor {
         let mut axes: Vec<isize> = (0..rank as isize).collect();
         axes.swap(rank - 1, rank - 2);
         x.permute(axes)
+    }
+
+    /// Transpose two arbitrary dimensions
+    #[must_use]
+    pub fn transpose(&self, dim0: isize, dim1: isize) -> Tensor {
+        let rank = self.rank();
+        let mut axes: Vec<isize> = (0..rank as isize).collect();
+        axes.swap(to_axis(dim0, rank), to_axis(dim1, rank));
+        self.permute(axes)
     }
 
     // reduce
@@ -672,6 +688,17 @@ impl Tensor {
     }
 
     #[must_use]
+    pub fn cumsum(&self, axis: isize) -> Tensor {
+        let _ = axis;
+        //let axis = to_axis(axis, self.rank());
+        //let pl_sz = (self.shape()[axis] - 1) as isize;
+        //let axis = axis as isize;
+        //return self.transpose(axis,-1).pad_zeros([(pl_sz, 0)]).pool(self.shape[axis]).sum(-1).transpose(axis,-1)
+        todo!()
+        
+    }
+
+    #[must_use]
     pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
         let e = (self - self.max_kd(axes.clone())).exp();
         &e / e.sum_kd(axes)
@@ -754,7 +781,7 @@ impl Tensor {
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Tensor {
         let rhs = rhs.into();
         let org_y_shape = rhs.shape();
-        let y = rhs.transpose();
+        let y = rhs.t();
         let xshape = self.shape();
         let yshape = y.shape();
         let xrank = xshape.rank();
@@ -910,7 +937,10 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn pool(&self) -> Tensor {
+    pub fn pool(&self, kernel_size: impl IntoShape, stride: impl IntoIterator<Item = isize>, dilation: impl IntoIterator<Item = isize>) -> Tensor {
+        let _ = kernel_size;
+        let _ = stride;
+        let _ = dilation;
         todo!()
     }
 
@@ -988,6 +1018,7 @@ impl Tensor {
         return (x, y);
     }
 
+    // Calculate shape for reduce which keeps reduced dims set to 1
     fn reduce_kd_shape(&self, axes: impl IntoAxes) -> Vec<usize> {
         let mut shape = self.shape();
         for a in axes.clone().into_axes(shape.len()) {
