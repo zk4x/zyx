@@ -660,7 +660,7 @@ impl OpenCLDevice {
 
         // Declare register variables
 
-        for op in kernel.ops[6..].iter().copied() {
+        for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
             match op {
                 IROp::Set { z, len: _, value } => {
                     source += &format!("{indent}r{z} = {value};\n");

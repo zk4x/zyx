@@ -363,6 +363,7 @@ impl Runtime {
 
     #[must_use]
     pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        println!("Reshape {:?} to {shape:?}", self.shape(x));
         if &shape == self.shape(x) {
             self.retain(x);
             return x;

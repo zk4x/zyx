@@ -7,6 +7,7 @@ use core::ops::{
     RangeToInclusive, Sub,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter::repeat;
 
 use crate::runtime::{BackendConfig, ZyxError};
 use crate::RT;
@@ -136,7 +137,9 @@ impl Tensor {
         // This can be generated from uniform or just generate on cpu
         // and pass into device whole buffer
         match dtype {
-            DType::F32 => Tensor::uniform(shape.clone(), -1f32..1f32)/Tensor::uniform(shape, -1f32..1f32),
+            DType::F32 => {
+                Tensor::uniform(shape.clone(), -1f32..1f32) / Tensor::uniform(shape, -1f32..1f32)
+            }
             DType::F64 => todo!(),
             DType::U8 => todo!(),
             DType::I8 => todo!(),
@@ -169,7 +172,8 @@ impl Tensor {
         Tensor {
             id: RT
                 .lock()
-                .uniform(shape.into_shape().collect(), start, end).unwrap(),
+                .uniform(shape.into_shape().collect(), start, end)
+                .unwrap(),
         }
     }
 
@@ -217,7 +221,7 @@ impl Tensor {
     pub fn eye(n: usize, dtype: DType) -> Tensor {
         return Tensor::ones(vec![n, 1], dtype)
             .pad_zeros([(0, n as isize)])
-            .reshape([n+1, n])
+            .reshape([n + 1, n])
             .get((..-1, ..));
     }
 
@@ -695,7 +699,6 @@ impl Tensor {
         //let axis = axis as isize;
         //return self.transpose(axis,-1).pad_zeros([(pl_sz, 0)]).pool(self.shape[axis]).sum(-1).transpose(axis,-1)
         todo!()
-        
     }
 
     #[must_use]
@@ -937,11 +940,71 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn pool(&self, kernel_size: impl IntoShape, stride: impl IntoIterator<Item = isize>, dilation: impl IntoIterator<Item = isize>) -> Tensor {
-        let _ = kernel_size;
-        let _ = stride;
-        let _ = dilation;
+    pub fn pool(
+        &self,
+        kernel_size: impl IntoShape,
+        stride: impl IntoShape,
+        dilation: impl IntoShape,
+    ) -> Tensor {
+        let k_: Vec<usize> = kernel_size.into_shape().collect();
+        let stride: Vec<usize> = stride.into_shape().collect();
+        let dilation: Vec<usize> = dilation.into_shape().collect();
+
+        let shape = self.shape();
+        let rank = shape.len();
+
+        let s_: Vec<usize> = if stride.len() == 1 {
+            repeat(stride[0]).take(k_.len()).collect()
+        } else {
+            stride
+        };
+        let d_: Vec<usize> = if dilation.len() == 1 {
+            repeat(dilation[0]).take(k_.len()).collect()
+        } else {
+            dilation
+        };
+        // noop_ = [None] * len(self.shape[:-len(k_)])
+        let noop_: Vec<Option<()>> = repeat(None).take(rank - k_.len()).collect();
+        let i_ = &shape[rank - k_.len()..];
+        let o_ = i_
+            .iter()
+            .cloned()
+            .zip(d_.iter().cloned())
+            .zip(k_.iter().cloned())
+            .zip(s_.iter().cloned())
+            .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s));
+
+        /*if any(k > s for k,s in zip(k_, s_)) or any(d != 1 for d in d_):
+        # repeats such that we don't need padding
+        xup = self.repeat([1]*len(noop_) + [math.ceil(k*(i+d) / i) for k,i,d in zip(k_, i_, d_)])
+        # handle dilation
+        xup = xup.shrink(tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)])).reshape(noop_ + flatten((k,i+d) for k,i,d in zip(k_, i_, d_)))
+        # handle stride
+        xup = xup.shrink(
+            tuple(noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_)))).reshape(noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_)))
+        xup = xup.shrink(tuple(noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_)))).reshape(noop_ + flatten((k,o) for k,o in zip(k_, o_)))
+        # permute to move reduce to the end
+        return xup.permute(*range(len(noop_)), *[len(noop_)+i*2+1 for i in range(len(i_))], *[len(noop_)+i*2 for i in range(len(i_))])*/
+
+        //xup = self.pad(tuple(noop_ + [(0, max(0,o*s-i)) for i,o,s in zip(i_, o_, s_)])).shrink(tuple(noop_ + [(0,o*s) for o,s in zip(o_, s_)]))
+        //xup = xup.reshape(noop_ + flatten(((o,s) for o,s in zip(o_, s_))))
+        //xup = xup.shrink(tuple(noop_ + flatten(((0,o), (0,k)) for o,k in zip(o_, k_))))
+        //return xup.permute(*range(len(noop_)), *[len(noop_)+i*2 for i in range(len(i_))], *[len(noop_)+i*2+1 for i in range(len(i_))])
         todo!()
+    }
+
+    #[must_use]
+    pub fn repeat(&self, repeats: impl IntoShape) -> Tensor {
+        let repeats: Vec<usize> = repeats.into_shape().collect();
+        let shape = self.shape();
+        let rank = shape.len();
+
+        let base_shape: Vec<usize> = repeat(1).take(repeats.len() - rank).chain(shape.iter().copied()).collect();
+        let new_shape: Vec<usize> = repeat(1).take(repeats.len() - rank).chain(shape.into_iter()).flat_map(|d| [1, d]).collect();
+        let expand_shape: Vec<usize> = repeats.iter().copied().zip(base_shape.iter().copied()).flat_map(|(r, d)| [r, d]).collect();
+        let final_shape: Vec<usize> = repeats.iter().copied().zip(base_shape.iter().copied()).map(|(r, d)| r*d).collect();
+
+        return self.reshape(new_shape).expand(expand_shape).reshape(final_shape)
     }
 
     #[must_use]

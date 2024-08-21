@@ -170,6 +170,7 @@ impl Kernel {
             }
         }
 
+        let mut unfinished_loops_num = 0;
         for vop in &self.ops {
             match vop {
                 VOp::Const { z, value, view } => {
@@ -220,6 +221,7 @@ impl Kernel {
                         len: *dimension,
                     });
                     max_axis += 1;
+                    unfinished_loops_num += 1;
                 }
                 VOp::Accumulator { z, rop, view } => {
                     let dtype: DType = graph.dtype(*z).into();
@@ -270,6 +272,7 @@ impl Kernel {
                         vars.remove_axis(max_axis);
                         max_axis -= 1;
                     }
+                    unfinished_loops_num -= num_axes;
                 }
                 VOp::Unary { z, x, uop } => {
                     let x_tensor = *x;
@@ -302,6 +305,10 @@ impl Kernel {
                     vars.remove(y_tensor);
                 }
             }
+        }
+
+        for _ in 0..unfinished_loops_num {
+            ops.push(IROp::EndLoop);
         }
 
         let mut addressables = Vec::new();

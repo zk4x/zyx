@@ -1,6 +1,6 @@
 - [ ] check caching of compiled graphs
 - [x] deallocation of memory
-- [ ] deallocation of intermediary buffers in scheduler
+- [ ] deallocation of intermediate buffers in scheduler
 - [ ] implement sharding
 - [x] padded view permute
 - [ ] test padded view permute
@@ -13,7 +13,11 @@
 - [ ] disk memory pool implemented as backend without devices
 - [x] dynamic loading of backends at runtime
 - [x] test reshape split
+- [ ] randn
 - [ ] cumsum
+- [ ] pool
+- [ ] conv
+- [x] repeat
 - [ ] remove duplicated code from IR
 
 
@@ -28,7 +32,7 @@ needs to call realize function and realize can be deprecated.
 Scheduler splits graph into kernels each kernel is optimized and compiled for specific device.
 Scheduler also assigns these kernels to devices and determines memory allocation and copies between devices.
 
-Thus optimizations can happend in three ways:
+Thus optimizations can happen in three ways:
 1. Kernel creation - how many and which operations get fused into one kernel
 2. Device side - how kernels are assigned to devices and how memory gets moved around
 3. Kernel side - how each kernel gets optimized for each device

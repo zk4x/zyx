@@ -146,3 +146,10 @@ fn t_12() {
     }
     println!("{x}");
 }
+
+#[test]
+fn t_14() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    x = x.repeat([2, 4, 1]);
+    println!("{x}");
+}
