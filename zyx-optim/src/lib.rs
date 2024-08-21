@@ -1,6 +1,5 @@
 //! Optimizers for zyx ML library
 
-#![no_std]
 #![forbid(unsafe_code)]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]

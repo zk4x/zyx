@@ -493,7 +493,7 @@ pub(super) struct Kernel {
 impl Kernel {
     #[cfg(feature = "debug_sched")]
     fn debug(&self) {
-        println!();
+        println!("Kernel shape: {:?}", self.shape);
         for vop in &self.ops {
             println!("{vop}");
         }
@@ -968,63 +968,61 @@ fn generate_kernels(
                     });
                     kernel.vars.insert(nid);
                 } else {
-                    let mut split_possible = true;
+                    // TODO we could also merge axes if possible
+                    let mut splits = Some(BTreeMap::new());
                     let prev_shape = graph.shape(*x);
                     if prev_shape.len() > shape.len() {
-                        split_possible = false;
-                        // TODO perhaps we could merge axes?
+                        splits = None;
                     } else {
-                        let mut dim = 1;
+                        // Example split
+                        //    2, 4,    4,    3
+                        // 1, 2, 4, 2, 2, 1, 3
+                        let mut dimensions = Vec::new();
                         let mut i = prev_shape.len() - 1;
-                        for d in shape.iter().rev() {
-                            if dim > prev_shape[i] {
-                                split_possible = false;
-                                break;
+                        let mut dim = 1;
+                        for d in shape.iter().copied().rev() {
+                            if i == 0 {
+                                dimensions.insert(0, d);
+                                continue
                             }
-                            dim *= d;
-                            if dim > prev_shape[i] {
-                                dim = 1;
-                                i -= 1;
+                            if dim * d > prev_shape[i] {
+                                if dim == prev_shape[i] {
+                                    if dimensions.len() > 1 {
+                                        splits.as_mut().unwrap().insert(i, dimensions);
+                                    }
+                                    dimensions = vec![d];
+                                    dim = d;
+                                    i -= 1;
+                                } else if dim > prev_shape[i] {
+                                    splits = None;
+                                    break;
+                                }
+                            } else {
+                                dimensions.insert(0, d);
+                                dim *= d;
                             }
+                        }
+                        if dimensions.len() > 1 {
+                            splits.as_mut().unwrap().insert(i, dimensions);
                         }
                     }
 
-                    split_possible = false;
-                    if split_possible {
-                        // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
-                        let mut dimensions = Vec::new();
-                        let mut dim = 1;
-                        let mut i = prev_shape.len() - 1;
-                        for d in shape.iter().rev() {
-                            dim *= d;
-                            //println!("d: {d}, dim: {dim}, i: {i}, dims: {dimensions:?}");
-                            if dim > prev_shape[i] {
-                                let mut op_id = 0;
-                                for (id, vop) in kernel.ops.iter().enumerate().rev() {
-                                    if let VOp::Loop { axis, dimension } = vop {
-                                        if *axis == i && *dimension == dim {
-                                            op_id = id;
-                                            break;
-                                        }
+                    if let Some(splits) = splits {
+                        for (split_axis, dimensions) in &splits {
+                            let dim: usize = dimensions.iter().product();
+                            for (id, vop) in kernel.ops.iter().enumerate().rev() {
+                                if let VOp::Loop { axis, dimension } = vop {
+                                    if *axis == *split_axis && *dimension == dim {
+                                        println!("Splitting at {id} to {dimensions:?}");
+                                        kernel.split_axis(id, &dimensions);
+                                        break;
                                     }
                                 }
-                                kernel.split_axis(op_id, &dimensions);
-                                dimensions.clear();
-                                dim = *d;
-                                i -= 1;
-                            }
-                            dimensions.insert(0, *d);
-                        }
-                        let mut op_id = 0;
-                        for (id, vop) in kernel.ops.iter().enumerate().rev() {
-                            if let VOp::Loop { axis, dimension } = vop {
-                                if *axis == i && *dimension == dim {
-                                    op_id = id;
-                                    break;
-                                }
                             }
                         }
-                        kernel.split_axis(op_id, &dimensions);
+                        // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
+                        // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
+                        // However we also need to make sure all code can work with out of order loop ids.
 
                         kernel.shape = shape.clone();
                         kernel.ops.push(VOp::Move {
@@ -1033,15 +1031,7 @@ fn generate_kernels(
                             mop: MOp::Resh,
                         });
                         kernel.vars.insert(nid);
-
-                        /*#[cfg(feature = "debug_sched")]
-                        {
-                            println!();
-                            for op in &kernel.ops {
-                                println!("{op}");
-                            }
-                            println!();
-                        }*/
+                        //kernel.debug();
                     } else {
                         // else create new kernel after storing results of previous kernel
                         kernel.store(*x, graph);

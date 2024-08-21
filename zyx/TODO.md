@@ -12,8 +12,9 @@
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
 - [x] dynamic loading of backends at runtime
-- [ ] test reshape split
+- [x] test reshape split
 - [ ] cumsum
+- [ ] remove duplicated code from IR
 
 
 ## Advanced graph caching
@@ -49,4 +50,14 @@ Optimizations are done in these ways:
 3. Permuting loops - automatic search, cache best kernels on disk
 4. Merging or splitting loops - automatic seach
 5. Padding - for kernels with irregular shapes to make them big enough and dimensions to be power of 2, automatic search
-6. Device specific optimizations - wmma, tensor cores, native ops (like mad) etc.
+6. Multi step reduce - big reduce loops can be split into two steps with use of intermediate sum/max buffers, again tiled in global/local/register
+7. Special algorithms - like running max in softmax in fast attention
+8. Device specific optimizations - wmma, tensor cores, native ops (like mad) etc.
+
+### IR
+
+When kernels get compiled to IR, currently two things happen:
+1. Tensor ids are converted into register ids
+2. Views get converted into IR ops
+
+IR should deduplicate all ops if possible are move ops before loops if they can happen outside of loops.
