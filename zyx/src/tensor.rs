@@ -974,6 +974,30 @@ impl Tensor {
             .zip(s_.iter().cloned())
             .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s));
 
+        let repeats: Vec<usize> = repeat(1)
+            .take(rank - k_.len())
+            .chain(
+                k_.iter()
+                    .copied()
+                    .zip(i_.iter().copied())
+                    .zip(d_.iter().copied())
+                    .map(|((k, i), d)| k * (i + d).div_ceil(i)),
+            )
+            .collect();
+        let xup = self.repeat(repeats);
+        // dilation
+        let padding: Vec<(isize, isize)> = k_.iter().copied().zip(i_.iter().copied()).zip(d_.iter().copied()).map(|((k, i), d)| (0, -((k*(i+d)) as isize))).collect();
+        let xup = xup.pad_zeros(padding);
+
+        //tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)])
+
+        //let xup = xup.shrink(tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)]))
+            //.reshape(noop_ + flatten((k,i+d) for k,i,d in zip(k_, i_, d_)))
+        // stride
+        //xup = xup.shrink(
+        //tuple(noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_)))).reshape(noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_)))
+        //xup = xup.shrink(tuple(noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_)))).reshape(noop_ + flatten((k,o) for k,o in zip(k_, o_)))
+
         /*if any(k > s for k,s in zip(k_, s_)) or any(d != 1 for d in d_):
         # repeats such that we don't need padding
         xup = self.repeat([1]*len(noop_) + [math.ceil(k*(i+d) / i) for k,i,d in zip(k_, i_, d_)])
@@ -999,12 +1023,32 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.len();
 
-        let base_shape: Vec<usize> = repeat(1).take(repeats.len() - rank).chain(shape.iter().copied()).collect();
-        let new_shape: Vec<usize> = repeat(1).take(repeats.len() - rank).chain(shape.into_iter()).flat_map(|d| [1, d]).collect();
-        let expand_shape: Vec<usize> = repeats.iter().copied().zip(base_shape.iter().copied()).flat_map(|(r, d)| [r, d]).collect();
-        let final_shape: Vec<usize> = repeats.iter().copied().zip(base_shape.iter().copied()).map(|(r, d)| r*d).collect();
+        let base_shape: Vec<usize> = repeat(1)
+            .take(repeats.len() - rank)
+            .chain(shape.iter().copied())
+            .collect();
+        let new_shape: Vec<usize> = repeat(1)
+            .take(repeats.len() - rank)
+            .chain(shape.into_iter())
+            .flat_map(|d| [1, d])
+            .collect();
+        let expand_shape: Vec<usize> = repeats
+            .iter()
+            .copied()
+            .zip(base_shape.iter().copied())
+            .flat_map(|(r, d)| [r, d])
+            .collect();
+        let final_shape: Vec<usize> = repeats
+            .iter()
+            .copied()
+            .zip(base_shape.iter().copied())
+            .map(|(r, d)| r * d)
+            .collect();
 
-        return self.reshape(new_shape).expand(expand_shape).reshape(final_shape)
+        return self
+            .reshape(new_shape)
+            .expand(expand_shape)
+            .reshape(final_shape);
     }
 
     #[must_use]

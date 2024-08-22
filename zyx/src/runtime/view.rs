@@ -82,6 +82,10 @@ impl View {
         }
     }
 
+    pub(crate) fn requires_conditional_padding(&self) -> bool {
+        // View requires conditional padding
+    }
+
     /*fn numel(&self) -> usize {
         self.0.iter().map(|dim| dim.dim).product()
     }*/

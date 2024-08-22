@@ -58,6 +58,23 @@ Optimizations are done in these ways:
 7. Special algorithms - like running max in softmax in fast attention
 8. Device specific optimizations - wmma, tensor cores, native ops (like mad) etc.
 
+In scheduler they are written this way:
+Kernel functions
+```rust
+impl Kernel {
+    fn pad_loop(&mut self, op_id: usize, lp: isize, rp: isize)
+    fn split_loop(&mut self, op_id: usize, dimensions: &[usize])
+    fn merge_loops(&mut self, op_id: usize, num_loops: usize)
+    fn permute_loops(&mut self, op_id: usize, axes: &[Axis])
+    fn vectorize_loop(&mut self, op_id: usize)
+    fn multi_step_loop(&mut self, op_id: usize, steps: &[usize])
+}
+```
+All these functions will need to be applied automatically to each loop with automatic search for the fastest version.
+
+As for tiling, each tensor and accumulator (each variable) needs to be represented as tile.
+Each tile can exist in each scope at most once. Unary and binary ops always access tiles that exist at register scope.
+
 ### IR
 
 When kernels get compiled to IR, currently two things happen:
@@ -65,3 +82,5 @@ When kernels get compiled to IR, currently two things happen:
 2. Views get converted into IR ops
 
 IR should deduplicate all ops if possible are move ops before loops if they can happen outside of loops.
+
+IR should also probably add synchronization barriers automatically just before loads of tiles written by the kernel.

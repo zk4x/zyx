@@ -174,7 +174,7 @@ impl Kernel {
         for vop in &self.ops {
             match vop {
                 VOp::Const { z, value, view } => {
-                    let var = if matches!(view, View::Padded(..)) {
+                    let var = if view.requires_conditional_padding() {
                         vars.generate_padding(view, &mut ops, Var::Const(*value), graph.rc(*z), value.dtype())
                     } else {
                         Var::Const(*value)
@@ -190,15 +190,17 @@ impl Kernel {
                     let x = vars.get(*x, Scope::Global);
                     let zt = *z;
                     let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
+                    if view.requires_conditional_padding() {
+                        let var = vars.generate_padding(view, &mut ops, z, graph.rc(zt), graph.dtype(zt));
+                        vars.var_map.remove(&(zt, Scope::Register));
+                        vars.var_map.insert((zt, Scope::Register), var);
+                    }
                     ops.push(IROp::Load {
                         z,
                         x,
                         at,
                         dtype,
                     });
-                    if matches!(view, View::Padded(..)) {
-                        vars.generate_padding(view, &mut ops, z, graph.rc(zt), graph.dtype(zt));
-                    }
                     vars.remove_var(at);
                 }
                 VOp::Store { z, view } => {
@@ -405,7 +407,7 @@ impl VarMap {
                     {
                         //std::println!("Padding {id} with {lp}, {rp}");
                         if *lp > 0 {
-                            ops.push(IROp::SMAdd {
+                            ops.push(IROp::AMAdd {
                                 z,
                                 a: self.get_axis(*axis),
                                 b: Var::Const(Constant::I64(*lp as i64)),
@@ -415,7 +417,7 @@ impl VarMap {
                             });
                         } else if *lp < 0 {
                             let lp = -lp;
-                            ops.push(IROp::AMAdd {
+                            ops.push(IROp::SMAdd {
                                 z,
                                 a: self.get_axis(*axis),
                                 b: Var::Const(Constant::I64(lp as i64)),
@@ -450,6 +452,7 @@ impl VarMap {
 
     // Takes self, view, ops and var without padding, returns var with padding applied
     fn generate_padding(&mut self, view: &View, ops: &mut Vec<IROp>, var: Var, rc: u32, dtype: DType) -> Var {
+        let old_var = var.clone();
         let View::Padded(dims, padding) = view  else { panic!() };
         //std::println!("Using padded index");
 
