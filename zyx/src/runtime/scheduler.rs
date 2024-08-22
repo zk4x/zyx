@@ -12,7 +12,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    backend::opencl::OpenCLEvent, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId,
+    backend::{cuda::CUDAEvent, opencl::OpenCLEvent}, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId,
 };
 
 // In which order
@@ -59,6 +59,17 @@ impl Runtime {
                     }) {
                         match &self.devices[program_id.device_id] {
                             Device::OpenCL { programs, .. } => {
+                                for (arg, _, read_only) in &programs[program_id.program_id].1 {
+                                    if !read_only && kernel.inputs.contains(&arg) {
+                                        device_program_map
+                                            .get_mut(&program_id.device_id)
+                                            .unwrap()
+                                            .retain(|pid| *pid != program_id.program_id);
+                                        program_wait_list.push(*program_id);
+                                    }
+                                }
+                            } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
+                            Device::CUDA { programs, .. } => {
                                 for (arg, _, read_only) in &programs[program_id.program_id].1 {
                                     if !read_only && kernel.inputs.contains(&arg) {
                                         device_program_map
@@ -263,8 +274,22 @@ impl Runtime {
                             .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
                             .collect();
                         let MemoryPool::OpenCL { buffers, .. } =
-                            &mut self.memory_pools[*memory_pool_id];
+                            &mut self.memory_pools[*memory_pool_id] else { panic!() };
                         events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
+                    }
+                    Device::CUDA {
+                        device: _,
+                        memory_pool_id,
+                        programs,
+                    } => {
+                        let (program, args) = &mut programs[program_id.program_id];
+                        let args: Vec<usize> = args
+                            .iter()
+                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
+                            .collect();
+                        let MemoryPool::CUDA { buffers, .. } =
+                            &mut self.memory_pools[*memory_pool_id] else { panic!() };
+                        events.insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
                     }
                 },
                 SchedulerOp::Finish(program_id) => {
@@ -295,7 +320,24 @@ impl Runtime {
                                 dst_mp.opencl_to_opencl(
                                     &src_buffers[src_bid],
                                     &dst_buffers[dst_bid],
-                                    bytes,
+                                )?;
+                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
+                                self.tensor_buffer_map.insert(
+                                    (*tensor_id, view.clone()),
+                                    BufferId {
+                                        memory_pool_id: *dst,
+                                        buffer_id: dst_bid,
+                                    },
+                                );
+                            }
+                            MemoryPool::CUDA {
+                                memory_pool: dst_mp,
+                                buffers: dst_buffers,
+                            } => {
+                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
+                                dst_mp.opencl_to_cuda(
+                                    &src_buffers[src_bid],
+                                    &dst_buffers[dst_bid],
                                 )?;
                                 src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
                                 self.tensor_buffer_map.insert(
@@ -329,6 +371,20 @@ impl Runtime {
                             },
                         );
                     }
+                    MemoryPool::CUDA {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let buffer = memory_pool.allocate(*bytes)?;
+                        let buffer_id = buffers.push(buffer);
+                        self.tensor_buffer_map.insert(
+                            (*tensor_id, view.clone()),
+                            BufferId {
+                                memory_pool_id: *memory_pool_id,
+                                buffer_id,
+                            },
+                        );
+                    }
                 },
                 SchedulerOp::Deallocate {
                     tensor_id,
@@ -336,7 +392,26 @@ impl Runtime {
                     bytes,
                     view,
                 } => match &mut self.memory_pools[*memory_pool_id] {
+                    // TODO probably just add macro for this, 'cause rust can't do this without macro
                     MemoryPool::OpenCL {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let _ = bytes;
+                        let key = &(*tensor_id, view.clone());
+                        if let Some(BufferId {
+                            memory_pool_id: buf_mpid,
+                            ..
+                        }) = self.tensor_buffer_map.get(key)
+                        {
+                            if buf_mpid == memory_pool_id {
+                                let BufferId { buffer_id, .. } =
+                                    self.tensor_buffer_map.remove(key).unwrap();
+                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
+                            }
+                        }
+                    }
+                    MemoryPool::CUDA {
                         memory_pool,
                         buffers,
                     } => {
@@ -401,6 +476,8 @@ impl Runtime {
 enum Event {
     #[allow(unused)]
     OpenCL(OpenCLEvent),
+    #[allow(unused)]
+    CUDA(CUDAEvent),
 }
 
 enum SchedulerOp {

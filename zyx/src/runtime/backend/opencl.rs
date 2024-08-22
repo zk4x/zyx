@@ -73,7 +73,7 @@ pub(crate) struct OpenCLMemoryPool {
 #[derive(Debug)]
 pub(crate) struct OpenCLBuffer {
     ptr: *mut c_void,
-    byte_size: usize,
+    bytes: usize,
     queue: *mut c_void, // This is the queue held by memory pool
 }
 
@@ -136,7 +136,7 @@ pub(crate) struct OpenCLProgram {
     local_work_size: [usize; 3],
     queue: *mut c_void, // points to device queue
     // Functions
-    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> cl_int,
+    clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> cl_int,
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -149,7 +149,7 @@ pub(crate) struct OpenCLProgram {
         *mut *mut c_void,
     ) -> cl_int,
     clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> cl_int,
-    clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> cl_int,
+    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> cl_int,
 }
 
 // Event associated with program launch
@@ -200,7 +200,7 @@ impl Drop for OpenCLMemoryPool {
 }
 
 pub(crate) fn initialize_opencl_backend(
-    config: OpenCLConfig,
+    config: &OpenCLConfig,
 ) -> Result<(Vec<OpenCLMemoryPool>, Vec<OpenCLDevice>), OpenCLError> {
     let opencl_lib_filenames = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
     let library = opencl_lib_filenames.iter().find_map(|path| if let Ok(lib) = unsafe { Library::new(path) } { Some(lib) } else { None } );
@@ -260,13 +260,13 @@ pub(crate) fn initialize_opencl_backend(
         // Get the number of platforms
         let mut count: cl_uint = 0;
         let status = unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut count) };
-        check(status, "Unable to get OpenCL platform ids.")?;
+        check(status, "Failed to get OpenCL platform ids.")?;
         if count > 0 {
             // Get the platform ids.
             let len = count as usize;
             let mut ids: Vec<*mut c_void> = Vec::with_capacity(len);
             let status = unsafe { clGetPlatformIDs(count, ids.as_mut_ptr(), ptr::null_mut()) };
-            check(status, "Unable to get OpenCL platform ids.")?;
+            check(status, "Failed to get OpenCL platform ids.")?;
             unsafe { ids.set_len(len) };
             ids
         } else {
@@ -317,7 +317,7 @@ pub(crate) fn initialize_opencl_backend(
                 Ok(Vec::default())
             }
         }
-        .map_err(|err| check(err, "Unable to get OpenCL device ids").err().unwrap()) else {
+        .map_err(|err| check(err, "Failed to get OpenCL device ids").err().unwrap()) else {
             continue;
         };
         let mut status = CL_SUCCESS;
@@ -331,7 +331,7 @@ pub(crate) fn initialize_opencl_backend(
                 &mut status,
             )
         };
-        let Ok(()) = check(status, "Unable to create OpenCL context") else {
+        let Ok(()) = check(status, "Failed to create OpenCL context") else {
             continue;
         };
         let mut total_bytes = 0;
@@ -342,7 +342,7 @@ pub(crate) fn initialize_opencl_backend(
                 let status = unsafe {
                     clGetPlatformInfo(platform, CL_PLATFORM_NAME, 0, ptr::null_mut(), &mut size)
                 };
-                let Ok(_) = check(status, "Unable to get platform info.") else { continue; };
+                let Ok(_) = check(status, "Failed to get platform info.") else { continue; };
                 if 0 < size {
                     let count = size / core::mem::size_of::<u8>();
                     let mut data: Vec<u8> = Vec::with_capacity(count);
@@ -356,7 +356,7 @@ pub(crate) fn initialize_opencl_backend(
                             ptr::null_mut(),
                         )
                     };
-                    match check(status, "Unable to get platform info.") {
+                    match check(status, "Failed to get platform info.") {
                         Ok(_) => Ok(data),
                         Err(err) => Err(err),
                     }
@@ -372,7 +372,7 @@ pub(crate) fn initialize_opencl_backend(
         }
         for dev in device_ids.iter().copied() {
             let queue = unsafe { clCreateCommandQueue(context, dev, 0, &mut status) };
-            let Ok(_) = check(status, "Unable to create device command queue") else {
+            let Ok(_) = check(status, "Failed to create device command queue") else {
                 continue;
             };
             let mut device = OpenCLDevice {
@@ -437,20 +437,20 @@ impl OpenCLMemoryPool {
                 &mut status,
             )
         };
-        check(status, "Unable to allocate memory.")?;
+        check(status, "Failed to allocate memory.")?;
         //println!("Allocated buffer {ptr:?}");
         self.free_bytes -= bytes;
         Ok(OpenCLBuffer {
             ptr,
-            byte_size: bytes,
+            bytes,
             queue: self.queue,
         })
     }
 
     pub(crate) fn deallocate(&mut self, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
         let status = unsafe { (self.clReleaseMemObject)(buffer.ptr) };
-        check(status, "Unable to free allocated memory")?;
-        self.free_bytes += buffer.byte_size;
+        check(status, "Failed to free allocated memory")?;
+        self.free_bytes += buffer.bytes;
         Ok(())
     }
 
@@ -474,10 +474,10 @@ impl OpenCLMemoryPool {
                 &mut event,
             )
         };
-        check(status, "Unable to write buffer.")?;
+        check(status, "Failed to write buffer.")?;
         // Immediattely synchronize because we do not know the lifetime of data
         let status = unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) };
-        check(status, "Unable to finish buffer write event.")?;
+        check(status, "Failed to finish buffer write event.")?;
         Ok(())
     }
 
@@ -488,12 +488,12 @@ impl OpenCLMemoryPool {
         &mut self,
         src: &OpenCLBuffer,
         dst: &OpenCLBuffer,
-        bytes: usize,
     ) -> Result<(), OpenCLError> {
         //println!("Moving from {src:?} to {dst:?}");
         // TODO going through host is slow
-        let mut data: Vec<u8> = Vec::with_capacity(bytes);
-        unsafe { data.set_len(bytes) };
+        assert_eq!(src.bytes, dst.bytes);
+        let mut data: Vec<u8> = Vec::with_capacity(dst.bytes);
+        unsafe { data.set_len(dst.bytes) };
         self.opencl_to_host(src, data.as_mut())?;
         //println!("Copied data: {data:?}");
         self.host_to_opencl(&data, dst)?;
@@ -524,9 +524,9 @@ impl OpenCLMemoryPool {
                 &mut event,
             )
         };
-        check(status, "Unable to read buffer.")?;
+        check(status, "Failed to read buffer.")?;
         let status = unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) };
-        check(status, "Unable to finish buffer write event.")?;
+        check(status, "Failed to finish buffer write event.")?;
         Ok(())
     }
 }
@@ -802,7 +802,7 @@ impl OpenCLDevice {
                 &mut status,
             )
         };
-        check(status, "Unable to compile program.")?;
+        check(status, "Failed to compile program.")?;
         let err = unsafe {
             (self.clBuildProgram)(
                 program,
@@ -821,14 +821,14 @@ impl OpenCLDevice {
             let build_log = self.get_program_build_data(program, CL_PROGRAM_BUILD_LOG);
             match build_log {
                 Ok(build_log) => panic!("{}", String::from_utf8_lossy(&build_log)),
-                Err(status) => check(status, "Unable to get info about failed compilation.")?,
+                Err(status) => check(status, "Failed to get info about failed compilation.")?,
             }
         }
         let mut status = CL_SUCCESS;
         let program_name = &CString::new(name.clone()).unwrap();
         let kernel =
             unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
-        check(status, "Unable to create kernel.")?;
+        check(status, "Failed to create kernel.")?;
         Ok(OpenCLProgram {
             kernel,
             program,
@@ -844,7 +844,7 @@ impl OpenCLDevice {
 }
 
 impl OpenCLProgram {
-    pub(crate) fn launch<'a>(
+    pub(crate) fn launch(
         &mut self,
         buffers: &mut IndexMap<OpenCLBuffer>,
         args: &[usize],
@@ -866,7 +866,7 @@ impl OpenCLProgram {
                     ptr.cast(),
                 )
             };
-            check(status, "Unable to set kernel arg.")?;
+            check(status, "Failend to set kernel arg.")?;
             i += 1;
         }
         let mut event: *mut c_void = ptr::null_mut();
@@ -883,7 +883,7 @@ impl OpenCLProgram {
                 &mut event,
             )
         };
-        check(status, "Unable to enqueue kernel.")?;
+        check(status, "Failed to enqueue kernel.")?;
         return Ok(OpenCLEvent {
             ptr: event,
             clWaitForEvents: self.clWaitForEvents,
@@ -894,7 +894,7 @@ impl OpenCLProgram {
 impl Drop for OpenCLEvent {
     fn drop(&mut self) {
         let status = unsafe { (self.clWaitForEvents)(1, (&[self.ptr]).as_ptr().cast()) };
-        check(status, "Unable to finish program.").unwrap();
+        check(status, "Failed to finish program.").unwrap();
     }
 }
 
@@ -999,7 +999,7 @@ impl OpenCLDevice {
             if CL_SUCCESS != status {
                 return Err(OpenCLError {
                     status: status.into(),
-                    info: format!("Unable to get device info {param_name}"),
+                    info: format!("Failed to get device info {param_name}"),
                 });
             } else {
                 Ok(size)
@@ -1024,7 +1024,7 @@ impl OpenCLDevice {
                 if CL_SUCCESS != status {
                     Err(OpenCLError {
                         status: status.into(),
-                        info: format!("Unable to get {param_name}"),
+                        info: format!("Failed to get {param_name}"),
                     })
                 } else {
                     Ok(data)
