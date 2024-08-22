@@ -16,7 +16,7 @@ use std::{
     rc::Rc,
 };
 
-use super::{cuda::CUDABuffer, DeviceInfo};
+use super::DeviceInfo;
 
 // OpenCL does not have the concept of memory pools,
 // so we simply say it is all in one memory pool
@@ -202,11 +202,11 @@ impl Drop for OpenCLMemoryPool {
 pub(crate) fn initialize_opencl_backend(
     config: &OpenCLConfig,
 ) -> Result<(Vec<OpenCLMemoryPool>, Vec<OpenCLDevice>), OpenCLError> {
-    let opencl_lib_filenames = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
-    let library = opencl_lib_filenames.iter().find_map(|path| if let Ok(lib) = unsafe { Library::new(path) } { Some(lib) } else { None } );
-    let Some(library) = library else { return Err(OpenCLError { info: "OpenCL runtime not found.".into(), status: OpenCLStatus::UNKNOWN }) };
+    let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
+    let opencl = opencl_paths.iter().find_map(|path| if let Ok(lib) = unsafe { Library::new(path) } { Some(lib) } else { None } );
+    let Some(opencl) = opencl else { return Err(OpenCLError { info: "OpenCL runtime not found.".into(), status: OpenCLStatus::UNKNOWN }) };
     let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> cl_int =
-        *unsafe { library.get(b"clGetPlatformIDs\0") }.unwrap();
+        *unsafe { opencl.get(b"clGetPlatformIDs\0") }.unwrap();
     let clCreateContext: unsafe extern "C" fn(
         *const isize,
         cl_uint,
@@ -214,36 +214,36 @@ pub(crate) fn initialize_opencl_backend(
         Option<unsafe extern "C" fn(*const i8, *const c_void, usize, *mut c_void)>,
         *mut c_void,
         *mut cl_int,
-    ) -> *mut c_void = *unsafe { library.get(b"clCreateContext\0") }.unwrap();
+    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateContext\0") }.unwrap();
     let clCreateCommandQueue: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
         cl_bitfield,
         *mut cl_int,
-    ) -> *mut c_void = *unsafe { library.get(b"clCreateCommandQueue\0") }.unwrap();
+    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateCommandQueue\0") }.unwrap();
     let clGetDeviceIDs: unsafe extern "C" fn(
         *mut c_void,
         cl_bitfield,
         cl_uint,
         *mut *mut c_void,
         *mut cl_uint,
-    ) -> cl_int = *unsafe { library.get(b"clGetDeviceIDs\0") }.unwrap();
-    let clWaitForEvents = *unsafe { library.get(b"clWaitForEvents\0") }.unwrap();
-    let clReleaseCommandQueue = *unsafe { library.get(b"clReleaseCommandQueue\0") }.unwrap();
-    let clEnqueueNDRangeKernel = *unsafe { library.get(b"clEnqueueNDRangeKernel\0") }.unwrap();
-    let clGetProgramBuildInfo = *unsafe { library.get(b"clGetProgramBuildInfo\0") }.unwrap();
-    let clBuildProgram = *unsafe { library.get(b"clBuildProgram\0") }.unwrap();
-    let clReleaseProgram = *unsafe { library.get(b"clReleaseProgram\0") }.unwrap();
-    let clReleaseContext = *unsafe { library.get(b"clReleaseContext\0") }.unwrap();
-    let clSetKernelArg = *unsafe { library.get(b"clSetKernelArg\0") }.unwrap();
-    let clCreateKernel = *unsafe { library.get(b"clCreateKernel\0") }.unwrap();
-    let clReleaseMemObject = *unsafe { library.get(b"clReleaseMemObject\0") }.unwrap();
-    let clGetDeviceInfo = *unsafe { library.get(b"clGetDeviceInfo\0") }.unwrap();
+    ) -> cl_int = *unsafe { opencl.get(b"clGetDeviceIDs\0") }.unwrap();
+    let clWaitForEvents = *unsafe { opencl.get(b"clWaitForEvents\0") }.unwrap();
+    let clReleaseCommandQueue = *unsafe { opencl.get(b"clReleaseCommandQueue\0") }.unwrap();
+    let clEnqueueNDRangeKernel = *unsafe { opencl.get(b"clEnqueueNDRangeKernel\0") }.unwrap();
+    let clGetProgramBuildInfo = *unsafe { opencl.get(b"clGetProgramBuildInfo\0") }.unwrap();
+    let clBuildProgram = *unsafe { opencl.get(b"clBuildProgram\0") }.unwrap();
+    let clReleaseProgram = *unsafe { opencl.get(b"clReleaseProgram\0") }.unwrap();
+    let clReleaseContext = *unsafe { opencl.get(b"clReleaseContext\0") }.unwrap();
+    let clSetKernelArg = *unsafe { opencl.get(b"clSetKernelArg\0") }.unwrap();
+    let clCreateKernel = *unsafe { opencl.get(b"clCreateKernel\0") }.unwrap();
+    let clReleaseMemObject = *unsafe { opencl.get(b"clReleaseMemObject\0") }.unwrap();
+    let clGetDeviceInfo = *unsafe { opencl.get(b"clGetDeviceInfo\0") }.unwrap();
     let clCreateProgramWithSource =
-        *unsafe { library.get(b"clCreateProgramWithSource\0") }.unwrap();
-    let clEnqueueReadBuffer = *unsafe { library.get(b"clEnqueueReadBuffer\0") }.unwrap();
-    let clEnqueueWriteBuffer = *unsafe { library.get(b"clEnqueueWriteBuffer\0") }.unwrap();
-    let clCreateBuffer = *unsafe { library.get(b"clCreateBuffer\0") }.unwrap();
+        *unsafe { opencl.get(b"clCreateProgramWithSource\0") }.unwrap();
+    let clEnqueueReadBuffer = *unsafe { opencl.get(b"clEnqueueReadBuffer\0") }.unwrap();
+    let clEnqueueWriteBuffer = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }.unwrap();
+    let clCreateBuffer = *unsafe { opencl.get(b"clCreateBuffer\0") }.unwrap();
 
     #[cfg(feature = "debug_dev")]
     let clGetPlatformInfo: unsafe extern "C" fn(
@@ -252,9 +252,9 @@ pub(crate) fn initialize_opencl_backend(
         usize,
         *mut c_void,
         *mut usize,
-    ) -> cl_int = *unsafe { library.get(b"clGetPlatformInfo\0") }.unwrap();
+    ) -> cl_int = *unsafe { opencl.get(b"clGetPlatformInfo\0") }.unwrap();
 
-    let library = Rc::new(library);
+    let library = Rc::new(opencl);
 
     let platform_ids = {
         // Get the number of platforms
@@ -365,7 +365,7 @@ pub(crate) fn initialize_opencl_backend(
                 }
             } {
                 println!(
-                    "Using OpenCL platform {} on devices:",
+                    "Using OpenCL backend, platform {} on devices:",
                     String::from_utf8(platform_name).unwrap()
                 );
             }
