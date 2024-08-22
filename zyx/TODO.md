@@ -1,25 +1,27 @@
-- [ ] check caching of compiled graphs
 - [x] deallocation of memory
-- [ ] deallocation of intermediate buffers in scheduler
 - [ ] implement sharding
 - [x] padded view permute
 - [ ] test padded view permute
-- [ ] cuda backend
 - [ ] ptx compiler
 - [ ] more tests
-- [ ] local memory caching
-- [ ] bigger accumulators
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
 - [x] dynamic loading of backends at runtime
 - [x] test reshape split
+- [x] repeat
+- [ ] remove duplicated code from IR
+
+## Release blockers
+
+- [ ] local memory caching
+- [ ] bigger accumulators
 - [ ] randn
 - [ ] cumsum
 - [ ] pool
 - [ ] conv
-- [x] repeat
-- [ ] remove duplicated code from IR
-
+- [ ] cuda backend
+- [ ] deallocation of intermediate buffers in scheduler
+- [ ] check caching of compiled graphs
 
 ## Advanced graph caching
 

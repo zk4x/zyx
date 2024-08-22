@@ -206,31 +206,41 @@ impl Runtime {
             });
             self.initialize_backends(BackendConfig::default())?;
             let bytes = data.len() * T::byte_size();
-            if let Some((memory_pool_id, memory_pool)) = self.memory_pools.iter_mut().enumerate().find(|(_, mp)| mp.free_bytes() > bytes) {
-                // Search for first memory pool where we can put this tensor
-                let buffer_id = match memory_pool {
-                    MemoryPool::OpenCL {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let buffer_id =
-                            buffers.push(memory_pool.allocate(bytes)?);
-                        let ptr: *const u8 = data.as_ptr().cast();
-                        memory_pool.host_to_opencl(
-                            unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                            &mut buffers[buffer_id],
-                        )?;
-                        BufferId {
-                            memory_pool_id,
-                            buffer_id,
-                        }
-                    }
-                };
-                self.tensor_buffer_map
-                    .insert((id, View::new(self.shape(id))), buffer_id);
-            } else {
+            // Put it into memory pool with fastest device out of memory pools with enough free capacity
+            let mem_pools: Vec<usize> = self.memory_pools.iter().enumerate().filter_map(|(id, mp)| if mp.free_bytes() > bytes { Some(id) } else { None }).collect();
+            if mem_pools.is_empty() {
                 return Err(ZyxError::AllocationError);
+            }
+            // Pick memory pool with fastest device
+            let mut memory_pool_id = mem_pools[0];
+            let mut max_compute = 0;
+            for dev in &self.devices {
+                if dev.compute() > max_compute && mem_pools.contains(&dev.memory_pool_id()) {
+                    max_compute = dev.compute();
+                    memory_pool_id = dev.memory_pool_id();
+                }
+            }
+            // Search for first memory pool where we can put this tensor
+            let buffer_id = match &mut self.memory_pools[memory_pool_id] {
+                MemoryPool::OpenCL {
+                    memory_pool,
+                    buffers,
+                } => {
+                    let buffer_id =
+                        buffers.push(memory_pool.allocate(bytes)?);
+                    let ptr: *const u8 = data.as_ptr().cast();
+                    memory_pool.host_to_opencl(
+                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
+                        &mut buffers[buffer_id],
+                    )?;
+                    BufferId {
+                        memory_pool_id,
+                        buffer_id,
+                    }
+                }
             };
+            self.tensor_buffer_map
+                .insert((id, View::new(self.shape(id))), buffer_id);
             Ok(id)
         }
     }
@@ -913,6 +923,12 @@ impl Device {
                 memory_pool_id: _,
                 programs: _,
             } => device.info().compute,
+        }
+    }
+
+    fn memory_pool_id(&self) -> MemoryPoolId {
+        match self {
+            Device::OpenCL { memory_pool_id, ..} => *memory_pool_id,
         }
     }
 }
