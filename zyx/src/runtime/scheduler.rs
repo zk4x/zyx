@@ -397,7 +397,9 @@ impl Runtime {
     }
 }
 
+// Just read only, when event is dropped, it automatically finishes associated program
 enum Event {
+    #[allow(unused)]
     OpenCL(OpenCLEvent),
 }
 
@@ -488,6 +490,37 @@ pub(super) struct Kernel {
     // Register variables
     vars: BTreeSet<TensorId>,
     pub(super) ops: Vec<VOp>,
+    pub(super) optimizations: Vec<Optimization>,
+}
+
+// Optimizations get applied to existing kernels after
+// they are assigned to devices.
+#[derive(Debug)]
+enum Optimization {
+    // Unrolls loop with given id
+    UnrollLoop {
+        loop_id: usize,
+    },
+    // Converts all variables in loop into native vector dtypes
+    // and removes the loop.
+    VectorDtype {
+        loop_id: usize,
+    },
+    // Load tensor first into local tile, then into registers
+    // this is used mainly for expanded tensors, so use threads
+    // from one local work group to load the tile and then sync loads
+    // before loading into registers
+    LocalTile {
+        x: TensorId,
+        view: View,
+    },
+    // Tile tensor in registers with given view
+    RegisterTile {
+        x: TensorId,
+        view: View,
+    },
+    // TensorCores,
+    // WMMA
 }
 
 impl Kernel {
@@ -514,6 +547,7 @@ impl Kernel {
             outputs: BTreeSet::new(),
             vars: BTreeSet::from([x]),
             ops,
+            optimizations: Vec::new(),
         }
     }
 
@@ -674,7 +708,9 @@ impl Kernel {
     }
 
     fn optimize(&mut self, dev_info: &DeviceInfo) {
-        // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels
+        // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
+        // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
+        // tensor cores, just a ton of stuff. Later add search over different optimizations.
         // Get the number of loops before any other operation
         let num_loops = self
             .ops
@@ -830,6 +866,7 @@ fn generate_kernels(
                         outputs: BTreeSet::new(),
                         vars: BTreeSet::from([nid]),
                         ops,
+                        optimizations: Vec::new(),
                     })
                 }
             }
@@ -1047,6 +1084,7 @@ fn generate_kernels(
                             outputs: BTreeSet::new(),
                             vars: BTreeSet::from([nid]),
                             ops,
+                            optimizations: Vec::new(),
                         });
                     }
                 }

@@ -202,8 +202,9 @@ impl Drop for OpenCLMemoryPool {
 pub(crate) fn initialize_opencl_backend(
     config: OpenCLConfig,
 ) -> Result<(Vec<OpenCLMemoryPool>, Vec<OpenCLDevice>), OpenCLError> {
-    let opencl_lib_filename = "/lib64/libOpenCL.so";
-    let library = unsafe { Library::new(opencl_lib_filename) }.unwrap();
+    let opencl_lib_filenames = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
+    let library = opencl_lib_filenames.iter().find_map(|path| if let Ok(lib) = unsafe { Library::new(path) } { Some(lib) } else { None } );
+    let Some(library) = library else { return Err(OpenCLError { info: "OpenCL runtime not found.".into(), status: OpenCLStatus::UNKNOWN }) };
     let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> cl_int =
         *unsafe { library.get(b"clGetPlatformIDs\0") }.unwrap();
     let clCreateContext: unsafe extern "C" fn(
@@ -1148,8 +1149,10 @@ impl From<cl_int> for OpenCLStatus {
 fn get_compute(device_name: &str) -> u128 {
     match device_name.to_lowercase() {
         x if x.contains("i5-4460") => 300 * 1024 * 1024 * 1024,
-        x if x.contains("rx 550") => 1200 * 1024 * 1024 * 1024,
+        x if x.contains("i5-2500") => 150 * 1024 * 1024 * 1024,
         x if x.contains("ryzen 5 5500u") => 300 * 1024 * 1024 * 1024,
+        x if x.contains("rx 550") => 1200 * 1024 * 1024 * 1024,
+        x if x.contains("gtx 745") => 900 * 1024 * 1024 * 1024,
         _ => {
             #[cfg(feature = "debug_dev")]
             println!("Unknown device {device_name}, guessing compute capability");
