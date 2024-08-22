@@ -7,6 +7,7 @@ use backend::cuda::{initialize_cuda_backend, CUDABuffer, CUDAConfig, CUDADevice,
 use backend::opencl::{
     initialize_opencl_backend, OpenCLBuffer, OpenCLConfig, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
 };
+use backend::DeviceInfo;
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
 use std::fmt::Display;
@@ -997,6 +998,13 @@ impl Device {
         match self {
             Device::OpenCL { memory_pool_id, ..} => *memory_pool_id,
             Device::CUDA { memory_pool_id, ..} => *memory_pool_id,
+        }
+    }
+
+    fn info(&self) -> &DeviceInfo {
+        match self {
+            Device::CUDA { device, .. } => device.info(),
+            Device::OpenCL { device, .. } => device.info(),
         }
     }
 }

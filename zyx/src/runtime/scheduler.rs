@@ -131,51 +131,68 @@ impl Runtime {
                     .unwrap()
                     .0;
 
+                kernel.optimize(self.devices[device_id].info());
+                #[cfg(feature = "debug_sched")]
+                kernel.debug();
+                let memory_pool_id = self.devices[device_id].memory_pool_id();
+                // Allocate memory for outputs
+                for output in &kernel.outputs {
+                    let key = (*output, View::new(graph.shape(*output)));
+                    if !tensor_buffer_map.contains_key(&key) {
+                        let shape = graph.shape(*output);
+                        let view = View::new(shape);
+                        sched_graph.push(SchedulerOp::Allocate {
+                            tensor_id: *output,
+                            memory_pool_id,
+                            bytes: shape.iter().product::<usize>()
+                                * graph.dtype(*output).byte_size(),
+                            view: view.clone(),
+                        });
+                        tensor_buffer_map.insert((*output, view), memory_pool_id);
+                    }
+                }
+                // Move necessary inputs to memory pool associated with this device
+                for input in &kernel.inputs {
+                    let view = View::new(graph.shape(*input));
+                    let buf_mpid =
+                        tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
+                    //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
+                    if buf_mpid != memory_pool_id {
+                        sched_graph.push(SchedulerOp::Move {
+                            tensor_id: *input,
+                            dst: memory_pool_id,
+                            view: view.clone(),
+                        });
+                        tensor_buffer_map.insert((*input, view), memory_pool_id);
+                    }
+                }
+                for program_id in program_wait_list {
+                    sched_graph.push(SchedulerOp::Finish(program_id));
+                }
+                let (ir_kernel, args) = kernel.to_ir(&graph);
                 let program_id = match &mut self.devices[device_id] {
                     Device::OpenCL {
                         device,
-                        memory_pool_id,
                         programs,
+                        ..
                     } => {
-                        let memory_pool_id = *memory_pool_id;
-                        kernel.optimize(device.info());
-                        #[cfg(feature = "debug_sched")]
-                        kernel.debug();
-                        // Allocate memory for outputs
-                        for output in &kernel.outputs {
-                            let key = (*output, View::new(graph.shape(*output)));
-                            if !tensor_buffer_map.contains_key(&key) {
-                                let shape = graph.shape(*output);
-                                let view = View::new(shape);
-                                sched_graph.push(SchedulerOp::Allocate {
-                                    tensor_id: *output,
-                                    memory_pool_id,
-                                    bytes: shape.iter().product::<usize>()
-                                        * graph.dtype(*output).byte_size(),
-                                    view: view.clone(),
-                                });
-                                tensor_buffer_map.insert((*output, view), memory_pool_id);
-                            }
-                        }
-                        // Move necessary inputs to memory pool associated with this device
-                        for input in &kernel.inputs {
-                            let view = View::new(graph.shape(*input));
-                            let buf_mpid =
-                                tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
-                            //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
-                            if buf_mpid != memory_pool_id {
-                                sched_graph.push(SchedulerOp::Move {
-                                    tensor_id: *input,
-                                    dst: memory_pool_id,
-                                    view: view.clone(),
-                                });
-                                tensor_buffer_map.insert((*input, view), memory_pool_id);
-                            }
-                        }
-                        for program_id in program_wait_list {
-                            sched_graph.push(SchedulerOp::Finish(program_id));
-                        }
-                        let (ir_kernel, args) = kernel.to_ir(&graph);
+                        let program = device.compile(&ir_kernel)?;
+                        // Since it is not sharded, sharding view is contiguous
+                        programs.push((
+                            program,
+                            args.into_iter()
+                                .map(|(arg, read_only)| {
+                                    (arg, View::new(graph.shape(arg)), read_only)
+                                })
+                                .collect(),
+                        ));
+                        programs.len() - 1
+                    }
+                    Device::CUDA {
+                        device,
+                        programs,
+                        ..
+                    } => {
                         let program = device.compile(&ir_kernel)?;
                         // Since it is not sharded, sharding view is contiguous
                         programs.push((
@@ -335,7 +352,60 @@ impl Runtime {
                                 buffers: dst_buffers,
                             } => {
                                 let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
-                                dst_mp.opencl_to_cuda(
+                                let mut data: Vec<u8> = Vec::with_capacity(bytes);
+                                unsafe { data.set_len(bytes) };
+                                src_mp.opencl_to_host(
+                                    &src_buffers[src_bid],
+                                    &mut data,
+                                )?;
+                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
+                                dst_mp.host_to_cuda(
+                                    &data,
+                                    &dst_buffers[dst_bid],
+                                )?;
+                                self.tensor_buffer_map.insert(
+                                    (*tensor_id, view.clone()),
+                                    BufferId {
+                                        memory_pool_id: *dst,
+                                        buffer_id: dst_bid,
+                                    },
+                                );
+                            }
+                        },
+                        MemoryPool::CUDA {
+                            memory_pool: src_mp,
+                            buffers: src_buffers,
+                        } => match &mut dst_mps[0] {
+                            MemoryPool::OpenCL {
+                                memory_pool: dst_mp,
+                                buffers: dst_buffers,
+                            } => {
+                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
+                                let mut data: Vec<u8> = Vec::with_capacity(bytes);
+                                unsafe { data.set_len(bytes) };
+                                src_mp.cuda_to_host(
+                                    &src_buffers[src_bid],
+                                    &mut data,
+                                )?;
+                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
+                                dst_mp.host_to_opencl(
+                                    &data,
+                                    &dst_buffers[dst_bid],
+                                )?;
+                                self.tensor_buffer_map.insert(
+                                    (*tensor_id, view.clone()),
+                                    BufferId {
+                                        memory_pool_id: *dst,
+                                        buffer_id: dst_bid,
+                                    },
+                                );
+                            }
+                            MemoryPool::CUDA {
+                                memory_pool: dst_mp,
+                                buffers: dst_buffers,
+                            } => {
+                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
+                                dst_mp.cuda_to_cuda(
                                     &src_buffers[src_bid],
                                     &dst_buffers[dst_bid],
                                 )?;

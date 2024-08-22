@@ -16,7 +16,7 @@ use std::{
     rc::Rc,
 };
 
-use super::DeviceInfo;
+use super::{cuda::CUDABuffer, DeviceInfo};
 
 // OpenCL does not have the concept of memory pools,
 // so we simply say it is all in one memory pool
@@ -481,25 +481,6 @@ impl OpenCLMemoryPool {
         Ok(())
     }
 
-    // Perhaps this can be done directly, for now we go through host
-    //pub(crate) fn cuda_to_opencl(&mut self, src: Buffer, dst: Buffer) -> Result<(), OpenCLError> {}
-
-    pub(crate) fn opencl_to_opencl(
-        &mut self,
-        src: &OpenCLBuffer,
-        dst: &OpenCLBuffer,
-    ) -> Result<(), OpenCLError> {
-        //println!("Moving from {src:?} to {dst:?}");
-        // TODO going through host is slow
-        assert_eq!(src.bytes, dst.bytes);
-        let mut data: Vec<u8> = Vec::with_capacity(dst.bytes);
-        unsafe { data.set_len(dst.bytes) };
-        self.opencl_to_host(src, data.as_mut())?;
-        //println!("Copied data: {data:?}");
-        self.host_to_opencl(&data, dst)?;
-        Ok(())
-    }
-
     pub(crate) fn opencl_to_host(
         &mut self,
         src: &OpenCLBuffer,
@@ -527,6 +508,22 @@ impl OpenCLMemoryPool {
         check(status, "Failed to read buffer.")?;
         let status = unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) };
         check(status, "Failed to finish buffer write event.")?;
+        Ok(())
+    }
+
+    pub(crate) fn opencl_to_opencl(
+        &mut self,
+        src: &OpenCLBuffer,
+        dst: &OpenCLBuffer,
+    ) -> Result<(), OpenCLError> {
+        //println!("Moving from {src:?} to {dst:?}");
+        // TODO going through host is slow
+        assert_eq!(src.bytes, dst.bytes);
+        let mut data: Vec<u8> = Vec::with_capacity(dst.bytes);
+        unsafe { data.set_len(dst.bytes) };
+        self.opencl_to_host(src, data.as_mut())?;
+        //println!("Copied data: {data:?}");
+        self.host_to_opencl(&data, dst)?;
         Ok(())
     }
 }

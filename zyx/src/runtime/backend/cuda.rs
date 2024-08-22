@@ -1,4 +1,4 @@
-use crate::index_map::IndexMap;
+use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 use super::{opencl::OpenCLBuffer, DeviceInfo};
 
@@ -86,14 +86,6 @@ impl CUDAMemoryPool {
     ) -> Result<(), CUDAError> {
         todo!()
     }
-
-    pub(crate) fn opencl_to_cuda(
-        &mut self,
-        src: &OpenCLBuffer,
-        dst: &CUDABuffer,
-    ) -> Result<(), CUDAError> {
-        todo!()
-    }
 }
 
 impl CUDADevice {
@@ -104,6 +96,10 @@ impl CUDADevice {
     // Memory pool id out of OpenCLMemoryPools
     pub(crate) fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
+    }
+
+    pub(crate) fn compile(&mut self, kernel: &IRKernel) -> Result<CUDAProgram, CUDAError> {
+        todo!()
     }
 }
 
