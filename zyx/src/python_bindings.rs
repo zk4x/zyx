@@ -1,12 +1,14 @@
-use std::vec::Vec;
-
 use pyo3::{
-    pymethods, pymodule,
-    types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple},
-    Bound, PyResult,
+    exceptions::PyOSError, pymethods, pymodule, types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple}, Bound, PyAny, PyErr, PyResult
 };
 
-use crate::{DType, Device, Tensor};
+use crate::{runtime::{BackendConfig, ZyxError}, DType, Tensor};
+
+impl From<ZyxError> for PyErr {
+    fn from(err: ZyxError) -> Self {
+        PyOSError::new_err(format!("{err:?}"))
+    }
+}
 
 #[pymethods]
 impl Tensor {
@@ -15,6 +17,18 @@ impl Tensor {
     pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) {
         let tensors: Vec<Tensor> = tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
         Tensor::plot_dot_graph(&tensors, name);
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "configure_backends")]
+    pub fn configure_backends_py(config: &BackendConfig) -> Result<(), ZyxError> {
+        Tensor::configure_backends(config)
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "manual_seed")]
+    pub fn manual_seed_py(seed: u64) {
+        Tensor::manual_seed(seed)
     }
 
     #[staticmethod]
@@ -39,7 +53,7 @@ impl Tensor {
 
     #[staticmethod]
     #[pyo3(name = "realize")]
-    pub fn realize_py(tensors: &Bound<'_, PyList>) {
+    pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
         let tensors: Vec<Tensor> = tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
         Tensor::realize(&tensors)
     }
@@ -152,6 +166,30 @@ impl Tensor {
     pub fn exp_py(&self) -> Tensor {
         return self.exp();
     }
+
+    #[must_use]
+    #[pyo3(name = "gelu")]
+    pub fn gelu_py(&self) -> Tensor {
+        return self.gelu();
+    }
+
+    #[must_use]
+    #[pyo3(name = "leaky_relu")]
+    pub fn leaky_relu_py(&self, neg_slope: &Bound<'_, PyAny>) -> Tensor {
+        if let Ok(ns) = neg_slope.extract::<f64>() {
+            return self.leaky_relu(ns);
+        }
+        if let Ok(ns) = neg_slope.extract::<i64>() {
+            return self.leaky_relu(ns);
+        }
+        panic!("neg_slope must be numeric");
+    }
+
+    #[must_use]
+    #[pyo3(name = "ln")]
+    pub fn ln_py(&self) -> Tensor {
+        return self.ln();
+    }
 }
 
 /// A Python module implemented in Rust.
@@ -160,6 +198,7 @@ impl Tensor {
 fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Tensor>()?;
     m.add_class::<DType>()?;
+    m.add_class::<BackendConfig>()?;
     //m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
 }

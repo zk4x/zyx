@@ -14,6 +14,7 @@ pub use dtype::DType;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
+pub use runtime::BackendConfig;
 
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 

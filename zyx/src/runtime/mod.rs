@@ -35,6 +35,7 @@ mod node;
 mod scheduler;
 mod view;
 
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct BackendConfig {
     opencl: OpenCLConfig,
     cuda: CUDAConfig,
@@ -120,7 +121,7 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn configure_backends(&mut self, config: BackendConfig) -> Result<(), ZyxError> {
+    pub(crate) fn configure_backends(&mut self, config: &BackendConfig) -> Result<(), ZyxError> {
         if !self.devices.is_empty() {
             return Err(ZyxError::BackendConfig("Unable to configure backends after they were initialized."))
         }
@@ -190,6 +191,10 @@ impl Runtime {
         // some nodes for bitshifts and such.
         let n: usize = shape.iter().product();
         match T::dtype() {
+            #[cfg(feature = "half")]
+            DType::BF16 => todo!(),
+            #[cfg(feature = "half")]
+            DType::F16 => todo!(),
             DType::F32 => {
                 let range = Uniform::new(start.cast::<f32>(), end.cast::<f32>());
                 self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
@@ -198,7 +203,17 @@ impl Runtime {
                 self.temp(shape, &data)
             }
             DType::F64 => todo!(),
-            DType::U8 => todo!(),
+            #[cfg(feature = "complex")]
+            DType::CF32 => todo!(),
+            #[cfg(feature = "complex")]
+            DType::CF64 => todo!(),
+            DType::U8 => {
+                let range = Uniform::new(start.cast::<u8>(), end.cast::<u8>());
+                self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
+                let rng = self.rng.get_mut().unwrap();
+                let data: Vec<u8> = (0..n).map(|_| rng.sample(&range)).collect();
+                self.temp(shape, &data)
+            }
             DType::I8 => todo!(),
             DType::I16 => todo!(),
             DType::I32 => todo!(),
@@ -222,7 +237,7 @@ impl Runtime {
                 shape,
                 dtype: T::dtype(),
             });
-            self.initialize_backends(BackendConfig::default())?;
+            self.initialize_backends(&BackendConfig::default())?;
             let bytes = data.len() * T::byte_size();
             // Put it into memory pool with fastest device out of memory pools with enough free capacity
             let mem_pools: Vec<usize> = self.memory_pools.iter().enumerate().filter_map(|(id, mp)| if mp.free_bytes() > bytes { Some(id) } else { None }).collect();
@@ -538,7 +553,7 @@ impl Runtime {
     // Does nothing if devices were already initialized.
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
-    fn initialize_backends(&mut self, backend_config: BackendConfig) -> Result<(), ZyxError> {
+    fn initialize_backends(&mut self, backend_config: &BackendConfig) -> Result<(), ZyxError> {
         if !self.devices.is_empty() {
             return Ok(());
         }
@@ -621,7 +636,7 @@ impl Runtime {
             return Ok(());
         }
         if self.devices.is_empty() {
-            self.initialize_backends(BackendConfig::default())?;
+            self.initialize_backends(&BackendConfig::default())?;
         }
         let graph = self.graph.realize_graph(&tensors, |x| {
             self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)

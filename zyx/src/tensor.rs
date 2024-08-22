@@ -62,7 +62,7 @@ impl Tensor {
         }
     }
 
-    pub fn configure_backends(config: BackendConfig) -> Result<(), ZyxError> {
+    pub fn configure_backends(config: &BackendConfig) -> Result<(), ZyxError> {
         RT.lock().configure_backends(config)
     }
 
@@ -137,11 +137,21 @@ impl Tensor {
         // This can be generated from uniform or just generate on cpu
         // and pass into device whole buffer
         match dtype {
+            #[cfg(feature = "half")]
+            DType::BF16 => todo!(),
+            #[cfg(feature = "half")]
+            DType::F16 => todo!(),
             DType::F32 => {
                 Tensor::uniform(shape.clone(), -1f32..1f32) / Tensor::uniform(shape, -1f32..1f32)
             }
             DType::F64 => todo!(),
-            DType::U8 => todo!(),
+            #[cfg(feature = "complex")]
+            DType::CF32 => todo!(),
+            #[cfg(feature = "complex")]
+            DType::CF64 => todo!(),
+            DType::U8 => {
+                Tensor::uniform(shape.clone(), 0u8..255u8) / Tensor::uniform(shape, 0u8..255u8)
+            }
             DType::I8 => todo!(),
             DType::I16 => todo!(),
             DType::I32 => todo!(),

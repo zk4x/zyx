@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use std::ffi::{c_char, c_int, c_uint, CStr};
+use std::ffi::{c_char, c_int, c_uint};
 use std::ptr;
 
 use libloading::Library;
@@ -172,7 +172,7 @@ pub(crate) fn initialize_cuda_backend(config: &CUDAConfig) -> Result<(Vec<CUDAMe
         unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }.check("Failed to get CUDA device compute capability.")?;
         #[cfg(feature = "debug_dev")]
         println!("{:?}, compute capability: {major}.{minor}", unsafe {
-            CStr::from_ptr(device_name.as_ptr())
+            std::ffi::CStr::from_ptr(device_name.as_ptr())
         });
         let mut context: CUcontext = ptr::null_mut();
         unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Unable to create CUDA context.")?;
