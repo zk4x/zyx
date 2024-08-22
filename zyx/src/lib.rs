@@ -68,8 +68,8 @@ fn t3() {
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
-    let x = Tensor::randn([1024, 1024], DType::F32);
-    let y = Tensor::randn([1024, 1024], DType::F32);
+    let x = Tensor::uniform([1024, 1024], 0f32..1f32);
+    let y = Tensor::uniform([1024, 1024], 0f32..1f32);
     //let z = (x * y).sum(2);
     let z = x.dot(y);
     Tensor::realize([&z]).unwrap();
@@ -98,6 +98,7 @@ fn t6() {
 #[test]
 fn t7() {
     let x = Tensor::from([[2, 3], [4, 5]]);
+    //let x = x.pad_zeros([(0, 1)]);
     let x = x.pad_zeros([(4, 3), (1, 2)]);
     //Tensor::plot_dot_graph([], "graph0");
     println!("{x}")

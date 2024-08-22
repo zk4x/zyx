@@ -175,7 +175,7 @@ impl Kernel {
             match vop {
                 VOp::Const { z, value, view } => {
                     let var = if view.requires_conditional_padding() {
-                        vars.generate_padding(view, &mut ops, Var::Const(*value), graph.rc(*z), value.dtype())
+                        vars.generate_padding(view, &mut ops, Var::Const(*value), graph.rc(*z), value.dtype(), None)
                     } else {
                         Var::Const(*value)
                     };
@@ -191,17 +191,18 @@ impl Kernel {
                     let zt = *z;
                     let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
                     if view.requires_conditional_padding() {
-                        let var = vars.generate_padding(view, &mut ops, z, graph.rc(zt), graph.dtype(zt));
+                        let var = vars.generate_padding(view, &mut ops, z, graph.rc(zt), graph.dtype(zt), Some((x, at, dtype)));
                         vars.var_map.remove(&(zt, Scope::Register));
                         vars.var_map.insert((zt, Scope::Register), var);
+                    } else {
+                        ops.push(IROp::Load {
+                            z,
+                            x,
+                            at,
+                            dtype,
+                        });
+                        vars.remove_var(at);
                     }
-                    ops.push(IROp::Load {
-                        z,
-                        x,
-                        at,
-                        dtype,
-                    });
-                    vars.remove_var(at);
                 }
                 VOp::Store { z, view } => {
                     let dtype = graph.dtype(*z).into();
@@ -383,8 +384,9 @@ impl VarMap {
             View::None => Var::Const(Constant::I64(0)),
             View::Strided(dims) => {
                 let z = self.zero_var(ops);
+                let numel = dims.iter().flat_map(|StridedDim { dim, stride, .. }| if *stride != 0 { Some(*dim) } else { None }).product();
                 for StridedDim { axis, stride, .. } in dims {
-                    if *stride != 0 {
+                    if *stride != 0 && *stride != numel {
                         let a = self.get_axis(*axis);
                         ops.push(IROp::MAdd {
                             z,
@@ -405,9 +407,9 @@ impl VarMap {
                         .iter()
                         .find(|(axes, _)| axes.iter().max().unwrap() == axis)
                     {
-                        //std::println!("Padding {id} with {lp}, {rp}");
+                        println!("Padding {axis} with {lp}");
                         if *lp > 0 {
-                            ops.push(IROp::AMAdd {
+                            ops.push(IROp::SMAdd {
                                 z,
                                 a: self.get_axis(*axis),
                                 b: Var::Const(Constant::I64(*lp as i64)),
@@ -417,7 +419,7 @@ impl VarMap {
                             });
                         } else if *lp < 0 {
                             let lp = -lp;
-                            ops.push(IROp::SMAdd {
+                            ops.push(IROp::AMAdd {
                                 z,
                                 a: self.get_axis(*axis),
                                 b: Var::Const(Constant::I64(lp as i64)),
@@ -451,8 +453,9 @@ impl VarMap {
     }
 
     // Takes self, view, ops and var without padding, returns var with padding applied
-    fn generate_padding(&mut self, view: &View, ops: &mut Vec<IROp>, var: Var, rc: u32, dtype: DType) -> Var {
-        let old_var = var.clone();
+    // It does it all branchlessly
+    // TODO this is little ugly, make it more straigthforward
+    fn generate_padding(&mut self, view: &View, ops: &mut Vec<IROp>, var: Var, rc: u32, dtype: DType, load: Option<(Var, Var, IRDType)>) -> Var {
         let View::Padded(dims, padding) = view  else { panic!() };
         //std::println!("Using padded index");
 
@@ -560,6 +563,22 @@ impl VarMap {
             uop: UOp::Not,
             dtype: dtype.into(),
         });
+        if let Some((x, at, dtype)) = load {
+            ops.push(IROp::Binary {
+                z: at,
+                x: padding_condition,
+                y: at,
+                bop: BOp::Mul,
+                dtype: IRDType::Idx,
+            });
+            ops.push(IROp::Load {
+                z: var,
+                x,
+                at,
+                dtype,
+            });
+            self.remove_var(at);
+        }
         let temp1 = Var::Id(self.get_empty_id(1, 0, dtype.into(), Scope::Register, None, false) as u8, Scope::Register);
         ops.push(IROp::Binary {
             z: temp1,

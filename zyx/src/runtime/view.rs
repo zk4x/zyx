@@ -83,7 +83,11 @@ impl View {
     }
 
     pub(crate) fn requires_conditional_padding(&self) -> bool {
-        // View requires conditional padding
+        // View requires conditional padding if any padding is more than zero
+        if let View::Padded(_, padded_axes) = self {
+            return padded_axes.axes.iter().any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
+        }
+        false
     }
 
     /*fn numel(&self) -> usize {
@@ -269,24 +273,6 @@ impl View {
         &View::new(&self.shape()) == self
     }
 }
-
-/*use std::{fmt::Display, format as f};
-
-pub(crate) enum Scope {
-    Global,
-    Local,
-    Register,
-}
-
-impl Display for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Scope::Global => "g",
-            Scope::Local => "l",
-            Scope::Register => "r",
-        })
-    }
-}*/
 
 /*impl View {
     pub(crate) fn to_str(&self, id: u64, scope: Scope, _temp_id: u8) -> (Vec<String>, String) {
