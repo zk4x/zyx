@@ -18,6 +18,7 @@ pub(crate) struct HIPError {
 enum HIPStatus {
     HIP_SUCCESS,
     HIP_ERROR_UNKNOWN,
+    HIP_ERROR_OUT_OF_MEMORY,
 }
 
 #[derive(Debug)]
@@ -114,6 +115,9 @@ impl HIPMemoryPool {
 
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<HIPBuffer, HIPError> {
         //println!("Allocated buffer {ptr:?}");
+        if bytes > self.free_bytes {
+            return Err(HIPError { info: "Insufficient free memory.".into(), status: HIPStatus::HIP_ERROR_OUT_OF_MEMORY });
+        }
         self.free_bytes -= bytes;
         /*let mut dptr = 0;
         check(

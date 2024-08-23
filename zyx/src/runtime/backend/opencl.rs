@@ -427,6 +427,9 @@ pub(crate) fn initialize_opencl_backend(
 
 impl OpenCLMemoryPool {
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<OpenCLBuffer, OpenCLError> {
+        if bytes > self.free_bytes {
+            return Err(OpenCLError { info: "Insufficient free memory.".into(), status: OpenCLStatus::CL_MEM_OBJECT_ALLOCATION_FAILURE });
+        }
         let mut status = CL_SUCCESS;
         let ptr = unsafe {
             (self.clCreateBuffer)(

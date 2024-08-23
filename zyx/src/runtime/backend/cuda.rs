@@ -6,9 +6,8 @@ use std::ptr;
 
 use libloading::Library;
 
-use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 use super::DeviceInfo;
-
+use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 #[derive(Debug)]
 pub(crate) struct CUDAConfig {}
@@ -102,11 +101,15 @@ enum CUDAStatus {
 
 #[derive(Debug)]
 pub(crate) struct CUDAMemoryPool {
+    context: CUcontext,
+    device: CUdevice,
     free_bytes: usize,
+    cuMemAlloc: unsafe extern "C" fn(*mut c_uint, usize) -> CUDAStatus,
 }
 
 #[derive(Debug)]
 pub(crate) struct CUDABuffer {
+    ptr: c_uint,
     bytes: usize,
 }
 
@@ -122,12 +125,27 @@ pub(crate) struct CUDAProgram {}
 #[derive(Debug)]
 pub(crate) struct CUDAEvent {}
 
-pub(crate) fn initialize_cuda_backend(config: &CUDAConfig) -> Result<(Vec<CUDAMemoryPool>, Vec<CUDADevice>), CUDAError> {
+unsafe impl Send for CUDAMemoryPool {}
+
+pub(crate) fn initialize_cuda_backend(
+    config: &CUDAConfig,
+) -> Result<(Vec<CUDAMemoryPool>, Vec<CUDADevice>), CUDAError> {
     let _ = config;
 
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so"];
-    let cuda = cuda_paths.iter().find_map(|path| if let Ok(lib) = unsafe { Library::new(path) } { Some(lib) } else { None } );
-    let Some(cuda) = cuda else { return Err(CUDAError { info: "CUDA runtime not found.".into(), status: CUDAStatus::CUDA_ERROR_UNKNOWN }) };
+    let cuda = cuda_paths.iter().find_map(|path| {
+        if let Ok(lib) = unsafe { Library::new(path) } {
+            Some(lib)
+        } else {
+            None
+        }
+    });
+    let Some(cuda) = cuda else {
+        return Err(CUDAError {
+            info: "CUDA runtime not found.".into(),
+            status: CUDAStatus::CUDA_ERROR_UNKNOWN,
+        });
+    };
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus =
         *unsafe { cuda.get(b"cuInit\0") }.unwrap();
@@ -139,15 +157,23 @@ pub(crate) fn initialize_cuda_backend(config: &CUDAConfig) -> Result<(Vec<CUDAMe
         *unsafe { cuda.get(b"cuDeviceGet\0") }.unwrap();
     let cuDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceGetName\0") }.unwrap();
-    let cuDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
+    let cuDeviceComputeCapability: unsafe extern "C" fn(
+        *mut c_int,
+        *mut c_int,
+        CUdevice,
+    ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
+    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDeviceTotalName\0") }.unwrap();
     let cuCtxCreate_v2: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuCtxCreate_v2\0") }.unwrap();
+    let cuMemAlloc =
+        *unsafe { cuda.get(b"cuMemAlloc_v2\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
 
     let mut driver_version = 0;
-    unsafe { cuDriverGetVersion(&mut driver_version) }.check("Failed to get CUDA driver version")?;
+    unsafe { cuDriverGetVersion(&mut driver_version) }
+        .check("Failed to get CUDA driver version")?;
     #[cfg(feature = "debug_dev")]
     println!(
         "Using CUDA backend, driver version: {}.{} on devices:",
@@ -157,7 +183,10 @@ pub(crate) fn initialize_cuda_backend(config: &CUDAConfig) -> Result<(Vec<CUDAMe
     let mut num_devices = 0;
     unsafe { cuDeviceGetCount(&mut num_devices) }.check("Failed to get CUDA device count")?;
     if num_devices == 0 {
-        return Err(CUDAError { info: "No available cuda device.".into(), status: CUDAStatus::CUDA_ERROR_UNKNOWN });
+        return Err(CUDAError {
+            info: "No available cuda device.".into(),
+            status: CUDAStatus::CUDA_ERROR_UNKNOWN,
+        });
     }
 
     let mut memory_pools = Vec::new();
@@ -166,18 +195,26 @@ pub(crate) fn initialize_cuda_backend(config: &CUDAConfig) -> Result<(Vec<CUDAMe
         let mut device = 0;
         unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
         let mut device_name = [0; 100];
-        unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check("Failed to get CUDA device name")?;
+        let Ok(_) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check("Failed to get CUDA device name") else { continue };
         let mut major = 0;
         let mut minor = 0;
-        unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }.check("Failed to get CUDA device compute capability.")?;
+        let Ok(_) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }.check("Failed to get CUDA device compute capability.") else { continue };
         #[cfg(feature = "debug_dev")]
         println!("{:?}, compute capability: {major}.{minor}", unsafe {
             std::ffi::CStr::from_ptr(device_name.as_ptr())
         });
-        let mut context: CUcontext = ptr::null_mut();
-        unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Unable to create CUDA context.")?;
+        let mut free_bytes = 0;
+        let Ok(_) = unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Unable to get dev mem.") else { continue };
 
-        devices.push(CUDADevice { dev_info: DeviceInfo::default(), memory_pool_id: 0 })
+        let mut context: CUcontext = ptr::null_mut();
+        let Ok(_) = unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Unable to create CUDA context.") else { continue };
+
+        memory_pools.push(CUDAMemoryPool { context, device, free_bytes, cuMemAlloc });
+
+        devices.push(CUDADevice {
+            dev_info: DeviceInfo::default(),
+            memory_pool_id: 0,
+        })
     }
 
     Ok((memory_pools, devices))
@@ -190,14 +227,13 @@ impl CUDAMemoryPool {
 
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<CUDABuffer, CUDAError> {
         //println!("Allocated buffer {ptr:?}");
+        if bytes > self.free_bytes {
+            return Err(CUDAError { info: "Insufficient free memory.".into(), status: CUDAStatus::CUDA_ERROR_OUT_OF_MEMORY });
+        }
         self.free_bytes -= bytes;
-        /*let mut dptr = 0;
-        check(
-            unsafe { cuMemAlloc_v2(&mut dptr, bytes) },
-            "Failed to allocate memory",
-        )?;
-        return Ok(CUDABuffer { mem: dptr });*/
-        todo!()
+        let mut ptr = self.device as u32;
+        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory")?;
+        return Ok(CUDABuffer { ptr, bytes });
     }
 
     pub(crate) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
@@ -208,11 +244,7 @@ impl CUDAMemoryPool {
         todo!()
     }
 
-    pub(crate) fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: &CUDABuffer,
-    ) -> Result<(), CUDAError> {
+    pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
         todo!()
     }
 
@@ -261,7 +293,10 @@ impl CUDAProgram {
 impl CUDAStatus {
     fn check(self, info: &str) -> Result<(), CUDAError> {
         if self != CUDAStatus::CUDA_SUCCESS {
-            return Err(CUDAError { info: info.into(), status: self });
+            return Err(CUDAError {
+                info: info.into(),
+                status: self,
+            });
         } else {
             return Ok(());
         }

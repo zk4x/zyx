@@ -15,8 +15,8 @@ CUDA is toolkit for running code on NVIDIA gpus.
 To install cuda toolkit, please refer to Nvidia's official [website](https://developer.nvidia.com/cuda-downloads).
 
 Zyx uses only CUDA's driver API, so you don't need to install runtime API.
-Zyx also needs NVRTC, so it runs on all devices with CUDA compute capability 2.0
-and above (GTX 465 and above).
+That is to say zyx runs with just the driver, you do not need to install cuda toolkit.
+Zyx does not use cuda toolkit.
 
 ## HSA
 

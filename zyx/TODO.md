@@ -8,7 +8,7 @@
 - [x] dynamic loading of backends at runtime
 - [x] test reshape split
 - [x] repeat
-- [ ] hsa backend
+- [ ] hsa/hsail backend
 - [ ] remove duplicated code from IR
 - [ ] automatic optimizations with search
 
@@ -23,6 +23,9 @@
 - [ ] randn
 - [ ] conv
 - [ ] cuda/ptx backend
+- [ ] hip/rocr backend
+- [ ] test backpropagation
+- [ ] some tests
 
 ## Advanced graph caching
 
