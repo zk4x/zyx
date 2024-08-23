@@ -1,8 +1,9 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use std::ffi::{c_char, c_int, c_uint};
+use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
+use std::rc::Rc;
 
 use libloading::Library;
 
@@ -10,7 +11,7 @@ use super::DeviceInfo;
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 #[derive(Debug)]
-pub(crate) struct CUDAConfig {}
+pub struct CUDAConfig {}
 
 #[derive(Debug)]
 pub struct CUDAError {
@@ -101,15 +102,23 @@ enum CUDAStatus {
 
 #[derive(Debug)]
 pub(crate) struct CUDAMemoryPool {
+    // Just to close the connection
+    #[allow(unused)]
+    cuda: Rc<Library>,
     context: CUcontext,
     device: CUdevice,
     free_bytes: usize,
-    cuMemAlloc: unsafe extern "C" fn(*mut c_uint, usize) -> CUDAStatus,
+    cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
+    cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
+    cuMemcpyDtoH: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUDAStatus,
+    cuMemFree: unsafe extern "C" fn (CUdeviceptr) -> CUDAStatus,
+    cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
 }
 
 #[derive(Debug)]
 pub(crate) struct CUDABuffer {
-    ptr: c_uint,
+    ptr: u64,
+    context: CUcontext,
     bytes: usize,
 }
 
@@ -126,6 +135,7 @@ pub(crate) struct CUDAProgram {}
 pub(crate) struct CUDAEvent {}
 
 unsafe impl Send for CUDAMemoryPool {}
+unsafe impl Send for CUDABuffer {}
 
 pub(crate) fn initialize_cuda_backend(
     config: &CUDAConfig,
@@ -163,11 +173,19 @@ pub(crate) fn initialize_cuda_backend(
         CUdevice,
     ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
     let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceTotalName\0") }.unwrap();
+        *unsafe { cuda.get(b"cuDeviceTotalMem\0") }.unwrap();
     let cuCtxCreate_v2: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuCtxCreate_v2\0") }.unwrap();
+        *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
     let cuMemAlloc =
-        *unsafe { cuda.get(b"cuMemAlloc_v2\0") }.unwrap();
+        *unsafe { cuda.get(b"cuMemAlloc\0") }.unwrap();
+    let cuMemcpyHtoD =
+        *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
+    let cuMemFree =
+        *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
+    let cuMemcpyDtoH =
+        *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
+    let cuMemcpyPeer =
+        *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
 
@@ -189,6 +207,7 @@ pub(crate) fn initialize_cuda_backend(
         });
     }
 
+    let cuda = Rc::new(cuda);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
     for dev_id in 0..num_devices {
@@ -209,7 +228,7 @@ pub(crate) fn initialize_cuda_backend(
         let mut context: CUcontext = ptr::null_mut();
         let Ok(_) = unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Unable to create CUDA context.") else { continue };
 
-        memory_pools.push(CUDAMemoryPool { context, device, free_bytes, cuMemAlloc });
+        memory_pools.push(CUDAMemoryPool { cuda: cuda.clone(), context, device, free_bytes, cuMemAlloc, cuMemcpyHtoD, cuMemFree, cuMemcpyDtoH, cuMemcpyPeer });
 
         devices.push(CUDADevice {
             dev_info: DeviceInfo::default(),
@@ -226,26 +245,24 @@ impl CUDAMemoryPool {
     }
 
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<CUDABuffer, CUDAError> {
-        //println!("Allocated buffer {ptr:?}");
         if bytes > self.free_bytes {
             return Err(CUDAError { info: "Insufficient free memory.".into(), status: CUDAStatus::CUDA_ERROR_OUT_OF_MEMORY });
         }
         self.free_bytes -= bytes;
-        let mut ptr = self.device as u32;
-        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory")?;
-        return Ok(CUDABuffer { ptr, bytes });
+        let mut ptr = self.device as u64;
+        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
+        return Ok(CUDABuffer { ptr, bytes, context: self.context });
     }
 
     pub(crate) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
-        //let status = unsafe { (self.clReleaseMemObject)(buffer.ptr) };
-        //check(status, "Unable to free allocated memory")?;
+        unsafe { (self.cuMemFree)(buffer.ptr) }.check("Failed to free memory.")?;
         self.free_bytes += buffer.bytes;
-        //Ok(())
-        todo!()
+        Ok(())
     }
 
     pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
-        todo!()
+        println!("Copying {src:?} to {dst:?}");
+        unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory.")
     }
 
     pub(crate) fn pool_to_host(
@@ -253,7 +270,7 @@ impl CUDAMemoryPool {
         src: &CUDABuffer,
         dst: &mut [u8],
     ) -> Result<(), CUDAError> {
-        todo!()
+        unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }.check("Failed to copy memory.")
     }
 
     pub(crate) fn pool_to_pool(
@@ -261,7 +278,7 @@ impl CUDAMemoryPool {
         src: &CUDABuffer,
         dst: &CUDABuffer,
     ) -> Result<(), CUDAError> {
-        todo!()
+        unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }.check("Failed pool to pool copy.")
     }
 }
 
@@ -310,3 +327,4 @@ struct CUctx_st {
 }
 type CUcontext = *mut CUctx_st;
 type CUdevice = c_int;
+type CUdeviceptr = u64;

@@ -3,10 +3,10 @@ use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::cuda::{initialize_cuda_backend, CUDABuffer, CUDAConfig, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram};
-use backend::hip::{initialize_hip_backend, HIPBuffer, HIPConfig, HIPDevice, HIPError, HIPMemoryPool, HIPProgram};
+use backend::cuda::{initialize_cuda_backend, CUDABuffer, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram};
+use backend::hip::{initialize_hip_backend, HIPBuffer, HIPDevice, HIPError, HIPMemoryPool, HIPProgram};
 use backend::opencl::{
-    initialize_opencl_backend, OpenCLBuffer, OpenCLConfig, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
+    initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
 };
 use backend::DeviceInfo;
 use graph::Graph;
@@ -18,6 +18,11 @@ use std::{
     vec::Vec,
 };
 use view::View;
+use scheduler::CompiledGraph;
+
+pub use backend::cuda::CUDAConfig;
+pub use backend::hip::HIPConfig;
+pub use backend::opencl::OpenCLConfig;
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -27,7 +32,6 @@ use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use scheduler::CompiledGraph;
 
 mod backend;
 mod graph;
@@ -38,9 +42,9 @@ mod view;
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct BackendConfig {
-    cuda: CUDAConfig,
-    hip: HIPConfig,
-    opencl: OpenCLConfig,
+    pub cuda: CUDAConfig,
+    pub hip: HIPConfig,
+    pub opencl: OpenCLConfig,
 }
 
 impl Default for BackendConfig {

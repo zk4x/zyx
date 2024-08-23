@@ -15,12 +15,16 @@ pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 pub use runtime::BackendConfig;
+pub use runtime::CUDAConfig;
+pub use runtime::HIPConfig;
+pub use runtime::OpenCLConfig;
 
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 
 // Load and save test
 #[test]
 fn t0() {
+    Tensor::configure_backends(&BackendConfig { opencl: OpenCLConfig { platform_ids: Some(vec![]) }, ..Default::default() }).unwrap();
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);

@@ -22,14 +22,14 @@ use super::DeviceInfo;
 // so we simply say it is all in one memory pool
 #[derive(Debug)]
 pub(crate) struct OpenCLMemoryPool {
+    // Just to close the connection
+    #[allow(unused)]
+    library: Rc<Library>,
     #[allow(unused)]
     total_bytes: usize,
     free_bytes: usize,
     context: *mut c_void,
     queue: *mut c_void,
-    // Just to close the connection
-    #[allow(unused)]
-    library: Rc<Library>,
     // Functions
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> cl_int,
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> cl_int,
@@ -189,6 +189,9 @@ impl Drop for OpenCLProgram {
 }
 
 pub struct OpenCLConfig {
+    /// Select which platforms will be used by OpenCL backend
+    /// If set to None, uses all available platforms.
+    /// default = None
     pub platform_ids: Option<Vec<usize>>,
 }
 
