@@ -454,7 +454,7 @@ impl OpenCLMemoryPool {
         Ok(())
     }
 
-    pub(crate) fn host_to_opencl(
+    pub(crate) fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: &OpenCLBuffer,
@@ -481,7 +481,7 @@ impl OpenCLMemoryPool {
         Ok(())
     }
 
-    pub(crate) fn opencl_to_host(
+    pub(crate) fn pool_to_host(
         &mut self,
         src: &OpenCLBuffer,
         dst: &mut [u8],
@@ -511,7 +511,7 @@ impl OpenCLMemoryPool {
         Ok(())
     }
 
-    pub(crate) fn opencl_to_opencl(
+    pub(crate) fn pool_to_pool(
         &mut self,
         src: &OpenCLBuffer,
         dst: &OpenCLBuffer,
@@ -521,9 +521,9 @@ impl OpenCLMemoryPool {
         assert_eq!(src.bytes, dst.bytes);
         let mut data: Vec<u8> = Vec::with_capacity(dst.bytes);
         unsafe { data.set_len(dst.bytes) };
-        self.opencl_to_host(src, data.as_mut())?;
+        self.pool_to_host(src, data.as_mut())?;
         //println!("Copied data: {data:?}");
-        self.host_to_opencl(&data, dst)?;
+        self.host_to_pool(&data, dst)?;
         Ok(())
     }
 }

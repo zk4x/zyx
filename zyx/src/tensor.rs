@@ -134,6 +134,7 @@ impl Tensor {
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
+        // TODO just use threefry
         // This can be generated from uniform or just generate on cpu
         // and pass into device whole buffer
         match dtype {

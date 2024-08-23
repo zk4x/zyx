@@ -4,6 +4,7 @@ use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
 use backend::cuda::{initialize_cuda_backend, CUDABuffer, CUDAConfig, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram};
+use backend::hip::{initialize_hip_backend, HIPBuffer, HIPConfig, HIPDevice, HIPError, HIPMemoryPool, HIPProgram};
 use backend::opencl::{
     initialize_opencl_backend, OpenCLBuffer, OpenCLConfig, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
 };
@@ -37,15 +38,17 @@ mod view;
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct BackendConfig {
-    opencl: OpenCLConfig,
     cuda: CUDAConfig,
+    hip: HIPConfig,
+    opencl: OpenCLConfig,
 }
 
 impl Default for BackendConfig {
     fn default() -> Self {
         BackendConfig {
-            opencl: OpenCLConfig { platform_ids: None },
             cuda: CUDAConfig {},
+            hip: HIPConfig {},
+            opencl: OpenCLConfig { platform_ids: None },
         }
     }
 }
@@ -73,6 +76,12 @@ enum Device {
         // Program and tensors passed as arguments for the program and if arguments are read only
         programs: Vec<(CUDAProgram, Vec<(TensorId, View, bool)>)>,
     },
+    HIP {
+        device: HIPDevice,
+        memory_pool_id: MemoryPoolId,
+        // Program and tensors passed as arguments for the program and if arguments are read only
+        programs: Vec<(HIPProgram, Vec<(TensorId, View, bool)>)>,
+    },
     OpenCL {
         device: OpenCLDevice,
         memory_pool_id: MemoryPoolId,
@@ -85,6 +94,10 @@ enum MemoryPool {
     CUDA {
         memory_pool: CUDAMemoryPool,
         buffers: IndexMap<CUDABuffer>,
+    },
+    HIP {
+        memory_pool: HIPMemoryPool,
+        buffers: IndexMap<HIPBuffer>,
     },
     OpenCL {
         memory_pool: OpenCLMemoryPool,
@@ -142,11 +155,15 @@ impl Runtime {
         }
         for buffer in buffers {
             match &mut self.memory_pools[buffer.memory_pool_id] {
-                MemoryPool::OpenCL { memory_pool, buffers } => {
+                MemoryPool::CUDA { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
-                MemoryPool::CUDA { memory_pool, buffers } => {
+                MemoryPool::HIP { memory_pool, buffers } => {
+                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
+                    memory_pool.deallocate(buffer)?;
+                }
+                MemoryPool::OpenCL { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
@@ -255,14 +272,14 @@ impl Runtime {
             }
             // Search for first memory pool where we can put this tensor
             let buffer_id = match &mut self.memory_pools[memory_pool_id] {
-                MemoryPool::OpenCL {
+                MemoryPool::CUDA {
                     memory_pool,
                     buffers,
                 } => {
                     let buffer_id =
                         buffers.push(memory_pool.allocate(bytes)?);
                     let ptr: *const u8 = data.as_ptr().cast();
-                    memory_pool.host_to_opencl(
+                    memory_pool.host_to_pool(
                         unsafe { std::slice::from_raw_parts(ptr, bytes) },
                         &mut buffers[buffer_id],
                     )?;
@@ -271,14 +288,30 @@ impl Runtime {
                         buffer_id,
                     }
                 }
-                MemoryPool::CUDA {
+                MemoryPool::HIP {
                     memory_pool,
                     buffers,
                 } => {
                     let buffer_id =
                         buffers.push(memory_pool.allocate(bytes)?);
                     let ptr: *const u8 = data.as_ptr().cast();
-                    memory_pool.host_to_cuda(
+                    memory_pool.host_to_pool(
+                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
+                        &mut buffers[buffer_id],
+                    )?;
+                    BufferId {
+                        memory_pool_id,
+                        buffer_id,
+                    }
+                }
+                MemoryPool::OpenCL {
+                    memory_pool,
+                    buffers,
+                } => {
+                    let buffer_id =
+                        buffers.push(memory_pool.allocate(bytes)?);
+                    let ptr: *const u8 = data.as_ptr().cast();
+                    memory_pool.host_to_pool(
                         unsafe { std::slice::from_raw_parts(ptr, bytes) },
                         &mut buffers[buffer_id],
                     )?;
@@ -571,6 +604,20 @@ impl Runtime {
                     programs: Vec::new(),
                 }));
         }
+        if let Ok((memory_pools, devices)) = initialize_hip_backend(&backend_config.hip) {
+            let n = self.memory_pools.len();
+            self.memory_pools
+                .extend(memory_pools.into_iter().map(|m| MemoryPool::HIP {
+                    memory_pool: m,
+                    buffers: IndexMap::new(),
+                }));
+            self.devices
+                .extend(devices.into_iter().map(|device| Device::HIP {
+                    memory_pool_id: device.memory_pool_id() + n,
+                    device,
+                    programs: Vec::new(),
+                }));
+        }
         if let Ok((memory_pools, devices)) = initialize_opencl_backend(&backend_config.opencl) {
             let n = self.memory_pools.len();
             self.memory_pools
@@ -607,17 +654,23 @@ impl Runtime {
                         std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n * T::byte_size())
                     };
                     match &mut self.memory_pools[buffer_id.memory_pool_id] {
-                        MemoryPool::OpenCL {
-                            memory_pool,
-                            buffers,
-                        } => {
-                            memory_pool.opencl_to_host(&buffers[buffer_id.buffer_id], slice)?;
-                        }
                         MemoryPool::CUDA {
                             memory_pool,
                             buffers,
                         } => {
-                            memory_pool.cuda_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                        }
+                        MemoryPool::HIP {
+                            memory_pool,
+                            buffers,
+                        } => {
+                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                        }
+                        MemoryPool::OpenCL {
+                            memory_pool,
+                            buffers,
+                        } => {
+                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
                     }
                     break;
@@ -945,14 +998,9 @@ impl Runtime {
 impl MemoryPool {
     fn free_bytes(&self) -> usize {
         match self {
-            MemoryPool::OpenCL {
-                memory_pool,
-                ..
-            } => memory_pool.free_bytes(),
-            MemoryPool::CUDA {
-                memory_pool,
-                ..
-            } => memory_pool.free_bytes(),
+            MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
+            MemoryPool::HIP { memory_pool, .. } => memory_pool.free_bytes(),
+            MemoryPool::OpenCL { memory_pool, .. } => memory_pool.free_bytes(),
         }
     }
 }
@@ -977,14 +1025,9 @@ pub enum ZyxError {
     WrongDType(&'static str),
     NoBackendAvailable,
     AllocationError,
-    OpenCLError(OpenCLError),
     CUDAError(CUDAError),
-}
-
-impl From<OpenCLError> for ZyxError {
-    fn from(value: OpenCLError) -> Self {
-        ZyxError::OpenCLError(value)
-    }
+    HIPError(HIPError),
+    OpenCLError(OpenCLError),
 }
 
 impl From<CUDAError> for ZyxError {
@@ -993,15 +1036,32 @@ impl From<CUDAError> for ZyxError {
     }
 }
 
+impl From<HIPError> for ZyxError {
+    fn from(value: HIPError) -> Self {
+        ZyxError::HIPError(value)
+    }
+}
+
+impl From<OpenCLError> for ZyxError {
+    fn from(value: OpenCLError) -> Self {
+        ZyxError::OpenCLError(value)
+    }
+}
+
 impl Device {
     fn compute(&self) -> u128 {
         match self {
-            Device::OpenCL {
+            Device::CUDA {
                 device,
                 memory_pool_id: _,
                 programs: _,
             } => device.info().compute,
-            Device::CUDA {
+            Device::HIP {
+                device,
+                memory_pool_id: _,
+                programs: _,
+            } => device.info().compute,
+            Device::OpenCL {
                 device,
                 memory_pool_id: _,
                 programs: _,
@@ -1011,14 +1071,16 @@ impl Device {
 
     fn memory_pool_id(&self) -> MemoryPoolId {
         match self {
-            Device::OpenCL { memory_pool_id, ..} => *memory_pool_id,
             Device::CUDA { memory_pool_id, ..} => *memory_pool_id,
+            Device::HIP { memory_pool_id, ..} => *memory_pool_id,
+            Device::OpenCL { memory_pool_id, ..} => *memory_pool_id,
         }
     }
 
     fn info(&self) -> &DeviceInfo {
         match self {
             Device::CUDA { device, .. } => device.info(),
+            Device::HIP { device, .. } => device.info(),
             Device::OpenCL { device, .. } => device.info(),
         }
     }
@@ -1027,14 +1089,21 @@ impl Device {
 impl Display for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Device::OpenCL {
+            Device::CUDA {
                 device: _,
                 memory_pool_id,
                 programs: _,
             } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
-            Device::CUDA {
+            Device::HIP {
+                device: _,
+                memory_pool_id,
+                programs: _,
+            } => f.write_fmt(format_args!(
+                "Device {{ memory_pool_id: {memory_pool_id} }})"
+            )),
+            Device::OpenCL {
                 device: _,
                 memory_pool_id,
                 programs: _,

@@ -1,5 +1,6 @@
-pub(crate) mod opencl;
 pub(crate) mod cuda;
+pub(crate) mod hip;
+pub(crate) mod opencl;
 
 /// Hardware information needed for applying optimizations
 #[derive(Debug, Default)]

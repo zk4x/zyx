@@ -208,7 +208,7 @@ impl CUDAMemoryPool {
         todo!()
     }
 
-    pub(crate) fn host_to_cuda(
+    pub(crate) fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: &CUDABuffer,
@@ -216,7 +216,7 @@ impl CUDAMemoryPool {
         todo!()
     }
 
-    pub(crate) fn cuda_to_host(
+    pub(crate) fn pool_to_host(
         &mut self,
         src: &CUDABuffer,
         dst: &mut [u8],
@@ -224,7 +224,7 @@ impl CUDAMemoryPool {
         todo!()
     }
 
-    pub(crate) fn cuda_to_cuda(
+    pub(crate) fn pool_to_pool(
         &mut self,
         src: &CUDABuffer,
         dst: &CUDABuffer,

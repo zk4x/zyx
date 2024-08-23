@@ -12,7 +12,8 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    backend::{cuda::CUDAEvent, opencl::OpenCLEvent}, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId,
+    backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent},
+    BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId,
 };
 
 // In which order
@@ -58,7 +59,7 @@ impl Runtime {
                             && programs.contains(&program_id.program_id)
                     }) {
                         match &self.devices[program_id.device_id] {
-                            Device::OpenCL { programs, .. } => {
+                            Device::CUDA { programs, .. } => {
                                 for (arg, _, read_only) in &programs[program_id.program_id].1 {
                                     if !read_only && kernel.inputs.contains(&arg) {
                                         device_program_map
@@ -69,7 +70,18 @@ impl Runtime {
                                     }
                                 }
                             } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
-                            Device::CUDA { programs, .. } => {
+                            Device::HIP { programs, .. } => {
+                                for (arg, _, read_only) in &programs[program_id.program_id].1 {
+                                    if !read_only && kernel.inputs.contains(&arg) {
+                                        device_program_map
+                                            .get_mut(&program_id.device_id)
+                                            .unwrap()
+                                            .retain(|pid| *pid != program_id.program_id);
+                                        program_wait_list.push(*program_id);
+                                    }
+                                }
+                            } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
+                            Device::OpenCL { programs, .. } => {
                                 for (arg, _, read_only) in &programs[program_id.program_id].1 {
                                     if !read_only && kernel.inputs.contains(&arg) {
                                         device_program_map
@@ -131,7 +143,7 @@ impl Runtime {
                     .unwrap()
                     .0;
 
-                kernel.optimize(self.devices[device_id].info());
+                let optimizations = kernel.optimize(self.devices[device_id].info());
                 #[cfg(feature = "debug_sched")]
                 kernel.debug();
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
@@ -154,8 +166,7 @@ impl Runtime {
                 // Move necessary inputs to memory pool associated with this device
                 for input in &kernel.inputs {
                     let view = View::new(graph.shape(*input));
-                    let buf_mpid =
-                        tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
+                    let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                     if buf_mpid != memory_pool_id {
                         sched_graph.push(SchedulerOp::Move {
@@ -169,12 +180,10 @@ impl Runtime {
                 for program_id in program_wait_list {
                     sched_graph.push(SchedulerOp::Finish(program_id));
                 }
-                let (ir_kernel, args) = kernel.to_ir(&graph);
+                let (ir_kernel, args) = kernel.to_ir(&graph, optimizations);
                 let program_id = match &mut self.devices[device_id] {
-                    Device::OpenCL {
-                        device,
-                        programs,
-                        ..
+                    Device::CUDA {
+                        device, programs, ..
                     } => {
                         let program = device.compile(&ir_kernel)?;
                         // Since it is not sharded, sharding view is contiguous
@@ -188,10 +197,23 @@ impl Runtime {
                         ));
                         programs.len() - 1
                     }
-                    Device::CUDA {
-                        device,
-                        programs,
-                        ..
+                    Device::HIP {
+                        device, programs, ..
+                    } => {
+                        let program = device.compile(&ir_kernel)?;
+                        // Since it is not sharded, sharding view is contiguous
+                        programs.push((
+                            program,
+                            args.into_iter()
+                                .map(|(arg, read_only)| {
+                                    (arg, View::new(graph.shape(arg)), read_only)
+                                })
+                                .collect(),
+                        ));
+                        programs.len() - 1
+                    }
+                    Device::OpenCL {
+                        device, programs, ..
                     } => {
                         let program = device.compile(&ir_kernel)?;
                         // Since it is not sharded, sharding view is contiguous
@@ -280,20 +302,6 @@ impl Runtime {
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
-                    Device::OpenCL {
-                        device: _,
-                        memory_pool_id,
-                        programs,
-                    } => {
-                        let (program, args) = &mut programs[program_id.program_id];
-                        let args: Vec<usize> = args
-                            .iter()
-                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
-                            .collect();
-                        let MemoryPool::OpenCL { buffers, .. } =
-                            &mut self.memory_pools[*memory_pool_id] else { panic!() };
-                        events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
-                    }
                     Device::CUDA {
                         device: _,
                         memory_pool_id,
@@ -305,8 +313,45 @@ impl Runtime {
                             .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
                             .collect();
                         let MemoryPool::CUDA { buffers, .. } =
-                            &mut self.memory_pools[*memory_pool_id] else { panic!() };
+                            &mut self.memory_pools[*memory_pool_id]
+                        else {
+                            panic!()
+                        };
                         events.insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
+                    }
+                    Device::HIP {
+                        device: _,
+                        memory_pool_id,
+                        programs,
+                    } => {
+                        let (program, args) = &mut programs[program_id.program_id];
+                        let args: Vec<usize> = args
+                            .iter()
+                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
+                            .collect();
+                        let MemoryPool::HIP { buffers, .. } =
+                            &mut self.memory_pools[*memory_pool_id]
+                        else {
+                            panic!()
+                        };
+                        events.insert(*program_id, Event::HIP(program.launch(buffers, &args)?));
+                    }
+                    Device::OpenCL {
+                        device: _,
+                        memory_pool_id,
+                        programs,
+                    } => {
+                        let (program, args) = &mut programs[program_id.program_id];
+                        let args: Vec<usize> = args
+                            .iter()
+                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
+                            .collect();
+                        let MemoryPool::OpenCL { buffers, .. } =
+                            &mut self.memory_pools[*memory_pool_id]
+                        else {
+                            panic!()
+                        };
+                        events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
                     }
                 },
                 SchedulerOp::Finish(program_id) => {
@@ -324,101 +369,149 @@ impl Runtime {
                         buffer_id: src_bid,
                     } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
                     let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst);
-                    match &mut src_mps[memory_pool_id] {
-                        MemoryPool::OpenCL {
-                            memory_pool: src_mp,
-                            buffers: src_buffers,
-                        } => match &mut dst_mps[0] {
-                            MemoryPool::OpenCL {
-                                memory_pool: dst_mp,
-                                buffers: dst_buffers,
-                            } => {
-                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
-                                dst_mp.opencl_to_opencl(
-                                    &src_buffers[src_bid],
-                                    &dst_buffers[dst_bid],
-                                )?;
-                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
-                                self.tensor_buffer_map.insert(
-                                    (*tensor_id, view.clone()),
-                                    BufferId {
-                                        memory_pool_id: *dst,
-                                        buffer_id: dst_bid,
-                                    },
-                                );
-                            }
+
+                    macro_rules! cross_backend {
+                        ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
+                            let dst_bid = $db.push($dm.allocate(bytes)?);
+                            let mut data: Vec<u8> = Vec::with_capacity(bytes);
+                            unsafe { data.set_len(bytes) };
+                            $sm.pool_to_host(&$sb[src_bid], &mut data)?;
+                            $sm.deallocate($sb.remove(src_bid).unwrap())?;
+                            $dm.host_to_pool(&data, &$db[dst_bid])?;
+                            self.tensor_buffer_map.insert(
+                                (*tensor_id, view.clone()),
+                                BufferId {
+                                    memory_pool_id: *dst,
+                                    buffer_id: dst_bid,
+                                },
+                            );
+                        }};
+                    }
+
+                    macro_rules! within_backend {
+                        ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
+                            let dst_bid = $db.push($dm.allocate(bytes)?);
+                            $dm.pool_to_pool(&$sb[src_bid], &$db[dst_bid])?;
+                            $sm.deallocate($sb.remove(src_bid).unwrap())?;
+                            self.tensor_buffer_map.insert(
+                                (*tensor_id, view.clone()),
+                                BufferId {
+                                    memory_pool_id: *dst,
+                                    buffer_id: dst_bid,
+                                },
+                            );
+                        }};
+                    }
+
+                    match (&mut src_mps[memory_pool_id], &mut dst_mps[0]) {
+                        (
                             MemoryPool::CUDA {
-                                memory_pool: dst_mp,
-                                buffers: dst_buffers,
-                            } => {
-                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
-                                let mut data: Vec<u8> = Vec::with_capacity(bytes);
-                                unsafe { data.set_len(bytes) };
-                                src_mp.opencl_to_host(
-                                    &src_buffers[src_bid],
-                                    &mut data,
-                                )?;
-                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
-                                dst_mp.host_to_cuda(
-                                    &data,
-                                    &dst_buffers[dst_bid],
-                                )?;
-                                self.tensor_buffer_map.insert(
-                                    (*tensor_id, view.clone()),
-                                    BufferId {
-                                        memory_pool_id: *dst,
-                                        buffer_id: dst_bid,
-                                    },
-                                );
-                            }
-                        },
-                        MemoryPool::CUDA {
-                            memory_pool: src_mp,
-                            buffers: src_buffers,
-                        } => match &mut dst_mps[0] {
-                            MemoryPool::OpenCL {
-                                memory_pool: dst_mp,
-                                buffers: dst_buffers,
-                            } => {
-                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
-                                let mut data: Vec<u8> = Vec::with_capacity(bytes);
-                                unsafe { data.set_len(bytes) };
-                                src_mp.cuda_to_host(
-                                    &src_buffers[src_bid],
-                                    &mut data,
-                                )?;
-                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
-                                dst_mp.host_to_opencl(
-                                    &data,
-                                    &dst_buffers[dst_bid],
-                                )?;
-                                self.tensor_buffer_map.insert(
-                                    (*tensor_id, view.clone()),
-                                    BufferId {
-                                        memory_pool_id: *dst,
-                                        buffer_id: dst_bid,
-                                    },
-                                );
-                            }
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
                             MemoryPool::CUDA {
-                                memory_pool: dst_mp,
-                                buffers: dst_buffers,
-                            } => {
-                                let dst_bid = dst_buffers.push(dst_mp.allocate(bytes)?);
-                                dst_mp.cuda_to_cuda(
-                                    &src_buffers[src_bid],
-                                    &dst_buffers[dst_bid],
-                                )?;
-                                src_mp.deallocate(src_buffers.remove(src_bid).unwrap())?;
-                                self.tensor_buffer_map.insert(
-                                    (*tensor_id, view.clone()),
-                                    BufferId {
-                                        memory_pool_id: *dst,
-                                        buffer_id: dst_bid,
-                                    },
-                                );
-                            }
-                        },
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            within_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::CUDA {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::HIP {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            cross_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::CUDA {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::OpenCL {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            cross_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::HIP {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::CUDA {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            cross_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::HIP {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::HIP {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            within_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::HIP {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::OpenCL {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            cross_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::OpenCL {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::CUDA {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            cross_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::OpenCL {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::HIP {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            cross_backend!(sm, sb, dm, db)
+                        }
+                        (
+                            MemoryPool::OpenCL {
+                                memory_pool: sm,
+                                buffers: sb,
+                            },
+                            MemoryPool::OpenCL {
+                                memory_pool: dm,
+                                buffers: db,
+                            },
+                        ) => {
+                            within_backend!(sm, sb, dm, db)
+                        }
                     }
                 }
                 SchedulerOp::Allocate {
@@ -427,7 +520,7 @@ impl Runtime {
                     bytes,
                     view,
                 } => match &mut self.memory_pools[*memory_pool_id] {
-                    MemoryPool::OpenCL {
+                    MemoryPool::CUDA {
                         memory_pool,
                         buffers,
                     } => {
@@ -441,7 +534,21 @@ impl Runtime {
                             },
                         );
                     }
-                    MemoryPool::CUDA {
+                    MemoryPool::HIP {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let buffer = memory_pool.allocate(*bytes)?;
+                        let buffer_id = buffers.push(buffer);
+                        self.tensor_buffer_map.insert(
+                            (*tensor_id, view.clone()),
+                            BufferId {
+                                memory_pool_id: *memory_pool_id,
+                                buffer_id,
+                            },
+                        );
+                    }
+                    MemoryPool::OpenCL {
                         memory_pool,
                         buffers,
                     } => {
@@ -463,7 +570,7 @@ impl Runtime {
                     view,
                 } => match &mut self.memory_pools[*memory_pool_id] {
                     // TODO probably just add macro for this, 'cause rust can't do this without macro
-                    MemoryPool::OpenCL {
+                    MemoryPool::CUDA {
                         memory_pool,
                         buffers,
                     } => {
@@ -481,7 +588,25 @@ impl Runtime {
                             }
                         }
                     }
-                    MemoryPool::CUDA {
+                    MemoryPool::HIP {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let _ = bytes;
+                        let key = &(*tensor_id, view.clone());
+                        if let Some(BufferId {
+                            memory_pool_id: buf_mpid,
+                            ..
+                        }) = self.tensor_buffer_map.get(key)
+                        {
+                            if buf_mpid == memory_pool_id {
+                                let BufferId { buffer_id, .. } =
+                                    self.tensor_buffer_map.remove(key).unwrap();
+                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
+                            }
+                        }
+                    }
+                    MemoryPool::OpenCL {
                         memory_pool,
                         buffers,
                     } => {
@@ -545,9 +670,11 @@ impl Runtime {
 // Just read only, when event is dropped, it automatically finishes associated program
 enum Event {
     #[allow(unused)]
-    OpenCL(OpenCLEvent),
-    #[allow(unused)]
     CUDA(CUDAEvent),
+    #[allow(unused)]
+    HIP(HIPEvent),
+    #[allow(unused)]
+    OpenCL(OpenCLEvent),
 }
 
 enum SchedulerOp {
@@ -637,35 +764,24 @@ pub(super) struct Kernel {
     // Register variables
     vars: BTreeSet<TensorId>,
     pub(super) ops: Vec<VOp>,
-    pub(super) optimizations: Vec<Optimization>,
 }
 
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
 #[derive(Debug)]
-enum Optimization {
+pub(super) enum Optimization {
     // Unrolls loop with given id
-    UnrollLoop {
-        loop_id: usize,
-    },
+    UnrollLoop { loop_id: usize },
     // Converts all variables in loop into native vector dtypes
     // and removes the loop.
-    VectorDtype {
-        loop_id: usize,
-    },
+    VectorDtype { loop_id: usize },
     // Load tensor first into local tile, then into registers
     // this is used mainly for expanded tensors, so use threads
     // from one local work group to load the tile and then sync loads
     // before loading into registers
-    LocalTile {
-        x: TensorId,
-        view: View,
-    },
+    LocalTile { x: TensorId, view: View },
     // Tile tensor in registers with given view
-    RegisterTile {
-        x: TensorId,
-        view: View,
-    },
+    RegisterTile { x: TensorId, view: View },
     // TensorCores,
     // WMMA
 }
@@ -694,7 +810,6 @@ impl Kernel {
             outputs: BTreeSet::new(),
             vars: BTreeSet::from([x]),
             ops,
-            optimizations: Vec::new(),
         }
     }
 
@@ -854,7 +969,7 @@ impl Kernel {
         None
     }
 
-    fn optimize(&mut self, dev_info: &DeviceInfo) {
+    fn optimize(&mut self, dev_info: &DeviceInfo) -> Vec<Optimization> {
         // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
         // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
         // tensor cores, just a ton of stuff. Later add search over different optimizations.
@@ -910,6 +1025,7 @@ impl Kernel {
         self.split_axis(2, &[gws[1], lws[1]]);
         self.split_axis(4, &[gws[2], lws[2]]);
 
+        let optimizations = Vec::new();
         // Split for bigger work per thread
         // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
         // So that will be 64 work items per thread
@@ -928,6 +1044,7 @@ impl Kernel {
         // So make larger accumulators
 
         // Add local caching for loads
+        optimizations
     }
 }
 
@@ -1013,7 +1130,6 @@ fn generate_kernels(
                         outputs: BTreeSet::new(),
                         vars: BTreeSet::from([nid]),
                         ops,
-                        optimizations: Vec::new(),
                     })
                 }
             }
@@ -1167,7 +1283,7 @@ fn generate_kernels(
                         for d in shape.iter().copied().rev() {
                             if i == 0 {
                                 dimensions.insert(0, d);
-                                continue
+                                continue;
                             }
                             if dim * d > prev_shape[i] {
                                 if dim == prev_shape[i] {
@@ -1231,7 +1347,6 @@ fn generate_kernels(
                             outputs: BTreeSet::new(),
                             vars: BTreeSet::from([nid]),
                             ops,
-                            optimizations: Vec::new(),
                         });
                     }
                 }
