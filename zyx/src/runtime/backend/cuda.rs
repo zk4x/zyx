@@ -113,6 +113,7 @@ pub(crate) struct CUDAMemoryPool {
     cuMemcpyDtoH: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUDAStatus,
     cuMemFree: unsafe extern "C" fn (CUdeviceptr) -> CUDAStatus,
     cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
+    cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -186,6 +187,8 @@ pub(crate) fn initialize_cuda_backend(
         *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
     let cuMemcpyPeer =
         *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
+    let cuCtxDestroy =
+        *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
 
@@ -228,7 +231,7 @@ pub(crate) fn initialize_cuda_backend(
         let mut context: CUcontext = ptr::null_mut();
         let Ok(_) = unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Unable to create CUDA context.") else { continue };
 
-        memory_pools.push(CUDAMemoryPool { cuda: cuda.clone(), context, device, free_bytes, cuMemAlloc, cuMemcpyHtoD, cuMemFree, cuMemcpyDtoH, cuMemcpyPeer });
+        memory_pools.push(CUDAMemoryPool { cuda: cuda.clone(), context, device, free_bytes, cuMemAlloc, cuMemcpyHtoD, cuMemFree, cuMemcpyDtoH, cuMemcpyPeer, cuCtxDestroy });
 
         devices.push(CUDADevice {
             dev_info: DeviceInfo::default(),
@@ -279,6 +282,12 @@ impl CUDAMemoryPool {
         dst: &CUDABuffer,
     ) -> Result<(), CUDAError> {
         unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }.check("Failed pool to pool copy.")
+    }
+}
+
+impl Drop for CUDAMemoryPool {
+    fn drop(&mut self) {
+        unsafe { (self.cuCtxDestroy)(self.context) };
     }
 }
 
