@@ -423,14 +423,13 @@ impl CUDADevice {
                     source += &format!("{indent}{}.{} {z}, {x};\n", match uop {
                         UOp::Cast(_) => todo!(),
                         UOp::ReLU => todo!(),
-                        UOp::Neg => todo!(),
+                        UOp::Neg => "neg.f32",
                         UOp::Exp2 => "ex2.approx",
-                        UOp::Log2 => todo!(),
-                        UOp::Tanh => todo!(),
+                        UOp::Log2 => "lg2.approx",
                         UOp::Inv => todo!(),
                         UOp::Sqrt => todo!(),
-                        UOp::Sin => todo!(),
-                        UOp::Cos => todo!(),
+                        UOp::Sin => "sin.approx",
+                        UOp::Cos => "cos.approx",
                         UOp::Not => todo!(),
                         UOp::Nonzero => todo!(),
                     }, dtype.ptx());

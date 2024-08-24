@@ -20,7 +20,6 @@ pub(crate) enum UOp {
     Neg,
     Exp2,
     Log2,
-    Tanh,
     Inv,
     Sqrt,
     Sin,

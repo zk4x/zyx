@@ -682,7 +682,6 @@ impl OpenCLDevice {
                             UOp::Neg => format!("-{x}"),
                             UOp::Exp2 => format!("exp2({x})"),
                             UOp::Log2 => format!("log2({x})"),
-                            UOp::Tanh => format!("tanh({x})"),
                             UOp::Inv => format!("1/{x}"),
                             UOp::Sqrt => format!("sqrt({x})"),
                             UOp::Sin => format!("sin({x})"),

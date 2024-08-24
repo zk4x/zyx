@@ -261,6 +261,15 @@ impl Tensor {
         }
     }
 
+    #[must_use]
+    pub fn cosh(&self) -> Tensor {
+        // (e^x + e^-x) / 2
+        let nx = self.neg();
+        let enx = nx.exp();
+        let ex = self.exp();
+        (ex + enx)/2
+    }
+
     /// During training, randomly zeroes some of the elements of the input tensor with probability.
     /// The zeroed elements are chosen independently for each forward call and are sampled from a Bernoulli distribution.
     /// Each channel will be zeroed out independently on every forward call.
@@ -372,6 +381,15 @@ impl Tensor {
     }
 
     #[must_use]
+    pub fn sinh(&self) -> Tensor {
+        // (e^x - e^-x) / 2
+        let nx = self.neg();
+        let enx = nx.exp();
+        let ex = self.exp();
+        (ex - enx)/2
+    }
+
+    #[must_use]
     pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor {
         let x = self * beta;
         x.cmplt(threshold)
@@ -397,9 +415,8 @@ impl Tensor {
 
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        return Tensor {
-            id: RT.lock().tanh(self.id),
-        };
+        let e2x = (self + self).exp();
+        (&e2x + 1)/(e2x - 1)
     }
 
     // movement

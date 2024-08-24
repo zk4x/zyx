@@ -460,11 +460,6 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn tanh(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Tanh });
-    }
-
-    #[must_use]
     pub(crate) fn nonzero(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary {
             x,
@@ -985,7 +980,7 @@ impl Runtime {
                         let grad = self.neg(grad);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
-                    UOp::Tanh => {
+                    /*UOp::Tanh => {
                         // 1 - tanh^2(x)
                         let tanh_x_2 = self.mul(nid, nid);
                         let ones = self.ones(self.shape(x).into(), self.dtype(x));
@@ -993,7 +988,7 @@ impl Runtime {
                         self.release(ones).unwrap();
                         self.release(tanh_x_2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
-                    }
+                    }*/
                     UOp::Not => {
                         todo!("Not backward")
                         //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None,
