@@ -9,6 +9,7 @@ use libloading::Library;
 
 use super::DeviceInfo;
 use crate::runtime::ir::{IRDType, IROp};
+use crate::runtime::node::UOp;
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 #[derive(Debug, serde::Deserialize)]
@@ -397,9 +398,9 @@ impl CUDADevice {
                     // Multiply at by byte width of dtype
                     source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
                     // Convert at to s64
-                    //source += &format!("{indent}add.s64    a1, a1, {at};\n");
+                    source += &format!("{indent}cvt.s64.u32    a0, {at};\n");
                     // Add at to address
-                    //source += &format!("{indent}add.s64    a1, a1, {at};\n");
+                    source += &format!("{indent}add.s64    a1, a1, a0;\n");
                     // Load from global to register
                     source += &format!("{indent}ld.global.{}  {z}, [a1];\n", dtype.ptx());
                 }
@@ -411,12 +412,28 @@ impl CUDADevice {
                     // Shift by {at}
                     // Multiply at by byte width of dtype
                     source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
+                    // Convert at to s64
+                    source += &format!("{indent}cvt.s64.u32    a0, {at};\n");
                     // Add at to address
+                    source += &format!("{indent}add.s64    a1, a1, a0;\n");
                     // Load from global to register
                     source += &format!("{indent}st.global.{}  [a1], {x};\n", dtype.ptx());
                 }
                 IROp::Unary { z, x, uop, dtype } => {
-                    source += &format!("{indent}ex2.approx.{} {z}, {x};\n", dtype.ptx());
+                    source += &format!("{indent}{}.{} {z}, {x};\n", match uop {
+                        UOp::Cast(_) => todo!(),
+                        UOp::ReLU => todo!(),
+                        UOp::Neg => todo!(),
+                        UOp::Exp2 => "ex2.approx",
+                        UOp::Log2 => todo!(),
+                        UOp::Tanh => todo!(),
+                        UOp::Inv => todo!(),
+                        UOp::Sqrt => todo!(),
+                        UOp::Sin => todo!(),
+                        UOp::Cos => todo!(),
+                        UOp::Not => todo!(),
+                        UOp::Nonzero => todo!(),
+                    }, dtype.ptx());
                 }
                 IROp::Binary { z, x, y, bop, dtype } => todo!(),
                 IROp::MAdd { z, a, b, c, dtype } => {
