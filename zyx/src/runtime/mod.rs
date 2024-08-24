@@ -3,14 +3,20 @@ use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::cuda::{initialize_cuda_backend, CUDABuffer, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram};
-use backend::hip::{initialize_hip_backend, HIPBuffer, HIPDevice, HIPError, HIPMemoryPool, HIPProgram};
+use backend::cuda::{
+    initialize_cuda_backend, CUDABuffer, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram,
+};
+use backend::hip::{
+    initialize_hip_backend, HIPBuffer, HIPDevice, HIPError, HIPMemoryPool, HIPProgram,
+};
 use backend::opencl::{
-    initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool, OpenCLProgram
+    initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool,
+    OpenCLProgram,
 };
 use backend::DeviceInfo;
 use graph::Graph;
 use node::{BOp, Node, ROp, UOp};
+use scheduler::CompiledGraph;
 use std::fmt::Display;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -18,7 +24,6 @@ use std::{
     vec::Vec,
 };
 use view::View;
-use scheduler::CompiledGraph;
 
 pub use backend::cuda::CUDAConfig;
 pub use backend::hip::HIPConfig;
@@ -41,6 +46,7 @@ mod scheduler;
 mod view;
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(serde::Deserialize)]
 pub struct BackendConfig {
     pub cuda: CUDAConfig,
     pub hip: HIPConfig,
@@ -138,13 +144,6 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn configure_backends(&mut self, config: &BackendConfig) -> Result<(), ZyxError> {
-        if !self.devices.is_empty() {
-            return Err(ZyxError::BackendConfig("Unable to configure backends after they were initialized."))
-        }
-        self.initialize_backends(config)
-    }
-
     pub(crate) fn retain(&mut self, x: TensorId) {
         self.graph.retain(x);
     }
@@ -153,21 +152,34 @@ impl Runtime {
         let to_remove = self.graph.release(x);
         let mut buffers: Vec<BufferId> = Vec::new();
         for tensor in to_remove {
-            for (_, buffer_id) in self.tensor_buffer_map.iter().filter(|((t, _), _)| *t == tensor) {
+            for (_, buffer_id) in self
+                .tensor_buffer_map
+                .iter()
+                .filter(|((t, _), _)| *t == tensor)
+            {
                 buffers.push(*buffer_id);
             }
         }
         for buffer in buffers {
             match &mut self.memory_pools[buffer.memory_pool_id] {
-                MemoryPool::CUDA { memory_pool, buffers } => {
+                MemoryPool::CUDA {
+                    memory_pool,
+                    buffers,
+                } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
-                MemoryPool::HIP { memory_pool, buffers } => {
+                MemoryPool::HIP {
+                    memory_pool,
+                    buffers,
+                } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
-                MemoryPool::OpenCL { memory_pool, buffers } => {
+                MemoryPool::OpenCL {
+                    memory_pool,
+                    buffers,
+                } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
@@ -206,7 +218,7 @@ impl Runtime {
         start: T,
         end: T,
     ) -> Result<TensorId, ZyxError> {
-        use rand::{distributions::Uniform, SeedableRng, Rng};
+        use rand::{distributions::Uniform, Rng, SeedableRng};
         const SEED: u64 = 69420;
         // Pass in few numbers generated randomly on cpu and then add
         // some nodes for bitshifts and such.
@@ -258,10 +270,21 @@ impl Runtime {
                 shape,
                 dtype: T::dtype(),
             });
-            self.initialize_backends(&BackendConfig::default())?;
+            self.initialize_backends()?;
             let bytes = data.len() * T::byte_size();
             // Put it into memory pool with fastest device out of memory pools with enough free capacity
-            let mem_pools: Vec<usize> = self.memory_pools.iter().enumerate().filter_map(|(id, mp)| if mp.free_bytes() > bytes { Some(id) } else { None }).collect();
+            let mem_pools: Vec<usize> = self
+                .memory_pools
+                .iter()
+                .enumerate()
+                .filter_map(|(id, mp)| {
+                    if mp.free_bytes() > bytes {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if mem_pools.is_empty() {
                 return Err(ZyxError::AllocationError);
             }
@@ -280,8 +303,7 @@ impl Runtime {
                     memory_pool,
                     buffers,
                 } => {
-                    let buffer_id =
-                        buffers.push(memory_pool.allocate(bytes)?);
+                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
                     let ptr: *const u8 = data.as_ptr().cast();
                     memory_pool.host_to_pool(
                         unsafe { std::slice::from_raw_parts(ptr, bytes) },
@@ -296,8 +318,7 @@ impl Runtime {
                     memory_pool,
                     buffers,
                 } => {
-                    let buffer_id =
-                        buffers.push(memory_pool.allocate(bytes)?);
+                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
                     let ptr: *const u8 = data.as_ptr().cast();
                     memory_pool.host_to_pool(
                         unsafe { std::slice::from_raw_parts(ptr, bytes) },
@@ -312,8 +333,7 @@ impl Runtime {
                     memory_pool,
                     buffers,
                 } => {
-                    let buffer_id =
-                        buffers.push(memory_pool.allocate(bytes)?);
+                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
                     let ptr: *const u8 = data.as_ptr().cast();
                     memory_pool.host_to_pool(
                         unsafe { std::slice::from_raw_parts(ptr, bytes) },
@@ -459,7 +479,6 @@ impl Runtime {
 
     #[must_use]
     pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
-        println!("Reshape {:?} to {shape:?}", self.shape(x));
         if &shape == self.shape(x) {
             self.retain(x);
             return x;
@@ -491,7 +510,7 @@ impl Runtime {
             *d = (*d as isize + padding[i].0 + padding[i].1) as usize;
             i += 1;
             if i >= padding.len() {
-                break
+                break;
             }
         }
         //println!("Result {shape:?}");
@@ -590,10 +609,55 @@ impl Runtime {
     // Does nothing if devices were already initialized.
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
-    fn initialize_backends(&mut self, backend_config: &BackendConfig) -> Result<(), ZyxError> {
+    fn initialize_backends(&mut self) -> Result<(), ZyxError> {
         if !self.devices.is_empty() {
             return Ok(());
         }
+
+        // Search through config directories and find zyx/backend_config.ron
+        // If not found or failed to parse, use defaults.
+        let backend_config = xdg::BaseDirectories::new()
+            .map_err(|e| {
+                #[cfg(feature = "debug_dev")]
+                println!(
+                    "Failed to find config directories for backend_config.ron, using defaults: {e}"
+                );
+                #[cfg(not(feature = "debug_dev"))]
+                let _ = e;
+            })
+            .ok()
+            .map(|bd| {
+                let mut dirs = bd.get_config_dirs();
+                dirs.push(bd.get_config_home());
+                dirs
+            })
+            .map(|paths| {
+                paths.into_iter().find_map(|mut path| {
+                    path.push("zyx/backend_config.ron");
+                    std::fs::read_to_string(&path)
+                /*.map_err(|e| {
+                    #[cfg(feature = "debug_dev")]
+                    println!("Failed to read backend_config.ron at {path:?}, using defaults: {e}");
+                    #[cfg(not(feature = "debug_dev"))]
+                    let _ = e;
+                })*/
+                .ok()
+                })
+            })
+            .flatten()
+            .map(|file| {
+                ron::from_str(&file)
+                    .map_err(|e| {
+                        #[cfg(feature = "debug_dev")]
+                        println!("Failed to parse backend_config.ron, using defaults: {e}");
+                        #[cfg(not(feature = "debug_dev"))]
+                        let _ = e;
+                    })
+                    .ok()
+            })
+            .flatten()
+            .unwrap_or_else(|| BackendConfig::default());
+
         if let Ok((memory_pools, devices)) = initialize_cuda_backend(&backend_config.cuda) {
             let n = self.memory_pools.len();
             self.memory_pools
@@ -693,7 +757,7 @@ impl Runtime {
             return Ok(());
         }
         if self.devices.is_empty() {
-            self.initialize_backends(&BackendConfig::default())?;
+            self.initialize_backends()?;
         }
         let graph = self.graph.realize_graph(&tensors, |x| {
             self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
@@ -850,9 +914,7 @@ impl Runtime {
                         }
                     }
                     BOp::Cmplt | BOp::Cmpgt => {
-                        panic!(
-                            "Comparison is not a differentiable operation."
-                        );
+                        panic!("Comparison is not a differentiable operation.");
                     }
                     BOp::Max => {
                         todo!("Max backward.");
@@ -1075,9 +1137,9 @@ impl Device {
 
     fn memory_pool_id(&self) -> MemoryPoolId {
         match self {
-            Device::CUDA { memory_pool_id, ..} => *memory_pool_id,
-            Device::HIP { memory_pool_id, ..} => *memory_pool_id,
-            Device::OpenCL { memory_pool_id, ..} => *memory_pool_id,
+            Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
+            Device::HIP { memory_pool_id, .. } => *memory_pool_id,
+            Device::OpenCL { memory_pool_id, .. } => *memory_pool_id,
         }
     }
 

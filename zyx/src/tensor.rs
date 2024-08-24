@@ -62,10 +62,6 @@ impl Tensor {
         }
     }
 
-    pub fn configure_backends(config: &BackendConfig) -> Result<(), ZyxError> {
-        RT.lock().configure_backends(config)
-    }
-
     #[cfg(feature = "rand")]
     pub fn manual_seed(seed: u64) {
         RT.lock().manual_seed(seed);

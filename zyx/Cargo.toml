@@ -16,21 +16,26 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-# Sysinfo is used to get information about the host
-sysinfo = { version = "0.31.2", default-features = false, features = [
-    "system",
-] }
-# Loading is used to access cuda, opencl and hsa runtimes
+# libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.5", default-features = false }
+# serde is used to read backend config
+serde = { version = "1.0.209", default-features = false, features = ["std", "derive"] }
+# ron is used to read backend config
+ron = { version = "*", default-features = false }
+# xdg is used to read backend config
+xdg = { version = "2.5.2", default-features = false }
 
 # Optional dependencies
+# Support for random number generation
 rand = { version = "0.8.5", default-features = false, features = [
     "small_rng",
 ], optional = true }
+# Support for f16 and bf16 dtypes
 half = { version = "2.4.1", default-features = false, optional = true }
+# Support for cf32 and cf64 dtypes
 num-complex = { version = "0.4.6", default-features = false, optional = true }
-
-inline_colorization = { version = "*", optional = true }
+# For nice colorful debug logging
+inline_colorization = { version = "0.1.6", optional = true }
 
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.22.2", optional = true }
@@ -71,4 +76,4 @@ half = ["dep:half"]
 complex = ["dep:num-complex"]
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
-py = ["dep:pyo3", "half", "rand", "complex"]
+py = ["dep:pyo3", "rand", "half", "complex"]

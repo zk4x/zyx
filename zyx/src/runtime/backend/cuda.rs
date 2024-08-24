@@ -10,7 +10,7 @@ use libloading::Library;
 use super::DeviceInfo;
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize)]
 pub struct CUDAConfig {}
 
 #[derive(Debug)]

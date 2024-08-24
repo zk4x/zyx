@@ -188,6 +188,7 @@ impl Drop for OpenCLProgram {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
 pub struct OpenCLConfig {
     /// Select which platforms will be used by OpenCL backend
     /// If set to None, uses all available platforms.

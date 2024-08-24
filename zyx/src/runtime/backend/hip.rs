@@ -8,7 +8,7 @@ use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 use super::DeviceInfo;
 
 #[derive(Debug)]
-pub(crate) struct HIPError {
+pub struct HIPError {
     info: String,
     status: HIPStatus,
 }
@@ -43,7 +43,7 @@ pub(crate) struct HIPProgram {}
 #[derive(Debug)]
 pub(crate) struct HIPEvent {}
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize)]
 pub struct HIPConfig {}
 
 pub(crate) fn initialize_hip_backend(config: &HIPConfig) -> Result<(Vec<HIPMemoryPool>, Vec<HIPDevice>), HIPError> {

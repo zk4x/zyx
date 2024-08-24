@@ -13,7 +13,7 @@ zyx-optim = { version = "0.2.0", path = "./zyx-optim", default-features = false 
 zyx-derive = { version = "0.2.0", path = "./zyx-derive", default-features = false }
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
 panic = 'abort'
