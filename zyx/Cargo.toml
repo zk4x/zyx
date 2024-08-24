@@ -47,7 +47,8 @@ crate-type = ["lib", "cdylib"]
 default = [
     "debug_dev",
     "debug_perf",
-    "debug_sched",
+    #"debug_sched",
+    "debug_ir",
     "debug_asm",
     "rand",
     #"complex",

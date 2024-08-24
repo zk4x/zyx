@@ -8,6 +8,7 @@ use std::rc::Rc;
 use libloading::Library;
 
 use super::DeviceInfo;
+use crate::runtime::ir::{IRDType, IROp};
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 #[derive(Debug, serde::Deserialize)]
@@ -125,18 +126,31 @@ pub(crate) struct CUDABuffer {
 
 #[derive(Debug)]
 pub(crate) struct CUDADevice {
-    dev_info: DeviceInfo,
+    device: CUdevice,
     memory_pool_id: usize,
+    dev_info: DeviceInfo,
+    compute_capability: [c_int; 2],
+    cuModuleLoadDataEx: unsafe extern "C" fn(*mut CUmodule, *const c_void, c_uint, *mut CUjit_option, *mut *mut c_void) -> CUDAStatus,
+    cuModuleGetFunction: unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
+    cuLaunchKernel: unsafe extern "C" fn(CUfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, CUstream, *mut *mut c_void, *mut *mut c_void) -> CUDAStatus,
 }
 
 #[derive(Debug)]
-pub(crate) struct CUDAProgram {}
+pub(crate) struct CUDAProgram {
+    name: String,
+    module: CUmodule,
+    function: CUfunction,
+    global_work_size: [usize; 3],
+    local_work_size: [usize; 3],
+    cuLaunchKernel: unsafe extern "C" fn(CUfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, CUstream, *mut *mut c_void, *mut *mut c_void) -> CUDAStatus,
+}
 
 #[derive(Debug)]
 pub(crate) struct CUDAEvent {}
 
 unsafe impl Send for CUDAMemoryPool {}
 unsafe impl Send for CUDABuffer {}
+unsafe impl Send for CUDAProgram {}
 
 pub(crate) fn initialize_cuda_backend(
     config: &CUDAConfig,
@@ -175,6 +189,8 @@ pub(crate) fn initialize_cuda_backend(
     ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
     let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceTotalMem\0") }.unwrap();
+    let cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }.unwrap();
     let cuCtxCreate_v2: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
     let cuMemAlloc =
@@ -189,6 +205,12 @@ pub(crate) fn initialize_cuda_backend(
         *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
     let cuCtxDestroy =
         *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
+    let cuModuleLoadDataEx =
+        *unsafe { cuda.get(b"cuModuleLoadDataEx\0")}.unwrap();
+    let cuModuleGetFunction =
+        *unsafe { cuda.get(b"cuModuleGetFunction\0")}.unwrap();
+    let cuLaunchKernel =
+        *unsafe { cuda.get(b"cuLaunchKernel\0")}.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
 
@@ -226,16 +248,24 @@ pub(crate) fn initialize_cuda_backend(
             std::ffi::CStr::from_ptr(device_name.as_ptr())
         });
         let mut free_bytes = 0;
-        let Ok(_) = unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Unable to get dev mem.") else { continue };
+        let Ok(_) = unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.") else { continue };
 
         let mut context: CUcontext = ptr::null_mut();
-        let Ok(_) = unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Unable to create CUDA context.") else { continue };
+        let Ok(_) = unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Failed to create CUDA context.") else { continue };
 
         memory_pools.push(CUDAMemoryPool { cuda: cuda.clone(), context, device, free_bytes, cuMemAlloc, cuMemcpyHtoD, cuMemFree, cuMemcpyDtoH, cuMemcpyPeer, cuCtxDestroy });
 
+        //let mut max_ptx_version = 0;
+        //let Ok(_) = unsafe { cuDeviceGetAttribute(max_ptx_version, CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_, device) }.check("Failed to get max supported ptx version") else { continue };
+
         devices.push(CUDADevice {
+            device,
             dev_info: DeviceInfo::default(),
             memory_pool_id: 0,
+            cuModuleLoadDataEx,
+            cuModuleGetFunction,
+            cuLaunchKernel,
+            compute_capability: [major, minor],
         })
     }
 
@@ -264,7 +294,7 @@ impl CUDAMemoryPool {
     }
 
     pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
-        println!("Copying {src:?} to {dst:?}");
+        //println!("Copying {src:?} to {dst:?}");
         unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory.")
     }
 
@@ -302,7 +332,129 @@ impl CUDADevice {
     }
 
     pub(crate) fn compile(&mut self, kernel: &IRKernel) -> Result<CUDAProgram, CUDAError> {
-        todo!()
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
+        for op in &kernel.ops[..6] {
+            if let IROp::Loop { id, len } = op {
+                if id % 2 == 0 {
+                    global_work_size[*id as usize / 2] = *len;
+                } else {
+                    local_work_size[*id as usize / 2] = *len;
+                }
+            }
+        }
+        let name = format!(
+            "k__{}_{}__{}_{}__{}_{}",
+            global_work_size[0],
+            local_work_size[0],
+            global_work_size[1],
+            local_work_size[1],
+            global_work_size[2],
+            local_work_size[2],
+        );
+
+        let indent = "  ";
+        let mut source = format!(".version {0}.{1}
+.target sm_{0}{1}
+.address_size 64
+.visible .entry {name}(\n", self.compute_capability[0], self.compute_capability[1]);
+        // Declare global variables
+        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
+            source += &format!("{indent}.param  .u64 g{id},\n");
+        }
+        source.pop();
+        source.pop();
+        source += "\n) {\n";
+        // Temporaries
+        source += "  .reg  .s64 a0;\n";
+        source += "  .reg  .s64 a1;\n";
+        // Declare register variables
+        for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
+            source += &format!(
+                "{indent}.reg  .{} r{id};\n",
+                dtype.ptx()
+            );
+        }
+        // Add indices for global and local loops
+        source += "  mov.u32  r0, %ctaid.x;\n";
+        source += "  mov.u32  r1, %tid.x;\n";
+        source += "  mov.u32  r2, %ctaid.y;\n";
+        source += "  mov.u32  r3, %tid.y;\n";
+        source += "  mov.u32  r4, %ctaid.z;\n";
+        source += "  mov.u32  r5, %tid.z;\n";
+
+
+        for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
+            match op {
+                IROp::Set { z, len, value } => {
+                    source += &format!("{indent}mov.u32  r{z}, {value};\n");
+                }
+                IROp::Load { z, x, at, dtype } => {
+                    // Get address
+                    source += &format!("{indent}ld.param.u64  a0, [{x}];\n");
+                    // Convert address to global
+                    source += &format!("{indent}cvta.to.global.u64  a1, a0;\n");
+                    // Shift by {at}
+                    // Multiply at by byte width of dtype
+                    source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
+                    // Add at to address
+                    //source += &format!("{indent}add.s64    a1, a1, {at};\n");
+                    // Load from global to register
+                    source += &format!("{indent}ld.global.{}  {z}, [a1];\n", dtype.ptx());
+                }
+                IROp::Store { z, x, at, dtype } => {
+                    // Get address
+                    source += &format!("{indent}ld.param.u64  a0, [{z}];\n");
+                    // Convert address to global
+                    source += &format!("{indent}cvta.to.global.u64  a1, a0;\n");
+                    // Shift by {at}
+                    // Multiply at by byte width of dtype
+                    source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
+                    // Add at to address
+                    // Load from global to register
+                    source += &format!("{indent}st.global.{}  [a1], {x};\n", dtype.ptx());
+                }
+                IROp::Unary { z, x, uop, dtype } => {
+                    source += &format!("{indent}ex2.approx.{} {z}, {x};\n", dtype.ptx());
+                }
+                IROp::Binary { z, x, y, bop, dtype } => todo!(),
+                IROp::MAdd { z, a, b, c, dtype } => {
+                    source += &format!("{indent}mad.lo.{}    {z}, {a}, {b}, {c};\n", dtype.ptx());
+                }
+                IROp::AMAdd { z, a, b, c, d, dtype } => todo!(),
+                IROp::SMAdd { z, a, b, c, d, dtype } => todo!(),
+                IROp::Loop { id, len } => todo!(),
+                IROp::EndLoop => todo!(),
+                IROp::Barrier { scope } => todo!(),
+            }
+        }
+
+        // End kernel
+        source += &format!("{indent}ret;\n}}\0");
+        #[cfg(feature = "debug_asm")]
+        println!("Compiling kernel {name}, PTX source:\n{source}");
+        let mut module = ptr::null_mut();
+        unsafe {
+            (self.cuModuleLoadDataEx)(
+                &mut module,
+                source.as_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }.check(
+            "Module load failed.",
+        )?;
+        let mut function = ptr::null_mut();
+        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }.check("Failed to load function")?;
+        Ok(CUDAProgram {
+            name,
+            module,
+            function,
+            global_work_size,
+            local_work_size,
+            cuLaunchKernel: self.cuLaunchKernel,
+        })
     }
 }
 
@@ -312,7 +464,30 @@ impl CUDAProgram {
         buffers: &mut IndexMap<CUDABuffer>,
         args: &[usize],
     ) -> Result<CUDAEvent, CUDAError> {
-        todo!()
+        let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
+        for arg in args {
+            let arg = &mut buffers[*arg];
+            //let ptr = &mut arg.mem;
+            let ptr: *mut _ = &mut arg.ptr;
+            kernel_params.push(ptr.cast());
+        }
+        unsafe {
+            (self.cuLaunchKernel)(
+                self.function,
+                self.global_work_size[0] as u32,
+                self.global_work_size[1] as u32,
+                self.global_work_size[2] as u32,
+                self.local_work_size[0] as u32,
+                self.local_work_size[1] as u32,
+                self.local_work_size[2] as u32,
+                0,
+                ptr::null_mut(),
+                kernel_params.as_mut_ptr(),
+                ptr::null_mut(),
+            )
+        }.check("Failed to launch kernel.")?;
+        // For now just empty event, later we can deal with streams to make it async
+        Ok(CUDAEvent {})
     }
 }
 
@@ -337,3 +512,205 @@ struct CUctx_st {
 type CUcontext = *mut CUctx_st;
 type CUdevice = c_int;
 type CUdeviceptr = u64;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct CUmod_st {
+    _unused: [u8; 0],
+}
+type CUmodule = *mut CUmod_st;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct CUfunc_st {
+    _unused: [u8; 0],
+}
+type CUfunction = *mut CUfunc_st;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct CUstream_st {
+    _unused: [u8; 0],
+}
+type CUstream = *mut CUstream_st;
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CUjit_option {
+    CU_JIT_MAX_REGISTERS = 0,
+    CU_JIT_THREADS_PER_BLOCK = 1,
+    CU_JIT_WALL_TIME = 2,
+    CU_JIT_INFO_LOG_BUFFER = 3,
+    CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES = 4,
+    CU_JIT_ERROR_LOG_BUFFER = 5,
+    CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES = 6,
+    CU_JIT_OPTIMIZATION_LEVEL = 7,
+    CU_JIT_TARGET_FROM_CUCONTEXT = 8,
+    CU_JIT_TARGET = 9,
+    CU_JIT_FALLBACK_STRATEGY = 10,
+    CU_JIT_GENERATE_DEBUG_INFO = 11,
+    CU_JIT_LOG_VERBOSE = 12,
+    CU_JIT_GENERATE_LINE_INFO = 13,
+    CU_JIT_CACHE_MODE = 14,
+    CU_JIT_NEW_SM3X_OPT = 15,
+    CU_JIT_FAST_COMPILE = 16,
+    CU_JIT_GLOBAL_SYMBOL_NAMES = 17,
+    CU_JIT_GLOBAL_SYMBOL_ADDRESSES = 18,
+    CU_JIT_GLOBAL_SYMBOL_COUNT = 19,
+    CU_JIT_NUM_OPTIONS = 20,
+}
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CUdevice_attribute {
+    CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 1,
+    CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X = 2,
+    CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y = 3,
+    CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z = 4,
+    CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X = 5,
+    CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y = 6,
+    CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z = 7,
+    CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK = 8,
+    CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY = 9,
+    CU_DEVICE_ATTRIBUTE_WARP_SIZE = 10,
+    CU_DEVICE_ATTRIBUTE_MAX_PITCH = 11,
+    CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK = 12,
+    CU_DEVICE_ATTRIBUTE_CLOCK_RATE = 13,
+    CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT = 14,
+    CU_DEVICE_ATTRIBUTE_GPU_OVERLAP = 15,
+    CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 16,
+    CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT = 17,
+    CU_DEVICE_ATTRIBUTE_INTEGRATED = 18,
+    CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY = 19,
+    CU_DEVICE_ATTRIBUTE_COMPUTE_MODE = 20,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_WIDTH = 21,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_WIDTH = 22,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_HEIGHT = 23,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH = 24,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT = 25,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH = 26,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_LAYERED_WIDTH = 27,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_LAYERED_HEIGHT = 28,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_LAYERED_LAYERS = 29,
+    CU_DEVICE_ATTRIBUTE_SURFACE_ALIGNMENT = 30,
+    CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS = 31,
+    CU_DEVICE_ATTRIBUTE_ECC_ENABLED = 32,
+    CU_DEVICE_ATTRIBUTE_PCI_BUS_ID = 33,
+    CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID = 34,
+    CU_DEVICE_ATTRIBUTE_TCC_DRIVER = 35,
+    CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE = 36,
+    CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH = 37,
+    CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE = 38,
+    CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR = 39,
+    CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT = 40,
+    CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING = 41,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_LAYERED_WIDTH = 42,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_LAYERED_LAYERS = 43,
+    CU_DEVICE_ATTRIBUTE_CAN_TEX2D_GATHER = 44,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_GATHER_WIDTH = 45,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_GATHER_HEIGHT = 46,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH_ALTERNATE = 47,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT_ALTERNATE = 48,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH_ALTERNATE = 49,
+    CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID = 50,
+    CU_DEVICE_ATTRIBUTE_TEXTURE_PITCH_ALIGNMENT = 51,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURECUBEMAP_WIDTH = 52,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURECUBEMAP_LAYERED_WIDTH = 53,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURECUBEMAP_LAYERED_LAYERS = 54,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_WIDTH = 55,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_WIDTH = 56,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_HEIGHT = 57,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_WIDTH = 58,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_HEIGHT = 59,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE3D_DEPTH = 60,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_LAYERED_WIDTH = 61,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE1D_LAYERED_LAYERS = 62,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_LAYERED_WIDTH = 63,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_LAYERED_HEIGHT = 64,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACE2D_LAYERED_LAYERS = 65,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACECUBEMAP_WIDTH = 66,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACECUBEMAP_LAYERED_WIDTH = 67,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_SURFACECUBEMAP_LAYERED_LAYERS = 68,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_LINEAR_WIDTH = 70,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_LINEAR_HEIGHT = 71,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_LINEAR_PITCH = 72,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_MIPMAPPED_WIDTH = 73,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_MIPMAPPED_HEIGHT = 74,
+    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75,
+    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 76,
+    CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_MIPMAPPED_WIDTH = 77,
+    CU_DEVICE_ATTRIBUTE_STREAM_PRIORITIES_SUPPORTED = 78,
+    CU_DEVICE_ATTRIBUTE_GLOBAL_L1_CACHE_SUPPORTED = 79,
+    CU_DEVICE_ATTRIBUTE_LOCAL_L1_CACHE_SUPPORTED = 80,
+    CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR = 81,
+    CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR = 82,
+    CU_DEVICE_ATTRIBUTE_MANAGED_MEMORY = 83,
+    CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD = 84,
+    CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD_GROUP_ID = 85,
+    CU_DEVICE_ATTRIBUTE_HOST_NATIVE_ATOMIC_SUPPORTED = 86,
+    CU_DEVICE_ATTRIBUTE_SINGLE_TO_DOUBLE_PRECISION_PERF_RATIO = 87,
+    CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS = 88,
+    CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS = 89,
+    CU_DEVICE_ATTRIBUTE_COMPUTE_PREEMPTION_SUPPORTED = 90,
+    CU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM = 91,
+    CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH = 95,
+    CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN = 97,
+    CU_DEVICE_ATTRIBUTE_CAN_FLUSH_REMOTE_WRITES = 98,
+    CU_DEVICE_ATTRIBUTE_HOST_REGISTER_SUPPORTED = 99,
+    CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES = 100,
+    CU_DEVICE_ATTRIBUTE_DIRECT_MANAGED_MEM_ACCESS_FROM_HOST = 101,
+    CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED = 102,
+    CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR_SUPPORTED = 103,
+    CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_WIN32_HANDLE_SUPPORTED = 104,
+    CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_WIN32_KMT_HANDLE_SUPPORTED = 105,
+    CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR = 106,
+    CU_DEVICE_ATTRIBUTE_GENERIC_COMPRESSION_SUPPORTED = 107,
+    CU_DEVICE_ATTRIBUTE_MAX_PERSISTING_L2_CACHE_SIZE = 108,
+    CU_DEVICE_ATTRIBUTE_MAX_ACCESS_POLICY_WINDOW_SIZE = 109,
+    CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED = 110,
+    CU_DEVICE_ATTRIBUTE_RESERVED_SHARED_MEMORY_PER_BLOCK = 111,
+    CU_DEVICE_ATTRIBUTE_SPARSE_CUDA_ARRAY_SUPPORTED = 112,
+    CU_DEVICE_ATTRIBUTE_READ_ONLY_HOST_REGISTER_SUPPORTED = 113,
+    CU_DEVICE_ATTRIBUTE_TIMELINE_SEMAPHORE_INTEROP_SUPPORTED = 114,
+    CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED = 115,
+    CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_SUPPORTED = 116,
+    CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_FLUSH_WRITES_OPTIONS = 117,
+    CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WRITES_ORDERING = 118,
+    CU_DEVICE_ATTRIBUTE_MEMPOOL_SUPPORTED_HANDLE_TYPES = 119,
+    CU_DEVICE_ATTRIBUTE_CLUSTER_LAUNCH = 120,
+    CU_DEVICE_ATTRIBUTE_DEFERRED_MAPPING_CUDA_ARRAY_SUPPORTED = 121,
+    CU_DEVICE_ATTRIBUTE_CAN_USE_64_BIT_STREAM_MEM_OPS = 122,
+    CU_DEVICE_ATTRIBUTE_CAN_USE_STREAM_WAIT_VALUE_NOR = 123,
+    CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED = 124,
+    CU_DEVICE_ATTRIBUTE_IPC_EVENT_SUPPORTED = 125,
+    CU_DEVICE_ATTRIBUTE_MEM_SYNC_DOMAIN_COUNT = 126,
+    CU_DEVICE_ATTRIBUTE_TENSOR_MAP_ACCESS_SUPPORTED = 127,
+    CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED = 128,
+    CU_DEVICE_ATTRIBUTE_UNIFIED_FUNCTION_POINTERS = 129,
+    CU_DEVICE_ATTRIBUTE_NUMA_CONFIG = 130,
+    CU_DEVICE_ATTRIBUTE_NUMA_ID = 131,
+    CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED = 132,
+    CU_DEVICE_ATTRIBUTE_MPS_ENABLED = 133,
+    CU_DEVICE_ATTRIBUTE_HOST_NUMA_ID = 134,
+    CU_DEVICE_ATTRIBUTE_D3D12_CIG_SUPPORTED = 135,
+    CU_DEVICE_ATTRIBUTE_MAX,
+}
+
+impl IRDType {
+    pub(crate) fn ptx(&self) -> &str {
+        return match self {
+            #[cfg(feature = "half")]
+            IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            #[cfg(feature = "half")]
+            IRDType::F16 => "f16",
+            IRDType::F32 => "f32",
+            IRDType::F64 => "f64",
+            #[cfg(feature = "complex")]
+            IRDType::CF32 => panic!("Not native to OpenCL, workaround is WIP"),
+            #[cfg(feature = "complex")]
+            IRDType::CF64 => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::U8 => "u8",
+            IRDType::I8 => "s8",
+            IRDType::I16 => "s16",
+            IRDType::I32 => "s32",
+            IRDType::I64 => "s64",
+            IRDType::Bool => "b8",
+            IRDType::U32 => "u32",
+        };
+    }
+}

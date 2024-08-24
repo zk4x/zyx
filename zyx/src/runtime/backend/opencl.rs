@@ -617,10 +617,9 @@ impl OpenCLDevice {
         // Declare global variables
         for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
             source += &format!(
-                "{indent}__global {}{}* g{},\n",
+                "{indent}__global {}{}* g{id},\n",
                 if *read_only { "const " } else { "" },
                 dtype.ocl(),
-                id
             );
         }
 
@@ -662,8 +661,6 @@ impl OpenCLDevice {
             "  r5 = get_local_id(2);   /* 0..{} */\n",
             local_work_size[2]
         );
-
-        // Declare register variables
 
         for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
             match op {
@@ -921,7 +918,7 @@ impl IRDType {
             IRDType::I32 => "int",
             IRDType::I64 => "long",
             IRDType::Bool => "bool",
-            IRDType::Idx => "unsigned int",
+            IRDType::U32 => "unsigned int",
         };
     }
 }

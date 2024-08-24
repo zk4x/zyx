@@ -114,7 +114,7 @@ pub(crate) enum IRDType {
     I64,
     Bool,
     // For indexing, usually u32
-    Idx,
+    U32,
 }
 
 #[derive(Debug)]
@@ -393,7 +393,7 @@ impl VarMap {
                             a,
                             b: Var::Const(Constant::I64(*stride as i64)),
                             c: z,
-                            dtype: IRDType::Idx,
+                            dtype: IRDType::U32,
                         });
                     }
                 }
@@ -415,7 +415,7 @@ impl VarMap {
                                 b: Var::Const(Constant::I64(*lp as i64)),
                                 c: Var::Const(Constant::I64(*stride as i64)),
                                 d: z,
-                                dtype: IRDType::Idx,
+                                dtype: IRDType::U32,
                             });
                         } else if *lp < 0 {
                             let lp = -lp;
@@ -425,7 +425,7 @@ impl VarMap {
                                 b: Var::Const(Constant::I64(lp as i64)),
                                 c: Var::Const(Constant::I64(*stride as i64)),
                                 d: z,
-                                dtype: IRDType::Idx,
+                                dtype: IRDType::U32,
                             });
                         } else {
                             ops.push(IROp::MAdd {
@@ -433,7 +433,7 @@ impl VarMap {
                                 a: self.get_axis(*axis),
                                 b: Var::Const(Constant::I64(*stride as i64)),
                                 c: z,
-                                dtype: IRDType::Idx,
+                                dtype: IRDType::U32,
                             });
                         }
                         //std::println!("dim: {dim}, paddding {lp}, {rp}");
@@ -443,7 +443,7 @@ impl VarMap {
                             a: self.get_axis(*axis),
                             b: Var::Const(Constant::I64(*stride as i64)),
                             c: z,
-                            dtype: IRDType::Idx,
+                            dtype: IRDType::U32,
                         });
                     }
                 }
@@ -500,7 +500,7 @@ impl VarMap {
                         a: self.get_axis(*axis),
                         b: Var::Const(Constant::I64(st as i64)),
                         c: idx,
-                        dtype: IRDType::Idx,
+                        dtype: IRDType::U32,
                     });
                     st *= dims[*axis].dim;
                     dim *= dims[*axis].dim;
@@ -513,14 +513,14 @@ impl VarMap {
                         z: temp,
                         x: idx,
                         y: Var::Const(Constant::I64(*lp as i64)),
-                        dtype: IRDType::Idx,
+                        dtype: IRDType::U32,
                         bop: BOp::Cmplt,
                     });
                     ops.push(IROp::Binary {
                         z: padding_condition,
                         x: temp,
                         y: padding_condition,
-                        dtype: IRDType::Idx,
+                        dtype: IRDType::U32,
                         bop: BOp::Or,
                     });
                     self.remove_var(temp);
@@ -532,14 +532,14 @@ impl VarMap {
                         z: temp,
                         x: idx,
                         y: Var::Const(Constant::I64((dim as isize - *rp - 1) as i64)),
-                        dtype: IRDType::Idx,
+                        dtype: IRDType::U32,
                         bop: BOp::Cmpgt,
                     });
                     ops.push(IROp::Binary {
                         z: padding_condition,
                         x: temp,
                         y: padding_condition,
-                        dtype: IRDType::Idx,
+                        dtype: IRDType::U32,
                         bop: BOp::Or,
                     });
                     self.remove_var(temp);
@@ -569,7 +569,7 @@ impl VarMap {
                 x: padding_condition,
                 y: at,
                 bop: BOp::Mul,
-                dtype: IRDType::Idx,
+                dtype: IRDType::U32,
             });
             ops.push(IROp::Load {
                 z: var,
@@ -602,7 +602,7 @@ impl VarMap {
     }
 
     fn zero_var(&mut self, ops: &mut Vec<IROp>) -> Var {
-        let id = self.get_empty_id(1, 0, IRDType::Idx, Scope::Register, None, false) as u8;
+        let id = self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8;
         ops.push(IROp::Set {
             z: id,
             len: 0,
@@ -612,7 +612,7 @@ impl VarMap {
     }
 
     fn add_axis(&mut self, axis: Axis) -> u8 {
-        let id = self.get_empty_id(1, 0, IRDType::Idx, Scope::Register, None, false) as u8;
+        let id = self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8;
         let var = Var::Id(id, Scope::Register);
         self.axis_map.insert(axis, var);
         return id;
@@ -712,14 +712,29 @@ impl Display for Scope {
     }
 }
 
-/*
+impl IRKernel {
+    #[cfg(feature = "debug_ir")]
+    pub(super) fn debug(&self) {
+        println!();
+        for op in &self.ops {
+            println!("{op:?}");
+        }
+        println!()
+    }
+}
 
-r1 = g1[r0]
-r2 = (i3 < 2 || i4 > 2)
-r3 = r2 * 0
-r4 = !r2
-r5 = r4 * r0
-r6 = r3 + r5
-
-
-*/
+impl IRDType {
+    pub(crate) fn byte_size(&self) -> usize {
+        match self {
+            IRDType::F32 => 4,
+            IRDType::F64 => 8,
+            IRDType::U8 => 1,
+            IRDType::I8 => 1,
+            IRDType::I16 => 2,
+            IRDType::I32 => 4,
+            IRDType::I64 => 8,
+            IRDType::Bool => 1,
+            IRDType::U32 => 4,
+        }
+    }
+}

@@ -181,6 +181,8 @@ impl Runtime {
                     sched_graph.push(SchedulerOp::Finish(program_id));
                 }
                 let (ir_kernel, args) = kernel.to_ir(&graph, optimizations);
+                #[cfg(feature = "debug_ir")]
+                ir_kernel.debug();
                 let program_id = match &mut self.devices[device_id] {
                     Device::CUDA {
                         device, programs, ..
