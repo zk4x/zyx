@@ -281,10 +281,16 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn exp(&self) -> Tensor {
+    pub fn exp2(&self) -> Tensor {
         return Tensor {
-            id: RT.lock().exp(self.id),
+            id: RT.lock().exp2(self.id),
         };
+    }
+
+    #[must_use]
+    pub fn exp(&self) -> Tensor {
+        let c: Tensor = std::f64::consts::E.log2().try_into().unwrap();
+        (self*c.cast(self.dtype())).exp2()
     }
 
     #[must_use]
@@ -301,10 +307,16 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn ln(&self) -> Tensor {
+    pub fn log2(&self) -> Tensor {
         return Tensor {
-            id: RT.lock().ln(self.id),
+            id: RT.lock().log2(self.id),
         };
+    }
+
+    #[must_use]
+    pub fn ln(&self) -> Tensor {
+        let c: Tensor = (1f64/std::f64::consts::E.log2()).try_into().unwrap();
+        self.log2()*c.cast(self.dtype())
     }
 
     #[must_use]

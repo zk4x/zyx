@@ -383,7 +383,6 @@ impl CUDADevice {
         source += "  mov.u32  r4, %ctaid.z;\n";
         source += "  mov.u32  r5, %tid.z;\n";
 
-
         for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
             match op {
                 IROp::Set { z, len, value } => {
@@ -397,6 +396,8 @@ impl CUDADevice {
                     // Shift by {at}
                     // Multiply at by byte width of dtype
                     source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
+                    // Convert at to s64
+                    //source += &format!("{indent}add.s64    a1, a1, {at};\n");
                     // Add at to address
                     //source += &format!("{indent}add.s64    a1, a1, {at};\n");
                     // Load from global to register

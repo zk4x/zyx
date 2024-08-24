@@ -435,13 +435,13 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn exp(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Exp });
+    pub(crate) fn exp2(&mut self, x: TensorId) -> TensorId {
+        return self.graph.push(Node::Unary { x, uop: UOp::Exp2 });
     }
 
     #[must_use]
-    pub(crate) fn ln(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Ln });
+    pub(crate) fn log2(&mut self, x: TensorId) -> TensorId {
+        return self.graph.push(Node::Unary { x, uop: UOp::Log2 });
     }
 
     #[must_use]
@@ -905,7 +905,7 @@ impl Runtime {
                         }
                         if req_grad.contains(&y) {
                             // grad * x.pow(y) * ln(x)
-                            let temp1 = self.ln(x);
+                            let temp1 = self.log2(x);
                             let temp2 = self.mul(nid, temp1);
                             self.release(temp1).unwrap();
                             let y_grad = self.mul(grad, temp2);
@@ -939,12 +939,20 @@ impl Runtime {
                         self.release(zl).unwrap();
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
-                    UOp::Exp => {
-                        let grad = self.mul(nid, grad);
+                    UOp::Exp2 => {
+                        let temp = self.full(self.shape(x).into(), std::f64::consts::E.log2());
+                        let temp2 = self.mul(nid, temp);
+                        self.release(temp).unwrap();
+                        let grad = self.mul(nid, temp2);
+                        self.release(temp2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
-                    UOp::Ln => {
-                        let grad = self.div(grad, x);
+                    UOp::Log2 => {
+                        let temp = self.full(self.shape(x).into(), std::f64::consts::E.log2());
+                        let temp2 = self.mul(x, temp);
+                        self.release(temp).unwrap();
+                        let grad = self.div(grad, temp2);
+                        self.release(temp2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Sin => {
