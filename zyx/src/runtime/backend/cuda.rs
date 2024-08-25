@@ -135,7 +135,7 @@ pub(crate) struct CUDADevice {
     compute_capability: [c_int; 2],
     cuModuleLoadDataEx: unsafe extern "C" fn(*mut CUmodule, *const c_void, c_uint, *mut CUjit_option, *mut *mut c_void) -> CUDAStatus,
     cuModuleGetFunction: unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
-    cuModuleEnumerateFunctions: unsafe extern "C" fn(*mut CUfunction, c_uint, CUmodule) -> CUDAStatus,
+    //cuModuleEnumerateFunctions: unsafe extern "C" fn(*mut CUfunction, c_uint, CUmodule) -> CUDAStatus,
     cuLaunchKernel: unsafe extern "C" fn(CUfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, CUstream, *mut *mut c_void, *mut *mut c_void) -> CUDAStatus,
 }
 
@@ -213,8 +213,8 @@ pub(crate) fn initialize_cuda_backend(
         *unsafe { cuda.get(b"cuModuleLoadDataEx\0")}.unwrap();
     let cuModuleGetFunction =
         *unsafe { cuda.get(b"cuModuleGetFunction\0")}.unwrap();
-    let cuModuleEnumerateFunctions =
-        *unsafe { cuda.get(b"cuModuleEnumerateFunctions\0")}.unwrap();
+    /*let cuModuleEnumerateFunctions =
+        *unsafe { cuda.get(b"cuModuleEnumerateFunctions\0")}.unwrap();*/
     let cuLaunchKernel =
         *unsafe { cuda.get(b"cuLaunchKernel\0")}.unwrap();
 
@@ -270,7 +270,7 @@ pub(crate) fn initialize_cuda_backend(
             memory_pool_id: 0,
             cuModuleLoadDataEx,
             cuModuleGetFunction,
-            cuModuleEnumerateFunctions,
+            //cuModuleEnumerateFunctions,
             cuLaunchKernel,
             compute_capability: [major, minor],
         })
