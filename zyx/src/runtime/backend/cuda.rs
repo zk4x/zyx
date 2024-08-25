@@ -769,14 +769,16 @@ impl Constant {
         use core::mem::transmute as t;
         match self {
             Constant::F32(x) => {
-                let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
+                /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
-                format!("0f{}", hex)
+                format!("0f{}", hex)*/
+                format!("{:.12}", unsafe { t::<_, f32>(*x) })
             }
             Constant::F64(x) => {
-                let bytes = unsafe { t::<_, f64>(*x).to_ne_bytes() };
+                /*let bytes = unsafe { t::<_, f64>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
-                format!("0d{}", hex)
+                format!("0d{}", hex)*/
+                format!("{:.12}", unsafe { t::<_, f64>(*x) })
             }
             Constant::U8(_) => todo!(),
             Constant::I8(_) => todo!(),

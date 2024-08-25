@@ -771,19 +771,21 @@ pub(super) struct Kernel {
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
 #[derive(Debug)]
-pub(super) enum Optimization {
+pub(super) struct KernelOptimizations {
+    // Permutation: op_id, axes
+    permutation: Vec<(usize, Vec<Axis>)>,
     // Unrolls loop with given id
-    UnrollLoop { loop_id: usize },
+    unroll_loops: Vec<usize>,
     // Converts all variables in loop into native vector dtypes
     // and removes the loop.
-    VectorDtype { loop_id: usize },
+    vectorize_loops: Vec<usize>,
     // Load tensor first into local tile, then into registers
     // this is used mainly for expanded tensors, so use threads
     // from one local work group to load the tile and then sync loads
     // before loading into registers
-    LocalTile { x: TensorId, view: View },
+    local_tiles: Vec<(TensorId, View)>,
     // Tile tensor in registers with given view
-    RegisterTile { x: TensorId, view: View },
+    register_tiles: Vec<(TensorId, View)>,
     // TensorCores,
     // WMMA
 }
@@ -971,7 +973,7 @@ impl Kernel {
         None
     }
 
-    fn optimize(&mut self, dev_info: &DeviceInfo) -> Vec<Optimization> {
+    fn optimize(&mut self, dev_info: &DeviceInfo) -> KernelOptimizations {
         // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
         // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
         // tensor cores, just a ton of stuff. Later add search over different optimizations.
@@ -1027,7 +1029,6 @@ impl Kernel {
         self.split_axis(2, &[gws[1], lws[1]]);
         self.split_axis(4, &[gws[2], lws[2]]);
 
-        let optimizations = Vec::new();
         // Split for bigger work per thread
         // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
         // So that will be 64 work items per thread
@@ -1046,7 +1047,13 @@ impl Kernel {
         // So make larger accumulators
 
         // Add local caching for loads
-        optimizations
+        KernelOptimizations {
+            permutation: Vec::new(),
+            unroll_loops: Vec::new(),
+            vectorize_loops: Vec::new(),
+            local_tiles: Vec::new(),
+            register_tiles: Vec::new(),
+        }
     }
 }
 

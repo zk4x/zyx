@@ -10,9 +10,8 @@ use crate::{
     DType,
 };
 use core::fmt::Display;
-use std::{collections::BTreeMap, string::ToString};
-
-use super::scheduler::{Kernel, Optimization, VOp};
+use std::collections::BTreeMap;
+use super::scheduler::{Kernel, KernelOptimizations, VOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Var {
@@ -139,7 +138,7 @@ impl Kernel {
     pub(super) fn to_ir(
         &self,
         graph: &Graph,
-        optimizations: Vec<Optimization>,
+        optimizations: KernelOptimizations,
     ) -> (IRKernel, Vec<(TensorId, bool)>) {
         let mut ops = Vec::new();
         let mut vars: VarMap = VarMap::new();
@@ -283,34 +282,43 @@ impl Kernel {
                     }
                 }
                 VOp::Unary { z, x, uop } => {
-                    let x_tensor = *x;
-                    let dtype = graph.dtype(*x).into();
-                    let x = vars.get(*x, Scope::Register);
-                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
-                    ops.push(IROp::Unary {
-                        z,
-                        x,
-                        uop: *uop,
-                        dtype,
-                    });
-                    vars.remove(x_tensor);
+                    //println!("IR Unary {uop:?} on {:?}", vars.get(*x, Scope::Register));
+                    if let Var::Const(v) = vars.get(*x, Scope::Register) {
+                        vars.var_map.insert((*z, Scope::Register), Var::Const(v.unary(*uop)));
+                    } else {
+                        let x_tensor = *x;
+                        let dtype = graph.dtype(*x).into();
+                        let x = vars.get(*x, Scope::Register);
+                        let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
+                        ops.push(IROp::Unary {
+                            z,
+                            x,
+                            uop: *uop,
+                            dtype,
+                        });
+                        vars.remove(x_tensor);
+                    }
                 }
                 VOp::Binary { z, x, y, bop } => {
-                    let x_tensor = *x;
-                    let y_tensor = *y;
-                    let dtype = graph.dtype(*z).into();
-                    let x = vars.get(*x, Scope::Register);
-                    let y = vars.get(*y, Scope::Register);
-                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
-                    ops.push(IROp::Binary {
-                        z,
-                        x,
-                        y,
-                        bop: *bop,
-                        dtype,
-                    });
-                    vars.remove(x_tensor);
-                    vars.remove(y_tensor);
+                    if let (Var::Const(xv), Var::Const(yv)) = (vars.get(*x, Scope::Register), vars.get(*y, Scope::Register)) {
+                        vars.var_map.insert((*z, Scope::Register), Var::Const(Constant::binary(xv, yv, *bop)));
+                    } else {
+                        let x_tensor = *x;
+                        let y_tensor = *y;
+                        let dtype = graph.dtype(*z).into();
+                        let x = vars.get(*x, Scope::Register);
+                        let y = vars.get(*y, Scope::Register);
+                        let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
+                        ops.push(IROp::Binary {
+                            z,
+                            x,
+                            y,
+                            bop: *bop,
+                            dtype,
+                        });
+                        vars.remove(x_tensor);
+                        vars.remove(y_tensor);
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-use crate::{dtype::Constant, tensor::TensorId, DType};
+use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum BOp {
@@ -118,11 +118,6 @@ impl Node {
                 idx: 0,
                 len: 0,
             },
-            /*TODO Node::ToDevice { x, .. } => NodeParametersIterator {
-            parameters: [*x, 0, 0],
-            idx: 0,
-            len: 1,
-            },*/
             Node::Unary { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
@@ -141,13 +136,6 @@ impl Node {
         };
     }
 
-    /*pub(crate) fn is_leaf(&self) -> bool {
-        matches!(
-            self,
-            Node::Leaf { .. } | Node::Const { .. }
-        )
-    }*/
-
     pub(crate) fn is_movement(&self) -> bool {
         matches!(
             self,
@@ -157,5 +145,40 @@ impl Node {
 
     pub(crate) fn is_unary(&self) -> bool {
         matches!(self, Node::Unary { .. })
+    }
+}
+
+impl Constant {
+    pub(crate) fn unary(self, uop: UOp) -> Constant {
+        match uop {
+            UOp::Cast(dtype) => {
+                match self {
+                    Constant::F32(x) => unsafe { std::mem::transmute::<_, f32>(x) }.cast_dtype(dtype),
+                    Constant::F64(x) => unsafe { std::mem::transmute::<_, f64>(x) }.cast_dtype(dtype),
+                    Constant::U8(x) => x.cast_dtype(dtype),
+                    Constant::I8(x) => x.cast_dtype(dtype),
+                    Constant::I16(x) => x.cast_dtype(dtype),
+                    Constant::U32(_) => panic!(),
+                    Constant::I32(x) => x.cast_dtype(dtype),
+                    Constant::I64(x) => x.cast_dtype(dtype),
+                    Constant::Bool(x) => x.cast_dtype(dtype),
+                }
+            }
+            UOp::ReLU => todo!(),
+            UOp::Neg => todo!(),
+            UOp::Exp2 => todo!(),
+            UOp::Log2 => todo!(),
+            UOp::Inv => todo!(),
+            UOp::Sqrt => todo!(),
+            UOp::Sin => todo!(),
+            UOp::Cos => todo!(),
+            UOp::Not => todo!(),
+            UOp::Nonzero => todo!(),
+        }
+    }
+
+    // Assumes both constants are the same dtype
+    pub(crate) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
+        todo!()
     }
 }

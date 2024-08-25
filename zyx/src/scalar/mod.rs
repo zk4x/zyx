@@ -21,7 +21,7 @@ use num_complex::Complex;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
 
-use crate::dtype::DType;
+use crate::dtype::{Constant, DType};
 
 /// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
@@ -129,5 +129,17 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
             DType::I64 => T::from_i64(t(&self)),
             DType::Bool => T::from_bool(t(&self)),
         }};
+    }
+    fn cast_dtype(self, dtype: DType) -> Constant {
+        match dtype {
+            DType::F32 => Constant::F32(unsafe { std::mem::transmute(self.cast::<f32>()) }),
+            DType::F64 => Constant::F64(unsafe { std::mem::transmute(self.cast::<f64>()) }),
+            DType::U8 => Constant::U8(self.cast()),
+            DType::I8 => Constant::I8(self.cast()),
+            DType::I16 => Constant::I16(self.cast()),
+            DType::I32 => Constant::I32(self.cast()),
+            DType::I64 => Constant::I64(self.cast()),
+            DType::Bool => Constant::Bool(self.cast()),
+        }
     }
 }
