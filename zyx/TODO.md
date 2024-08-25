@@ -26,7 +26,7 @@
 - [ ] hip/rocr backend
 - [ ] test backpropagation
 - [ ] some tests
-- [ ] remove smadd, amadd
+- [x] remove smadd, amadd
 
 ## Advanced graph caching
 

@@ -459,8 +459,6 @@ impl CUDADevice {
                 IROp::MAdd { z, a, b, c, dtype } => {
                     source += &format!("{indent}mad.lo.{}    {}, {}, {}, {};\n", dtype.ptx(), z.ptx(), a.ptx(), b.ptx(), c.ptx());
                 }
-                IROp::AMAdd { z, a, b, c, d, dtype } => todo!(),
-                IROp::SMAdd { z, a, b, c, d, dtype } => todo!(),
                 IROp::Loop { id, len } => {
                     source += &format!("LOOP_{id}:\n");
                 }

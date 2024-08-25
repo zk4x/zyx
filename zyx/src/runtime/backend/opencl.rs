@@ -719,26 +719,6 @@ impl OpenCLDevice {
                 } => {
                     source += &format!("{indent}{} = {} * {} + {};\n", z.ocl(), a.ocl(), b.ocl(), c.ocl());
                 }
-                IROp::AMAdd {
-                    z,
-                    a,
-                    b,
-                    c,
-                    d,
-                    dtype: _,
-                } => {
-                    source += &format!("{indent}{} = ({} + {}) * {} + {};\n", z.ocl(), a.ocl(), b.ocl(), c.ocl(), d.ocl());
-                }
-                IROp::SMAdd {
-                    z,
-                    a,
-                    b,
-                    c,
-                    d,
-                    dtype: _,
-                } => {
-                    source += &format!("{indent}{} = ({} - {}) * {} + {};\n", z.ocl(), a.ocl(), b.ocl(), c.ocl(), d.ocl());
-                }
                 IROp::Loop { id, len } => {
                     source += &format!(
                         "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"

@@ -67,25 +67,6 @@ pub(crate) enum IROp {
         c: Var,
         dtype: IRDType,
     },
-    // TODO remove this junk AMAdd and SMAdd
-    // z = (a + b) * c + d
-    AMAdd {
-        z: Var,
-        a: Var,
-        b: Var,
-        c: Var,
-        d: Var,
-        dtype: IRDType,
-    },
-    // z = (a - b) * c + d
-    SMAdd {
-        z: Var,
-        a: Var,
-        b: Var,
-        c: Var,
-        d: Var,
-        dtype: IRDType,
-    },
     Loop {
         id: u8,
         len: usize,
@@ -422,24 +403,14 @@ impl VarMap {
                     {
                         println!("Padding {axis} with {lp}");
                         if *lp > 0 {
-                            ops.push(IROp::SMAdd {
-                                z,
-                                a: self.get_axis(*axis),
-                                b: Var::Const(Constant::U32(*lp as u32)),
-                                c: Var::Const(Constant::U32(*stride as u32)),
-                                d: z,
-                                dtype: IRDType::U32,
-                            });
+                            let t = Var::Id(self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8, Scope::Register);
+                            ops.push(IROp::Binary { z: t, x: self.get_axis(*axis), y: Var::Const(Constant::U32(*lp as u32)), bop: BOp::Sub, dtype: IRDType::U32 });
+                            ops.push(IROp::MAdd { z, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: z, dtype: IRDType::U32 } );
                         } else if *lp < 0 {
                             let lp = -lp;
-                            ops.push(IROp::AMAdd {
-                                z,
-                                a: self.get_axis(*axis),
-                                b: Var::Const(Constant::U32(lp as u32)),
-                                c: Var::Const(Constant::U32(*stride as u32)),
-                                d: z,
-                                dtype: IRDType::U32,
-                            });
+                            let t = Var::Id(self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8, Scope::Register);
+                            ops.push(IROp::Binary { z: t, x: self.get_axis(*axis), y: Var::Const(Constant::U32(lp as u32)), bop: BOp::Add, dtype: IRDType::U32 });
+                            ops.push(IROp::MAdd { z, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: z, dtype: IRDType::U32 } );
                         } else {
                             ops.push(IROp::MAdd {
                                 z,
