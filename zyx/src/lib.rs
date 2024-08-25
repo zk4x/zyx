@@ -32,7 +32,7 @@ fn t0() {
 // Unary test
 #[test]
 fn t1() {
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp2();
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }
@@ -134,9 +134,9 @@ fn t_10() {
 fn t_11() {
     let x = Tensor::from([[2, 3, 1], [3, 4, 1]]);
     let y = Tensor::from([[2, 3], [2, 1], [4, 1]]);
-    //let x = x.dot(y);
-    let x = x.reshape([2, 1, 3]) * y.t().reshape([1, 2, 3]);
-    let x = x.sum(2);
+    let x = x.dot(y);
+    //let x = x.reshape([2, 1, 3]) * y.t().reshape([1, 2, 3]);
+    //let x = x.sum(2);
     println!("{x}");
 }
 

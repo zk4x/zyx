@@ -4,11 +4,10 @@
 use libloading::Library;
 
 use crate::{
-    index_map::IndexMap,
-    runtime::{
-        ir::{IRDType, IRKernel, IROp, Scope},
+    dtype::Constant, index_map::IndexMap, runtime::{
+        ir::{IRDType, IRKernel, IROp, Scope, Var},
         node::{BOp, UOp},
-    },
+    }
 };
 use std::{
     ffi::{c_void, CString},
@@ -668,28 +667,25 @@ impl OpenCLDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, x, at, dtype: _ } => {
-                    source += &format!("{indent}{z} = {x}[{at}];\n");
+                    source += &format!("{indent}{} = {}[{}];\n", z.ocl(), x.ocl(), at.ocl());
                 }
                 IROp::Store { z, x, at, dtype: _ } => {
-                    source += &format!("{indent}{z}[{at}] = {x};\n");
+                    source += &format!("{indent}{}[{}] = {};\n", z.ocl(), at.ocl(), x.ocl());
                 }
                 IROp::Unary { z, x, uop, dtype } => {
-                    source += &format!(
-                        "{indent}{z} = {};\n",
-                        match uop {
-                            UOp::Cast(_) => format!("({}){x}", dtype.ocl()),
-                            UOp::ReLU => format!("max({x}, 0)"),
-                            UOp::Neg => format!("-{x}"),
-                            UOp::Exp2 => format!("exp2({x})"),
-                            UOp::Log2 => format!("log2({x})"),
-                            UOp::Inv => format!("1/{x}"),
-                            UOp::Sqrt => format!("sqrt({x})"),
-                            UOp::Sin => format!("sin({x})"),
-                            UOp::Cos => format!("cos({x})"),
-                            UOp::Not => format!("!{x}"),
-                            UOp::Nonzero => format!("{x} != 0"),
-                        }
-                    );
+                    source += &match uop {
+                        UOp::Cast(_) => format!("{indent}{} = ({}){};\n", z.ocl(), dtype.ocl(), x.ocl()),
+                        UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.ocl(), x.ocl()),
+                        UOp::Neg => format!("{indent}{} = -{};\n", z.ocl(), x.ocl()),
+                        UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.ocl(), x.ocl()),
+                        UOp::Log2 => format!("{indent}{} = log2({});\n", z.ocl(), x.ocl()),
+                        UOp::Inv => format!("{indent}{} = 1/{};\n", z.ocl(), x.ocl()),
+                        UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.ocl(), x.ocl()),
+                        UOp::Sin => format!("{indent}{} = sin({});\n", z.ocl(), x.ocl()),
+                        UOp::Cos => format!("{indent}{} = cos({});\n", z.ocl(), x.ocl()),
+                        UOp::Not => format!("{indent}{} = !{};\n", z.ocl(), x.ocl()),
+                        UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.ocl(), x.ocl()),
+                    };
                 }
                 IROp::Binary {
                     z,
@@ -699,17 +695,18 @@ impl OpenCLDevice {
                     dtype: _,
                 } => {
                     source += &format!(
-                        "{indent}{z} = {};\n",
+                        "{indent}{} = {};\n",
+                        z.ocl(),
                         match bop {
-                            BOp::Add => format!("{x} + {y}"),
-                            BOp::Sub => format!("{x} - {y}"),
-                            BOp::Mul => format!("{x} * {y}"),
-                            BOp::Div => format!("{x} / {y}"),
-                            BOp::Pow => format!("pow({x}, {y})"),
-                            BOp::Cmplt => format!("{x} < {y}"),
-                            BOp::Cmpgt => format!("{x} > {y}"),
-                            BOp::Max => format!("max({x}, {y})"),
-                            BOp::Or => format!("{x} || {y}"),
+                            BOp::Add => format!("{} + {}", x.ocl(), y.ocl()),
+                            BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
+                            BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
+                            BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
+                            BOp::Pow => format!("pow({}, {})", x.ocl(), y.ocl()),
+                            BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
+                            BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),
+                            BOp::Max => format!("max({}, {})", x.ocl(), y.ocl()),
+                            BOp::Or => format!("{} || {}", x.ocl(), y.ocl()),
                         }
                     );
                 }
@@ -720,7 +717,7 @@ impl OpenCLDevice {
                     c,
                     dtype: _,
                 } => {
-                    source += &format!("{indent}{z} = {a} * {b} + {c};\n");
+                    source += &format!("{indent}{} = {} * {} + {};\n", z.ocl(), a.ocl(), b.ocl(), c.ocl());
                 }
                 IROp::AMAdd {
                     z,
@@ -730,7 +727,7 @@ impl OpenCLDevice {
                     d,
                     dtype: _,
                 } => {
-                    source += &format!("{indent}{z} = ({a} + {b}) * {c} + {d};\n");
+                    source += &format!("{indent}{} = ({} + {}) * {} + {};\n", z.ocl(), a.ocl(), b.ocl(), c.ocl(), d.ocl());
                 }
                 IROp::SMAdd {
                     z,
@@ -740,7 +737,7 @@ impl OpenCLDevice {
                     d,
                     dtype: _,
                 } => {
-                    source += &format!("{indent}{z} = ({a} - {b}) * {c} + {d};\n");
+                    source += &format!("{indent}{} = ({} - {}) * {} + {};\n", z.ocl(), a.ocl(), b.ocl(), c.ocl(), d.ocl());
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
@@ -748,7 +745,7 @@ impl OpenCLDevice {
                     );
                     indent += "  ";
                 }
-                IROp::EndLoop => {
+                IROp::EndLoop { .. } => {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
@@ -1157,6 +1154,35 @@ fn get_compute(device_name: &str) -> u128 {
             #[cfg(feature = "debug_dev")]
             println!("Unknown device {device_name}, guessing compute capability");
             1024 * 1024 * 1024 * 1024
+        }
+    }
+}
+
+impl Constant {
+    fn opencl(&self) -> String {
+        use core::mem::transmute as t;
+        match self {
+            Constant::F32(x) => {
+                let x: f32 = unsafe { t::<_, f32>(*x) };
+                format!("{x}f", )
+            }
+            Constant::F64(_) => todo!(),
+            Constant::U8(_) => todo!(),
+            Constant::I8(_) => todo!(),
+            Constant::I16(_) => todo!(),
+            Constant::U32(x) => format!("{x}"),
+            Constant::I32(x) => format!("{x}"),
+            Constant::I64(x) => format!("{x}"),
+            Constant::Bool(_) => todo!(),
+        }
+    }
+}
+
+impl Var {
+    fn ocl(&self) -> String {
+        match self {
+            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Const(value) => format!("{}", value.opencl()),
         }
     }
 }

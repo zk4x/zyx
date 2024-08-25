@@ -8,8 +8,10 @@ use std::rc::Rc;
 use libloading::Library;
 
 use super::DeviceInfo;
-use crate::runtime::ir::{IRDType, IROp};
-use crate::runtime::node::UOp;
+use crate::dtype::Constant;
+use crate::runtime::ir::{IRDType, IROp, Var};
+use crate::runtime::node::{BOp, UOp};
+use crate::DType;
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 #[derive(Debug, serde::Deserialize)]
@@ -133,6 +135,7 @@ pub(crate) struct CUDADevice {
     compute_capability: [c_int; 2],
     cuModuleLoadDataEx: unsafe extern "C" fn(*mut CUmodule, *const c_void, c_uint, *mut CUjit_option, *mut *mut c_void) -> CUDAStatus,
     cuModuleGetFunction: unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
+    cuModuleEnumerateFunctions: unsafe extern "C" fn(*mut CUfunction, c_uint, CUmodule) -> CUDAStatus,
     cuLaunchKernel: unsafe extern "C" fn(CUfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, CUstream, *mut *mut c_void, *mut *mut c_void) -> CUDAStatus,
 }
 
@@ -210,6 +213,8 @@ pub(crate) fn initialize_cuda_backend(
         *unsafe { cuda.get(b"cuModuleLoadDataEx\0")}.unwrap();
     let cuModuleGetFunction =
         *unsafe { cuda.get(b"cuModuleGetFunction\0")}.unwrap();
+    let cuModuleEnumerateFunctions =
+        *unsafe { cuda.get(b"cuModuleEnumerateFunctions\0")}.unwrap();
     let cuLaunchKernel =
         *unsafe { cuda.get(b"cuLaunchKernel\0")}.unwrap();
 
@@ -265,6 +270,7 @@ pub(crate) fn initialize_cuda_backend(
             memory_pool_id: 0,
             cuModuleLoadDataEx,
             cuModuleGetFunction,
+            cuModuleEnumerateFunctions,
             cuLaunchKernel,
             compute_capability: [major, minor],
         })
@@ -296,7 +302,7 @@ impl CUDAMemoryPool {
 
     pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
         //println!("Copying {src:?} to {dst:?}");
-        unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory.")
+        unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory from host to pool.")
     }
 
     pub(crate) fn pool_to_host(
@@ -304,7 +310,7 @@ impl CUDAMemoryPool {
         src: &CUDABuffer,
         dst: &mut [u8],
     ) -> Result<(), CUDAError> {
-        unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }.check("Failed to copy memory.")
+        unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }.check("Failed to copy memory from pool to host.")
     }
 
     pub(crate) fn pool_to_pool(
@@ -312,7 +318,7 @@ impl CUDAMemoryPool {
         src: &CUDABuffer,
         dst: &CUDABuffer,
     ) -> Result<(), CUDAError> {
-        unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }.check("Failed pool to pool copy.")
+        unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }.check("Failed copy memory from pool to pool.")
     }
 }
 
@@ -354,94 +360,118 @@ impl CUDADevice {
             local_work_size[2],
         );
 
-        let indent = "  ";
+        let indent = "    ";
         let mut source = format!(".version {0}.{1}
 .target sm_{0}{1}
 .address_size 64
 .visible .entry {name}(\n", self.compute_capability[0], self.compute_capability[1]);
         // Declare global variables
         for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
-            source += &format!("{indent}.param  .u64 g{id},\n");
+            source += &format!("{indent}.param    .u64 g{id},\n");
         }
         source.pop();
         source.pop();
         source += "\n) {\n";
         // Temporaries
-        source += "  .reg  .s64 a0;\n";
-        source += "  .reg  .s64 a1;\n";
+        source += &format!("{indent}.reg  .pred    p;\n");
+        source += &format!("{indent}.reg  .s64    a0;\n");
+        source += &format!("{indent}.reg  .s64    a1;\n");
         // Declare register variables
         for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
             source += &format!(
-                "{indent}.reg  .{} r{id};\n",
+                "{indent}.reg  .{}    r{id};\n",
                 dtype.ptx()
             );
         }
         // Add indices for global and local loops
-        source += "  mov.u32  r0, %ctaid.x;\n";
-        source += "  mov.u32  r1, %tid.x;\n";
-        source += "  mov.u32  r2, %ctaid.y;\n";
-        source += "  mov.u32  r3, %tid.y;\n";
-        source += "  mov.u32  r4, %ctaid.z;\n";
-        source += "  mov.u32  r5, %tid.z;\n";
+        source += &format!("{indent}mov.u32    r0, %ctaid.x;\n");
+        source += &format!("{indent}mov.u32    r1, %tid.x;\n");
+        source += &format!("{indent}mov.u32    r2, %ctaid.y;\n");
+        source += &format!("{indent}mov.u32    r3, %tid.y;\n");
+        source += &format!("{indent}mov.u32    r4, %ctaid.z;\n");
+        source += &format!("{indent}mov.u32    r5, %tid.z;\n");
 
         for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
             match op {
                 IROp::Set { z, len, value } => {
-                    source += &format!("{indent}mov.u32  r{z}, {value};\n");
+                    let dtype: IRDType = value.dtype().into();
+                    source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.ptx());
                 }
                 IROp::Load { z, x, at, dtype } => {
                     // Get address
-                    source += &format!("{indent}ld.param.u64  a0, [{x}];\n");
+                    source += &format!("{indent}ld.param.u64    a0, [{}];\n", x.ptx());
                     // Convert address to global
-                    source += &format!("{indent}cvta.to.global.u64  a1, a0;\n");
+                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
                     // Shift by {at}
                     // Multiply at by byte width of dtype
-                    source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
+                    source += &format!("{indent}shl.b32    {0}, {0}, {1};\n", at.ptx(), dtype.byte_size().ilog2());
                     // Convert at to s64
-                    source += &format!("{indent}cvt.s64.u32    a0, {at};\n");
+                    source += &format!("{indent}cvt.s64.u32    a0, {};\n", at.ptx());
                     // Add at to address
                     source += &format!("{indent}add.s64    a1, a1, a0;\n");
                     // Load from global to register
-                    source += &format!("{indent}ld.global.{}  {z}, [a1];\n", dtype.ptx());
+                    source += &format!("{indent}ld.global.{}    {}, [a1];\n", dtype.ptx(), z.ptx());
                 }
                 IROp::Store { z, x, at, dtype } => {
                     // Get address
-                    source += &format!("{indent}ld.param.u64  a0, [{z}];\n");
+                    source += &format!("{indent}ld.param.u64    a0, [{}];\n", z.ptx());
                     // Convert address to global
-                    source += &format!("{indent}cvta.to.global.u64  a1, a0;\n");
+                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
                     // Shift by {at}
                     // Multiply at by byte width of dtype
-                    source += &format!("{indent}shl.b32    {at}, {at}, {};\n", dtype.byte_size().ilog2());
+                    source += &format!("{indent}shl.b32    {0}, {0}, {1};\n", at.ptx(), dtype.byte_size().ilog2());
                     // Convert at to s64
-                    source += &format!("{indent}cvt.s64.u32    a0, {at};\n");
+                    source += &format!("{indent}cvt.s64.u32    a0, {};\n", at.ptx());
                     // Add at to address
                     source += &format!("{indent}add.s64    a1, a1, a0;\n");
                     // Load from global to register
-                    source += &format!("{indent}st.global.{}  [a1], {x};\n", dtype.ptx());
+                    source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.ptx());
                 }
                 IROp::Unary { z, x, uop, dtype } => {
-                    source += &format!("{indent}{}.{} {z}, {x};\n", match uop {
-                        UOp::Cast(_) => todo!(),
+                    source += &match uop {
+                        UOp::Cast(cdt) => format!("{indent}cvt.{}.{}    {}, {};\n", <DType as Into<IRDType>>::into(cdt).ptx(), dtype.ptx(), z.ptx(), x.ptx()),
                         UOp::ReLU => todo!(),
-                        UOp::Neg => "neg.f32",
-                        UOp::Exp2 => "ex2.approx",
-                        UOp::Log2 => "lg2.approx",
+                        UOp::Neg => format!("{indent}neg.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Exp2 => format!("{indent}ex2.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Log2 => format!("{indent}lg2.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
                         UOp::Inv => todo!(),
-                        UOp::Sqrt => todo!(),
-                        UOp::Sin => "sin.approx",
-                        UOp::Cos => "cos.approx",
-                        UOp::Not => todo!(),
+                        UOp::Sqrt => format!("{indent}sqrt.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Sin => format!("{indent}sin.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Cos => format!("{indent}cos.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Not => format!("{indent}not.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
                         UOp::Nonzero => todo!(),
-                    }, dtype.ptx());
+                    };
                 }
-                IROp::Binary { z, x, y, bop, dtype } => todo!(),
+                IROp::Binary { z, x, y, bop, dtype } => {
+                    //println!("Adding binary {bop:?}");
+                    source += &format!("{indent}{}.{}   {}, {}, {};\n", match bop {
+                        BOp::Add => "add",
+                        BOp::Sub => "sub",
+                        BOp::Mul => "mul",
+                        BOp::Div => "div",
+                        BOp::Pow => todo!(),
+                        BOp::Cmplt => "set.lt",
+                        BOp::Cmpgt => "set.gt",
+                        BOp::Max => todo!(),
+                        BOp::Or => todo!(),
+                    }, dtype.ptx(), z.ptx(), x.ptx(), y.ptx());
+                }
                 IROp::MAdd { z, a, b, c, dtype } => {
-                    source += &format!("{indent}mad.lo.{}    {z}, {a}, {b}, {c};\n", dtype.ptx());
+                    source += &format!("{indent}mad.lo.{}    {}, {}, {}, {};\n", dtype.ptx(), z.ptx(), a.ptx(), b.ptx(), c.ptx());
                 }
                 IROp::AMAdd { z, a, b, c, d, dtype } => todo!(),
                 IROp::SMAdd { z, a, b, c, d, dtype } => todo!(),
-                IROp::Loop { id, len } => todo!(),
-                IROp::EndLoop => todo!(),
+                IROp::Loop { id, len } => {
+                    source += &format!("LOOP_{id}:\n");
+                }
+                IROp::EndLoop { id, len } => {
+                    // Increment counter
+                    source += &format!("{indent}add.u32    r{id}, r{id}, 1;\n");
+                    // Set condition
+                    source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
+                    // Branch
+                    source += &format!("@p  bra    LOOP_{id};\n");
+                },
                 IROp::Barrier { scope } => todo!(),
             }
         }
@@ -463,7 +493,9 @@ impl CUDADevice {
             "Module load failed.",
         )?;
         let mut function = ptr::null_mut();
-        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }.check("Failed to load function")?;
+        //println!("Loading function {name}");
+        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }.check("Failed to load function.")?;
+        //unsafe { (self.cuModuleEnumerateFunctions)(&mut function, 1, module) }.check("Failed to load functions.")?;
         Ok(CUDAProgram {
             name,
             module,
@@ -729,5 +761,39 @@ impl IRDType {
             IRDType::Bool => "b8",
             IRDType::U32 => "u32",
         };
+    }
+}
+
+impl Constant {
+    fn ptx(&self) -> String {
+        use core::mem::transmute as t;
+        match self {
+            Constant::F32(x) => {
+                let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
+                let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
+                format!("0f{}", hex)
+            }
+            Constant::F64(x) => {
+                let bytes = unsafe { t::<_, f64>(*x).to_ne_bytes() };
+                let hex = format!("{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
+                format!("0d{}", hex)
+            }
+            Constant::U8(_) => todo!(),
+            Constant::I8(_) => todo!(),
+            Constant::I16(_) => todo!(),
+            Constant::U32(x) => format!("{x}"),
+            Constant::I32(x) => format!("{x}"),
+            Constant::I64(x) => format!("{x}"),
+            Constant::Bool(_) => todo!(),
+        }
+    }
+}
+
+impl Var {
+    fn ptx(&self) -> String {
+        match self {
+            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Const(value) => format!("{}", value.ptx()),
+        }
     }
 }

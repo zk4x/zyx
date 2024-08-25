@@ -19,6 +19,7 @@ pub(crate) enum Constant {
     U8(u8),
     I8(i8),
     I16(i16),
+    U32(u32),
     I32(i32),
     I64(i64),
     Bool(bool),
@@ -47,6 +48,7 @@ impl Constant {
             DType::U8 => Constant::U8(unsafe {t(&x)}),
             DType::I8 => Constant::I8(unsafe {t(&x)}),
             DType::I16 => Constant::I16(unsafe {t(&x)}),
+            //DType::U32 => Constant::U32(unsafe {t(&x)}),
             DType::I32 => Constant::I32(unsafe {t(&x)}),
             DType::I64 => Constant::I64(unsafe {t(&x)}),
             DType::Bool => Constant::Bool(unsafe {t(&x)}),
@@ -67,7 +69,8 @@ impl Constant {
             Constant::CF64(..) => DType::CF64,
             Constant::U8(_) => DType::U8,
             Constant::I8(_) => DType::I8,
-            Constant::I16(_) => DType::I16,
+            Constant::I16(_) => panic!(),
+            Constant::U32(_) => DType::I32,
             Constant::I32(_) => DType::I32,
             Constant::I64(_) => DType::I64,
             Constant::Bool(_) => DType::Bool,
@@ -112,6 +115,9 @@ impl Display for Constant {
                 return f.write_fmt(format_args!("{}", value));
             }
             Constant::I16(value) => {
+                return f.write_fmt(format_args!("{}", value));
+            }
+            Constant::U32(value) => {
                 return f.write_fmt(format_args!("{}", value));
             }
             Constant::I32(value) => {

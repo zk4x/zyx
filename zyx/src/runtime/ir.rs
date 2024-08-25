@@ -50,6 +50,7 @@ pub(crate) enum IROp {
         z: Var,
         x: Var,
         uop: UOp,
+        // For cast this is dtype before cast
         dtype: IRDType,
     },
     Binary {
@@ -67,6 +68,7 @@ pub(crate) enum IROp {
         c: Var,
         dtype: IRDType,
     },
+    // TODO remove this junk AMAdd and SMAdd
     // z = (a + b) * c + d
     AMAdd {
         z: Var,
@@ -89,7 +91,10 @@ pub(crate) enum IROp {
         id: u8,
         len: usize,
     },
-    EndLoop,
+    EndLoop {
+        id: u8,
+        len: usize,
+    },
     Barrier {
         scope: Scope,
     },
@@ -170,7 +175,7 @@ impl Kernel {
             }
         }
 
-        let mut unfinished_loops_num = 0;
+        let mut loops = Vec::new();
         for vop in &self.ops {
             match vop {
                 VOp::Const { z, value, view } => {
@@ -224,7 +229,7 @@ impl Kernel {
                         len: *dimension,
                     });
                     max_axis += 1;
-                    unfinished_loops_num += 1;
+                    loops.push((id, *dimension));
                 }
                 VOp::Accumulator { z, rop, view } => {
                     let dtype: DType = graph.dtype(*z).into();
@@ -271,15 +276,15 @@ impl Kernel {
                     vars.remove(*x);
                     //vars.remove(*z);
                     for _ in 0..*num_axes {
-                        ops.push(IROp::EndLoop);
+                        let (id, len) = loops.pop().unwrap();
+                        ops.push(IROp::EndLoop { id, len });
                         vars.remove_axis(max_axis);
                         max_axis -= 1;
                     }
-                    unfinished_loops_num -= num_axes;
                 }
                 VOp::Unary { z, x, uop } => {
                     let x_tensor = *x;
-                    let dtype = graph.dtype(*z).into();
+                    let dtype = graph.dtype(*x).into();
                     let x = vars.get(*x, Scope::Register);
                     let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
                     ops.push(IROp::Unary {
@@ -310,8 +315,8 @@ impl Kernel {
             }
         }
 
-        for _ in 0..unfinished_loops_num {
-            ops.push(IROp::EndLoop);
+        while let Some((id, len)) = loops.pop() {
+            ops.push(IROp::EndLoop { id, len });
         }
 
         let mut addressables = Vec::new();
@@ -381,7 +386,7 @@ impl VarMap {
 
     fn generate_idx(&mut self, view: &View, ops: &mut Vec<IROp>) -> Var {
         match view {
-            View::None => Var::Const(Constant::I64(0)),
+            View::None => Var::Const(Constant::U32(0)),
             View::Strided(dims) => {
                 let z = self.zero_var(ops);
                 let numel = dims.iter().flat_map(|StridedDim { dim, stride, .. }| if *stride != 0 { Some(*dim) } else { None }).product();
@@ -391,7 +396,7 @@ impl VarMap {
                         ops.push(IROp::MAdd {
                             z,
                             a,
-                            b: Var::Const(Constant::I64(*stride as i64)),
+                            b: Var::Const(Constant::U32(*stride as u32)),
                             c: z,
                             dtype: IRDType::U32,
                         });
@@ -412,8 +417,8 @@ impl VarMap {
                             ops.push(IROp::SMAdd {
                                 z,
                                 a: self.get_axis(*axis),
-                                b: Var::Const(Constant::I64(*lp as i64)),
-                                c: Var::Const(Constant::I64(*stride as i64)),
+                                b: Var::Const(Constant::U32(*lp as u32)),
+                                c: Var::Const(Constant::U32(*stride as u32)),
                                 d: z,
                                 dtype: IRDType::U32,
                             });
@@ -422,8 +427,8 @@ impl VarMap {
                             ops.push(IROp::AMAdd {
                                 z,
                                 a: self.get_axis(*axis),
-                                b: Var::Const(Constant::I64(lp as i64)),
-                                c: Var::Const(Constant::I64(*stride as i64)),
+                                b: Var::Const(Constant::U32(lp as u32)),
+                                c: Var::Const(Constant::U32(*stride as u32)),
                                 d: z,
                                 dtype: IRDType::U32,
                             });
@@ -431,7 +436,7 @@ impl VarMap {
                             ops.push(IROp::MAdd {
                                 z,
                                 a: self.get_axis(*axis),
-                                b: Var::Const(Constant::I64(*stride as i64)),
+                                b: Var::Const(Constant::U32(*stride as u32)),
                                 c: z,
                                 dtype: IRDType::U32,
                             });
@@ -441,7 +446,7 @@ impl VarMap {
                         ops.push(IROp::MAdd {
                             z,
                             a: self.get_axis(*axis),
-                            b: Var::Const(Constant::I64(*stride as i64)),
+                            b: Var::Const(Constant::U32(*stride as u32)),
                             c: z,
                             dtype: IRDType::U32,
                         });
@@ -498,7 +503,7 @@ impl VarMap {
                     ops.push(IROp::MAdd {
                         z: idx,
                         a: self.get_axis(*axis),
-                        b: Var::Const(Constant::I64(st as i64)),
+                        b: Var::Const(Constant::U32(st as u32)),
                         c: idx,
                         dtype: IRDType::U32,
                     });
@@ -512,7 +517,7 @@ impl VarMap {
                     ops.push(IROp::Binary {
                         z: temp,
                         x: idx,
-                        y: Var::Const(Constant::I64(*lp as i64)),
+                        y: Var::Const(Constant::U32(*lp as u32)),
                         dtype: IRDType::U32,
                         bop: BOp::Cmplt,
                     });
@@ -531,7 +536,7 @@ impl VarMap {
                     ops.push(IROp::Binary {
                         z: temp,
                         x: idx,
-                        y: Var::Const(Constant::I64((dim as isize - *rp - 1) as i64)),
+                        y: Var::Const(Constant::U32((dim as isize - *rp - 1) as u32)),
                         dtype: IRDType::U32,
                         bop: BOp::Cmpgt,
                     });
@@ -606,7 +611,7 @@ impl VarMap {
         ops.push(IROp::Set {
             z: id,
             len: 0,
-            value: Constant::I64(0),
+            value: Constant::U32(0),
         });
         Var::Id(id, Scope::Register)
     }
@@ -693,15 +698,6 @@ impl From<DType> for IRDType {
     }
 }
 
-impl Display for Var {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Var::Id(id, scope) => f.write_fmt(format_args!("{scope}{id}")),
-            Var::Const(value) => f.write_fmt(format_args!("{}", value.to_string())),
-        }
-    }
-}
-
 impl Display for Scope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -735,6 +731,30 @@ impl IRDType {
             IRDType::I64 => 8,
             IRDType::Bool => 1,
             IRDType::U32 => 4,
+        }
+    }
+}
+
+impl Constant {
+    pub(crate) fn ir_dtype(&self) -> IRDType {
+        match self {
+            #[cfg(feature = "half")]
+            Constant::BF16(_) => IRDType::BF16,
+            #[cfg(feature = "half")]
+            Constant::F16(_) => IRDType::F16,
+            Constant::F32(_) => IRDType::F32,
+            Constant::F64(_) => IRDType::F64,
+            #[cfg(feature = "complex")]
+            Constant::CF32(..) => IRDType::CF32,
+            #[cfg(feature = "complex")]
+            Constant::CF64(..) => IRDType::CF64,
+            Constant::U8(_) => IRDType::U8,
+            Constant::I8(_) => IRDType::I8,
+            Constant::I16(_) => IRDType::U32,
+            Constant::U32(_) => IRDType::I32,
+            Constant::I32(_) => IRDType::I32,
+            Constant::I64(_) => IRDType::I64,
+            Constant::Bool(_) => IRDType::Bool,
         }
     }
 }

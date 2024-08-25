@@ -22,10 +22,11 @@
 - [ ] cumsum
 - [ ] randn
 - [ ] conv
-- [ ] cuda/ptx backend
+- [x] cuda/ptx backend
 - [ ] hip/rocr backend
 - [ ] test backpropagation
 - [ ] some tests
+- [ ] remove smadd, amadd
 
 ## Advanced graph caching
 
