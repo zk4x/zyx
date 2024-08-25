@@ -16,7 +16,7 @@
 
 - [ ] local memory caching
 - [ ] bigger accumulators
-- [ ] deallocation of intermediate buffers in scheduler
+- [x] deallocation of intermediate buffers in scheduler
 - [ ] check caching of compiled graphs
 - [ ] pool
 - [ ] cumsum

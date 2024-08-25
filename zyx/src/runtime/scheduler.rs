@@ -37,7 +37,7 @@ impl Runtime {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
         let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
         // create vop representation
-        let kernels: Vec<Kernel> = generate_kernels(&graph, &order, &to_eval);
+        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order, &to_eval);
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
         // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
         let mut device_program_map: BTreeMap<DeviceId, Vec<usize>> = (0..self.devices.len())
@@ -50,8 +50,9 @@ impl Runtime {
             .map(|(x, &BufferId { memory_pool_id, .. })| (x.clone(), memory_pool_id))
             .collect();
 
-        for mut kernel in kernels {
+        for kid in 0..kernels.len() {
             let mut program_wait_list = Vec::new();
+            let mut kernel = &mut kernels[kid];
             for i in (0..sched_graph.len()).rev() {
                 if let SchedulerOp::Launch(program_id) = &sched_graph[i] {
                     if device_program_map.iter().any(|(device_id, programs)| {
@@ -69,7 +70,7 @@ impl Runtime {
                                         program_wait_list.push(*program_id);
                                     }
                                 }
-                            } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
+                            }
                             Device::HIP { programs, .. } => {
                                 for (arg, _, read_only) in &programs[program_id.program_id].1 {
                                     if !read_only && kernel.inputs.contains(&arg) {
@@ -80,7 +81,7 @@ impl Runtime {
                                         program_wait_list.push(*program_id);
                                     }
                                 }
-                            } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
+                            }
                             Device::OpenCL { programs, .. } => {
                                 for (arg, _, read_only) in &programs[program_id.program_id].1 {
                                     if !read_only && kernel.inputs.contains(&arg) {
@@ -91,11 +92,12 @@ impl Runtime {
                                         program_wait_list.push(*program_id);
                                     }
                                 }
-                            } // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
+                            }
                         }
                     }
                 }
             }
+            // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
             // Is this kernel shardable across multiple devices?
             let shard = if device_program_map.len() > 1 {
                 if let Some((axis, dimension)) = kernel.shard_axis() {
@@ -112,6 +114,7 @@ impl Runtime {
                 todo!()
             } else {
                 // Find fastest device out of least occupied ones
+                // Smallest number of programs
                 let min_programs = device_program_map
                     .iter()
                     .min_by(|x, y| x.1.len().cmp(&y.1.len()))
@@ -239,6 +242,19 @@ impl Runtime {
                     program_id,
                 }));
                 // TODO deallocate kernel inputs that will not be used by other kernels
+                let mut needed_tensors: BTreeSet<TensorId> = BTreeSet::new();
+                for kernel in &kernels[kid..] {
+                    needed_tensors.extend(&kernel.inputs);
+                }
+                //println!("Needed tensors: {needed_tensors:?}, kernel inputs {:?}", &kernels[kid].inputs);
+                for input in &kernels[kid].inputs {
+                    if !needed_tensors.contains(&input) {
+                        let view = View::new(graph.shape(*input));
+                        let dtype = graph.dtype(*input);
+                        let memory_pool_id = *tensor_buffer_map.get(&(*input, view.clone())).unwrap();
+                        sched_graph.push(SchedulerOp::Deallocate { tensor_id: *input, memory_pool_id, bytes: view.numel()*dtype.byte_size(), view });
+                    }
+                }
             }
         }
         for (device_id, programs) in device_program_map.iter_mut() {
