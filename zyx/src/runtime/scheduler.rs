@@ -9,7 +9,7 @@ use crate::{
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
-use std::{collections::{BTreeMap, BTreeSet}, fmt::Display};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent},
@@ -49,6 +49,7 @@ impl Runtime {
             .iter()
             .map(|(x, &BufferId { memory_pool_id, .. })| (x.clone(), memory_pool_id))
             .collect();
+        let mut temp_tensors: BTreeSet<TensorId> = BTreeSet::new();
 
         for kid in 0..kernels.len() {
         //for mut kernel in kernels {
@@ -165,6 +166,7 @@ impl Runtime {
                                 * graph.dtype(*output).byte_size(),
                             view: view.clone(),
                         });
+                        temp_tensors.insert(*output);
                         tensor_buffer_map.insert((*output, view), memory_pool_id);
                     }
                 }
@@ -179,8 +181,8 @@ impl Runtime {
                             dst: memory_pool_id,
                             view: view.clone(),
                         });
-                        tensor_buffer_map.insert((*input, view), memory_pool_id);
                     }
+                    tensor_buffer_map.insert((*input, view), memory_pool_id);
                 }
                 for program_id in program_wait_list {
                     sched_graph.push(SchedulerOp::Finish(program_id));
@@ -244,20 +246,23 @@ impl Runtime {
                     program_id,
                 }));
                 // Deallocate kernel inputs that will not be used by other kernels
-                let mut needed_tensors: BTreeSet<TensorId> = to_eval.clone();
+                let mut unneeded_tensors = temp_tensors.clone();
                 if kid + 1 < kernels.len() {
                     for kernel in &kernels[kid+1..] {
-                        needed_tensors.extend(&kernel.inputs);
+                        for input in &kernel.inputs {
+                            unneeded_tensors.remove(input);
+                        }
                     }
                 }
-                //println!("Needed tensors: {needed_tensors:?}, kernel inputs {:?}", &kernels[kid].inputs);
-                for input in &kernels[kid].inputs {
-                    if !needed_tensors.contains(&input) {
-                        let view = View::new(graph.shape(*input));
-                        let dtype = graph.dtype(*input);
-                        let Some(memory_pool_id) = tensor_buffer_map.get(&(*input, view.clone())) else { continue };
-                        sched_graph.push(SchedulerOp::Deallocate { tensor_id: *input, memory_pool_id: *memory_pool_id, bytes: view.numel()*dtype.byte_size(), view });
-                    }
+                for tensor in to_eval {
+                    unneeded_tensors.remove(tensor);
+                }
+                //println!("Unneeded tensors: {unneeded_tensors:?}, kernel inputs {:?} tensor_buffer_map {tensor_buffer_map:?}", &kernels[kid].inputs);
+                for tensor_id in unneeded_tensors {
+                    let view = View::new(graph.shape(tensor_id));
+                    let dtype = graph.dtype(tensor_id);
+                    let Some(memory_pool_id) = tensor_buffer_map.get(&(tensor_id, view.clone())) else { panic!() };
+                    sched_graph.push(SchedulerOp::Deallocate { tensor_id, memory_pool_id: *memory_pool_id, bytes: view.numel()*dtype.byte_size(), view });
                 }
             }
         }
@@ -1734,7 +1739,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
 }
 
 #[cfg(feature = "debug_sched")]
-impl Display for VOp {
+impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
