@@ -154,7 +154,7 @@ pub enum DType {
     Bool,
 }
 
-impl core::fmt::Display for DType {
+impl Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         return f.write_str(match self {
             #[cfg(feature = "half")]

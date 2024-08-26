@@ -7,6 +7,7 @@ use core::ops::{
     RangeToInclusive, Sub,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::{Debug, Display};
 use std::iter::repeat;
 
 use crate::runtime::{BackendConfig, ZyxError};
@@ -1314,14 +1315,14 @@ impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     }
 }
 
-impl core::fmt::Debug for Tensor {
+impl Debug for Tensor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{self}"))
         //f.write_fmt(format_args!("Tensor {{ id = {:?} }}", self.id))
     }
 }
 
-impl core::fmt::Display for Tensor {
+impl Display for Tensor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // TODO don't print the whole tensor if it is too big
         let precision = if let Some(precision) = f.precision() {

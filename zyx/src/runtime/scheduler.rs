@@ -9,7 +9,7 @@ use crate::{
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Display};
 
 use super::{
     backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent},
@@ -51,8 +51,9 @@ impl Runtime {
             .collect();
 
         for kid in 0..kernels.len() {
+        //for mut kernel in kernels {
+            let kernel = &mut kernels[kid];
             let mut program_wait_list = Vec::new();
-            let mut kernel = &mut kernels[kid];
             for i in (0..sched_graph.len()).rev() {
                 if let SchedulerOp::Launch(program_id) = &sched_graph[i] {
                     if device_program_map.iter().any(|(device_id, programs)| {
@@ -242,17 +243,19 @@ impl Runtime {
                     program_id,
                 }));
                 // TODO deallocate kernel inputs that will not be used by other kernels
-                let mut needed_tensors: BTreeSet<TensorId> = BTreeSet::new();
-                for kernel in &kernels[kid..] {
-                    needed_tensors.extend(&kernel.inputs);
+                let mut needed_tensors: BTreeSet<TensorId> = to_eval.clone();
+                if kid + 1 < kernels.len() {
+                    for kernel in &kernels[kid+1..] {
+                        needed_tensors.extend(&kernel.inputs);
+                    }
                 }
-                //println!("Needed tensors: {needed_tensors:?}, kernel inputs {:?}", &kernels[kid].inputs);
+                println!("Needed tensors: {needed_tensors:?}, kernel inputs {:?}", &kernels[kid].inputs);
                 for input in &kernels[kid].inputs {
                     if !needed_tensors.contains(&input) {
                         let view = View::new(graph.shape(*input));
                         let dtype = graph.dtype(*input);
-                        let memory_pool_id = *tensor_buffer_map.get(&(*input, view.clone())).unwrap();
-                        sched_graph.push(SchedulerOp::Deallocate { tensor_id: *input, memory_pool_id, bytes: view.numel()*dtype.byte_size(), view });
+                        let Some(memory_pool_id) = tensor_buffer_map.get(&(*input, view.clone())) else { continue };
+                        sched_graph.push(SchedulerOp::Deallocate { tensor_id: *input, memory_pool_id: *memory_pool_id, bytes: view.numel()*dtype.byte_size(), view });
                     }
                 }
             }
@@ -1703,7 +1706,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
 }
 
 #[cfg(feature = "debug_sched")]
-impl std::fmt::Display for VOp {
+impl Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
@@ -1734,12 +1737,18 @@ impl std::fmt::Display for VOp {
             VOp::Move { z, x, mop } => f.write_fmt(format_args!(
                 "{color_white}Move{color_reset}.{mop:?}   {z} <- {x}"
             )),
-            VOp::Unary { z, x, uop } => f.write_fmt(format_args!(
+            VOp::Unary { z, x, uop } => {
+                let mut len = format!("{uop:?}").len();
+                if len > 5 {
+                    len = 5;
+                }
+                f.write_fmt(format_args!(
                 "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
                 core::iter::repeat(" ")
-                    .take(5 - format!("{uop:?}").len())
+                    .take(5 - len)
                     .collect::<String>()
-            )),
+                ))
+            }
             VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!(
                 "{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}"
             )),

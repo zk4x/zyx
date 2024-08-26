@@ -75,7 +75,7 @@ fn t4() {
     let x = Tensor::uniform([1024, 1024], 0f32..1f32);
     let y = Tensor::uniform([1024, 1024], 0f32..1f32);
     //let z = (x * y).sum(2);
-    let z = x.dot(y);
+    let z = x.dot(y).exp().reshape([256, 4, 64, 16]); //.permute([2, 1, 3, 0]);
     Tensor::realize([&z]).unwrap();
 }
 

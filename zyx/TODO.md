@@ -1,7 +1,6 @@
 - [x] deallocation of memory
 - [ ] implement sharding
 - [x] padded view permute
-- [ ] test padded view permute
 - [ ] more tests
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
@@ -9,7 +8,7 @@
 - [x] test reshape split
 - [x] repeat
 - [ ] hsa/hsail backend
-- [ ] remove duplicated code from IR
+- [ ] clean up ir.rs
 - [ ] automatic optimizations with search
 
 ## Release blockers
@@ -27,6 +26,11 @@
 - [ ] test backpropagation
 - [ ] some tests
 - [x] remove smadd, amadd
+- [ ] fix pad after reduce
+- [ ] test padded view permute
+- [ ] fix reshape after reduce
+- [ ] fix expand after reduce
+- [ ] todo fix permute on reduced and reshaped kernel
 
 ## Advanced graph caching
 
