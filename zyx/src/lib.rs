@@ -158,3 +158,13 @@ fn t_14() {
     x = x.repeat([2, 4, 1]);
     println!("{x}");
 }
+
+#[test]
+fn t_15() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    for _ in 0..5 {
+        x = &x + &x;
+        Tensor::realize([&x]).unwrap();
+    }
+    println!("{x}");
+}

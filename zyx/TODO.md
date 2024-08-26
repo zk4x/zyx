@@ -10,6 +10,7 @@
 - [ ] hsa/hsail backend
 - [ ] clean up ir.rs
 - [ ] automatic optimizations with search
+- [ ] hip/rocr backend
 
 ## Release blockers
 
@@ -22,15 +23,14 @@
 - [ ] randn
 - [ ] conv
 - [x] cuda/ptx backend
-- [ ] hip/rocr backend
 - [ ] test backpropagation
 - [ ] some tests
 - [x] remove smadd, amadd
-- [ ] fix pad after reduce
+- [ ] test pad after reduce
 - [ ] test padded view permute
-- [ ] fix reshape after reduce
-- [ ] fix expand after reduce
-- [ ] todo fix permute on reduced and reshaped kernel
+- [x] fix reshape after reduce
+- [ ] test expand after reduce
+- [x] todo fix permute on reduced and reshaped kernel
 
 ## Advanced graph caching
 

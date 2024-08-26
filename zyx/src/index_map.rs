@@ -19,9 +19,11 @@ impl<T> IndexMap<T> {
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop() {
             self.values[id] = value;
+            println!("Pushing to empty {id}");
             id
         } else {
             self.values.push(value);
+            println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
             self.values.len() - 1
         }
     }

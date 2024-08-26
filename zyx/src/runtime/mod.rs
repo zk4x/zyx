@@ -751,6 +751,7 @@ impl Runtime {
         if tensors.len() == 0 {
             return Ok(());
         }
+        println!("Graph: {:?}", self.graph);
         if self.devices.is_empty() {
             self.initialize_backends()?;
         }
@@ -762,6 +763,7 @@ impl Runtime {
             self.compiled_graphs.insert(graph.clone(), compiled_graph);
         }
         self.launch_graph(&graph)?;
+        // Remove evaluated part of graph unless needed for backpropagation
         return Ok(());
     }
 

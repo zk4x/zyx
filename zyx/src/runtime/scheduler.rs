@@ -1152,7 +1152,7 @@ fn generate_kernels(
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!("ID({nid})x{}: {node:?}", graph.rc(nid));
+        //println!("ID({nid})x{}: {node:?}", graph.rc(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {
