@@ -95,6 +95,7 @@ impl View {
     }*/
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
+        println!("Permuting {self} by {axes:?}");
         assert_eq!(self.rank(), axes.len());
         match self {
             View::None => {}

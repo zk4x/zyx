@@ -147,9 +147,10 @@ impl Runtime {
                     .unwrap()
                     .0;
 
-                let optimizations = kernel.optimize(self.devices[device_id].info());
+                // Prints unoptimized kernel
                 #[cfg(feature = "debug_sched")]
                 kernel.debug();
+                let optimizations = kernel.optimize(self.devices[device_id].info());
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
                 // Allocate memory for outputs
                 for output in &kernel.outputs {
@@ -242,14 +243,14 @@ impl Runtime {
                     device_id,
                     program_id,
                 }));
-                // TODO deallocate kernel inputs that will not be used by other kernels
+                // Deallocate kernel inputs that will not be used by other kernels
                 let mut needed_tensors: BTreeSet<TensorId> = to_eval.clone();
                 if kid + 1 < kernels.len() {
                     for kernel in &kernels[kid+1..] {
                         needed_tensors.extend(&kernel.inputs);
                     }
                 }
-                println!("Needed tensors: {needed_tensors:?}, kernel inputs {:?}", &kernels[kid].inputs);
+                //println!("Needed tensors: {needed_tensors:?}, kernel inputs {:?}", &kernels[kid].inputs);
                 for input in &kernels[kid].inputs {
                     if !needed_tensors.contains(&input) {
                         let view = View::new(graph.shape(*input));
@@ -848,31 +849,40 @@ impl Kernel {
     }
 
     fn permute(&mut self, axes: &[usize]) {
-        if axes.iter().zip(0..axes.len()).all(|(a, ca)| *a == ca) {
+        //self.debug();
+        if (0..axes.len()).zip(axes).all(|(a, ca)| a == *ca) {
             // no permute
             return;
         }
         let shape: Vec<usize> = axes.iter().map(|a| self.shape[*a]).collect();
-        let mut permuted_loops: BTreeSet<usize> = axes.iter().copied().collect();
-        'ops_loop: for op in self.ops.iter_mut().rev() {
+        //let mut permuted_loops: BTreeSet<usize> = axes.iter().copied().collect();
+        let mut skip_loops = 0;
+        let mut last_axis = axes.len() - 1;
+        for op in self.ops.iter_mut().rev() {
             match op {
-                VOp::Loop { axis, dimension } => {
-                    if axes.contains(axis) {
-                        *dimension = shape[*axis];
-                        permuted_loops.remove(axis);
-                        if permuted_loops.is_empty() {
-                            break 'ops_loop;
+                VOp::Loop { dimension, .. } => {
+                    if skip_loops > 0 {
+                        skip_loops -= 1;
+                    } else {
+                        *dimension = shape[last_axis];
+                        if last_axis > 0 {
+                            last_axis -= 1;
                         }
                     }
                 }
                 VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
                     let n = view.rank();
-                    let all_axes: Vec<usize> = if axes.len() < n {
-                        axes.iter().copied().chain(axes.len()..n).collect()
+                    let permute_axes: Vec<usize> = if last_axis > n {
+                        // We actually need to check which axis view refers to, then check which loops those were
+                        // and if and how those loops are permuted
+                        todo!()
                     } else {
-                        axes.iter().copied().filter(|a| *a < n).collect()
+                        axes[..=last_axis].iter().copied().chain(last_axis+1..n).collect()
                     };
-                    view.permute(&all_axes);
+                    view.permute(&permute_axes);
+                }
+                VOp::Reduce { num_axes, .. } => {
+                    skip_loops += *num_axes;
                 }
                 _ => {}
             }
@@ -1334,19 +1344,37 @@ fn generate_kernels(
                             splits.as_mut().unwrap().insert(i, dimensions);
                         }
                     }
-
-                    if let Some(splits) = splits {
-                        for (split_axis, dimensions) in &splits {
-                            let dim: usize = dimensions.iter().product();
-                            for (id, vop) in kernel.ops.iter().enumerate().rev() {
-                                if let VOp::Loop { axis, dimension } = vop {
-                                    if *axis == *split_axis && *dimension == dim {
-                                        println!("Splitting at {id} to {dimensions:?}");
-                                        kernel.split_axis(id, &dimensions);
-                                        break;
+                    //println!("Splits: {splits:?}");
+                    if let Some(mut splits) = splits {
+                        let mut loop_id = kernel.shape.len() - 1;
+                        let mut skip_loops = 0;
+                        let mut split_ids = Vec::new();
+                        for (id, vop) in kernel.ops.iter().enumerate().rev() {
+                            match vop {
+                                VOp::Reduce { num_axes, .. } => {
+                                    skip_loops += num_axes;
+                                }
+                                VOp::Loop { dimension, .. } => {
+                                    if skip_loops > 0 {
+                                        skip_loops -= 1;
+                                    } else {
+                                        if loop_id < splits.len() {
+                                            let dimensions = splits[&loop_id].clone();
+                                            assert_eq!(*dimension, dimensions.iter().product());
+                                            split_ids.push(id);
+                                        }
+                                        if loop_id > 0 {
+                                            loop_id -= 1;
+                                        }
                                     }
                                 }
+                                _ => {}
                             }
+                        }
+                        for op_id in split_ids {
+                            let Some((_, dimensions)) = splits.pop_last() else { panic!() };
+                            //println!("Splitting at {op_id} to {dimensions:?}");
+                            kernel.split_axis(op_id, &dimensions);
                         }
                         // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
                         // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
