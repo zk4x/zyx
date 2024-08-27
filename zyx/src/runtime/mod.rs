@@ -15,6 +15,7 @@ use backend::opencl::{
 };
 use backend::DeviceInfo;
 use graph::Graph;
+use ir::IRKernel;
 use node::{BOp, Node, ROp, UOp};
 use scheduler::CompiledGraph;
 use std::fmt::Display;
@@ -127,6 +128,7 @@ pub(crate) struct Runtime {
     devices: Vec<Device>,
     memory_pools: Vec<MemoryPool>,
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
+    ir_kernel_cache: BTreeMap<IRKernel, ProgramId>,
 }
 
 impl Runtime {
@@ -141,6 +143,7 @@ impl Runtime {
             devices: Vec::new(),
             memory_pools: Vec::new(),
             tensor_buffer_map: BTreeMap::new(),
+            ir_kernel_cache: BTreeMap::new(),
         }
     }
 

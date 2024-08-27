@@ -13,7 +13,7 @@ use core::fmt::Display;
 use std::collections::BTreeMap;
 use super::scheduler::{Kernel, KernelOptimizations, VOp};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Var {
     Id(u8, Scope),
     Const(Constant),
@@ -26,7 +26,7 @@ pub(crate) enum Scope {
     Register,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum IROp {
     Set {
         z: u8,
@@ -80,7 +80,7 @@ pub(crate) enum IROp {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum IRDType {
     #[cfg(feature = "half")]
     BF16,
@@ -102,7 +102,7 @@ pub(crate) enum IRDType {
     U32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct IRKernel {
     // Index of var is it's Id
     // len, dtype, read_only

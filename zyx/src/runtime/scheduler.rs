@@ -190,53 +190,63 @@ impl Runtime {
                 let (ir_kernel, args) = kernel.to_ir(&graph, optimizations);
                 #[cfg(feature = "debug_ir")]
                 ir_kernel.debug();
-                let program_id = match &mut self.devices[device_id] {
-                    Device::CUDA {
-                        device, programs, ..
-                    } => {
-                        let program = device.compile(&ir_kernel)?;
-                        // Since it is not sharded, sharding view is contiguous
-                        programs.push((
-                            program,
-                            args.into_iter()
-                                .map(|(arg, read_only)| {
-                                    (arg, View::new(graph.shape(arg)), read_only)
-                                })
-                                .collect(),
-                        ));
-                        programs.len() - 1
+                                
+                let mut program_id = None;
+                if let Some(program) = self.ir_kernel_cache.get(&ir_kernel) {
+                    if program.device_id == device_id {
+                        program_id = Some(program.program_id);
                     }
-                    Device::HIP {
-                        device, programs, ..
-                    } => {
-                        let program = device.compile(&ir_kernel)?;
-                        // Since it is not sharded, sharding view is contiguous
-                        programs.push((
-                            program,
-                            args.into_iter()
-                                .map(|(arg, read_only)| {
-                                    (arg, View::new(graph.shape(arg)), read_only)
-                                })
-                                .collect(),
-                        ));
-                        programs.len() - 1
-                    }
-                    Device::OpenCL {
-                        device, programs, ..
-                    } => {
-                        let program = device.compile(&ir_kernel)?;
-                        // Since it is not sharded, sharding view is contiguous
-                        programs.push((
-                            program,
-                            args.into_iter()
-                                .map(|(arg, read_only)| {
-                                    (arg, View::new(graph.shape(arg)), read_only)
-                                })
-                                .collect(),
-                        ));
-                        programs.len() - 1
-                    }
-                };
+                }
+                if program_id.is_none() {
+                    program_id = Some(match &mut self.devices[device_id] {
+                        Device::CUDA {
+                            device, programs, ..
+                        } => {
+                            let program = device.compile(&ir_kernel)?;
+                            // Since it is not sharded, sharding view is contiguous
+                            programs.push((
+                                program,
+                                args.into_iter()
+                                    .map(|(arg, read_only)| {
+                                        (arg, View::new(graph.shape(arg)), read_only)
+                                    })
+                                    .collect(),
+                            ));
+                            programs.len() - 1
+                        }
+                        Device::HIP {
+                            device, programs, ..
+                        } => {
+                            let program = device.compile(&ir_kernel)?;
+                            // Since it is not sharded, sharding view is contiguous
+                            programs.push((
+                                program,
+                                args.into_iter()
+                                    .map(|(arg, read_only)| {
+                                        (arg, View::new(graph.shape(arg)), read_only)
+                                    })
+                                    .collect(),
+                            ));
+                            programs.len() - 1
+                        }
+                        Device::OpenCL {
+                            device, programs, ..
+                        } => {
+                            let program = device.compile(&ir_kernel)?;
+                            // Since it is not sharded, sharding view is contiguous
+                            programs.push((
+                                program,
+                                args.into_iter()
+                                    .map(|(arg, read_only)| {
+                                        (arg, View::new(graph.shape(arg)), read_only)
+                                    })
+                                    .collect(),
+                            ));
+                            programs.len() - 1
+                        }
+                    });
+                }
+                let program_id = program_id.unwrap();
                 device_program_map
                     .get_mut(&device_id)
                     .unwrap()
