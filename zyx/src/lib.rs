@@ -147,10 +147,10 @@ fn t_12() {
     let b = Tensor::from([2, 3, 5]);
     for _ in 0..10 {
         x = x.dot(&w) + &b;
+        //Tensor::plot_graph([], "graph1");
         //Tensor::plot_graph([], "graph0");
         Tensor::realize([&x]).unwrap();
     }
-    Tensor::plot_graph([], "graph1");
     println!("{x}");
 }
 

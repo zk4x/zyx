@@ -41,6 +41,8 @@ impl Graph {
                 params.extend(node.1.parameters());
                 to_remove.insert(x);
                 self.nodes.remove(x);
+                self.shapes.remove(&x);
+                self.dtypes.remove(&x);
             }
         }
         to_remove
@@ -85,8 +87,10 @@ impl Graph {
         id
     }
 
-    pub(crate) fn add_shape_and_dtype(&mut self, id: TensorId, shape: Vec<Dimension>, dtype: DType) {
+    pub(crate) fn add_shape_dtype(&mut self, id: TensorId) {
+        let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
+        let dtype = self.dtype(id);
         self.dtypes.insert(id, dtype);
     }
 
@@ -115,6 +119,7 @@ impl Graph {
             } else if let Node::Const { .. } = self.nodes[tensor_id].1 {
                 return &[1];
             } else {
+                //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
                 tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
             i += 1;
@@ -198,11 +203,18 @@ impl Graph {
             .chain(tensors.iter().copied())
             .collect();
 
+        let mut shapes: BTreeMap<TensorId, Vec<Dimension>> = self.shapes.iter().filter_map(|(id, sh)| if visited.contains(id) { Some((*id, sh.clone())) } else { None }).collect();
+        let mut dtypes: BTreeMap<TensorId, DType> = self.dtypes.iter().filter_map(|(id, dt)| if visited.contains(id) { Some((*id, *dt)) } else { None }).collect();
+        for leaf in &leafs {
+            shapes.entry(*leaf).or_insert_with(|| self.shape(*leaf).into());
+            dtypes.entry(*leaf).or_insert_with(|| self.dtype(*leaf));
+        }
+
         // replace realized nodes with leafs
         return (
             Graph {
-                shapes: self.shapes.iter().filter_map(|(id, sh)| if visited.contains(id) { Some((*id, sh.clone())) } else { None }).collect(),
-                dtypes: self.dtypes.iter().filter_map(|(id, dt)| if visited.contains(id) { Some((*id, *dt)) } else { None }).collect(),
+                shapes,
+                dtypes,
                 nodes: visited
                     .into_iter()
                     .map(|id| {
@@ -211,11 +223,7 @@ impl Graph {
                             if leafs.contains(&id) {
                                 (
                                     self.nodes[id].0,
-                                    Node::Leaf {
-                                        shape: self.shape(id).into(),
-                                        dtype: self.dtype(id),
-                                        //device,
-                                    },
+                                    Node::Leaf,
                                 )
                             } else {
                                 self.nodes[id].clone()
@@ -299,8 +307,8 @@ impl Graph {
         for nid in &order {
             match &self.nodes[*nid].1 {
                 Node::Const { .. } => {}
-                Node::Leaf { shape, dtype, .. } => {
-                    bytes_read += shape.iter().product::<usize>() * dtype.byte_size();
+                Node::Leaf => {
+                    bytes_read += self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
                 }
                 Node::Unary { x, .. } => {
                     flop += self.shape(*x).iter().product::<usize>();
@@ -506,11 +514,7 @@ impl Graph {
             let node = &self.nodes[*id].1;
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
-                Node::Leaf {
-                    shape,
-                    dtype,
-                    //device,
-                } => add_node(id, &f!("Leaf({shape:?}, {dtype})"), "box"),
+                Node::Leaf => add_node(id, &f!("Leaf({:?}, {})", self.shape(*id), self.dtype(*id)), "box"),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
                 Node::Reshape { x, .. } => add_node(id, &f!("Reshape({x})"), "oval"),

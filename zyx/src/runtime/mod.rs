@@ -231,10 +231,7 @@ impl Runtime {
                 value: Constant::new(data[0]),
             }))
         } else {
-            let id = self.graph.push_wshape_and_dtype(Node::Leaf {
-                shape: shape.clone(),
-                dtype: T::dtype(),
-            }, shape, T::dtype());
+            let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
             self.initialize_backends()?;
             let bytes = data.len() * T::byte_size();
             // Put it into memory pool with fastest device out of memory pools with enough free capacity
@@ -443,7 +440,7 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        self.graph.push_wshape(Node::Reshape { x, shape: shape.clone() }, shape)
+        self.graph.push_wshape(Node::Reshape { x }, shape)
     }
 
     #[must_use]
@@ -452,13 +449,13 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        self.graph.push_wshape(Node::Expand { x, shape: shape.clone() }, shape)
+        self.graph.push_wshape(Node::Expand { x }, shape)
     }
 
     #[must_use]
     pub(crate) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = permute(self.shape(x), &axes);
-        self.graph.push_wshape(Node::Permute { x, axes, shape: shape.clone() }, shape)
+        self.graph.push_wshape(Node::Permute { x, axes }, shape)
     }
 
     #[must_use]
@@ -474,7 +471,7 @@ impl Runtime {
             }
         }
         //println!("Result {shape:?}");
-        self.graph.push_wshape(Node::Pad { x, padding, shape: shape.clone() }, shape)
+        self.graph.push_wshape(Node::Pad { x, padding }, shape)
     }
 
     #[must_use]
@@ -483,7 +480,6 @@ impl Runtime {
         self.graph.push_wshape(Node::Reduce {
             x,
             axes,
-            shape: shape.clone(),
             rop: ROp::Sum,
         }, shape)
     }
@@ -494,7 +490,6 @@ impl Runtime {
         self.graph.push_wshape(Node::Reduce {
             x,
             axes,
-            shape: shape.clone(),
             rop: ROp::Max,
         }, shape)
     }
@@ -692,7 +687,6 @@ impl Runtime {
         if tensors.len() == 0 {
             return Ok(());
         }
-        println!("Graph: {:?}", self.graph);
         if self.devices.is_empty() {
             self.initialize_backends()?;
         }
@@ -703,8 +697,11 @@ impl Runtime {
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         let mut to_delete = BTreeSet::new();
         let mut new_leafs = BTreeSet::new();
+        println!("Graph: {:?}", graph);
+        println!("Outside nodes: {outside_nodes:?}");
+        println!("Order: {order:?}");
         for tensor in &order {
-            if self.graph[*tensor].is_leaf() {
+            if matches!(self.graph[*tensor], Node::Leaf | Node::Const { .. }) {
                 if !outside_nodes.contains(tensor) {
                     to_delete.insert(*tensor);
                     continue;
@@ -713,7 +710,11 @@ impl Runtime {
                 if self.graph[*tensor].parameters().all(|tensor| to_delete.contains(&tensor)) && !outside_nodes.contains(tensor) {
                     to_delete.insert(*tensor);
                 } else if self.graph[*tensor].parameters().any(|tensor| to_delete.contains(&tensor)) {
-                    new_leafs.insert(*tensor);
+                    for param in self.graph[*tensor].parameters() {
+                        if to_delete.contains(&param) {
+                            new_leafs.insert(param);
+                        }
+                    }
                 }
             }
         }
@@ -725,18 +726,14 @@ impl Runtime {
             self.compiled_graphs.insert(graph.clone(), compiled_graph);
         }
         self.launch_graph(&graph)?;
-        println!("Outside nodes: {outside_nodes:?}");
         println!("New leafs: {new_leafs:?}");
-        println!("To delete: {to_delete:?}");
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
-            // Set new leafs
-            // TODO perhaps do not search for the shape and dtype everytime here,
-            // perhaps store shape and dtype in to_delete and new_leafs
-            let shape = self.graph.shape(tensor).into();
-            let dtype = self.graph.dtype(tensor);
-            self.graph.add_shape_and_dtype(tensor, shape, dtype);
+            self.graph.add_shape_dtype(tensor);
+            self.graph[tensor] = Node::Leaf;
+            to_delete.remove(&tensor);
         }
+        println!("To delete: {to_delete:?}");
         // Delete the node, but do not use release function, just remove it from graph.nodes
         // and deallocate it from device
         self.graph.delete_tensors(&to_delete);
@@ -807,7 +804,6 @@ impl Runtime {
             x,
             self.graph.push_wshape(Node::Expand {
                 x: grad1,
-                shape: sh.clone(),
             }, sh),
         );
         self.release(grad1).unwrap();
@@ -1021,8 +1017,9 @@ impl Runtime {
                     let grad = self.reshape(grad, self.shape(x).into());
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Expand { x, ref shape } => {
-                    let mut vec = shape.clone();
+                Node::Expand { x } => {
+                    let shape = self.graph.shape(nid);
+                    let mut vec: Vec<Dimension> = shape.into();
                     while vec.len() < shape.len() {
                         vec.insert(0, 1);
                     }

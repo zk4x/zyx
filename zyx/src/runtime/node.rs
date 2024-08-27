@@ -1,4 +1,4 @@
-use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
+use crate::{dtype::Constant, shape::Axis, tensor::TensorId, DType, Scalar};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(crate) enum BOp {
@@ -34,44 +34,32 @@ pub(crate) enum ROp {
     Max,
 }
 
-type Axis = usize;
-
-type Dimension = usize;
-
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(crate) enum Node {
+    // Constant tensor baked into kernels
     Const {
         value: Constant,
     },
     // Tensor stored on device
-    Leaf {
-        shape: Vec<Dimension>,
-        dtype: DType,
-    },
-    // Constant tensor baked into kernels
+    Leaf,
     Expand {
         x: TensorId,
-        shape: Vec<Dimension>,
     },
     Permute {
         x: TensorId,
         axes: Vec<Axis>,
-        shape: Vec<usize>,
     },
     // Reshape can be sometimes axis split or axis join
     Reshape {
         x: TensorId,
-        shape: Vec<Dimension>,
     },
     Pad {
         x: TensorId,
         padding: Vec<(isize, isize)>,
-        shape: Vec<usize>,
     },
     Reduce {
         x: TensorId,
         axes: Vec<Axis>,
-        shape: Vec<usize>,
         rop: ROp,
     },
     Unary {
@@ -134,10 +122,6 @@ impl Node {
                 len: 2,
             },
         };
-    }
-
-    pub(crate) fn is_leaf(&self) -> bool {
-        matches!(self, Node::Leaf { .. } | Node::Const { .. })
     }
 
     pub(crate) fn is_movement(&self) -> bool {

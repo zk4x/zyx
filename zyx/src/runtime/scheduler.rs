@@ -1178,7 +1178,8 @@ fn generate_kernels(
                     })
                 }
             }
-            Node::Leaf { shape, .. } => {
+            Node::Leaf => {
+                let shape = graph.shape(nid);
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| &kernel.shape == shape) {
                     kernel.ops.push(VOp::Load {
                         z: nid,
@@ -1191,7 +1192,8 @@ fn generate_kernels(
                     kernels.push(Kernel::load(graph, nid));
                 }
             }
-            Node::Expand { x, shape } => {
+            Node::Expand { x } => {
+                let shape = graph.shape(nid);
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 // Expand can just add loops
                 // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
@@ -1249,7 +1251,7 @@ fn generate_kernels(
                     mop: MOp::Expa,
                 });
                 kernel.vars.insert(nid);
-                kernel.shape = shape.clone();
+                kernel.shape = shape.into();
             }
             Node::Permute { x, axes, .. } => {
                 // Permute shuffles load and store strides
@@ -1265,7 +1267,7 @@ fn generate_kernels(
                 });
                 kernel.vars.insert(nid);
             }
-            Node::Reshape { x, shape } => {
+            Node::Reshape { x } => {
                 // If we really want, we can get reshape working with loads and stores
                 // simply by using view for loads to have multiple reshapes in single view.
                 // But for now it is much simpler to just add new kernel.
@@ -1273,6 +1275,7 @@ fn generate_kernels(
                 // If reshape comes after reduce, then if it just aplits axes, it can be merged,
                 // otherwise we have to create new kernel.
 
+                let shape = graph.shape(nid);
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 // If this is just a reshape of kernel with only unary ops and contiguous loads
                 // and stores, we can remove old loops and replace them with new loops.
@@ -1305,7 +1308,7 @@ fn generate_kernels(
                             _ => {}
                         }
                     }
-                    kernel.shape = shape.clone();
+                    kernel.shape = shape.into();
                     kernel.ops.push(VOp::Move {
                         z: nid,
                         x: *x,
@@ -1387,7 +1390,7 @@ fn generate_kernels(
                         // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
                         // However we also need to make sure all code can work with out of order loop ids.
 
-                        kernel.shape = shape.clone();
+                        kernel.shape = shape.into();
                         kernel.ops.push(VOp::Move {
                             z: nid,
                             x: *x,
@@ -1405,7 +1408,7 @@ fn generate_kernels(
                             view: View::new(shape),
                         });
                         kernels.push(Kernel {
-                            shape: shape.clone(),
+                            shape: shape.into(),
                             inputs: BTreeSet::from([*x]),
                             outputs: BTreeSet::new(),
                             vars: BTreeSet::from([nid]),
@@ -1415,7 +1418,8 @@ fn generate_kernels(
                 }
                 //println!("\nKernels {kernels:?}\n");
             }
-            Node::Pad { x, padding, shape } => {
+            Node::Pad { x, padding } => {
+                let shape = graph.shape(nid);
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
                 let mut kernel = get_kernel(*x, &mut kernels, graph);
@@ -1469,7 +1473,7 @@ fn generate_kernels(
                         _ => {}
                     }
                 }
-                kernel.shape = shape.clone();
+                kernel.shape = shape.into();
                 kernel.ops.push(VOp::Move {
                     z: nid,
                     x: *x,
@@ -1481,8 +1485,8 @@ fn generate_kernels(
                 x,
                 axes,
                 rop,
-                shape,
             } => {
+                let shape = graph.shape(nid);
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 //println!("Axes {axes:?}");
@@ -1532,7 +1536,7 @@ fn generate_kernels(
                     x: *x,
                 });
                 kernel.vars.insert(nid);
-                kernel.shape = shape.clone();
+                kernel.shape = shape.into();
                 // Optionally merge axes (if possible) for potentially better performance
                 //kernel.merge_axes(acc_id + 1, axes.len());
             }
