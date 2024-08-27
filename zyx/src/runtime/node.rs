@@ -223,11 +223,61 @@ impl Constant {
                 Constant::I64(x) => Constant::I64(1/x),
                 Constant::Bool(_) => todo!(),
             }
-            UOp::Sqrt => todo!(),
-            UOp::Sin => todo!(),
-            UOp::Cos => todo!(),
-            UOp::Not => todo!(),
-            UOp::Nonzero => todo!(),
+            UOp::Sqrt => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).sqrt()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).sqrt()) }),
+                Constant::U8(x) => Constant::U8(x.sqrt()),
+                Constant::I8(x) => Constant::I8(x.sqrt()),
+                Constant::I16(x) => Constant::I16(x.sqrt()),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(x.sqrt()),
+                Constant::I64(x) => Constant::I64(x.sqrt()),
+                Constant::Bool(_) => todo!(),
+            }
+            UOp::Sin => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).sin()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).sin()) }),
+                Constant::U8(x) => Constant::U8(x.sin()),
+                Constant::I8(x) => Constant::I8(x.sin()),
+                Constant::I16(x) => Constant::I16(x.sin()),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(x.sin()),
+                Constant::I64(x) => Constant::I64(x.sin()),
+                Constant::Bool(_) => todo!(),
+            }
+            UOp::Cos => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).cos()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).cos()) }),
+                Constant::U8(x) => Constant::U8(x.cos()),
+                Constant::I8(x) => Constant::I8(x.cos()),
+                Constant::I16(x) => Constant::I16(x.cos()),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(x.cos()),
+                Constant::I64(x) => Constant::I64(x.cos()),
+                Constant::Bool(_) => todo!(),
+            }
+            UOp::Not => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(if t::<_, f32>(x) == 0f32 { 1f32 } else { 0f32 }) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(if t::<_, f64>(x) == 0f64 { 1f64 } else { 0f64 }) }),
+                Constant::U8(x) => Constant::U8(!x),
+                Constant::I8(x) => Constant::I8(!x),
+                Constant::I16(x) => Constant::I16(!x),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(!x),
+                Constant::I64(x) => Constant::I64(!x),
+                Constant::Bool(_) => todo!(),
+            }
+            UOp::Nonzero => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t((t::<_, f32>(x) != 0.) as i32 as f32) }),
+                Constant::F64(x) => Constant::F64(unsafe { t((t::<_, f64>(x) != 0.) as i64 as f64) }),
+                Constant::U8(x) => Constant::U8((x != 0) as u8),
+                Constant::I8(x) => Constant::I8((x != 0) as i8),
+                Constant::I16(x) => Constant::I16((x != 0) as i16),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32((x != 0) as i32),
+                Constant::I64(x) => Constant::I64((x != 0) as i64),
+                Constant::Bool(_) => todo!(),
+            }
         }
     }
 
