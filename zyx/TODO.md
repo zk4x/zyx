@@ -31,6 +31,7 @@
 - [x] fix reshape after reduce
 - [ ] test expand after reduce
 - [x] todo fix permute on reduced and reshaped kernel
+- [ ] go over all todos and check which are necessary
 
 ## Advanced graph caching
 

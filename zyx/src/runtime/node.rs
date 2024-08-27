@@ -136,6 +136,10 @@ impl Node {
         };
     }
 
+    pub(crate) fn is_leaf(&self) -> bool {
+        matches!(self, Node::Leaf { .. } | Node::Const { .. })
+    }
+
     pub(crate) fn is_movement(&self) -> bool {
         matches!(
             self,
@@ -148,13 +152,31 @@ impl Node {
     }
 }
 
+trait CastDType: Scalar {
+    fn cast_dtype(self, dtype: DType) -> Constant {
+        match dtype {
+            DType::F32 => Constant::F32(unsafe { std::mem::transmute(self.cast::<f32>()) }),
+            DType::F64 => Constant::F64(unsafe { std::mem::transmute(self.cast::<f64>()) }),
+            DType::U8 => Constant::U8(self.cast()),
+            DType::I8 => Constant::I8(self.cast()),
+            DType::I16 => Constant::I16(self.cast()),
+            DType::I32 => Constant::I32(self.cast()),
+            DType::I64 => Constant::I64(self.cast()),
+            DType::Bool => Constant::Bool(self.cast()),
+        }
+    }
+}
+
+impl<T: Scalar> CastDType for T {}
+
 impl Constant {
     pub(crate) fn unary(self, uop: UOp) -> Constant {
+        use std::mem::transmute as t;
         match uop {
             UOp::Cast(dtype) => {
                 match self {
-                    Constant::F32(x) => unsafe { std::mem::transmute::<_, f32>(x) }.cast_dtype(dtype),
-                    Constant::F64(x) => unsafe { std::mem::transmute::<_, f64>(x) }.cast_dtype(dtype),
+                    Constant::F32(x) => unsafe { t::<_, f32>(x) }.cast_dtype(dtype),
+                    Constant::F64(x) => unsafe { t::<_, f64>(x) }.cast_dtype(dtype),
                     Constant::U8(x) => x.cast_dtype(dtype),
                     Constant::I8(x) => x.cast_dtype(dtype),
                     Constant::I16(x) => x.cast_dtype(dtype),
@@ -164,8 +186,32 @@ impl Constant {
                     Constant::Bool(x) => x.cast_dtype(dtype),
                 }
             }
-            UOp::ReLU => todo!(),
-            UOp::Neg => todo!(),
+            UOp::ReLU => {
+                match self {
+                    Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).relu()) }),
+                    Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).relu()) }),
+                    Constant::U8(x) => Constant::U8(x.relu()),
+                    Constant::I8(x) => Constant::I8(x.relu()),
+                    Constant::I16(x) => Constant::I16(x.relu()),
+                    Constant::U32(_) => panic!(),
+                    Constant::I32(x) => Constant::I32(x.relu()),
+                    Constant::I64(x) => Constant::I64(x.relu()),
+                    Constant::Bool(x) => Constant::Bool(x.relu()),
+                }
+            }
+            UOp::Neg => {
+                match self {
+                    Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).neg()) }),
+                    Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).neg()) }),
+                    Constant::U8(x) => Constant::U8(x.neg()),
+                    Constant::I8(x) => Constant::I8(x.neg()),
+                    Constant::I16(x) => Constant::I16(x.neg()),
+                    Constant::U32(_) => panic!(),
+                    Constant::I32(x) => Constant::I32(x.neg()),
+                    Constant::I64(x) => Constant::I64(x.neg()),
+                    Constant::Bool(x) => Constant::Bool(x.neg()),
+                }
+            }
             UOp::Exp2 => todo!(),
             UOp::Log2 => todo!(),
             UOp::Inv => todo!(),

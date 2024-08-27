@@ -44,7 +44,7 @@ impl Tensor {
     /// Write graph of operations between tensors as png image with given filename
     /// Expects dot program to be in the path. Otherwise create dot graph file
     /// without converting it to png.
-    pub fn plot_dot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) {
+    pub fn plot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) {
         use std::format;
         let graph = RT
             .lock()

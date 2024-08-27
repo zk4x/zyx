@@ -1,8 +1,8 @@
 use super::{
-    node::{BOp, Node, UOp},
+    node::{BOp, Node},
     TensorId,
 };
-use crate::{index_map::IndexMap, DType};
+use crate::{index_map::IndexMap, shape::Dimension, DType};
 use std::collections::{BTreeMap, BTreeSet};
 
 // TODO implement PartialOrd such that tensor id does not matter
@@ -12,12 +12,16 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) struct Graph {
     // First value is reference count, second is node
     nodes: IndexMap<(u32, Node)>,
+    shapes: BTreeMap<TensorId, Vec<Dimension>>,
+    dtypes: BTreeMap<TensorId, DType>,
 }
 
 impl Graph {
     pub(crate) const fn new() -> Self {
         Self {
             nodes: IndexMap::new(),
+            shapes: BTreeMap::new(),
+            dtypes: BTreeMap::new(),
         }
     }
 
@@ -50,82 +54,93 @@ impl Graph {
         self.nodes.push((1, node))
     }
 
+    pub(crate) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
+        //libc_print::libc_println!("Pushing {node:?}");
+        for nid in node.parameters() {
+            self.nodes[nid].0 += 1;
+        }
+        let id = self.nodes.push((1, node));
+        self.shapes.insert(id, shape);
+        id
+    }
+
+    pub(crate) fn push_wdtype(&mut self, node: Node, dtype: DType) -> TensorId {
+        //libc_print::libc_println!("Pushing {node:?}");
+        for nid in node.parameters() {
+            self.nodes[nid].0 += 1;
+        }
+        let id = self.nodes.push((1, node));
+        self.dtypes.insert(id, dtype);
+        id
+    }
+
+    pub(crate) fn push_wshape_and_dtype(&mut self, node: Node, shape: Vec<Dimension>, dtype: DType) -> TensorId {
+        //libc_print::libc_println!("Pushing {node:?}");
+        for nid in node.parameters() {
+            self.nodes[nid].0 += 1;
+        }
+        let id = self.nodes.push((1, node));
+        self.shapes.insert(id, shape);
+        self.dtypes.insert(id, dtype);
+        id
+    }
+
+    pub(crate) fn add_shape_and_dtype(&mut self, id: TensorId, shape: Vec<Dimension>, dtype: DType) {
+        self.shapes.insert(id, shape);
+        self.dtypes.insert(id, dtype);
+    }
+
     pub(crate) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 1000000 {
-            let node = &self.nodes[tensor_id].1;
-            //libc_print::libc_println!("{tensor_id}, {node:?}");
-            match node {
-                Node::Const { value, .. } => return value.dtype(),
-                Node::Leaf { dtype, .. } => return *dtype,
-                Node::Unary { x, uop } => {
-                    if let UOp::Cast(dtype) = uop {
-                        return *dtype;
-                    } else {
-                        tensor_id = *x;
-                    }
-                }
-                //Node::Const { value, .. } => return value.dtype(),
-                _ => tensor_id = node.parameters().next().unwrap(),
+            if let Some(dtype) = self.dtypes.get(&tensor_id) {
+                return *dtype;
+            } else if let Node::Const { value } = self.nodes[tensor_id].1 {
+                return value.dtype();
+            } else {
+                tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
             i += 1;
         }
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
 
-    /*pub(crate) fn device(&self, tensor_id: TensorId) -> Device {
-        // TODO now that we have const we need better search algorithm
-        let mut i = 0;
-        let mut params = alloc::vec![tensor_id];
-        while let Some(param) = params.pop() {
-            let node = &self.nodes[&param].1;
-            match node {
-                Node::Leaf { device, .. } => return *device,
-                // TODO | Node::ToDevice { device, .. }
-                _ => params.extend(node.parameters()),
-            }
-            i += 1;
-            if i > 1000000 {
-                panic!("Device of {tensor_id} could not be found. This is internal bug.")
-            }
-        }
-        return self.default_device;
-    }*/
-
     pub(crate) fn shape(&self, tensor_id: TensorId) -> &[usize] {
-        let mut x = tensor_id;
+        let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 10000 {
-            let node = &self.nodes[x].1;
-            match node {
-                Node::Const { .. } => return &[1],
-                Node::Leaf { shape, .. }
-                | Node::Reshape { shape, .. }
-                | Node::Pad { shape, .. }
-                | Node::Permute { shape, .. }
-                | Node::Reduce { shape, .. }
-                | Node::Expand { shape, .. } => return &shape,
-                _ => x = node.parameters().next().unwrap(),
+            if let Some(shape) = self.shapes.get(&tensor_id) {
+                return shape;
+            } else if let Node::Const { .. } = self.nodes[tensor_id].1 {
+                return &[1];
+            } else {
+                tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
             i += 1;
         }
-        panic!("Shape of {x} could not be found. This is internal bug.")
+        panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }
 
     pub(crate) fn rc(&self, x: TensorId) -> u32 {
         self.nodes[x].0
     }
 
+    pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
+        for tensor in tensors {
+            self.nodes.remove(*tensor);
+        }
+    }
+
     pub(crate) fn realize_graph(
         &self,
         tensors: &BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
-    ) -> Graph {
+    ) -> (Graph, BTreeSet<TensorId>, Vec<TensorId>) {
         // First topo search for minimum number of required nodes and create graph from it
         // Then replace all realized nodes with Node::Leaf
         // topo search
-        let mut params: Vec<TensorId> = tensors.iter().map(|tensor_id| *tensor_id).collect();
+        let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         let mut visited = BTreeSet::new();
         let mut leafs = BTreeSet::new();
         while let Some(param) = params.pop() {
@@ -137,29 +152,81 @@ impl Graph {
                 }
             }
         }
-        //let device = self.device(*visited.last().unwrap());
-        return Graph {
-            nodes: visited
-                .into_iter()
-                .map(|id| {
-                    (
-                        id,
-                        if leafs.contains(&id) {
-                            (
-                                self.nodes[id].0,
-                                Node::Leaf {
-                                    shape: self.shape(id).into(),
-                                    dtype: self.dtype(id),
-                                    //device,
-                                },
-                            )
-                        } else {
-                            self.nodes[id].clone()
-                        },
-                    )
-                })
-                .collect(),
-        };
+
+        // Get refcounts of all nodes
+        let mut params: Vec<TensorId> = tensors.iter().copied().collect();
+        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                params.extend(self.nodes[nid].1.parameters());
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut params: Vec<TensorId> = tensors.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(rc) = rcs.get(&nid) {
+                if *rc
+                    == *internal_rcs
+                        .entry(nid)
+                        .and_modify(|rc| *rc += 1)
+                        .or_insert(1)
+                {
+                    order.push(nid);
+                    params.extend(self.nodes[nid].1.parameters());
+                }
+            }
+        }
+        order.reverse();
+
+        // TODO
+        // Nodes required outside of realized graph: self.rcs - rcs > 0
+        let outside_nodes = self
+            .nodes
+            .iter()
+            .filter_map(|(id, (rc, _))| if let Some(rc2) = rcs.get(&id) {
+                if *rc > *rc2 {
+                    Some(id)
+                } else {
+                    None
+                }
+            } else {
+                Some(id)
+            })
+            .chain(tensors.iter().copied())
+            .collect();
+
+        // replace realized nodes with leafs
+        return (
+            Graph {
+                shapes: self.shapes.iter().filter_map(|(id, sh)| if visited.contains(id) { Some((*id, sh.clone())) } else { None }).collect(),
+                dtypes: self.dtypes.iter().filter_map(|(id, dt)| if visited.contains(id) { Some((*id, *dt)) } else { None }).collect(),
+                nodes: visited
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            id,
+                            if leafs.contains(&id) {
+                                (
+                                    self.nodes[id].0,
+                                    Node::Leaf {
+                                        shape: self.shape(id).into(),
+                                        dtype: self.dtype(id),
+                                        //device,
+                                    },
+                                )
+                            } else {
+                                self.nodes[id].clone()
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+            outside_nodes,
+            order,
+        );
     }
 
     // Calculates execution order, recalculates rcs, flop, bytes read and written and optimizes graph:
@@ -270,7 +337,12 @@ impl Graph {
             bytes_written +=
                 self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
         }
-        return (order, flop as u128, bytes_read as u128, bytes_written as u128);
+        return (
+            order,
+            flop as u128,
+            bytes_read as u128,
+            bytes_written as u128,
+        );
     }
 
     // Swap movement and unary op
@@ -397,7 +469,6 @@ impl Graph {
                 }
             }
         }
-
         /// Puts graph of nodes into dot language for visualization
         use core::fmt::Write;
         use std::format as f;
@@ -421,7 +492,7 @@ impl Graph {
                 res,
                 "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled]",
                 i,
-                rcs[i],
+                self.nodes[*i].0,
                 text,
                 self.shape(*i),
                 shape,
@@ -462,9 +533,15 @@ impl Graph {
     }
 }
 
-impl core::ops::Index<TensorId> for Graph {
+impl std::ops::Index<TensorId> for Graph {
     type Output = Node;
     fn index(&self, index: TensorId) -> &Self::Output {
         &self.nodes[index].1
+    }
+}
+
+impl std::ops::IndexMut<TensorId> for Graph {
+    fn index_mut(&mut self, index: TensorId) -> &mut Self::Output {
+        &mut self.nodes[index].1
     }
 }

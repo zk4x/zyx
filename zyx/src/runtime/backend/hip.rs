@@ -105,6 +105,7 @@ pub(crate) fn initialize_hip_backend(config: &HIPConfig) -> Result<(Vec<HIPMemor
         devices.push(HIPDevice { dev_info: DeviceInfo::default(), memory_pool_id: 0 })
     }
 
+    let devices = Vec::new();
     Ok((memory_pools, devices))
 }
 

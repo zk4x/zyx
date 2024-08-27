@@ -1146,14 +1146,14 @@ impl Constant {
                 let x: f32 = unsafe { t::<_, f32>(*x) };
                 format!("{x}f", )
             }
-            Constant::F64(_) => todo!(),
-            Constant::U8(_) => todo!(),
-            Constant::I8(_) => todo!(),
-            Constant::I16(_) => todo!(),
+            Constant::F64(x) => format!("{x}"),
+            Constant::U8(x) => format!("{x}"),
+            Constant::I8(x) => format!("{x}"),
+            Constant::I16(x) => format!("{x}"),
             Constant::U32(x) => format!("{x}"),
             Constant::I32(x) => format!("{x}"),
             Constant::I64(x) => format!("{x}"),
-            Constant::Bool(_) => todo!(),
+            Constant::Bool(x) => format!("{x}"),
         }
     }
 }

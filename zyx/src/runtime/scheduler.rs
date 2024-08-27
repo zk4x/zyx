@@ -799,6 +799,7 @@ pub(super) struct Kernel {
 pub(super) struct KernelOptimizations {
     // Permutation: op_id, axes
     permutation: Vec<(usize, Vec<Axis>)>,
+    splits: Vec<(usize, Vec<Dimension>)>,
     // Unrolls loop with given id
     unroll_loops: Vec<usize>,
     // Converts all variables in loop into native vector dtypes
@@ -1083,6 +1084,7 @@ impl Kernel {
         // Add local caching for loads
         KernelOptimizations {
             permutation: Vec::new(),
+            splits: Vec::new(),
             unroll_loops: Vec::new(),
             vectorize_loops: Vec::new(),
             local_tiles: Vec::new(),
