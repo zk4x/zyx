@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::iter::repeat;
 
-use crate::runtime::{BackendConfig, ZyxError};
+use crate::runtime::ZyxError;
 use crate::RT;
 
 #[cfg(feature = "half")]
@@ -94,6 +94,57 @@ impl Tensor {
             .map(|x: TensorId| grads.get(&x).copied())
             .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
             .collect()
+    }
+
+    /// Detaches tensor from graph.
+    /// This function returns a new tensor with the same data as the previous one,
+    /// but drops it's backpropagation graph. This is usefull for recurrent networks:
+    /// ```rust
+    /// let mut x = Tensor::randn([8, 8]);
+    /// let z = Tensor::randn([8]);
+    /// for _ in 0..100 {
+    ///     // Without detach the graph would grow bigger with every iteration
+    ///     x = x.detach() + z;
+    /// }
+    /// ```
+    pub fn detach(self) -> Tensor {
+        // TODO remove realization from here
+        let shape = self.shape();
+        let dtype = self.dtype();
+        match dtype {
+            DType::F32 => {
+                let data: Vec<f32> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::F64 => {
+                let data: Vec<f64> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::U8 => {
+                let data: Vec<u8> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::I8 => {
+                let data: Vec<i8> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::I16 => {
+                let data: Vec<i16> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::I32 => {
+                let data: Vec<i32> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::I64 => {
+                let data: Vec<i64> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            DType::Bool => {
+                let data: Vec<bool> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+        }
     }
 
     /// Immediatelly evaluate passed tensors

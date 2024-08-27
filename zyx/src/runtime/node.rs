@@ -157,48 +157,72 @@ impl Constant {
     pub(crate) fn unary(self, uop: UOp) -> Constant {
         use std::mem::transmute as t;
         match uop {
-            UOp::Cast(dtype) => {
-                match self {
-                    Constant::F32(x) => unsafe { t::<_, f32>(x) }.cast_dtype(dtype),
-                    Constant::F64(x) => unsafe { t::<_, f64>(x) }.cast_dtype(dtype),
-                    Constant::U8(x) => x.cast_dtype(dtype),
-                    Constant::I8(x) => x.cast_dtype(dtype),
-                    Constant::I16(x) => x.cast_dtype(dtype),
-                    Constant::U32(_) => panic!(),
-                    Constant::I32(x) => x.cast_dtype(dtype),
-                    Constant::I64(x) => x.cast_dtype(dtype),
-                    Constant::Bool(x) => x.cast_dtype(dtype),
-                }
+            UOp::Cast(dtype) => match self {
+                Constant::F32(x) => unsafe { t::<_, f32>(x) }.cast_dtype(dtype),
+                Constant::F64(x) => unsafe { t::<_, f64>(x) }.cast_dtype(dtype),
+                Constant::U8(x) => x.cast_dtype(dtype),
+                Constant::I8(x) => x.cast_dtype(dtype),
+                Constant::I16(x) => x.cast_dtype(dtype),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => x.cast_dtype(dtype),
+                Constant::I64(x) => x.cast_dtype(dtype),
+                Constant::Bool(x) => x.cast_dtype(dtype),
             }
-            UOp::ReLU => {
-                match self {
-                    Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).relu()) }),
-                    Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).relu()) }),
-                    Constant::U8(x) => Constant::U8(x.relu()),
-                    Constant::I8(x) => Constant::I8(x.relu()),
-                    Constant::I16(x) => Constant::I16(x.relu()),
-                    Constant::U32(_) => panic!(),
-                    Constant::I32(x) => Constant::I32(x.relu()),
-                    Constant::I64(x) => Constant::I64(x.relu()),
-                    Constant::Bool(x) => Constant::Bool(x.relu()),
-                }
+            UOp::ReLU => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).relu()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).relu()) }),
+                Constant::U8(x) => Constant::U8(x.relu()),
+                Constant::I8(x) => Constant::I8(x.relu()),
+                Constant::I16(x) => Constant::I16(x.relu()),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(x.relu()),
+                Constant::I64(x) => Constant::I64(x.relu()),
+                Constant::Bool(x) => Constant::Bool(x.relu()),
             }
-            UOp::Neg => {
-                match self {
-                    Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).neg()) }),
-                    Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).neg()) }),
-                    Constant::U8(x) => Constant::U8(x.neg()),
-                    Constant::I8(x) => Constant::I8(x.neg()),
-                    Constant::I16(x) => Constant::I16(x.neg()),
-                    Constant::U32(_) => panic!(),
-                    Constant::I32(x) => Constant::I32(x.neg()),
-                    Constant::I64(x) => Constant::I64(x.neg()),
-                    Constant::Bool(x) => Constant::Bool(x.neg()),
-                }
+            UOp::Neg => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).neg()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).neg()) }),
+                Constant::U8(x) => Constant::U8(x.neg()),
+                Constant::I8(x) => Constant::I8(x.neg()),
+                Constant::I16(x) => Constant::I16(x.neg()),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(x.neg()),
+                Constant::I64(x) => Constant::I64(x.neg()),
+                Constant::Bool(x) => Constant::Bool(x.neg()),
             }
-            UOp::Exp2 => todo!(),
-            UOp::Log2 => todo!(),
-            UOp::Inv => todo!(),
+            UOp::Exp2 => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).exp2()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).exp2()) }),
+                Constant::U8(x) => Constant::U8(2.pow(x)),
+                Constant::I8(x) => Constant::I8(2.pow(x)),
+                Constant::I16(x) => Constant::I16(2.pow(x)),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(2.pow(x)),
+                Constant::I64(x) => Constant::I64(2.pow(x)),
+                Constant::Bool(_) => todo!(),
+            }
+            UOp::Log2 => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).log2()) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).log2()) }),
+                Constant::U8(x) => Constant::U8(x.ilog2() as u8),
+                Constant::I8(x) => Constant::I8(x.ilog2() as i8),
+                Constant::I16(x) => Constant::I16(x.ilog2() as i16),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(x.ilog2() as i32),
+                Constant::I64(x) => Constant::I64(x.ilog2() as i64),
+                Constant::Bool(_) => todo!(),
+            }
+            UOp::Inv => match self {
+                Constant::F32(x) => Constant::F32(unsafe { t(1f32/t::<_, f32>(x)) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(1f64/t::<_, f64>(x)) }),
+                Constant::U8(x) => Constant::U8(1/x),
+                Constant::I8(x) => Constant::I8(1/x),
+                Constant::I16(x) => Constant::I16(1/x),
+                Constant::U32(_) => panic!(),
+                Constant::I32(x) => Constant::I32(1/x),
+                Constant::I64(x) => Constant::I64(1/x),
+                Constant::Bool(_) => todo!(),
+            }
             UOp::Sqrt => todo!(),
             UOp::Sin => todo!(),
             UOp::Cos => todo!(),

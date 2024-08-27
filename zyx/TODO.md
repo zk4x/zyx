@@ -17,7 +17,8 @@
 - [ ] local memory caching
 - [ ] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
-- [ ] check caching of compiled graphs
+- [x] check caching of compiled graphs
+- [ ] tensor detach (for recurrent nets)
 - [ ] pool
 - [ ] cumsum
 - [ ] randn
