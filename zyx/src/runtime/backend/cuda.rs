@@ -115,8 +115,9 @@ pub(crate) struct CUDAMemoryPool {
     cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
     cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
     cuMemcpyDtoH: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUDAStatus,
-    cuMemFree: unsafe extern "C" fn (CUdeviceptr) -> CUDAStatus,
-    cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
+    cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
+    cuMemcpyPeer:
+        unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
     cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
 }
 
@@ -133,10 +134,29 @@ pub(crate) struct CUDADevice {
     memory_pool_id: usize,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
-    cuModuleLoadDataEx: unsafe extern "C" fn(*mut CUmodule, *const c_void, c_uint, *mut CUjit_option, *mut *mut c_void) -> CUDAStatus,
-    cuModuleGetFunction: unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
+    cuModuleLoadDataEx: unsafe extern "C" fn(
+        *mut CUmodule,
+        *const c_void,
+        c_uint,
+        *mut CUjit_option,
+        *mut *mut c_void,
+    ) -> CUDAStatus,
+    cuModuleGetFunction:
+        unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
     //cuModuleEnumerateFunctions: unsafe extern "C" fn(*mut CUfunction, c_uint, CUmodule) -> CUDAStatus,
-    cuLaunchKernel: unsafe extern "C" fn(CUfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, CUstream, *mut *mut c_void, *mut *mut c_void) -> CUDAStatus,
+    cuLaunchKernel: unsafe extern "C" fn(
+        CUfunction,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        CUstream,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -146,7 +166,19 @@ pub(crate) struct CUDAProgram {
     function: CUfunction,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
-    cuLaunchKernel: unsafe extern "C" fn(CUfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, CUstream, *mut *mut c_void, *mut *mut c_void) -> CUDAStatus,
+    cuLaunchKernel: unsafe extern "C" fn(
+        CUfunction,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        CUstream,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -193,33 +225,26 @@ pub(crate) fn initialize_cuda_backend(
     ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
     let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceTotalMem\0") }.unwrap();
-    let cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }.unwrap();
-    let cuCtxCreate_v2: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
+    let cuDeviceGetAttribute: unsafe extern "C" fn(
+        *mut c_int,
+        CUdevice_attribute,
+        CUdevice,
+    ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }.unwrap();
+    let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
-    let cuMemAlloc =
-        *unsafe { cuda.get(b"cuMemAlloc\0") }.unwrap();
-    let cuMemcpyHtoD =
-        *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
-    let cuMemFree =
-        *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
-    let cuMemcpyDtoH =
-        *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
-    let cuMemcpyPeer =
-        *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
-    let cuCtxDestroy =
-        *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
-    let cuModuleLoadDataEx =
-        *unsafe { cuda.get(b"cuModuleLoadDataEx\0")}.unwrap();
-    let cuModuleGetFunction =
-        *unsafe { cuda.get(b"cuModuleGetFunction\0")}.unwrap();
+    let cuMemAlloc = *unsafe { cuda.get(b"cuMemAlloc\0") }.unwrap();
+    let cuMemcpyHtoD = *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
+    let cuMemFree = *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
+    let cuMemcpyDtoH = *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
+    let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
+    let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
+    let cuModuleLoadDataEx = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
+    let cuModuleGetFunction = *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
     /*let cuModuleEnumerateFunctions =
-        *unsafe { cuda.get(b"cuModuleEnumerateFunctions\0")}.unwrap();*/
-    let cuLaunchKernel =
-        *unsafe { cuda.get(b"cuLaunchKernel\0")}.unwrap();
+     *unsafe { cuda.get(b"cuModuleEnumerateFunctions\0")}.unwrap();*/
+    let cuLaunchKernel = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
-
     let mut driver_version = 0;
     unsafe { cuDriverGetVersion(&mut driver_version) }
         .check("Failed to get CUDA driver version")?;
@@ -245,25 +270,46 @@ pub(crate) fn initialize_cuda_backend(
         let mut device = 0;
         unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
         let mut device_name = [0; 100];
-        let Ok(_) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check("Failed to get CUDA device name") else { continue };
+        let Ok(_) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }
+            .check("Failed to get CUDA device name")
+        else {
+            continue;
+        };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(_) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }.check("Failed to get CUDA device compute capability.") else { continue };
+        let Ok(_) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }
+            .check("Failed to get CUDA device compute capability.")
+        else {
+            continue;
+        };
         #[cfg(feature = "debug_dev")]
         println!("{:?}, compute capability: {major}.{minor}", unsafe {
             std::ffi::CStr::from_ptr(device_name.as_ptr())
         });
         let mut free_bytes = 0;
-        let Ok(_) = unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.") else { continue };
-
+        let Ok(_) =
+            unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.")
+        else {
+            continue;
+        };
         let mut context: CUcontext = ptr::null_mut();
-        let Ok(_) = unsafe { cuCtxCreate_v2(&mut context, 0, device) }.check("Failed to create CUDA context.") else { continue };
-
-        memory_pools.push(CUDAMemoryPool { cuda: cuda.clone(), context, device, free_bytes, cuMemAlloc, cuMemcpyHtoD, cuMemFree, cuMemcpyDtoH, cuMemcpyPeer, cuCtxDestroy });
-
-        //let mut max_ptx_version = 0;
-        //let Ok(_) = unsafe { cuDeviceGetAttribute(max_ptx_version, CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_, device) }.check("Failed to get max supported ptx version") else { continue };
-
+        let Ok(_) = unsafe { cuCtxCreate(&mut context, 0, device) }
+            .check("Failed to create CUDA context.")
+        else {
+            continue;
+        };
+        memory_pools.push(CUDAMemoryPool {
+            cuda: cuda.clone(),
+            context,
+            device,
+            free_bytes,
+            cuMemAlloc,
+            cuMemcpyHtoD,
+            cuMemFree,
+            cuMemcpyDtoH,
+            cuMemcpyPeer,
+            cuCtxDestroy,
+        });
         devices.push(CUDADevice {
             device,
             dev_info: DeviceInfo::default(),
@@ -286,12 +332,19 @@ impl CUDAMemoryPool {
 
     pub(crate) fn allocate(&mut self, bytes: usize) -> Result<CUDABuffer, CUDAError> {
         if bytes > self.free_bytes {
-            return Err(CUDAError { info: "Insufficient free memory.".into(), status: CUDAStatus::CUDA_ERROR_OUT_OF_MEMORY });
+            return Err(CUDAError {
+                info: "Insufficient free memory.".into(),
+                status: CUDAStatus::CUDA_ERROR_OUT_OF_MEMORY,
+            });
         }
         self.free_bytes -= bytes;
         let mut ptr = self.device as u64;
         unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
-        return Ok(CUDABuffer { ptr, bytes, context: self.context });
+        return Ok(CUDABuffer {
+            ptr,
+            bytes,
+            context: self.context,
+        });
     }
 
     pub(crate) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
@@ -302,7 +355,8 @@ impl CUDAMemoryPool {
 
     pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
         //println!("Copying {src:?} to {dst:?}");
-        unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory from host to pool.")
+        unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }
+            .check("Failed to copy memory from host to pool.")
     }
 
     pub(crate) fn pool_to_host(
@@ -310,7 +364,8 @@ impl CUDAMemoryPool {
         src: &CUDABuffer,
         dst: &mut [u8],
     ) -> Result<(), CUDAError> {
-        unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }.check("Failed to copy memory from pool to host.")
+        unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }
+            .check("Failed to copy memory from pool to host.")
     }
 
     pub(crate) fn pool_to_pool(
@@ -318,7 +373,8 @@ impl CUDAMemoryPool {
         src: &CUDABuffer,
         dst: &CUDABuffer,
     ) -> Result<(), CUDAError> {
-        unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }.check("Failed copy memory from pool to pool.")
+        unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }
+            .check("Failed copy memory from pool to pool.")
     }
 }
 
@@ -361,10 +417,13 @@ impl CUDADevice {
         );
 
         let indent = "    ";
-        let mut source = format!(".version {0}.{1}
+        let mut source = format!(
+            ".version {0}.{1}
 .target sm_{0}{1}
 .address_size 64
-.visible .entry {name}(\n", self.compute_capability[0], self.compute_capability[1]);
+.visible .entry {name}(\n",
+            self.compute_capability[0], self.compute_capability[1]
+        );
         // Declare global variables
         for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
             source += &format!("{indent}.param    .u64 g{id},\n");
@@ -378,10 +437,7 @@ impl CUDADevice {
         source += &format!("{indent}.reg  .s64    a1;\n");
         // Declare register variables
         for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
-            source += &format!(
-                "{indent}.reg  .{}    r{id};\n",
-                dtype.ptx()
-            );
+            source += &format!("{indent}.reg  .{}    r{id};\n", dtype.ptx());
         }
         // Add indices for global and local loops
         source += &format!("{indent}mov.u32    r0, %ctaid.x;\n");
@@ -391,7 +447,7 @@ impl CUDADevice {
         source += &format!("{indent}mov.u32    r4, %ctaid.z;\n");
         source += &format!("{indent}mov.u32    r5, %tid.z;\n");
 
-        for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
+        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, len, value } => {
                     let dtype: IRDType = value.dtype().into();
@@ -404,7 +460,11 @@ impl CUDADevice {
                     source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
                     // Shift by {at}
                     // Multiply at by byte width of dtype
-                    source += &format!("{indent}shl.b32    {0}, {0}, {1};\n", at.ptx(), dtype.byte_size().ilog2());
+                    source += &format!(
+                        "{indent}shl.b32    {0}, {0}, {1};\n",
+                        at.ptx(),
+                        dtype.byte_size().ilog2()
+                    );
                     // Convert at to s64
                     source += &format!("{indent}cvt.s64.u32    a0, {};\n", at.ptx());
                     // Add at to address
@@ -419,7 +479,11 @@ impl CUDADevice {
                     source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
                     // Shift by {at}
                     // Multiply at by byte width of dtype
-                    source += &format!("{indent}shl.b32    {0}, {0}, {1};\n", at.ptx(), dtype.byte_size().ilog2());
+                    source += &format!(
+                        "{indent}shl.b32    {0}, {0}, {1};\n",
+                        at.ptx(),
+                        dtype.byte_size().ilog2()
+                    );
                     // Convert at to s64
                     source += &format!("{indent}cvt.s64.u32    a0, {};\n", at.ptx());
                     // Add at to address
@@ -429,35 +493,90 @@ impl CUDADevice {
                 }
                 IROp::Unary { z, x, uop, dtype } => {
                     source += &match uop {
-                        UOp::Cast(cdt) => format!("{indent}cvt.{}.{}    {}, {};\n", <DType as Into<IRDType>>::into(cdt).ptx(), dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Cast(cdt) => format!(
+                            "{indent}cvt.{}.{}    {}, {};\n",
+                            <DType as Into<IRDType>>::into(cdt).ptx(),
+                            dtype.ptx(),
+                            z.ptx(),
+                            x.ptx()
+                        ),
                         UOp::ReLU => todo!(),
-                        UOp::Neg => format!("{indent}neg.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
-                        UOp::Exp2 => format!("{indent}ex2.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
-                        UOp::Log2 => format!("{indent}lg2.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Neg => {
+                            format!("{indent}neg.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx())
+                        }
+                        UOp::Exp2 => format!(
+                            "{indent}ex2.approx.{}   {}, {};\n",
+                            dtype.ptx(),
+                            z.ptx(),
+                            x.ptx()
+                        ),
+                        UOp::Log2 => format!(
+                            "{indent}lg2.approx.{}   {}, {};\n",
+                            dtype.ptx(),
+                            z.ptx(),
+                            x.ptx()
+                        ),
                         UOp::Inv => todo!(),
-                        UOp::Sqrt => format!("{indent}sqrt.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
-                        UOp::Sin => format!("{indent}sin.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
-                        UOp::Cos => format!("{indent}cos.approx.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
-                        UOp::Not => format!("{indent}not.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx()),
+                        UOp::Sqrt => format!(
+                            "{indent}sqrt.approx.{}   {}, {};\n",
+                            dtype.ptx(),
+                            z.ptx(),
+                            x.ptx()
+                        ),
+                        UOp::Sin => format!(
+                            "{indent}sin.approx.{}   {}, {};\n",
+                            dtype.ptx(),
+                            z.ptx(),
+                            x.ptx()
+                        ),
+                        UOp::Cos => format!(
+                            "{indent}cos.approx.{}   {}, {};\n",
+                            dtype.ptx(),
+                            z.ptx(),
+                            x.ptx()
+                        ),
+                        UOp::Not => {
+                            format!("{indent}not.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx())
+                        }
                         UOp::Nonzero => todo!(),
                     };
                 }
-                IROp::Binary { z, x, y, bop, dtype } => {
+                IROp::Binary {
+                    z,
+                    x,
+                    y,
+                    bop,
+                    dtype,
+                } => {
                     //println!("Adding binary {bop:?}");
-                    source += &format!("{indent}{}.{}   {}, {}, {};\n", match bop {
-                        BOp::Add => "add",
-                        BOp::Sub => "sub",
-                        BOp::Mul => "mul",
-                        BOp::Div => "div",
-                        BOp::Pow => todo!(),
-                        BOp::Cmplt => "set.lt",
-                        BOp::Cmpgt => "set.gt",
-                        BOp::Max => todo!(),
-                        BOp::Or => todo!(),
-                    }, dtype.ptx(), z.ptx(), x.ptx(), y.ptx());
+                    source += &format!(
+                        "{indent}{}.{}   {}, {}, {};\n",
+                        match bop {
+                            BOp::Add => "add",
+                            BOp::Sub => "sub",
+                            BOp::Mul => "mul",
+                            BOp::Div => "div",
+                            BOp::Pow => todo!(),
+                            BOp::Cmplt => "set.lt",
+                            BOp::Cmpgt => "set.gt",
+                            BOp::Max => todo!(),
+                            BOp::Or => todo!(),
+                        },
+                        dtype.ptx(),
+                        z.ptx(),
+                        x.ptx(),
+                        y.ptx()
+                    );
                 }
                 IROp::MAdd { z, a, b, c, dtype } => {
-                    source += &format!("{indent}mad.lo.{}    {}, {}, {}, {};\n", dtype.ptx(), z.ptx(), a.ptx(), b.ptx(), c.ptx());
+                    source += &format!(
+                        "{indent}mad.lo.{}    {}, {}, {}, {};\n",
+                        dtype.ptx(),
+                        z.ptx(),
+                        a.ptx(),
+                        b.ptx(),
+                        c.ptx()
+                    );
                 }
                 IROp::Loop { id, len } => {
                     source += &format!("LOOP_{id}:\n");
@@ -469,7 +588,7 @@ impl CUDADevice {
                     source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
                     // Branch
                     source += &format!("@p  bra    LOOP_{id};\n");
-                },
+                }
                 IROp::Barrier { scope } => todo!(),
             }
         }
@@ -487,12 +606,12 @@ impl CUDADevice {
                 ptr::null_mut(),
                 ptr::null_mut(),
             )
-        }.check(
-            "Module load failed.",
-        )?;
+        }
+        .check("Module load failed.")?;
         let mut function = ptr::null_mut();
         //println!("Loading function {name}");
-        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }.check("Failed to load function.")?;
+        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+            .check("Failed to load function.")?;
         //unsafe { (self.cuModuleEnumerateFunctions)(&mut function, 1, module) }.check("Failed to load functions.")?;
         Ok(CUDAProgram {
             name,
@@ -532,7 +651,8 @@ impl CUDAProgram {
                 kernel_params.as_mut_ptr(),
                 ptr::null_mut(),
             )
-        }.check("Failed to launch kernel.")?;
+        }
+        .check("Failed to launch kernel.")?;
         // For now just empty event, later we can deal with streams to make it async
         Ok(CUDAEvent {})
     }

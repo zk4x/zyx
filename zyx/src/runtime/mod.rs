@@ -64,7 +64,7 @@ pub(crate) struct Runtime {
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug)]
 pub struct BackendConfig {
     pub cuda: CUDAConfig,
     pub hip: HIPConfig,
