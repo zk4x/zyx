@@ -10,7 +10,6 @@
 - [ ] hsa/hsail backend
 - [ ] clean up ir.rs
 - [ ] automatic optimizations with search
-- [ ] hip/rocr backend
 
 ## Release blockers
 
@@ -18,12 +17,13 @@
 - [ ] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
-- [ ] tensor detach (for recurrent nets)
+- [x] tensor detach (for recurrent nets)
 - [ ] pool
 - [ ] cumsum
 - [ ] randn
 - [ ] conv
 - [x] cuda/ptx backend
+- [ ] hip/rocr backend
 - [ ] test backpropagation
 - [ ] some tests
 - [x] remove smadd, amadd

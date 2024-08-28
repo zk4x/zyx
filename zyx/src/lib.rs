@@ -151,8 +151,6 @@ fn t_12() {
     let b = Tensor::from([2, 3, 5]);
     for _ in 0..10 {
         x = x.dot(&w) + &b;
-        //Tensor::plot_graph([], "graph1");
-        //Tensor::plot_graph([], "graph0");
         Tensor::realize([&x]).unwrap();
     }
     println!("{x}");
@@ -168,10 +166,22 @@ fn t_14() {
 #[test]
 fn t_15() {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    for _ in 0..5 {
+    for _ in 0..10 {
         x = &x + &x;
+        println!("{x}");
         //Tensor::plot_graph([], &format!("graph{i}"));
         Tensor::realize([&x]).unwrap();
     }
     println!("{x}");
+}
+
+#[test]
+fn t_16() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    let y = Tensor::from([[5, 6, 9], [4, 2, 0]]);
+    let _z = x.exp2() + &y;
+    x = -x * &y;
+    Tensor::plot_graph([], "graph0");
+    Tensor::realize([&x]).unwrap();
+    Tensor::plot_graph([], "graph1");
 }

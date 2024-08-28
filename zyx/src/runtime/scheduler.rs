@@ -13,10 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent},
-    BufferId, Device, DeviceId, MemoryPool, MemoryPoolId, ProgramId,
+    BufferId, Device, DeviceId, MemoryPool, MemoryPoolId,
 };
 
-// In which order
+#[derive(Debug)]
 pub(super) struct CompiledGraph {
     sched_graph: Vec<SchedulerOp>,
     #[cfg(feature = "debug_perf")]
@@ -25,6 +25,13 @@ pub(super) struct CompiledGraph {
     bytes_read: u128,
     #[cfg(feature = "debug_perf")]
     bytes_written: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct VProgram {
+    device_id: DeviceId,
+    program_id: usize,
+    args: Vec<(TensorId, View, bool)>,
 }
 
 // TODO this function could take &mut Runtime
@@ -56,28 +63,20 @@ impl Runtime {
             //for mut kernel in kernels {
             let kernel = &mut kernels[kid];
             let mut program_wait_list = Vec::new();
+            // Which kernels we need to wait for before launching the next one?
             for i in (0..sched_graph.len()).rev() {
-                if let SchedulerOp::Launch(program_id) = &sched_graph[i] {
-                    if let Some(args) = self.ir_kernel_cache.values().find_map(|(pid, args)| {
-                        if program_id == pid {
-                            Some(args)
-                        } else {
-                            None
-                        }
-                    }) {
-                        for (arg, _, read_only) in args {
-                            if !read_only && kernel.inputs.contains(&arg) {
-                                device_program_map
-                                    .get_mut(&program_id.device_id)
-                                    .unwrap()
-                                    .retain(|pid| *pid != program_id.program_id);
-                                program_wait_list.push(*program_id);
-                            }
+                if let SchedulerOp::Launch(vprogram) = &sched_graph[i] {
+                    for (arg, _, read_only) in &vprogram.args {
+                        if !read_only && kernel.inputs.contains(&arg) {
+                            device_program_map
+                                .get_mut(&vprogram.device_id)
+                                .unwrap()
+                                .retain(|pid| *pid != vprogram.program_id);
+                            program_wait_list.push((vprogram.device_id, vprogram.program_id));
                         }
                     }
                 }
             }
-            // TODO deallocate inputs of kernels[lkid] if they are not used elsewhere
             // Is this kernel shardable across multiple devices?
             let shard = if device_program_map.len() > 1 {
                 if let Some((axis, dimension)) = kernel.shard_axis() {
@@ -162,14 +161,15 @@ impl Runtime {
                     }
                     tensor_buffer_map.insert((*input, view), memory_pool_id);
                 }
-                for program_id in program_wait_list {
-                    sched_graph.push(SchedulerOp::Finish(program_id));
+                // Finish kernels that contain this kernel's inputs
+                for (device_id, program_id) in program_wait_list {
+                    sched_graph.push(SchedulerOp::Finish { device_id, program_id });
                 }
-                let (ir_kernel, args) = kernel.to_ir(&graph, optimizations);
+                let (ir_kernel, ir_args) = kernel.to_ir(&graph, optimizations);
                 let mut program_id = None;
-                if let Some((program, _)) = self.ir_kernel_cache.get(&ir_kernel) {
-                    if program.device_id == device_id {
-                        program_id = Some(program.program_id);
+                if let Some((dev_id, prog_id) ) = self.ir_kernel_cache.get(&ir_kernel) {
+                    if *dev_id == device_id {
+                        program_id = Some(*prog_id);
                     }
                 }
                 if program_id.is_none() {
@@ -195,28 +195,21 @@ impl Runtime {
                             programs.len() - 1
                         }
                     });
+                    self.ir_kernel_cache.insert(
+                        ir_kernel,
+                        (device_id, program_id.unwrap())
+                    );
                 }
                 let program_id = program_id.unwrap();
                 // Since it is not sharded, sharding view is contiguous
-                self.ir_kernel_cache.insert(
-                    ir_kernel,
-                    (
-                        ProgramId {
-                            device_id,
-                            program_id,
-                        },
-                        args.into_iter()
-                            .map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only))
-                            .collect(),
-                    ),
-                );
                 device_program_map
                     .get_mut(&device_id)
                     .unwrap()
                     .push(program_id);
-                sched_graph.push(SchedulerOp::Launch(ProgramId {
+                sched_graph.push(SchedulerOp::Launch(VProgram {
                     device_id,
                     program_id,
+                    args: ir_args.into_iter().map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only)).collect(),
                 }));
                 // Deallocate kernel inputs that will not be used by other kernels
                 let mut unneeded_tensors = temp_tensors.clone();
@@ -249,10 +242,10 @@ impl Runtime {
         }
         for (device_id, programs) in device_program_map.iter_mut() {
             for program_id in &mut *programs {
-                sched_graph.push(SchedulerOp::Finish(ProgramId {
+                sched_graph.push(SchedulerOp::Finish {
                     device_id: *device_id,
                     program_id: *program_id,
-                }));
+                });
             }
             programs.clear();
         }
@@ -263,7 +256,7 @@ impl Runtime {
                 SchedulerOp::Launch(program_id) => {
                     println!("Launch kernel {}", self.devices[program_id.device_id])
                 }
-                SchedulerOp::Finish(program_id) => println!("Finish kernel {program_id:?}"),
+                SchedulerOp::Finish { device_id, program_id }=> println!("Finish kernel {program_id} on device {device_id}"),
                 SchedulerOp::Move {
                     tensor_id: tensor,
                     view,
@@ -303,84 +296,65 @@ impl Runtime {
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
-        let mut events: BTreeMap<ProgramId, Event> = BTreeMap::new();
+        let mut events: BTreeMap<VProgram, Event> = BTreeMap::new();
         let compiled_graph = &self.compiled_graph_cache[graph];
+        //println!("Launching compiled graph: {compiled_graph:?}");
         #[cfg(feature = "debug_perf")]
         let begin = std::time::Instant::now();
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
-                SchedulerOp::Launch(program_id) => {
-                    let args: Vec<usize> = self
-                        .ir_kernel_cache
-                        .values()
-                        .find_map(|(pid, args)| {
-                            if program_id == pid {
-                                Some(
-                                    args.iter()
+                SchedulerOp::Launch(vprogram) => {
+                    // Same program can launch with different args. Thus in program map we also need args.
+                    //println!("Launch {program_id:?} with args:");
+                    let args: Vec<usize> = vprogram.args.iter()
                                         .map(|arg| {
+                                            //println!("Arg {} {}", arg.0, arg.1);
                                             self.graph.tensor_buffer_map[&(arg.0, arg.1.clone())]
                                                 .buffer_id
                                         })
-                                        .collect(),
-                                )
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap();
-                    //println!("Launching kernel with args: {args:?}");
-                    /*for arg in args {
-                        let x = self.load()?;
-                    }*/
-                    match &mut self.devices[program_id.device_id] {
+                                        .collect();
+                    events.insert(vprogram.clone(), match &mut self.devices[vprogram.device_id] {
                         Device::CUDA {
                             device: _,
                             memory_pool_id,
                             programs,
                         } => {
-                            let program = &mut programs[program_id.program_id];
                             let MemoryPool::CUDA { buffers, .. } =
                                 &mut self.memory_pools[*memory_pool_id]
                             else {
                                 panic!()
                             };
-                            events
-                                .insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
+                            Event::CUDA(programs[vprogram.program_id].launch(buffers, &args)?)
                         }
                         Device::HIP {
                             device: _,
                             memory_pool_id,
                             programs,
                         } => {
-                            let program = &mut programs[program_id.program_id];
                             let MemoryPool::HIP { buffers, .. } =
                                 &mut self.memory_pools[*memory_pool_id]
                             else {
                                 panic!()
                             };
-                            events.insert(*program_id, Event::HIP(program.launch(buffers, &args)?));
+                            Event::HIP(programs[vprogram.program_id].launch(buffers, &args)?)
                         }
                         Device::OpenCL {
                             device: _,
                             memory_pool_id,
                             programs,
                         } => {
-                            let program = &mut programs[program_id.program_id];
                             let MemoryPool::OpenCL { buffers, .. } =
                                 &mut self.memory_pools[*memory_pool_id]
                             else {
                                 panic!()
                             };
-                            events.insert(
-                                *program_id,
-                                Event::OpenCL(program.launch(buffers, &args)?),
-                            );
+                            Event::OpenCL(programs[vprogram.program_id].launch(buffers, &args)?)
                         }
-                    }
+                    });
                 }
-                SchedulerOp::Finish(program_id) => {
+                SchedulerOp::Finish { device_id: dev_id, program_id: prog_id } => {
                     // Dropping event finishes it
-                    let _ = events.remove(&program_id).unwrap();
+                    events.retain(|VProgram { device_id, program_id, .. }, _| *device_id != *dev_id || *program_id != *prog_id);
                 }
                 SchedulerOp::Move {
                     tensor_id,
@@ -701,11 +675,15 @@ enum Event {
     OpenCL(OpenCLEvent),
 }
 
+#[derive(Debug)]
 enum SchedulerOp {
     // Async launch kernel on device
-    Launch(ProgramId),
+    Launch(VProgram),
     // Block for kernel to finish execution
-    Finish(ProgramId),
+    Finish {
+        device_id: DeviceId,
+        program_id: usize,
+    },
     // Copy part of tensor between devices
     // This is used for sharding, but can be used for other purposes too,
     // if found usefull

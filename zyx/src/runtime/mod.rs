@@ -46,6 +46,23 @@ mod node;
 mod scheduler;
 mod view;
 
+// This is the whole global state of zyx
+pub(crate) struct Runtime {
+    // Current graph of tensor operations as nodes
+    graph: Graph,
+    // Random number generator
+    #[cfg(feature = "rand")]
+    rng: std::cell::OnceCell<SmallRng>,
+    // Are we in training mode?
+    pub(crate) training: bool,
+    devices: Vec<Device>,
+    memory_pools: Vec<MemoryPool>,
+    // Cache for compiled graphs
+    compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
+    // Cache which maps IRKernel to device and program id on the device
+    ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
+}
+
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(serde::Deserialize)]
 pub struct BackendConfig {
@@ -71,12 +88,6 @@ type DeviceId = usize;
 struct BufferId {
     memory_pool_id: usize,
     buffer_id: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ProgramId {
-    device_id: DeviceId,
-    program_id: usize,
 }
 
 #[derive(Debug)]
@@ -114,21 +125,6 @@ enum MemoryPool {
         memory_pool: OpenCLMemoryPool,
         buffers: IndexMap<OpenCLBuffer>,
     },
-}
-
-pub(crate) struct Runtime {
-    // Current graph of tensor operations as nodes
-    graph: Graph,
-    // Random number generator
-    #[cfg(feature = "rand")]
-    rng: std::cell::OnceCell<SmallRng>,
-    // Are we in training mode?
-    pub(crate) training: bool,
-    devices: Vec<Device>,
-    memory_pools: Vec<MemoryPool>,
-    // Caches for compiled graphs and ir kernels
-    compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
-    ir_kernel_cache: BTreeMap<IRKernel, (ProgramId, Vec<(TensorId, View, bool)>)>,
 }
 
 impl Runtime {
@@ -233,7 +229,9 @@ impl Runtime {
                 value: Constant::new(data[0]),
             }))
         } else {
-            let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
+            let id = self
+                .graph
+                .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
             self.initialize_backends()?;
             let bytes = data.len() * T::byte_size();
             // Put it into memory pool with fastest device out of memory pools with enough free capacity
@@ -309,7 +307,8 @@ impl Runtime {
                     }
                 }
             };
-            self.graph.tensor_buffer_map
+            self.graph
+                .tensor_buffer_map
                 .insert((id, View::new(self.shape(id))), buffer_id);
             Ok(id)
         }
@@ -377,10 +376,13 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        return self.graph.push_wdtype(Node::Unary {
-            x,
-            uop: UOp::Cast(dtype),
-        }, dtype);
+        return self.graph.push_wdtype(
+            Node::Unary {
+                x,
+                uop: UOp::Cast(dtype),
+            },
+            dtype,
+        );
     }
 
     #[must_use]
@@ -479,56 +481,90 @@ impl Runtime {
     #[must_use]
     pub(crate) fn sum_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
-        self.graph.push_wshape(Node::Reduce {
-            x,
-            axes,
-            rop: ROp::Sum,
-        }, shape)
+        self.graph.push_wshape(
+            Node::Reduce {
+                x,
+                axes,
+                rop: ROp::Sum,
+            },
+            shape,
+        )
     }
 
     #[must_use]
     pub(crate) fn max_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
-        self.graph.push_wshape(Node::Reduce {
-            x,
-            axes,
-            rop: ROp::Max,
-        }, shape)
+        self.graph.push_wshape(
+            Node::Reduce {
+                x,
+                axes,
+                rop: ROp::Max,
+            },
+            shape,
+        )
     }
 
     #[must_use]
     pub(crate) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Add })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Add,
+        })
     }
 
     #[must_use]
     pub(crate) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Sub })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Sub,
+        })
     }
 
     #[must_use]
     pub(crate) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Mul })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Mul,
+        })
     }
 
     #[must_use]
     pub(crate) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Div })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Div,
+        })
     }
 
     #[must_use]
     pub(crate) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Pow })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Pow,
+        })
     }
 
     #[must_use]
     pub(crate) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Cmplt })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Cmplt,
+        })
     }
 
     #[must_use]
     pub(crate) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Max })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Max,
+        })
     }
 }
 
@@ -564,13 +600,13 @@ impl Runtime {
                 paths.into_iter().find_map(|mut path| {
                     path.push("zyx/backend_config.ron");
                     std::fs::read_to_string(&path)
-                /*.map_err(|e| {
-                    #[cfg(feature = "debug_dev")]
-                    println!("Failed to read backend_config.ron at {path:?}, using defaults: {e}");
-                    #[cfg(not(feature = "debug_dev"))]
-                    let _ = e;
-                })*/
-                .ok()
+                        /*.map_err(|e| {
+                            #[cfg(feature = "debug_dev")]
+                            println!("Failed to read backend_config.ron at {path:?}, using defaults: {e}");
+                            #[cfg(not(feature = "debug_dev"))]
+                            let _ = e;
+                        })*/
+                        .ok()
                 })
             })
             .flatten()
@@ -637,7 +673,12 @@ impl Runtime {
 
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
-        if self.graph.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
+        if self
+            .graph
+            .tensor_buffer_map
+            .iter()
+            .all(|((id, _), _)| *id != x)
+        {
             self.realize(BTreeSet::from([x]))?;
         }
         // If at least part of tensor exists in some device, there must be
@@ -689,14 +730,26 @@ impl Runtime {
         if tensors.len() == 0 {
             return Ok(());
         }
+        if tensors.iter().all(|tensor| {
+            self.graph
+                .tensor_buffer_map
+                .iter()
+                .any(|((t, _), _)| tensor == t)
+        }) {
+            return Ok(());
+        }
         if self.devices.is_empty() {
             self.initialize_backends()?;
         }
         // Get rcs of nodes outside of realized graph
         let (graph, outside_nodes, order) = self.graph.realize_graph(&tensors, |x| {
-            self.graph.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
+            self.graph
+                .tensor_buffer_map
+                .iter()
+                .any(|((id, _), _)| *id == x)
         });
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
+        // New leafs never store data, so we can deallocate them if they are allocated.
         let mut to_delete = BTreeSet::new();
         let mut new_leafs = BTreeSet::new();
         //println!("Graph: {:?}", graph);
@@ -709,9 +762,16 @@ impl Runtime {
                     continue;
                 }
             } else {
-                if self.graph[*tensor].parameters().all(|tensor| to_delete.contains(&tensor)) && !outside_nodes.contains(tensor) {
+                if self.graph[*tensor]
+                    .parameters()
+                    .all(|tensor| to_delete.contains(&tensor))
+                    && !outside_nodes.contains(tensor)
+                {
                     to_delete.insert(*tensor);
-                } else if self.graph[*tensor].parameters().any(|tensor| to_delete.contains(&tensor)) {
+                } else if self.graph[*tensor]
+                    .parameters()
+                    .any(|tensor| to_delete.contains(&tensor))
+                {
                     for param in self.graph[*tensor].parameters() {
                         if to_delete.contains(&param) {
                             new_leafs.insert(param);
@@ -726,9 +786,11 @@ impl Runtime {
             // Also realize nodes that will become new leafs... but why?
             //tensors.extend(&new_leafs);
             let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
-            self.compiled_graph_cache.insert(graph.clone(), compiled_graph);
+            self.compiled_graph_cache
+                .insert(graph.clone(), compiled_graph);
         }
         self.launch_graph(&graph)?;
+        self.deallocate_tensors(to_delete.clone())?;
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
             self.graph.add_shape_dtype(tensor);
@@ -739,14 +801,14 @@ impl Runtime {
         // Delete the node, but do not use release function, just remove it from graph.nodes
         // and deallocate it from device
         self.graph.delete_tensors(&to_delete);
-        self.deallocate_tensors(to_delete)?;
         return Ok(());
     }
 
     fn deallocate_tensors(&mut self, to_remove: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         let mut buffers: Vec<BufferId> = Vec::new();
         for tensor in to_remove {
-            for (_, buffer_id) in self.graph
+            for (_, buffer_id) in self
+                .graph
                 .tensor_buffer_map
                 .iter()
                 .filter(|((t, _), _)| *t == tensor)
@@ -754,7 +816,9 @@ impl Runtime {
                 buffers.push(*buffer_id);
             }
         }
-        self.graph.tensor_buffer_map.retain(|_, b| !buffers.contains(b));
+        self.graph
+            .tensor_buffer_map
+            .retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
             match &mut self.memory_pools[buffer.memory_pool_id] {
                 MemoryPool::CUDA {
@@ -802,12 +866,7 @@ impl Runtime {
         // Initial gradient of ones
         let grad1 = self.ones(vec![1], self.dtype(x));
         let sh: Vec<Dimension> = self.shape(x).into();
-        grads.insert(
-            x,
-            self.graph.push_wshape(Node::Expand {
-                x: grad1,
-            }, sh),
-        );
+        grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad1 }, sh));
         self.release(grad1).unwrap();
         //std::println!("{:?}", self.nodes.last().unwrap());
 
