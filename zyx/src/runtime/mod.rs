@@ -682,7 +682,7 @@ impl Runtime {
         Ok(data)
     }
 
-    pub(crate) fn realize(&mut self, mut tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // Runs in O(4n) where n = self.graph.len(),
         // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
         // fourth pass for to_delete and new_leafs
@@ -700,9 +700,9 @@ impl Runtime {
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         let mut to_delete = BTreeSet::new();
         let mut new_leafs = BTreeSet::new();
-        println!("Graph: {:?}", graph);
-        println!("Outside nodes: {outside_nodes:?}");
-        println!("Order: {order:?}");
+        //println!("Graph: {:?}", graph);
+        //println!("Outside nodes: {outside_nodes:?}");
+        //println!("Order: {order:?}");
         for tensor in &order {
             if matches!(self.graph[*tensor], Node::Leaf | Node::Const { .. }) {
                 if !outside_nodes.contains(tensor) {
@@ -721,22 +721,22 @@ impl Runtime {
                 }
             }
         }
+        //println!("New leafs: {new_leafs:?}");
         // Compile and launch
         if !self.compiled_graphs.contains_key(&graph) {
-            // Also realize nodes that will become new leafs
-            tensors.extend(&new_leafs);
+            // Also realize nodes that will become new leafs... but why?
+            //tensors.extend(&new_leafs);
             let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
             self.compiled_graphs.insert(graph.clone(), compiled_graph);
         }
         self.launch_graph(&graph)?;
-        println!("New leafs: {new_leafs:?}");
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
             self.graph.add_shape_dtype(tensor);
             self.graph[tensor] = Node::Leaf;
             to_delete.remove(&tensor);
         }
-        println!("To delete: {to_delete:?}");
+        //println!("To delete: {to_delete:?}");
         // Delete the node, but do not use release function, just remove it from graph.nodes
         // and deallocate it from device
         self.graph.delete_tensors(&to_delete);

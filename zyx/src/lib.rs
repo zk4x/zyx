@@ -76,6 +76,7 @@ fn t4() {
     let y = Tensor::uniform([1024, 1024], 0f32..1f32);
     //let z = (x * y).sum(2);
     let z = x.dot(y);
+    Tensor::plot_graph([], "graph0");
     Tensor::realize([&z]).unwrap();
 }
 

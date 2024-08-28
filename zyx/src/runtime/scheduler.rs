@@ -188,9 +188,6 @@ impl Runtime {
                     sched_graph.push(SchedulerOp::Finish(program_id));
                 }
                 let (ir_kernel, args) = kernel.to_ir(&graph, optimizations);
-                #[cfg(feature = "debug_ir")]
-                ir_kernel.debug();
-                                
                 let mut program_id = None;
                 if let Some(program) = self.ir_kernel_cache.get(&ir_kernel) {
                     if program.device_id == device_id {
@@ -198,6 +195,8 @@ impl Runtime {
                     }
                 }
                 if program_id.is_none() {
+                    #[cfg(feature = "debug_ir")]
+                    ir_kernel.debug();
                     program_id = Some(match &mut self.devices[device_id] {
                         Device::CUDA {
                             device, programs, ..
@@ -247,6 +246,7 @@ impl Runtime {
                     });
                 }
                 let program_id = program_id.unwrap();
+                self.ir_kernel_cache.insert(ir_kernel, ProgramId { device_id, program_id });
                 device_program_map
                     .get_mut(&device_id)
                     .unwrap()
@@ -1164,7 +1164,7 @@ fn generate_kernels(
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //println!("ID({nid})x{}: {node:?}", graph.rc(nid));
+        println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {
@@ -1594,6 +1594,8 @@ fn generate_kernels(
                     if let Some(mut kernel_y_id) =
                         kernels.iter().position(|kernel| kernel.vars.contains(y))
                     {
+                        // TODO check that swapping id's never changes order in the binary op itself,
+                        // because some binary ops may not be commutative
                         //println!("Both inputs are in different kernels.");
                         // Two separate kernels contain our inputs, so we join them together
 
@@ -1633,15 +1635,24 @@ fn generate_kernels(
                             kernel_y_id = kernels.len() - 1
                         }
 
-                        // We know that kernel_y is the latest kernel,
-                        // since this is the order in which ordering of nodes works.
-                        assert_eq!(kernel_y_id, kernels.len() - 1);
+                        //println!("Kernel x");
+                        //kernels[kernel_x_id].debug();
+                        //println!("Kernel y");
+                        //kernels[kernel_y_id].debug();
+                        let (kernel_x, kernel_y) = if kernel_y_id > kernel_x_id {
+                            let kernel_x = kernels.remove(kernel_x_id);
+                            // we have just removed kernel before this one
+                            kernel_y_id -= 1;
+                            let kernel_y = &mut kernels[kernel_y_id];
+                            (kernel_x, kernel_y)
+                        } else {
+                            let kernel_y = kernels.remove(kernel_y_id);
+                            // we have just removed kernel before this one
+                            kernel_x_id -= 1;
+                            let kernel_x = &mut kernels[kernel_x_id];
+                            (kernel_y, kernel_x)
+                        };
 
-                        let kernel_x = kernels.remove(kernel_x_id);
-                        // we have just removed kernel before this one
-                        kernel_y_id -= 1;
-
-                        let kernel_y = &mut kernels[kernel_y_id];
                         assert_eq!(kernel_x.shape, kernel_y.shape);
 
                         // We cannot have both loops from kernel_x and kernel_y
