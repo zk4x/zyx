@@ -1,6 +1,7 @@
 use super::{
     node::{BOp, Node},
-    TensorId,
+    view::View,
+    BufferId, TensorId,
 };
 use crate::{index_map::IndexMap, shape::Dimension, DType};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +15,8 @@ pub(super) struct Graph {
     nodes: IndexMap<(u32, Node)>,
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
     dtypes: BTreeMap<TensorId, DType>,
+    // In which device buffers tensors are stored, this is important for graph caching
+    pub(super) tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
 }
 
 impl Graph {
@@ -22,6 +25,7 @@ impl Graph {
             nodes: IndexMap::new(),
             shapes: BTreeMap::new(),
             dtypes: BTreeMap::new(),
+            tensor_buffer_map: BTreeMap::new(),
         }
     }
 
@@ -76,7 +80,12 @@ impl Graph {
         id
     }
 
-    pub(crate) fn push_wshape_and_dtype(&mut self, node: Node, shape: Vec<Dimension>, dtype: DType) -> TensorId {
+    pub(crate) fn push_wshape_and_dtype(
+        &mut self,
+        node: Node,
+        shape: Vec<Dimension>,
+        dtype: DType,
+    ) -> TensorId {
         //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
@@ -191,22 +200,46 @@ impl Graph {
         let outside_nodes = self
             .nodes
             .iter()
-            .filter_map(|(id, (rc, _))| if let Some(rc2) = rcs.get(&id) {
-                if *rc > *rc2 {
-                    Some(id)
+            .filter_map(|(id, (rc, _))| {
+                if let Some(rc2) = rcs.get(&id) {
+                    if *rc > *rc2 {
+                        Some(id)
+                    } else {
+                        None
+                    }
                 } else {
-                    None
+                    Some(id)
                 }
-            } else {
-                Some(id)
             })
             .chain(tensors.iter().copied())
             .collect();
 
-        let mut shapes: BTreeMap<TensorId, Vec<Dimension>> = self.shapes.iter().filter_map(|(id, sh)| if visited.contains(id) { Some((*id, sh.clone())) } else { None }).collect();
-        let mut dtypes: BTreeMap<TensorId, DType> = self.dtypes.iter().filter_map(|(id, dt)| if visited.contains(id) { Some((*id, *dt)) } else { None }).collect();
+        let mut shapes: BTreeMap<TensorId, Vec<Dimension>> = self
+            .shapes
+            .iter()
+            .filter_map(|(id, sh)| {
+                if visited.contains(id) {
+                    Some((*id, sh.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut dtypes: BTreeMap<TensorId, DType> = self
+            .dtypes
+            .iter()
+            .filter_map(|(id, dt)| {
+                if visited.contains(id) {
+                    Some((*id, *dt))
+                } else {
+                    None
+                }
+            })
+            .collect();
         for leaf in &leafs {
-            shapes.entry(*leaf).or_insert_with(|| self.shape(*leaf).into());
+            shapes
+                .entry(*leaf)
+                .or_insert_with(|| self.shape(*leaf).into());
             dtypes.entry(*leaf).or_insert_with(|| self.dtype(*leaf));
         }
 
@@ -215,16 +248,24 @@ impl Graph {
             Graph {
                 shapes,
                 dtypes,
+                tensor_buffer_map: self
+                    .tensor_buffer_map
+                    .iter()
+                    .filter_map(|((t, v), b)| {
+                        if visited.contains(t) {
+                            Some(((*t, v.clone()), *b))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
                 nodes: visited
                     .into_iter()
                     .map(|id| {
                         (
                             id,
                             if leafs.contains(&id) {
-                                (
-                                    self.nodes[id].0,
-                                    Node::Leaf,
-                                )
+                                (self.nodes[id].0, Node::Leaf)
                             } else {
                                 self.nodes[id].clone()
                             },
@@ -308,7 +349,8 @@ impl Graph {
             match &self.nodes[*nid].1 {
                 Node::Const { .. } => {}
                 Node::Leaf => {
-                    bytes_read += self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
+                    bytes_read +=
+                        self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
                 }
                 Node::Unary { x, .. } => {
                     flop += self.shape(*x).iter().product::<usize>();
@@ -514,7 +556,11 @@ impl Graph {
             let node = &self.nodes[*id].1;
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
-                Node::Leaf => add_node(id, &f!("Leaf({:?}, {})", self.shape(*id), self.dtype(*id)), "box"),
+                Node::Leaf => add_node(
+                    id,
+                    &f!("Leaf({:?}, {})", self.shape(*id), self.dtype(*id)),
+                    "box",
+                ),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
                 Node::Reshape { x, .. } => add_node(id, &f!("Reshape({x})"), "oval"),

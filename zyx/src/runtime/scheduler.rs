@@ -45,6 +45,7 @@ impl Runtime {
             .collect();
         // Simulated tensor buffer map
         let mut tensor_buffer_map: BTreeMap<(TensorId, View), MemoryPoolId> = self
+            .graph
             .tensor_buffer_map
             .iter()
             .map(|(x, &BufferId { memory_pool_id, .. })| (x.clone(), memory_pool_id))
@@ -52,12 +53,18 @@ impl Runtime {
         let mut temp_tensors: BTreeSet<TensorId> = BTreeSet::new();
 
         for kid in 0..kernels.len() {
-        //for mut kernel in kernels {
+            //for mut kernel in kernels {
             let kernel = &mut kernels[kid];
             let mut program_wait_list = Vec::new();
             for i in (0..sched_graph.len()).rev() {
                 if let SchedulerOp::Launch(program_id) = &sched_graph[i] {
-                    if let Some(args) = self.ir_kernel_cache.values().find_map(|(pid, args)| if program_id == pid { Some(args) } else { None }) {
+                    if let Some(args) = self.ir_kernel_cache.values().find_map(|(pid, args)| {
+                        if program_id == pid {
+                            Some(args)
+                        } else {
+                            None
+                        }
+                    }) {
                         for (arg, _, read_only) in args {
                             if !read_only && kernel.inputs.contains(&arg) {
                                 device_program_map
@@ -191,7 +198,18 @@ impl Runtime {
                 }
                 let program_id = program_id.unwrap();
                 // Since it is not sharded, sharding view is contiguous
-                self.ir_kernel_cache.insert(ir_kernel, (ProgramId { device_id, program_id }, args.into_iter().map(|(arg, read_only)| { (arg, View::new(graph.shape(arg)), read_only) }).collect()));
+                self.ir_kernel_cache.insert(
+                    ir_kernel,
+                    (
+                        ProgramId {
+                            device_id,
+                            program_id,
+                        },
+                        args.into_iter()
+                            .map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only))
+                            .collect(),
+                    ),
+                );
                 device_program_map
                     .get_mut(&device_id)
                     .unwrap()
@@ -203,7 +221,7 @@ impl Runtime {
                 // Deallocate kernel inputs that will not be used by other kernels
                 let mut unneeded_tensors = temp_tensors.clone();
                 if kid + 1 < kernels.len() {
-                    for kernel in &kernels[kid+1..] {
+                    for kernel in &kernels[kid + 1..] {
                         for input in &kernel.inputs {
                             unneeded_tensors.remove(input);
                         }
@@ -216,8 +234,16 @@ impl Runtime {
                 for tensor_id in unneeded_tensors {
                     let view = View::new(graph.shape(tensor_id));
                     let dtype = graph.dtype(tensor_id);
-                    let Some(memory_pool_id) = tensor_buffer_map.get(&(tensor_id, view.clone())) else { panic!() };
-                    sched_graph.push(SchedulerOp::Deallocate { tensor_id, memory_pool_id: *memory_pool_id, bytes: view.numel()*dtype.byte_size(), view });
+                    let Some(memory_pool_id) = tensor_buffer_map.get(&(tensor_id, view.clone()))
+                    else {
+                        panic!()
+                    };
+                    sched_graph.push(SchedulerOp::Deallocate {
+                        tensor_id,
+                        memory_pool_id: *memory_pool_id,
+                        bytes: view.numel() * dtype.byte_size(),
+                        view,
+                    });
                 }
             }
         }
@@ -278,15 +304,34 @@ impl Runtime {
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
         let mut events: BTreeMap<ProgramId, Event> = BTreeMap::new();
-        let compiled_graph = &self.compiled_graphs[graph];
+        let compiled_graph = &self.compiled_graph_cache[graph];
         #[cfg(feature = "debug_perf")]
         let begin = std::time::Instant::now();
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program_id) => {
-                    let args: Vec<usize> = self.ir_kernel_cache.values().find_map(|(pid, args)| if program_id == pid { Some(args.iter()
-                        .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
-                        .collect()) } else { None }).unwrap();
+                    let args: Vec<usize> = self
+                        .ir_kernel_cache
+                        .values()
+                        .find_map(|(pid, args)| {
+                            if program_id == pid {
+                                Some(
+                                    args.iter()
+                                        .map(|arg| {
+                                            self.graph.tensor_buffer_map[&(arg.0, arg.1.clone())]
+                                                .buffer_id
+                                        })
+                                        .collect(),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap();
+                    //println!("Launching kernel with args: {args:?}");
+                    /*for arg in args {
+                        let x = self.load()?;
+                    }*/
                     match &mut self.devices[program_id.device_id] {
                         Device::CUDA {
                             device: _,
@@ -299,7 +344,8 @@ impl Runtime {
                             else {
                                 panic!()
                             };
-                            events.insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
+                            events
+                                .insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
                         }
                         Device::HIP {
                             device: _,
@@ -325,10 +371,13 @@ impl Runtime {
                             else {
                                 panic!()
                             };
-                            events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
+                            events.insert(
+                                *program_id,
+                                Event::OpenCL(program.launch(buffers, &args)?),
+                            );
                         }
                     }
-                },
+                }
                 SchedulerOp::Finish(program_id) => {
                     // Dropping event finishes it
                     let _ = events.remove(&program_id).unwrap();
@@ -342,7 +391,7 @@ impl Runtime {
                     let BufferId {
                         memory_pool_id,
                         buffer_id: src_bid,
-                    } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
+                    } = self.graph.tensor_buffer_map[&(*tensor_id, view.clone())];
                     let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst);
 
                     macro_rules! cross_backend {
@@ -353,7 +402,7 @@ impl Runtime {
                             $sm.pool_to_host(&$sb[src_bid], &mut data)?;
                             $sm.deallocate($sb.remove(src_bid).unwrap())?;
                             $dm.host_to_pool(&data, &$db[dst_bid])?;
-                            self.tensor_buffer_map.insert(
+                            self.graph.tensor_buffer_map.insert(
                                 (*tensor_id, view.clone()),
                                 BufferId {
                                     memory_pool_id: *dst,
@@ -368,7 +417,7 @@ impl Runtime {
                             let dst_bid = $db.push($dm.allocate(bytes)?);
                             $dm.pool_to_pool(&$sb[src_bid], &$db[dst_bid])?;
                             $sm.deallocate($sb.remove(src_bid).unwrap())?;
-                            self.tensor_buffer_map.insert(
+                            self.graph.tensor_buffer_map.insert(
                                 (*tensor_id, view.clone()),
                                 BufferId {
                                     memory_pool_id: *dst,
@@ -501,7 +550,7 @@ impl Runtime {
                     } => {
                         let buffer = memory_pool.allocate(*bytes)?;
                         let buffer_id = buffers.push(buffer);
-                        self.tensor_buffer_map.insert(
+                        self.graph.tensor_buffer_map.insert(
                             (*tensor_id, view.clone()),
                             BufferId {
                                 memory_pool_id: *memory_pool_id,
@@ -515,7 +564,7 @@ impl Runtime {
                     } => {
                         let buffer = memory_pool.allocate(*bytes)?;
                         let buffer_id = buffers.push(buffer);
-                        self.tensor_buffer_map.insert(
+                        self.graph.tensor_buffer_map.insert(
                             (*tensor_id, view.clone()),
                             BufferId {
                                 memory_pool_id: *memory_pool_id,
@@ -529,7 +578,7 @@ impl Runtime {
                     } => {
                         let buffer = memory_pool.allocate(*bytes)?;
                         let buffer_id = buffers.push(buffer);
-                        self.tensor_buffer_map.insert(
+                        self.graph.tensor_buffer_map.insert(
                             (*tensor_id, view.clone()),
                             BufferId {
                                 memory_pool_id: *memory_pool_id,
@@ -554,11 +603,11 @@ impl Runtime {
                         if let Some(BufferId {
                             memory_pool_id: buf_mpid,
                             ..
-                        }) = self.tensor_buffer_map.get(key)
+                        }) = self.graph.tensor_buffer_map.get(key)
                         {
                             if buf_mpid == memory_pool_id {
                                 let BufferId { buffer_id, .. } =
-                                    self.tensor_buffer_map.remove(key).unwrap();
+                                    self.graph.tensor_buffer_map.remove(key).unwrap();
                                 memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
                             }
                         }
@@ -572,11 +621,11 @@ impl Runtime {
                         if let Some(BufferId {
                             memory_pool_id: buf_mpid,
                             ..
-                        }) = self.tensor_buffer_map.get(key)
+                        }) = self.graph.tensor_buffer_map.get(key)
                         {
                             if buf_mpid == memory_pool_id {
                                 let BufferId { buffer_id, .. } =
-                                    self.tensor_buffer_map.remove(key).unwrap();
+                                    self.graph.tensor_buffer_map.remove(key).unwrap();
                                 memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
                             }
                         }
@@ -590,11 +639,11 @@ impl Runtime {
                         if let Some(BufferId {
                             memory_pool_id: buf_mpid,
                             ..
-                        }) = self.tensor_buffer_map.get(key)
+                        }) = self.graph.tensor_buffer_map.get(key)
                         {
                             if buf_mpid == memory_pool_id {
                                 let BufferId { buffer_id, .. } =
-                                    self.tensor_buffer_map.remove(key).unwrap();
+                                    self.graph.tensor_buffer_map.remove(key).unwrap();
                                 memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
                             }
                         }
@@ -831,7 +880,11 @@ impl Kernel {
                         // and if and how those loops are permuted
                         todo!()
                     } else {
-                        axes[..=last_axis].iter().copied().chain(last_axis+1..n).collect()
+                        axes[..=last_axis]
+                            .iter()
+                            .copied()
+                            .chain(last_axis + 1..n)
+                            .collect()
                     };
                     view.permute(&permute_axes);
                 }
@@ -1330,7 +1383,9 @@ fn generate_kernels(
                             }
                         }
                         for op_id in split_ids {
-                            let Some((_, dimensions)) = splits.pop_last() else { panic!() };
+                            let Some((_, dimensions)) = splits.pop_last() else {
+                                panic!()
+                            };
                             //println!("Splitting at {op_id} to {dimensions:?}");
                             kernel.split_axis(op_id, &dimensions);
                         }
@@ -1429,11 +1484,7 @@ fn generate_kernels(
                 });
                 kernel.vars.insert(nid);
             }
-            Node::Reduce {
-                x,
-                axes,
-                rop,
-            } => {
+            Node::Reduce { x, axes, rop } => {
                 let shape = graph.shape(nid);
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 // Reduce removes loops and adds accumulator before those loops that it removes
@@ -1741,10 +1792,8 @@ impl std::fmt::Display for VOp {
                     len = 5;
                 }
                 f.write_fmt(format_args!(
-                "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
-                core::iter::repeat(" ")
-                    .take(5 - len)
-                    .collect::<String>()
+                    "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
+                    core::iter::repeat(" ").take(5 - len).collect::<String>()
                 ))
             }
             VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!(

@@ -168,8 +168,9 @@ fn t_14() {
 #[test]
 fn t_15() {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    for _ in 0..6 {
+    for _ in 0..5 {
         x = &x + &x;
+        //Tensor::plot_graph([], &format!("graph{i}"));
         Tensor::realize([&x]).unwrap();
     }
     println!("{x}");

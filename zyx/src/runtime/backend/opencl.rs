@@ -826,9 +826,6 @@ impl OpenCLProgram {
         buffers: &mut IndexMap<OpenCLBuffer>,
         args: &[usize],
     ) -> Result<OpenCLEvent, OpenCLError> {
-        //#[cfg(feature = "debug1")]
-        //libc_print::libc_println!("{:?}", self.load_memory::<f32>(&args[0], 4).unwrap());
-        //#[cfg(not(feature = "debug1"))]
         let mut i = 0;
         for arg in args {
             let arg = &mut buffers[*arg];

@@ -124,10 +124,10 @@ pub(crate) struct Runtime {
     rng: std::cell::OnceCell<SmallRng>,
     // Are we in training mode?
     pub(crate) training: bool,
-    compiled_graphs: BTreeMap<Graph, CompiledGraph>,
     devices: Vec<Device>,
     memory_pools: Vec<MemoryPool>,
-    tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
+    // Caches for compiled graphs and ir kernels
+    compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
     ir_kernel_cache: BTreeMap<IRKernel, (ProgramId, Vec<(TensorId, View, bool)>)>,
 }
 
@@ -139,10 +139,9 @@ impl Runtime {
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             training: false,
-            compiled_graphs: BTreeMap::new(),
+            compiled_graph_cache: BTreeMap::new(),
             devices: Vec::new(),
             memory_pools: Vec::new(),
-            tensor_buffer_map: BTreeMap::new(),
             ir_kernel_cache: BTreeMap::new(),
         }
     }
@@ -310,7 +309,7 @@ impl Runtime {
                     }
                 }
             };
-            self.tensor_buffer_map
+            self.graph.tensor_buffer_map
                 .insert((id, View::new(self.shape(id))), buffer_id);
             Ok(id)
         }
@@ -638,14 +637,14 @@ impl Runtime {
 
     pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
-        if self.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
+        if self.graph.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
             self.realize(BTreeSet::from([x]))?;
         }
         // If at least part of tensor exists in some device, there must be
         // the rest of the tensor in other devices
         let n: usize = self.shape(x).iter().product();
         let mut data: Vec<T> = Vec::with_capacity(n);
-        for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
+        for ((tensor_id, view), buffer_id) in &self.graph.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
                     let slice = unsafe {
@@ -695,7 +694,7 @@ impl Runtime {
         }
         // Get rcs of nodes outside of realized graph
         let (graph, outside_nodes, order) = self.graph.realize_graph(&tensors, |x| {
-            self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
+            self.graph.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
         });
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         let mut to_delete = BTreeSet::new();
@@ -723,11 +722,11 @@ impl Runtime {
         }
         //println!("New leafs: {new_leafs:?}");
         // Compile and launch
-        if !self.compiled_graphs.contains_key(&graph) {
+        if !self.compiled_graph_cache.contains_key(&graph) {
             // Also realize nodes that will become new leafs... but why?
             //tensors.extend(&new_leafs);
             let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
-            self.compiled_graphs.insert(graph.clone(), compiled_graph);
+            self.compiled_graph_cache.insert(graph.clone(), compiled_graph);
         }
         self.launch_graph(&graph)?;
         // Remove evaluated part of graph unless needed for backpropagation
@@ -747,7 +746,7 @@ impl Runtime {
     fn deallocate_tensors(&mut self, to_remove: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         let mut buffers: Vec<BufferId> = Vec::new();
         for tensor in to_remove {
-            for (_, buffer_id) in self
+            for (_, buffer_id) in self.graph
                 .tensor_buffer_map
                 .iter()
                 .filter(|((t, _), _)| *t == tensor)
@@ -755,7 +754,7 @@ impl Runtime {
                 buffers.push(*buffer_id);
             }
         }
-        self.tensor_buffer_map.retain(|_, b| !buffers.contains(b));
+        self.graph.tensor_buffer_map.retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
             match &mut self.memory_pools[buffer.memory_pool_id] {
                 MemoryPool::CUDA {
