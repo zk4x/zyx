@@ -75,9 +75,12 @@ fn t4() {
     let x = Tensor::uniform([1024, 1024], 0f32..1f32);
     let y = Tensor::uniform([1024, 1024], 0f32..1f32);
     //let z = (x * y).sum(2);
-    let z = x.dot(y);
-    Tensor::plot_graph([], "graph0");
-    Tensor::realize([&z]).unwrap();
+    for _ in 0..100 {
+        let z = x.dot(&y);
+        Tensor::realize([&z]).unwrap();
+    }
+    //Tensor::plot_graph([], "graph0");
+    //Tensor::realize([&z]).unwrap();
 }
 
 #[test]
@@ -165,7 +168,7 @@ fn t_14() {
 #[test]
 fn t_15() {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    for _ in 0..20 {
+    for _ in 0..6 {
         x = &x + &x;
         Tensor::realize([&x]).unwrap();
     }

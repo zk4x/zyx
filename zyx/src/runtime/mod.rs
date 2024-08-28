@@ -85,19 +85,19 @@ enum Device {
         device: CUDADevice,
         memory_pool_id: MemoryPoolId,
         // Program and tensors passed as arguments for the program and if arguments are read only
-        programs: Vec<(CUDAProgram, Vec<(TensorId, View, bool)>)>,
+        programs: Vec<CUDAProgram>,
     },
     HIP {
         device: HIPDevice,
         memory_pool_id: MemoryPoolId,
         // Program and tensors passed as arguments for the program and if arguments are read only
-        programs: Vec<(HIPProgram, Vec<(TensorId, View, bool)>)>,
+        programs: Vec<HIPProgram>,
     },
     OpenCL {
         device: OpenCLDevice,
         memory_pool_id: MemoryPoolId,
         // Program and tensors passed as arguments for the program and if arguments are read only
-        programs: Vec<(OpenCLProgram, Vec<(TensorId, View, bool)>)>,
+        programs: Vec<OpenCLProgram>,
     },
 }
 
@@ -128,7 +128,7 @@ pub(crate) struct Runtime {
     devices: Vec<Device>,
     memory_pools: Vec<MemoryPool>,
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
-    ir_kernel_cache: BTreeMap<IRKernel, ProgramId>,
+    ir_kernel_cache: BTreeMap<IRKernel, (ProgramId, Vec<(TensorId, View, bool)>)>,
 }
 
 impl Runtime {

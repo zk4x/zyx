@@ -29,10 +29,9 @@ let b_grad = z.backward([&b]);
 ## Backends
 
 Zyx runs on different devices, current backends are CUDA, OpenCL and CPU.
-Zyx automatically tries to select the most performant available device, but you can also manually change it.
-```rust
-Tensor::set_default_device(Device::CPU);
-```
+Zyx automatically tries to select the most performant available device, but you can also manually change it
+by creating file backend_config.ron in folder zyx in home config directory (usually ~/.config/zyx/backend_config.ron).
+There write [BackendConfig] struct.
 
 ## Simple neural network
 

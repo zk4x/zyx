@@ -57,43 +57,14 @@ impl Runtime {
             let mut program_wait_list = Vec::new();
             for i in (0..sched_graph.len()).rev() {
                 if let SchedulerOp::Launch(program_id) = &sched_graph[i] {
-                    if device_program_map.iter().any(|(device_id, programs)| {
-                        *device_id == program_id.device_id
-                            && programs.contains(&program_id.program_id)
-                    }) {
-                        match &self.devices[program_id.device_id] {
-                            Device::CUDA { programs, .. } => {
-                                for (arg, _, read_only) in &programs[program_id.program_id].1 {
-                                    if !read_only && kernel.inputs.contains(&arg) {
-                                        device_program_map
-                                            .get_mut(&program_id.device_id)
-                                            .unwrap()
-                                            .retain(|pid| *pid != program_id.program_id);
-                                        program_wait_list.push(*program_id);
-                                    }
-                                }
-                            }
-                            Device::HIP { programs, .. } => {
-                                for (arg, _, read_only) in &programs[program_id.program_id].1 {
-                                    if !read_only && kernel.inputs.contains(&arg) {
-                                        device_program_map
-                                            .get_mut(&program_id.device_id)
-                                            .unwrap()
-                                            .retain(|pid| *pid != program_id.program_id);
-                                        program_wait_list.push(*program_id);
-                                    }
-                                }
-                            }
-                            Device::OpenCL { programs, .. } => {
-                                for (arg, _, read_only) in &programs[program_id.program_id].1 {
-                                    if !read_only && kernel.inputs.contains(&arg) {
-                                        device_program_map
-                                            .get_mut(&program_id.device_id)
-                                            .unwrap()
-                                            .retain(|pid| *pid != program_id.program_id);
-                                        program_wait_list.push(*program_id);
-                                    }
-                                }
+                    if let Some(args) = self.ir_kernel_cache.values().find_map(|(pid, args)| if program_id == pid { Some(args) } else { None }) {
+                        for (arg, _, read_only) in args {
+                            if !read_only && kernel.inputs.contains(&arg) {
+                                device_program_map
+                                    .get_mut(&program_id.device_id)
+                                    .unwrap()
+                                    .retain(|pid| *pid != program_id.program_id);
+                                program_wait_list.push(*program_id);
                             }
                         }
                     }
@@ -189,7 +160,7 @@ impl Runtime {
                 }
                 let (ir_kernel, args) = kernel.to_ir(&graph, optimizations);
                 let mut program_id = None;
-                if let Some(program) = self.ir_kernel_cache.get(&ir_kernel) {
+                if let Some((program, _)) = self.ir_kernel_cache.get(&ir_kernel) {
                     if program.device_id == device_id {
                         program_id = Some(program.program_id);
                     }
@@ -201,52 +172,26 @@ impl Runtime {
                         Device::CUDA {
                             device, programs, ..
                         } => {
-                            let program = device.compile(&ir_kernel)?;
-                            // Since it is not sharded, sharding view is contiguous
-                            programs.push((
-                                program,
-                                args.into_iter()
-                                    .map(|(arg, read_only)| {
-                                        (arg, View::new(graph.shape(arg)), read_only)
-                                    })
-                                    .collect(),
-                            ));
+                            programs.push(device.compile(&ir_kernel)?);
                             programs.len() - 1
                         }
                         Device::HIP {
                             device, programs, ..
                         } => {
-                            let program = device.compile(&ir_kernel)?;
-                            // Since it is not sharded, sharding view is contiguous
-                            programs.push((
-                                program,
-                                args.into_iter()
-                                    .map(|(arg, read_only)| {
-                                        (arg, View::new(graph.shape(arg)), read_only)
-                                    })
-                                    .collect(),
-                            ));
+                            programs.push(device.compile(&ir_kernel)?);
                             programs.len() - 1
                         }
                         Device::OpenCL {
                             device, programs, ..
                         } => {
-                            let program = device.compile(&ir_kernel)?;
-                            // Since it is not sharded, sharding view is contiguous
-                            programs.push((
-                                program,
-                                args.into_iter()
-                                    .map(|(arg, read_only)| {
-                                        (arg, View::new(graph.shape(arg)), read_only)
-                                    })
-                                    .collect(),
-                            ));
+                            programs.push(device.compile(&ir_kernel)?);
                             programs.len() - 1
                         }
                     });
                 }
                 let program_id = program_id.unwrap();
-                self.ir_kernel_cache.insert(ir_kernel, ProgramId { device_id, program_id });
+                // Since it is not sharded, sharding view is contiguous
+                self.ir_kernel_cache.insert(ir_kernel, (ProgramId { device_id, program_id }, args.into_iter().map(|(arg, read_only)| { (arg, View::new(graph.shape(arg)), read_only) }).collect()));
                 device_program_map
                     .get_mut(&device_id)
                     .unwrap()
@@ -338,57 +283,50 @@ impl Runtime {
         let begin = std::time::Instant::now();
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
-                SchedulerOp::Launch(program_id) => match &mut self.devices[program_id.device_id] {
-                    Device::CUDA {
-                        device: _,
-                        memory_pool_id,
-                        programs,
-                    } => {
-                        let (program, args) = &mut programs[program_id.program_id];
-                        let args: Vec<usize> = args
-                            .iter()
-                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
-                            .collect();
-                        let MemoryPool::CUDA { buffers, .. } =
-                            &mut self.memory_pools[*memory_pool_id]
-                        else {
-                            panic!()
-                        };
-                        events.insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
-                    }
-                    Device::HIP {
-                        device: _,
-                        memory_pool_id,
-                        programs,
-                    } => {
-                        let (program, args) = &mut programs[program_id.program_id];
-                        let args: Vec<usize> = args
-                            .iter()
-                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
-                            .collect();
-                        let MemoryPool::HIP { buffers, .. } =
-                            &mut self.memory_pools[*memory_pool_id]
-                        else {
-                            panic!()
-                        };
-                        events.insert(*program_id, Event::HIP(program.launch(buffers, &args)?));
-                    }
-                    Device::OpenCL {
-                        device: _,
-                        memory_pool_id,
-                        programs,
-                    } => {
-                        let (program, args) = &mut programs[program_id.program_id];
-                        let args: Vec<usize> = args
-                            .iter()
-                            .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
-                            .collect();
-                        let MemoryPool::OpenCL { buffers, .. } =
-                            &mut self.memory_pools[*memory_pool_id]
-                        else {
-                            panic!()
-                        };
-                        events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
+                SchedulerOp::Launch(program_id) => {
+                    let args: Vec<usize> = self.ir_kernel_cache.values().find_map(|(pid, args)| if program_id == pid { Some(args.iter()
+                        .map(|arg| self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id)
+                        .collect()) } else { None }).unwrap();
+                    match &mut self.devices[program_id.device_id] {
+                        Device::CUDA {
+                            device: _,
+                            memory_pool_id,
+                            programs,
+                        } => {
+                            let program = &mut programs[program_id.program_id];
+                            let MemoryPool::CUDA { buffers, .. } =
+                                &mut self.memory_pools[*memory_pool_id]
+                            else {
+                                panic!()
+                            };
+                            events.insert(*program_id, Event::CUDA(program.launch(buffers, &args)?));
+                        }
+                        Device::HIP {
+                            device: _,
+                            memory_pool_id,
+                            programs,
+                        } => {
+                            let program = &mut programs[program_id.program_id];
+                            let MemoryPool::HIP { buffers, .. } =
+                                &mut self.memory_pools[*memory_pool_id]
+                            else {
+                                panic!()
+                            };
+                            events.insert(*program_id, Event::HIP(program.launch(buffers, &args)?));
+                        }
+                        Device::OpenCL {
+                            device: _,
+                            memory_pool_id,
+                            programs,
+                        } => {
+                            let program = &mut programs[program_id.program_id];
+                            let MemoryPool::OpenCL { buffers, .. } =
+                                &mut self.memory_pools[*memory_pool_id]
+                            else {
+                                panic!()
+                            };
+                            events.insert(*program_id, Event::OpenCL(program.launch(buffers, &args)?));
+                        }
                     }
                 },
                 SchedulerOp::Finish(program_id) => {
@@ -1164,7 +1102,7 @@ fn generate_kernels(
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
+        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {

@@ -41,31 +41,28 @@ impl Drop for Tensor {
 }
 
 impl Tensor {
-    /// Write graph of operations between tensors as png image with given filename
-    /// Expects dot program to be in the path. Otherwise create dot graph file
-    /// without converting it to png.
-    pub fn plot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) {
-        use std::format;
-        let graph = RT
-            .lock()
-            .plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
-        std::fs::write(format!("{name}.dot"), graph).unwrap();
-        let output = std::process::Command::new("dot")
-            .arg("-Tpng")
-            .arg(format!("{name}.dot"))
-            .arg("-o")
-            .arg(format!("{name}.png"))
-            .output();
-        if let Err(err) = output {
-            std::println!("Graph png could not be created: {err}");
-        } else {
-            let _ = std::fs::remove_file(format!("{name}.dot"));
-        }
+    /// Shape of tensor
+    #[must_use]
+    pub fn shape(&self) -> Vec<usize> {
+        RT.lock().shape(self.id).to_vec()
     }
 
-    #[cfg(feature = "rand")]
-    pub fn manual_seed(seed: u64) {
-        RT.lock().manual_seed(seed);
+    /// Number of scalar elements stored in self
+    #[must_use]
+    pub fn numel(&self) -> usize {
+        self.shape().iter().product()
+    }
+
+    /// Rank of self. Rank means number of dimensions/axes.
+    #[must_use]
+    pub fn rank(&self) -> usize {
+        self.shape().len()
+    }
+
+    /// Datatype of self. See [DType](crate::DType) for available datatypes.
+    #[must_use]
+    pub fn dtype(&self) -> DType {
+        RT.lock().dtype(self.id)
     }
 
     /// Is zyx in training mode?
@@ -77,6 +74,12 @@ impl Tensor {
     /// Set training mode
     pub fn set_training(training: bool) {
         RT.lock().training = training;
+    }
+
+    /// Immediatelly evaluate passed tensors
+    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
+        RT.lock()
+            .realize(tensors.into_iter().map(|t| t.id).collect())
     }
 
     /// Returns gradients of self derived w.r.t. sources
@@ -147,34 +150,31 @@ impl Tensor {
         }
     }
 
-    /// Immediatelly evaluate passed tensors
-    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        RT.lock()
-            .realize(tensors.into_iter().map(|t| t.id).collect())
+    /// Write graph of operations between tensors as png image with given filename
+    /// Expects dot program to be in the path. Otherwise create dot graph file
+    /// without converting it to png.
+    pub fn plot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) {
+        use std::format;
+        let graph = RT
+            .lock()
+            .plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
+        std::fs::write(format!("{name}.dot"), graph).unwrap();
+        let output = std::process::Command::new("dot")
+            .arg("-Tpng")
+            .arg(format!("{name}.dot"))
+            .arg("-o")
+            .arg(format!("{name}.png"))
+            .output();
+        if let Err(err) = output {
+            std::println!("Graph png could not be created: {err}");
+        } else {
+            let _ = std::fs::remove_file(format!("{name}.dot"));
+        }
     }
 
-    /// Shape of tensor
-    #[must_use]
-    pub fn shape(&self) -> Vec<usize> {
-        RT.lock().shape(self.id).to_vec()
-    }
-
-    /// Number of scalar elements stored in self
-    #[must_use]
-    pub fn numel(&self) -> usize {
-        self.shape().iter().product()
-    }
-
-    /// Rank of self. Rank means number of dimensions/axes.
-    #[must_use]
-    pub fn rank(&self) -> usize {
-        self.shape().len()
-    }
-
-    /// Datatype of self. See [DType](crate::DType) for available datatypes.
-    #[must_use]
-    pub fn dtype(&self) -> DType {
-        RT.lock().dtype(self.id)
+    #[cfg(feature = "rand")]
+    pub fn manual_seed(seed: u64) {
+        RT.lock().manual_seed(seed);
     }
 
     // Initializers
@@ -668,7 +668,7 @@ impl Tensor {
     }
 
     /// Transpose last two dimensions of this tensor.
-    /// If self.rank() == 1, returns tensor with shape [self.shape()[0], 1] (column tensor)
+    /// If self.rank() == 1, returns tensor with shape `[self.shape()[0], 1]` (column tensor)
     #[must_use]
     pub fn t(&self) -> Tensor {
         let mut rank = self.rank();
