@@ -11,6 +11,12 @@ only once. Since zyx stores the whole graph and automatically optimizes it,
 all tensors are differentiable. In pytorch this is equivalent to all tensors
 being set to requires_grad=True.
 
+## Install
+
+```shell
+cargo add zyx
+```
+
 ## Syntax
 
 Zyx uses syntax similar to pytorch.
@@ -23,14 +29,16 @@ let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32);
 let b = Tensor::zeros([1024], DType::F16);
 let z = &x + &y;
 let z = (x.dot(&y), + b).gelu();
-let b_grad = z.backward([&b]);
+// Zyx allows for arbitrary differentiation
+let b_grad = z.backward([&b])[0].unwrap();
+// Also higher order derivatives
+let bb_grad = b_grad.backward([&b])[0].unwrap();
 ```
 
 ## Backends
 
-Zyx runs on different devices, current backends are CUDA, OpenCL and CPU.
-Zyx automatically tries to select the most performant available device, but you can also manually change it
-by creating file backend_config.ron in folder zyx in home config directory (usually ~/.config/zyx/backend_config.ron).
+Zyx runs on different devices, current backends are CUDA, HIP and OpenCL.
+Zyx automatically tries to utilize all available devices, but you can also manually change it by creating file backend_config.ron in folder zyx in home config directory (usually ~/.config/zyx/backend_config.ron).
 There write [BackendConfig] struct.
 
 ## Simple neural network
@@ -52,6 +60,7 @@ let l1 = Linear::new(1024, 2, DType::F16);
 let x = Tensor::from([2, 3, 1]).cast(DType::F16);
 let target = Tensor::from([2, 4]);
 
+// Zyx also provides some optimizers like SGD and Adam
 let mut optim = zyx_optim::SGD {
     learning_rate: 0.01,
     momentum: 0.9,
@@ -73,20 +82,41 @@ l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors");
 
 For more details, there is a [book](https://zk4x.github.io/zyx).
 
-# No-std
+## Rust version
 
-Zyx does not use rust's std, it only uses alloc.
+Zyx currently only supports latest rust stable version. Zyx also requires std,
+as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging) and also some other stuff that requires filesystem.
+
+## Lazyness
+
+Tensors do not get realized automatically. Realization happens only when user accesses tensors, or explicitly using Tensor::realize function.
+```rust
+Tensor::realize([&x, &y]).unwrap();
+```
+If you do not know when to realize tensors, just do it after updating them with optimizer.
+```rust
+sgd.update(&mut model, grads);
+Tensor::realize(&model).unwrap();
+```
+This function might get obsolete in the future once detection of repeating graph patterns is implemented.
+
+## Goals
+
+1. Correctness
+2. Hardware support
+3. Performance
 
 ## Features
 
-debug1 - enables printing of debug information during runtime
+rand - enables support for functions that enable random number generation
+half - enables support for f16 and bf16 dtypes
+complex - enables support for cf32 and cf64 dtypes
 
 ## Warning
 
 Zyx breaks many principles of clean code. Clean code was tried in older versions of zyx.
 Abstractions, wrappers, dyn (virtual tables), generics and lifetimes made the code hard
-to reason about. Zyx now uses enums for everything and almost zero generics (only in functions,
-such as impl IntoShape to make API more flexible). If you dislike ugly code, please do not use zyx.
+to reason about. Zyx now uses enums for everything and almost zero generics (only in functions, such as impl IntoShape to make API more flexible). If you dislike ugly code, please do not use zyx.
 
 Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive,
 please do not use zyx.
@@ -99,11 +129,17 @@ offensive, please do not use zyx.
 
 Zyx uses some code duplication. If you hate code that is not DRY, please do not use zyx.
 
-Zyx has code of conduct that we humbly borrowed from sqlite.
+## Code of conduct
+
+Zyx has [code of conduct](CODE_OF_CONDUCT.md) that we humbly borrowed from sqlite.
 
 ## Contributing
 
-Please read CONTRIBUTING.md
+Please check out [CONTRIBUTING.md](CONTRIBUTING.md)
+
+## Thanks
+
+For contributing to Zyx, finding bugs and using it in your ML models.
 
 ## License
 

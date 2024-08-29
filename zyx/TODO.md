@@ -1,7 +1,6 @@
 - [x] deallocation of memory
 - [ ] implement sharding
 - [x] padded view permute
-- [ ] more tests
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
 - [x] dynamic loading of backends at runtime
@@ -9,30 +8,70 @@
 - [x] repeat
 - [ ] hsa/hsail backend
 - [ ] clean up ir.rs
-- [ ] automatic optimizations with search
+- [ ] automatic optimizations with search on vkernel
+- [ ] automatic optimizations for scheduler
+- [x] depends_on function for binary ops resolution
+- [x] multiple tensors depending on single one (rc > 1)
+- [x] multiple tensors depending on single one (rc > 1) for binary ops
+- [x] padding
+- [x] fix split dimensions for views with large padding
+- [x] permute of padded view
+- [x] reshape axis split
+- [x] local memory work size
+- [x] vops renumbering which allows us to set IRMem id to u8 and then directly generate assembly (PTX, HSA)
+- [x] multiple memory pools
+- [x] device work scheduler that creates graph of kernels, shards them (if needed) and schedules them to devices and memory pools
+- [x] Just write the scheduler, temporary variables and stuff does not matter whatsoever
+- [x] multiple kernel executors (with different performance)
+- [ ] PTX compiler
+- [x] uniform function
+- [x] compiled graph execution performance metrics
+- [x] reorder unary and movement ops
+- [ ] constant folding
+- [x] fix search for device with const nodes in graph
+- [x] get function
+- [x] pad
+- [x] cat
+- [x] const node
+- [x] dot graph of all nodes
+- [x] backpropagation
+- [x] scalar casting
 
-## Release blockers
+### Release blockers
 
 - [ ] local memory caching
 - [ ] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
 - [x] tensor detach (for recurrent nets)
+- [ ] tensor split
+- [ ] stack
+- [ ] lower/upper triangle mask (for attention)
 - [ ] pool
 - [ ] cumsum
 - [ ] randn
 - [ ] conv
-- [x] cuda/ptx backend
-- [ ] hip/rocr backend
-- [ ] test backpropagation
-- [ ] some tests
+- [x] cuda backend
+- [ ] hip backend
 - [x] remove smadd, amadd
 - [ ] test pad after reduce
 - [ ] test padded view permute
 - [x] fix reshape after reduce
 - [ ] test expand after reduce
 - [x] todo fix permute on reduced and reshaped kernel
-- [ ] go over all todos and check which are necessary
+- [ ] go over all todos in source code and check which are necessary
+
+### Tests
+
+- [ ] unary with backprop
+- [ ] binary with backprop
+- [ ] movement with backprop
+- [ ] reduce with backprop
+- [ ] combination of unary and binary
+- [ ] combination of movement and unary
+- [ ] combination of movent, unary and binary
+- [ ] combination of all ops
+- [ ] we need test for big modules like transformer. If transformer gives correct outputs, it's likely everything else is correct too.
 
 ## Advanced graph caching
 
