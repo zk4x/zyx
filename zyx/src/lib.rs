@@ -32,7 +32,7 @@ fn t0() {
 // Unary test
 #[test]
 fn t1() {
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp2();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
 }

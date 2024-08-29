@@ -631,6 +631,11 @@ impl CUDADevice {
         unsafe { nvrtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) }.check("nvrtcGetProgramLog")?;
         unsafe { nvrtcDestroyProgram(&mut program) }.check("nvrtcDestoyProgram")?;
         unsafe { program_log.set_len(program_log_size) };
+        let program_log = unsafe {
+            String::from_raw_parts(program_log.as_mut_ptr(), program_log_size, program_log_size)
+        };
+        println!("NVRTC program log:\n{program_log:?}");
+        unsafe { nvrtcDestroyProgram(&mut program) };
 
         self.load_ptx(name, ptx_source, global_work_size, local_work_size)
     }
