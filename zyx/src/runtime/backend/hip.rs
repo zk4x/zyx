@@ -67,7 +67,7 @@ pub(crate) fn initialize_hip_backend(
 ) -> Result<(Vec<HIPMemoryPool>, Vec<HIPDevice>), HIPError> {
     let _ = config;
 
-    let hip_paths = ["/lib64/libamdhip64.so"];
+    let hip_paths = ["/lib64/libamdhip64.so", "/lib/x86_64-linux-gnu/libamdhip64.so"];
     let hip = hip_paths.iter().find_map(|path| {
         if let Ok(lib) = unsafe { Library::new(path) } {
             Some(lib)
