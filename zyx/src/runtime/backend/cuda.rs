@@ -565,6 +565,7 @@ impl CUDADevice {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
+        name += "\0";
         if let Ok(_) = std::env::var("DEBUG_ASM") {
             println!("{source}");
         }
@@ -598,7 +599,6 @@ impl CUDADevice {
         let nvrtcDestroyProgram: unsafe extern "C" fn (*mut nvrtcProgram) -> nvrtcResult
             = *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
 
-        name += &format!("\0");
         #[repr(C)]
         #[derive(Debug)]
         struct _nvrtcProgram {
@@ -609,8 +609,8 @@ impl CUDADevice {
         unsafe {
             nvrtcCreateProgram(
                 &mut program as *mut nvrtcProgram,
-                source.as_ptr() as *const c_char,
-                name.as_ptr() as *const c_char,
+                source.as_ptr().cast(),
+                name.as_ptr().cast(),
                 0,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -635,10 +635,6 @@ impl CUDADevice {
         unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check("nvrtcGetPTXSize")?;
         let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
         unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr() as *mut i8) }.check("nvrtcGetPTX")?;
-        let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec.clone()) }.into_string().unwrap();
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
-            println!("{ptx_source}");
-        }
         unsafe { nvrtcDestroyProgram(&mut program) }.check("nvrtcDestoyProgram")?;
 
         let mut module = ptr::null_mut();
@@ -656,6 +652,12 @@ impl CUDADevice {
         // Don't forget that the name is null terminated string
         unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
             .check("Failed to load function.")?;
+
+        if let Ok(_) = std::env::var("DEBUG_ASM") {
+            let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
+            println!("{ptx_source}");
+        }
+
         Ok(CUDAProgram {
             name,
             module,

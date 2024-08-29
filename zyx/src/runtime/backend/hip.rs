@@ -401,7 +401,7 @@ impl HIPDevice {
 
         let mut global_work_size = global_work_size;
         let local_work_size = local_work_size;
-        let name = format!(
+        let mut name = format!(
             "k__{}_{}__{}_{}__{}_{}",
             global_work_size[0],
             local_work_size[0],
@@ -417,7 +417,9 @@ impl HIPDevice {
         if source.contains("double") {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
-        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}");
+        // INFO: MUST BE NULL TERMINATED!
+        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
+        name += "\0";
         if let Ok(_) = std::env::var("DEBUG_ASM") {
             println!("{source}");
         }
@@ -452,7 +454,6 @@ impl HIPDevice {
         let hiprtcDestroyProgram: unsafe extern "C" fn (*mut hiprtcProgram) -> hiprtcResult
             = *unsafe { hiprtc.get(b"hiprtcDestroyProgram\0") }.unwrap();
 
-
         #[repr(C)]
         #[derive(Debug)]
         struct _hiprtcProgram {
@@ -463,49 +464,49 @@ impl HIPDevice {
         unsafe {
             hiprtcCreateProgram(
                 &mut program as *mut hiprtcProgram,
-                (&format!("{source}\0")).as_ptr() as *const c_char,
-                (&format!("{name}\0")).as_ptr() as *const c_char,
+                source.as_ptr().cast(),
+                name.as_ptr().cast(),
                 0,
                 ptr::null(),
                 ptr::null(),
             )
         }.check("hiprtcCreateProgram")?;
 
-        //let df = format!("--gpu-architecture=compute_{}{}\0", self.compute_capability[0], self.compute_capability[1]);
-        let df = format!("");
+        let df = format!("--gpu-architecture=compute_{}{}\0", self.compute_capability[0], self.compute_capability[1]);
+        //let df = format!("");
         let opts = [df.as_str()];
-        if let Err(mut e) = unsafe { hiprtcCompileProgram(program, 0, opts.as_ptr().cast()) }.check("hiprtcCompileProgram") {
+        if let Err(e) = unsafe { hiprtcCompileProgram(program, 0, opts.as_ptr().cast()) }.check("hiprtcCompileProgram") {
             //println!("Error during compilation {e:?}");
             let mut program_log_size: usize = 0;
             unsafe { hiprtcGetProgramLogSize(program, &mut program_log_size) }.check("hiprtcGetProgramLogSize")?;
-            program_log_size = 1000;
+            //program_log_size = 1000;
             println!("Program log size: {program_log_size}");
             let mut program_log: Vec<u8> = vec![0; program_log_size];
             unsafe { hiprtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) }.check("hiprtcGetProgramLog")?;
-            unsafe { hiprtcDestroyProgram(&mut program) }.check("hiprtcDestoyProgram")?;
-            println!("{program_log:?}");
-            let program_log = unsafe {
-                String::from_raw_parts(program_log.as_mut_ptr(), program_log_size, program_log_size)
-            };
-            e.info = program_log;
+            if let Ok(log) = String::from_utf8(program_log) {
+                println!("HIPRTC program log:\n{log}", );
+            } else {
+                println!("HIPRTC program log is not valid utf8");
+            }
             return Err(e);
         }
 
 
         panic!();
 
-        let mut ptx_size: usize = 0;
-        unsafe { hiprtcGetCodeSize(program, &mut ptx_size) }.check("hiprtcGetCodeSize")?;
+        let mut code_size: usize = 0;
+        unsafe { hiprtcGetCodeSize(program, &mut code_size) }.check("hiprtcGetCodeSize")?;
 
-        panic!();
-        let mut ptx_vec: Vec<u8> = Vec::with_capacity(ptx_size);
-        unsafe { hiprtcGetCode(program, ptx_vec.as_mut_ptr() as *mut i8) }.check("hiprtcGetCode")?;
-        unsafe { ptx_vec.set_len(ptx_size) };
-
+        let mut code_vec: Vec<u8> = vec![0; code_size];
+        unsafe { hiprtcGetCode(program, code_vec.as_mut_ptr() as *mut i8) }.check("hiprtcGetCode")?;
         unsafe { hiprtcDestroyProgram(&mut program) }.check("hiprtcDestroyProgram")?;
 
         panic!();
-        let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
+
+        if let Ok(_) = std::env::var("DEBUG_ASM") {
+            let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(code_vec) }.into_string().unwrap();
+            println!("{ptx_source}");
+        }
 
         panic!();
 
