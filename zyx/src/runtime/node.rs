@@ -75,7 +75,9 @@ pub(crate) enum Node {
 
 impl Default for Node {
     fn default() -> Self {
-        Self::Const { value: Constant::Bool(false) }
+        Self::Const {
+            value: Constant::Bool(false),
+        }
     }
 }
 
@@ -139,8 +141,16 @@ impl Node {
 trait CastDType: Scalar {
     fn cast_dtype(self, dtype: DType) -> Constant {
         match dtype {
+            #[cfg(feature = "half")]
+            DType::F16 => Constant::F16(unsafe { std::mem::transmute(self.cast::<half::f16>()) }),
+            #[cfg(feature = "half")]
+            DType::BF16 => Constant::BF16(unsafe { std::mem::transmute(self.cast::<half::bf16>()) }),
             DType::F32 => Constant::F32(unsafe { std::mem::transmute(self.cast::<f32>()) }),
             DType::F64 => Constant::F64(unsafe { std::mem::transmute(self.cast::<f64>()) }),
+            #[cfg(feature = "complex")]
+            DType::CF32 => todo!("Complex numbers"),
+            #[cfg(feature = "complex")]
+            DType::CF64 => todo!("Complex numbers"),
             DType::U8 => Constant::U8(self.cast()),
             DType::I8 => Constant::I8(self.cast()),
             DType::I16 => Constant::I16(self.cast()),
@@ -158,8 +168,16 @@ impl Constant {
         use std::mem::transmute as t;
         match uop {
             UOp::Cast(dtype) => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => unsafe { t::<_, half::f16>(x) }.cast_dtype(dtype),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => unsafe { t::<_, half::bf16>(x) }.cast_dtype(dtype),
                 Constant::F32(x) => unsafe { t::<_, f32>(x) }.cast_dtype(dtype),
                 Constant::F64(x) => unsafe { t::<_, f64>(x) }.cast_dtype(dtype),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => x.cast_dtype(dtype),
                 Constant::I8(x) => x.cast_dtype(dtype),
                 Constant::I16(x) => x.cast_dtype(dtype),
@@ -167,10 +185,18 @@ impl Constant {
                 Constant::I32(x) => x.cast_dtype(dtype),
                 Constant::I64(x) => x.cast_dtype(dtype),
                 Constant::Bool(x) => x.cast_dtype(dtype),
-            }
+            },
             UOp::ReLU => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).relu()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).relu()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(x.relu()),
                 Constant::I8(x) => Constant::I8(x.relu()),
                 Constant::I16(x) => Constant::I16(x.relu()),
@@ -178,10 +204,18 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(x.relu()),
                 Constant::I64(x) => Constant::I64(x.relu()),
                 Constant::Bool(x) => Constant::Bool(x.relu()),
-            }
+            },
             UOp::Neg => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).neg()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).neg()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).neg()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).neg()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(x.neg()),
                 Constant::I8(x) => Constant::I8(x.neg()),
                 Constant::I16(x) => Constant::I16(x.neg()),
@@ -189,10 +223,18 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(x.neg()),
                 Constant::I64(x) => Constant::I64(x.neg()),
                 Constant::Bool(x) => Constant::Bool(x.neg()),
-            }
+            },
             UOp::Exp2 => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).exp2()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).exp2()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).exp2()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).exp2()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(2.pow(x)),
                 Constant::I8(x) => Constant::I8(2.pow(x)),
                 Constant::I16(x) => Constant::I16(2.pow(x)),
@@ -200,10 +242,18 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(2.pow(x)),
                 Constant::I64(x) => Constant::I64(2.pow(x)),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Log2 => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).log2()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).log2()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).log2()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).log2()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(x.ilog2() as u8),
                 Constant::I8(x) => Constant::I8(x.ilog2() as i8),
                 Constant::I16(x) => Constant::I16(x.ilog2() as i16),
@@ -211,21 +261,37 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(x.ilog2() as i32),
                 Constant::I64(x) => Constant::I64(x.ilog2() as i64),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Inv => match self {
-                Constant::F32(x) => Constant::F32(unsafe { t(1f32/t::<_, f32>(x)) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(1f64/t::<_, f64>(x)) }),
-                Constant::U8(x) => Constant::U8(1/x),
-                Constant::I8(x) => Constant::I8(1/x),
-                Constant::I16(x) => Constant::I16(1/x),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(half::f16::ONE/t::<_, half::f16>(x)) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(half::bf16::ONE/t::<_, half::bf16>(x)) }),
+                Constant::F32(x) => Constant::F32(unsafe { t(1f32 / t::<_, f32>(x)) }),
+                Constant::F64(x) => Constant::F64(unsafe { t(1f64 / t::<_, f64>(x)) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
+                Constant::U8(x) => Constant::U8(1 / x),
+                Constant::I8(x) => Constant::I8(1 / x),
+                Constant::I16(x) => Constant::I16(1 / x),
                 Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(1/x),
-                Constant::I64(x) => Constant::I64(1/x),
+                Constant::I32(x) => Constant::I32(1 / x),
+                Constant::I64(x) => Constant::I64(1 / x),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Sqrt => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).sqrt()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).sqrt()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(x.sqrt()),
                 Constant::I8(x) => Constant::I8(x.sqrt()),
                 Constant::I16(x) => Constant::I16(x.sqrt()),
@@ -233,10 +299,18 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(x.sqrt()),
                 Constant::I64(x) => Constant::I64(x.sqrt()),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Sin => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).sin()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).sin()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(x.sin()),
                 Constant::I8(x) => Constant::I8(x.sin()),
                 Constant::I16(x) => Constant::I16(x.sin()),
@@ -244,10 +318,18 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(x.sin()),
                 Constant::I64(x) => Constant::I64(x.sin()),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Cos => match self {
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).cos()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).cos()) }),
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(x.cos()),
                 Constant::I8(x) => Constant::I8(x.cos()),
                 Constant::I16(x) => Constant::I16(x.cos()),
@@ -255,10 +337,22 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(x.cos()),
                 Constant::I64(x) => Constant::I64(x.cos()),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Not => match self {
-                Constant::F32(x) => Constant::F32(unsafe { t(if t::<_, f32>(x) == 0f32 { 1f32 } else { 0f32 }) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(if t::<_, f64>(x) == 0f64 { 1f64 } else { 0f64 }) }),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
+                Constant::F32(x) => {
+                    Constant::F32(unsafe { t(if t::<_, f32>(x) == 0f32 { 1f32 } else { 0f32 }) })
+                }
+                Constant::F64(x) => {
+                    Constant::F64(unsafe { t(if t::<_, f64>(x) == 0f64 { 1f64 } else { 0f64 }) })
+                }
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8(!x),
                 Constant::I8(x) => Constant::I8(!x),
                 Constant::I16(x) => Constant::I16(!x),
@@ -266,10 +360,22 @@ impl Constant {
                 Constant::I32(x) => Constant::I32(!x),
                 Constant::I64(x) => Constant::I64(!x),
                 Constant::Bool(_) => todo!(),
-            }
+            },
             UOp::Nonzero => match self {
-                Constant::F32(x) => Constant::F32(unsafe { t((t::<_, f32>(x) != 0.) as i32 as f32) }),
-                Constant::F64(x) => Constant::F64(unsafe { t((t::<_, f64>(x) != 0.) as i64 as f64) }),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
+                #[cfg(feature = "half")]
+                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
+                Constant::F32(x) => {
+                    Constant::F32(unsafe { t((t::<_, f32>(x) != 0.) as i32 as f32) })
+                }
+                Constant::F64(x) => {
+                    Constant::F64(unsafe { t((t::<_, f64>(x) != 0.) as i64 as f64) })
+                }
+                #[cfg(feature = "complex")]
+                Constant::CF32(..) => todo!("Complex numbers"),
+                #[cfg(feature = "complex")]
+                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => Constant::U8((x != 0) as u8),
                 Constant::I8(x) => Constant::I8((x != 0) as i8),
                 Constant::I16(x) => Constant::I16((x != 0) as i16),
@@ -277,7 +383,7 @@ impl Constant {
                 Constant::I32(x) => Constant::I32((x != 0) as i32),
                 Constant::I64(x) => Constant::I64((x != 0) as i64),
                 Constant::Bool(_) => todo!(),
-            }
+            },
         }
     }
 

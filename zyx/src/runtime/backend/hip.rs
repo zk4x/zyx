@@ -516,11 +516,16 @@ impl Constant {
     fn hip(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            Constant::F32(x) => {
-                let x: f32 = unsafe { t::<_, f32>(*x) };
-                format!("{x}f", )
-            }
-            Constant::F64(x) => format!("{x}"),
+            #[cfg(feature = "half")]
+            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
+            #[cfg(feature = "half")]
+            Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F32(x) => format!("{}f", unsafe { t::<_, f32>(*x) }),
+            Constant::F64(x) => format!("{}f", unsafe { t::<_, f64>(*x) }),
+            #[cfg(feature = "complex")]
+            Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
+            #[cfg(feature = "complex")]
+            Constant::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
             Constant::U8(x) => format!("{x}"),
             Constant::I8(x) => format!("{x}"),
             Constant::I16(x) => format!("{x}"),

@@ -165,4 +165,16 @@ impl Scalar for f16 {
     fn is_equal(self, rhs: Self) -> bool {
         self.to_f32() == rhs.to_f32()
     }
+    
+    fn exp2(self) -> Self {
+        todo!()
+    }
+    
+    fn log2(self) -> Self {
+        todo!()
+    }
+    
+    fn log(self) -> Self {
+        todo!()
+    }
 }

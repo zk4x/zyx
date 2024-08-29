@@ -170,4 +170,16 @@ impl Scalar for f64 {
             || (self - rhs).abs() < Self::epsilon()
             || (self - rhs).abs() < self.abs() * 0.01
     }
+    
+    fn exp2(self) -> Self {
+        todo!()
+    }
+    
+    fn log2(self) -> Self {
+        todo!()
+    }
+    
+    fn log(self) -> Self {
+        todo!()
+    }
 }

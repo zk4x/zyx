@@ -700,8 +700,16 @@ impl IRKernel {
 impl IRDType {
     pub(crate) fn byte_size(&self) -> usize {
         match self {
+            #[cfg(feature = "half")]
+            IRDType::F16 => 2,
+            #[cfg(feature = "half")]
+            IRDType::BF16 => 2,
             IRDType::F32 => 4,
             IRDType::F64 => 8,
+            #[cfg(feature = "complex")]
+            IRDType::CF32 => 8,
+            #[cfg(feature = "complex")]
+            IRDType::CF64 => 16,
             IRDType::U8 => 1,
             IRDType::I8 => 1,
             IRDType::I16 => 2,

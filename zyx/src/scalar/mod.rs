@@ -79,8 +79,14 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     fn cos(self) -> Self;
     /// Ln
     fn ln(self) -> Self;
+    /// Exp 2
+    fn exp2(self) -> Self;
     /// Exp
     fn exp(self) -> Self;
+    /// Log 2
+    fn log2(self) -> Self;
+    /// Log
+    fn log(self) -> Self;
     /// Tanh
     fn tanh(self) -> Self;
     /// Square root of this scalar.

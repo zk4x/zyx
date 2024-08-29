@@ -115,12 +115,32 @@ impl Tensor {
         let shape = self.shape();
         let dtype = self.dtype();
         match dtype {
+            #[cfg(feature = "half")]
+            DType::F16 => {
+                let data: Vec<f16> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            #[cfg(feature = "half")]
+            DType::BF16 => {
+                let data: Vec<bf16> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
             DType::F32 => {
                 let data: Vec<f32> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::F64 => {
                 let data: Vec<f64> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            #[cfg(feature = "complex")]
+            DType::CF32 => {
+                let data: Vec<Complex<f32>> = self.try_into().unwrap();
+                Tensor::from(data).reshape(shape)
+            }
+            #[cfg(feature = "complex")]
+            DType::CF64 => {
+                let data: Vec<Complex<f64>> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::U8 => {

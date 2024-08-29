@@ -167,4 +167,16 @@ impl Scalar for i16 {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
+    
+    fn exp2(self) -> Self {
+        todo!()
+    }
+    
+    fn log2(self) -> Self {
+        todo!()
+    }
+    
+    fn log(self) -> Self {
+        todo!()
+    }
 }
