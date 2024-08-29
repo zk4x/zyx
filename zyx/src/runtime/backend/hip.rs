@@ -57,7 +57,6 @@ pub(crate) struct HIPDevice {
     memory_pool_id: usize,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
-    hiprtcCreateProgram: unsafe extern "C" fn(*mut c_void, *const c_char, c_int, ) -> HIPStatus,
 }
 
 #[derive(Debug)]
@@ -120,22 +119,6 @@ pub(crate) fn initialize_hip_backend(
     //let hipModuleLoadDataEx = *unsafe { hip.get(b"hipModuleLoadDataEx\0") }.unwrap();
     //let hipModuleGetFunction = *unsafe { hip.get(b"hipModuleGetFunction\0") }.unwrap();
     //let hipLaunchKernel = *unsafe { hip.get(b"hipLaunchKernel\0") }.unwrap();
-
-    let hiprtc_paths = ["/lib64/libhiprtc.so"];
-    let hiprtc = hiprtc_paths.iter().find_map(|path| {
-        if let Ok(lib) = unsafe { Library::new(path) } {
-            Some(lib)
-        } else {
-            None
-        }
-    });
-    let Some(hiprtc) = hiprtc else {
-        return Err(HIPError {
-            info: "HIP runtime compiler (HIPRTC) not found.".into(),
-            status: HIPStatus::HIP_ERROR_UNKNOWN,
-        });
-    };
-    let hiprtcCreateProgram = *unsafe { hiprtc.get(b"hiprtcCreateProgram\0") }.unwrap();
 
     unsafe { hipInit(0) }.check("Failed to init HIP")?;
     let mut driver_version = 0;
@@ -200,7 +183,6 @@ pub(crate) fn initialize_hip_backend(
             //hipModuleGetFunction,
             //hipModuleEnumerateFunctions,
             //hipLaunchKernel,
-            hiprtcCreateProgram,
         })
     }
 
@@ -443,6 +425,23 @@ impl HIPDevice {
         if let Ok(_) = std::env::var("DEBUG_ASM") {
             println!("{source}");
         }
+
+        let hiprtc_paths = ["/lib64/libhiprtc.so"];
+        let hiprtc = hiprtc_paths.iter().find_map(|path| {
+            if let Ok(lib) = unsafe { Library::new(path) } {
+                Some(lib)
+            } else {
+                None
+            }
+        });
+        let Some(hiprtc) = hiprtc else {
+            return Err(HIPError {
+                info: "HIP runtime compiler (HIPRTC) not found.".into(),
+                status: HIPStatus::HIP_ERROR_UNKNOWN,
+            });
+        };
+        let hiprtcCreateProgram: unsafe extern "C" fn() -> u32
+            = *unsafe { hiprtc.get(b"hiprtcCreateProgram\0") }.unwrap();
         //unsafe { (self.hiprtcCreateProgram)(prog, kernel, "", num_headers, &header_sources[0], &header_names[0]) };
         //unsafe { (self.hiprtcCompileProgram)(prog, 0, ) }.check();
         todo!()
