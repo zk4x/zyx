@@ -548,7 +548,7 @@ impl CUDADevice {
 
         let mut global_work_size = global_work_size;
         let local_work_size = local_work_size;
-        let name = format!(
+        let mut name = format!(
             "k__{}_{}__{}_{}__{}_{}",
             global_work_size[0],
             local_work_size[0],
@@ -564,12 +564,12 @@ impl CUDADevice {
         if source.contains("double") {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
-        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}");
+        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         if let Ok(_) = std::env::var("DEBUG_ASM") {
             println!("{source}");
         }
 
-        let cudartc_paths = ["/lib/x86_64-linux-gnu/libcuda.so"];
+        let cudartc_paths = ["/lib/x86_64-linux-gnu/libnvrtc.so"];
         let cudartc = cudartc_paths.iter().find_map(|path| {
             if let Ok(lib) = unsafe { Library::new(path) } {
                 Some(lib)
@@ -598,6 +598,7 @@ impl CUDADevice {
         let nvrtcDestroyProgram: unsafe extern "C" fn (*mut nvrtcProgram) -> nvrtcResult
             = *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
 
+        name += &format!("\0");
         #[repr(C)]
         #[derive(Debug)]
         struct _nvrtcProgram {
@@ -608,8 +609,8 @@ impl CUDADevice {
         unsafe {
             nvrtcCreateProgram(
                 &mut program as *mut nvrtcProgram,
-                (&format!("{source}\0")).as_ptr() as *const c_char,
-                (&format!("{name}\0")).as_ptr() as *const c_char,
+                source.as_ptr() as *const c_char,
+                name.as_ptr() as *const c_char,
                 0,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -617,29 +618,53 @@ impl CUDADevice {
         }.check("nvrtcCreateProgram")?;
         let df = format!("--gpu-architecture=compute_{}{}\0", self.compute_capability[0], self.compute_capability[1]);
         let opts = [df.as_str()];
-        unsafe { nvrtcCompileProgram(program, 1, opts.as_ptr().cast()) }.check("nvrtcCompileProgram")?;
+        if let Err(e) = unsafe { nvrtcCompileProgram(program, 1, opts.as_ptr().cast()) }.check("nvrtcCompileProgram") {
+            println!("CUDA compilation error {e:?}");
+            let mut program_log_size: usize = 0;
+            unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }.check("nvrtcGetProgramLogSize")?;
+            let mut program_log_vec: Vec<u8> = vec![0; program_log_size+1];
+            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr() as *mut i8) }.check("nvrtcGetProgramLog")?;
+            if let Ok(log) = String::from_utf8(program_log_vec) {
+                println!("NVRTC program log:\n{log}", );
+            } else {
+                println!("NVRTC program log is not valid utf8");
+            }
+        }
+
         let mut ptx_size: usize = 0;
         unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check("nvrtcGetPTXSize")?;
-        let mut ptx_vec: Vec<u8> = Vec::with_capacity(ptx_size);
+        let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
         unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr() as *mut i8) }.check("nvrtcGetPTX")?;
-        unsafe { ptx_vec.set_len(ptx_size) };
         let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec.clone()) }.into_string().unwrap();
-
-        let mut program_log_size: usize = 0;
-        unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }.check("nvrtcGetProgramLogSize")?;
-        let mut program_log: Vec<u8> = Vec::with_capacity(program_log_size);
-        unsafe { nvrtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) }.check("nvrtcGetProgramLog")?;
+        if let Ok(_) = std::env::var("DEBUG_ASM") {
+            println!("{ptx_source}");
+        }
         unsafe { nvrtcDestroyProgram(&mut program) }.check("nvrtcDestoyProgram")?;
-        unsafe { program_log.set_len(program_log_size) };
-        let program_log = unsafe {
-            String::from_raw_parts(program_log.as_mut_ptr(), program_log_size, program_log_size)
-        };
-        println!("NVRTC program log:\n{program_log:?}");
-        unsafe { nvrtcDestroyProgram(&mut program) };
 
-        self.load_ptx(name, ptx_source, global_work_size, local_work_size)
+        let mut module = ptr::null_mut();
+        unsafe {
+            (self.cuModuleLoadDataEx)(
+                &mut module,
+                ptx_vec.as_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }
+        .check("Module load failed.")?;
+        let mut function: CUfunction = ptr::null_mut();
+        // Don't forget that the name is null terminated string
+        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+            .check("Failed to load function.")?;
+        Ok(CUDAProgram {
+            name,
+            module,
+            function,
+            global_work_size,
+            local_work_size,
+            cuLaunchKernel: self.cuLaunchKernel,
+        })
     }
-
     
     fn compile_ptx(&mut self, kernel: &IRKernel) -> String {
         let mut global_work_size = [0; 3];
@@ -845,33 +870,6 @@ impl CUDADevice {
             println!("Compiling kernel {name}, PTX source:\n{source}");
         }
         source
-    }
-
-    fn load_ptx(&mut self, name: String, ptx_source: String, global_work_size: [usize; 3], local_work_size: [usize; 3]) -> Result<CUDAProgram, CUDAError> {
-        let mut module = ptr::null_mut();
-        unsafe {
-            (self.cuModuleLoadDataEx)(
-                &mut module,
-                ptx_source.as_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check("Module load failed.")?;
-        let mut function = ptr::null_mut();
-        //println!("Loading function {name}");
-        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
-            .check("Failed to load function.")?;
-        //unsafe { (self.cuModuleEnumerateFunctions)(&mut function, 1, module) }.check("Failed to load functions.")?;
-        Ok(CUDAProgram {
-            name,
-            module,
-            function,
-            global_work_size,
-            local_work_size,
-            cuLaunchKernel: self.cuLaunchKernel,
-        })
     }
 }
 
