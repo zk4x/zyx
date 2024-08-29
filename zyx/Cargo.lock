@@ -248,9 +248,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.75"
+version = "2.0.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6af063034fc1935ede7be0122941bafa9bacb949334d090b77ca98b5817c7d9"
+checksum = "578e081a14e0cefc3279b0472138c513f37b41a08d5a3cca9b6e4e8ceb6cd525"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -358,38 +358,4 @@ dependencies = [
  "ron",
  "serde",
  "xdg",
-]
-
-[[package]]
-name = "zyx-derive"
-version = "0.2.0"
-dependencies = [
- "quote",
- "syn",
- "zyx",
-]
-
-[[package]]
-name = "zyx-examples"
-version = "0.2.0"
-dependencies = [
- "zyx",
- "zyx-derive",
- "zyx-nn",
- "zyx-optim",
-]
-
-[[package]]
-name = "zyx-nn"
-version = "0.2.0"
-dependencies = [
- "zyx",
- "zyx-derive",
-]
-
-[[package]]
-name = "zyx-optim"
-version = "0.2.0"
-dependencies = [
- "zyx",
 ]
