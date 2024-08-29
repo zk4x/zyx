@@ -568,7 +568,71 @@ impl CUDADevice {
         if let Ok(_) = std::env::var("DEBUG_ASM") {
             println!("{source}");
         }
-        todo!()
+
+        let cudartc_paths = ["/lib/x86_64-linux-gnu/libcuda.so"];
+        let cudartc = cudartc_paths.iter().find_map(|path| {
+            if let Ok(lib) = unsafe { Library::new(path) } {
+                Some(lib)
+            } else {
+                None
+            }
+        });
+        let Some(cudartc) = cudartc else {
+            return Err(CUDAError {
+                info: "CUDA runtime not found.".into(),
+                status: CUDAStatus::CUDA_ERROR_UNKNOWN,
+            });
+        };
+        let nvrtcCreateProgram: unsafe extern "C" fn(*mut nvrtcProgram, *const c_char, *const c_char, c_int, *const *const c_char, *const *const c_char) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcCreateProgram\0") }.unwrap();
+        let nvrtcCompileProgram: unsafe extern "C" fn (nvrtcProgram, c_int, *const *const c_char) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcCompileProgram\0") }.unwrap();
+        let nvrtcGetPTXSize: unsafe extern "C" fn (nvrtcProgram, *mut usize) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcGetPTXSize\0") }.unwrap();
+        let nvrtcGetPTX: unsafe extern "C" fn (nvrtcProgram, *mut c_char) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcGetPTX\0") }.unwrap();
+        let nvrtcGetProgramLogSize: unsafe extern "C" fn (nvrtcProgram, *mut usize) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcGetProgramLogSize\0") }.unwrap();
+        let nvrtcGetProgramLog: unsafe extern "C" fn (nvrtcProgram, *mut c_char) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcGetProgramLog\0") }.unwrap();
+        let nvrtcDestroyProgram: unsafe extern "C" fn (*mut nvrtcProgram) -> nvrtcResult
+            = *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
+
+        #[repr(C)]
+        #[derive(Debug)]
+        struct _nvrtcProgram {
+            _unused: [u8; 0],
+        }
+        type nvrtcProgram = *mut _nvrtcProgram;
+        let mut program = ptr::null_mut();
+        unsafe {
+            nvrtcCreateProgram(
+                &mut program as *mut nvrtcProgram,
+                (&format!("{source}\0")).as_ptr() as *const c_char,
+                (&format!("{name}\0")).as_ptr() as *const c_char,
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }.check("nvrtcCreateProgram")?;
+        let df = format!("--gpu-architecture=compute_{}{}\0", self.compute_capability[0], self.compute_capability[1]);
+        let opts = [df.as_str()];
+        unsafe { nvrtcCompileProgram(program, 1, opts.as_ptr().cast()) }.check("nvrtcCompileProgram")?;
+        let mut ptx_size: usize = 0;
+        unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check("nvrtcGetPTXSize")?;
+        let mut ptx_vec: Vec<u8> = Vec::with_capacity(ptx_size);
+        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr() as *mut i8) }.check("nvrtcGetPTX")?;
+        unsafe { ptx_vec.set_len(ptx_size) };
+        let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec.clone()) }.into_string().unwrap();
+
+        let mut program_log_size: usize = 0;
+        unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }.check("nvrtcGetProgramLogSize")?;
+        let mut program_log: Vec<u8> = Vec::with_capacity(program_log_size);
+        unsafe { nvrtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) }.check("nvrtcGetProgramLog")?;
+        unsafe { nvrtcDestroyProgram(&mut program) }.check("nvrtcDestoyProgram")?;
+        unsafe { program_log.set_len(program_log_size) };
+
+        self.load_ptx(name, ptx_source, global_work_size, local_work_size)
     }
 
     
@@ -1165,6 +1229,34 @@ impl Constant {
             Constant::I32(x) => format!("{x}"),
             Constant::I64(x) => format!("{x}"),
             Constant::Bool(x) => format!("{x}"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[repr(C)]
+enum nvrtcResult {
+    NVRTC_SUCCESS = 0,
+    NVRTC_ERROR_OUT_OF_MEMORY = 1,
+    NVRTC_ERROR_PROGRAM_CREATION_FAILURE = 2,
+    NVRTC_ERROR_INVALID_INPUT = 3,
+    NVRTC_ERROR_INVALID_PROGRAM = 4,
+    NVRTC_ERROR_INVALID_OPTION = 5,
+    NVRTC_ERROR_COMPILATION = 6,
+    NVRTC_ERROR_BUILTIN_OPERATION_FAILURE = 7,
+    NVRTC_ERROR_NO_NAME_EXPRESSIONS_AFTER_COMPILATION = 8,
+    NVRTC_ERROR_NO_LOWERED_NAMES_BEFORE_COMPILATION = 9,
+    NVRTC_ERROR_NAME_EXPRESSION_NOT_VALID = 10,
+    NVRTC_ERROR_INTERNAL_ERROR = 11,
+    NVRTC_ERROR_TIME_FILE_WRITE_FAILED = 12,
+}
+
+impl nvrtcResult {
+    fn check(self, info: &str) -> Result<(), CUDAError> {
+        if self != Self::NVRTC_SUCCESS {
+            Err(CUDAError { info: info.into(), status: CUDAStatus::CUDA_ERROR_INVALID_SOURCE })
+        } else {
+            Ok(())
         }
     }
 }

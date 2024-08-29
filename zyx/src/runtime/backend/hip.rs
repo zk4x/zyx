@@ -57,6 +57,7 @@ pub(crate) struct HIPDevice {
     memory_pool_id: usize,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
+    hiprtcCreateProgram: unsafe extern "C" fn(*mut c_void, *const c_char, c_int, ) -> HIPStatus,
 }
 
 #[derive(Debug)]
@@ -106,11 +107,8 @@ pub(crate) fn initialize_hip_backend(
     ) -> HIPStatus = *unsafe { hip.get(b"hipDeviceComputeCapability\0") }.unwrap();
     let hipDeviceTotalMem: unsafe extern "C" fn(*mut usize, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipDeviceTotalMem\0") }.unwrap();
-    let hipDeviceGetAttribute: unsafe extern "C" fn(
-        *mut c_int,
-        HIPdevice_attribute,
-        HIPdevice,
-    ) -> HIPStatus = *unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
+    let hipDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, HIPdevice_attribute, HIPdevice) -> HIPStatus =
+        *unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
     let hipCtxCreate: unsafe extern "C" fn(*mut HIPcontext, c_uint, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipCtxCreate\0") }.unwrap();
     let hipMemAlloc = *unsafe { hip.get(b"hipMalloc\0") }.unwrap();
@@ -122,6 +120,22 @@ pub(crate) fn initialize_hip_backend(
     //let hipModuleLoadDataEx = *unsafe { hip.get(b"hipModuleLoadDataEx\0") }.unwrap();
     //let hipModuleGetFunction = *unsafe { hip.get(b"hipModuleGetFunction\0") }.unwrap();
     //let hipLaunchKernel = *unsafe { hip.get(b"hipLaunchKernel\0") }.unwrap();
+
+    let hiprtc_paths = ["/lib64/libhiprtc.so"];
+    let hiprtc = hiprtc_paths.iter().find_map(|path| {
+        if let Ok(lib) = unsafe { Library::new(path) } {
+            Some(lib)
+        } else {
+            None
+        }
+    });
+    let Some(hiprtc) = hiprtc else {
+        return Err(HIPError {
+            info: "HIP runtime compiler (HIPRTC) not found.".into(),
+            status: HIPStatus::HIP_ERROR_UNKNOWN,
+        });
+    };
+    let hiprtcCreateProgram = *unsafe { hiprtc.get(b"hiprtcCreateProgram\0") }.unwrap();
 
     unsafe { hipInit(0) }.check("Failed to init HIP")?;
     let mut driver_version = 0;
@@ -181,11 +195,12 @@ pub(crate) fn initialize_hip_backend(
             device,
             dev_info: DeviceInfo::default(),
             memory_pool_id: 0,
+            compute_capability: [major, minor],
             //hipModuleLoadDataEx,
             //hipModuleGetFunction,
             //hipModuleEnumerateFunctions,
             //hipLaunchKernel,
-            compute_capability: [major, minor],
+            hiprtcCreateProgram,
         })
     }
 
@@ -428,6 +443,8 @@ impl HIPDevice {
         if let Ok(_) = std::env::var("DEBUG_ASM") {
             println!("{source}");
         }
+        //unsafe { (self.hiprtcCreateProgram)(prog, kernel, "", num_headers, &header_sources[0], &header_names[0]) };
+        //unsafe { (self.hiprtcCompileProgram)(prog, 0, ) }.check();
         todo!()
     }
 }
