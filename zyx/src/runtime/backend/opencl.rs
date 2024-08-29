@@ -247,8 +247,6 @@ pub(crate) fn initialize_opencl_backend(
     let clEnqueueReadBuffer = *unsafe { opencl.get(b"clEnqueueReadBuffer\0") }.unwrap();
     let clEnqueueWriteBuffer = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }.unwrap();
     let clCreateBuffer = *unsafe { opencl.get(b"clCreateBuffer\0") }.unwrap();
-
-    #[cfg(feature = "debug_dev")]
     let clGetPlatformInfo: unsafe extern "C" fn(
         *mut c_void,
         cl_uint,
@@ -338,8 +336,7 @@ pub(crate) fn initialize_opencl_backend(
             continue;
         };
         let mut total_bytes = 0;
-        #[cfg(feature = "debug_dev")]
-        {
+        if let Ok(_) = std::env::var("DEBUG_DEV") {
             if let Ok(platform_name) = {
                 let mut size: usize = 0;
                 let status = unsafe {
@@ -539,8 +536,9 @@ impl OpenCLDevice {
         let device_name = self.get_device_data(CL_DEVICE_NAME)?;
         let device_name = String::from_utf8(device_name).unwrap();
         let max_work_item_dims = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
-        #[cfg(feature = "debug_dev")]
-        println!("{device_name}");
+        if let Ok(_) = std::env::var("DEBUG_DEV") {
+            println!("{device_name}");
+        }
         let max_work_item_dims =
             u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
         let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
@@ -610,6 +608,8 @@ impl OpenCLDevice {
                 } else {
                     local_work_size[*id as usize / 2] = *len;
                 }
+            } else {
+                panic!()
             }
         }
 
@@ -766,8 +766,9 @@ impl OpenCLDevice {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}__kernel void {name}{source}");
-        #[cfg(feature = "debug_asm")]
-        println!("{source}");
+        if let Ok(_) = std::env::var("DEBUG_ASM") {
+            println!("{source}");
+        }
         let sources: &[&str] = &[source.as_str()];
         let mut status = CL_SUCCESS;
         let program = unsafe {
@@ -1014,7 +1015,6 @@ type cl_int = i32;
 type cl_uint = u32;
 type cl_bitfield = u64;
 
-#[cfg(feature = "debug_dev")]
 const CL_PLATFORM_NAME: cl_uint = 0x0902; // 2306
 const CL_DEVICE_NAME: cl_uint = 0x102B; // 4139
 const CL_DEVICE_GLOBAL_MEM_SIZE: cl_uint = 0x101F; // 4127
@@ -1128,15 +1128,16 @@ fn get_compute(device_name: &str) -> u128 {
         x if x.contains("rx 550") => 1200 * 1024 * 1024 * 1024,
         x if x.contains("gtx 745") => 900 * 1024 * 1024 * 1024,
         _ => {
-            #[cfg(feature = "debug_dev")]
-            println!("Unknown device {device_name}, guessing compute capability");
+            if let Ok(_) = std::env::var("DEBUG_DEV") {
+                println!("Unknown device {device_name}, guessing compute capability");
+            }
             1024 * 1024 * 1024 * 1024
         }
     }
 }
 
 impl Constant {
-    fn opencl(&self) -> String {
+    fn ocl(&self) -> String {
         use core::mem::transmute as t;
         match self {
             Constant::F32(x) => {
@@ -1159,7 +1160,7 @@ impl Var {
     fn ocl(&self) -> String {
         match self {
             Var::Id(id, scope) => format!("{scope}{id}"),
-            Var::Const(value) => format!("{}", value.opencl()),
+            Var::Const(value) => format!("{}", value.ocl()),
         }
     }
 }

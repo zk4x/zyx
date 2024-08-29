@@ -583,12 +583,11 @@ impl Runtime {
         // If not found or failed to parse, use defaults.
         let backend_config = xdg::BaseDirectories::new()
             .map_err(|e| {
-                #[cfg(feature = "debug_dev")]
-                println!(
-                    "Failed to find config directories for backend_config.ron, using defaults: {e}"
-                );
-                #[cfg(not(feature = "debug_dev"))]
-                let _ = e;
+                if let Ok(_) = std::env::var("DEBUG_DEV") {
+                    println!(
+                        "Failed to find config directories for backend_config.ron, using defaults: {e}"
+                    );
+                }
             })
             .ok()
             .map(|bd| {
@@ -601,10 +600,9 @@ impl Runtime {
                     path.push("zyx/backend_config.ron");
                     std::fs::read_to_string(&path)
                         /*.map_err(|e| {
-                            #[cfg(feature = "debug_dev")]
-                            println!("Failed to read backend_config.ron at {path:?}, using defaults: {e}");
-                            #[cfg(not(feature = "debug_dev"))]
-                            let _ = e;
+                            if let Ok(_) = std::env::var("DEBUG_DEV") {
+                                println!("Failed to read backend_config.ron at {path:?}, using defaults: {e}");
+                            }
                         })*/
                         .ok()
                 })
@@ -613,10 +611,9 @@ impl Runtime {
             .map(|file| {
                 ron::from_str(&file)
                     .map_err(|e| {
-                        #[cfg(feature = "debug_dev")]
-                        println!("Failed to parse backend_config.ron, using defaults: {e}");
-                        #[cfg(not(feature = "debug_dev"))]
-                        let _ = e;
+                        if let Ok(_) = std::env::var("DEBUG_DEV") {
+                            println!("Failed to parse backend_config.ron, using defaults: {e}");
+                        }
                     })
                     .ok()
             })

@@ -2,6 +2,9 @@
 #![allow(non_camel_case_types)]
 
 use super::DeviceInfo;
+use crate::dtype::Constant;
+use crate::runtime::ir::{IRDType, IROp, Scope, Var};
+use crate::runtime::node::{BOp, UOp};
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 use libloading::Library;
 use std::ffi::{c_char, c_int, c_uint, c_void};
@@ -124,12 +127,13 @@ pub(crate) fn initialize_hip_backend(
     let mut driver_version = 0;
     unsafe { hipDriverGetVersion(&mut driver_version) }
         .check("Failed to get HIP driver version")?;
-    #[cfg(feature = "debug_dev")]
-    println!(
-        "Using HIP backend, driver version: {}.{} on devices:",
-        driver_version / 1000,
-        (driver_version - (driver_version / 1000 * 1000)) / 10
-    );
+    if let Ok(_) = std::env::var("DEBUG_DEV") {
+        println!(
+            "Using HIP backend, driver version: {}.{} on devices:",
+            driver_version / 1000,
+            (driver_version - (driver_version / 1000 * 1000)) / 10
+        );
+    }
     let mut num_devices = 0;
     unsafe { hipDeviceGetCount(&mut num_devices) }.check("Failed to get HIP device count")?;
     if num_devices == 0 {
@@ -152,10 +156,11 @@ pub(crate) fn initialize_hip_backend(
         let mut minor = 0;
         let Ok(_) = unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }
             .check("Failed to get HIP device compute capability.") else { continue; };
-        #[cfg(feature = "debug_dev")]
-        println!("{:?}, compute capability: {major}.{minor}", unsafe {
-            std::ffi::CStr::from_ptr(device_name.as_ptr())
-        });
+        if let Ok(_) = std::env::var("DEBUG_DEV") {
+            println!("{:?}, compute capability: {major}.{minor}", unsafe {
+                std::ffi::CStr::from_ptr(device_name.as_ptr())
+            });
+        }
         let mut free_bytes = 0;
         let Ok(_) = unsafe { hipDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.") else { continue; };
         let mut context: HIPcontext = ptr::null_mut();
@@ -252,6 +257,177 @@ impl HIPDevice {
     }
 
     pub(crate) fn compile(&mut self, kernel: &IRKernel) -> Result<HIPProgram, HIPError> {
+        let mut source = String::from("(\n");
+        let mut indent = String::from("  ");
+
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
+
+        for op in &kernel.ops[..6] {
+            if let IROp::Loop { id, len } = op {
+                if id % 2 == 0 {
+                    global_work_size[*id as usize / 2] = *len;
+                } else {
+                    local_work_size[*id as usize / 2] = *len;
+                }
+            } else {
+                panic!()
+            }
+        }
+
+        // Declare global variables
+        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
+            source += &format!(
+                "{indent}{}{}* g{id},\n",
+                if *read_only { "const " } else { "" },
+                dtype.hip(),
+            );
+        }
+
+        source.pop();
+        source.pop();
+        source += "\n) {\n";
+
+        // Declare register variables
+        for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
+            source += &format!(
+                "{indent}{}{} r{id};\n",
+                if *read_only { "const " } else { "" },
+                dtype.hip()
+            );
+        }
+
+        // Add indices for global and local loops
+        source += &format!(
+            "  r0 = blockIdx.x;   /* 0..{} */\n",
+            global_work_size[0]
+        );
+        source += &format!(
+            "  r1 = threadIdx.x;   /* 0..{} */\n",
+            local_work_size[0]
+        );
+        source += &format!(
+            "  r2 = blockIdx.y;   /* 0..{} */\n",
+            global_work_size[1]
+        );
+        source += &format!(
+            "  r3 = threadIdx.y;   /* 0..{} */\n",
+            local_work_size[1]
+        );
+        source += &format!(
+            "  r4 = blockIdx.z;   /* 0..{} */\n",
+            global_work_size[2]
+        );
+        source += &format!(
+            "  r5 = threadIdx.z;   /* 0..{} */\n",
+            local_work_size[2]
+        );
+
+        for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
+            match op {
+                IROp::Set { z, len: _, value } => {
+                    source += &format!("{indent}r{z} = {value};\n");
+                }
+                IROp::Load { z, x, at, dtype: _ } => {
+                    source += &format!("{indent}{} = {}[{}];\n", z.hip(), x.hip(), at.hip());
+                }
+                IROp::Store { z, x, at, dtype: _ } => {
+                    source += &format!("{indent}{}[{}] = {};\n", z.hip(), at.hip(), x.hip());
+                }
+                IROp::Unary { z, x, uop, dtype } => {
+                    source += &match uop {
+                        UOp::Cast(_) => format!("{indent}{} = ({}){};\n", z.hip(), dtype.hip(), x.hip()),
+                        UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.hip(), x.hip()),
+                        UOp::Neg => format!("{indent}{} = -{};\n", z.hip(), x.hip()),
+                        UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.hip(), x.hip()),
+                        UOp::Log2 => format!("{indent}{} = log2({});\n", z.hip(), x.hip()),
+                        UOp::Inv => format!("{indent}{} = 1/{};\n", z.hip(), x.hip()),
+                        UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.hip(), x.hip()),
+                        UOp::Sin => format!("{indent}{} = sin({});\n", z.hip(), x.hip()),
+                        UOp::Cos => format!("{indent}{} = cos({});\n", z.hip(), x.hip()),
+                        UOp::Not => format!("{indent}{} = !{};\n", z.hip(), x.hip()),
+                        UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.hip(), x.hip()),
+                    };
+                }
+                IROp::Binary {
+                    z,
+                    x,
+                    y,
+                    bop,
+                    dtype: _,
+                } => {
+                    source += &format!(
+                        "{indent}{} = {};\n",
+                        z.hip(),
+                        match bop {
+                            BOp::Add => format!("{} + {}", x.hip(), y.hip()),
+                            BOp::Sub => format!("{} - {}", x.hip(), y.hip()),
+                            BOp::Mul => format!("{} * {}", x.hip(), y.hip()),
+                            BOp::Div => format!("{} / {}", x.hip(), y.hip()),
+                            BOp::Pow => format!("pow({}, {})", x.hip(), y.hip()),
+                            BOp::Cmplt => format!("{} < {}", x.hip(), y.hip()),
+                            BOp::Cmpgt => format!("{} > {}", x.hip(), y.hip()),
+                            BOp::Max => format!("max({}, {})", x.hip(), y.hip()),
+                            BOp::Or => format!("{} || {}", x.hip(), y.hip()),
+                        }
+                    );
+                }
+                IROp::MAdd {
+                    z,
+                    a,
+                    b,
+                    c,
+                    dtype: _,
+                } => {
+                    source += &format!("{indent}{} = {} * {} + {};\n", z.hip(), a.hip(), b.hip(), c.hip());
+                }
+                IROp::Loop { id, len } => {
+                    source += &format!(
+                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
+                    );
+                    indent += "  ";
+                }
+                IROp::EndLoop { .. } => {
+                    indent.pop();
+                    indent.pop();
+                    source += &format!("{indent}}}\n");
+                }
+                IROp::Barrier { scope } => {
+                    source += &format!(
+                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                        match scope {
+                            Scope::Global => "GLOB",
+                            Scope::Local => "LOC",
+                            Scope::Register => panic!(),
+                        }
+                    );
+                }
+            }
+        }
+        source += "}\n";
+
+        let mut global_work_size = global_work_size;
+        let local_work_size = local_work_size;
+        let name = format!(
+            "k__{}_{}__{}_{}__{}_{}",
+            global_work_size[0],
+            local_work_size[0],
+            global_work_size[1],
+            local_work_size[1],
+            global_work_size[2],
+            local_work_size[2],
+        );
+        for (i, lwd) in local_work_size.iter().enumerate() {
+            global_work_size[i] *= lwd;
+        }
+        let mut pragma = format!("");
+        if source.contains("double") {
+            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
+        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}");
+        if let Ok(_) = std::env::var("DEBUG_ASM") {
+            println!("{source}");
+        }
         todo!()
     }
 }
@@ -299,6 +475,59 @@ impl HIPStatus {
             });
         } else {
             return Ok(());
+        }
+    }
+}
+
+impl IRDType {
+    pub(crate) fn hip(&self) -> &str {
+        return match self {
+            #[cfg(feature = "half")]
+            IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            #[cfg(feature = "half")]
+            IRDType::F16 => "half",
+            IRDType::F32 => "float",
+            IRDType::F64 => "double",
+            #[cfg(feature = "complex")]
+            IRDType::CF32 => panic!("Not native to OpenCL, workaround is WIP"),
+            #[cfg(feature = "complex")]
+            IRDType::CF64 => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::U8 => "unsigned char",
+            IRDType::I8 => "char",
+            IRDType::I16 => "short",
+            IRDType::I32 => "int",
+            IRDType::I64 => "long",
+            IRDType::Bool => "bool",
+            IRDType::U32 => "unsigned int",
+        };
+    }
+}
+
+impl Var {
+    fn hip(&self) -> String {
+        match self {
+            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Const(value) => format!("{}", value.hip()),
+        }
+    }
+}
+
+impl Constant {
+    fn hip(&self) -> String {
+        use core::mem::transmute as t;
+        match self {
+            Constant::F32(x) => {
+                let x: f32 = unsafe { t::<_, f32>(*x) };
+                format!("{x}f", )
+            }
+            Constant::F64(x) => format!("{x}"),
+            Constant::U8(x) => format!("{x}"),
+            Constant::I8(x) => format!("{x}"),
+            Constant::I16(x) => format!("{x}"),
+            Constant::U32(x) => format!("{x}"),
+            Constant::I32(x) => format!("{x}"),
+            Constant::I64(x) => format!("{x}"),
+            Constant::Bool(x) => format!("{x}"),
         }
     }
 }

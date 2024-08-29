@@ -19,11 +19,8 @@ use super::{
 #[derive(Debug)]
 pub(super) struct CompiledGraph {
     sched_graph: Vec<SchedulerOp>,
-    #[cfg(feature = "debug_perf")]
     flop: u128,
-    #[cfg(feature = "debug_perf")]
     bytes_read: u128,
-    #[cfg(feature = "debug_perf")]
     bytes_written: u128,
 }
 
@@ -126,8 +123,9 @@ impl Runtime {
                     .0;
 
                 // Prints unoptimized kernel
-                #[cfg(feature = "debug_sched")]
-                kernel.debug();
+                if let Ok(_) = std::env::var("DEBUG_SCHED") {
+                    kernel.debug();
+                }
                 let optimizations = kernel.optimize(self.devices[device_id].info());
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
                 // Allocate memory for outputs
@@ -173,8 +171,9 @@ impl Runtime {
                     }
                 }
                 if program_id.is_none() {
-                    #[cfg(feature = "debug_ir")]
-                    ir_kernel.debug();
+                    if let Ok(_) = std::env::var("DEBUG_IR") {
+                        ir_kernel.debug();
+                    }
                     program_id = Some(match &mut self.devices[device_id] {
                         Device::CUDA {
                             device, programs, ..
@@ -250,56 +249,50 @@ impl Runtime {
             programs.clear();
         }
 
-        #[cfg(feature = "debug_sched")]
-        for sched_op in &sched_graph {
-            match sched_op {
-                SchedulerOp::Launch(program_id) => {
-                    println!("Launch kernel {}", self.devices[program_id.device_id])
-                }
-                SchedulerOp::Finish { device_id, program_id }=> println!("Finish kernel {program_id} on device {device_id}"),
-                SchedulerOp::Move {
-                    tensor_id: tensor,
-                    view,
-                    dst,
-                } => println!("Move tensor {tensor} with {view} to memory pool {dst:?}"),
-                SchedulerOp::Allocate {
-                    tensor_id,
-                    bytes,
-                    memory_pool_id,
-                    view: _,
-                } => {
-                    println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
-                }
-                SchedulerOp::Deallocate {
-                    tensor_id,
-                    memory_pool_id,
-                    bytes,
-                    view: _,
-                } => {
-                    println!("Deallocate tensor {tensor_id} on {memory_pool_id:?}, {bytes}")
+        if let Ok(_) = std::env::var("DEBUG_SCHED") {
+            for sched_op in &sched_graph {
+                match sched_op {
+                    SchedulerOp::Launch(program_id) => {
+                        println!("Launch kernel {}", self.devices[program_id.device_id])
+                    }
+                    SchedulerOp::Finish { device_id, program_id }=> println!("Finish kernel {program_id} on device {device_id}"),
+                    SchedulerOp::Move {
+                        tensor_id: tensor,
+                        view,
+                        dst,
+                    } => println!("Move tensor {tensor} with {view} to memory pool {dst:?}"),
+                    SchedulerOp::Allocate {
+                        tensor_id,
+                        bytes,
+                        memory_pool_id,
+                        view: _,
+                    } => {
+                        println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
+                    }
+                    SchedulerOp::Deallocate {
+                        tensor_id,
+                        memory_pool_id,
+                        bytes,
+                        view: _,
+                    } => {
+                        println!("Deallocate tensor {tensor_id} on {memory_pool_id:?}, {bytes}")
+                    }
                 }
             }
         }
 
-        #[cfg(feature = "debug_perf")]
         return Ok(CompiledGraph {
             sched_graph,
             flop,
             bytes_read,
             bytes_written,
         });
-        #[cfg(not(feature = "debug_perf"))]
-        {
-            let (_, _, _) = (flop, bytes_read, bytes_written);
-            return Ok(CompiledGraph { sched_graph });
-        }
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
         let mut events: BTreeMap<VProgram, Event> = BTreeMap::new();
         let compiled_graph = &self.compiled_graph_cache[graph];
         //println!("Launching compiled graph: {compiled_graph:?}");
-        #[cfg(feature = "debug_perf")]
         let begin = std::time::Instant::now();
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
@@ -625,8 +618,7 @@ impl Runtime {
                 },
             }
         }
-        #[cfg(feature = "debug_perf")]
-        {
+        if let Ok(_) = std::env::var("DEBUG_PERF") {
             let duration = begin.elapsed();
             let nanos = duration.as_nanos();
 
@@ -792,7 +784,6 @@ pub(super) struct KernelOptimizations {
 }
 
 impl Kernel {
-    #[cfg(feature = "debug_sched")]
     fn debug(&self) {
         println!("Kernel shape: {:?}", self.shape);
         for vop in &self.ops {
@@ -1732,7 +1723,6 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
     }
 }
 
-#[cfg(feature = "debug_sched")]
 impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;

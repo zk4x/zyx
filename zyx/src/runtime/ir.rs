@@ -688,7 +688,6 @@ impl Display for Scope {
 }
 
 impl IRKernel {
-    #[cfg(feature = "debug_ir")]
     pub(super) fn debug(&self) {
         println!();
         for op in &self.ops {
