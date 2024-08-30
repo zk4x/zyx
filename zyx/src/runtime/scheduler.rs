@@ -958,13 +958,6 @@ impl Kernel {
                         view.0.remove(axis_id + 1);
                     }
                 }
-                VOp::Store { strides, .. } => {
-                    let stride = strides[axis_id + num_loops - 1];
-                    strides[axis_id] = stride;
-                    for _ in 0..num_loops - 1 {
-                        strides.remove(axis_id + 1);
-                    }
-                }
                 _ => {}
             }
         }

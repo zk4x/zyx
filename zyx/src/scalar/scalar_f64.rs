@@ -182,4 +182,16 @@ impl Scalar for f64 {
     fn log(self) -> Self {
         todo!()
     }
+    
+    fn inv(self) -> Self {
+        todo!()
+    }
+    
+    fn not(self) -> Self {
+        todo!()
+    }
+    
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 }

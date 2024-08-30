@@ -11,8 +11,10 @@ use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::rc::Rc;
 
-#[derive(Debug, serde::Deserialize)]
-pub struct HIPConfig {}
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct HIPConfig {
+    device_ids: Option<Vec<i32>>,
+}
 
 #[derive(Debug)]
 pub struct HIPError {
@@ -138,7 +140,13 @@ pub(crate) fn initialize_hip_backend(
     let hip = Rc::new(hip);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
-    for dev_id in 0..num_devices {
+    for dev_id in (0..num_devices).filter(|id|
+        if let Some(ids) = config.device_ids.as_ref() {
+            ids.contains(id)
+        } else {
+            true
+        }
+    ) {
         let mut device = 0;
         unsafe { hipDeviceGet(&mut device, dev_id) }.check("Failed to access HIP device")?;
         let mut device_name = [0; 100];
@@ -553,7 +561,7 @@ impl HIPStatus {
     fn check(self, info: &str) -> Result<(), HIPError> {
         if self != HIPStatus::hipSuccess {
             return Err(HIPError {
-                info: info.into(),
+                info: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {info}"),
                 status: self,
                 hiprtc: hiprtcResult::HIPRTC_SUCCESS,
             });
@@ -667,7 +675,7 @@ enum hiprtcResult {
 impl hiprtcResult {
     fn check(self, info: &str) -> Result<(), HIPError> {
         if self != Self::HIPRTC_SUCCESS {
-            Err(HIPError { info: info.into(), status: HIPStatus::hipSuccess, hiprtc: self })
+            Err(HIPError { info: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {info}"), status: HIPStatus::hipSuccess, hiprtc: self })
         } else {
             Ok(())
         }

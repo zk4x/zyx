@@ -14,7 +14,7 @@ use crate::runtime::node::{BOp, UOp};
 use crate::DType;
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 pub struct CUDAConfig {}
 
 #[derive(Debug)]

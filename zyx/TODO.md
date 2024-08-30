@@ -39,6 +39,9 @@
 
 ### Release blockers
 
+- [ ] test pad after reduce
+- [ ] test padded view permute
+- [ ] test expand after reduce
 - [ ] local memory caching
 - [ ] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
@@ -52,12 +55,9 @@
 - [ ] randn
 - [ ] conv
 - [x] cuda backend
-- [ ] hip backend
+- [x] hip backend
 - [x] remove smadd, amadd
-- [ ] test pad after reduce
-- [ ] test padded view permute
 - [x] fix reshape after reduce
-- [ ] test expand after reduce
 - [x] todo fix permute on reduced and reshaped kernel
 - [ ] go over all todos in source code and check which are necessary
 
@@ -71,6 +71,7 @@
 - [ ] combination of movement and unary
 - [ ] combination of movent, unary and binary
 - [ ] combination of all ops
+- [ ] fuzzy tester with simple cpu tensor, mostly takes care of all combination testing. The longer it runs, the more certain we can be there are no bugs.
 - [ ] we need test for big modules like transformer. If transformer gives correct outputs, it's likely everything else is correct too.
 
 ## Advanced graph caching

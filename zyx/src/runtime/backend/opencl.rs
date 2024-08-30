@@ -17,6 +17,14 @@ use std::{
 
 use super::DeviceInfo;
 
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct OpenCLConfig {
+    /// Select which platforms will be used by OpenCL backend
+    /// If set to None, uses all available platforms.
+    /// default = None
+    pub platform_ids: Option<Vec<usize>>,
+}
+
 // OpenCL does not have the concept of memory pools,
 // so we simply say it is all in one memory pool
 #[derive(Debug)]
@@ -187,14 +195,6 @@ impl Drop for OpenCLProgram {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct OpenCLConfig {
-    /// Select which platforms will be used by OpenCL backend
-    /// If set to None, uses all available platforms.
-    /// default = None
-    pub platform_ids: Option<Vec<usize>>,
-}
-
 impl Drop for OpenCLMemoryPool {
     fn drop(&mut self) {
         unsafe { (self.clReleaseContext)(self.context) };
@@ -277,7 +277,7 @@ pub(crate) fn initialize_opencl_backend(
     let mut devices = Vec::new();
     let mut memory_pools = Vec::new();
     let mut memory_pool_id = 0;
-    for (_, platform) in platform_ids.iter().enumerate().filter(|(id, _)| {
+    for (platform_id, platform) in platform_ids.iter().enumerate().filter(|(id, _)| {
         if let Some(ids) = config.platform_ids.as_ref() {
             ids.contains(id)
         } else {
@@ -365,7 +365,7 @@ pub(crate) fn initialize_opencl_backend(
                 }
             } {
                 println!(
-                    "Using OpenCL backend, platform {} on devices:",
+                    "Using OpenCL backend, platform id {platform_id}, name {} on devices:",
                     String::from_utf8(platform_name).unwrap()
                 );
             }

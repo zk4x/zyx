@@ -74,9 +74,9 @@ pub struct BackendConfig {
 impl Default for BackendConfig {
     fn default() -> Self {
         BackendConfig {
-            cuda: CUDAConfig {},
-            hip: HIPConfig {},
-            opencl: OpenCLConfig { platform_ids: None },
+            cuda: CUDAConfig::default(),
+            hip: HIPConfig::default(),
+            opencl: OpenCLConfig::default(),
         }
     }
 }

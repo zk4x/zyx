@@ -89,6 +89,12 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     fn log(self) -> Self;
     /// Tanh
     fn tanh(self) -> Self;
+    /// Inv
+    fn inv(self) -> Self;
+    /// Not
+    fn not(self) -> Self;
+    /// Nonzero
+    fn nonzero(self) -> Self;
     /// Square root of this scalar.
     /// That this function may be imprecise.
     fn sqrt(self) -> Self;
