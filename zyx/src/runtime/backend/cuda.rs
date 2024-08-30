@@ -15,7 +15,9 @@ use crate::DType;
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 #[derive(Debug, Default, serde::Deserialize)]
-pub struct CUDAConfig {}
+pub struct CUDAConfig {
+    device_ids: Option<Vec<i32>>,
+}
 
 #[derive(Debug)]
 pub struct CUDAError {
@@ -267,7 +269,13 @@ pub(crate) fn initialize_cuda_backend(
     let cuda = Rc::new(cuda);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
-    for dev_id in 0..num_devices {
+    for dev_id in (0..num_devices).filter(|id|
+        if let Some(ids) = config.device_ids.as_ref() {
+            ids.contains(id)
+        } else {
+            true
+        }
+    ) {
         let mut device = 0;
         unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
         let mut device_name = [0; 100];

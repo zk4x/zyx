@@ -1,6 +1,75 @@
 use std::rc::Rc;
+use rand::Rng;
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
-use zyx::{DType, Scalar};
+#[test]
+fn fuzzy() -> Result<(), ZyxError> {
+    let mut rng = rand::thread_rng();
+
+    let max_numel = 32*256*256;
+    // TODO random shapes for tensors
+    let num_t = rng.gen_range(0..100);
+    let mut tensors = Vec::new();
+    let mut cpu_tensors = Vec::new();
+
+    // Initialize a random number of tensors with random shapes and dtypes
+    for _ in 0..num_t {
+        let mut shape = Vec::new();
+        for i in 0..rng.gen_range(1..20) {
+            let n = if i > 1 {
+                max_numel / shape.iter().product::<usize>()
+            } else {
+                max_numel/10
+            };
+            if n > 1 {
+                shape.insert(0, rng.gen_range(1..n));
+            } else {
+                break;
+            }
+        }
+        tensors.push(Tensor::randn(&shape, DType::F32));
+        let data: Vec<f32> = tensors.last().unwrap().try_into()?;
+        cpu_tensors.push(CPUTensor::new(&data).reshape(&shape));
+    }
+
+    for _ in 0..100 {
+        // Pick binary or unary op
+        // pick a random tensor or two tensors for binary op
+        // cast if necessary
+        // apply that op
+        // Assert that CPUTensor and zyx::Tensor give the same result
+        let x = rng.gen_range(0..num_t);
+        let y = rng.gen_range(0..num_t);
+        match rng.gen_range(0..10) {
+            // Unary
+            0 => tensors[x] = tensors[x].relu(),
+            1 => tensors[x] = -&tensors[x],
+            2 => tensors[x] = tensors[x].exp2(),
+            3 => tensors[x] = tensors[x].log2(),
+            4 => tensors[x] = tensors[x].inv(),
+            5 => tensors[x] = tensors[x].sqrt(),
+            6 => tensors[x] = tensors[x].sin(),
+            7 => tensors[x] = tensors[x].cos(),
+            8 => tensors[x] = !&tensors[x],
+            9 => tensors[x] = tensors[x].nonzero(),
+            // Binary
+            10 => {
+                let t = rng.gen_range(0..num_t);
+                tensors[t] = tensors[t].exp2();
+            }
+            // Reduce
+            20 => tensors[x] = tensors[x].sum_kd([]),
+            20 => tensors[x] = tensors[x].max_kd([]),
+            // Movement
+            20 => tensors[x] = tensors[x].reshape([]),
+            _ => panic!(),
+        }
+    }
+    //let data: Vec<f32> = tensors.get(t).unwrap().try_into()?;
+    //assert_eq!(data, );
+
+    Ok(())
+}
 
 // Just a very barebones and slow CPU tensor that is slow, but verifiably correct
 #[derive(Clone)]

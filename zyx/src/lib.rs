@@ -14,6 +14,7 @@ pub use dtype::DType;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
+pub use runtime::ZyxError;
 pub use runtime::BackendConfig;
 pub use runtime::CUDAConfig;
 pub use runtime::HIPConfig;

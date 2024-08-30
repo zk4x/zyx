@@ -49,6 +49,16 @@ impl IntoShape for Vec<Dimension> {
     }
 }
 
+impl IntoShape for &Vec<Dimension> {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+        return self.into_iter().copied();
+    }
+
+    fn rank(&self) -> usize {
+        return self.len();
+    }
+}
+
 pub(crate) fn to_axis<T>(axis: T, rank: usize) -> usize
 where
     usize: TryInto<T>,

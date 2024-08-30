@@ -411,6 +411,11 @@ impl Runtime {
     }
 
     #[must_use]
+    pub(crate) fn inv(&mut self, x: TensorId) -> TensorId {
+        return self.graph.push(Node::Unary { x, uop: UOp::Inv });
+    }
+
+    #[must_use]
     pub(crate) fn sin(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Sin });
     }
