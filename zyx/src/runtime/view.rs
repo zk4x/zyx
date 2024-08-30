@@ -137,80 +137,6 @@ impl View {
         }
     }
 
-    pub(crate) fn split_axis(&mut self, axis: Axis, dimensions: &[usize]) {
-        match self {
-            View::None => {}
-            View::Strided(dims) => {
-                if let Some(st_dim) = dims.get_mut(axis) {
-                    let mut stride = st_dim.stride;
-                    dims.remove(axis);
-                    let mut temp_axis = axis + dimensions.len();
-                    for dim in dimensions.iter().copied().rev() {
-                        temp_axis -= 1;
-                        dims.insert(
-                            axis,
-                            StridedDim {
-                                axis: temp_axis,
-                                dim,
-                                stride,
-                            },
-                        );
-                        stride *= dim;
-                    }
-                }
-                // Rename all following axes
-                for a in axis + dimensions.len()..dims.len() {
-                    if let Some(st_dim) = dims.get_mut(a) {
-                        st_dim.axis += dimensions.len() - 1;
-                    }
-                }
-            }
-            View::Padded(dims, padding) => {
-                let dim_len = dimensions.len();
-                if let Some(st_dim) = dims.get_mut(axis) {
-                    let mut stride = st_dim.stride;
-                    dims.remove(axis);
-                    let mut temp_axis = axis + dim_len;
-                    for dim in dimensions.iter().copied().rev() {
-                        temp_axis -= 1;
-                        dims.insert(
-                            axis,
-                            StridedDim {
-                                axis: temp_axis,
-                                dim,
-                                stride,
-                            },
-                        );
-                        stride *= dim;
-                    }
-                }
-                // Rename all following axes
-                for a in (axis + dim_len..dims.len()).rev() {
-                    if let Some(st_dim) = dims.get_mut(a) {
-                        st_dim.axis += dim_len - 1;
-                    }
-                }
-                // If key in padding axes is greater than axis, then add dim_len - 1 to it
-                for (axes, _) in padding.axes.iter_mut() {
-                    for a in axes {
-                        if *a > axis {
-                            *a += dim_len - 1;
-                        }
-                    }
-                }
-                // Split padding
-                if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
-                    //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
-                    for a in axis + 1..axis + dim_len {
-                        axes.push(a);
-                    }
-                    // Would not be needed on btreeset
-                    axes.sort();
-                }
-            }
-        }
-    }
-
     pub(crate) fn expand(&mut self, axis: Axis, dimension: Dimension) {
         match self {
             View::None => {}
@@ -258,99 +184,80 @@ impl View {
     pub(crate) fn is_contiguous(&self) -> bool {
         &View::new(&self.shape()) == self
     }
-}
 
-/*impl View {
-    pub(crate) fn to_str(&self, id: u64, scope: Scope, _temp_id: u8) -> (Vec<String>, String) {
+    pub(crate) fn split_axis(&mut self, axis: Axis, dimensions: &[usize]) {
         match self {
-            View::None => return (Vec::new(), f!("{}{}", scope, id)),
+            View::None => {}
             View::Strided(dims) => {
-                //std::println!("Using contiguous or strided index");
-                let mut res = String::new();
-                for StridedDim { axis, stride, .. } in dims {
-                    res += &f!("i{axis}*{stride}+");
-                }
-                res.pop();
-                return (Vec::new(), f!("{}{}[{res}]", scope, id));
-            }
-            View::Padded(dims, padding) => {
-                //std::println!("Using padded index");
-                let mut res = String::new();
-                // When the padding does not apply
-                let mut padding_condition = String::new();
-                for StridedDim { axis, stride, .. } in dims {
-                    if let Some((axes, (lp, rp))) = padding
-                        .axes
-                        .iter()
-                        .find(|(axes, _)| axes.iter().max().unwrap() == axis)
-                    {
-                        //std::println!("Padding {id} with {lp}, {rp}");
-                        let mut idx = String::new();
-                        let mut st = 1;
-                        let mut dim = 1;
-                        for axis in axes.iter().rev() {
-                            idx = f!("i{axis}*{st}+{idx}");
-                            st *= dims[*axis].dim;
-                            dim *= dims[*axis].dim;
-                        }
-                        idx.pop();
-                        if *lp > 0 {
-                            padding_condition += &f!("{idx} < {lp} || ");
-                            res += &f!("(i{axis}-{lp})*{stride}+");
-                        } else if *lp < 0 {
-                            let lp = -lp;
-                            res += &f!("(i{axis}+{lp})*{stride}+");
-                        } else {
-                            res += &f!("i{axis}*{stride}+");
-                        }
-                        // rp negative does essentially nothing, we only care if it's positive
-                        //std::println!("dim: {dim}, paddding {lp}, {rp}");
-                        if *rp > 0 {
-                            padding_condition += &f!("{idx} > {} || ", dim as isize - rp - 1);
-                        }
-                    } else {
-                        res += &f!("i{axis}*{stride}+");
+                // Rename all following axes
+                for st_dim in dims.iter_mut() {
+                    if axis < st_dim.axis {
+                        st_dim.axis += dimensions.len() - 1;
                     }
                 }
-                res.pop();
-                return (
-                    Vec::new(),
-                    if padding_condition.is_empty() {
-                        f!("{}{}[{res}]", scope, id)
-                    } else {
-                        f!(
-                            "{} ? 0 : {}{}[{res}]",
-                            &padding_condition[..padding_condition.len() - 4],
-                            scope,
-                            id
-                        )
-                    },
-                );
-            } /*View::Reshaped { dims, reshapes, .. } => {
-              let mut res = String::new();
-              for (id, mul) in dims {
-                  res += &f!("i{id}*{mul}+");
-              }
-              res.pop();
-              let mut res = vec![res];
-              for reshape in reshapes[..reshapes.len() - 1].iter() {
-                  let mut idx = String::new();
-                  for (div, m, mul) in reshape.iter() {
-                      idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-                  }
-                  idx.pop();
-                  res.push(idx);
-              }
-              let mut idx = String::new();
-              for (div, m, mul) in reshapes.last().unwrap().iter() {
-                  idx += &f!("t{temp_id}/{div}%{m}*{mul}+");
-              }
-              idx.pop();
-              return (res, f!("{}{}[{idx}]", scope, id));
-              }*/
+                if let Some((id, st_dim)) = dims.iter_mut().enumerate().find(|(_, dim)| dim.axis == axis) {
+                    let mut stride = st_dim.stride;
+                    dims.remove(id);
+                    let mut temp_axis = axis + dimensions.len();
+                    for dim in dimensions.iter().copied().rev() {
+                        temp_axis -= 1;
+                        dims.insert(
+                            id,
+                            StridedDim {
+                                axis: temp_axis,
+                                dim,
+                                stride,
+                            },
+                        );
+                        stride *= dim;
+                    }
+                }
+            }
+            View::Padded(dims, padding) => {
+                let dim_len = dimensions.len();
+                for st_dim in dims.iter_mut() {
+                    if axis < st_dim.axis {
+                        st_dim.axis += dim_len - 1;
+                    }
+                }
+                if let Some((id, st_dim)) = dims.iter_mut().enumerate().find(|(_, dim)| dim.axis == axis) {
+                    let mut stride = st_dim.stride;
+                    dims.remove(id);
+                    let mut temp_axis = axis + dimensions.len();
+                    for dim in dimensions.iter().copied().rev() {
+                        temp_axis -= 1;
+                        dims.insert(
+                            id,
+                            StridedDim {
+                                axis: temp_axis,
+                                dim,
+                                stride,
+                            },
+                        );
+                        stride *= dim;
+                    }
+                }
+                // If key in padding axes is greater than axis, then add dim_len - 1 to it
+                for (axes, _) in padding.axes.iter_mut() {
+                    for a in axes {
+                        if *a > axis {
+                            *a += dim_len - 1;
+                        }
+                    }
+                }
+                // Split padding
+                if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
+                    //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
+                    for a in axis + 1..axis + dim_len {
+                        axes.push(a);
+                    }
+                    // Would not be needed on btreeset
+                    axes.sort();
+                }
+            }
         }
     }
-}*/
+}
 
 impl Display for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

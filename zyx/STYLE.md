@@ -101,3 +101,7 @@ and there is almost no way to guarantee that UML diagram is accurate representat
 to write code in such a way that UML diagrams are not needed to understand the whole program.
 
 If all programs stored their whole state in single struct, they would be very transparent. As a side effect this makes maintaining software and dealing with changing requirements surprisingly easy.
+
+## Clean code
+
+Don't write clean code, rather write debuggable and understandable code.

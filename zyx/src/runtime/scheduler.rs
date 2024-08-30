@@ -1024,8 +1024,8 @@ impl Kernel {
                 .chain([self.shape[0]])
                 .collect();
             self.split_axis(0, &dims);
-            self.debug();
         }
+        self.debug();
 
         // Split first three loops into global and local loops.
         let mut gws = [1; 3];
@@ -1050,8 +1050,12 @@ impl Kernel {
         gws[2] /= lws[2];
 
         self.split_axis(0, &[gws[0], lws[0]]);
+        self.debug();
         self.split_axis(2, &[gws[1], lws[1]]);
+        self.debug();
         self.split_axis(4, &[gws[2], lws[2]]);
+
+        self.debug();
 
         // Split for bigger work per thread
         // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
@@ -1069,8 +1073,6 @@ impl Kernel {
 
         // All accumulators should now take advantage of wpt_x and wpt_y
         // So make larger accumulators
-
-        self.debug();
 
         // Add local caching for loads
         KernelOptimizations {
