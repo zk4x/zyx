@@ -220,4 +220,12 @@ impl Scalar for f32 {
     fn nonzero(self) -> Self {
         todo!()
     }
+    
+    fn cmpgt(self, rhs: Self) -> Self {
+        todo!()
+    }
+    
+    fn or(self, rhs: Self) -> Self {
+        todo!()
+    }
 }

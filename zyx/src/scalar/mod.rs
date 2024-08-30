@@ -110,6 +110,10 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     fn pow(self, rhs: Self) -> Self;
     /// Compare less than
     fn cmplt(self, rhs: Self) -> Self;
+    /// Compare less than
+    fn cmpgt(self, rhs: Self) -> Self;
+    /// Compare less than
+    fn or(self, rhs: Self) -> Self;
     /// Max of two numbers
     fn max(self, rhs: Self) -> Self;
     /// Max value of this dtype

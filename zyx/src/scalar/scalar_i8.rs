@@ -204,4 +204,12 @@ impl Scalar for i8 {
     fn nonzero(self) -> Self {
         todo!()
     }
+    
+    fn cmpgt(self, rhs: Self) -> Self {
+        todo!()
+    }
+    
+    fn or(self, rhs: Self) -> Self {
+        todo!()
+    }
 }

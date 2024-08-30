@@ -310,11 +310,11 @@ fn reduce_op<T: Scalar + Sync + Send>(
     use std::boxed::Box;
     // Strides of the input
     let shape = view.shape();
-    let strides = shape_to_strides(&shape);
+    let strides = shape.strides();
     // indices of dimensions that are not reduced
     let included_dims: Box<[usize]> = (0..shape.len()).filter(|x| !axes.contains(x)).collect();
     // Strides of the result
-    let res_strides = shape_to_strides(res_shape);
+    let res_strides = res_shape.strides();
     let mut res: Vec<T> = if sum_reduce {
         core::iter::repeat(T::zero())
     } else {
@@ -417,8 +417,8 @@ impl<'a, T: Scalar> Iterator for CPUPaddedIter<'a, T> {
 
 impl View {
     pub fn new(shape: &[usize]) -> View {
-        let shape = shape.into();
-        let strides = shape_to_strides(&shape);
+        let shape: Vec<usize> = shape.into();
+        let strides = shape.strides();
         View { views: vec![InnerView { shape, strides, padding: Vec::new() }] }
     }
 
@@ -454,7 +454,7 @@ impl View {
         views[0].strides = views[0]
             .shape
             .expand_strides(shape, views[0].strides.clone());
-        views[0].shape = shape.clone();
+        views[0].shape = shape.into();
         let n = shape.len() - views[0].padding.len();
         views[0].padding = core::iter::repeat((0, 0))
             .take(n)
@@ -515,7 +515,7 @@ impl View {
         debug_assert_eq!(
             n_shape.numel(),
             self.numel(),
-            "Can't reshape {} to {}",
+            "Can't reshape {:?} to {:?}",
             self.shape(),
             n_shape
         );
@@ -523,13 +523,13 @@ impl View {
         // If we are reshaping InnerView that is contiguous, we just delete the last reshape
         if views.first().unwrap().is_contiguous() {
             views[0] = InnerView {
-                shape: n_shape.clone(),
+                shape: n_shape.into(),
                 strides: n_shape.strides(),
-                padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
+                padding: core::iter::repeat((0, 0)).take(n_shape.len()).collect(),
             };
         } else {
             let shape = self.shape();
-            if n_shape.rank() > shape.rank()
+            if n_shape.len() > shape.len()
                 && n_shape
                     .iter()
                     .filter(|d| **d != 1)
@@ -545,7 +545,7 @@ impl View {
                 }) = views.first_mut()
                 {
                     //std::println!("Merging");
-                    *shape = n_shape.clone();
+                    *shape = n_shape.into();
                     let mut n_strides: Vec<usize> = strides.clone().into();
                     let mut n_padding = padding.to_vec();
                     for (i, d) in n_shape.iter().rev().enumerate() {
@@ -564,16 +564,16 @@ impl View {
                     }
                     //std::println!("n_strides: {n_strides:?}, n_padding: {n_padding:?}");
                     *strides = n_strides.into();
-                    *padding = n_padding.into_boxed_slice();
+                    *padding = n_padding;
                 }
             } else {
                 // If there is no merge.
                 views.insert(
                     0,
                     InnerView {
-                        shape: n_shape.clone(),
+                        shape: n_shape.into(),
                         strides: n_shape.strides(),
-                        padding: core::iter::repeat((0, 0)).take(n_shape.rank()).collect(),
+                        padding: core::iter::repeat((0, 0)).take(n_shape.len()).collect(),
                     },
                 );
             }
@@ -583,6 +583,34 @@ impl View {
     }
 }
 
-fn shape_to_strides(shape: &[usize]) -> Vec<usize> {
-    todo!()
+trait Shape {
+    fn as_slice(&self) -> &[usize];
+
+    fn strides(&self) -> Vec<usize> {
+        todo!()
+    }
+
+    fn expand_strides(&self) -> Vec<usize> {
+        todo!()
+    }
+
+    fn permute(&self, axes: &[usize]) -> Vec<usize> {
+        todo!()
+    }
+    
+    fn numel(&self) -> usize {
+        self.as_slice().iter().product()
+    }
+}
+
+impl Shape for Vec<usize> {
+    fn as_slice(&self) -> &[usize] {
+        self
+    }
+}
+
+impl Shape for &[usize] {
+    fn as_slice(&self) -> &[usize] {
+        self
+    }
 }
