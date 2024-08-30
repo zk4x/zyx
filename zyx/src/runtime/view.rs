@@ -141,46 +141,54 @@ impl View {
         match self {
             View::None => {}
             View::Strided(dims) => {
-                let mut stride = dims[axis].stride;
-                dims.remove(axis);
-                let mut temp_axis = axis + dimensions.len();
-                for dim in dimensions.iter().copied().rev() {
-                    temp_axis -= 1;
-                    dims.insert(
-                        axis,
-                        StridedDim {
-                            axis: temp_axis,
-                            dim,
-                            stride,
-                        },
-                    );
-                    stride *= dim;
+                if let Some(st_dim) = dims.get_mut(axis) {
+                    let mut stride = st_dim.stride;
+                    dims.remove(axis);
+                    let mut temp_axis = axis + dimensions.len();
+                    for dim in dimensions.iter().copied().rev() {
+                        temp_axis -= 1;
+                        dims.insert(
+                            axis,
+                            StridedDim {
+                                axis: temp_axis,
+                                dim,
+                                stride,
+                            },
+                        );
+                        stride *= dim;
+                    }
                 }
                 // Rename all following axes
                 for a in axis + dimensions.len()..dims.len() {
-                    dims[a].axis += dimensions.len() - 1;
+                    if let Some(st_dim) = dims.get_mut(a) {
+                        st_dim.axis += dimensions.len() - 1;
+                    }
                 }
             }
             View::Padded(dims, padding) => {
                 let dim_len = dimensions.len();
-                let mut stride = dims[axis].stride;
-                dims.remove(axis);
-                let mut temp_axis = axis + dim_len;
-                for dim in dimensions.iter().copied().rev() {
-                    temp_axis -= 1;
-                    dims.insert(
-                        axis,
-                        StridedDim {
-                            axis: temp_axis,
-                            dim,
-                            stride,
-                        },
-                    );
-                    stride *= dim;
+                if let Some(st_dim) = dims.get_mut(axis) {
+                    let mut stride = st_dim.stride;
+                    dims.remove(axis);
+                    let mut temp_axis = axis + dim_len;
+                    for dim in dimensions.iter().copied().rev() {
+                        temp_axis -= 1;
+                        dims.insert(
+                            axis,
+                            StridedDim {
+                                axis: temp_axis,
+                                dim,
+                                stride,
+                            },
+                        );
+                        stride *= dim;
+                    }
                 }
                 // Rename all following axes
                 for a in (axis + dim_len..dims.len()).rev() {
-                    dims[a].axis += dim_len - 1;
+                    if let Some(st_dim) = dims.get_mut(a) {
+                        st_dim.axis += dim_len - 1;
+                    }
                 }
                 // If key in padding axes is greater than axis, then add dim_len - 1 to it
                 for (axes, _) in padding.axes.iter_mut() {
@@ -194,8 +202,6 @@ impl View {
                 if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
                     //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
                     for a in axis + 1..axis + dim_len {
-                        //if !axes.contains(&a) {
-                        //}
                         axes.push(a);
                     }
                     // Would not be needed on btreeset
@@ -240,27 +246,6 @@ impl View {
             }
         }
     }
-
-    /*pub(super) fn index(&self) -> Index {
-        // TODO add index for padded views
-        if self.is_contiguous() {
-            Index::Contiguous {
-                dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
-            }
-        } else if self.0.iter().all(|dim| dim.lp == 0 && dim.rp == 0) {
-            Index::Strided {
-                dims: self.0.iter().map(|dim| (dim.axis, dim.stride)).collect(),
-            }
-        } else {
-            Index::Padded {
-                dims: self
-                    .0
-                    .iter()
-                    .map(|dim| (dim.axis, (dim.dim, dim.stride, dim.lp, dim.rp)))
-                    .collect(),
-            }
-        }
-    }*/
 
     pub(crate) fn numel(&self) -> usize {
         match self {
@@ -372,12 +357,14 @@ impl Display for View {
         match self {
             View::None => f.write_str("View::None"),
             View::Strided(dims) => f.write_fmt(format_args!(
-                "View::Strided shape: {:?}, strides: {:?}",
+                "View::Strided axes: {:?}, shape: {:?}, strides: {:?}",
+                dims.iter().map(|d| d.axis).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.dim).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.stride).collect::<Vec<Stride>>()
             )),
             View::Padded(dims, padding) => f.write_fmt(format_args!(
-                "View::Padded shape: {:?}, strides: {:?}, padding: {:?}",
+                "View::Padded axes: {:?}, shape: {:?}, strides: {:?}, padding: {:?}",
+                dims.iter().map(|d| d.axis).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.dim).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.stride).collect::<Vec<Stride>>(),
                 padding.axes,

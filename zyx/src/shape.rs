@@ -90,7 +90,8 @@ impl IntoAxes for isize {
 
 impl IntoAxes for Vec<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return self.into_iter().map(move |a| to_axis(a, rank));
+        let n = self.len();
+        self.into_iter().map(move |a| to_axis(a, rank)).chain(if n == 0 { 0..rank } else { 0..0 })
     }
 
     fn len(&self) -> usize {
@@ -100,7 +101,7 @@ impl IntoAxes for Vec<isize> {
 
 impl<const N: usize> IntoAxes for [isize; N] {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return self.into_iter().map(move |a| to_axis(a, rank));
+        self.into_iter().map(move |a| to_axis(a, rank)).chain(if self.len() == 0 { 0..rank } else { 0..0 })
     }
 
     fn len(&self) -> usize {
@@ -110,7 +111,8 @@ impl<const N: usize> IntoAxes for [isize; N] {
 
 impl IntoAxes for Range<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return to_axis(self.start, rank)..to_axis(self.end, rank);
+        let n = ExactSizeIterator::len(&self);
+        (to_axis(self.start, rank)..to_axis(self.end, rank)).chain(if n == 0 { 0..rank } else { 0..0 })
     }
 
     fn len(&self) -> usize {
@@ -120,7 +122,7 @@ impl IntoAxes for Range<isize> {
 
 impl IntoAxes for RangeInclusive<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        return to_axis(*self.start(), rank)..to_axis(*self.end(), rank);
+        (to_axis(*self.start(), rank)..to_axis(*self.end(), rank)).chain(if self.len() == 0 { 0..rank } else { 0..0 })
     }
 
     fn len(&self) -> usize {

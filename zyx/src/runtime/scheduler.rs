@@ -12,8 +12,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent},
-    BufferId, Device, DeviceId, MemoryPool, MemoryPoolId,
+    backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent}, view::StridedDim, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId
 };
 
 #[derive(Debug)]
@@ -963,6 +962,31 @@ impl Kernel {
         }
     }*/
 
+    /// Inserts loop at op_id, giving it axis id and dimension 1.
+    /// All loops and views axis equal or greater then axis are increased by 1
+    /// Does not change reduce op's num_axes
+    /// This function also does not change kernel's shape!
+    fn insert_loop(&mut self, op_id: usize, axis: Axis) {
+        let naxis = axis;
+        for op in &mut self.ops {
+            match op {
+                VOp::Const { view, .. } | VOp::Load { view, .. } | VOp::Store { view, .. } => match view {
+                    View::None => {}
+                    View::Strided(dims) => {
+                        dims.iter_mut().for_each(|StridedDim { axis, .. }| if *axis >= naxis { *axis += 1 });
+                    }
+                    View::Padded(dims, axes) => {
+                        dims.iter_mut().for_each(|StridedDim { axis, .. }| if *axis >= naxis { *axis += 1 });
+                        axes.axes.iter_mut().for_each(|(axes, _)| axes.iter_mut().for_each(|a| if *a >= naxis { *a += 1 }));
+                    }
+                }
+                VOp::Loop { axis, dimension } => if *axis >= naxis { *axis += 1 }
+                _ => {}
+            }
+        }
+        self.ops.insert(op_id, VOp::Loop { axis, dimension: 1 })
+    }
+
     fn shard_axis(&self) -> Option<(Axis, Dimension)> {
         // Shard axis is axis that is not gonna be locally cached,
         // which is usually the batch axis, but it can also be other axes.
@@ -971,23 +995,24 @@ impl Kernel {
         None
     }
 
+    // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
+    // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
+    // tensor cores, just a ton of stuff. Later add search over different optimizations.
     fn optimize(&mut self, dev_info: &DeviceInfo) -> KernelOptimizations {
-        // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
-        // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
-        // tensor cores, just a ton of stuff. Later add search over different optimizations.
         // Get the number of loops before any other operation
-        let num_loops = self
+        let mut num_loops = self
             .ops
             .iter()
             .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
             .unwrap();
 
-        // If this is full reduce kernel
         if num_loops == 0 {
             // this should never happen, because we should use local and register memory
             // and always spread work across multiple threads
-            todo!("Full reduce")
+            panic!();
         }
+
+        self.debug();
 
         // If there is more loops than 3, pick first three loops as global loops,
         // rest is register loops.
@@ -999,6 +1024,7 @@ impl Kernel {
                 .chain([self.shape[0]])
                 .collect();
             self.split_axis(0, &dims);
+            self.debug();
         }
 
         // Split first three loops into global and local loops.
@@ -1043,6 +1069,8 @@ impl Kernel {
 
         // All accumulators should now take advantage of wpt_x and wpt_y
         // So make larger accumulators
+
+        self.debug();
 
         // Add local caching for loads
         KernelOptimizations {
@@ -1117,7 +1145,7 @@ fn generate_kernels(
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
+        println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
         match node {
             Node::Const { value } => {
                 let const_op = VOp::Const {
@@ -1498,6 +1526,10 @@ fn generate_kernels(
                 });
                 kernel.vars.insert(nid);
                 kernel.shape = shape.into();
+
+                if kernel.shape == [1] && !matches!(kernel.ops[0], VOp::Loop { .. }) {
+                    kernel.insert_loop(0, 0);
+                }
                 // Optionally merge axes (if possible) for potentially better performance
                 //kernel.merge_axes(acc_id + 1, axes.len());
             }

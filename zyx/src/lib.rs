@@ -186,3 +186,11 @@ fn t_16() {
     Tensor::realize([&x]).unwrap();
     Tensor::plot_graph([], "graph1");
 }
+
+#[test]
+fn t_17() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    println!("{x}");
+    x = x.sum([]);
+    println!("{x}");
+}

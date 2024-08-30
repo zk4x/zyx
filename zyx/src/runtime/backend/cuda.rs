@@ -661,10 +661,10 @@ impl CUDADevice {
         unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
             .check("Failed to load function.")?;
 
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
+        /*if let Ok(_) = std::env::var("DEBUG_ASM") {
             let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
             println!("{ptx_source}");
-        }
+        }*/
 
         Ok(CUDAProgram {
             name,

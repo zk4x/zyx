@@ -1158,12 +1158,17 @@ fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
 }
 
 fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    shape
+    let res: Vec<usize> = shape
         .iter()
         .copied()
         .enumerate()
         .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
-        .collect()
+        .collect();
+    if res.is_empty() {
+        vec![1]
+    } else {
+        res
+    }
 }
 
 #[derive(Debug)]
