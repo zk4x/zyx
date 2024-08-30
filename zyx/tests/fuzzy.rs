@@ -4,7 +4,7 @@ use zyx::{DType, Scalar};
 
 // Just a very barebones and slow CPU tensor that is slow, but verifiably correct
 #[derive(Clone)]
-struct CPUTensor {
+pub struct CPUTensor {
     view: View,
     data: Data,
 }
@@ -47,7 +47,7 @@ macro_rules! binary_op {
 // Only implements all ops in node.rs
 // No backpropagation
 impl CPUTensor {
-    fn new<T: Scalar>(data: &[T]) -> CPUTensor {
+    pub fn new<T: Scalar>(data: &[T]) -> CPUTensor {
         use std::mem::transmute as t;
         CPUTensor { view: View::new(&[data.len()]), data: match T::dtype() {
             DType::BF16 => todo!(),
@@ -65,7 +65,7 @@ impl CPUTensor {
         } }
     }
 
-    fn to_vec<T: Scalar>(&self) -> Vec<T> {
+    pub fn to_vec<T: Scalar>(&self) -> Vec<T> {
         use std::mem::transmute as t;
         let numel = self.view.numel();
         match &self.data {
@@ -76,16 +76,28 @@ impl CPUTensor {
                     .take(numel)
                     .collect::<Vec<f32>>())
             },
-            Data::F64(data) => todo!(),
-            Data::I32(data) => todo!(),
+            Data::F64(data) => unsafe {
+                t(self
+                    .view
+                    .iterate_padded(data)
+                    .take(numel)
+                    .collect::<Vec<f64>>())
+            },
+            Data::I32(data) => unsafe {
+                t(self
+                    .view
+                    .iterate_padded(data)
+                    .take(numel)
+                    .collect::<Vec<i32>>())
+            },
         }
     }
 
-    fn shape(&self) -> Vec<usize> {
+    pub fn shape(&self) -> Vec<usize> {
         self.view.shape()
     }
 
-    fn cast(&self, dtype: DType) -> CPUTensor {
+    pub fn cast(&self, dtype: DType) -> CPUTensor {
         let data = match &self.data {
             Data::F32(data) => match dtype {
                 DType::F32 => Data::F32(unary(data, Scalar::cast)),
@@ -109,112 +121,124 @@ impl CPUTensor {
         CPUTensor { view: self.view.clone(), data }
     }
 
-    fn relu(&self) -> CPUTensor {
+    pub fn relu(&self) -> CPUTensor {
         unary_op!(self, Scalar::relu)
     }
 
-    fn neg(&self) -> CPUTensor {
+    pub fn neg(&self) -> CPUTensor {
         unary_op!(self, Scalar::neg)
     }
 
-    fn exp2(&self) -> CPUTensor {
+    pub fn exp2(&self) -> CPUTensor {
         unary_op!(self, Scalar::exp2)
     }
 
-    fn log2(&self) -> CPUTensor {
+    pub fn log2(&self) -> CPUTensor {
         unary_op!(self, Scalar::log2)
     }
 
-    fn inv(&self) -> CPUTensor {
+    pub fn inv(&self) -> CPUTensor {
         unary_op!(self, Scalar::inv)
     }
 
-    fn sqrt(&self) -> CPUTensor {
+    pub fn sqrt(&self) -> CPUTensor {
         unary_op!(self, Scalar::sqrt)
     }
 
-    fn sin(&self) -> CPUTensor {
+    pub fn sin(&self) -> CPUTensor {
         unary_op!(self, Scalar::sin)
     }
 
-    fn cos(&self) -> CPUTensor {
+    pub fn cos(&self) -> CPUTensor {
         unary_op!(self, Scalar::cos)
     }
 
-    fn not(&self) -> CPUTensor {
+    pub fn not(&self) -> CPUTensor {
         unary_op!(self, Scalar::not)
     }
 
-    fn nonzero(&self) -> CPUTensor {
+    pub fn nonzero(&self) -> CPUTensor {
         unary_op!(self, Scalar::nonzero)
     }
 
-    fn add(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn add(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::add)
     }
 
-    fn sub(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn sub(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::sub)
     }
 
-    fn mul(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn mul(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::mul)
     }
 
-    fn div(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn div(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::div)
     }
 
-    fn pow(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn pow(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::pow)
     }
 
-    fn cmplt(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn cmplt(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::cmplt)
     }
 
-    fn cmpgt(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn cmpgt(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::cmpgt)
     }
 
-    fn max(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn max(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::max)
     }
 
-    fn or(&self, other: &CPUTensor) -> CPUTensor {
+    pub fn or(&self, other: &CPUTensor) -> CPUTensor {
         binary_op!(self, other, Scalar::or)
     }
 
-    fn reduce_sum(&self, axes: &[usize]) -> CPUTensor {
-        todo!()
+    pub fn reduce_sum_kd(&self, axes: &[usize]) -> CPUTensor {
+        CPUTensor {
+            view: View::new(&self.shape()),
+            data: match &self.data {
+                Data::F32(data) => Data::F32(reduce_op(&self.view, data, axes, &self.shape().reduce(axes), true)),
+                _ => todo!(),
+            }
+        }
     }
 
-    fn reduce_max(&self, axes: &[usize]) -> CPUTensor {
-        todo!()
+    pub fn reduce_max_kd(&self, axes: &[usize]) -> CPUTensor {
+        CPUTensor {
+            view: View::new(&self.shape()),
+            data: match &self.data {
+                Data::F32(data) => Data::F32(reduce_op(&self.view, data, axes, &self.shape().reduce(axes), false)),
+                _ => todo!(),
+            }
+        }
     }
 
-    fn pad(&self, padding: &[(isize, isize)]) -> CPUTensor {
+    pub fn pad(&self, padding: &[(isize, isize)]) -> CPUTensor {
         CPUTensor {
             view: self.view.pad(padding),
             data: self.data.clone(), // just rc clone
         }
     }
 
-    fn permute(&self, axes: &[usize]) -> CPUTensor {
+    pub fn permute(&self, axes: &[usize]) -> CPUTensor {
         CPUTensor {
             view: self.view.permute(axes),
             data: self.data.clone(), // just rc clone
         }
     }
 
-    fn expand(&self, shape: &[usize]) -> CPUTensor {
+    pub fn expand(&self, shape: &[usize]) -> CPUTensor {
         CPUTensor {
             view: self.view.expand(shape),
             data: self.data.clone(), // just rc clone
         }
     }
 
-    fn reshape(&self, shape: &[usize]) -> CPUTensor {
+    pub fn reshape(&self, shape: &[usize]) -> CPUTensor {
         CPUTensor {
             view: self.view.reshape(shape),
             data: self.data.clone(), // just rc clone
@@ -229,7 +253,7 @@ enum Data {
     I32(Rc<[i32]>),
 }
 
-impl Data {
+/*impl Data {
     unsafe fn as_type<T: Scalar>(&self) -> &[T] {
         use std::mem::transmute as t;
         match self {
@@ -238,7 +262,7 @@ impl Data {
             Data::I32(data) => t::<&[i32], &[T]>(data.as_ref()),
         }
     }
-}
+}*/
 
 fn unary<T: Scalar + Sync + Send, T2: Scalar + Send>(
     data: &[T],
@@ -261,51 +285,13 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
         .collect()
 }
 
-/*impl Interpreter {
-    fn evaluate(
-        &mut self,
-        mut rcs: BTreeMap<Id, u32>,
-        order: &[Id],
-        nodes: &[Node],
-    ) -> Result<(), ZyxError> {
-        for nid in order.iter().copied() {
-            //std::println!("Interpreting {nid}: {:?}", nodes[nid.i()]);
-            match &nodes[nid.i()] {
-                Node::Leaf(..) => {}
-                Node::Sum(x, ax, sh) => {
-                    let (view, data) = self.get(x);
-                    let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, true)),
-                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, true)),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, true)),
-                    };
-                    self.views.insert(nid, (View::new(sh.clone()), nid));
-                    self.buffers.insert(nid, data);
-                }
-                Node::Max(x, ax, sh) => {
-                    let (view, data) = self.get(x);
-                    let data = match data {
-                        Data::F32(data) => Data::F32(reduce_op(view, data, ax, sh, false)),
-                        Data::F64(data) => Data::F64(reduce_op(view, data, ax, sh, false)),
-                        Data::I32(data) => Data::I32(reduce_op(view, data, ax, sh, false)),
-                    };
-                    self.views.insert(nid, (View::new(sh.clone()), nid));
-                    self.buffers.insert(nid, data);
-                }
-            }
-            //std::println!("Views {}, buffers {}", self.views.len(), self.buffers.len());
-        }
-        Ok(())
-    }
-}*/
-
-fn reduce_op<T: Scalar + Sync + Send>(
+fn reduce_op<T: Scalar>(
     view: &View,
     data: &[T],
     axes: &[usize],
     res_shape: &[usize],
     sum_reduce: bool,
-) -> Vec<T> {
+) -> Rc<[T]> {
     // TODO parallelize this
     use std::boxed::Box;
     // Strides of the input
@@ -339,7 +325,7 @@ fn reduce_op<T: Scalar + Sync + Send>(
             res[j] = Scalar::max(res[j].clone(), x);
         }
     }
-    res
+    res.into()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -587,19 +573,49 @@ trait Shape {
     fn as_slice(&self) -> &[usize];
 
     fn strides(&self) -> Vec<usize> {
-        todo!()
+        let mut stride = 1;
+        let shape = self.as_slice();
+        let mut res = Vec::with_capacity(shape.len());
+        for d in shape.iter().rev() {
+            res.push(stride);
+            stride *= d;
+        }
+        res.reverse();
+        res
     }
 
-    fn expand_strides(&self) -> Vec<usize> {
-        todo!()
+    fn expand_strides(&self, shape: &[usize], mut old_strides: Vec<usize>) -> Vec<usize> {
+        let mut vec = self.as_slice().to_vec();
+        while vec.len() < shape.len() {
+            vec.insert(0, 1);
+            old_strides = [0]
+                .into_iter()
+                .chain(old_strides.iter().copied())
+                .collect();
+        }
+        vec
+            .into_iter()
+            .zip(shape)
+            .zip(&old_strides)
+            .map(|((od, nd), st)| if od == *nd { *st } else { 0 })
+            .collect()
     }
 
     fn permute(&self, axes: &[usize]) -> Vec<usize> {
-        todo!()
+        let shape = self.as_slice();
+        axes.iter().map(|axis| shape[*axis]).collect()
     }
     
     fn numel(&self) -> usize {
         self.as_slice().iter().product()
+    }
+
+    fn reduce(&self, axes: &[usize]) -> Vec<usize> {
+         let mut shape: Vec<usize> = self.as_slice().into();
+        for a in axes.iter() {
+            shape[*a] = 1;
+        }
+        shape
     }
 }
 
