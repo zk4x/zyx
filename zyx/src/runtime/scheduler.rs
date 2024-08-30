@@ -11,9 +11,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent}, view::StridedDim, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId
-};
+use super::{backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent}, view::StridedDim, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId};
 
 #[derive(Debug)]
 pub(super) struct CompiledGraph {
@@ -1000,7 +998,7 @@ impl Kernel {
     // tensor cores, just a ton of stuff. Later add search over different optimizations.
     fn optimize(&mut self, dev_info: &DeviceInfo) -> KernelOptimizations {
         // Get the number of loops before any other operation
-        let mut num_loops = self
+        let num_loops = self
             .ops
             .iter()
             .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
@@ -1011,8 +1009,6 @@ impl Kernel {
             // and always spread work across multiple threads
             panic!();
         }
-
-        self.debug();
 
         // If there is more loops than 3, pick first three loops as global loops,
         // rest is register loops.
@@ -1025,7 +1021,6 @@ impl Kernel {
                 .collect();
             self.split_axis(0, &dims);
         }
-        self.debug();
 
         // Split first three loops into global and local loops.
         let mut gws = [1; 3];
@@ -1050,27 +1045,26 @@ impl Kernel {
         gws[2] /= lws[2];
 
         self.split_axis(0, &[gws[0], lws[0]]);
-        self.debug();
         self.split_axis(2, &[gws[1], lws[1]]);
-        self.debug();
         self.split_axis(4, &[gws[2], lws[2]]);
-
-        self.debug();
 
         // Split for bigger work per thread
         // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
         // So that will be 64 work items per thread
-        // Later we can search for best wpt_x and wpt_y
-        //let wpt_x = 8;
-        //let wpt_y = 8;
-
-        //self.split_axis(4, &[gws[2]/wpt_y, wpt_y]);
-        //self.split_axis(2, &[gws[1]/wpt_x, wpt_x]);
-
-        // Permute so that these two wpt loops are after global and local loops
-        //assert_eq!(self.shape.len(), 8);
-        //self.permute(&[0, 1, 2, 4, 5, 3, 6, 7]);
-
+        // TODO search for best work per thread
+        let wpt_x = 8;
+        let wpt_y = 8;
+        self.split_axis(4, &[gws[2]/wpt_y, wpt_y]);
+        self.split_axis(2, &[gws[1]/wpt_x, wpt_x]);
+        self.debug();
+        // Permute so that work per thread loops are after global, local and reduce loops
+        if self.shape.len() > 8 {
+            let axes: Vec<usize> = [0, 1, 2, 4, 5, 7].into_iter().chain(8..self.shape.len()).chain([3, 6]).collect();
+            self.permute(&axes);
+        } else {
+            self.permute(&[0, 1, 2, 4, 5, 7, 3, 6]);
+        }
+        self.debug();
         // All accumulators should now take advantage of wpt_x and wpt_y
         // So make larger accumulators
 
@@ -1363,7 +1357,7 @@ fn generate_kernels(
                                     } else {
                                         if loop_id < splits.len() {
                                             let dimensions = splits[&loop_id].clone();
-                                            assert_eq!(*dimension, dimensions.iter().product());
+                                            assert_eq!(*dimension, dimensions.iter().product::<usize>());
                                             split_ids.push(id);
                                         }
                                         if loop_id > 0 {

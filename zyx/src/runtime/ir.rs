@@ -378,7 +378,7 @@ impl VarMap {
             View::None => Var::Const(Constant::U32(0)),
             View::Strided(dims) => {
                 let z = self.zero_var(ops);
-                let numel = dims.iter().flat_map(|StridedDim { dim, stride, .. }| if *stride != 0 { Some(*dim) } else { None }).product();
+                let numel: usize = dims.iter().flat_map(|StridedDim { dim, stride, .. }| if *stride != 0 { Some(*dim) } else { None }).product();
                 for StridedDim { axis, stride, .. } in dims {
                     if *stride != 0 && *stride != numel {
                         let a = self.get_axis(*axis);

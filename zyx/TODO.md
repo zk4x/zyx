@@ -40,9 +40,11 @@
 ### Release blockers
 
 - [ ] test pad after reduce
+- [x] full reduce
 - [ ] test padded view permute
 - [ ] test expand after reduce
 - [ ] local memory caching
+- [ ] more work per thread
 - [ ] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs

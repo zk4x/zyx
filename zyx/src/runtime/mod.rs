@@ -584,13 +584,13 @@ impl Runtime {
             return Ok(());
         }
 
-        // Search through config directories and find zyx/backend_config.ron
+        // Search through config directories and find zyx/backend_config.json
         // If not found or failed to parse, use defaults.
         let backend_config = xdg::BaseDirectories::new()
             .map_err(|e| {
                 if let Ok(_) = std::env::var("DEBUG_DEV") {
                     println!(
-                        "Failed to find config directories for backend_config.ron, using defaults: {e}"
+                        "Failed to find config directories for backend_config.json, using defaults: {e}"
                     );
                 }
             })
@@ -602,22 +602,22 @@ impl Runtime {
             })
             .map(|paths| {
                 paths.into_iter().find_map(|mut path| {
-                    path.push("zyx/backend_config.ron");
+                    path.push("zyx/backend_config.json");
                     std::fs::read_to_string(&path)
-                        /*.map_err(|e| {
+                        .map_err(|e| {
                             if let Ok(_) = std::env::var("DEBUG_DEV") {
-                                println!("Failed to read backend_config.ron at {path:?}, using defaults: {e}");
+                                println!("Failed to read backend_config.json at {path:?}, using defaults: {e}");
                             }
-                        })*/
+                        })
                         .ok()
                 })
             })
             .flatten()
             .map(|file| {
-                ron::from_str(&file)
+                serde_json::from_str(&file)
                     .map_err(|e| {
                         if let Ok(_) = std::env::var("DEBUG_DEV") {
-                            println!("Failed to parse backend_config.ron, using defaults: {e}");
+                            println!("Failed to parse backend_config.json, using defaults: {e}");
                         }
                     })
                     .ok()

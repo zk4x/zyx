@@ -33,7 +33,7 @@ let bb_grad = b_grad.backward([&b])[0].unwrap();
 ## Backends
 
 Zyx runs on different devices, current backends are CUDA, HIP and OpenCL.
-Zyx automatically tries to utilize all available devices, but you can also manually change it by creating file backend_config.ron in folder zyx in home config directory (usually ~/.config/zyx/backend_config.ron).
+Zyx automatically tries to utilize all available devices, but you can also manually change it by creating file backend_config.json in folder zyx in home config directory (usually ~/.config/zyx/backend_config.json).
 There write [BackendConfig] struct.
 
 ## Simple neural network
