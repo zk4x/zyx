@@ -2,14 +2,9 @@
 
 Zyx is machine learning library written in Rust.
 It's main feature is compiled backend. It automatically generates
-optimized kernels for CUDA, OpenCL and WGPU.
-Zyx is lazy, waits with execution until it is explicitly asked for results
-or the graph of tensor operations gets too large.
-Zyx automatically finds repetition in your training loops, caches
-that part of the graph and uses constant folding on values that are evaluated
-only once. Since zyx stores the whole graph and automatically optimizes it,
-all tensors are differentiable. In pytorch this is equivalent to all tensors
-being set to requires_grad=True.
+optimized kernels for CUDA, OpenCL and HIP.
+Zyx is lazy, waits with execution until it is explicitly asked for results.
+All tensors are differentiable.
 
 ## Install
 
@@ -82,11 +77,6 @@ l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors");
 
 For more details, there is a [book](https://zk4x.github.io/zyx).
 
-## Rust version
-
-Zyx currently only supports latest rust stable version. Zyx also requires std,
-as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging) and also some other stuff that requires filesystem.
-
 ## Lazyness
 
 Tensors do not get realized automatically. Realization happens only when user accesses tensors, or explicitly using Tensor::realize function.
@@ -106,6 +96,11 @@ This function might get obsolete in the future once detection of repeating graph
 2. Hardware support
 3. Performance
 
+## Rust version
+
+Zyx currently only supports latest rust stable version. Zyx also requires std,
+as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging) and also some other stuff that requires filesystem.
+
 ## Features
 
 rand - enables support for functions that enable random number generation
@@ -116,13 +111,14 @@ complex - enables support for cf32 and cf64 dtypes
 
 Zyx breaks many principles of clean code. Clean code was tried in older versions of zyx.
 Abstractions, wrappers, dyn (virtual tables), generics and lifetimes made the code hard
-to reason about. Zyx now uses enums for everything and almost zero generics (only in functions, such as impl IntoShape to make API more flexible). If you dislike ugly code, please do not use zyx.
+to reason about. Zyx now uses enums for everything and almost zero generics (only in functions, such as impl IntoShape to make API more flexible).
+If you dislike ugly code, please do not use zyx.
 
 Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive,
 please do not use zyx.
 
 Zyx brings it's own runtime. It is a single global struct behind mutex.
-Tensor are indices into graph stored in this runtime. If runtime wasn't
+Tensors are indices into graph stored in this runtime. If runtime wasn't
 global variable, all tensors would have to keep lifetime to it. It was
 tried and it poisoned the whole codebase with lifetimes. If you find global variables
 offensive, please do not use zyx.
