@@ -66,6 +66,28 @@ impl View {
         return View::Strided(view);
     }
 
+    /// Creates view binded to specific axes
+    pub(super) fn binded(shape: &[usize], axes: &[usize]) -> Self {
+        assert_eq!(shape.len(), axes.len());
+        let mut stride = 1;
+        let mut view: Vec<StridedDim> = shape
+            .iter()
+            .zip(axes)
+            .rev()
+            .map(|(&dim, &axis)| {
+                let temp = stride;
+                stride *= dim;
+                StridedDim {
+                    axis,
+                    stride: temp,
+                    dim,
+                }
+            })
+            .collect();
+        view.reverse();
+        return View::Strided(view);
+    }
+
     pub(crate) fn shape(&self) -> Vec<usize> {
         match self {
             View::None => vec![1],

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::{runtime::{graph::Graph, view::{StridedDim, View}}, shape::{Axis, Dimension}, tensor::TensorId};
+use crate::{runtime::{graph::Graph, ir::Scope, view::{StridedDim, View}}, shape::{Axis, Dimension}, tensor::TensorId};
 
 use super::{shape_to_loops, vop::VOp};
 
@@ -33,6 +33,7 @@ impl Kernel {
             z: x,
             x,
             view: View::new(&shape),
+            zscope: Scope::Register,
         });
         Kernel {
             shape,
@@ -101,7 +102,7 @@ impl Kernel {
     }
 
     // Permutes first found loops, not the kernel as a whole
-    fn permute_loops(&mut self, op_id: usize, naxes: &[usize]) {
+    pub(super) fn permute_loops(&mut self, op_id: usize, naxes: &[usize]) {
         if naxes.is_empty() { return }
         let mut axes = Vec::new();
         let mut dims = Vec::new();
@@ -154,11 +155,6 @@ impl Kernel {
                 },
             );
         }
-        // Update shape
-        self.shape.remove(axis);
-        for dim in dimensions.iter().rev() {
-            self.shape.insert(axis, *dim);
-        }
         let mut num_loops = 0;
         // Update loops, loads and stores
         let mut reduce_end = false;
@@ -177,6 +173,9 @@ impl Kernel {
                         *num_axes += dimensions.len() - 1;
                         reduce_end = true;
                     }
+                    if *num_axes > num_loops {
+                        return
+                    }
                     num_loops -= *num_axes;
                 }
                 // Then change all load and store operations in this loop in the same way.
@@ -185,6 +184,10 @@ impl Kernel {
                 }
                 _ => {}
             }
+        }
+        self.shape.remove(axis);
+        for dim in dimensions.iter().rev() {
+            self.shape.insert(axis, *dim);
         }
     }
 

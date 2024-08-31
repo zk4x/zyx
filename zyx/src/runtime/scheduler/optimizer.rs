@@ -1,4 +1,4 @@
-use crate::{runtime::{backend::DeviceInfo, scheduler::vop::VOp, view::View}, tensor::TensorId};
+use crate::{runtime::{backend::DeviceInfo, ir::Scope, scheduler::vop::VOp, view::View}, tensor::TensorId};
 use super::kernel::Kernel;
 
 // Optimizations get applied to existing kernels after
@@ -55,7 +55,7 @@ impl Kernel {
 
         // Set best local work sizes
         let mut gws = [1; 3];
-        let local_work_size = {
+        let lws = {
             // Split first three loops into global and local loops.
             for op in &self.ops {
                 if let VOp::Loop { axis, dimension } = op {
@@ -76,7 +76,7 @@ impl Kernel {
         };
 
         // Set best register work sizes
-        let register_work_size = {
+        let rws = {
             let rws = best_work_size(gws, dev_info.num_registers);
             gws[0] = gws[0]/rws[0];
             gws[1] = gws[1]/rws[1];
@@ -87,26 +87,55 @@ impl Kernel {
             // Permute so that work per thread loops are after global and local loops
             self.permute(&[0, 2, 3, 5, 6, 8, 1, 4, 7]);
 
-
+            if self.ops.iter().any(|op| matches!(op, VOp::Reduce { .. })) {
                 // Handle reduce loops
                 // Split reduce loops for more work per thread
+                let mut splits = Vec::new();
+                for (id, op) in self.ops[9..].iter().enumerate() {
+                    if let VOp::Accumulator { .. } = op {
+                        // Permute such that all register loops are last
+                        // TODO get this working if there is more than one reduce loop
+                        let VOp::Loop { dimension, .. } = self.ops[id+10] else { todo!() };
+                        // TODO get this working with different work per thread
+                        splits.push((id+10, [dimension/8, 8]));
+                    }
+                }
+                for split in splits {
+                    println!("Splitting at {split:?}");
+                    self.split_axis(split.0, &split.1);
+                }
 
-                // Permute such that all register loops are last
+                // Permutation such that register loops come after reduce loops
 
-                //self.permute_loops(op_id, &[]);
 
                 // Update accumulators such that they use these register loops
+
+            }
             rws
         };
         self.debug();
-        println!("Optimizations: {} work sizes: {gws:?} {local_work_size:?} {register_work_size:?}", dev_info.num_registers);
+        println!("Optimizations: {} work sizes: {gws:?} {lws:?} {rws:?}", dev_info.num_registers);
+
+        let mut local_loads = Vec::new();
+        // Add local and register tiles for expanded tensor loads
+        for id in 0..self.ops.len() {
+            //if matches!(self.ops[id], VOp::Load { .. }) {
+            if let VOp::Load { z, zscope: scope, view, .. } = &mut self.ops[id] {
+                local_loads.push((*z, view.clone()));
+                *scope = Scope::Local;
+                // First load into local
+                *view = View::binded(&[lws[0]*rws[0], lws[1]*rws[1], lws[2]*rws[2]], &[6, 7, 8]);
+            }
+            // Find all uses of this local loads and put them into registers before using them
+            // registers can be tiles, correctly wized tiles directly map to tensor cores
+        }
 
         // Add local caching for loads
         KernelOptimizations {
             permutation: Vec::new(),
             global_work_size: gws,
-            local_work_size,
-            register_work_size,
+            local_work_size: lws,
+            register_work_size: rws,
             local_tiles: Vec::new(),
             unroll_loops: Vec::new(),
             vectorize_loops: Vec::new(),

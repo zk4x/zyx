@@ -128,7 +128,7 @@ impl Kernel {
         // Get all global args and set them first
         for vop in &self.ops {
             match &vop {
-                &VOp::Load { z: _, x, view } => {
+                &VOp::Load { z: _, x, view, zscope: scope } => {
                     let dtype = graph.dtype(*x).into();
                     let _ = vars.add_var(
                         *x,
@@ -169,7 +169,7 @@ impl Kernel {
                 VOp::Move { z, x, .. } => {
                     vars.noop(*z, *x, graph.rc(*z));
                 }
-                VOp::Load { z, x, view } => {
+                VOp::Load { z, x, view, zscope: scope } => {
                     let dtype = graph.dtype(*z).into();
                     let at = vars.generate_idx(view, &mut ops);
                     let x = vars.get(*x, Scope::Global);

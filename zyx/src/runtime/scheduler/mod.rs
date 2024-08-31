@@ -3,8 +3,7 @@ use vop::MOp;
 pub(super) use vop::VOp;
 
 use crate::{
-    runtime::{node::Node, Runtime, ZyxError},
-    runtime::{graph::Graph, view::View},
+    runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -122,7 +121,11 @@ impl Runtime {
 
                 // Prints unoptimized kernel
                 if self.debug_sched() { kernel.debug(); }
-                let optimizations = kernel.optimize(self.devices[device_id].info());
+
+                // TODO rerun this function and the kernel multiple times and cache optimizations to the disk
+                let _optimizations = kernel.optimize(self.devices[device_id].info());
+
+
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
                 // Allocate memory for outputs
                 for output in &kernel.outputs {
@@ -738,6 +741,7 @@ fn generate_kernels(
                         z: nid,
                         x: nid,
                         view: View::new(shape),
+                        zscope: Scope::Register,
                     });
                     kernel.inputs.insert(nid);
                     kernel.vars.insert(nid);
@@ -961,6 +965,7 @@ fn generate_kernels(
                             z: nid,
                             x: *x,
                             view: View::new(shape),
+                            zscope: Scope::Register,
                         });
                         kernels.push(Kernel {
                             shape: shape.into(),
@@ -1118,6 +1123,7 @@ fn generate_kernels(
                             z: *y,
                             x: *y,
                             view: View::new(graph.shape(*y)),
+                            zscope: Scope::Register,
                         });
                         kernel.vars.insert(*y);
                         kernel.inputs.insert(*y);

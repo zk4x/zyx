@@ -1,4 +1,4 @@
-use crate::{dtype::Constant, runtime::{node::{BOp, ROp, UOp}, view::View}, shape::{Axis, Dimension}, tensor::TensorId};
+use crate::{dtype::Constant, runtime::{ir::Scope, node::{BOp, ROp, UOp}, view::View}, shape::{Axis, Dimension}, tensor::TensorId};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VOp {
@@ -9,7 +9,9 @@ pub(crate) enum VOp {
     },
     Load {
         z: TensorId,
+        xscope: Scope,
         x: TensorId,
+        zscope: Scope,
         view: View,
     },
     Store {
@@ -64,8 +66,8 @@ impl std::fmt::Display for VOp {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
                 "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"
             )),
-            VOp::Load { z, x, view } => f.write_fmt(format_args!(
-                "{color_yellow}Load{color_reset}        {z} <- {x}, {view}"
+            VOp::Load { z, x, view, zscope, xscope } => f.write_fmt(format_args!(
+                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[xscope:?], {view}"
             )),
             VOp::Store { z, view } => f.write_fmt(format_args!(
                 "{color_red}Store{color_reset}       {z}, {view}"
