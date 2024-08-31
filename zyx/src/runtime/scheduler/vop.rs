@@ -1,5 +1,6 @@
 use crate::{dtype::Constant, runtime::{ir::Scope, node::{BOp, ROp, UOp}, view::View}, shape::{Axis, Dimension}, tensor::TensorId};
 
+// Should be just Unary, Binary, Const, Copy, Loop, Reduce
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VOp {
     Const {
@@ -7,21 +8,19 @@ pub(crate) enum VOp {
         value: Constant,
         view: View,
     },
-    Load {
+    Copy {
         z: TensorId,
-        xscope: Scope,
-        x: TensorId,
         zscope: Scope,
-        view: View,
-    },
-    Store {
-        z: TensorId,
+        x: TensorId,
+        xscope: Scope,
         view: View,
     },
     Loop {
         axis: Axis,
         dimension: Dimension,
     },
+    // TODO remove accumulator and use const + copy
+    // instead to create register tile
     Accumulator {
         z: TensorId,
         rop: ROp,
@@ -33,6 +32,7 @@ pub(crate) enum VOp {
         num_axes: usize,
         rop: ROp,
     },
+    // Move is noop
     Move {
         z: TensorId,
         x: TensorId,
@@ -66,11 +66,8 @@ impl std::fmt::Display for VOp {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
                 "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"
             )),
-            VOp::Load { z, x, view, zscope, xscope } => f.write_fmt(format_args!(
-                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[xscope:?], {view}"
-            )),
-            VOp::Store { z, view } => f.write_fmt(format_args!(
-                "{color_red}Store{color_reset}       {z}, {view}"
+            VOp::Copy { z, zscope, x, xscope, view } => f.write_fmt(format_args!(
+                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}], {view}"
             )),
             VOp::Loop { axis, dimension } => f.write_fmt(format_args!(
                 "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"

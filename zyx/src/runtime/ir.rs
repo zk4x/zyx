@@ -127,7 +127,20 @@ impl Kernel {
 
         // Get all global args and set them first
         for vop in &self.ops {
-            match &vop {
+            if let &VOp::Copy { z, zscope, x, xscope, ref view } = vop {
+                // TODO only if one of the scopes is global
+                let dtype = graph.dtype(x).into();
+                let _ = vars.add_var(
+                    x,
+                    view.numel(),
+                    Scope::Global,
+                    graph.rc(x),
+                    dtype,
+                    Some(x),
+                    true,
+                );
+            }
+            /*match &vop {
                 &VOp::Load { z: _, x, view, zscope: scope } => {
                     let dtype = graph.dtype(*x).into();
                     let _ = vars.add_var(
@@ -152,7 +165,7 @@ impl Kernel {
                     );
                 }
                 _ => {}
-            }
+            }*/
         }
 
         let mut loops = Vec::new();
@@ -169,7 +182,7 @@ impl Kernel {
                 VOp::Move { z, x, .. } => {
                     vars.noop(*z, *x, graph.rc(*z));
                 }
-                VOp::Load { z, x, view, zscope: scope } => {
+                /*VOp::Load { z, x, view, zscope: scope } => {
                     let dtype = graph.dtype(*z).into();
                     let at = vars.generate_idx(view, &mut ops);
                     let x = vars.get(*x, Scope::Global);
@@ -201,7 +214,8 @@ impl Kernel {
                         dtype,
                     });
                     vars.remove_var(at);
-                }
+                }*/
+                VOp::Copy { .. } => todo!(),
                 VOp::Loop { axis, dimension } => {
                     let id = vars.add_axis(*axis);
                     ops.push(IROp::Loop {
