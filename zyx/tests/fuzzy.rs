@@ -1,10 +1,10 @@
 use std::rc::Rc;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn fuzzy() -> Result<(), ZyxError> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(21847091824098071);
 
     let max_numel = 32*256*256;
     // TODO random shapes for tensors
@@ -119,11 +119,15 @@ impl CPUTensor {
     pub fn new<T: Scalar>(data: &[T]) -> CPUTensor {
         use std::mem::transmute as t;
         CPUTensor { view: View::new(&[data.len()]), data: match T::dtype() {
+            #[cfg(feature = "half")]
             DType::BF16 => todo!(),
+            #[cfg(feature = "half")]
             DType::F16 => todo!(),
             DType::F32 => Data::F32(unsafe { t::<_, &[f32]>(data) }.into()),
             DType::F64 => todo!(),
+            #[cfg(feature = "complex")]
             DType::CF32 => todo!(),
+            #[cfg(feature = "complex")]
             DType::CF64 => todo!(),
             DType::U8 => todo!(),
             DType::I8 => todo!(),

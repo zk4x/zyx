@@ -192,6 +192,7 @@ unsafe impl Send for CUDAProgram {}
 
 pub(crate) fn initialize_cuda_backend(
     config: &CUDAConfig,
+    debug_dev: bool,
 ) -> Result<(Vec<CUDAMemoryPool>, Vec<CUDADevice>), CUDAError> {
     let _ = config;
 
@@ -250,7 +251,7 @@ pub(crate) fn initialize_cuda_backend(
     let mut driver_version = 0;
     unsafe { cuDriverGetVersion(&mut driver_version) }
         .check("Failed to get CUDA driver version")?;
-    if let Ok(_) = std::env::var("DEBUG_DEV") {
+    if debug_dev {
         println!(
             "Using CUDA backend, driver version: {}.{} on devices:",
             driver_version / 1000,
@@ -291,7 +292,7 @@ pub(crate) fn initialize_cuda_backend(
         else {
             continue;
         };
-        if let Ok(_) = std::env::var("DEBUG_DEV") {
+        if debug_dev {
             println!("{:?}, compute capability: {major}.{minor}", unsafe {
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
@@ -404,7 +405,7 @@ impl CUDADevice {
         self.memory_pool_id
     }
 
-    pub(crate) fn compile(&mut self, kernel: &IRKernel) -> Result<CUDAProgram, CUDAError> {
+    pub(crate) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<CUDAProgram, CUDAError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -574,7 +575,7 @@ impl CUDADevice {
         }
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         name += "\0";
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
+        if debug_asm {
             println!("{source}");
         }
 
@@ -661,7 +662,7 @@ impl CUDADevice {
         unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
             .check("Failed to load function.")?;
 
-        /*if let Ok(_) = std::env::var("DEBUG_ASM") {
+        /*if debug_asm {
             let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
             println!("{ptx_source}");
         }*/
@@ -676,7 +677,7 @@ impl CUDADevice {
         })
     }
     
-    fn compile_ptx(&mut self, kernel: &IRKernel) -> String {
+    fn compile_ptx(&mut self, kernel: &IRKernel, debug_asm: bool) -> String {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
@@ -876,7 +877,7 @@ impl CUDADevice {
         }
         // End kernel
         source += &format!("{indent}ret;\n}}\0");
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
+        if debug_asm {
             println!("Compiling kernel {name}, PTX source:\n{source}");
         }
         source

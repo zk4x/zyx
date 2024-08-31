@@ -55,7 +55,26 @@ pub(crate) struct HIPDevice {
 }
 
 #[derive(Debug)]
-pub(crate) struct HIPProgram {}
+pub(crate) struct HIPProgram {
+    name: String,
+    module: HIPmodule,
+    function: HIPfunction,
+    global_work_size: [usize; 3],
+    local_work_size: [usize; 3],
+    hipLaunchKernel: unsafe extern "C" fn(
+        HIPfunction,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        HIPstream,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> HIPStatus,
+}
 
 #[derive(Debug)]
 pub(crate) struct HIPEvent {}
@@ -66,6 +85,7 @@ unsafe impl Send for HIPProgram {}
 
 pub(crate) fn initialize_hip_backend(
     config: &HIPConfig,
+    debug_dev: bool,
 ) -> Result<(Vec<HIPMemoryPool>, Vec<HIPDevice>), HIPError> {
     let _ = config;
 
@@ -120,7 +140,7 @@ pub(crate) fn initialize_hip_backend(
     let mut driver_version = 0;
     unsafe { hipDriverGetVersion(&mut driver_version) }
         .check("Failed to get HIP driver version")?;
-    if let Ok(_) = std::env::var("DEBUG_DEV") {
+    if debug_dev {
         println!(
             "Using HIP backend, driver version: {}.{} on devices:",
             driver_version / 1000,
@@ -156,7 +176,7 @@ pub(crate) fn initialize_hip_backend(
         let mut minor = 0;
         let Ok(_) = unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }
             .check("Failed to get HIP device compute capability.") else { continue; };
-        if let Ok(_) = std::env::var("DEBUG_DEV") {
+        if debug_dev {
             println!("{:?}, compute capability: {major}.{minor}", unsafe {
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
@@ -257,13 +277,11 @@ impl HIPDevice {
         self.memory_pool_id
     }
 
-    pub(crate) fn compile(&mut self, kernel: &IRKernel) -> Result<HIPProgram, HIPError> {
+    pub(crate) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<HIPProgram, HIPError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
-
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
-
         for op in &kernel.ops[..6] {
             if let IROp::Loop { id, len } = op {
                 if id % 2 == 0 {
@@ -275,7 +293,6 @@ impl HIPDevice {
                 panic!()
             }
         }
-
         // Declare global variables
         for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
             source += &format!(
@@ -284,11 +301,9 @@ impl HIPDevice {
                 dtype.hip(),
             );
         }
-
         source.pop();
         source.pop();
         source += "\n) {\n";
-
         // Declare register variables
         for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
             source += &format!(
@@ -297,7 +312,6 @@ impl HIPDevice {
                 dtype.hip()
             );
         }
-
         // Add indices for global and local loops
         source += &format!(
             "  r0 = blockIdx.x;   /* 0..{} */\n",
@@ -323,7 +337,6 @@ impl HIPDevice {
             "  r5 = threadIdx.z;   /* 0..{} */\n",
             local_work_size[2]
         );
-
         for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
             match op {
                 IROp::Set { z, len: _, value } => {
@@ -406,7 +419,6 @@ impl HIPDevice {
             }
         }
         source += "}\n";
-
         let mut global_work_size = global_work_size;
         let local_work_size = local_work_size;
         let mut name = format!(
@@ -428,10 +440,9 @@ impl HIPDevice {
         // INFO: MUST BE NULL TERMINATED!
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         name += "\0";
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
+        if debug_asm {
             println!("{source}");
         }
-
         let hiprtc_paths = ["/lib64/libhiprtc.so"];
         let hiprtc = hiprtc_paths.iter().find_map(|path| {
             if let Ok(lib) = unsafe { Library::new(path) } {
@@ -499,9 +510,6 @@ impl HIPDevice {
             return Err(e);
         }
 
-
-        panic!();
-
         let mut code_size: usize = 0;
         unsafe { hiprtcGetCodeSize(program, &mut code_size) }.check("hiprtcGetCodeSize")?;
 
@@ -509,17 +517,31 @@ impl HIPDevice {
         unsafe { hiprtcGetCode(program, code_vec.as_mut_ptr() as *mut i8) }.check("hiprtcGetCode")?;
         unsafe { hiprtcDestroyProgram(&mut program) }.check("hiprtcDestroyProgram")?;
 
-        panic!();
-
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
-            let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(code_vec) }.into_string().unwrap();
-            println!("{ptx_source}");
+        /*let mut module = ptr::null_mut();
+        unsafe {
+            (self.hipModuleLoadDataEx)(
+                &mut module,
+                code_vec.as_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
         }
+        .check("Module load failed.")?;
+        let mut function: HIPfunction = ptr::null_mut();
+        // Don't forget that the name is null terminated string
+        // Name may be mangled, IDK cause hiprtc just does not work
+        unsafe { (self.hipModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+            .check("Failed to load function.")?;*/
 
-        panic!();
-
-
-        todo!()
+        Ok(HIPProgram {
+            name,
+            module: todo!(),
+            function: todo!(),
+            global_work_size,
+            local_work_size,
+            hipLaunchKernel: todo!(), //self.hipLaunchKernel,
+        })
     }
 }
 
@@ -536,7 +558,7 @@ impl HIPProgram {
             let ptr: *mut _ = &mut arg.ptr;
             kernel_params.push(ptr.cast());
         }
-        /*unsafe {
+        unsafe {
             (self.hipLaunchKernel)(
                 self.function,
                 self.global_work_size[0] as u32,
@@ -551,7 +573,7 @@ impl HIPProgram {
                 ptr::null_mut(),
             )
         }
-        .check("Failed to launch kernel.")?;*/
+        .check("Failed to launch kernel.")?;
         // For now just empty event, later we can deal with streams to make it async
         Ok(HIPEvent {})
     }
@@ -654,6 +676,12 @@ type HIPfunction = *mut HIPfunc_st;
 enum HIPdevice_attribute {
     HIP_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 1,
 }
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct HIPstream_st {
+    _unused: [u8; 0],
+}
+type HIPstream = *mut HIPstream_st;
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum hiprtcResult {

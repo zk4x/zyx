@@ -24,6 +24,11 @@
 - [x] Just write the scheduler, temporary variables and stuff does not matter whatsoever
 - [x] multiple kernel executors (with different performance)
 - [ ] PTX compiler
+- [ ] comgr compiler instead of broken hiprtc
+- [ ] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
+- [ ] saving of searched kernel to disk
+- [ ] kernel search using beam
+- [x] ability to use env vars in code blocks
 - [x] uniform function
 - [x] compiled graph execution performance metrics
 - [x] reorder unary and movement ops

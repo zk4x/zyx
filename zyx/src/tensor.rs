@@ -170,6 +170,25 @@ impl Tensor {
         }
     }
 
+    /// Create debug guard at the beginning of the block to debug that block.
+    /// Once the guard is dropped, debug gets reset to global state,
+    /// the one set by ZYX_DEBUG env variable.
+    /// ZYX_DEBUG is bitmask
+    /// 0000 0001 DEBUG_DEV
+    /// 0000 0010 DEBUG_PERF
+    /// 0000 0100 DEBUG_SCHED
+    /// 0000 1000 DEBUG_IR
+    /// 0001 0000 DEBUG_ASM
+    #[must_use]
+    pub fn debug_guard(debug: u32) -> DebugGuard {
+        let mut rt = RT.lock();
+        let guard = DebugGuard {
+            debug: rt.debug,
+        };
+        rt.debug = debug;
+        guard
+    }
+
     /// Write graph of operations between tensors as png image with given filename
     /// Expects dot program to be in the path. Otherwise create dot graph file
     /// without converting it to png.
@@ -1170,6 +1189,16 @@ impl Tensor {
     #[must_use]
     pub fn conv(&self) -> Tensor {
         todo!()
+    }
+}
+
+pub struct DebugGuard {
+    debug: u32,
+}
+
+impl Drop for DebugGuard {
+    fn drop(&mut self) {
+        RT.lock().debug = self.debug;
     }
 }
 

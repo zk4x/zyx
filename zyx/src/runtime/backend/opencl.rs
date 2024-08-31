@@ -204,6 +204,7 @@ impl Drop for OpenCLMemoryPool {
 
 pub(crate) fn initialize_opencl_backend(
     config: &OpenCLConfig,
+    debug_dev: bool,
 ) -> Result<(Vec<OpenCLMemoryPool>, Vec<OpenCLDevice>), OpenCLError> {
     let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
     let opencl = opencl_paths.iter().find_map(|path| if let Ok(lib) = unsafe { Library::new(path) } { Some(lib) } else { None } );
@@ -336,7 +337,7 @@ pub(crate) fn initialize_opencl_backend(
             continue;
         };
         let mut total_bytes = 0;
-        if let Ok(_) = std::env::var("DEBUG_DEV") {
+        if debug_dev {
             if let Ok(platform_name) = {
                 let mut size: usize = 0;
                 let status = unsafe {
@@ -392,7 +393,7 @@ pub(crate) fn initialize_opencl_backend(
                 clGetDeviceInfo,
                 clCreateProgramWithSource,
             };
-            let Ok(_) = device.set_info() else {
+            let Ok(_) = device.set_info(debug_dev) else {
                 continue;
             };
             if let Ok(bytes) = device.get_device_data(CL_DEVICE_GLOBAL_MEM_SIZE) {
@@ -532,11 +533,11 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
-    fn set_info(&mut self) -> Result<(), OpenCLError> {
+    fn set_info(&mut self, debug_dev: bool) -> Result<(), OpenCLError> {
         let device_name = self.get_device_data(CL_DEVICE_NAME)?;
         let device_name = String::from_utf8(device_name).unwrap();
         let max_work_item_dims = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
-        if let Ok(_) = std::env::var("DEBUG_DEV") {
+        if debug_dev {
             println!("{device_name}");
         }
         let max_work_item_dims =
@@ -559,7 +560,7 @@ impl OpenCLDevice {
             max_work_item_sizes.push(max_dim_size);
         }
         self.dev_info = DeviceInfo {
-            compute: get_compute(&device_name),
+            compute: get_compute(&device_name, debug_dev),
             max_work_item_sizes,
             max_work_group_size: usize::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?
@@ -594,7 +595,7 @@ impl OpenCLDevice {
         Ok(())
     }
 
-    pub(crate) fn compile(&mut self, kernel: &IRKernel) -> Result<OpenCLProgram, OpenCLError> {
+    pub(crate) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<OpenCLProgram, OpenCLError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -766,7 +767,7 @@ impl OpenCLDevice {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}__kernel void {name}{source}");
-        if let Ok(_) = std::env::var("DEBUG_ASM") {
+        if debug_asm {
             println!("{source}");
         }
         let sources: &[&str] = &[source.as_str()];
@@ -1120,7 +1121,7 @@ impl From<cl_int> for OpenCLStatus {
     }
 }
 
-fn get_compute(device_name: &str) -> u128 {
+fn get_compute(device_name: &str, debug_dev: bool) -> u128 {
     match device_name.to_lowercase() {
         x if x.contains("i5-4460") => 300 * 1024 * 1024 * 1024,
         x if x.contains("i5-2500") => 150 * 1024 * 1024 * 1024,
@@ -1128,7 +1129,7 @@ fn get_compute(device_name: &str) -> u128 {
         x if x.contains("rx 550") => 1200 * 1024 * 1024 * 1024,
         x if x.contains("gtx 745") => 900 * 1024 * 1024 * 1024,
         _ => {
-            if let Ok(_) = std::env::var("DEBUG_DEV") {
+            if debug_dev {
                 println!("Unknown device {device_name}, guessing compute capability");
             }
             1024 * 1024 * 1024 * 1024

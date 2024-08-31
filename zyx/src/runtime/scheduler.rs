@@ -120,9 +120,7 @@ impl Runtime {
                     .0;
 
                 // Prints unoptimized kernel
-                if let Ok(_) = std::env::var("DEBUG_SCHED") {
-                    kernel.debug();
-                }
+                if self.debug_sched() { kernel.debug(); }
                 let optimizations = kernel.optimize(self.devices[device_id].info());
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
                 // Allocate memory for outputs
@@ -168,26 +166,25 @@ impl Runtime {
                     }
                 }
                 if program_id.is_none() {
-                    if let Ok(_) = std::env::var("DEBUG_IR") {
-                        ir_kernel.debug();
-                    }
+                    if self.debug_ir() { ir_kernel.debug(); }
+                    let debug_asm = self.debug_asm();
                     program_id = Some(match &mut self.devices[device_id] {
                         Device::CUDA {
                             device, programs, ..
                         } => {
-                            programs.push(device.compile(&ir_kernel)?);
+                            programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
                         Device::HIP {
                             device, programs, ..
                         } => {
-                            programs.push(device.compile(&ir_kernel)?);
+                            programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
                         Device::OpenCL {
                             device, programs, ..
                         } => {
-                            programs.push(device.compile(&ir_kernel)?);
+                            programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
                     });
@@ -246,7 +243,7 @@ impl Runtime {
             programs.clear();
         }
 
-        if let Ok(_) = std::env::var("DEBUG_SCHED") {
+        if self.debug_sched() {
             for sched_op in &sched_graph {
                 match sched_op {
                     SchedulerOp::Launch(program_id) => {
@@ -615,7 +612,7 @@ impl Runtime {
                 },
             }
         }
-        if let Ok(_) = std::env::var("DEBUG_PERF") {
+        if self.debug_perf() {
             let duration = begin.elapsed();
             let nanos = duration.as_nanos();
 
@@ -1052,7 +1049,7 @@ impl Kernel {
         // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
         // So that will be 64 work items per thread
         // TODO search for best work per thread
-        let wpt_x = 8;
+        /*let wpt_x = 8;
         let wpt_y = 8;
         self.split_axis(4, &[gws[2]/wpt_y, wpt_y]);
         self.split_axis(2, &[gws[1]/wpt_x, wpt_x]);
@@ -1066,7 +1063,7 @@ impl Kernel {
         }
         self.debug();
         // All accumulators should now take advantage of wpt_x and wpt_y
-        // So make larger accumulators
+        // So make larger accumulators*/
 
         // Add local caching for loads
         KernelOptimizations {

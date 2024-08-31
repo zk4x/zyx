@@ -138,9 +138,9 @@ impl View {
     }
 
     pub(crate) fn expand(&mut self, axis: Axis, dimension: Dimension) {
-        let _ = dimension;
         // TODO probably instead of changing stride to 0, we can simply
         // remove the dimension alltogether
+        /*let _ = dimension;
         match self {
             View::None => {}
             View::Strided(dims) => {
@@ -151,8 +151,8 @@ impl View {
                 pa.axes.iter_mut().for_each(|(v, _)| v.retain(|a| *a != axis));
                 pa.axes.retain(|(axes, _)| !axes.is_empty());
             }
-        }
-        /*match self {
+        }*/
+        match self {
             View::None => {}
             View::Strided(dims) => {
                 for StridedDim {
@@ -184,7 +184,7 @@ impl View {
                     }
                 }
             }
-        }*/
+        }
     }
 
     pub(crate) fn numel(&self) -> usize {

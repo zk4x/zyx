@@ -53,14 +53,16 @@ pub(crate) struct Runtime {
     // Random number generator
     #[cfg(feature = "rand")]
     rng: std::cell::OnceCell<SmallRng>,
-    // Are we in training mode?
-    pub(crate) training: bool,
     devices: Vec<Device>,
     memory_pools: Vec<MemoryPool>,
     // Cache for compiled graphs
     compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
     // Cache which maps IRKernel to device and program id on the device
     ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
+    // Are we in training mode?
+    pub(crate) training: bool,
+    pub(super) debug: u32,
+    //pub(super) beam_search: bool,
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
@@ -134,11 +136,13 @@ impl Runtime {
             graph: Graph::new(),
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
-            training: false,
             compiled_graph_cache: BTreeMap::new(),
             devices: Vec::new(),
             memory_pools: Vec::new(),
             ir_kernel_cache: BTreeMap::new(),
+            training: false,
+            debug: 0,
+            //beam_search: false,
         }
     }
 
@@ -574,6 +578,26 @@ impl Runtime {
 }
 
 impl Runtime {
+    fn debug_dev(&self) -> bool {
+        self.debug % 2 == 1
+    }
+
+    fn debug_perf(&self) -> bool {
+        (self.debug >> 1) % 2 == 1
+    }
+
+    fn debug_sched(&self) -> bool {
+        (self.debug >> 2) % 2 == 1
+    }
+
+    fn debug_ir(&self) -> bool {
+        (self.debug >> 3) % 2 == 1
+    }
+
+    fn debug_asm(&self) -> bool {
+        (self.debug >> 4) % 2 == 1
+    }
+
     // Initializes all available devices, creating a device for each compute
     // device and a memory pool for each physical memory.
     // Does nothing if devices were already initialized.
@@ -584,14 +608,22 @@ impl Runtime {
             return Ok(());
         }
 
+        // Set env vars
+        if let Ok(x) = std::env::var("ZYX_DEBUG") {
+            if let Ok(x) = x.parse::<u32>() {
+                self.debug = x;
+            }
+        }
+        /*if let Ok(_) = std::env::var("ZYX_BEAM") {
+            self.beam_search = true;
+        }*/
+
         // Search through config directories and find zyx/backend_config.json
         // If not found or failed to parse, use defaults.
         let backend_config = xdg::BaseDirectories::new()
             .map_err(|e| {
-                if let Ok(_) = std::env::var("DEBUG_DEV") {
-                    println!(
-                        "Failed to find config directories for backend_config.json, using defaults: {e}"
-                    );
+                if self.debug_dev() {
+                    println!("Failed to find config directories for backend_config.json, {e}");
                 }
             })
             .ok()
@@ -605,8 +637,8 @@ impl Runtime {
                     path.push("zyx/backend_config.json");
                     std::fs::read_to_string(&path)
                         .map_err(|e| {
-                            if let Ok(_) = std::env::var("DEBUG_DEV") {
-                                println!("Failed to read backend_config.json at {path:?}, using defaults: {e}");
+                            if self.debug_dev() {
+                                println!("Failed to read backend_config.json at {path:?}, {e}");
                             }
                         })
                         .ok()
@@ -616,16 +648,29 @@ impl Runtime {
             .map(|file| {
                 serde_json::from_str(&file)
                     .map_err(|e| {
-                        if let Ok(_) = std::env::var("DEBUG_DEV") {
-                            println!("Failed to parse backend_config.json, using defaults: {e}");
+                        if self.debug_dev() {
+                            println!("Failed to parse backend_config.json, {e}");
                         }
                     })
                     .ok()
             })
             .flatten()
-            .unwrap_or_else(|| BackendConfig::default());
+            .map(|x| {
+                if self.debug_dev() {
+                    println!("Backend config successfully read and parsed.");
+                }
+                x
+            })
+            .unwrap_or_else(|| {
+                if self.debug_dev() {
+                    println!("Failed to get backend config, using defaults.");
+                }
+                BackendConfig::default()
+            });
 
-        if let Ok((memory_pools, devices)) = initialize_cuda_backend(&backend_config.cuda) {
+        if let Ok((memory_pools, devices)) =
+            initialize_cuda_backend(&backend_config.cuda, self.debug_dev())
+        {
             let n = self.memory_pools.len();
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
@@ -639,7 +684,9 @@ impl Runtime {
                     programs: Vec::new(),
                 }));
         }
-        if let Ok((memory_pools, devices)) = initialize_hip_backend(&backend_config.hip) {
+        if let Ok((memory_pools, devices)) =
+            initialize_hip_backend(&backend_config.hip, self.debug_dev())
+        {
             let n = self.memory_pools.len();
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::HIP {
@@ -653,7 +700,9 @@ impl Runtime {
                     programs: Vec::new(),
                 }));
         }
-        if let Ok((memory_pools, devices)) = initialize_opencl_backend(&backend_config.opencl) {
+        if let Ok((memory_pools, devices)) =
+            initialize_opencl_backend(&backend_config.opencl, self.debug_dev())
+        {
             let n = self.memory_pools.len();
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL {
