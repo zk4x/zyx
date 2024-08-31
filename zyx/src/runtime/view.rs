@@ -121,6 +121,10 @@ impl View {
         }
     }
 
+    pub(super) fn arbitrary_permute(&mut self, axes: &[usize]) {
+        todo!()
+    }
+
     pub(crate) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
         //println!("Padding view with {left_pad}, {right_pad}");
         match self {

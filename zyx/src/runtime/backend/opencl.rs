@@ -588,7 +588,7 @@ impl OpenCLDevice {
                     .try_into()
                     .unwrap(),
             ) as usize,
-            num_registers: 128, // We can only guess or have a map of concrete hardware and respective register counts
+            num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
             wmma: false,
             tensor_cores: false,
         };

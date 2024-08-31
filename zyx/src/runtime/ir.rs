@@ -11,7 +11,8 @@ use crate::{
 };
 use core::fmt::Display;
 use std::collections::BTreeMap;
-use super::scheduler::{Kernel, KernelOptimizations, VOp};
+
+use super::scheduler::{Kernel, VOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Var {
@@ -119,7 +120,6 @@ impl Kernel {
     pub(super) fn to_ir(
         &self,
         graph: &Graph,
-        optimizations: KernelOptimizations,
     ) -> (IRKernel, Vec<(TensorId, bool)>) {
         let mut ops = Vec::new();
         let mut vars: VarMap = VarMap::new();
