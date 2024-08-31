@@ -860,7 +860,23 @@ impl Kernel {
         self.shape = shape.clone();
     }
 
-    pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
+    // Permutes first found loops, not the kernel as a whole
+    /*fn permute_loops(&mut self, op_id: usize) {
+        for op in self.ops[op_id..].iter_mut() {
+            match op {
+                VOp::Loop { dimension, .. } => {
+                    *dimension = shape[last_axis];
+                }
+                VOp::Const { view, .. } | VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Accumulator { view, .. } => {
+                    //view.arbitrary_permute();
+                    todo!()
+                }
+                _ => {}
+            }
+        }
+    }*/
+
+    fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
         let VOp::Loop { axis, dimension } = &mut self.ops[op_id] else {
@@ -870,7 +886,7 @@ impl Kernel {
         let axis = *axis;
         let mut temp_axis = axis;
         let mut id = op_id;
-        for dim in dimensions[1..].iter() {
+        for dim in &dimensions[1..] {
             id += 1;
             temp_axis += 1;
             self.ops.insert(
@@ -879,14 +895,14 @@ impl Kernel {
                     axis: temp_axis,
                     dimension: *dim,
                 },
-            )
+            );
         }
-        let mut num_loops = 0;
         // Update shape
         self.shape.remove(axis);
-        for dim in dimensions {
+        for dim in dimensions.iter().rev() {
             self.shape.insert(axis, *dim);
         }
+        let mut num_loops = 0;
         // Update loops, loads and stores
         let mut reduce_end = false;
         for i in id + 1..self.ops.len() {
@@ -1041,19 +1057,22 @@ impl Kernel {
         gws[1] /= lws[1];
         gws[2] /= lws[2];
 
+        println!("sizes {gws:?}, {lws:?}");
+
+        self.debug();
         self.split_axis(0, &[gws[0], lws[0]]);
         self.split_axis(2, &[gws[1], lws[1]]);
         self.split_axis(4, &[gws[2], lws[2]]);
+        self.debug();
 
         // Split for bigger work per thread
         // For now split axis 2 and 4 to [gws[1]/8, 8] and [gws[2]/8, 8]
         // So that will be 64 work items per thread
         // TODO search for best work per thread
-        /*let wpt_x = 8;
+        let wpt_x = 8;
         let wpt_y = 8;
         self.split_axis(4, &[gws[2]/wpt_y, wpt_y]);
         self.split_axis(2, &[gws[1]/wpt_x, wpt_x]);
-        self.debug();
         // Permute so that work per thread loops are after global, local and reduce loops
         if self.shape.len() > 8 {
             let axes: Vec<usize> = [0, 1, 2, 4, 5, 7].into_iter().chain(8..self.shape.len()).chain([3, 6]).collect();
