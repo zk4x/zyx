@@ -142,13 +142,6 @@ pub(crate) fn initialize_hip_backend(
     let mut driver_version = 0;
     unsafe { hipDriverGetVersion(&mut driver_version) }
         .check("Failed to get HIP driver version")?;
-    if debug_dev {
-        println!(
-            "Using HIP backend, driver version: {}.{} on devices:",
-            driver_version / 1000,
-            (driver_version - (driver_version / 1000 * 1000)) / 10
-        );
-    }
     let mut num_devices = 0;
     unsafe { hipDeviceGetCount(&mut num_devices) }.check("Failed to get HIP device count")?;
     if num_devices == 0 {
@@ -157,6 +150,13 @@ pub(crate) fn initialize_hip_backend(
             status: HIPStatus::hipErrorTbd,
             hiprtc: hiprtcResult::HIPRTC_SUCCESS,
         });
+    }
+    if debug_dev {
+        println!(
+            "Using HIP backend, driver version: {}.{} on devices:",
+            driver_version / 1000,
+            (driver_version - (driver_version / 1000 * 1000)) / 10
+        );
     }
 
     let hip = Rc::new(hip);

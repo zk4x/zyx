@@ -172,21 +172,19 @@ impl Runtime {
                     if self.debug_ir() { ir_kernel.debug(); }
                     let debug_asm = self.debug_asm();
                     program_id = Some(match &mut self.devices[device_id] {
-                        Device::CUDA {
-                            device, programs, ..
-                        } => {
+                        Device::CUDA { device, programs, ..  } => {
                             programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
-                        Device::HIP {
-                            device, programs, ..
-                        } => {
+                        Device::HIP { device, programs, ..  } => {
                             programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
-                        Device::OpenCL {
-                            device, programs, ..
-                        } => {
+                        Device::OpenCL { device, programs, ..  } => {
+                            programs.push(device.compile(&ir_kernel, debug_asm)?);
+                            programs.len() - 1
+                        }
+                        Device::WGSL { device, programs, ..  } => {
                             programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
@@ -353,6 +351,21 @@ impl Runtime {
                             queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
                             id
                         }
+                        Device::WGSL {
+                            device: _,
+                            memory_pool_id: mpid,
+                            programs,
+                            queues,
+                        } => {
+                            let MemoryPool::WGSL { buffers, .. } = &mut self.memory_pools[*mpid] else { panic!() };
+                            let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                            if queue.load() > 10 {
+                                (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                                queue.sync()?;
+                            }
+                            queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
+                            id
+                        }
                     });
                 }
                 SchedulerOp::Finish(program) => {
@@ -362,6 +375,7 @@ impl Runtime {
                                 Device::CUDA { queues, .. } => queues[*queue].sync()?,
                                 Device::HIP { queues, .. } => queues[*queue].sync()?,
                                 Device::OpenCL { queues, .. } => queues[*queue].sync()?,
+                                Device::WGSL { queues, .. } => queues[*queue].sync()?,
                             }
                         }
                     }
@@ -412,114 +426,38 @@ impl Runtime {
                     }
 
                     match (&mut src_mps[memory_pool_id], &mut dst_mps[0]) {
-                        (
-                            MemoryPool::CUDA {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::CUDA {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            within_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::CUDA {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::HIP {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            cross_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::CUDA {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::OpenCL {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            cross_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::HIP {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::CUDA {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            cross_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::HIP {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::HIP {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            within_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::HIP {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::OpenCL {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            cross_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::OpenCL {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::CUDA {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            cross_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::OpenCL {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::HIP {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            cross_backend!(sm, sb, dm, db)
-                        }
-                        (
-                            MemoryPool::OpenCL {
-                                memory_pool: sm,
-                                buffers: sb,
-                            },
-                            MemoryPool::OpenCL {
-                                memory_pool: dm,
-                                buffers: db,
-                            },
-                        ) => {
-                            within_backend!(sm, sb, dm, db)
-                        }
+                        #[rustfmt::skip]
+                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb, }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[rustfmt::skip]
+                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
                     }
                 }
                 SchedulerOp::Allocate {
@@ -557,6 +495,20 @@ impl Runtime {
                         );
                     }
                     MemoryPool::OpenCL {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let buffer = memory_pool.allocate(*bytes)?;
+                        let buffer_id = buffers.push(buffer);
+                        self.graph.tensor_buffer_map.insert(
+                            (*tensor_id, view.clone()),
+                            BufferId {
+                                memory_pool_id: *memory_pool_id,
+                                buffer_id,
+                            },
+                        );
+                    }
+                    MemoryPool::WGSL {
                         memory_pool,
                         buffers,
                     } => {
@@ -615,6 +567,24 @@ impl Runtime {
                         }
                     }
                     MemoryPool::OpenCL {
+                        memory_pool,
+                        buffers,
+                    } => {
+                        let _ = bytes;
+                        let key = &(*tensor_id, view.clone());
+                        if let Some(BufferId {
+                            memory_pool_id: buf_mpid,
+                            ..
+                        }) = self.graph.tensor_buffer_map.get(key)
+                        {
+                            if buf_mpid == memory_pool_id {
+                                let BufferId { buffer_id, .. } =
+                                    self.graph.tensor_buffer_map.remove(key).unwrap();
+                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
+                            }
+                        }
+                    }
+                    MemoryPool::WGSL {
                         memory_pool,
                         buffers,
                     } => {

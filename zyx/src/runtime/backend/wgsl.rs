@@ -1,31 +1,197 @@
-use crate::{dtype::Constant, runtime::{ir::{IRDType, IRKernel, IROp, Scope, Var}, node::{BOp, UOp}}};
+use std::sync::Arc;
 
-#[derive(Debug)]
+use wgpu::{util::DownloadBuffer, BufferDescriptor, BufferUsages};
+
+use super::DeviceInfo;
+use crate::{
+    dtype::Constant,
+    index_map::IndexMap,
+    runtime::{
+        ir::{IRDType, IRKernel, IROp, Scope, Var},
+        node::{BOp, UOp},
+    },
+};
+
+#[derive(serde::Deserialize, Debug, Default)]
 pub struct WGSLConfig {}
 
 #[derive(Debug)]
 pub(crate) enum WGSLError {}
 
 #[derive(Debug)]
-pub(crate) struct WGSLMemoryPool {}
+pub(crate) struct WGSLMemoryPool {
+    free_bytes: usize,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+}
 
 #[derive(Debug)]
-pub(crate) struct WGSLDevice {}
+pub(crate) struct WGSLBuffer {
+    buffer: wgpu::Buffer,
+}
+
+#[derive(Debug)]
+pub(crate) struct WGSLDevice {
+    dev_info: DeviceInfo,
+    memory_pool_id: usize,
+    device: Arc<wgpu::Device>,
+    adapter: wgpu::Adapter,
+}
 
 #[derive(Debug)]
 pub(crate) struct WGSLProgram {}
 
-pub(crate) fn initialize_hip_backend(
-    config: &WGSLConfig,
-    debug_dev: bool,
-) -> Result<(Vec<WGSLMemoryPool>, Vec<WGSLDevice>), WGSLError> {
-    todo!()
+#[derive(Debug)]
+pub(crate) struct WGSLQueue {
+    load: usize,
+    queue: Arc<wgpu::Queue>,
 }
 
-impl WGSLMemoryPool {}
+pub(crate) fn initialize_wgsl_backend(
+    config: &WGSLConfig,
+    debug_dev: bool,
+) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
+    let power_preference =
+        wgpu::util::power_preference_from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        ..Default::default()
+    });
+
+    println!("Requesting device with {:#?}", power_preference);
+
+    let (adapter, device, queue) = futures::executor::block_on(async {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference,
+                ..Default::default()
+            })
+            .await
+            .expect("Failed at adapter creation.");
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: adapter.features(),
+                    required_limits: adapter.limits(),
+                    memory_hints: Default::default(),
+                },
+                None,
+            )
+            .await
+            .expect("Failed at device creation.");
+        (adapter, device, queue)
+    });
+
+    let info = adapter.get_info();
+    println!(
+        "Using {} ({}) - {:#?}.",
+        info.name, info.device, info.backend
+    );
+    let device = Arc::new(device);
+    /*let polling_device = Arc::clone(&device);
+    let handle = std::thread::spawn(move || loop {
+        polling_device.poll(wgpu::Maintain::Poll);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    });
+    handle.join().unwrap();*/
+
+    let queue = Arc::new(queue);
+    let mut memory_pools = Vec::new();
+    let mut devices = Vec::new();
+    memory_pools.push(WGSLMemoryPool {
+        free_bytes: 1000000000,
+        device: device.clone(),
+        queue: queue.clone(),
+    });
+    devices.push((
+        WGSLDevice {
+            device,
+            adapter,
+            dev_info: DeviceInfo::default(),
+            memory_pool_id: 0,
+        },
+        vec![WGSLQueue { load: 0, queue }],
+    ));
+
+    Ok((memory_pools, devices))
+}
+
+impl WGSLMemoryPool {
+    pub(crate) fn free_bytes(&self) -> usize {
+        self.free_bytes
+    }
+
+    pub(crate) fn allocate(&mut self, bytes: usize) -> Result<WGSLBuffer, WGSLError> {
+        Ok(WGSLBuffer {
+            buffer: self.device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: bytes as u64,
+                usage: BufferUsages::from_bits_truncate(BufferUsages::STORAGE.bits() | BufferUsages::COPY_SRC.bits() | BufferUsages::COPY_DST.bits()),
+                mapped_at_creation: false,
+            }),
+        })
+    }
+
+    pub(crate) fn deallocate(&mut self, buffer: WGSLBuffer) -> Result<(), WGSLError> {
+        todo!()
+    }
+
+    pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &WGSLBuffer) -> Result<(), WGSLError> {
+        self.queue.write_buffer(&dst.buffer, 0, src);
+        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("GpuBuffer::write"),
+        });
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    pub(crate) fn pool_to_host(
+        &mut self,
+        src: &WGSLBuffer,
+        dst: &mut [u8],
+    ) -> Result<(), WGSLError> {
+        futures::executor::block_on(async {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            DownloadBuffer::read_buffer(
+                &self.device,
+                &self.queue,
+                &src.buffer.slice(..),
+                move |result| {
+                    tx.send(result)
+                        .unwrap_or_else(|_| panic!("Failed to download buffer."));
+                },
+            );
+            let download = rx.await.unwrap().unwrap();
+            dst.copy_from_slice(&download);
+        });
+        Ok(())
+    }
+
+    pub(crate) fn pool_to_pool(
+        &mut self,
+        src: &WGSLBuffer,
+        dst: &WGSLBuffer,
+    ) -> Result<(), WGSLError> {
+        todo!()
+    }
+}
 
 impl WGSLDevice {
-    fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<WGSLProgram, WGSLError> {
+    pub(crate) fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
+
+    // Memory pool id out of OpenCLMemoryPools
+    pub(crate) fn memory_pool_id(&self) -> usize {
+        self.memory_pool_id
+    }
+
+    pub(crate) fn compile(
+        &mut self,
+        kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<WGSLProgram, WGSLError> {
         let mut source = String::new();
         let mut indent = String::from("  ");
 
@@ -60,7 +226,10 @@ impl WGSLDevice {
         }
 
         // NOTE Just gonna assume wgsl workgroup size is local work size
-        source += &format!("@compute @workgroup_size({}, {}, {})", local_work_size[0], local_work_size[1], local_work_size[2]);
+        source += &format!(
+            "@compute @workgroup_size({}, {}, {})",
+            local_work_size[0], local_work_size[1], local_work_size[2]
+        );
         source += &format!("fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {{\n");
 
         // Declare register variables
@@ -73,32 +242,14 @@ impl WGSLDevice {
         }
 
         // Add indices for global and local loops
-        source += &format!(
-            "  r0 = gid.x;   /* 0..{} */\n",
-            global_work_size[0]
-        );
-        source += &format!(
-            "  r1 = lid.x;   /* 0..{} */\n",
-            local_work_size[0]
-        );
-        source += &format!(
-            "  r2 = gid.y;   /* 0..{} */\n",
-            global_work_size[1]
-        );
-        source += &format!(
-            "  r3 = lid.y;   /* 0..{} */\n",
-            local_work_size[1]
-        );
-        source += &format!(
-            "  r4 = gid.z;   /* 0..{} */\n",
-            global_work_size[2]
-        );
-        source += &format!(
-            "  r5 = lid.z;   /* 0..{} */\n",
-            local_work_size[2]
-        );
+        source += &format!("  r0 = gid.x;   /* 0..{} */\n", global_work_size[0]);
+        source += &format!("  r1 = lid.x;   /* 0..{} */\n", local_work_size[0]);
+        source += &format!("  r2 = gid.y;   /* 0..{} */\n", global_work_size[1]);
+        source += &format!("  r3 = lid.y;   /* 0..{} */\n", local_work_size[1]);
+        source += &format!("  r4 = gid.z;   /* 0..{} */\n", global_work_size[2]);
+        source += &format!("  r5 = lid.z;   /* 0..{} */\n", local_work_size[2]);
 
-        for op in kernel.ops[6..kernel.ops.len()-6].iter().copied() {
+        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, len: _, value } => {
                     source += &format!("{indent}r{z} = {value};\n");
@@ -111,7 +262,9 @@ impl WGSLDevice {
                 }
                 IROp::Unary { z, x, uop, dtype } => {
                     source += &match uop {
-                        UOp::Cast(_) => format!("{indent}{} = ({}){};\n", z.wgsl(), dtype.wgsl(), x.wgsl()),
+                        UOp::Cast(_) => {
+                            format!("{indent}{} = ({}){};\n", z.wgsl(), dtype.wgsl(), x.wgsl())
+                        }
                         UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.wgsl(), x.wgsl()),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.wgsl(), x.wgsl()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.wgsl(), x.wgsl()),
@@ -154,7 +307,13 @@ impl WGSLDevice {
                     c,
                     dtype: _,
                 } => {
-                    source += &format!("{indent}{} = {} * {} + {};\n", z.wgsl(), a.wgsl(), b.wgsl(), c.wgsl());
+                    source += &format!(
+                        "{indent}{} = {} * {} + {};\n",
+                        z.wgsl(),
+                        a.wgsl(),
+                        b.wgsl(),
+                        c.wgsl()
+                    );
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
@@ -229,6 +388,26 @@ impl IRDType {
             IRDType::Bool => "bool",
             IRDType::U32 => "u32",
         };
+    }
+}
+
+impl WGSLQueue {
+    pub(crate) fn launch(
+        &mut self,
+        program: &mut WGSLProgram,
+        buffers: &mut IndexMap<WGSLBuffer>,
+        args: &[usize],
+    ) -> Result<(), WGSLError> {
+        todo!()
+    }
+
+    pub(crate) fn sync(&mut self) -> Result<(), WGSLError> {
+        self.load = 0;
+        todo!()
+    }
+
+    pub(crate) fn load(&self) -> usize {
+        self.load
     }
 }
 

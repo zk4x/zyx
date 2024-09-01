@@ -27,6 +27,11 @@ xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # For nice colorful debug logging
 inline_colorization = { version = "0.1.6" } # MIT
 
+# Lot of dependencies from wgpu
+wgpu = { version = "*", default-features = false }
+# Futures for wgpu axync
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+
 # Optional dependencies
 # Support for random number generation
 rand = { version = "0.8.5", default-features = false, features = ["small_rng"], optional = true } # MIT or Apache 2.0

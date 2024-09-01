@@ -13,6 +13,7 @@ use backend::opencl::{
     initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool,
     OpenCLProgram, OpenCLQueue,
 };
+use backend::wgsl::{initialize_wgsl_backend, WGSLBuffer, WGSLConfig, WGSLDevice, WGSLError, WGSLMemoryPool, WGSLProgram, WGSLQueue};
 use backend::DeviceInfo;
 use graph::Graph;
 use ir::IRKernel;
@@ -71,6 +72,7 @@ pub struct BackendConfig {
     pub cuda: CUDAConfig,
     pub hip: HIPConfig,
     pub opencl: OpenCLConfig,
+    pub wgsl: WGSLConfig,
 }
 
 impl Default for BackendConfig {
@@ -79,6 +81,7 @@ impl Default for BackendConfig {
             cuda: CUDAConfig::default(),
             hip: HIPConfig::default(),
             opencl: OpenCLConfig::default(),
+            wgsl: WGSLConfig::default(),
         }
     }
 }
@@ -95,22 +98,28 @@ struct BufferId {
 #[derive(Debug)]
 enum Device {
     CUDA {
-        device: CUDADevice,
         memory_pool_id: MemoryPoolId,
+        device: CUDADevice,
         programs: Vec<CUDAProgram>,
         queues: Vec<CUDAQueue>,
     },
     HIP {
-        device: HIPDevice,
         memory_pool_id: MemoryPoolId,
+        device: HIPDevice,
         programs: Vec<HIPProgram>,
         queues: Vec<HIPQueue>,
     },
     OpenCL {
-        device: OpenCLDevice,
         memory_pool_id: MemoryPoolId,
+        device: OpenCLDevice,
         programs: Vec<OpenCLProgram>,
         queues: Vec<OpenCLQueue>,
+    },
+    WGSL {
+        memory_pool_id: MemoryPoolId,
+        device: WGSLDevice,
+        programs: Vec<WGSLProgram>,
+        queues: Vec<WGSLQueue>,
     },
 }
 
@@ -126,6 +135,10 @@ enum MemoryPool {
     OpenCL {
         memory_pool: OpenCLMemoryPool,
         buffers: IndexMap<OpenCLBuffer>,
+    },
+    WGSL {
+        memory_pool: WGSLMemoryPool,
+        buffers: IndexMap<WGSLBuffer>,
     },
 }
 
@@ -296,6 +309,21 @@ impl Runtime {
                     }
                 }
                 MemoryPool::OpenCL {
+                    memory_pool,
+                    buffers,
+                } => {
+                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
+                    let ptr: *const u8 = data.as_ptr().cast();
+                    memory_pool.host_to_pool(
+                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
+                        &mut buffers[buffer_id],
+                    )?;
+                    BufferId {
+                        memory_pool_id,
+                        buffer_id,
+                    }
+                }
+                MemoryPool::WGSL {
                     memory_pool,
                     buffers,
                 } => {
@@ -719,6 +747,23 @@ impl Runtime {
                     queues,
                 }));
         }
+        if let Ok((memory_pools, devices)) =
+            initialize_wgsl_backend(&backend_config.wgsl, self.debug_dev())
+        {
+            let n = self.memory_pools.len();
+            self.memory_pools
+                .extend(memory_pools.into_iter().map(|m| MemoryPool::WGSL {
+                    memory_pool: m,
+                    buffers: IndexMap::new(),
+                }));
+            self.devices
+                .extend(devices.into_iter().map(|(device, queues)| Device::WGSL {
+                    memory_pool_id: device.memory_pool_id() + n,
+                    device,
+                    programs: Vec::new(),
+                    queues,
+                }));
+        }
         if self.devices.is_empty() {
             return Err(ZyxError::NoBackendAvailable);
         }
@@ -746,22 +791,16 @@ impl Runtime {
                         std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n * T::byte_size())
                     };
                     match &mut self.memory_pools[buffer_id.memory_pool_id] {
-                        MemoryPool::CUDA {
-                            memory_pool,
-                            buffers,
-                        } => {
+                        MemoryPool::CUDA { memory_pool, buffers } => {
                             memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
-                        MemoryPool::HIP {
-                            memory_pool,
-                            buffers,
-                        } => {
+                        MemoryPool::HIP { memory_pool, buffers } => {
                             memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
-                        MemoryPool::OpenCL {
-                            memory_pool,
-                            buffers,
-                        } => {
+                        MemoryPool::OpenCL { memory_pool, buffers } => {
+                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                        }
+                        MemoryPool::WGSL { memory_pool, buffers } => {
                             memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
                     }
@@ -875,24 +914,19 @@ impl Runtime {
             .retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
             match &mut self.memory_pools[buffer.memory_pool_id] {
-                MemoryPool::CUDA {
-                    memory_pool,
-                    buffers,
-                } => {
+                MemoryPool::CUDA { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
-                MemoryPool::HIP {
-                    memory_pool,
-                    buffers,
-                } => {
+                MemoryPool::HIP { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
-                MemoryPool::OpenCL {
-                    memory_pool,
-                    buffers,
-                } => {
+                MemoryPool::OpenCL { memory_pool, buffers } => {
+                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
+                    memory_pool.deallocate(buffer)?;
+                }
+                MemoryPool::WGSL { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
@@ -1201,6 +1235,7 @@ impl MemoryPool {
             MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::HIP { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::OpenCL { memory_pool, .. } => memory_pool.free_bytes(),
+            MemoryPool::WGSL { memory_pool, .. } => memory_pool.free_bytes(),
         }
     }
 }
@@ -1233,6 +1268,7 @@ pub enum ZyxError {
     CUDAError(CUDAError),
     HIPError(HIPError),
     OpenCLError(OpenCLError),
+    WGSLError(WGSLError),
 }
 
 impl From<CUDAError> for ZyxError {
@@ -1253,12 +1289,19 @@ impl From<OpenCLError> for ZyxError {
     }
 }
 
+impl From<WGSLError> for ZyxError {
+    fn from(value: WGSLError) -> Self {
+        ZyxError::WGSLError(value)
+    }
+}
+
 impl Device {
     fn compute(&self) -> u128 {
         match self {
             Device::CUDA { device, ..  } => device.info().compute,
             Device::HIP { device, ..  } => device.info().compute,
             Device::OpenCL { device, ..  } => device.info().compute,
+            Device::WGSL { device, ..  } => device.info().compute,
         }
     }
 
@@ -1267,6 +1310,7 @@ impl Device {
             Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
             Device::HIP { memory_pool_id, .. } => *memory_pool_id,
             Device::OpenCL { memory_pool_id, .. } => *memory_pool_id,
+            Device::WGSL { memory_pool_id, .. } => *memory_pool_id,
         }
     }
 
@@ -1275,6 +1319,7 @@ impl Device {
             Device::CUDA { device, .. } => device.info(),
             Device::HIP { device, .. } => device.info(),
             Device::OpenCL { device, .. } => device.info(),
+            Device::WGSL { device, .. } => device.info(),
         }
     }
 }
@@ -1289,6 +1334,9 @@ impl Display for Device {
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
             Device::OpenCL { memory_pool_id, ..  } => f.write_fmt(format_args!(
+                "Device {{ memory_pool_id: {memory_pool_id} }})"
+            )),
+            Device::WGSL { memory_pool_id, ..  } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
         }
