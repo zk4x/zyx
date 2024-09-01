@@ -3,6 +3,7 @@
 - [x] padded view permute
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
+- [ ] run kernel launch function on separate thread/threads
 - [x] dynamic loading of backends at runtime
 - [x] test reshape split
 - [x] repeat
@@ -25,7 +26,6 @@
 - [x] multiple kernel executors (with different performance)
 - [ ] PTX compiler
 - [ ] comgr compiler instead of broken hiprtc
-- [ ] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
 - [ ] saving of searched kernel to disk
 - [ ] kernel search using beam
 - [x] ability to use env vars in code blocks
@@ -41,9 +41,15 @@
 - [x] dot graph of all nodes
 - [x] backpropagation
 - [x] scalar casting
+- [ ] lower/upper triangle mask (for attention)
+- [ ] conv
+- [ ] wgsl memory copy
+- [x] wgsl compilation
+- [ ] wgsl program launch
 
 ### Release blockers
 
+- [x] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
 - [ ] test pad after reduce
 - [x] full reduce
 - [ ] test padded view permute
@@ -56,11 +62,9 @@
 - [x] tensor detach (for recurrent nets)
 - [ ] tensor split
 - [ ] stack
-- [ ] lower/upper triangle mask (for attention)
 - [ ] pool
 - [ ] cumsum
 - [ ] randn
-- [ ] conv
 - [x] cuda backend
 - [x] hip backend
 - [x] remove smadd, amadd

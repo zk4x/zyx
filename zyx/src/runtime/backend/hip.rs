@@ -61,6 +61,11 @@ pub(crate) struct HIPProgram {
     function: HIPfunction,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
+}
+
+#[derive(Debug)]
+pub(crate) struct HIPQueue {
+    load: usize,
     hipLaunchKernel: unsafe extern "C" fn(
         HIPfunction,
         c_uint,
@@ -76,9 +81,6 @@ pub(crate) struct HIPProgram {
     ) -> HIPStatus,
 }
 
-#[derive(Debug)]
-pub(crate) struct HIPEvent {}
-
 unsafe impl Send for HIPMemoryPool {}
 unsafe impl Send for HIPBuffer {}
 unsafe impl Send for HIPProgram {}
@@ -86,7 +88,7 @@ unsafe impl Send for HIPProgram {}
 pub(crate) fn initialize_hip_backend(
     config: &HIPConfig,
     debug_dev: bool,
-) -> Result<(Vec<HIPMemoryPool>, Vec<HIPDevice>), HIPError> {
+) -> Result<(Vec<HIPMemoryPool>, Vec<(HIPDevice, Vec<HIPQueue>)>), HIPError> {
     let _ = config;
 
     let hip_paths = ["/lib64/libamdhip64.so", "/lib/x86_64-linux-gnu/libamdhip64.so"];
@@ -197,16 +199,13 @@ pub(crate) fn initialize_hip_backend(
             hipMemcpyPeer,
             hipCtxDestroy,
         });
-        devices.push(HIPDevice {
+        let mut queues = Vec::new();
+        devices.push((HIPDevice {
             device,
             dev_info: DeviceInfo::default(),
             memory_pool_id: 0,
             compute_capability: [major, minor],
-            //hipModuleLoadDataEx,
-            //hipModuleGetFunction,
-            //hipModuleEnumerateFunctions,
-            //hipLaunchKernel,
-        })
+        }, queues))
     }
 
     Ok((memory_pools, devices))
@@ -540,17 +539,17 @@ impl HIPDevice {
             function: todo!(),
             global_work_size,
             local_work_size,
-            hipLaunchKernel: todo!(), //self.hipLaunchKernel,
         })
     }
 }
 
-impl HIPProgram {
+impl HIPQueue {
     pub(crate) fn launch(
         &mut self,
+        program: &mut HIPProgram,
         buffers: &mut IndexMap<HIPBuffer>,
         args: &[usize],
-    ) -> Result<HIPEvent, HIPError> {
+    ) -> Result<(), HIPError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for arg in args {
             let arg = &mut buffers[*arg];
@@ -560,22 +559,29 @@ impl HIPProgram {
         }
         unsafe {
             (self.hipLaunchKernel)(
-                self.function,
-                self.global_work_size[0] as u32,
-                self.global_work_size[1] as u32,
-                self.global_work_size[2] as u32,
-                self.local_work_size[0] as u32,
-                self.local_work_size[1] as u32,
-                self.local_work_size[2] as u32,
+                program.function,
+                program.global_work_size[0] as u32,
+                program.global_work_size[1] as u32,
+                program.global_work_size[2] as u32,
+                program.local_work_size[0] as u32,
+                program.local_work_size[1] as u32,
+                program.local_work_size[2] as u32,
                 0,
                 ptr::null_mut(),
                 kernel_params.as_mut_ptr(),
                 ptr::null_mut(),
             )
         }
-        .check("Failed to launch kernel.")?;
-        // For now just empty event, later we can deal with streams to make it async
-        Ok(HIPEvent {})
+        .check("Failed to launch kernel.")
+    }
+
+    pub(crate) fn sync(&mut self) -> Result<(), HIPError> {
+        self.load = 0;
+        todo!()
+    }
+
+    pub(crate) fn load(&self) -> usize {
+        self.load
     }
 }
 

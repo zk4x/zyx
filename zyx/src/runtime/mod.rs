@@ -4,14 +4,14 @@ use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
 use backend::cuda::{
-    initialize_cuda_backend, CUDABuffer, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram,
+    initialize_cuda_backend, CUDABuffer, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram, CUDAQueue,
 };
 use backend::hip::{
-    initialize_hip_backend, HIPBuffer, HIPDevice, HIPError, HIPMemoryPool, HIPProgram,
+    initialize_hip_backend, HIPBuffer, HIPDevice, HIPError, HIPMemoryPool, HIPProgram, HIPQueue,
 };
 use backend::opencl::{
     initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool,
-    OpenCLProgram,
+    OpenCLProgram, OpenCLQueue,
 };
 use backend::DeviceInfo;
 use graph::Graph;
@@ -97,20 +97,20 @@ enum Device {
     CUDA {
         device: CUDADevice,
         memory_pool_id: MemoryPoolId,
-        // Program and tensors passed as arguments for the program and if arguments are read only
         programs: Vec<CUDAProgram>,
+        queues: Vec<CUDAQueue>,
     },
     HIP {
         device: HIPDevice,
         memory_pool_id: MemoryPoolId,
-        // Program and tensors passed as arguments for the program and if arguments are read only
         programs: Vec<HIPProgram>,
+        queues: Vec<HIPQueue>,
     },
     OpenCL {
         device: OpenCLDevice,
         memory_pool_id: MemoryPoolId,
-        // Program and tensors passed as arguments for the program and if arguments are read only
         programs: Vec<OpenCLProgram>,
+        queues: Vec<OpenCLQueue>,
     },
 }
 
@@ -678,10 +678,11 @@ impl Runtime {
                     buffers: IndexMap::new(),
                 }));
             self.devices
-                .extend(devices.into_iter().map(|device| Device::CUDA {
+                .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
                     programs: Vec::new(),
+                    queues,
                 }));
         }
         if let Ok((memory_pools, devices)) =
@@ -694,10 +695,11 @@ impl Runtime {
                     buffers: IndexMap::new(),
                 }));
             self.devices
-                .extend(devices.into_iter().map(|device| Device::HIP {
+                .extend(devices.into_iter().map(|(device, queues)| Device::HIP {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
                     programs: Vec::new(),
+                    queues,
                 }));
         }
         if let Ok((memory_pools, devices)) =
@@ -710,10 +712,11 @@ impl Runtime {
                     buffers: IndexMap::new(),
                 }));
             self.devices
-                .extend(devices.into_iter().map(|device| Device::OpenCL {
+                .extend(devices.into_iter().map(|(device, queues)| Device::OpenCL {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
                     programs: Vec::new(),
+                    queues,
                 }));
         }
         if self.devices.is_empty() {
@@ -1253,21 +1256,9 @@ impl From<OpenCLError> for ZyxError {
 impl Device {
     fn compute(&self) -> u128 {
         match self {
-            Device::CUDA {
-                device,
-                memory_pool_id: _,
-                programs: _,
-            } => device.info().compute,
-            Device::HIP {
-                device,
-                memory_pool_id: _,
-                programs: _,
-            } => device.info().compute,
-            Device::OpenCL {
-                device,
-                memory_pool_id: _,
-                programs: _,
-            } => device.info().compute,
+            Device::CUDA { device, ..  } => device.info().compute,
+            Device::HIP { device, ..  } => device.info().compute,
+            Device::OpenCL { device, ..  } => device.info().compute,
         }
     }
 
@@ -1291,25 +1282,13 @@ impl Device {
 impl Display for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Device::CUDA {
-                device: _,
-                memory_pool_id,
-                programs: _,
-            } => f.write_fmt(format_args!(
+            Device::CUDA { memory_pool_id, ..  } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
-            Device::HIP {
-                device: _,
-                memory_pool_id,
-                programs: _,
-            } => f.write_fmt(format_args!(
+            Device::HIP { memory_pool_id, ..  } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
-            Device::OpenCL {
-                device: _,
-                memory_pool_id,
-                programs: _,
-            } => f.write_fmt(format_args!(
+            Device::OpenCL { memory_pool_id, ..  } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
         }

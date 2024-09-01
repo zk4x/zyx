@@ -1,13 +1,12 @@
 pub(super) use kernel::Kernel;
-use vop::MOp;
 pub(super) use vop::VOp;
-
+use vop::MOp;
 use crate::{
     runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use super::{backend::{cuda::CUDAEvent, hip::HIPEvent, opencl::OpenCLEvent}, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId};
+use super::{BufferId, Device, DeviceId, MemoryPool, MemoryPoolId};
 
 mod kernel;
 mod optimizer;
@@ -66,7 +65,7 @@ impl Runtime {
                                 .get_mut(&vprogram.device_id)
                                 .unwrap()
                                 .retain(|pid| *pid != vprogram.program_id);
-                            program_wait_list.push((vprogram.device_id, vprogram.program_id));
+                            program_wait_list.push(vprogram.clone());
                         }
                     }
                 }
@@ -159,8 +158,8 @@ impl Runtime {
                     tensor_buffer_map.insert((*input, view), memory_pool_id);
                 }
                 // Finish kernels that contain this kernel's inputs
-                for (device_id, program_id) in program_wait_list {
-                    sched_graph.push(SchedulerOp::Finish { device_id, program_id });
+                for vprogram in program_wait_list {
+                    sched_graph.push(SchedulerOp::Finish(vprogram));
                 }
                 let (ir_kernel, ir_args) = kernel.to_ir(&graph);
                 let mut program_id = None;
@@ -237,23 +236,27 @@ impl Runtime {
                 }
             }
         }
-        for (device_id, programs) in device_program_map.iter_mut() {
-            for program_id in &mut *programs {
-                sched_graph.push(SchedulerOp::Finish {
-                    device_id: *device_id,
-                    program_id: *program_id,
-                });
+        // Finish unfinished programs
+        let mut unfinished_programs = BTreeSet::new();
+        for sched_op in &sched_graph {
+            match sched_op {
+                SchedulerOp::Launch(program) => { unfinished_programs.insert(program); }
+                SchedulerOp::Finish(program) => { unfinished_programs.remove(program); }
+                _ => {}
             }
-            programs.clear();
+        }
+        let unfinished_programs: BTreeSet<VProgram> = unfinished_programs.into_iter().cloned().collect();
+        for program in unfinished_programs {
+            sched_graph.push(SchedulerOp::Finish(program));
         }
 
         if self.debug_sched() {
             for sched_op in &sched_graph {
                 match sched_op {
-                    SchedulerOp::Launch(program_id) => {
-                        println!("Launch kernel {}", self.devices[program_id.device_id])
+                    SchedulerOp::Launch(program) => {
+                        println!("Launch kernel {}", self.devices[program.device_id])
                     }
-                    SchedulerOp::Finish { device_id, program_id }=> println!("Finish kernel {program_id} on device {device_id}"),
+                    SchedulerOp::Finish(program)=> println!("Finish kernel {} on device {}", program.program_id, program.device_id),
                     SchedulerOp::Move {
                         tensor_id: tensor,
                         view,
@@ -288,7 +291,7 @@ impl Runtime {
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
-        let mut events: BTreeMap<VProgram, Event> = BTreeMap::new();
+        let mut queues: BTreeMap<VProgram, usize> = BTreeMap::new();
         let compiled_graph = &self.compiled_graph_cache[graph];
         //println!("Launching compiled graph: {compiled_graph:?}");
         let begin = std::time::Instant::now();
@@ -304,48 +307,64 @@ impl Runtime {
                                                 .buffer_id
                                         })
                                         .collect();
-                    events.insert(vprogram.clone(), match &mut self.devices[vprogram.device_id] {
+                    queues.insert(vprogram.clone(), match &mut self.devices[vprogram.device_id] {
                         Device::CUDA {
                             device: _,
-                            memory_pool_id,
+                            memory_pool_id: mpid,
                             programs,
+                            queues
                         } => {
-                            let MemoryPool::CUDA { buffers, .. } =
-                                &mut self.memory_pools[*memory_pool_id]
-                            else {
-                                panic!()
-                            };
-                            Event::CUDA(programs[vprogram.program_id].launch(buffers, &args)?)
+                            let MemoryPool::CUDA { buffers, .. } = &mut self.memory_pools[*mpid] else { panic!() };
+                            let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                            if queue.load() > 10 {
+                                (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                                queue.sync()?;
+                            }
+                            queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
+                            id
                         }
                         Device::HIP {
                             device: _,
-                            memory_pool_id,
+                            memory_pool_id: mpid,
                             programs,
+                            queues
                         } => {
-                            let MemoryPool::HIP { buffers, .. } =
-                                &mut self.memory_pools[*memory_pool_id]
-                            else {
-                                panic!()
-                            };
-                            Event::HIP(programs[vprogram.program_id].launch(buffers, &args)?)
+                            let MemoryPool::HIP { buffers, .. } = &mut self.memory_pools[*mpid] else { panic!() };
+                            let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                            if queue.load() > 10 {
+                                (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                                queue.sync()?;
+                            }
+                            queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
+                            id
                         }
                         Device::OpenCL {
                             device: _,
-                            memory_pool_id,
+                            memory_pool_id: mpid,
                             programs,
+                            queues,
                         } => {
-                            let MemoryPool::OpenCL { buffers, .. } =
-                                &mut self.memory_pools[*memory_pool_id]
-                            else {
-                                panic!()
-                            };
-                            Event::OpenCL(programs[vprogram.program_id].launch(buffers, &args)?)
+                            let MemoryPool::OpenCL { buffers, .. } = &mut self.memory_pools[*mpid] else { panic!() };
+                            let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                            if queue.load() > 10 {
+                                (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                                queue.sync()?;
+                            }
+                            queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
+                            id
                         }
                     });
                 }
-                SchedulerOp::Finish { device_id: dev_id, program_id: prog_id } => {
-                    // Dropping event finishes it
-                    events.retain(|VProgram { device_id, program_id, .. }, _| *device_id != *dev_id || *program_id != *prog_id);
+                SchedulerOp::Finish(program) => {
+                    for (vprogram, queue) in &mut queues {
+                        if program == vprogram {
+                            match &mut self.devices[program.device_id] {
+                                Device::CUDA { queues, .. } => queues[*queue].sync()?,
+                                Device::HIP { queues, .. } => queues[*queue].sync()?,
+                                Device::OpenCL { queues, .. } => queues[*queue].sync()?,
+                            }
+                        }
+                    }
                 }
                 SchedulerOp::Move {
                     tensor_id,
@@ -655,25 +674,12 @@ impl Runtime {
     }
 }
 
-// Just read only, when event is dropped, it automatically finishes associated program
-enum Event {
-    #[allow(unused)]
-    CUDA(CUDAEvent),
-    #[allow(unused)]
-    HIP(HIPEvent),
-    #[allow(unused)]
-    OpenCL(OpenCLEvent),
-}
-
 #[derive(Debug)]
 enum SchedulerOp {
     // Async launch kernel on device
     Launch(VProgram),
     // Block for kernel to finish execution
-    Finish {
-        device_id: DeviceId,
-        program_id: usize,
-    },
+    Finish(VProgram),
     // Copy part of tensor between devices
     // This is used for sharding, but can be used for other purposes too,
     // if found usefull
