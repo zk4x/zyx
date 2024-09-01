@@ -126,30 +126,40 @@ impl Kernel {
         let mut max_axis = 0;
 
         // Get all global args and set them first
-        for vop in &self.ops {
-            if let &VOp::Copy { z, zscope, x, xscope, ref view } = vop {
-                // TODO only if one of the scopes is global
-                let dtype = graph.dtype(x).into();
-                let _ = vars.add_var(
-                    x,
-                    view.numel(),
-                    Scope::Global,
-                    graph.rc(x),
-                    dtype,
-                    Some(x),
-                    true,
-                );
-            }
-            /*match &vop {
-                &VOp::Load { z: _, x, view, zscope: scope } => {
-                    let dtype = graph.dtype(*x).into();
+        for &x in &self.inputs {
+            let dtype = graph.dtype(x).into();
+            let _ = vars.add_var(
+                x,
+                graph.shape(x).iter().product(),
+                Scope::Global,
+                graph.rc(x),
+                dtype,
+                Some(x),
+                true,
+            );
+        }
+        for &z in &self.outputs {
+            let _ = vars.add_var(
+                z,
+                graph.shape(z).iter().product(),
+                Scope::Global,
+                graph.rc(z),
+                graph.dtype(z).into(),
+                Some(z),
+                false,
+            );
+        }
+        /*for vop in &self.ops {
+            match vop {
+                &VOp::Load { z: _, x, ref view, zscope, xscope } => {
+                    let dtype = graph.dtype(x).into();
                     let _ = vars.add_var(
-                        *x,
+                        x,
                         view.numel(),
                         Scope::Global,
-                        graph.rc(*x),
+                        graph.rc(x),
                         dtype,
-                        Some(*x),
+                        Some(x),
                         true,
                     );
                 }
@@ -165,36 +175,35 @@ impl Kernel {
                     );
                 }
                 _ => {}
-            }*/
-        }
+            }
+        }*/
 
         let mut loops = Vec::new();
         for vop in &self.ops {
             match vop {
-                VOp::Const { z, value, view } => {
+                &VOp::Const { z, value, ref view } => {
                     let var = if view.requires_conditional_padding() {
-                        vars.generate_padding(view, &mut ops, Var::Const(*value), graph.rc(*z), value.dtype(), None)
+                        vars.generate_padding(view, &mut ops, Var::Const(value), graph.rc(z), value.dtype(), None)
                     } else {
-                        Var::Const(*value)
+                        Var::Const(value)
                     };
-                    vars.var_map.insert((*z, Scope::Register), var);
+                    vars.var_map.insert((z, Scope::Register), var);
                 }
                 VOp::Move { z, x, .. } => {
                     vars.noop(*z, *x, graph.rc(*z));
                 }
-                /*VOp::Load { z, x, view, zscope: scope } => {
-                    let dtype = graph.dtype(*z).into();
+                &VOp::Load { z, zscope, x, xscope, ref view } => {
+                    let dtype = graph.dtype(z).into();
                     let at = vars.generate_idx(view, &mut ops);
-                    let x = vars.get(*x, Scope::Global);
-                    let zt = *z;
-                    let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
+                    let x = vars.get(x, Scope::Global);
+                    let zvar = vars.add_var(z, 0, Scope::Register, graph.rc(z), graph.dtype(z).into(), None, false);
                     if view.requires_conditional_padding() {
-                        let var = vars.generate_padding(view, &mut ops, z, graph.rc(zt), graph.dtype(zt), Some((x, at, dtype)));
-                        vars.var_map.remove(&(zt, Scope::Register));
-                        vars.var_map.insert((zt, Scope::Register), var);
+                        let var = vars.generate_padding(view, &mut ops, zvar, graph.rc(z), graph.dtype(z), Some((x, at, dtype)));
+                        vars.var_map.remove(&(z, Scope::Register));
+                        vars.var_map.insert((z, Scope::Register), var);
                     } else {
                         ops.push(IROp::Load {
-                            z,
+                            z: zvar,
                             x,
                             at,
                             dtype,
@@ -202,11 +211,11 @@ impl Kernel {
                         vars.remove_var(at);
                     }
                 }
-                VOp::Store { z, view } => {
-                    let dtype = graph.dtype(*z).into();
+                &VOp::Store { z, zscope, xscope, ref view } => {
+                    let dtype = graph.dtype(z).into();
                     let at = vars.generate_idx(view, &mut ops);
-                    let x = vars.get(*z, Scope::Register);
-                    let z = vars.get(*z, Scope::Global);
+                    let x = vars.get(z, Scope::Register);
+                    let z = vars.get(z, Scope::Global);
                     ops.push(IROp::Store {
                         z,
                         x,
@@ -214,8 +223,7 @@ impl Kernel {
                         dtype,
                     });
                     vars.remove_var(at);
-                }*/
-                VOp::Copy { .. } => todo!(),
+                }
                 VOp::Loop { axis, dimension } => {
                     let id = vars.add_axis(*axis);
                     ops.push(IROp::Loop {

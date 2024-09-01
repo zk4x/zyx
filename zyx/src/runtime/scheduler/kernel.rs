@@ -31,9 +31,10 @@ impl Kernel {
         let mut ops: Vec<VOp> = shape_to_loops(&shape);
         ops.push(VOp::Load {
             z: x,
-            x,
-            view: View::new(&shape),
             zscope: Scope::Register,
+            x,
+            xscope: Scope::Global,
+            view: View::new(&shape),
         });
         Kernel {
             shape,
@@ -47,6 +48,8 @@ impl Kernel {
     pub(super) fn store(&mut self, z: TensorId, graph: &Graph) {
         let store_op = VOp::Store {
             z,
+            zscope: Scope::Global,
+            xscope: Scope::Register,
             view: View::new(graph.shape(z)),
         };
         if self.ops.last().unwrap() != &store_op {

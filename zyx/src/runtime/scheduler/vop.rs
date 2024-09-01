@@ -8,10 +8,16 @@ pub(crate) enum VOp {
         value: Constant,
         view: View,
     },
-    Copy {
+    Load {
         z: TensorId,
         zscope: Scope,
         x: TensorId,
+        xscope: Scope,
+        view: View,
+    },
+    Store {
+        z: TensorId,
+        zscope: Scope,
         xscope: Scope,
         view: View,
     },
@@ -66,8 +72,11 @@ impl std::fmt::Display for VOp {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
                 "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"
             )),
-            VOp::Copy { z, zscope, x, xscope, view } => f.write_fmt(format_args!(
+            VOp::Load { z, zscope, x, xscope, view } => f.write_fmt(format_args!(
                 "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}], {view}"
+            )),
+            VOp::Store { z, zscope, xscope, view } => f.write_fmt(format_args!(
+                "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {view}"
             )),
             VOp::Loop { axis, dimension } => f.write_fmt(format_args!(
                 "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"

@@ -739,9 +739,10 @@ fn generate_kernels(
                 if let Some(kernel) = kernels.iter_mut().find(|kernel| &kernel.shape == shape) {
                     kernel.ops.push(VOp::Load {
                         z: nid,
-                        x: nid,
-                        view: View::new(shape),
                         zscope: Scope::Register,
+                        x: nid,
+                        xscope: Scope::Global,
+                        view: View::new(shape),
                     });
                     kernel.inputs.insert(nid);
                     kernel.vars.insert(nid);
@@ -963,9 +964,10 @@ fn generate_kernels(
                         let mut ops = shape_to_loops(shape);
                         ops.push(VOp::Load {
                             z: nid,
-                            x: *x,
-                            view: View::new(shape),
                             zscope: Scope::Register,
+                            x: *x,
+                            xscope: Scope::Global,
+                            view: View::new(shape),
                         });
                         kernels.push(Kernel {
                             shape: shape.into(),
@@ -1121,9 +1123,10 @@ fn generate_kernels(
                         let mut kernel = Kernel::load(graph, *x);
                         kernel.ops.push(VOp::Load {
                             z: *y,
-                            x: *y,
-                            view: View::new(graph.shape(*y)),
                             zscope: Scope::Register,
+                            x: *y,
+                            xscope: Scope::Global,
+                            view: View::new(graph.shape(*y)),
                         });
                         kernel.vars.insert(*y);
                         kernel.inputs.insert(*y);
