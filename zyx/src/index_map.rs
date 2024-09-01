@@ -44,7 +44,7 @@ impl<T> IndexMap<T> {
         T: Default,
     {
         if let Some(v) = self.values.get_mut(id) {
-            self.empty.retain(|x| *x != id);
+            self.empty.retain(|&x| x != id);
             *v = value;
             false
         } else {

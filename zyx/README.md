@@ -2,7 +2,7 @@
 
 Zyx is machine learning library written in Rust.
 It's main feature is compiled backend. It automatically generates
-optimized kernels for CUDA, OpenCL and HIP.
+optimized kernels for CUDA and OpenCL.
 Zyx is lazy, waits with execution until it is explicitly asked for results.
 All tensors are differentiable.
 
@@ -32,7 +32,8 @@ let bb_grad = b_grad.backward([&b])[0].unwrap();
 
 ## Backends
 
-Zyx runs on different devices, current backends are CUDA, HIP and OpenCL.
+Zyx runs on different devices, current backends are CUDA and OpenCL.
+HIP would be supported too, but HIPRTC is broken.
 Zyx automatically tries to utilize all available devices, but you can also manually change it by creating file backend_config.json in folder zyx in home config directory (usually ~/.config/zyx/backend_config.json).
 There write [BackendConfig] struct.
 

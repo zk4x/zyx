@@ -875,7 +875,7 @@ impl Drop for OpenCLEvent {
 }
 
 impl IRDType {
-    pub(crate) fn ocl(&self) -> &str {
+    fn ocl(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
             IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),

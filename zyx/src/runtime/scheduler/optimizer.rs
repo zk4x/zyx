@@ -113,10 +113,9 @@ impl Kernel {
             }
             rws
         };
-        self.debug();
         println!("Optimizations: {} work sizes: {gws:?} {lws:?} {rws:?}", dev_info.num_registers);
 
-        let mut local_loads = Vec::new();
+        /*let mut local_loads = Vec::new();
         // Add local and register tiles for expanded tensor loads
         for id in 0..self.ops.len() {
             //if matches!(self.ops[id], VOp::Load { .. }) {
@@ -128,7 +127,8 @@ impl Kernel {
             }
             // Find all uses of this local loads and put them into registers before using them
             // registers can be tiles, correctly wized tiles directly map to tensor cores
-        }
+        }*/
+        self.debug();
 
         // Add local caching for loads
         KernelOptimizations {

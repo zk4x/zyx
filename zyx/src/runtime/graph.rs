@@ -107,8 +107,8 @@ impl Graph {
         let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 1000000 {
-            if let Some(dtype) = self.dtypes.get(&tensor_id) {
-                return *dtype;
+            if let Some(&dtype) = self.dtypes.get(&tensor_id) {
+                return dtype;
             } else if let Node::Const { value } = self.nodes[tensor_id].1 {
                 return value.dtype();
             } else {
@@ -141,8 +141,8 @@ impl Graph {
     }
 
     pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
-        for tensor in tensors {
-            self.nodes.remove(*tensor);
+        for &tensor in tensors {
+            self.nodes.remove(tensor);
         }
     }
 
@@ -181,8 +181,8 @@ impl Graph {
         let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         while let Some(nid) = params.pop() {
-            if let Some(rc) = rcs.get(&nid) {
-                if *rc
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc
                     == *internal_rcs
                         .entry(nid)
                         .and_modify(|rc| *rc += 1)
@@ -201,8 +201,8 @@ impl Graph {
             .nodes
             .iter()
             .filter_map(|(id, (rc, _))| {
-                if let Some(rc2) = rcs.get(&id) {
-                    if *rc > *rc2 {
+                if let Some(&rc2) = rcs.get(&id) {
+                    if *rc > rc2 {
                         Some(id)
                     } else {
                         None
@@ -236,11 +236,11 @@ impl Graph {
                 }
             })
             .collect();
-        for leaf in &leafs {
+        for &leaf in &leafs {
             shapes
-                .entry(*leaf)
-                .or_insert_with(|| self.shape(*leaf).into());
-            dtypes.entry(*leaf).or_insert_with(|| self.dtype(*leaf));
+                .entry(leaf)
+                .or_insert_with(|| self.shape(leaf).into());
+            dtypes.entry(leaf).or_insert_with(|| self.dtype(leaf));
         }
 
         // replace realized nodes with leafs
@@ -299,8 +299,8 @@ impl Graph {
         let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         while let Some(nid) = params.pop() {
-            if let Some(rc) = rcs.get(&nid) {
-                if *rc
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc
                     == *internal_rcs
                         .entry(nid)
                         .and_modify(|rc| *rc += 1)
@@ -316,8 +316,8 @@ impl Graph {
         for (id, (rc, _)) in self.nodes.iter_mut().filter(|(rc, ..)| *rc == 0) {
             *rc = rcs[&id];
         }
-        for id in to_eval {
-            self.nodes[*id].0 += 1;
+        for &id in to_eval {
+            self.nodes[id].0 += 1;
         }
         //std::println!("Execution order: {order:?}");
         // Reorder nodes in such a way, that movement ops are as late as possible,
@@ -329,38 +329,38 @@ impl Graph {
         let mut node_swap = true;
         while node_swap {
             node_swap = false;
-            for (nid, nid1) in order.iter().zip(order.iter().skip(1)) {
-                if self.nodes[*nid].1.is_movement()
-                    && self.nodes[*nid1].1.is_unary()
-                    && !to_eval.contains(nid)
-                    && !to_eval.contains(nid1)
-                    && self.nodes[*nid].0 == 1
-                    && self.nodes[*nid1].0 == 1
+            for (&nid, &nid1) in order.iter().zip(order.iter().skip(1)) {
+                if self.nodes[nid].1.is_movement()
+                    && self.nodes[nid1].1.is_unary()
+                    && !to_eval.contains(&nid)
+                    && !to_eval.contains(&nid1)
+                    && self.nodes[nid].0 == 1
+                    && self.nodes[nid1].0 == 1
                 {
                     //println!("Reordering movement and unary ops, swap {nid} and {nid1}");
-                    self.swap_nodes(*nid, *nid1);
+                    self.swap_nodes(nid, nid1);
                     node_swap = true;
                 }
             }
         }
         let mut flop = 0;
         let mut bytes_read = 0;
-        for nid in &order {
-            match &self.nodes[*nid].1 {
+        for &nid in &order {
+            match &self.nodes[nid].1 {
                 Node::Const { .. } => {}
                 Node::Leaf => {
                     bytes_read +=
-                        self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
+                        self.shape(nid).iter().product::<usize>() * self.dtype(nid).byte_size();
                 }
-                Node::Unary { x, .. } => {
-                    flop += self.shape(*x).iter().product::<usize>();
+                &Node::Unary { x, .. } => {
+                    flop += self.shape(x).iter().product::<usize>();
                 }
-                Node::Binary { x, .. } => {
-                    flop += self.shape(*x).iter().product::<usize>();
+                &Node::Binary { x, .. } => {
+                    flop += self.shape(x).iter().product::<usize>();
                 }
-                Node::Reduce { x, axes, .. } => {
+                &Node::Reduce { x, ref axes, .. } => {
                     flop += self
-                        .shape(*x)
+                        .shape(x)
                         .iter()
                         .enumerate()
                         .map(|(a, d)| {
@@ -383,9 +383,9 @@ impl Graph {
             }
         }
         let mut bytes_written = 0;
-        for nid in to_eval {
+        for &nid in to_eval {
             bytes_written +=
-                self.shape(*nid).iter().product::<usize>() * self.dtype(*nid).byte_size();
+                self.shape(nid).iter().product::<usize>() * self.dtype(nid).byte_size();
         }
         return (
             order,
@@ -448,8 +448,8 @@ impl Graph {
         let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         let mut params: Vec<TensorId> = vec![x];
         while let Some(nid) = params.pop() {
-            if let Some(rc) = rcs.get(&nid) {
-                if *rc
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc
                     == *internal_rcs
                         .entry(nid)
                         .and_modify(|rc| *rc += 1)
@@ -532,8 +532,8 @@ impl Graph {
         //std::println!("User {:?}", user_rc);
         let mut res =
             String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
-        let mut add_node = |i: &TensorId, text: &str, shape: &str| {
-            let fillcolor = if user_rc[i] > 0 { "lightblue" } else { "grey" };
+        let mut add_node = |i: TensorId, text: &str, shape: &str| {
+            let fillcolor = if user_rc[&i] > 0 { "lightblue" } else { "grey" };
             /*if let Some(label) = labels.get(&NodeId::new(id)) {
                 write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
                     label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
@@ -542,9 +542,9 @@ impl Graph {
                 res,
                 "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled]",
                 i,
-                self.nodes[*i].0,
+                self.nodes[i].0,
                 text,
-                self.shape(*i),
+                self.shape(i),
                 shape,
                 fillcolor
             )
@@ -552,13 +552,13 @@ impl Graph {
             writeln!(res).unwrap();
         };
         let mut edges = String::new();
-        for id in &topo {
-            let node = &self.nodes[*id].1;
+        for &id in &topo {
+            let node = &self.nodes[id].1;
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
                 Node::Leaf => add_node(
                     id,
-                    &f!("Leaf({:?}, {})", self.shape(*id), self.dtype(*id)),
+                    &f!("Leaf({:?}, {})", self.shape(id), self.dtype(id)),
                     "box",
                 ),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),

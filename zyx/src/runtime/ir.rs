@@ -149,34 +149,6 @@ impl Kernel {
                 false,
             );
         }
-        /*for vop in &self.ops {
-            match vop {
-                &VOp::Load { z: _, x, ref view, zscope, xscope } => {
-                    let dtype = graph.dtype(x).into();
-                    let _ = vars.add_var(
-                        x,
-                        view.numel(),
-                        Scope::Global,
-                        graph.rc(x),
-                        dtype,
-                        Some(x),
-                        true,
-                    );
-                }
-                VOp::Store { z, view } => {
-                    let _ = vars.add_var(
-                        *z,
-                        view.numel(),
-                        Scope::Global,
-                        graph.rc(*z),
-                        graph.dtype(*z).into(),
-                        Some(*z),
-                        false,
-                    );
-                }
-                _ => {}
-            }
-        }*/
 
         let mut loops = Vec::new();
         for vop in &self.ops {
