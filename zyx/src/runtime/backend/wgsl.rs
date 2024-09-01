@@ -1,12 +1,28 @@
 use crate::{dtype::Constant, runtime::{ir::{IRDType, IRKernel, IROp, Scope, Var}, node::{BOp, UOp}}};
 
-pub(crate) struct WGSLMemoryPool {}
+#[derive(Debug)]
+pub struct WGSLConfig {}
 
+#[derive(Debug)]
 pub(crate) enum WGSLError {}
 
+#[derive(Debug)]
+pub(crate) struct WGSLMemoryPool {}
+
+#[derive(Debug)]
 pub(crate) struct WGSLDevice {}
 
+#[derive(Debug)]
 pub(crate) struct WGSLProgram {}
+
+pub(crate) fn initialize_hip_backend(
+    config: &WGSLConfig,
+    debug_dev: bool,
+) -> Result<(Vec<WGSLMemoryPool>, Vec<WGSLDevice>), WGSLError> {
+    todo!()
+}
+
+impl WGSLMemoryPool {}
 
 impl WGSLDevice {
     fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<WGSLProgram, WGSLError> {
