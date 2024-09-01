@@ -22,8 +22,6 @@ pub(super) struct DeviceInfo {
     pub fmadd: bool,
     /// Page size (base address alignment) in bytes
     pub page_size: usize,
-    /// Does this device have local memory?
-    pub local_memory: bool,
     /// Local memory size in bytes
     pub local_mem_size: usize,
     /// Number of registers per thread
@@ -32,15 +30,4 @@ pub(super) struct DeviceInfo {
     pub wmma: bool,
     /// Does this hardware have tensor cores?
     pub tensor_cores: bool,
-}
-
-pub(super) struct MemoryInfo {
-    /// Global (VRAM, RAM) memory size in bytes
-    pub total_memory: usize,
-    /// Maximum memory allocation for single buffer in bytes
-    pub max_alloc_size: usize,
-    /// Page size, minimum allocatable size
-    pub page_size: usize,
-    /// Alignment for data types in bytes
-    pub alignment: usize,
 }

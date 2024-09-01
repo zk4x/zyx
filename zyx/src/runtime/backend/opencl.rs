@@ -582,7 +582,6 @@ impl OpenCLDevice {
                     .unwrap(),
             ) as usize
                 / 8,
-            local_memory: true,
             local_mem_size: u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?
                     .try_into()

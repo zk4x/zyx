@@ -1,5 +1,7 @@
 use crate::{dtype::Constant, runtime::{ir::{IRDType, IRKernel, IROp, Scope, Var}, node::{BOp, UOp}}};
 
+pub(crate) struct WGSLMemoryPool {}
+
 pub(crate) enum WGSLError {}
 
 pub(crate) struct WGSLDevice {}
@@ -17,7 +19,7 @@ impl WGSLDevice {
         /*
         @group(0) @binding(0) var<storage, read> g0: array<f32>;
         @group(0) @binding(1) var<storage, read> g1: array<f32>;
-        @group(0) @binding(2) var<storage, write> g2: array<f32>;
+        @group(0) @binding(2) var<storage, read_write> g2: array<f32>;
         */
 
         for op in &kernel.ops[..6] {
@@ -36,7 +38,7 @@ impl WGSLDevice {
         for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
             source += &format!(
                 "@group(0) @binding({id}) var<storage, {}> g{id}: array<{}>;\n",
-                if *read_only { "read" } else { "write" },
+                if *read_only { "read" } else { "read_write" },
                 dtype.wgsl(),
             );
         }

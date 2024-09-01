@@ -17,26 +17,26 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 # libloading is used to access cuda, opencl and hsa runtimes
-libloading = { version = "0.8.5", default-features = false }
+libloading = { version = "0.8.5", default-features = false } # ISC
 # serde is used to read backend config
-serde = { version = "1.0.209", default-features = false, features = ["std", "derive"] }
+serde = { version = "1.0.209", default-features = false, features = ["std", "derive"] } # MIT or Apache 2.0
 # JSON is used to read backend config
-serde_json = { version = "*", default-features = false, features = ["std"] }
+serde_json = { version = "*", default-features = false, features = ["std"] } # MIT or Apache 2.0
 # xdg is used to read backend config
-xdg = { version = "2.5.2", default-features = false }
+xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # For nice colorful debug logging
-inline_colorization = { version = "0.1.6" }
+inline_colorization = { version = "0.1.6" } # MIT
 
 # Optional dependencies
 # Support for random number generation
-rand = { version = "0.8.5", default-features = false, features = ["small_rng"], optional = true }
+rand = { version = "0.8.5", default-features = false, features = ["small_rng"], optional = true } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
-half = { version = "2.4.1", default-features = false, optional = true }
+half = { version = "2.4.1", default-features = false, optional = true } # MIT or Apache 2.0
 # Support for cf32 and cf64 dtypes
-num-complex = { version = "0.4.6", default-features = false, optional = true }
+num-complex = { version = "0.4.6", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.22.2", optional = true }
+pyo3 = { version = "0.22.2", optional = true } # MIT or Apache 2.0
 
 [lib]
 crate-type = ["lib", "cdylib"]
@@ -61,6 +61,7 @@ complex = ["dep:num-complex"]
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
 py = ["dep:pyo3", "rand", "half", "complex"]
 
+# Optimize for linking time, 'cause linker is so slow...
 [profile.dev]            # Modify profile settings via config.
 opt-level = 0            # Optimization level.
 debug = false            # Include debug info.
@@ -74,6 +75,7 @@ incremental = true       # Incremental compilation.
 codegen-units = 16       # Number of code generation units.
 #rpath = false            # Sets the rpath linking option.
 
+# This is just a runtime, no need for o3 vectorization and crazy function inlining
 [profile.release]
 opt-level = "z"
 strip = true
