@@ -256,6 +256,10 @@ impl Kernel {
                         max_axis -= 1;
                     }
                 }
+                VOp::EndLoop => {
+                    let (id, len) = loops.pop().unwrap();
+                    ops.push(IROp::EndLoop { id, len });
+                }
                 VOp::Unary { z, x, uop } => {
                     //println!("IR Unary {uop:?} on {:?}", vars.get(*x, Scope::Register));
                     if let Var::Const(v) = vars.get(*x, Scope::Register) {

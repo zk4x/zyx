@@ -1,4 +1,4 @@
-use crate::{runtime::{backend::DeviceInfo, ir::Scope, scheduler::vop::VOp, view::View}, tensor::TensorId};
+use crate::{runtime::{backend::DeviceInfo, scheduler::vop::VOp, view::View}, tensor::TensorId};
 use super::kernel::Kernel;
 
 // Optimizations get applied to existing kernels after
@@ -93,9 +93,8 @@ impl Kernel {
                 let mut splits = Vec::new();
                 for (id, op) in self.ops[9..].iter().enumerate() {
                     if let VOp::Accumulator { .. } = op {
-                        // Permute such that all register loops are last
-                        // TODO get this working if there is more than one reduce loop
                         let VOp::Loop { dimension, .. } = self.ops[id+10] else { todo!() };
+                        // TODO get this working if there is more than one reduce loop
                         // TODO get this working with different work per thread
                         splits.push((id+10, [dimension/8, 8]));
                     }
@@ -105,15 +104,36 @@ impl Kernel {
                     self.split_axis(split.0, &split.1);
                 }
 
-                // Permutation such that register loops come after reduce loops
-
+                // Permute such that register loops come after reduce loops
+                // Just swap register loops after reduce loops
+                let r0loop = self.ops.remove(6);
+                let r1loop = self.ops.remove(6);
+                let r2loop = self.ops.remove(6);
+                let mut start_reg_ids = Vec::new();
+                let mut end_reg_ids = Vec::new();
+                let mut last_loop_id = None;
+                for id in 6..self.ops.len() {
+                    match self.ops[id] {
+                        VOp::Loop { .. } => if let Some(last_loop_id) = &mut last_loop_id {
+                            *last_loop_id = id;
+                        } else {
+                            end_reg_ids.push(id);
+                            last_loop_id = Some(id);
+                        },
+                        VOp::Reduce { .. } => {
+                            start_reg_ids.push(last_loop_id);
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Update accumulators such that they use these register loops
 
             }
             rws
         };
-        println!("Optimizations: {} work sizes: {gws:?} {lws:?} {rws:?}", dev_info.num_registers);
+        //let rws = [1, 1, 1];
+        println!("Work sizes: {gws:?} {lws:?} {rws:?}");
 
         /*let mut local_loads = Vec::new();
         // Add local and register tiles for expanded tensor loads

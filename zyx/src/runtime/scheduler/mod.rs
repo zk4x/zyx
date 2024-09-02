@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{BufferId, Device, DeviceId, MemoryPool, MemoryPoolId};
 
 mod kernel;
+// Kernel optimizer, multi device scheduler is optimized elsewhere
 mod optimizer;
 mod vop;
 
@@ -821,7 +822,7 @@ fn generate_kernels(
                     VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
                         view.is_contiguous()
                     }
-                    VOp::Accumulator { .. } | VOp::Reduce { .. } => false,
+                    VOp::Accumulator { .. } | VOp::Reduce { .. } | VOp::EndLoop => false,
                 }) {
                     // Remove old loops
                     for _ in 0..kernel.shape.len() {

@@ -25,20 +25,25 @@ pub(crate) enum VOp {
         axis: Axis,
         dimension: Dimension,
     },
-    // TODO remove accumulator and use const + copy
+    // TODO remove accumulator and use const + load
     // instead to create register tile
     Accumulator {
         z: TensorId,
         rop: ROp,
         view: View,
     },
+    // TODO probably just remove reduce and use
+    // binary op and end loop
     Reduce {
         z: TensorId,
         x: TensorId,
         num_axes: usize,
         rop: ROp,
     },
-    // Move is noop
+    // End the latest loop
+    EndLoop,
+    // Move is noop, just a marker for easy debugging
+    // and to keep track of tensor ids
     Move {
         z: TensorId,
         x: TensorId,
@@ -85,6 +90,7 @@ impl std::fmt::Display for VOp {
                 "{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}",
                 view.shape()
             )),
+            VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset}")),
             VOp::Reduce {
                 z,
                 x,

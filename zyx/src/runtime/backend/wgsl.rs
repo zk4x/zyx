@@ -16,7 +16,7 @@ use crate::{
 pub struct WGSLConfig {}
 
 #[derive(Debug)]
-pub(crate) enum WGSLError {}
+pub(crate) struct WGSLError {}
 
 #[derive(Debug)]
 pub(crate) struct WGSLMemoryPool {
@@ -51,6 +51,8 @@ pub(crate) fn initialize_wgsl_backend(
     config: &WGSLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
+    return Err(WGSLError {});
+
     let power_preference =
         wgpu::util::power_preference_from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
