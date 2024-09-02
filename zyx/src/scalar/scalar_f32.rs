@@ -1,5 +1,4 @@
-use core::f32::consts::{E, PI};
-
+use core::f32::consts::PI;
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 #[cfg(feature = "half")]
@@ -10,14 +9,12 @@ use num_complex::Complex;
 impl Scalar for f32 {
     #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        t.into()
     }
 
     #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self {
-        let _ = t;
-        todo!()
+        t.into()
     }
 
     fn from_f32(t: f32) -> Self {
@@ -39,18 +36,15 @@ impl Scalar for f32 {
     }
 
     fn from_u8(t: u8) -> Self {
-        let _ = t;
-        todo!()
+        t as f32
     }
 
     fn from_i8(t: i8) -> Self {
-        let _ = t;
-        todo!()
+        t as f32
     }
 
     fn from_i16(t: i16) -> Self {
-        let _ = t;
-        todo!()
+        t as f32
     }
 
     fn from_i32(t: i32) -> Self {
@@ -86,7 +80,7 @@ impl Scalar for f32 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self.abs()
     }
 
     fn reciprocal(self) -> Self {
@@ -123,22 +117,6 @@ impl Scalar for f32 {
         return x;
     }
 
-    fn ln(self) -> Self {
-        //libm::logf(self)
-        todo!()
-    }
-
-    fn exp(self) -> Self {
-        //libm::expf(self)
-        todo!()
-    }
-
-    fn tanh(self) -> Self {
-        //libm::tanhf(self)
-        let e2x = E.pow(2.0 * self);
-        return (e2x - 1.0) / (e2x + 1.0);
-    }
-
     fn sqrt(self) -> Self {
         // good enough (error of ~ 5%)
         if self >= 0. {
@@ -165,9 +143,7 @@ impl Scalar for f32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //libm::powf(self, rhs)
-        todo!()
+        self.powf(rhs)
     }
 
     fn cmplt(self, rhs: Self) -> Self {
@@ -198,34 +174,30 @@ impl Scalar for f32 {
     }
     
     fn exp2(self) -> Self {
-        todo!()
+        self.exp2()
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
-        todo!()
+        self.log2()
     }
     
     fn inv(self) -> Self {
-        todo!()
+        1./self
     }
     
     fn not(self) -> Self {
-        todo!()
+        if self != 0. { 0. } else { 1. }
     }
     
     fn nonzero(self) -> Self {
-        todo!()
+        (self != 0.) as i32 as f32
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        (self > rhs) as i32 as f32
     }
     
     fn or(self, rhs: Self) -> Self {
-        todo!()
+        (self != 0. || rhs != 0.) as i32 as f32
     }
 }

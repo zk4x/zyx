@@ -107,18 +107,6 @@ impl Scalar for bool {
         panic!()
     }
 
-    fn ln(self) -> Self {
-        panic!()
-    }
-
-    fn exp(self) -> Self {
-        panic!()
-    }
-
-    fn tanh(self) -> Self {
-        panic!()
-    }
-
     fn sqrt(self) -> Self {
         panic!()
     }
@@ -175,10 +163,6 @@ impl Scalar for bool {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     

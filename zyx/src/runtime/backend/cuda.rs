@@ -93,6 +93,7 @@ pub(crate) struct CUDAQueue {
         *mut *mut c_void,
         *mut *mut c_void,
     ) -> CUDAStatus,
+    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
 unsafe impl Send for CUDAMemoryPool {}
@@ -158,6 +159,7 @@ pub(crate) fn initialize_cuda_backend(
     let cuLaunchKernel = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
     let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
         *unsafe { cuda.get(b"cuStreamCreate\0") }.unwrap();
+    let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
     let mut driver_version = 0;
@@ -237,7 +239,7 @@ pub(crate) fn initialize_cuda_backend(
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
             let Ok(_) = unsafe { cuStreamCreate(&mut stream, 0) }.check("") else { continue };
-            queues.push(CUDAQueue { stream, load: 0, cuLaunchKernel });
+            queues.push(CUDAQueue { stream, load: 0, cuLaunchKernel, cuStreamSynchronize });
         }
         devices.push((CUDADevice {
             device,
@@ -833,7 +835,7 @@ impl CUDAQueue {
 
     pub(crate) fn sync(&mut self) -> Result<(), CUDAError> {
         self.load = 0;
-        todo!()
+        unsafe { (self.cuStreamSynchronize)(self.stream) }.check("Failed to synchronize CUDA stream.")
     }
 
     pub(crate) fn load(&self) -> usize {

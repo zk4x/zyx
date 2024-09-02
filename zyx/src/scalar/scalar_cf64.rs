@@ -123,15 +123,23 @@ impl Scalar for Complex<f64> {
         todo!()
     }
 
-    fn ln(self) -> Self {
+    fn exp2(self) -> Self {
         todo!()
     }
 
-    fn exp(self) -> Self {
+    fn log2(self) -> Self {
         todo!()
     }
 
-    fn tanh(self) -> Self {
+    fn inv(self) -> Self {
+        todo!()
+    }
+
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
         todo!()
     }
 
@@ -164,51 +172,6 @@ impl Scalar for Complex<f64> {
         let _ = rhs;
         todo!()
     }
-
-    fn max(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn max_value() -> Self {
-        todo!()
-    }
-
-    fn min_value() -> Self {
-        todo!()
-    }
-
-    fn epsilon() -> Self {
-        todo!()
-    }
-
-    fn is_equal(self, rhs: Self) -> bool {
-        self == rhs
-    }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
-    }
-    
-    fn not(self) -> Self {
-        todo!()
-    }
-    
-    fn nonzero(self) -> Self {
-        todo!()
-    }
     
     fn cmpgt(self, rhs: Self) -> Self {
         todo!()
@@ -216,5 +179,26 @@ impl Scalar for Complex<f64> {
     
     fn or(self, rhs: Self) -> Self {
         todo!()
+    }
+    
+    fn max(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+    
+    fn max_value() -> Self {
+        todo!()
+    }
+    
+    fn min_value() -> Self {
+        todo!()
+    }
+    
+    fn epsilon() -> Self {
+        todo!()
+    }
+    
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
     }
 }

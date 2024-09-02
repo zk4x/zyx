@@ -8,24 +8,22 @@ use num_complex::Complex;
 impl Scalar for i8 {
     #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        let t: f32 = t.into();
+        t as Self
     }
 
     #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self {
-        let _ = t;
-        todo!()
+        let t: f32 = t.into();
+        t as Self
     }
 
     fn from_f32(t: f32) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_f64(t: f64) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     #[cfg(feature = "complex")]
@@ -41,33 +39,27 @@ impl Scalar for i8 {
     }
 
     fn from_u8(t: u8) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_i8(t: i8) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_i16(t: i16) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_i32(t: i32) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_i64(t: i64) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_bool(t: bool) -> Self {
-        let _ = t;
-        todo!()
+        t as Self
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -91,7 +83,7 @@ impl Scalar for i8 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self.abs()
     }
 
     fn reciprocal(self) -> Self {
@@ -115,18 +107,6 @@ impl Scalar for i8 {
     }
 
     fn cos(self) -> Self {
-        todo!()
-    }
-
-    fn ln(self) -> Self {
-        todo!()
-    }
-
-    fn exp(self) -> Self {
-        todo!()
-    }
-
-    fn tanh(self) -> Self {
         todo!()
     }
 
@@ -186,10 +166,6 @@ impl Scalar for i8 {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     

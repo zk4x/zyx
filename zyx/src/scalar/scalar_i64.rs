@@ -110,18 +110,6 @@ impl Scalar for i64 {
         f64::cos(self as f64) as i64
     }
 
-    fn ln(self) -> Self {
-        f64::ln(self as f64) as i64
-    }
-
-    fn exp(self) -> Self {
-        f64::exp(self as f64) as i64
-    }
-
-    fn tanh(self) -> Self {
-        f64::tanh(self as f64) as i64
-    }
-
     fn sqrt(self) -> Self {
         (self as f64).sqrt() as i64
     }
@@ -175,10 +163,6 @@ impl Scalar for i64 {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     

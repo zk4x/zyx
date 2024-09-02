@@ -1,21 +1,24 @@
 use std::rc::Rc;
-use rand::{Rng, SeedableRng};
+use rand::{distributions::Uniform, Rng, SeedableRng};
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn fuzzy() -> Result<(), ZyxError> {
     let mut rng = rand::rngs::SmallRng::seed_from_u64(21847091824098071);
 
-    let max_numel = 32*256*256;
+    let max_tensors = 5;
+    let max_numel = 256*256;
+    let max_dims = 3;
+
     // TODO random shapes for tensors
-    let num_t = rng.gen_range(0..100);
+    let num_t = rng.gen_range(0..max_tensors);
     let mut tensors = Vec::new();
     let mut cpu_tensors = Vec::new();
 
     // Initialize a random number of tensors with random shapes and dtypes
     for _ in 0..num_t {
         let mut shape = Vec::new();
-        for i in 0..rng.gen_range(1..20) {
+        for i in 0..rng.gen_range(1..max_dims) {
             let n = if i > 1 {
                 max_numel / shape.iter().product::<usize>()
             } else {
@@ -27,12 +30,15 @@ fn fuzzy() -> Result<(), ZyxError> {
                 break;
             }
         }
-        tensors.push(Tensor::randn(&shape, DType::F32));
-        let data: Vec<f32> = tensors.last().unwrap().try_into()?;
+        //tensors.push(Tensor::randn(&shape, DType::F32));
+        let numel = shape.iter().product();
+        let r = Uniform::new(-100., 100.);
+        let data: Vec<f32> = (0..numel).map(|_| rng.sample(&r)).collect();
+        tensors.push(Tensor::from(&data).reshape(&shape));
         cpu_tensors.push(CPUTensor::new(&data).reshape(&shape));
     }
 
-    for _ in 0..100 {
+    for _ in 0..3 {
         // Pick binary or unary op
         // pick a random tensor or two tensors for binary op
         // cast if necessary
@@ -42,31 +48,67 @@ fn fuzzy() -> Result<(), ZyxError> {
         let y = rng.gen_range(0..num_t);
         match rng.gen_range(0..10) {
             // Unary
-            0 => tensors[x] = tensors[x].relu(),
-            1 => tensors[x] = -&tensors[x],
-            2 => tensors[x] = tensors[x].exp2(),
-            3 => tensors[x] = tensors[x].log2(),
-            4 => tensors[x] = tensors[x].inv(),
-            5 => tensors[x] = tensors[x].sqrt(),
-            6 => tensors[x] = tensors[x].sin(),
-            7 => tensors[x] = tensors[x].cos(),
-            8 => tensors[x] = !&tensors[x],
-            9 => tensors[x] = tensors[x].nonzero(),
+            0 => {
+                tensors[x] = tensors[x].relu();
+                cpu_tensors[x] = cpu_tensors[x].relu();
+            }
+            1 => {
+                tensors[x] = -&tensors[x];
+                cpu_tensors[x] = cpu_tensors[x].neg();
+            }
+            2 => {
+                tensors[x] = tensors[x].exp2();
+                cpu_tensors[x] = cpu_tensors[x].exp2();
+            }
+            3 => {
+                tensors[x] = tensors[x].log2();
+                cpu_tensors[x] = cpu_tensors[x].log2();
+            }
+            4 => {
+                tensors[x] = tensors[x].inv();
+                cpu_tensors[x] = cpu_tensors[x].inv();
+            }
+            5 => {
+                tensors[x] = tensors[x].sqrt();
+                cpu_tensors[x] = cpu_tensors[x].sqrt();
+            }
+            6 => {
+                tensors[x] = tensors[x].sin();
+                cpu_tensors[x] = cpu_tensors[x].sin();
+            }
+            7 => {
+                tensors[x] = tensors[x].cos();
+                cpu_tensors[x] = cpu_tensors[x].cos();
+            }
+            8 => {
+                tensors[x] = !&tensors[x];
+                cpu_tensors[x] = cpu_tensors[x].not();
+            }
+            9 => {
+                tensors[x] = tensors[x].nonzero();
+                cpu_tensors[x] = cpu_tensors[x].nonzero();
+            }
             // Binary
             10 => {
                 let t = rng.gen_range(0..num_t);
                 tensors[t] = tensors[t].exp2();
             }
             // Reduce
-            20 => tensors[x] = tensors[x].sum_kd([]),
-            20 => tensors[x] = tensors[x].max_kd([]),
+            //20 => tensors[x] = tensors[x].sum_kd([]),
+            //20 => tensors[x] = tensors[x].max_kd([]),
             // Movement
-            20 => tensors[x] = tensors[x].reshape([]),
+            //20 => tensors[x] = tensors[x].reshape([]),
             _ => panic!(),
         }
     }
-    //let data: Vec<f32> = tensors.get(t).unwrap().try_into()?;
-    //assert_eq!(data, );
+    Tensor::plot_graph([], "fuzzy_graph");
+    for (tensor, cpu_tensor) in tensors.iter().zip(cpu_tensors) {
+        let data: Vec<f32> = tensor.try_into()?;
+        let cpu_data: Vec<f32> = cpu_tensor.to_vec();
+        for (x, y) in data.iter().zip(cpu_data.iter()) {
+            assert_eq!(x, y, "x != y at {x} != {y}");
+        }
+    }
 
     Ok(())
 }

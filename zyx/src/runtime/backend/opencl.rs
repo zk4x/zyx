@@ -549,22 +549,12 @@ impl OpenCLDevice {
                     .unwrap(),
             ) as usize
                 * 4,
-            f16_support: true,
-            f64_support: true,
-            fmadd: true,
-            page_size: u32::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_MEM_BASE_ADDR_ALIGN)?
-                    .try_into()
-                    .unwrap(),
-            ) as usize
-                / 8,
             local_mem_size: u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?
                     .try_into()
                     .unwrap(),
             ) as usize,
             num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
-            wmma: false,
             tensor_cores: false,
         };
         Ok(())

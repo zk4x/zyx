@@ -108,18 +108,6 @@ impl Scalar for f64 {
         self.cos()
     }
 
-    fn ln(self) -> Self {
-        self.ln()
-    }
-
-    fn exp(self) -> Self {
-        self.exp()
-    }
-
-    fn tanh(self) -> Self {
-        self.tanh()
-    }
-
     fn sqrt(self) -> Self {
         return self.sqrt();
     }
@@ -172,34 +160,30 @@ impl Scalar for f64 {
     }
     
     fn exp2(self) -> Self {
-        todo!()
+        self.exp2()
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
-        todo!()
+        self.log2()
     }
     
     fn inv(self) -> Self {
-        todo!()
+        1./self
     }
     
     fn not(self) -> Self {
-        todo!()
+        if self != 0. { 0. } else { 1. }
     }
     
     fn nonzero(self) -> Self {
-        todo!()
+        (self != 0.) as i32 as f64
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        (self > rhs) as i32 as f64
     }
     
     fn or(self, rhs: Self) -> Self {
-        todo!()
+        (self != 0. || rhs != 0.) as i32 as f64
     }
 }

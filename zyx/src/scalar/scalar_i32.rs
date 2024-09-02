@@ -108,18 +108,6 @@ impl Scalar for i32 {
         f32::cos(self as f32) as i32
     }
 
-    fn ln(self) -> Self {
-        f32::ln(self as f32) as i32
-    }
-
-    fn exp(self) -> Self {
-        f32::exp(self as f32) as i32
-    }
-
-    fn tanh(self) -> Self {
-        f32::tanh(self as f32) as i32
-    }
-
     fn sqrt(self) -> Self {
         (self as f32).sqrt() as i32
     }
@@ -173,10 +161,6 @@ impl Scalar for i32 {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     

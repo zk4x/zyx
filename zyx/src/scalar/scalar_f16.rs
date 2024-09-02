@@ -106,18 +106,6 @@ impl Scalar for f16 {
         f16::from_f32(self.to_f32().cos())
     }
 
-    fn ln(self) -> Self {
-        f16::from_f32(self.to_f32().ln())
-    }
-
-    fn exp(self) -> Self {
-        f16::from_f32(self.to_f32().exp())
-    }
-
-    fn tanh(self) -> Self {
-        f16::from_f32(self.to_f32().tanh())
-    }
-
     fn sqrt(self) -> Self {
         f16::from_f32(self.to_f32().sqrt())
     }
@@ -171,10 +159,6 @@ impl Scalar for f16 {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     

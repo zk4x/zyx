@@ -104,18 +104,6 @@ impl Scalar for bf16 {
         todo!()
     }
 
-    fn ln(self) -> Self {
-        todo!()
-    }
-
-    fn exp(self) -> Self {
-        todo!()
-    }
-
-    fn tanh(self) -> Self {
-        todo!()
-    }
-
     fn sqrt(self) -> Self {
         todo!()
     }
@@ -173,10 +161,6 @@ impl Scalar for bf16 {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     

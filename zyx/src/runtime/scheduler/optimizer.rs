@@ -76,7 +76,7 @@ impl Kernel {
         };
 
         // Set best register work sizes
-        let rws = {
+        /*let rws = {
             let rws = best_work_size(gws, dev_info.num_registers);
             gws[0] = gws[0]/rws[0];
             gws[1] = gws[1]/rws[1];
@@ -132,8 +132,8 @@ impl Kernel {
             }
             rws
         };
-        //let rws = [1, 1, 1];
-        println!("Work sizes: {gws:?} {lws:?} {rws:?}");
+        println!("Work sizes: {gws:?} {lws:?} {rws:?}");*/
+        let rws = [1, 1, 1];
 
         /*let mut local_loads = Vec::new();
         // Add local and register tiles for expanded tensor loads

@@ -14,20 +14,10 @@ pub(super) struct DeviceInfo {
     pub max_work_group_size: usize,
     /// Preferred vector size in bytes
     pub preferred_vector_size: usize,
-    /// Is half supported?
-    pub f16_support: bool,
-    /// Is double supported?
-    pub f64_support: bool,
-    /// Is fused multiply add supported?
-    pub fmadd: bool,
-    /// Page size (base address alignment) in bytes
-    pub page_size: usize,
     /// Local memory size in bytes
     pub local_mem_size: usize,
     /// Number of registers per thread
     pub num_registers: usize,
-    /// Does this hardware support native matmul of 16x16 local tiles?
-    pub wmma: bool,
     /// Does this hardware have tensor cores?
     pub tensor_cores: bool,
 }

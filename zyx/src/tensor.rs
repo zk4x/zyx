@@ -1850,6 +1850,14 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
     }
 }
 
+impl<T: Scalar> From<&Vec<T>> for Tensor {
+    fn from(data: &Vec<T>) -> Self {
+        return Tensor {
+            id: RT.lock().temp(vec![data.len()], &data).unwrap(),
+        };
+    }
+}
+
 impl<T: Scalar> From<&[T]> for Tensor {
     fn from(data: &[T]) -> Self {
         let n = data.len();

@@ -118,18 +118,6 @@ impl Scalar for Complex<f32> {
         todo!()
     }
 
-    fn ln(self) -> Self {
-        todo!()
-    }
-
-    fn exp(self) -> Self {
-        todo!()
-    }
-
-    fn tanh(self) -> Self {
-        todo!()
-    }
-
     fn sqrt(self) -> Self {
         todo!()
     }
@@ -190,10 +178,6 @@ impl Scalar for Complex<f32> {
     }
     
     fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn log(self) -> Self {
         todo!()
     }
     
