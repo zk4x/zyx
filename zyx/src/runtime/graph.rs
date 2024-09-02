@@ -420,6 +420,17 @@ impl Graph {
         let second_value = self.nodes.remove(second).unwrap().clone();
         self.nodes.insert(first, second_value);
         self.nodes.insert(second, first_value);
+        // NOTE: do not forget to swap shapes and dtypes as well...
+        if let Some(first_shape) = self.shapes.remove(&first) {
+            if let Some(second_shape) = self.shapes.insert(second, first_shape) {
+                self.shapes.insert(first, second_shape);
+            }
+        }
+        if let Some(first_dtype) = self.dtypes.remove(&first) {
+            if let Some(second_dtype) = self.dtypes.insert(second, first_dtype) {
+                self.dtypes.insert(first, second_dtype);
+            }
+        }
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {

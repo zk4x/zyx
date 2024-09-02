@@ -824,6 +824,8 @@ fn generate_kernels(
                     }
                     VOp::Accumulator { .. } | VOp::Reduce { .. } | VOp::EndLoop => false,
                 }) {
+                    //println!("Before reshape continuous.");
+                    //kernel.debug();
                     // Remove old loops
                     for _ in 0..kernel.shape.len() {
                         kernel.ops.remove(0);
@@ -850,6 +852,8 @@ fn generate_kernels(
                         mop: MOp::Resh,
                     });
                     kernel.vars.insert(nid);
+                    //println!("Reshaping continuous.");
+                    //kernel.debug();
                 } else {
                     // TODO we could also merge axes if possible
                     let mut splits = Some(BTreeMap::new());
@@ -891,7 +895,7 @@ fn generate_kernels(
                     }
                     //kernel.debug();
                     //println!("Splits: {splits:?}");
-                    if let Some(mut splits) = splits {
+                    if let Some(splits) = splits {
                         let mut loop_id = kernel.shape.len() - 1;
                         let mut skip_loops = 0;
                         let mut split_ids = Vec::new();
@@ -1217,6 +1221,7 @@ fn generate_kernels(
                 }
             }
         }
+        //println!("nid: {nid} to_eval {to_eval:?}");
         if to_eval.contains(&nid)
             || (graph.rc(nid) > 1 && !matches!(graph[nid], Node::Leaf { .. } | Node::Const { .. }))
         {
@@ -1284,6 +1289,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         .iter_mut()
         .position(|kernel| kernel.vars.contains(&x))
     {
+        println!("Get kernel shapes: {:?}, {:?}", kernels[id].shape, graph.shape(x));
         if kernels[id].shape != graph.shape(x) {
             // create new kernel using already predefined store
             kernels.push(Kernel::load(graph, x));
