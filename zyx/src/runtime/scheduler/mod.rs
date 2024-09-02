@@ -1164,7 +1164,6 @@ fn generate_kernels(
                             kernels.push(Kernel::load(graph, *x));
                             kernel_x_id = kernels.len() - 1;
                         }
-
                         if kernels[kernel_y_id].shape != shape {
                             kernels.push(Kernel::load(graph, *y));
                             kernel_y_id = kernels.len() - 1
@@ -1192,7 +1191,6 @@ fn generate_kernels(
 
                         // We cannot have both loops from kernel_x and kernel_y
                         // We have to remove one set of loops
-
                         let kernel_x_ops: Vec<VOp> = kernel_x
                             .ops
                             .into_iter()
@@ -1289,7 +1287,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         .iter_mut()
         .position(|kernel| kernel.vars.contains(&x))
     {
-        println!("Get kernel shapes: {:?}, {:?}", kernels[id].shape, graph.shape(x));
+        //println!("Get kernel shapes: {:?}, {:?}", kernels[id].shape, graph.shape(x));
         if kernels[id].shape != graph.shape(x) {
             // create new kernel using already predefined store
             kernels.push(Kernel::load(graph, x));

@@ -4,13 +4,13 @@ use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn fuzzy() -> Result<(), ZyxError> {
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(21847091824098071);
-
+    let rand_seed = 21847091824098071;
     let max_tensors = 5;
     let max_numel = 256*256;
     let max_dims = 3;
+    let num_nodes = 14;
 
-    // TODO random shapes for tensors
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(rand_seed);
     let num_t = rng.gen_range(0..max_tensors);
     let mut tensors = Vec::new();
     let mut cpu_tensors = Vec::new();
@@ -38,7 +38,7 @@ fn fuzzy() -> Result<(), ZyxError> {
         cpu_tensors.push(CPUTensor::new(&data).reshape(&shape));
     }
 
-    for _ in 0..3 {
+    for _ in 0..num_nodes {
         // Pick binary or unary op
         // pick a random tensor or two tensors for binary op
         // cast if necessary
@@ -102,11 +102,12 @@ fn fuzzy() -> Result<(), ZyxError> {
         }
     }
     Tensor::plot_graph([], "fuzzy_graph");
+    Tensor::realize(&tensors)?;
     for (tensor, cpu_tensor) in tensors.iter().zip(cpu_tensors) {
         let data: Vec<f32> = tensor.try_into()?;
         let cpu_data: Vec<f32> = cpu_tensor.to_vec();
-        for (x, y) in data.iter().zip(cpu_data.iter()) {
-            assert_eq!(x, y, "x != y at {x} != {y}");
+        for (id, (x, y)) in data.iter().zip(cpu_data.iter()).enumerate() {
+            assert_eq!(x, y, "Comparing tensor id {id}, x != y at {x} != {y}");
         }
     }
 
@@ -114,6 +115,7 @@ fn fuzzy() -> Result<(), ZyxError> {
 }
 
 // Just a very barebones and slow CPU tensor that is slow, but verifiably correct
+// It's actually absurdly slow, so we may speed it up a bit perhaps
 #[derive(Clone)]
 pub struct CPUTensor {
     view: View,

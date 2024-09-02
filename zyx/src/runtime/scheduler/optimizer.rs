@@ -148,7 +148,7 @@ impl Kernel {
             // Find all uses of this local loads and put them into registers before using them
             // registers can be tiles, correctly wized tiles directly map to tensor cores
         }*/
-        self.debug();
+        //self.debug();
 
         // Add local caching for loads
         KernelOptimizations {

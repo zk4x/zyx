@@ -717,6 +717,24 @@ impl IRDType {
             IRDType::U32 => 4,
         }
     }
+
+    pub(crate) fn dtype(&self) -> DType {
+        match self {
+            IRDType::BF16 => DType::BF16,
+            IRDType::F16 => DType::F16,
+            IRDType::F32 => DType::F32,
+            IRDType::F64 => DType::F64,
+            IRDType::CF32 => DType::CF32,
+            IRDType::CF64 => DType::CF64,
+            IRDType::U8 => DType::U8,
+            IRDType::I8 => DType::I8,
+            IRDType::I16 => DType::I16,
+            IRDType::I32 => DType::I32,
+            IRDType::I64 => DType::I64,
+            IRDType::Bool => DType::Bool,
+            IRDType::U32 => panic!(),
+        }
+    }
 }
 
 impl Constant {

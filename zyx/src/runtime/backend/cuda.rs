@@ -402,9 +402,10 @@ impl CUDADevice {
                     source += &format!("{indent}{}[{}] = {};\n", z.cu(), at.cu(), x.cu());
                 }
                 IROp::Unary { z, x, uop, dtype } => {
+                    let zero = Constant::new(0).unary(UOp::Cast(dtype.dtype())).cu();
                     source += &match uop {
                         UOp::Cast(_) => format!("{indent}{} = ({}){};\n", z.cu(), dtype.cu(), x.cu()),
-                        UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.cu(), x.cu()),
+                        UOp::ReLU => format!("{indent}{} = max({}, {});\n", z.cu(), x.cu(), zero),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.cu(), x.cu()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.cu(), x.cu()),
                         UOp::Log2 => format!("{indent}{} = log2({});\n", z.cu(), x.cu()),
@@ -413,7 +414,7 @@ impl CUDADevice {
                         UOp::Sin => format!("{indent}{} = sin({});\n", z.cu(), x.cu()),
                         UOp::Cos => format!("{indent}{} = cos({});\n", z.cu(), x.cu()),
                         UOp::Not => format!("{indent}{} = !{};\n", z.cu(), x.cu()),
-                        UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.cu(), x.cu()),
+                        UOp::Nonzero => format!("{indent}{} = {} != {};\n", z.cu(), x.cu(), zero),
                     };
                 }
                 IROp::Binary {
@@ -1154,7 +1155,7 @@ impl Constant {
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F32(x) => {
                 let x: f32 = unsafe { t::<_, f32>(*x) };
-                format!("{x}f", )
+                format!("{x:.16}f", )
             }
             Constant::F64(x) => format!("{x}"),
             #[cfg(feature = "complex")]
