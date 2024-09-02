@@ -889,6 +889,7 @@ fn generate_kernels(
                             splits.as_mut().unwrap().insert(i, dimensions);
                         }
                     }
+                    //kernel.debug();
                     //println!("Splits: {splits:?}");
                     if let Some(mut splits) = splits {
                         let mut loop_id = kernel.shape.len() - 1;
@@ -896,6 +897,9 @@ fn generate_kernels(
                         let mut split_ids = Vec::new();
                         for (id, vop) in kernel.ops.iter().enumerate().rev() {
                             match vop {
+                                VOp::EndLoop => {
+                                    skip_loops += 1;
+                                }
                                 VOp::Reduce { num_axes, .. } => {
                                     skip_loops += num_axes;
                                 }
@@ -903,8 +907,7 @@ fn generate_kernels(
                                     if skip_loops > 0 {
                                         skip_loops -= 1;
                                     } else {
-                                        if loop_id < splits.len() {
-                                            let dimensions = splits[&loop_id].clone();
+                                        if let Some(dimensions) = splits.get(&loop_id) {
                                             assert_eq!(*dimension, dimensions.iter().product::<usize>());
                                             split_ids.push(id);
                                         }
@@ -916,12 +919,9 @@ fn generate_kernels(
                                 _ => {}
                             }
                         }
-                        for op_id in split_ids {
-                            let Some((_, dimensions)) = splits.pop_last() else {
-                                panic!()
-                            };
+                        for (&op_id, dimensions) in split_ids.iter().zip(splits.values().rev()) {
                             //println!("Splitting at {op_id} to {dimensions:?}");
-                            kernel.split_axis(op_id, &dimensions);
+                            kernel.split_axis(op_id, dimensions);
                         }
                         // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
                         // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.

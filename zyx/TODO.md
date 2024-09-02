@@ -1,5 +1,9 @@
 - [x] deallocation of memory
 - [ ] implement sharding
+- [ ] write optimizer that will reduce number of elementwise ops in IR
+      or increase their number, but reduce number of used registers,
+      reducing register pressure to avoid spilling,
+      this will depend on number of available registers
 - [x] padded view permute
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices

@@ -90,7 +90,7 @@ impl std::fmt::Display for VOp {
                 "{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}",
                 view.shape()
             )),
-            VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset}")),
+            VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset} ")),
             VOp::Reduce {
                 z,
                 x,
