@@ -117,54 +117,54 @@ impl Tensor {
         match dtype {
             #[cfg(feature = "half")]
             DType::F16 => {
-                let data: Vec<f16> = (&self).try_into().unwrap();
+                let data: Vec<f16> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             #[cfg(feature = "half")]
             DType::BF16 => {
-                let data: Vec<bf16> = (&self).try_into().unwrap();
+                let data: Vec<bf16> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::F32 => {
-                let data: Vec<f32> = (&self).try_into().unwrap();
+                let data: Vec<f32> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::F64 => {
-                let data: Vec<f64> = (&self).try_into().unwrap();
+                let data: Vec<f64> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             #[cfg(feature = "complex")]
             DType::CF32 => {
-                let data: Vec<Complex<f32>> = (&self).try_into().unwrap();
+                let data: Vec<Complex<f32>> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             #[cfg(feature = "complex")]
             DType::CF64 => {
-                let data: Vec<Complex<f64>> = (&self).try_into().unwrap();
+                let data: Vec<Complex<f64>> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::U8 => {
-                let data: Vec<u8> = (&self).try_into().unwrap();
+                let data: Vec<u8> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::I8 => {
-                let data: Vec<i8> = (&self).try_into().unwrap();
+                let data: Vec<i8> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::I16 => {
-                let data: Vec<i16> = (&self).try_into().unwrap();
+                let data: Vec<i16> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::I32 => {
-                let data: Vec<i32> = (&self).try_into().unwrap();
+                let data: Vec<i32> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::I64 => {
-                let data: Vec<i64> = (&self).try_into().unwrap();
+                let data: Vec<i64> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
             DType::Bool => {
-                let data: Vec<bool> = (&self).try_into().unwrap();
+                let data: Vec<bool> = self.try_into().unwrap();
                 Tensor::from(data).reshape(shape)
             }
         }
@@ -1416,9 +1416,9 @@ impl TryFrom<Tensor> for bool {
     }
 }
 
-impl<T: Scalar> TryFrom<&Tensor> for Vec<T> {
+impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     type Error = ZyxError;
-    fn try_from(value: &Tensor) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         RT.lock().load(value.id)
     }
 }
@@ -1438,10 +1438,11 @@ impl Display for Tensor {
         } else {
             3
         };
+        let x = self.clone();
         let res = match self.dtype() {
             #[cfg(feature = "half")]
             DType::BF16 => {
-                let data: Result<Vec<bf16>, _> = self.try_into();
+                let data: Result<Vec<bf16>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f16 tensor failed to realize {e:?}"),
@@ -1449,21 +1450,21 @@ impl Display for Tensor {
             }
             #[cfg(feature = "half")]
             DType::F16 => {
-                let data: Result<Vec<f16>, _> = self.try_into();
+                let data: Result<Vec<f16>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f16 tensor failed to realize {e:?}"),
                 }
             }
             DType::F32 => {
-                let data: Result<Vec<f32>, _> = self.try_into();
+                let data: Result<Vec<f32>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f32 tensor failed to realize {e:?}"),
                 }
             }
             DType::F64 => {
-                let data: Result<Vec<f64>, _> = self.try_into();
+                let data: Result<Vec<f64>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f64 tensor failed to realize {e:?}"),
@@ -1471,7 +1472,7 @@ impl Display for Tensor {
             }
             #[cfg(feature = "complex")]
             DType::CF32 => {
-                let data: Result<Vec<Complex<f32>>, _> = self.try_into();
+                let data: Result<Vec<Complex<f32>>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f32 tensor failed to realize {e:?}"),
@@ -1479,49 +1480,49 @@ impl Display for Tensor {
             }
             #[cfg(feature = "complex")]
             DType::CF64 => {
-                let data: Result<Vec<Complex<f64>>, _> = self.try_into();
+                let data: Result<Vec<Complex<f64>>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f64 tensor failed to realize {e:?}"),
                 }
             }
             DType::U8 => {
-                let data: Result<Vec<u8>, _> = self.try_into();
+                let data: Result<Vec<u8>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             DType::I8 => {
-                let data: Result<Vec<i8>, _> = self.try_into();
+                let data: Result<Vec<i8>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             DType::I16 => {
-                let data: Result<Vec<i16>, _> = self.try_into();
+                let data: Result<Vec<i16>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             DType::I32 => {
-                let data: Result<Vec<i32>, _> = self.try_into();
+                let data: Result<Vec<i32>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             DType::I64 => {
-                let data: Result<Vec<i64>, _> = self.try_into();
+                let data: Result<Vec<i64>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }
             DType::Bool => {
-                let data: Result<Vec<bool>, _> = self.try_into();
+                let data: Result<Vec<bool>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),

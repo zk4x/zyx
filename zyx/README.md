@@ -33,7 +33,8 @@ let bb_grad = b_grad.backward([&b])[0].unwrap();
 ## Backends
 
 Zyx runs on different devices, current backends are CUDA and OpenCL.
-HIP would be supported too, but HIPRTC is broken.
+HIP would be supported too, but HIPRTC is currently broken.
+Using COMGR directly as a workaround is in the works as well as Vulkan and WebGPU backends through wgpu and wgsl.
 Zyx automatically tries to utilize all available devices, but you can also manually change it by creating file backend_config.json in folder zyx in home config directory (usually ~/.config/zyx/backend_config.json).
 There write [BackendConfig] struct.
 

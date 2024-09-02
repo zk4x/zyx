@@ -22,7 +22,6 @@ pub use runtime::OpenCLConfig;
 
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 
-// Load and save test
 #[test]
 fn t0() {
     let x = Tensor::from([[2, 3], [4, 5]]);

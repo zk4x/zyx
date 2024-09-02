@@ -641,7 +641,7 @@ impl OpenCLDevice {
                 IROp::Unary { z, x, uop, dtype } => {
                     source += &match uop {
                         UOp::Cast(_) => format!("{indent}{} = ({}){};\n", z.ocl(), dtype.ocl(), x.ocl()),
-                        UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.ocl(), x.ocl()),
+                        UOp::ReLU => format!("{indent}{} = max({}, {});\n", z.ocl(), x.ocl(), Constant::new(0).unary(UOp::Cast(dtype.dtype())).ocl()),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.ocl(), x.ocl()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.ocl(), x.ocl()),
                         UOp::Log2 => format!("{indent}{} = log2({});\n", z.ocl(), x.ocl()),
@@ -1087,11 +1087,11 @@ impl Constant {
         use core::mem::transmute as t;
         match self {
             #[cfg(feature = "half")]
-            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
+            Constant::F16(x) => format!("{:.16}f", unsafe { t::<_, half::f16>(*x) }),
             #[cfg(feature = "half")]
-            Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F32(x) => format!("{}f", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("{}f", unsafe { t::<_, f64>(*x) }),
+            Constant::BF16(x) => format!("{:.16}f", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
+            Constant::F64(x) => format!("{:.16}f", unsafe { t::<_, f64>(*x) }),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]
