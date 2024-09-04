@@ -49,6 +49,7 @@ crate-type = ["lib", "cdylib"]
 [features]
 default = [
     "rand",
+    "wgsl",
     #"half",
     #"complex",
     #"py",

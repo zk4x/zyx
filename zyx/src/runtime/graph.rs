@@ -416,10 +416,11 @@ impl Graph {
             _ => panic!("Second op must be unary"),
         }
         // swap the two nodes
-        let first_value = self.nodes.remove(first).unwrap().clone();
-        let second_value = self.nodes.remove(second).unwrap().clone();
-        self.nodes.insert(first, second_value);
-        self.nodes.insert(second, first_value);
+        //let first_value = self.nodes.remove(first).unwrap().clone();
+        //let second_value = self.nodes.remove(second).unwrap().clone();
+        //self.nodes.insert(first, second_value);
+        //self.nodes.insert(second, first_value);
+        self.nodes.swap(first, second);
         // NOTE: do not forget to swap shapes and dtypes as well...
         if let Some(first_shape) = self.shapes.remove(&first) {
             if let Some(second_shape) = self.shapes.insert(second, first_shape) {

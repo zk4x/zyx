@@ -43,6 +43,7 @@ impl<T> IndexMap<T> {
             self.empty.push(id);
             //let x = std::mem::MaybeUninit::uninit();
             //let x = unsafe { x.assume_init() };
+            // TODO replace this with maybe uninit and make sure descructors don't run
             let x = unsafe { std::mem::zeroed() };
             self.values.push(x);
             let res = self.values.swap_remove(id);
@@ -52,8 +53,8 @@ impl<T> IndexMap<T> {
         }
     }
 
-    /// Returns true if newly inserted, false if replaced old value
-    pub(crate) fn insert(&mut self, id: Id, value: T) -> bool
+    // Returns true if newly inserted, false if replaced old value
+    /*pub(crate) fn insert(&mut self, id: Id, value: T) -> bool
     where
         T: Default,
     {
@@ -68,6 +69,10 @@ impl<T> IndexMap<T> {
             self.values[id] = value;
             true
         }
+    }*/
+
+    pub(crate) fn swap(&mut self, x: Id, y: Id) {
+        self.values.swap(x, y);
     }
 
     /*pub(crate) fn contains_id(&self, id: Id) -> bool {
