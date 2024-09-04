@@ -12,6 +12,7 @@
 - [x] test reshape split
 - [x] repeat
 - [ ] hsa/hsail backend
+- [ ] vulkan backend
 - [ ] clean up ir.rs
 - [ ] automatic optimizations with search on vkernel
 - [ ] automatic optimizations for scheduler
@@ -48,9 +49,10 @@
 - [ ] lower/upper triangle mask (for attention)
 - [ ] conv
 - [x] wgsl init
-- [ ] wgsl memory copy
+- [x] wgsl memory copy
 - [x] wgsl compilation
-- [ ] wgsl program launch
+- [x] wgsl program launch
+- [ ] tensor split
 
 ### Release blockers
 
@@ -65,7 +67,6 @@
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
 - [x] tensor detach (for recurrent nets)
-- [ ] tensor split
 - [ ] stack
 - [ ] pool
 - [ ] cumsum

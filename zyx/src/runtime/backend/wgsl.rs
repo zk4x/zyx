@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
-use wgpu::{util::DownloadBuffer, BufferDescriptor, BufferUsages};
+use wgpu::{
+    util::DownloadBuffer, BufferDescriptor, BufferUsages, ShaderModule, ShaderModuleDescriptor,
+    ShaderSource,
+};
 
 use super::DeviceInfo;
 use crate::{
@@ -39,11 +42,18 @@ pub(crate) struct WGSLDevice {
 }
 
 #[derive(Debug)]
-pub(crate) struct WGSLProgram {}
+pub(crate) struct WGSLProgram {
+    name: String,
+    global_work_size: [usize; 3],
+    local_work_size: [usize; 3],
+    read_only_args: Vec<bool>,
+    shader: ShaderModule,
+}
 
 #[derive(Debug)]
 pub(crate) struct WGSLQueue {
     load: usize,
+    device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 }
 
@@ -51,7 +61,7 @@ pub(crate) fn initialize_wgsl_backend(
     config: &WGSLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
-    return Err(WGSLError {});
+    //return Err(WGSLError {});
 
     let power_preference =
         wgpu::util::power_preference_from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
@@ -91,13 +101,6 @@ pub(crate) fn initialize_wgsl_backend(
         info.name, info.device, info.backend
     );
     let device = Arc::new(device);
-    /*let polling_device = Arc::clone(&device);
-    let handle = std::thread::spawn(move || loop {
-        polling_device.poll(wgpu::Maintain::Poll);
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    });
-    handle.join().unwrap();*/
-
     let queue = Arc::new(queue);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
@@ -108,12 +111,24 @@ pub(crate) fn initialize_wgsl_backend(
     });
     devices.push((
         WGSLDevice {
-            device,
+            device: device.clone(),
             adapter,
-            dev_info: DeviceInfo::default(),
+            dev_info: DeviceInfo {
+                compute: 1024*1024*1024*1024,
+                max_work_item_sizes: vec![1024, 1024, 1024],
+                max_work_group_size: 256,
+                preferred_vector_size: 4,
+                local_mem_size: 64 * 1024,
+                num_registers: 96,
+                tensor_cores: false,
+            },
             memory_pool_id: 0,
         },
-        vec![WGSLQueue { load: 0, queue }],
+        vec![WGSLQueue {
+            load: 0,
+            device,
+            queue,
+        }],
     ));
 
     Ok((memory_pools, devices))
@@ -129,21 +144,28 @@ impl WGSLMemoryPool {
             buffer: self.device.create_buffer(&BufferDescriptor {
                 label: None,
                 size: bytes as u64,
-                usage: BufferUsages::from_bits_truncate(BufferUsages::STORAGE.bits() | BufferUsages::COPY_SRC.bits() | BufferUsages::COPY_DST.bits()),
+                usage: BufferUsages::from_bits_truncate(
+                    BufferUsages::STORAGE.bits()
+                        | BufferUsages::COPY_SRC.bits()
+                        | BufferUsages::COPY_DST.bits(),
+                ),
                 mapped_at_creation: false,
             }),
         })
     }
 
     pub(crate) fn deallocate(&mut self, buffer: WGSLBuffer) -> Result<(), WGSLError> {
-        todo!()
+        buffer.buffer.destroy();
+        Ok(())
     }
 
     pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &WGSLBuffer) -> Result<(), WGSLError> {
         self.queue.write_buffer(&dst.buffer, 0, src);
-        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("GpuBuffer::write"),
-        });
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("GpuBuffer::write"),
+            });
         self.queue.submit(Some(encoder.finish()));
         Ok(())
     }
@@ -200,12 +222,6 @@ impl WGSLDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        /*
-        @group(0) @binding(0) var<storage, read> g0: array<f32>;
-        @group(0) @binding(1) var<storage, read> g1: array<f32>;
-        @group(0) @binding(2) var<storage, read_write> g2: array<f32>;
-        */
-
         for op in &kernel.ops[..6] {
             if let &IROp::Loop { id, len } = op {
                 if id % 2 == 0 {
@@ -219,20 +235,29 @@ impl WGSLDevice {
         }
 
         // Declare global variables
+        let mut read_only_args = Vec::new();
         for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
             source += &format!(
                 "@group(0) @binding({id}) var<storage, {}> g{id}: array<{}>;\n",
                 if *read_only { "read" } else { "read_write" },
                 dtype.wgsl(),
             );
+            read_only_args.push(*read_only);
         }
-
-        // NOTE Just gonna assume wgsl workgroup size is local work size
         source += &format!(
-            "@compute @workgroup_size({}, {}, {})",
+            "\n@compute @workgroup_size({}, {}, {})\n",
             local_work_size[0], local_work_size[1], local_work_size[2]
         );
-        source += &format!("fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {{\n");
+        let name = format!(
+            "k__{}_{}__{}_{}__{}_{}",
+            global_work_size[0],
+            local_work_size[0],
+            global_work_size[1],
+            local_work_size[1],
+            global_work_size[2],
+            local_work_size[2],
+        );
+        source += &format!("fn {name}(\n{indent}@builtin(global_invocation_id) gid: vec3<u32>,\n{indent}@builtin(local_invocation_id) lid: vec3<u32>\n) {{\n");
 
         // Declare register variables
         for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
@@ -254,7 +279,7 @@ impl WGSLDevice {
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, len: _, value } => {
-                    source += &format!("{indent}r{z} = {value};\n");
+                    source += &format!("{indent}r{z} = {};\n", value.wgsl());
                 }
                 IROp::Load { z, x, at, dtype: _ } => {
                     source += &format!("{indent}{} = {}[{}];\n", z.wgsl(), x.wgsl(), at.wgsl());
@@ -341,31 +366,131 @@ impl WGSLDevice {
             }
         }
         source += "}\n";
-
-        let mut global_work_size = global_work_size;
-        let local_work_size = local_work_size;
-        let name = format!(
-            "k__{}_{}__{}_{}__{}_{}",
-            global_work_size[0],
-            local_work_size[0],
-            global_work_size[1],
-            local_work_size[1],
-            global_work_size[2],
-            local_work_size[2],
-        );
-        for (i, lwd) in local_work_size.iter().enumerate() {
-            global_work_size[i] *= lwd;
-        }
-        let mut pragma = format!("");
-        if source.contains("double") {
-            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
-        }
-        let source = format!("{pragma}__kernel void {name}{source}");
+        let source = format!("{source}");
         if debug_asm {
             println!("{source}");
         }
 
-        todo!()
+        let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: ShaderSource::Wgsl(Cow::Owned(source)),
+        });
+
+        Ok(WGSLProgram {
+            name,
+            global_work_size,
+            local_work_size,
+            read_only_args,
+            shader: shader_module,
+        })
+    }
+}
+
+impl WGSLQueue {
+    pub(crate) fn launch(
+        &mut self,
+        program: &mut WGSLProgram,
+        buffers: &mut IndexMap<WGSLBuffer>,
+        args: &[usize],
+    ) -> Result<(), WGSLError> {
+        let mut set_layout: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+        let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
+
+        for (bind_id, &arg) in args.iter().enumerate() {
+            let bind_entry = wgpu::BindGroupLayoutEntry {
+                binding: bind_id as u32,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: program.read_only_args[bind_id], // TODO make this work properly with read only args
+                    },
+                },
+                count: None,
+            };
+            let bind = wgpu::BindGroupEntry {
+                binding: bind_id as u32,
+                resource: buffers[arg].buffer.as_entire_binding(),
+            };
+            set_layout.push(bind_entry);
+            binds.push(bind);
+        }
+        // Program
+        // shader
+        // entry point - function name
+        // descriptors
+        let mut layouts = Vec::new();
+        let mut sets = Vec::new();
+
+        // Unwraping of descriptors from program
+        let set_layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &set_layout,
+            });
+        let set = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &set_layout,
+            entries: &binds,
+        });
+        layouts.push(set_layout);
+        sets.push(set);
+
+        // Compute pipeline bindings
+        let group_layouts = layouts.iter().collect::<Vec<_>>();
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &group_layouts,
+                push_constant_ranges: &[],
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                module: &program.shader,
+                entry_point: &program.name,
+                layout: Some(&pipeline_layout),
+                cache: None,
+                compilation_options: Default::default(),
+            });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Kernel::enqueue"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Kernel::enqueue"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&pipeline);
+            for (id_set, set) in sets.iter().enumerate() {
+                cpass.set_bind_group(id_set as u32, set, &[]);
+            }
+            cpass.insert_debug_marker(&program.name);
+            cpass.dispatch_workgroups(
+                program.global_work_size[0] as u32,
+                program.global_work_size[1] as u32,
+                program.global_work_size[2] as u32,
+            );
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    pub(crate) fn sync(&mut self) -> Result<(), WGSLError> {
+        // TODO does wgpu even let us do that?
+        self.device.poll(wgpu::MaintainBase::Wait);
+        self.load = 0;
+        Ok(())
+    }
+
+    pub(crate) fn load(&self) -> usize {
+        self.load
     }
 }
 
@@ -393,26 +518,6 @@ impl IRDType {
     }
 }
 
-impl WGSLQueue {
-    pub(crate) fn launch(
-        &mut self,
-        program: &mut WGSLProgram,
-        buffers: &mut IndexMap<WGSLBuffer>,
-        args: &[usize],
-    ) -> Result<(), WGSLError> {
-        todo!()
-    }
-
-    pub(crate) fn sync(&mut self) -> Result<(), WGSLError> {
-        self.load = 0;
-        todo!()
-    }
-
-    pub(crate) fn load(&self) -> usize {
-        self.load
-    }
-}
-
 impl Constant {
     fn wgsl(&self) -> String {
         use core::mem::transmute as t;
@@ -421,8 +526,8 @@ impl Constant {
             Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
             #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F32(x) => format!("{}f", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("{}f", unsafe { t::<_, f64>(*x) }),
+            Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
+            Constant::F64(x) => format!("{:.16}f", unsafe { t::<_, f64>(*x) }),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]
@@ -430,7 +535,7 @@ impl Constant {
             Constant::U8(x) => format!("{x}"),
             Constant::I8(x) => format!("{x}"),
             Constant::I16(x) => format!("{x}"),
-            Constant::U32(x) => format!("{x}"),
+            Constant::U32(x) => format!("u32({x})"), // Why do we need to cast???
             Constant::I32(x) => format!("{x}"),
             Constant::I64(x) => format!("{x}"),
             Constant::Bool(x) => format!("{x}"),

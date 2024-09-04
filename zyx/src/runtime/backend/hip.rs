@@ -151,6 +151,16 @@ pub(crate) fn initialize_hip_backend(
             hiprtc: hiprtcResult::HIPRTC_SUCCESS,
         });
     }
+    let device_ids: Vec<_> = (0..num_devices).filter(|id|
+        if let Some(ids) = config.device_ids.as_ref() {
+            ids.contains(id)
+        } else {
+            true
+        }
+    ).collect();
+    if device_ids.is_empty() {
+        return Err(HIPError { info: format!("No devices available or selected."), status: HIPStatus::hipSuccess, hiprtc: hiprtcResult::HIPRTC_SUCCESS })
+    }
     if debug_dev {
         println!(
             "Using HIP backend, driver version: {}.{} on devices:",
@@ -162,13 +172,7 @@ pub(crate) fn initialize_hip_backend(
     let hip = Rc::new(hip);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
-    for dev_id in (0..num_devices).filter(|id|
-        if let Some(ids) = config.device_ids.as_ref() {
-            ids.contains(id)
-        } else {
-            true
-        }
-    ) {
+    for dev_id in device_ids {
         let mut device = 0;
         unsafe { hipDeviceGet(&mut device, dev_id) }.check("Failed to access HIP device")?;
         let mut device_name = [0; 100];

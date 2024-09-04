@@ -27,8 +27,8 @@ xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # For nice colorful debug logging
 inline_colorization = { version = "0.1.6" } # MIT
 
-# Lot of dependencies from wgpu
-wgpu = { version = "*", default-features = false }
+# Lot of dependencies from wgpu, probably just don't use that
+wgpu = { version = "*", default-features = false, features = ["wgsl"] }
 # Futures for wgpu axync
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 
@@ -49,8 +49,8 @@ crate-type = ["lib", "cdylib"]
 [features]
 default = [
     "rand",
-    "half",
-    "complex",
+    #"half",
+    #"complex",
     #"py",
 ]
 

@@ -1,17 +1,27 @@
-use std::ops::{Index, IndexMut};
+use std::{mem::{ManuallyDrop, MaybeUninit}, ops::{Index, IndexMut}};
 
 type Id = usize;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub(crate) struct IndexMap<T> {
-    values: Vec<T>,
+    values: ManuallyDrop<Vec<T>>,
     empty: Vec<Id>,
+}
+
+impl<T> Drop for IndexMap<T> {
+    fn drop(&mut self) {
+        // This is a bit tricky. We only need to call drop on values that are not in self.empty,
+        // otherwise it's UB
+        // First call drop on all non empty values
+        //for x in (0..values)
+        // Next deallocate all memory stored values
+    }
 }
 
 impl<T> IndexMap<T> {
     pub(crate) const fn new() -> IndexMap<T> {
         IndexMap {
-            values: Vec::new(),
+            values: ManuallyDrop::new(Vec::new()),
             empty: Vec::new(),
         }
     }
@@ -31,7 +41,9 @@ impl<T> IndexMap<T> {
     pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
         if self.values.len() > id && !self.empty.contains(&id) {
             self.empty.push(id);
-            self.values.push(unsafe { std::mem::zeroed() });
+            let x = MaybeUninit::uninit();
+            let x = unsafe { x.assume_init() };
+            self.values.push(x);
             Some(self.values.swap_remove(id))
         } else {
             None
@@ -114,7 +126,7 @@ impl<'a, T> IntoIterator for &'a mut IndexMap<T> {
 
 impl<T: Default> FromIterator<(Id, T)> for IndexMap<T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> IndexMap<T> {
-        let mut values = Vec::new();
+        let mut values = ManuallyDrop::new(Vec::new());
         let mut empty = Vec::new();
         let mut i = 0;
         for (id, v) in iter {

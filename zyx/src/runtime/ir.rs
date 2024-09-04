@@ -375,7 +375,7 @@ impl VarMap {
         match view {
             View::None => Var::Const(Constant::U32(0)),
             View::Strided(dims) => {
-                let z = self.zero_var(ops);
+                let z = self.zero_u32_var(ops);
                 let numel: usize = dims.iter().flat_map(|StridedDim { dim, stride, .. }| if *stride != 0 { Some(*dim) } else { None }).product();
                 for StridedDim { axis, stride, .. } in dims {
                     if *stride != 0 && *stride != numel {
@@ -392,7 +392,7 @@ impl VarMap {
                 z
             }
             View::Padded(dims, padding) => {
-                let z = self.zero_var(ops);
+                let z = self.zero_u32_var(ops);
                 for StridedDim { axis, stride, .. } in dims {
                     if let Some((_, (lp, _))) = padding
                         .axes
@@ -473,7 +473,7 @@ impl VarMap {
                     pc += &format!("{idx} > {} || ", dim as isize - rp - 1);
                 }
 
-                let idx = self.zero_var(ops);
+                let idx = self.zero_u32_var(ops);
                 let mut st = 1;
                 let mut dim = 1;
                 for axis in axes.iter().rev() {
@@ -583,7 +583,7 @@ impl VarMap {
         res
     }
 
-    fn zero_var(&mut self, ops: &mut Vec<IROp>) -> Var {
+    fn zero_u32_var(&mut self, ops: &mut Vec<IROp>) -> Var {
         let id = self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8;
         ops.push(IROp::Set {
             z: id,
@@ -720,11 +720,15 @@ impl IRDType {
 
     pub(crate) fn dtype(&self) -> DType {
         match self {
+            #[cfg(feature = "half")]
             IRDType::BF16 => DType::BF16,
+            #[cfg(feature = "half")]
             IRDType::F16 => DType::F16,
             IRDType::F32 => DType::F32,
             IRDType::F64 => DType::F64,
+            #[cfg(feature = "complex")]
             IRDType::CF32 => DType::CF32,
+            #[cfg(feature = "complex")]
             IRDType::CF64 => DType::CF64,
             IRDType::U8 => DType::U8,
             IRDType::I8 => DType::I8,
