@@ -38,11 +38,13 @@ impl<T> IndexMap<T> {
         }
     }
 
-    pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
+    pub(crate) fn remove(&mut self, id: Id) -> Option<T>
+    {
         if self.values.len() > id && !self.empty.contains(&id) {
             self.empty.push(id);
             //let x = std::mem::MaybeUninit::uninit();
             //let x = unsafe { x.assume_init() };
+            // TODO replace this with maybe uninit and make sure descructors don't run
             let x = unsafe { std::mem::zeroed() };
             self.values.push(x);
             let res = self.values.swap_remove(id);

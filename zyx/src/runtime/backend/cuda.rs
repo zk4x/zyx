@@ -9,10 +9,11 @@ use libloading::Library;
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
+use crate::index_map::IndexMap;
 use crate::runtime::ir::{IRDType, IROp, Scope, Var};
 use crate::runtime::node::{BOp, UOp};
 use crate::DType;
-use crate::{index_map::IndexMap, runtime::ir::IRKernel};
+use crate::{runtime::ir::IRKernel};
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct CUDAConfig {
@@ -829,8 +830,8 @@ impl CUDAQueue {
         args: &[usize],
     ) -> Result<(), CUDAError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-        for arg in args {
-            let arg = &mut buffers[*arg];
+        for &arg in args {
+            let arg = &mut buffers[arg];
             //let ptr = &mut arg.mem;
             let ptr: *mut _ = &mut arg.ptr;
             kernel_params.push(ptr.cast());
