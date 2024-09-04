@@ -47,6 +47,7 @@
 - [x] scalar casting
 - [ ] lower/upper triangle mask (for attention)
 - [ ] conv
+- [x] wgsl init
 - [ ] wgsl memory copy
 - [x] wgsl compilation
 - [ ] wgsl program launch
@@ -78,15 +79,19 @@
 
 ### Tests
 
-- [ ] unary with backprop
-- [ ] binary with backprop
-- [ ] movement with backprop
-- [ ] reduce with backprop
+- [x] unary
+- [ ] unary backprop
+- [x] binary
+- [ ] binary backprop
+- [ ] movement
+- [ ] movement backprop
+- [ ] reduce
+- [ ] reduce backprop
 - [ ] combination of unary and binary
 - [ ] combination of movement and unary
 - [ ] combination of movent, unary and binary
 - [ ] combination of all ops
-- [ ] fuzzy tester with simple cpu tensor, mostly takes care of all combination testing. The longer it runs, the more certain we can be there are no bugs.
+- [x] fuzzy tester with simple cpu tensor, mostly takes care of all combination testing. The longer it runs, the more certain we can be there are no bugs.
 - [ ] we need test for big modules like transformer. If transformer gives correct outputs, it's likely everything else is correct too.
 
 ## Advanced graph caching

@@ -3,6 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+// TODO replace this with std Mutex
 // Standard spinlock, but will panic if it fails to lock after more than N tries
 pub(super) struct Mutex<T, const N: usize> {
     data: UnsafeCell<T>,
