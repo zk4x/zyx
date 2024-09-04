@@ -1061,18 +1061,25 @@ impl Tensor {
     }
 
     #[must_use]
-    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
-        let _ = tensors;
-        let _ = dim;
-        todo!()
+    pub fn unsqueeze(&self, dim: isize) -> Tensor {
+        let shape = self.shape();
+        let rank = shape.len();
+        let dim = (dim + rank as isize) as usize % rank;
+        return self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<usize>>())
     }
 
     #[must_use]
+    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
+        let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim)).collect();
+        Tensor::cat(&tensors, dim)
+    }
+
+    /*#[must_use]
     pub fn split(&self, sizes: &[usize], dim: isize) -> Vec<Tensor> {
         let _ = sizes;
         let _ = dim;
         todo!()
-    }
+    }*/
 
     #[must_use]
     pub fn pool(
@@ -1186,10 +1193,10 @@ impl Tensor {
             .reshape(final_shape);
     }
 
-    #[must_use]
+    /*#[must_use]
     pub fn conv(&self) -> Tensor {
         todo!()
-    }
+    }*/
 }
 
 pub struct DebugGuard {

@@ -67,7 +67,8 @@
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
 - [x] tensor detach (for recurrent nets)
-- [ ] stack
+- [x] unsqueeze
+- [x] stack
 - [ ] pool
 - [ ] cumsum
 - [ ] randn
