@@ -824,6 +824,7 @@ impl OpenCLQueue {
     }
 
     pub(crate) fn sync(&mut self) -> Result<(), OpenCLError> {
+        println!("Syncing {:?}", self);
         self.load = 0;
         unsafe { (self.clFinish)(self.queue) }.check("Failed to synchronize device queue.")
     }
