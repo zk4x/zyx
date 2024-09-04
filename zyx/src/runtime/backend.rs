@@ -1,6 +1,7 @@
 pub(crate) mod cuda;
 pub(crate) mod hip;
 pub(crate) mod opencl;
+#[cfg(feature = "wgsl")]
 pub(crate) mod wgsl;
 
 /// Hardware information needed for applying optimizations

@@ -425,7 +425,7 @@ impl OpenCLMemoryPool {
             )
         };
         status.check("Failed to allocate memory.")?;
-        //println!("Allocated buffer {ptr:?}");
+        println!("Allocated buffer {ptr:?}");
         self.free_bytes -= bytes;
         Ok(OpenCLBuffer {
             ptr,
@@ -446,6 +446,7 @@ impl OpenCLMemoryPool {
         dst: &OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
         //println!("Storing {src:?} to {dst:?}");
+        println!("Storing to {dst:?}");
         let mut event = ptr::null_mut();
         unsafe {
             (self.clEnqueueWriteBuffer)(
@@ -474,7 +475,7 @@ impl OpenCLMemoryPool {
             "Trying to read null memory. Internal bug."
         );
         let mut event: *mut c_void = ptr::null_mut();
-        //println!("OpenCL to host src: {src:?}");
+        println!("OpenCL to host src: {src:?}");
         unsafe {
             (self.clEnqueueReadBuffer)(
                 src.queue,
@@ -633,9 +634,11 @@ impl OpenCLDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, x, at, dtype: _ } => {
+                    //source += &format!("{indent}if ({0} > 1048575) {{ printf(\"Load %d\\n\", {0}); }}\n", at.ocl());
                     source += &format!("{indent}{} = {}[{}];\n", z.ocl(), x.ocl(), at.ocl());
                 }
                 IROp::Store { z, x, at, dtype: _ } => {
+                    //source += &format!("{indent}if ({0} > 1048570) {{ printf(\"Store %d\\n\", {0}); }}\n", at.ocl());
                     source += &format!("{indent}{}[{}] = {};\n", z.ocl(), at.ocl(), x.ocl());
                 }
                 IROp::Unary { z, x, uop, dtype } => {
@@ -710,7 +713,6 @@ impl OpenCLDevice {
         }
         source += "}\n";
 
-        let mut global_work_size = global_work_size;
         let local_work_size = local_work_size;
         let name = format!(
             "k__{}_{}__{}_{}__{}_{}",
@@ -790,7 +792,7 @@ impl OpenCLQueue {
         let mut i = 0;
         for arg in args {
             let arg = &mut buffers[*arg];
-            //println!("Kernel arg: {arg:?}");
+            println!("Kernel arg: {arg:?}");
             // This is POINTER MAGIC. Be careful.
             let ptr: *const _ = &arg.ptr;
             unsafe {
@@ -805,6 +807,7 @@ impl OpenCLQueue {
         }
         let mut event: *mut c_void = ptr::null_mut();
         self.load += 1;
+        println!("Launch gws {:?}, lws {:?}", program.global_work_size, program.local_work_size);
         unsafe {
             (self.clEnqueueNDRangeKernel)(
                 self.queue,

@@ -154,8 +154,6 @@ pub(crate) fn initialize_cuda_backend(
     let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
     let cuModuleLoadDataEx = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
     let cuModuleGetFunction = *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
-    /*let cuModuleEnumerateFunctions =
-     *unsafe { cuda.get(b"cuModuleEnumerateFunctions\0")}.unwrap();*/
     let cuLaunchKernel = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
     let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
         *unsafe { cuda.get(b"cuStreamCreate\0") }.unwrap();
@@ -243,12 +241,27 @@ pub(crate) fn initialize_cuda_backend(
         }
         devices.push((CUDADevice {
             device,
-            dev_info: DeviceInfo::default(),
+            dev_info: DeviceInfo {
+                compute: 1024*1024*1024*1024,
+                max_work_item_sizes: vec![1024, 1024, 64],
+                max_work_group_size: 1,
+                preferred_vector_size: 8,
+                local_mem_size: 256*1024,
+                num_registers: 96,
+                tensor_cores: true,
+            },
             memory_pool_id: 0,
             cuModuleLoadDataEx,
             cuModuleGetFunction,
             compute_capability: [major, minor],
-        }, queues))
+        }, queues));
+        let dev = &mut devices.last_mut().unwrap().0;
+        dev.dev_info.max_work_group_size = dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, cuDeviceGetAttribute)? as usize;
+        dev.dev_info.max_work_item_sizes = vec![
+            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)? as usize,
+            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)? as usize,
+            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)? as usize
+        ];
     }
 
     Ok((memory_pools, devices))
@@ -314,6 +327,12 @@ impl Drop for CUDAMemoryPool {
 }
 
 impl CUDADevice {
+    fn get(&mut self, attr: CUdevice_attribute, cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus) -> Result<c_int, CUDAError> {
+        let mut v = 0;
+        unsafe { cuDeviceGetAttribute(&mut v, attr, self.device) }.check("Failed to get device attribute.")?;
+        Ok(v)
+    }
+
     pub(crate) fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }

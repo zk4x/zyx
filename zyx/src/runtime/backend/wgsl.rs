@@ -1,5 +1,4 @@
 use std::{borrow::Cow, sync::Arc};
-
 use wgpu::{
     util::DownloadBuffer, BufferDescriptor, BufferUsages, ShaderModule, ShaderModuleDescriptor,
     ShaderSource,

@@ -13,7 +13,8 @@ use backend::opencl::{
     initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool,
     OpenCLProgram, OpenCLQueue,
 };
-use backend::wgsl::{initialize_wgsl_backend, WGSLBuffer, WGSLConfig, WGSLDevice, WGSLError, WGSLMemoryPool, WGSLProgram, WGSLQueue};
+#[cfg(feature = "wgsl")]
+use backend::wgsl::{initialize_wgsl_backend, WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue, WGSLConfig, WGSLError};
 use backend::DeviceInfo;
 use graph::Graph;
 use ir::IRKernel;
@@ -72,6 +73,7 @@ pub struct BackendConfig {
     pub cuda: CUDAConfig,
     pub hip: HIPConfig,
     pub opencl: OpenCLConfig,
+    #[cfg(feature = "wgsl")]
     pub wgsl: WGSLConfig,
 }
 
@@ -81,6 +83,7 @@ impl Default for BackendConfig {
             cuda: CUDAConfig::default(),
             hip: HIPConfig::default(),
             opencl: OpenCLConfig::default(),
+            #[cfg(feature = "wgsl")]
             wgsl: WGSLConfig::default(),
         }
     }
@@ -115,6 +118,7 @@ enum Device {
         programs: Vec<OpenCLProgram>,
         queues: Vec<OpenCLQueue>,
     },
+    #[cfg(feature = "wgsl")]
     WGSL {
         memory_pool_id: MemoryPoolId,
         device: WGSLDevice,
@@ -136,6 +140,7 @@ enum MemoryPool {
         memory_pool: OpenCLMemoryPool,
         buffers: IndexMap<OpenCLBuffer>,
     },
+    #[cfg(feature = "wgsl")]
     WGSL {
         memory_pool: WGSLMemoryPool,
         buffers: IndexMap<WGSLBuffer>,
@@ -323,6 +328,7 @@ impl Runtime {
                         buffer_id,
                     }
                 }
+                #[cfg(feature = "wgsl")]
                 MemoryPool::WGSL {
                     memory_pool,
                     buffers,
@@ -747,6 +753,7 @@ impl Runtime {
                     queues,
                 }));
         }
+        #[cfg(feature = "wgsl")]
         if let Ok((memory_pools, devices)) =
             initialize_wgsl_backend(&backend_config.wgsl, self.debug_dev())
         {
@@ -800,6 +807,7 @@ impl Runtime {
                         MemoryPool::OpenCL { memory_pool, buffers } => {
                             memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
+                        #[cfg(feature = "wgsl")]
                         MemoryPool::WGSL { memory_pool, buffers } => {
                             memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
                         }
@@ -926,6 +934,7 @@ impl Runtime {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
                 }
+                #[cfg(feature = "wgsl")]
                 MemoryPool::WGSL { memory_pool, buffers } => {
                     let buffer = buffers.remove(buffer.buffer_id).unwrap();
                     memory_pool.deallocate(buffer)?;
@@ -1235,6 +1244,7 @@ impl MemoryPool {
             MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::HIP { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::OpenCL { memory_pool, .. } => memory_pool.free_bytes(),
+            #[cfg(feature = "wgsl")]
             MemoryPool::WGSL { memory_pool, .. } => memory_pool.free_bytes(),
         }
     }
@@ -1268,6 +1278,7 @@ pub enum ZyxError {
     CUDAError(CUDAError),
     HIPError(HIPError),
     OpenCLError(OpenCLError),
+    #[cfg(feature = "wgsl")]
     WGSLError(WGSLError),
 }
 
@@ -1289,6 +1300,7 @@ impl From<OpenCLError> for ZyxError {
     }
 }
 
+#[cfg(feature = "wgsl")]
 impl From<WGSLError> for ZyxError {
     fn from(value: WGSLError) -> Self {
         ZyxError::WGSLError(value)
@@ -1296,20 +1308,12 @@ impl From<WGSLError> for ZyxError {
 }
 
 impl Device {
-    fn compute(&self) -> u128 {
-        match self {
-            Device::CUDA { device, ..  } => device.info().compute,
-            Device::HIP { device, ..  } => device.info().compute,
-            Device::OpenCL { device, ..  } => device.info().compute,
-            Device::WGSL { device, ..  } => device.info().compute,
-        }
-    }
-
     fn memory_pool_id(&self) -> MemoryPoolId {
         match self {
             Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
             Device::HIP { memory_pool_id, .. } => *memory_pool_id,
             Device::OpenCL { memory_pool_id, .. } => *memory_pool_id,
+            #[cfg(feature = "wgsl")]
             Device::WGSL { memory_pool_id, .. } => *memory_pool_id,
         }
     }
@@ -1319,8 +1323,13 @@ impl Device {
             Device::CUDA { device, .. } => device.info(),
             Device::HIP { device, .. } => device.info(),
             Device::OpenCL { device, .. } => device.info(),
+            #[cfg(feature = "wgsl")]
             Device::WGSL { device, .. } => device.info(),
         }
+    }
+
+    fn compute(&self) -> u128 {
+        self.info().compute
     }
 }
 
@@ -1336,6 +1345,7 @@ impl Display for Device {
             Device::OpenCL { memory_pool_id, ..  } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
+            #[cfg(feature = "wgsl")]
             Device::WGSL { memory_pool_id, ..  } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),

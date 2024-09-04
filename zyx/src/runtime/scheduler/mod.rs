@@ -185,6 +185,7 @@ impl Runtime {
                             programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
                         }
+                        #[cfg(feature = "wgsl")]
                         Device::WGSL { device, programs, ..  } => {
                             programs.push(device.compile(&ir_kernel, debug_asm)?);
                             programs.len() - 1
@@ -352,6 +353,7 @@ impl Runtime {
                             queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
                             id
                         }
+                        #[cfg(feature = "wgsl")]
                         Device::WGSL {
                             device: _,
                             memory_pool_id: mpid,
@@ -376,6 +378,7 @@ impl Runtime {
                                 Device::CUDA { queues, .. } => queues[*queue].sync()?,
                                 Device::HIP { queues, .. } => queues[*queue].sync()?,
                                 Device::OpenCL { queues, .. } => queues[*queue].sync()?,
+                                #[cfg(feature = "wgsl")]
                                 Device::WGSL { queues, .. } => queues[*queue].sync()?,
                             }
                         }
@@ -433,6 +436,7 @@ impl Runtime {
                         (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
                         #[rustfmt::skip]
                         (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
                         #[rustfmt::skip]
@@ -441,6 +445,7 @@ impl Runtime {
                         (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
                         #[rustfmt::skip]
                         (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
                         #[rustfmt::skip]
@@ -449,14 +454,19 @@ impl Runtime {
                         (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
                         #[rustfmt::skip]
                         (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+                        #[cfg(feature = "wgsl")]
                         #[rustfmt::skip]
                         (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
                     }
@@ -509,6 +519,7 @@ impl Runtime {
                             },
                         );
                     }
+                    #[cfg(feature = "wgsl")]
                     MemoryPool::WGSL {
                         memory_pool,
                         buffers,
@@ -585,6 +596,7 @@ impl Runtime {
                             }
                         }
                     }
+                    #[cfg(feature = "wgsl")]
                     MemoryPool::WGSL {
                         memory_pool,
                         buffers,

@@ -75,10 +75,10 @@ fn t4() {
     let x = Tensor::uniform([1024, 1024], 0f32..1f32);
     let y = Tensor::uniform([1024, 1024], 0f32..1f32);
     //let z = (x * y).sum(2);
-    //for _ in 0..10 {
-    let z = x.dot(&y);
-    Tensor::realize([&z]).unwrap();
-    //}
+    for _ in 0..20 {
+        let z = x.dot(&y);
+        Tensor::realize([&z]).unwrap();
+    }
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
 }
