@@ -9,6 +9,7 @@ use core::ops::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::iter::repeat;
+use std::ops::{Bound, RangeBounds};
 
 use crate::runtime::ZyxError;
 use crate::RT;
@@ -1008,28 +1009,22 @@ impl Tensor {
     // misc
     /// Flatten. Joins axes into one dimension,
     #[must_use]
-    pub fn flatten(&self, axes: impl FlattenAxes) -> Tensor {
-        let sh = self.shape();
-        let n: usize = sh.iter().product();
-        let rank = sh.len();
-        let mut ld = 1;
-        let mut first_dims = false;
-        for a in axes.into_flatten_axes(rank) {
-            let a = if a > 0 {
-                a as usize
-            } else {
-                (a + rank as i64) as usize
-            };
-            if a == 0 {
-                first_dims = true;
-            }
-            ld *= sh[a];
-        }
-        if first_dims {
-            self.reshape([ld, n / ld])
-        } else {
-            self.reshape([n / ld, ld])
-        }
+    pub fn flatten(&self, axes: impl RangeBounds<isize>) -> Tensor {
+        let shape = self.shape();
+        let rank = shape.len();
+        let start_dim = to_axis(match axes.start_bound() {
+            Bound::Included(dim) => *dim,
+            Bound::Excluded(dim) => *dim+1,
+            Bound::Unbounded => 0,
+        }, rank);
+        let end_dim = to_axis(match axes.end_bound() {
+            Bound::Included(dim) => *dim,
+            Bound::Excluded(dim) => *dim-1,
+            Bound::Unbounded => 0,
+        }, rank);
+        let dim = shape[start_dim..end_dim].iter().product();
+        let new_shape: Vec<usize> = shape[..start_dim].iter().copied().chain([dim]).chain(shape[end_dim..].iter().copied()).collect();
+        self.reshape(new_shape)
     }
 
     #[must_use]
@@ -1606,7 +1601,7 @@ fn tensor_to_string<T: core::fmt::Display>(
     res
 }
 
-/// Into i64 range, used for indexing
+/// Into isize range, used for indexing
 pub trait IntoRange: Clone {
     /// Convert self to range i64, if it is scalar, it gets converted to x..x+1
     fn into_range(self) -> Range<isize>;
@@ -1779,60 +1774,6 @@ impl<
             self.7.into_range(),
         ]
         .into_iter()
-    }
-}
-
-/// A range of axes that can be used for flattening tensors.
-pub trait FlattenAxes {
-    /// Get flatten axes
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64>;
-}
-
-impl FlattenAxes for RangeFrom<i64> {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        assert!(
-            if self.start > 0 {
-                (self.start as usize) < rank
-            } else {
-                ((-self.start) as usize) <= rank
-            },
-            "Cannot use {self:?} as flatten axes."
-        );
-        self.start..i64::MAX
-    }
-}
-
-impl FlattenAxes for RangeTo<i64> {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        assert!(
-            if self.end > 0 {
-                (self.end as usize) < rank
-            } else {
-                ((-self.end) as usize) <= rank
-            },
-            "Cannot use {self:?} as flatten axes."
-        );
-        0..self.end
-    }
-}
-
-impl FlattenAxes for RangeToInclusive<i64> {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        assert!(
-            if self.end > 0 {
-                (self.end as usize) < rank
-            } else {
-                ((-self.end) as usize) <= rank
-            },
-            "Cannot use {self:?} as flatten axes."
-        );
-        0..self.end + 1
-    }
-}
-
-impl FlattenAxes for RangeFull {
-    fn into_flatten_axes(self, rank: usize) -> impl IntoIterator<Item = i64> {
-        0..rank as i64
     }
 }
 
