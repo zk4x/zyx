@@ -107,7 +107,7 @@ pub(crate) fn initialize_cuda_backend(
 ) -> Result<(Vec<CUDAMemoryPool>, Vec<(CUDADevice, Vec<CUDAQueue>)>), CUDAError> {
     let _ = config;
 
-    let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so"];
+    let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
     let cuda = cuda_paths.iter().find_map(|path| {
         if let Ok(lib) = unsafe { Library::new(path) } {
             Some(lib)
@@ -498,7 +498,7 @@ impl CUDADevice {
             println!("{source}");
         }
 
-        let cudartc_paths = ["/lib/x86_64-linux-gnu/libnvrtc.so"];
+        let cudartc_paths = ["/lib/x86_64-linux-gnu/libnvrtc.so", "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so"];
         let cudartc = cudartc_paths.iter().find_map(|path| {
             if let Ok(lib) = unsafe { Library::new(path) } {
                 Some(lib)

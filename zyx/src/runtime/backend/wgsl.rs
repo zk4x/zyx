@@ -16,10 +16,12 @@ use crate::{
 };
 
 #[derive(serde::Deserialize, Debug, Default)]
-pub struct WGSLConfig {}
+pub struct WGSLConfig {
+    use_wgsl: bool,
+}
 
 #[derive(Debug)]
-pub(crate) struct WGSLError {}
+pub struct WGSLError {}
 
 #[derive(Debug)]
 pub(crate) struct WGSLMemoryPool {
@@ -61,7 +63,9 @@ pub(crate) fn initialize_wgsl_backend(
     config: &WGSLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
-    //return Err(WGSLError {});
+    if !config.use_wgsl {
+        return Err(WGSLError {});
+    }
 
     let power_preference =
         wgpu::util::power_preference_from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
