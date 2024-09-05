@@ -1,19 +1,19 @@
-use std::ops::{Index, IndexMut};
+use std::{mem::MaybeUninit, ops::{Index, IndexMut}};
 
 type Id = usize;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(Debug)]
 pub(crate) struct IndexMap<T> {
-    values: Vec<T>,
+    values: Vec<MaybeUninit<T>>,
     empty: Vec<Id>,
 }
 
 impl<T> Drop for IndexMap<T> {
     fn drop(&mut self) {
-        // We don't want to drop empty values
-        for &id in &self.empty {
-            let x = self.values.remove(id);
-            std::mem::forget(x);
+        for (id, x) in self.values.iter_mut().enumerate() {
+            if !self.empty.contains(&id) {
+                unsafe { x.assume_init_drop() };
+            }
         }
     }
 }
@@ -28,11 +28,11 @@ impl<T> IndexMap<T> {
 
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop() {
-            self.values[id] = value;
+            self.values[id] = MaybeUninit::new(value);
             //println!("Pushing to empty {id}");
             id
         } else {
-            self.values.push(value);
+            self.values.push(MaybeUninit::new(value));
             //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
             self.values.len() - 1
         }
@@ -41,13 +41,8 @@ impl<T> IndexMap<T> {
     pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
         if self.values.len() > id && !self.empty.contains(&id) {
             self.empty.push(id);
-            //let x = std::mem::MaybeUninit::uninit();
-            //let x = unsafe { x.assume_init() };
-            // TODO replace this with maybe uninit and make sure descructors don't run
-            let x = unsafe { std::mem::zeroed() };
-            self.values.push(x);
-            let res = self.values.swap_remove(id);
-            Some(res)
+            self.values.push(MaybeUninit::uninit());
+            Some(unsafe { self.values.swap_remove(id).assume_init() })
         } else {
             None
         }
@@ -57,79 +52,98 @@ impl<T> IndexMap<T> {
         self.values.swap(x, y);
     }
 
-    /*pub(crate) fn contains_id(&self, id: Id) -> bool {
-        if self.values.len() > id && !self.empty.contains(&id) {
-            true
-        } else {
-            false
-        }
-    }*/
-
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
         (0..self.values.len()).skip_while(|x| self.empty.contains(x))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
-        self.values.iter()
+        self.values.iter().enumerate().filter(|(id, _)| !self.empty.contains(id)).map(|(_, x)| unsafe { x.assume_init_ref() })
     }
 
     pub(crate) fn iter<'a>(&'a self) -> impl Iterator<Item = (Id, &'a T)> {
-        self.values.iter().enumerate().skip_while(|(x, _)| self.empty.contains(x)).collect::<Vec<(Id, &'a T)>>().into_iter()
+        self.values.iter().enumerate().filter(|(id, _)| !self.empty.contains(id)).map(|(id, x)| (id, unsafe { x.assume_init_ref() }))
     }
 
     pub(crate) fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Id, &'a mut T)> {
-        self.values.iter_mut().enumerate().skip_while(|(x, _)| self.empty.contains(x)).collect::<Vec<(Id, &'a mut T)>>().into_iter()
+        self.values.iter_mut().enumerate().filter(|(id, _)| !self.empty.contains(id)).map(|(id, x)| (id, unsafe { x.assume_init_mut() }))
     }
 }
 
 impl<T> Index<Id> for IndexMap<T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
-        &self.values[index]
+        assert!(!self.empty.contains(&index));
+        unsafe { self.values[index].assume_init_ref() }
     }
 }
 
 impl<T> IndexMut<Id> for IndexMap<T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
-        &mut self.values[index]
+        assert!(!self.empty.contains(&index));
+        unsafe { self.values[index].assume_init_mut() }
     }
 }
 
-impl<'a, T> IntoIterator for &'a IndexMap<T> {
-    type Item = (Id, &'a T);
-    type IntoIter = std::vec::IntoIter<(Id, &'a T)>;
-    fn into_iter(self) -> Self::IntoIter {
-        // TODO make this faster, probably using custom iterator struct
-        self.values.iter().enumerate().skip_while(|(x, _)| self.empty.contains(x)).collect::<Vec<(Id, &'a T)>>().into_iter()
-    }
-}
-
-impl<'a, T> IntoIterator for &'a mut IndexMap<T> {
-    type Item = (Id, &'a mut T);
-    type IntoIter = std::vec::IntoIter<(Id, &'a mut T)>;
-    fn into_iter(self) -> Self::IntoIter {
-        // TODO make this faster, probably using custom iterator struct
-        self.values.iter_mut().enumerate().skip_while(|(x, _)| self.empty.contains(x)).collect::<Vec<(Id, &'a mut T)>>().into_iter()
-    }
-}
-
-impl<T: Default> FromIterator<(Id, T)> for IndexMap<T> {
+impl<T> FromIterator<(Id, T)> for IndexMap<T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> IndexMap<T> {
         let mut values = Vec::new();
         let mut empty = Vec::new();
         let mut i = 0;
         for (id, v) in iter {
             while id != i {
-                values.push(T::default());
+                values.push(MaybeUninit::uninit());
                 empty.push(i);
                 i += 1;
             }
-            values.push(v);
+            values.push(MaybeUninit::new(v));
             i += 1;
         }
         IndexMap {
             values,
             empty,
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for IndexMap<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().zip(other.iter()).all(|(x, y)| x == y)
+    }
+}
+
+impl<T: Eq> Eq for IndexMap<T> {}
+
+impl<T: PartialOrd> PartialOrd for IndexMap<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        let mut iter = self.iter().zip(other.iter());
+        loop {
+            if let Some((x, y)) = iter.next() {
+                return x.partial_cmp(&y)
+            } else {
+                return Some(self.values.len().cmp(&other.values.len()))
+            }
+        }
+    }
+}
+
+impl<T: Ord> Ord for IndexMap<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let mut iter = self.iter().zip(other.iter());
+        loop {
+            if let Some((x, y)) = iter.next() {
+                return x.cmp(&y)
+            } else {
+                return self.values.len().cmp(&other.values.len())
+            }
+        }
+    }
+}
+
+impl<T: Clone> Clone for IndexMap<T> {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values.iter().enumerate().map(|(id, x)| if self.empty.contains(&id) { MaybeUninit::uninit() } else { MaybeUninit::new(unsafe { x.assume_init_ref() }.clone()) }).collect(),
+            empty: self.empty.clone(),
         }
     }
 }
