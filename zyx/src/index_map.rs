@@ -38,8 +38,7 @@ impl<T> IndexMap<T> {
         }
     }
 
-    pub(crate) fn remove(&mut self, id: Id) -> Option<T>
-    {
+    pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
         if self.values.len() > id && !self.empty.contains(&id) {
             self.empty.push(id);
             //let x = std::mem::MaybeUninit::uninit();
@@ -53,24 +52,6 @@ impl<T> IndexMap<T> {
             None
         }
     }
-
-    // Returns true if newly inserted, false if replaced old value
-    /*pub(crate) fn insert(&mut self, id: Id, value: T) -> bool
-    where
-        T: Default,
-    {
-        if let Some(v) = self.values.get_mut(id) {
-            self.empty.retain(|&x| x != id);
-            *v = value;
-            false
-        } else {
-            while self.values.len() <= id {
-                self.values.push(T::default());
-            }
-            self.values[id] = value;
-            true
-        }
-    }*/
 
     pub(crate) fn swap(&mut self, x: Id, y: Id) {
         self.values.swap(x, y);
