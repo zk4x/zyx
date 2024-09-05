@@ -5,7 +5,7 @@ use super::kernel::Kernel;
 
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bitcode::Encode, bitcode::Decode)]
 pub(crate) struct KernelOptimizations {
     // Axis splits to give us global, local and register work sizes
     pub(crate) splits: Vec<(usize, Vec<Dimension>)>,

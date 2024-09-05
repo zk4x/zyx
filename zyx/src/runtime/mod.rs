@@ -197,7 +197,7 @@ impl Runtime {
             }
             // Search for first memory pool where we can put this tensor
             let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
-            self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id);
+            self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
             self.graph
                 .tensor_buffer_map
                 .insert((id, View::new(self.shape(id))), BufferId { memory_pool_id, buffer_id });
@@ -616,7 +616,7 @@ impl Runtime {
             .tensor_buffer_map
             .retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
-            self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id);
+            self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;
         }
         return Ok(());
     }

@@ -266,11 +266,6 @@ impl Runtime {
                 //println!("Unneeded tensors: {unneeded_tensors:?}, kernel inputs {:?} tensor_buffer_map {tensor_buffer_map:?}", &kernels[kid].inputs);
                 for tensor_id in unneeded_tensors {
                     let view = View::new(graph.shape(tensor_id));
-                    let dtype = graph.dtype(tensor_id);
-                    let Some(memory_pool_id) = tensor_buffer_map.get(&(tensor_id, view.clone()))
-                    else {
-                        panic!()
-                    };
                     sched_graph.push(SchedulerOp::Deallocate { tensor_id, view });
                 }
             }

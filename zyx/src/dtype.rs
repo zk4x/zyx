@@ -4,7 +4,7 @@ use half::{bf16, f16};
 
 use crate::Scalar;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) enum Constant {
     #[cfg(feature = "half")]
     BF16(u16),
@@ -134,7 +134,7 @@ impl Display for Constant {
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub enum DType {
     #[cfg(feature = "half")]
     BF16,

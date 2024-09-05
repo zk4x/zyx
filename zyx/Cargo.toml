@@ -24,8 +24,10 @@ serde = { version = "1.0.209", default-features = false, features = ["std", "der
 serde_json = { version = "*", default-features = false, features = ["std"] } # MIT or Apache 2.0
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
+# for caching of beam searched kernels
+bitcode = { version = "*", default-features = false, features = ["std", "derive"] }
 # For nice colorful debug logging
-inline_colorization = { version = "0.1.6" } # MIT
+inline_colorization = { version = "0.1.6", default-features = false } # MIT
 
 # Optional dependencies
 # Support for random number generation

@@ -974,7 +974,6 @@ const CL_DEVICE_LOCAL_MEM_SIZE: cl_uint = 0x1023; // 4131
 const CL_DEVICE_MAX_WORK_GROUP_SIZE: cl_uint = 0x1004; // 4100
 const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
-const CL_DEVICE_MEM_BASE_ADDR_ALIGN: cl_uint = 0x1019; // 4121
 const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
 const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
 const CL_MEM_READ_ONLY: cl_bitfield = 4;

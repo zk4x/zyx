@@ -1,7 +1,7 @@
 use crate::{dtype::Constant, runtime::{ir::Scope, node::{BOp, ROp, UOp}, view::View}, shape::{Axis, Dimension}, tensor::TensorId};
 
 // Should be just Unary, Binary, Const, Copy, Loop, Reduce
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) enum VOp {
     Const {
         z: TensorId,
@@ -62,7 +62,7 @@ pub(crate) enum VOp {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(super) enum MOp {
     Expa,
     Perm,

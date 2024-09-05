@@ -14,7 +14,6 @@
 - [ ] hsa/hsail backend
 - [ ] vulkan backend
 - [ ] clean up ir.rs
-- [ ] automatic optimizations with search on vkernel
 - [ ] automatic optimizations for scheduler
 - [x] depends_on function for binary ops resolution
 - [x] multiple tensors depending on single one (rc > 1)
@@ -31,8 +30,6 @@
 - [x] multiple kernel executors (with different performance)
 - [ ] PTX compiler
 - [ ] comgr compiler instead of broken hiprtc
-- [ ] saving of searched kernel to disk
-- [ ] kernel search using beam
 - [x] ability to use env vars in code blocks
 - [x] uniform function
 - [x] compiled graph execution performance metrics
@@ -56,6 +53,9 @@
 
 ### Release blockers
 
+- [ ] automatic optimizations with search on vkernel
+- [ ] saving of searched kernel to disk
+- [ ] kernel search using beam
 - [x] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
 - [ ] test pad after reduce
 - [x] full reduce

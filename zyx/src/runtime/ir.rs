@@ -20,7 +20,7 @@ pub(super) enum Var {
     Const(Constant),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(super) enum Scope {
     Global,
     Local,

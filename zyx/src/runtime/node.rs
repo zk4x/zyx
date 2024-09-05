@@ -1,6 +1,6 @@
 use crate::{dtype::Constant, shape::Axis, tensor::TensorId, DType, Scalar};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]
 pub(super) enum BOp {
     Add,
     Sub,
@@ -13,7 +13,7 @@ pub(super) enum BOp {
     Or,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]
 pub(super) enum UOp {
     Cast(DType),
     ReLU,
@@ -28,7 +28,7 @@ pub(super) enum UOp {
     Nonzero,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]
 pub(super) enum ROp {
     Sum,
     Max,
