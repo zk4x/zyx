@@ -505,9 +505,6 @@ impl CUDADevice {
             global_work_size[2],
             local_work_size[2],
         );
-        for (i, lwd) in local_work_size.iter().enumerate() {
-            global_work_size[i] *= lwd;
-        }
         let mut pragma = format!("");
         if source.contains("double") {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";

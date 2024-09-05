@@ -76,64 +76,69 @@ impl Kernel {
         };
 
         // Set best register work sizes
-        /*let rws = {
-            let rws = best_work_size(gws, dev_info.num_registers);
-            gws[0] = gws[0]/rws[0];
-            gws[1] = gws[1]/rws[1];
-            gws[2] = gws[2]/rws[2];
-            self.split_axis(0, &[gws[0], rws[0]]);
-            self.split_axis(3, &[gws[1], rws[1]]);
-            self.split_axis(6, &[gws[2], rws[2]]);
-            // Permute so that work per thread loops are after global and local loops
-            self.permute(&[0, 2, 3, 5, 6, 8, 1, 4, 7]);
+        let more_wpt = false;
+        let rws = if more_wpt {
+            let rws = {
+                let rws = best_work_size(gws, dev_info.num_registers);
+                gws[0] = gws[0]/rws[0];
+                gws[1] = gws[1]/rws[1];
+                gws[2] = gws[2]/rws[2];
+                self.split_axis(0, &[gws[0], rws[0]]);
+                self.split_axis(3, &[gws[1], rws[1]]);
+                self.split_axis(6, &[gws[2], rws[2]]);
+                // Permute so that work per thread loops are after global and local loops
+                self.permute(&[0, 2, 3, 5, 6, 8, 1, 4, 7]);
 
-            if self.ops.iter().any(|op| matches!(op, VOp::Reduce { .. })) {
-                // Handle reduce loops
-                // Split reduce loops for more work per thread
-                let mut splits = Vec::new();
-                for (id, op) in self.ops[9..].iter().enumerate() {
-                    if let VOp::Accumulator { .. } = op {
-                        let VOp::Loop { dimension, .. } = self.ops[id+10] else { todo!() };
-                        // TODO get this working if there is more than one reduce loop
-                        // TODO get this working with different work per thread
-                        splits.push((id+10, [dimension/8, 8]));
-                    }
-                }
-                for split in splits {
-                    println!("Splitting at {split:?}");
-                    self.split_axis(split.0, &split.1);
-                }
-
-                // Permute such that register loops come after reduce loops
-                // Just swap register loops after reduce loops
-                let r0loop = self.ops.remove(6);
-                let r1loop = self.ops.remove(6);
-                let r2loop = self.ops.remove(6);
-                let mut start_reg_ids = Vec::new();
-                let mut end_reg_ids = Vec::new();
-                let mut last_loop_id = None;
-                for id in 6..self.ops.len() {
-                    match self.ops[id] {
-                        VOp::Loop { .. } => if let Some(last_loop_id) = &mut last_loop_id {
-                            *last_loop_id = id;
-                        } else {
-                            end_reg_ids.push(id);
-                            last_loop_id = Some(id);
-                        },
-                        VOp::Reduce { .. } => {
-                            start_reg_ids.push(last_loop_id);
+                if self.ops.iter().any(|op| matches!(op, VOp::Reduce { .. })) {
+                    // Handle reduce loops
+                    // Split reduce loops for more work per thread
+                    let mut splits = Vec::new();
+                    for (id, op) in self.ops[9..].iter().enumerate() {
+                        if let VOp::Accumulator { .. } = op {
+                            let VOp::Loop { dimension, .. } = self.ops[id+10] else { todo!() };
+                            // TODO get this working if there is more than one reduce loop
+                            // TODO get this working with different work per thread
+                            splits.push((id+10, [dimension/8, 8]));
                         }
-                        _ => {}
                     }
+                    for split in splits {
+                        println!("Splitting at {split:?}");
+                        self.split_axis(split.0, &split.1);
+                    }
+
+                    // Permute such that register loops come after reduce loops
+                    // Just swap register loops after reduce loops
+                    let r0loop = self.ops.remove(6);
+                    let r1loop = self.ops.remove(6);
+                    let r2loop = self.ops.remove(6);
+                    let mut start_reg_ids = Vec::new();
+                    let mut end_reg_ids = Vec::new();
+                    let mut last_loop_id = None;
+                    for id in 6..self.ops.len() {
+                        match self.ops[id] {
+                            VOp::Loop { .. } => if let Some(last_loop_id) = &mut last_loop_id {
+                                *last_loop_id = id;
+                            } else {
+                                end_reg_ids.push(id);
+                                last_loop_id = Some(id);
+                            },
+                            VOp::Reduce { .. } => {
+                                start_reg_ids.push(last_loop_id);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Update accumulators such that they use these register loops
+
                 }
-
-                // Update accumulators such that they use these register loops
-
-            }
+                rws
+            };
+            println!("Work sizes: {gws:?} {lws:?} {rws:?}");
             rws
+        } else {
+            [1, 1, 1]
         };
-        println!("Work sizes: {gws:?} {lws:?} {rws:?}");*/
-        let rws = [1, 1, 1];
 
         /*let mut local_loads = Vec::new();
         // Add local and register tiles for expanded tensor loads
