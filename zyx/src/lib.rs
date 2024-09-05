@@ -15,10 +15,6 @@ pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 pub use runtime::ZyxError;
-pub use runtime::BackendConfig;
-pub use runtime::CUDAConfig;
-pub use runtime::HIPConfig;
-pub use runtime::OpenCLConfig;
 
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 

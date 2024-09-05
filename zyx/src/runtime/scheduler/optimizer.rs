@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::{runtime::{backend::DeviceInfo, scheduler::vop::VOp}, shape::Dimension};
+use crate::{runtime::backend::DeviceInfo, shape::Dimension};
 use super::kernel::Kernel;
 
 // Optimizations get applied to existing kernels after
@@ -8,11 +8,11 @@ use super::kernel::Kernel;
 #[derive(Debug, Clone)]
 pub(crate) struct KernelOptimizations {
     // Axis splits to give us global, local and register work sizes
-    splits: Vec<(usize, Vec<Dimension>)>,
+    pub(crate) splits: Vec<(usize, Vec<Dimension>)>,
     // Permutation so that global and local work sizes are first
-    permutation: Vec<usize>,
+    pub(crate) permutation: Vec<usize>,
     // Work per thread in reduce loops, one per each reduce
-    reduce_loop_wpt: Vec<usize>,
+    pub(crate) reduce_loop_wpt: Vec<usize>,
 
     // Load tensor first into local tile, then into registers
     // this is used mainly for expanded tensors, so use threads
@@ -75,7 +75,7 @@ impl Kernel {
     // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
     // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
     // tensor cores, just a ton of stuff. Later add search over different optimizations.
-    pub(super) fn optimize(&self, optimizations: &KernelOptimizations) -> Kernel {
+    pub(crate) fn optimize(&self, optimizations: &KernelOptimizations) -> Kernel {
         let mut kernel = self.clone();
         // Apply axis splits
         for (op_id, dimensions) in &optimizations.splits {

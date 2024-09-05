@@ -1,6 +1,6 @@
 # These are notes on style used in zyx and possibly general coding practices
 
-## On virtual tables and other junk
+## On virtual tables and other trash
 
 Don't use dyn, or virtual tables, just use enums instead. If there is necessity to work with function pointers,
 then pass those function pointers around directly.
@@ -104,4 +104,9 @@ If all programs stored their whole state in single struct, they would be very tr
 
 ## Clean code
 
-Don't write clean code, rather write debuggable and understandable code.
+Don't write clean code, rather write debuggable == understandable code.
+
+## Abstractions
+
+Don't use abstractions. Simply duplicate code. Once most of the stuff works abstractions come automatically by removing duplicate code. So refactor and remove duplicate code,
+thus adding good enough abstractions.

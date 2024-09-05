@@ -15,20 +15,20 @@ use std::collections::BTreeMap;
 use super::scheduler::{Kernel, VOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Var {
+pub(super) enum Var {
     Id(u8, Scope),
     Const(Constant),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Scope {
+pub(super) enum Scope {
     Global,
     Local,
     Register,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum IROp {
+pub(super) enum IROp {
     Set {
         z: u8,
         len: usize,
@@ -82,7 +82,7 @@ pub(crate) enum IROp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum IRDType {
+pub(super) enum IRDType {
     #[cfg(feature = "half")]
     BF16,
     #[cfg(feature = "half")]
@@ -104,7 +104,7 @@ pub(crate) enum IRDType {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct IRKernel {
+pub(super) struct IRKernel {
     // Index of var is it's Id
     // len, dtype, read_only
     pub(super) addressables: Vec<(usize, IRDType, bool)>,
@@ -696,7 +696,7 @@ impl IRKernel {
 }
 
 impl IRDType {
-    pub(crate) fn byte_size(&self) -> usize {
+    pub(super) fn byte_size(&self) -> usize {
         match self {
             #[cfg(feature = "half")]
             IRDType::F16 => 2,
@@ -718,7 +718,7 @@ impl IRDType {
         }
     }
 
-    pub(crate) fn dtype(&self) -> DType {
+    pub(super) fn dtype(&self) -> DType {
         match self {
             #[cfg(feature = "half")]
             IRDType::BF16 => DType::BF16,
@@ -742,7 +742,7 @@ impl IRDType {
 }
 
 impl Constant {
-    pub(crate) fn ir_dtype(&self) -> IRDType {
+    pub(super) fn ir_dtype(&self) -> IRDType {
         match self {
             #[cfg(feature = "half")]
             Constant::BF16(_) => IRDType::BF16,

@@ -28,7 +28,7 @@ pub struct OpenCLConfig {
 // OpenCL does not have the concept of memory pools,
 // so we simply say it is all in one memory pool
 #[derive(Debug)]
-pub(crate) struct OpenCLMemoryPool {
+pub(super) struct OpenCLMemoryPool {
     // Just to close the connection
     #[allow(unused)]
     library: Rc<Library>,
@@ -78,14 +78,14 @@ pub(crate) struct OpenCLMemoryPool {
 // lifetimes are not in rust, so we have to do manual memory management
 // as they did it in stone age.
 #[derive(Debug)]
-pub(crate) struct OpenCLBuffer {
+pub(super) struct OpenCLBuffer {
     ptr: *mut c_void,
     bytes: usize,
     queue: *mut c_void, // This is the queue held by memory pool
 }
 
 #[derive(Debug)]
-pub(crate) struct OpenCLDevice {
+pub(super) struct OpenCLDevice {
     ptr: *mut c_void,
     context: *mut c_void,
     dev_info: DeviceInfo,
@@ -122,7 +122,7 @@ pub(crate) struct OpenCLDevice {
 }
 
 #[derive(Debug)]
-pub(crate) struct OpenCLProgram {
+pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
     global_work_size: [usize; 3],
@@ -131,7 +131,7 @@ pub(crate) struct OpenCLProgram {
 }
 
 #[derive(Debug)]
-pub(crate) struct OpenCLQueue {
+pub(super) struct OpenCLQueue {
     queue: *mut c_void, // points to device queue
     load: usize,
     // Functions
@@ -158,12 +158,12 @@ unsafe impl Send for OpenCLProgram {}
 unsafe impl Send for OpenCLQueue {}
 
 impl OpenCLDevice {
-    pub(crate) fn info(&self) -> &DeviceInfo {
+    pub(super) fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(crate) fn memory_pool_id(&self) -> usize {
+    pub(super) fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 }
@@ -187,7 +187,7 @@ impl Drop for OpenCLQueue {
     }
 }
 
-pub(crate) fn initialize_opencl_backend(
+pub(super) fn initialize_backend(
     config: &OpenCLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<OpenCLMemoryPool>, Vec<(OpenCLDevice, Vec<OpenCLQueue>)>), OpenCLError> {
@@ -406,11 +406,11 @@ pub(crate) fn initialize_opencl_backend(
 }
 
 impl OpenCLMemoryPool {
-    pub(crate) fn free_bytes(&self) -> usize {
+    pub(super) fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    pub(crate) fn allocate(&mut self, bytes: usize) -> Result<OpenCLBuffer, OpenCLError> {
+    pub(super) fn allocate(&mut self, bytes: usize) -> Result<OpenCLBuffer, OpenCLError> {
         if bytes > self.free_bytes {
             return Err(OpenCLError { info: "Insufficient free memory.".into(), status: OpenCLStatus::CL_MEM_OBJECT_ALLOCATION_FAILURE });
         }
@@ -434,13 +434,13 @@ impl OpenCLMemoryPool {
         })
     }
 
-    pub(crate) fn deallocate(&mut self, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
+    pub(super) fn deallocate(&mut self, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
         unsafe { (self.clReleaseMemObject)(buffer.ptr) }.check("Failed to free allocated memory")?;
         self.free_bytes += buffer.bytes;
         Ok(())
     }
 
-    pub(crate) fn host_to_pool(
+    pub(super) fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: &OpenCLBuffer,
@@ -465,7 +465,7 @@ impl OpenCLMemoryPool {
         unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) }.check("Failed to finish buffer write event.")
     }
 
-    pub(crate) fn pool_to_host(
+    pub(super) fn pool_to_host(
         &mut self,
         src: &OpenCLBuffer,
         dst: &mut [u8],
@@ -492,7 +492,7 @@ impl OpenCLMemoryPool {
         unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) }.check("Failed to finish buffer write event.")
     }
 
-    pub(crate) fn pool_to_pool(
+    pub(super) fn pool_to_pool(
         &mut self,
         src: &OpenCLBuffer,
         dst: &OpenCLBuffer,
@@ -561,7 +561,7 @@ impl OpenCLDevice {
         Ok(())
     }
 
-    pub(crate) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<OpenCLProgram, OpenCLError> {
+    pub(super) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<OpenCLProgram, OpenCLError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -783,7 +783,7 @@ impl OpenCLDevice {
 }
 
 impl OpenCLQueue {
-    pub(crate) fn launch(
+    pub(super) fn launch(
         &mut self,
         program: &mut OpenCLProgram,
         buffers: &mut IndexMap<OpenCLBuffer>,
@@ -823,13 +823,13 @@ impl OpenCLQueue {
         }.check("Failed to enqueue kernel.")
     }
 
-    pub(crate) fn sync(&mut self) -> Result<(), OpenCLError> {
+    pub(super) fn sync(&mut self) -> Result<(), OpenCLError> {
         println!("Syncing {:?}", self);
         self.load = 0;
         unsafe { (self.clFinish)(self.queue) }.check("Failed to synchronize device queue.")
     }
 
-    pub(crate) fn load(&self) -> usize {
+    pub(super) fn load(&self) -> usize {
         self.load
     }
 }

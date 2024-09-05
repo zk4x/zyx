@@ -1,13 +1,15 @@
-pub(super) use kernel::Kernel;
-use optimizer::KernelOptimizations;
-pub(super) use vop::VOp;
 use vop::MOp;
 use crate::{
     runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use super::{backend::DeviceInfo, BufferId, Device, DeviceId, MemoryPool, MemoryPoolId};
+use super::{backend::{DeviceInfo, MemoryPoolId}, BufferId, DeviceId};
+
+// Export Kernel and VOp for IR
+pub(super) use kernel::Kernel;
+pub(super) use vop::VOp;
+pub(super) use optimizer::KernelOptimizations;
 
 mod kernel;
 // Kernel optimizer, multi device scheduler is optimized elsewhere
@@ -22,11 +24,37 @@ pub(super) struct CompiledGraph {
     bytes_written: u128,
 }
 
+#[derive(Debug)]
+enum SchedulerOp {
+    // Async launch kernel on device
+    Launch(VProgram),
+    // Block for kernel to finish execution
+    Finish(VProgram),
+    // Copy part of tensor between devices
+    // This is used for sharding, but can be used for other purposes too,
+    // if found usefull
+    Move {
+        tensor_id: TensorId,
+        view: View,
+        dst: MemoryPoolId,
+    },
+    Allocate {
+        tensor_id: TensorId,
+        memory_pool_id: MemoryPoolId,
+        bytes: usize,
+        view: View,
+    },
+    Deallocate {
+        tensor_id: TensorId,
+        view: View,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct VProgram {
-    device_id: DeviceId,
-    program_id: usize,
-    args: Vec<(TensorId, View, bool)>,
+pub(super) struct VProgram {
+    pub(super) device_id: DeviceId,
+    pub(super) program_id: usize,
+    pub(super) args: Vec<(TensorId, View, bool)>,
 }
 
 // TODO this function could take &mut Runtime
@@ -172,6 +200,7 @@ impl Runtime {
                         // allocate space for inputs and outputs that are not allocated for this kernel
                         for &tid in kernel.inputs.iter().chain(&kernel.outputs) {
                             let view = View::new(graph.shape(tid));
+                            let mpid = self.devices[device_id].memory_pool_id();
                             //self.memory_pools[mpid].allocate();
                         }
 
@@ -242,12 +271,7 @@ impl Runtime {
                     else {
                         panic!()
                     };
-                    sched_graph.push(SchedulerOp::Deallocate {
-                        tensor_id,
-                        memory_pool_id: *memory_pool_id,
-                        bytes: view.numel() * dtype.byte_size(),
-                        view,
-                    });
+                    sched_graph.push(SchedulerOp::Deallocate { tensor_id, view });
                 }
             }
         }
@@ -285,13 +309,8 @@ impl Runtime {
                     } => {
                         println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
                     }
-                    SchedulerOp::Deallocate {
-                        tensor_id,
-                        memory_pool_id,
-                        bytes,
-                        view: _,
-                    } => {
-                        println!("Deallocate tensor {tensor_id} on {memory_pool_id:?}, {bytes}")
+                    SchedulerOp::Deallocate { tensor_id, .. } => {
+                        println!("Deallocate tensor {tensor_id}")
                     }
                 }
             }
@@ -303,120 +322,6 @@ impl Runtime {
             bytes_read,
             bytes_written,
         });
-    }
-
-    // Launches vprogram on most empty queue and returns id of that queue
-    fn launch(devices: &mut [Device], memory_pools: &mut [MemoryPool], vprogram: &VProgram, tensor_buffer_map: &BTreeMap<(TensorId, View), BufferId>) -> Result<usize, ZyxError> {
-        // Same program can launch with different args. Thus in program map we also need args.
-        //println!("Launch {program_id:?} with args:");
-        let args: Vec<usize> = vprogram.args.iter()
-                            .map(|arg| {
-                                //println!("Arg {} {}", arg.0, arg.1);
-                                tensor_buffer_map[&(arg.0, arg.1.clone())]
-                                    .buffer_id
-                            })
-                            .collect();
-        Ok(match &mut devices[vprogram.device_id] {
-            Device::CUDA {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues
-            } => {
-                let MemoryPool::CUDA { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-            Device::HIP {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues
-            } => {
-                let MemoryPool::HIP { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-            Device::OpenCL {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues,
-            } => {
-                let MemoryPool::OpenCL { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues,
-            } => {
-                let MemoryPool::WGSL { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-        })
-    }
-
-    fn compile(&mut self, kernel: &Kernel, optimizations: &KernelOptimizations, device_id: DeviceId, graph: &Graph) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
-        let (ir_kernel, ir_args) = kernel.optimize(optimizations).to_ir(&graph);
-        let mut program_id = None;
-        if let Some((dev_id, prog_id) ) = self.ir_kernel_cache.get(&ir_kernel) {
-            if *dev_id == device_id {
-                program_id = Some(*prog_id);
-            }
-        }
-        if program_id.is_none() {
-            if self.debug_ir() { ir_kernel.debug(); }
-            let debug_asm = self.debug_asm();
-            program_id = Some(match &mut self.devices[device_id] {
-                Device::CUDA { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-                Device::HIP { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-                Device::OpenCL { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-                #[cfg(feature = "wgsl")]
-                Device::WGSL { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-            });
-            self.ir_kernel_cache.insert(
-                ir_kernel,
-                (device_id, program_id.unwrap())
-            );
-        }
-        Ok((program_id.unwrap(), ir_args.into_iter().map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only)).collect()))
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
@@ -432,13 +337,7 @@ impl Runtime {
                 SchedulerOp::Finish(program) => {
                     for (vprogram, queue) in &mut queues {
                         if program == vprogram {
-                            match &mut self.devices[program.device_id] {
-                                Device::CUDA { queues, .. } => queues[*queue].sync()?,
-                                Device::HIP { queues, .. } => queues[*queue].sync()?,
-                                Device::OpenCL { queues, .. } => queues[*queue].sync()?,
-                                #[cfg(feature = "wgsl")]
-                                Device::WGSL { queues, .. } => queues[*queue].sync()?,
-                            }
+                            self.devices[program.device_id].sync(*queue)?;
                         }
                     }
                 }
@@ -450,230 +349,43 @@ impl Runtime {
                     let bytes = view.numel() * graph.dtype(*tensor_id).byte_size();
                     let BufferId {
                         memory_pool_id,
-                        buffer_id: src_bid,
+                        buffer_id: src_buffer_id,
                     } = self.graph.tensor_buffer_map[&(*tensor_id, view.clone())];
                     let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst);
-
-                    macro_rules! cross_backend {
-                        ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
-                            let dst_bid = $db.push($dm.allocate(bytes)?);
-                            let mut data: Vec<u8> = Vec::with_capacity(bytes);
-                            unsafe { data.set_len(bytes) };
-                            $sm.pool_to_host(&$sb[src_bid], &mut data)?;
-                            $sm.deallocate($sb.remove(src_bid).unwrap())?;
-                            $dm.host_to_pool(&data, &$db[dst_bid])?;
-                            self.graph.tensor_buffer_map.insert(
-                                (*tensor_id, view.clone()),
-                                BufferId {
-                                    memory_pool_id: *dst,
-                                    buffer_id: dst_bid,
-                                },
-                            );
-                        }};
-                    }
-
-                    macro_rules! within_backend {
-                        ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
-                            let dst_bid = $db.push($dm.allocate(bytes)?);
-                            $dm.pool_to_pool(&$sb[src_bid], &$db[dst_bid])?;
-                            $sm.deallocate($sb.remove(src_bid).unwrap())?;
-                            self.graph.tensor_buffer_map.insert(
-                                (*tensor_id, view.clone()),
-                                BufferId {
-                                    memory_pool_id: *dst,
-                                    buffer_id: dst_bid,
-                                },
-                            );
-                        }};
-                    }
-
-                    match (&mut src_mps[memory_pool_id], &mut dst_mps[0]) {
-                        #[rustfmt::skip]
-                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb, }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[rustfmt::skip]
-                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
-                        #[cfg(feature = "wgsl")]
-                        #[rustfmt::skip]
-                        (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
-                    }
+                    let src_mp = &mut src_mps[memory_pool_id];
+                    let dst_mp = &mut dst_mps[0];
+                    let dst_buffer_id = dst_mp.allocate(bytes)?;
+                    src_mp.pool_to_pool(src_buffer_id, dst_mp, dst_buffer_id, bytes)?;
+                    src_mp.deallocate(src_buffer_id)?;
                 }
                 SchedulerOp::Allocate {
                     tensor_id,
                     memory_pool_id,
                     bytes,
                     view,
-                } => match &mut self.memory_pools[*memory_pool_id] {
-                    MemoryPool::CUDA {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let buffer = memory_pool.allocate(*bytes)?;
-                        let buffer_id = buffers.push(buffer);
-                        self.graph.tensor_buffer_map.insert(
-                            (*tensor_id, view.clone()),
-                            BufferId {
-                                memory_pool_id: *memory_pool_id,
-                                buffer_id,
-                            },
-                        );
-                    }
-                    MemoryPool::HIP {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let buffer = memory_pool.allocate(*bytes)?;
-                        let buffer_id = buffers.push(buffer);
-                        self.graph.tensor_buffer_map.insert(
-                            (*tensor_id, view.clone()),
-                            BufferId {
-                                memory_pool_id: *memory_pool_id,
-                                buffer_id,
-                            },
-                        );
-                    }
-                    MemoryPool::OpenCL {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let buffer = memory_pool.allocate(*bytes)?;
-                        let buffer_id = buffers.push(buffer);
-                        self.graph.tensor_buffer_map.insert(
-                            (*tensor_id, view.clone()),
-                            BufferId {
-                                memory_pool_id: *memory_pool_id,
-                                buffer_id,
-                            },
-                        );
-                    }
-                    #[cfg(feature = "wgsl")]
-                    MemoryPool::WGSL {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let buffer = memory_pool.allocate(*bytes)?;
-                        let buffer_id = buffers.push(buffer);
-                        self.graph.tensor_buffer_map.insert(
-                            (*tensor_id, view.clone()),
-                            BufferId {
-                                memory_pool_id: *memory_pool_id,
-                                buffer_id,
-                            },
-                        );
-                    }
-                },
+                } => {
+                    let buffer_id = self.memory_pools[*memory_pool_id].allocate(*bytes)?;
+                    self.graph.tensor_buffer_map.insert(
+                        (*tensor_id, view.clone()),
+                        BufferId {
+                            memory_pool_id: *memory_pool_id,
+                            buffer_id,
+                        },
+                    );
+                }
                 SchedulerOp::Deallocate {
                     tensor_id,
-                    memory_pool_id,
-                    bytes,
                     view,
-                } => match &mut self.memory_pools[*memory_pool_id] {
-                    // TODO probably just add macro for this, 'cause rust can't do this without macro
-                    MemoryPool::CUDA {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let _ = bytes;
-                        let key = &(*tensor_id, view.clone());
-                        if let Some(BufferId {
-                            memory_pool_id: buf_mpid,
-                            ..
-                        }) = self.graph.tensor_buffer_map.get(key)
-                        {
-                            if buf_mpid == memory_pool_id {
-                                let BufferId { buffer_id, .. } =
-                                    self.graph.tensor_buffer_map.remove(key).unwrap();
-                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
-                            }
-                        }
+                } => {
+                    let key = &(*tensor_id, view.clone());
+                    if let Some(BufferId {
+                        memory_pool_id,
+                        buffer_id
+                    }) = self.graph.tensor_buffer_map.get(key) {
+                        self.memory_pools[*memory_pool_id].deallocate(*buffer_id)?;
+                        self.graph.tensor_buffer_map.remove(key).unwrap();
                     }
-                    MemoryPool::HIP {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let _ = bytes;
-                        let key = &(*tensor_id, view.clone());
-                        if let Some(BufferId {
-                            memory_pool_id: buf_mpid,
-                            ..
-                        }) = self.graph.tensor_buffer_map.get(key)
-                        {
-                            if buf_mpid == memory_pool_id {
-                                let BufferId { buffer_id, .. } =
-                                    self.graph.tensor_buffer_map.remove(key).unwrap();
-                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
-                            }
-                        }
-                    }
-                    MemoryPool::OpenCL {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let _ = bytes;
-                        let key = &(*tensor_id, view.clone());
-                        if let Some(BufferId {
-                            memory_pool_id: buf_mpid,
-                            ..
-                        }) = self.graph.tensor_buffer_map.get(key)
-                        {
-                            if buf_mpid == memory_pool_id {
-                                let BufferId { buffer_id, .. } =
-                                    self.graph.tensor_buffer_map.remove(key).unwrap();
-                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
-                            }
-                        }
-                    }
-                    #[cfg(feature = "wgsl")]
-                    MemoryPool::WGSL {
-                        memory_pool,
-                        buffers,
-                    } => {
-                        let _ = bytes;
-                        let key = &(*tensor_id, view.clone());
-                        if let Some(BufferId {
-                            memory_pool_id: buf_mpid,
-                            ..
-                        }) = self.graph.tensor_buffer_map.get(key)
-                        {
-                            if buf_mpid == memory_pool_id {
-                                let BufferId { buffer_id, .. } =
-                                    self.graph.tensor_buffer_map.remove(key).unwrap();
-                                memory_pool.deallocate(buffers.remove(buffer_id).unwrap())?;
-                            }
-                        }
-                    }
-                },
+                }
             }
         }
         if self.debug_perf() {
@@ -713,34 +425,6 @@ impl Runtime {
         }
         Ok(())
     }
-}
-
-#[derive(Debug)]
-enum SchedulerOp {
-    // Async launch kernel on device
-    Launch(VProgram),
-    // Block for kernel to finish execution
-    Finish(VProgram),
-    // Copy part of tensor between devices
-    // This is used for sharding, but can be used for other purposes too,
-    // if found usefull
-    Move {
-        tensor_id: TensorId,
-        view: View,
-        dst: MemoryPoolId,
-    },
-    Allocate {
-        tensor_id: TensorId,
-        memory_pool_id: MemoryPoolId,
-        bytes: usize,
-        view: View,
-    },
-    Deallocate {
-        tensor_id: TensorId,
-        memory_pool_id: MemoryPoolId,
-        bytes: usize,
-        view: View,
-    },
 }
 
 fn generate_kernels(

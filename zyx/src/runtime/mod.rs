@@ -1,36 +1,20 @@
 use crate::dtype::{Constant, DType};
-use crate::index_map::IndexMap;
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
-use backend::cuda::{
-    initialize_cuda_backend, CUDABuffer, CUDADevice, CUDAError, CUDAMemoryPool, CUDAProgram, CUDAQueue,
-};
-use backend::hip::{
-    initialize_hip_backend, HIPBuffer, HIPDevice, HIPError, HIPMemoryPool, HIPProgram, HIPQueue,
-};
-use backend::opencl::{
-    initialize_opencl_backend, OpenCLBuffer, OpenCLDevice, OpenCLError, OpenCLMemoryPool,
-    OpenCLProgram, OpenCLQueue,
-};
-#[cfg(feature = "wgsl")]
-use backend::wgsl::{initialize_wgsl_backend, WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue, WGSLConfig, WGSLError};
-use backend::DeviceInfo;
 use graph::Graph;
 use ir::IRKernel;
 use node::{BOp, Node, ROp, UOp};
 use scheduler::CompiledGraph;
-use std::fmt::Display;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
 use view::View;
-
-pub use backend::cuda::CUDAConfig;
-pub use backend::hip::HIPConfig;
-pub use backend::opencl::OpenCLConfig;
+use backend::{BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool, OpenCLConfig, OpenCLError};
+#[cfg(feature = "wgsl")]
+use backend::{WGSLConfig, WGSLError};
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -48,8 +32,18 @@ mod node;
 mod scheduler;
 mod view;
 
+#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(serde::Deserialize, Debug, Default)]
+pub struct BackendConfig {
+    pub cuda: CUDAConfig,
+    pub hip: HIPConfig,
+    pub opencl: OpenCLConfig,
+    #[cfg(feature = "wgsl")]
+    pub wgsl: WGSLConfig,
+}
+
 // This is the whole global state of zyx
-pub(crate) struct Runtime {
+pub(super) struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
     // Random number generator
@@ -62,94 +56,14 @@ pub(crate) struct Runtime {
     // Cache which maps IRKernel to device and program id on the device
     ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
     // Are we in training mode?
-    pub(crate) training: bool,
+    pub(super) training: bool,
     pub(super) debug: u32,
     pub(super) beam_search: bool,
 }
 
-#[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(serde::Deserialize, Debug)]
-pub struct BackendConfig {
-    pub cuda: CUDAConfig,
-    pub hip: HIPConfig,
-    pub opencl: OpenCLConfig,
-    #[cfg(feature = "wgsl")]
-    pub wgsl: WGSLConfig,
-}
-
-impl Default for BackendConfig {
-    fn default() -> Self {
-        BackendConfig {
-            cuda: CUDAConfig::default(),
-            hip: HIPConfig::default(),
-            opencl: OpenCLConfig::default(),
-            #[cfg(feature = "wgsl")]
-            wgsl: WGSLConfig::default(),
-        }
-    }
-}
-
-type MemoryPoolId = usize;
-type DeviceId = usize;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct BufferId {
-    memory_pool_id: usize,
-    buffer_id: usize,
-}
-
-#[derive(Debug)]
-enum Device {
-    CUDA {
-        memory_pool_id: MemoryPoolId,
-        device: CUDADevice,
-        programs: Vec<CUDAProgram>,
-        queues: Vec<CUDAQueue>,
-    },
-    HIP {
-        memory_pool_id: MemoryPoolId,
-        device: HIPDevice,
-        programs: Vec<HIPProgram>,
-        queues: Vec<HIPQueue>,
-    },
-    OpenCL {
-        memory_pool_id: MemoryPoolId,
-        device: OpenCLDevice,
-        programs: Vec<OpenCLProgram>,
-        queues: Vec<OpenCLQueue>,
-    },
-    #[cfg(feature = "wgsl")]
-    WGSL {
-        memory_pool_id: MemoryPoolId,
-        device: WGSLDevice,
-        programs: Vec<WGSLProgram>,
-        queues: Vec<WGSLQueue>,
-    },
-}
-
-enum MemoryPool {
-    CUDA {
-        memory_pool: CUDAMemoryPool,
-        buffers: IndexMap<CUDABuffer>,
-    },
-    HIP {
-        memory_pool: HIPMemoryPool,
-        buffers: IndexMap<HIPBuffer>,
-    },
-    OpenCL {
-        memory_pool: OpenCLMemoryPool,
-        buffers: IndexMap<OpenCLBuffer>,
-    },
-    #[cfg(feature = "wgsl")]
-    WGSL {
-        memory_pool: WGSLMemoryPool,
-        buffers: IndexMap<WGSLBuffer>,
-    },
-}
-
 impl Runtime {
     #[must_use]
-    pub(crate) const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Runtime {
             graph: Graph::new(),
             #[cfg(feature = "rand")]
@@ -164,40 +78,40 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn retain(&mut self, x: TensorId) {
+    pub(super) fn retain(&mut self, x: TensorId) {
         self.graph.retain(x);
     }
 
-    pub(crate) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
+    pub(super) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
         self.deallocate_tensors(to_remove)
     }
 
     #[cfg(feature = "rand")]
-    pub(crate) fn manual_seed(&mut self, seed: u64) {
+    pub(super) fn manual_seed(&mut self, seed: u64) {
         use rand::SeedableRng;
         self.rng = std::cell::OnceCell::from(SmallRng::seed_from_u64(seed));
     }
 
     /// Creates dot plot of graph between given tensors
     #[must_use]
-    pub(crate) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
+    pub(super) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
         self.graph.plot_dot_graph(tensors)
     }
 
     #[must_use]
-    pub(crate) fn shape(&self, x: TensorId) -> &[usize] {
+    pub(super) fn shape(&self, x: TensorId) -> &[usize] {
         return self.graph.shape(x);
     }
 
     #[must_use]
-    pub(crate) fn dtype(&self, x: TensorId) -> DType {
+    pub(super) fn dtype(&self, x: TensorId) -> DType {
         return self.graph.dtype(x);
     }
 
     #[cfg(feature = "rand")]
     #[must_use]
-    pub(crate) fn uniform<T: Scalar>(
+    pub(super) fn uniform<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,
         start: T,
@@ -240,7 +154,7 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn temp<T: Scalar>(
+    pub(super) fn temp<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,
         data: &[T],
@@ -282,79 +196,18 @@ impl Runtime {
                 }
             }
             // Search for first memory pool where we can put this tensor
-            let buffer_id = match &mut self.memory_pools[memory_pool_id] {
-                MemoryPool::CUDA {
-                    memory_pool,
-                    buffers,
-                } => {
-                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
-                    let ptr: *const u8 = data.as_ptr().cast();
-                    memory_pool.host_to_pool(
-                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                        &mut buffers[buffer_id],
-                    )?;
-                    BufferId {
-                        memory_pool_id,
-                        buffer_id,
-                    }
-                }
-                MemoryPool::HIP {
-                    memory_pool,
-                    buffers,
-                } => {
-                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
-                    let ptr: *const u8 = data.as_ptr().cast();
-                    memory_pool.host_to_pool(
-                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                        &mut buffers[buffer_id],
-                    )?;
-                    BufferId {
-                        memory_pool_id,
-                        buffer_id,
-                    }
-                }
-                MemoryPool::OpenCL {
-                    memory_pool,
-                    buffers,
-                } => {
-                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
-                    let ptr: *const u8 = data.as_ptr().cast();
-                    memory_pool.host_to_pool(
-                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                        &mut buffers[buffer_id],
-                    )?;
-                    BufferId {
-                        memory_pool_id,
-                        buffer_id,
-                    }
-                }
-                #[cfg(feature = "wgsl")]
-                MemoryPool::WGSL {
-                    memory_pool,
-                    buffers,
-                } => {
-                    let buffer_id = buffers.push(memory_pool.allocate(bytes)?);
-                    let ptr: *const u8 = data.as_ptr().cast();
-                    memory_pool.host_to_pool(
-                        unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                        &mut buffers[buffer_id],
-                    )?;
-                    BufferId {
-                        memory_pool_id,
-                        buffer_id,
-                    }
-                }
-            };
+            let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
+            self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id);
             self.graph
                 .tensor_buffer_map
-                .insert((id, View::new(self.shape(id))), buffer_id);
+                .insert((id, View::new(self.shape(id))), BufferId { memory_pool_id, buffer_id });
             Ok(id)
         }
     }
 
     // Initialization
     #[must_use]
-    pub(crate) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> TensorId {
+    pub(super) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> TensorId {
         let one = self.graph.push(Node::Const {
             value: Constant::new(value),
         });
@@ -364,7 +217,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
+    pub(super) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         return match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.full(shape, bf16::ONE),
@@ -386,7 +239,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
+    pub(super) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         return match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.full(shape, bf16::ZERO),
@@ -409,7 +262,7 @@ impl Runtime {
 
     // Unary ops
     #[must_use]
-    pub(crate) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
+    pub(super) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
         if dtype == self.dtype(x) {
             self.retain(x);
             return x;
@@ -424,52 +277,52 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn reciprocal(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn reciprocal(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Inv });
     }
 
     #[must_use]
-    pub(crate) fn neg(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn neg(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Neg });
     }
 
     #[must_use]
-    pub(crate) fn relu(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn relu(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::ReLU });
     }
 
     #[must_use]
-    pub(crate) fn exp2(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn exp2(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Exp2 });
     }
 
     #[must_use]
-    pub(crate) fn log2(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn log2(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Log2 });
     }
 
     #[must_use]
-    pub(crate) fn inv(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn inv(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Inv });
     }
 
     #[must_use]
-    pub(crate) fn sin(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn sin(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Sin });
     }
 
     #[must_use]
-    pub(crate) fn cos(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn cos(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Cos });
     }
 
     #[must_use]
-    pub(crate) fn sqrt(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn sqrt(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Sqrt });
     }
 
     #[must_use]
-    pub(crate) fn nonzero(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn nonzero(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary {
             x,
             uop: UOp::Nonzero,
@@ -477,12 +330,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn not(&mut self, x: TensorId) -> TensorId {
+    pub(super) fn not(&mut self, x: TensorId) -> TensorId {
         return self.graph.push(Node::Unary { x, uop: UOp::Not });
     }
 
     #[must_use]
-    pub(crate) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         if &shape == self.shape(x) {
             self.retain(x);
             return x;
@@ -491,7 +344,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+    pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         if &shape == self.shape(x) {
             self.retain(x);
             return x;
@@ -500,13 +353,13 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+    pub(super) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = permute(self.shape(x), &axes);
         self.graph.push_wshape(Node::Permute { x, axes }, shape)
     }
 
     #[must_use]
-    pub(crate) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
+    pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
         let mut shape: Vec<usize> = self.shape(x).into();
         //println!("Self shape: {shape:?}, padding: {padding:?}");
         let mut i = 0;
@@ -522,7 +375,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn sum_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+    pub(super) fn sum_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
         self.graph.push_wshape(
             Node::Reduce {
@@ -535,7 +388,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn max_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+    pub(super) fn max_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
         let shape = reduce(self.shape(x), &axes);
         self.graph.push_wshape(
             Node::Reduce {
@@ -548,7 +401,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -557,7 +410,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -566,7 +419,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -575,7 +428,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -584,7 +437,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -593,7 +446,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -602,7 +455,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
+    pub(super) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
             y,
@@ -636,152 +489,7 @@ impl Runtime {
         self.beam_search
     }
 
-    // Initializes all available devices, creating a device for each compute
-    // device and a memory pool for each physical memory.
-    // Does nothing if devices were already initialized.
-    // Returns error if all devices failed to initialize
-    // DeviceParameters allows to disable some devices if requested
-    fn initialize_backends(&mut self) -> Result<(), ZyxError> {
-        if !self.devices.is_empty() {
-            return Ok(());
-        }
-
-        // Set env vars
-        if let Ok(x) = std::env::var("ZYX_DEBUG") {
-            if let Ok(x) = x.parse::<u32>() {
-                self.debug = x;
-            }
-        }
-        /*if let Ok(_) = std::env::var("ZYX_BEAM") {
-            self.beam_search = true;
-        }*/
-
-        // Search through config directories and find zyx/backend_config.json
-        // If not found or failed to parse, use defaults.
-        let backend_config = xdg::BaseDirectories::new()
-            .map_err(|e| {
-                if self.debug_dev() {
-                    println!("Failed to find config directories for backend_config.json, {e}");
-                }
-            })
-            .ok()
-            .map(|bd| {
-                let mut dirs = bd.get_config_dirs();
-                dirs.push(bd.get_config_home());
-                dirs
-            })
-            .map(|paths| {
-                paths.into_iter().find_map(|mut path| {
-                    path.push("zyx/backend_config.json");
-                    std::fs::read_to_string(&path)
-                        .map_err(|e| {
-                            if self.debug_dev() {
-                                println!("Failed to read backend_config.json at {path:?}, {e}");
-                            }
-                        })
-                        .ok()
-                })
-            })
-            .flatten()
-            .map(|file| {
-                serde_json::from_str(&file)
-                    .map_err(|e| {
-                        if self.debug_dev() {
-                            println!("Failed to parse backend_config.json, {e}");
-                        }
-                    })
-                    .ok()
-            })
-            .flatten()
-            .map(|x| {
-                if self.debug_dev() {
-                    println!("Backend config successfully read and parsed.");
-                }
-                x
-            })
-            .unwrap_or_else(|| {
-                if self.debug_dev() {
-                    println!("Failed to get backend config, using defaults.");
-                }
-                BackendConfig::default()
-            });
-
-        if let Ok((memory_pools, devices)) =
-            initialize_cuda_backend(&backend_config.cuda, self.debug_dev())
-        {
-            let n = self.memory_pools.len();
-            self.memory_pools
-                .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
-                    memory_pool: m,
-                    buffers: IndexMap::new(),
-                }));
-            self.devices
-                .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
-                    memory_pool_id: device.memory_pool_id() + n,
-                    device,
-                    programs: Vec::new(),
-                    queues,
-                }));
-        }
-        if let Ok((memory_pools, devices)) =
-            initialize_hip_backend(&backend_config.hip, self.debug_dev())
-        {
-            let n = self.memory_pools.len();
-            self.memory_pools
-                .extend(memory_pools.into_iter().map(|m| MemoryPool::HIP {
-                    memory_pool: m,
-                    buffers: IndexMap::new(),
-                }));
-            self.devices
-                .extend(devices.into_iter().map(|(device, queues)| Device::HIP {
-                    memory_pool_id: device.memory_pool_id() + n,
-                    device,
-                    programs: Vec::new(),
-                    queues,
-                }));
-        }
-        if let Ok((memory_pools, devices)) =
-            initialize_opencl_backend(&backend_config.opencl, self.debug_dev())
-        {
-            let n = self.memory_pools.len();
-            self.memory_pools
-                .extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL {
-                    memory_pool: m,
-                    buffers: IndexMap::new(),
-                }));
-            self.devices
-                .extend(devices.into_iter().map(|(device, queues)| Device::OpenCL {
-                    memory_pool_id: device.memory_pool_id() + n,
-                    device,
-                    programs: Vec::new(),
-                    queues,
-                }));
-        }
-        #[cfg(feature = "wgsl")]
-        if let Ok((memory_pools, devices)) =
-            initialize_wgsl_backend(&backend_config.wgsl, self.debug_dev())
-        {
-            let n = self.memory_pools.len();
-            self.memory_pools
-                .extend(memory_pools.into_iter().map(|m| MemoryPool::WGSL {
-                    memory_pool: m,
-                    buffers: IndexMap::new(),
-                }));
-            self.devices
-                .extend(devices.into_iter().map(|(device, queues)| Device::WGSL {
-                    memory_pool_id: device.memory_pool_id() + n,
-                    device,
-                    programs: Vec::new(),
-                    queues,
-                }));
-        }
-        if self.devices.is_empty() {
-            return Err(ZyxError::NoBackendAvailable);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
+    pub(super) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
         if self
             .graph
@@ -798,24 +506,7 @@ impl Runtime {
         for ((tensor_id, view), buffer_id) in &self.graph.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
-                    let slice = unsafe {
-                        std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), n * T::byte_size())
-                    };
-                    match &mut self.memory_pools[buffer_id.memory_pool_id] {
-                        MemoryPool::CUDA { memory_pool, buffers } => {
-                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
-                        }
-                        MemoryPool::HIP { memory_pool, buffers } => {
-                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
-                        }
-                        MemoryPool::OpenCL { memory_pool, buffers } => {
-                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
-                        }
-                        #[cfg(feature = "wgsl")]
-                        MemoryPool::WGSL { memory_pool, buffers } => {
-                            memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
-                        }
-                    }
+                    self.memory_pools[buffer_id.memory_pool_id].pool_to_host(buffer_id.buffer_id, &mut data)?;
                     break;
                 } else {
                     todo!()
@@ -827,7 +518,7 @@ impl Runtime {
         Ok(data)
     }
 
-    pub(crate) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    pub(super) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // Runs in O(4n) where n = self.graph.len(),
         // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
         // fourth pass for to_delete and new_leafs
@@ -925,30 +616,12 @@ impl Runtime {
             .tensor_buffer_map
             .retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
-            match &mut self.memory_pools[buffer.memory_pool_id] {
-                MemoryPool::CUDA { memory_pool, buffers } => {
-                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
-                    memory_pool.deallocate(buffer)?;
-                }
-                MemoryPool::HIP { memory_pool, buffers } => {
-                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
-                    memory_pool.deallocate(buffer)?;
-                }
-                MemoryPool::OpenCL { memory_pool, buffers } => {
-                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
-                    memory_pool.deallocate(buffer)?;
-                }
-                #[cfg(feature = "wgsl")]
-                MemoryPool::WGSL { memory_pool, buffers } => {
-                    let buffer = buffers.remove(buffer.buffer_id).unwrap();
-                    memory_pool.deallocate(buffer)?;
-                }
-            }
+            self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id);
         }
         return Ok(());
     }
 
-    pub(crate) fn backward(
+    pub(super) fn backward(
         &mut self,
         x: TensorId,
         sources: BTreeSet<TensorId>,
@@ -1242,18 +915,6 @@ impl Runtime {
     }
 }
 
-impl MemoryPool {
-    fn free_bytes(&self) -> usize {
-        match self {
-            MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
-            MemoryPool::HIP { memory_pool, .. } => memory_pool.free_bytes(),
-            MemoryPool::OpenCL { memory_pool, .. } => memory_pool.free_bytes(),
-            #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL { memory_pool, .. } => memory_pool.free_bytes(),
-        }
-    }
-}
-
 fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
     axes.iter().map(|a| shape[*a]).collect()
 }
@@ -1308,60 +969,5 @@ impl From<OpenCLError> for ZyxError {
 impl From<WGSLError> for ZyxError {
     fn from(value: WGSLError) -> Self {
         ZyxError::WGSLError(value)
-    }
-}
-
-impl Device {
-    fn memory_pool_id(&self) -> MemoryPoolId {
-        match self {
-            Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
-            Device::HIP { memory_pool_id, .. } => *memory_pool_id,
-            Device::OpenCL { memory_pool_id, .. } => *memory_pool_id,
-            #[cfg(feature = "wgsl")]
-            Device::WGSL { memory_pool_id, .. } => *memory_pool_id,
-        }
-    }
-
-    fn info(&self) -> &DeviceInfo {
-        match self {
-            Device::CUDA { device, .. } => device.info(),
-            Device::HIP { device, .. } => device.info(),
-            Device::OpenCL { device, .. } => device.info(),
-            #[cfg(feature = "wgsl")]
-            Device::WGSL { device, .. } => device.info(),
-        }
-    }
-
-    fn compute(&self) -> u128 {
-        self.info().compute
-    }
-
-    fn sync(&mut self, queue_id: usize) -> Result<(), ZyxError> {
-        match self {
-            Device::CUDA { queues, .. } => queues[queue_id].sync()?,
-            Device::HIP { queues, .. } => queues[queue_id].sync()?,
-            Device::OpenCL { queues, .. } => queues[queue_id].sync()?,
-        }
-        Ok(())
-    }
-}
-
-impl Display for Device {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Device::CUDA { memory_pool_id, ..  } => f.write_fmt(format_args!(
-                "Device {{ memory_pool_id: {memory_pool_id} }})"
-            )),
-            Device::HIP { memory_pool_id, ..  } => f.write_fmt(format_args!(
-                "Device {{ memory_pool_id: {memory_pool_id} }})"
-            )),
-            Device::OpenCL { memory_pool_id, ..  } => f.write_fmt(format_args!(
-                "Device {{ memory_pool_id: {memory_pool_id} }})"
-            )),
-            #[cfg(feature = "wgsl")]
-            Device::WGSL { memory_pool_id, ..  } => f.write_fmt(format_args!(
-                "Device {{ memory_pool_id: {memory_pool_id} }})"
-            )),
-        }
     }
 }

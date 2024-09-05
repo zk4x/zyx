@@ -7,13 +7,13 @@ use super::{shape_to_loops, vop::VOp};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Kernel {
     // Current shape of the kernel after all current ops
-    pub(crate) shape: Vec<Dimension>,
+    pub(super) shape: Vec<Dimension>,
+    // Register variables
+    pub(super) vars: BTreeSet<TensorId>,
     // Global loads
     pub(crate) inputs: BTreeSet<TensorId>,
     // Global stores
     pub(crate) outputs: BTreeSet<TensorId>,
-    // Register variables
-    pub(super) vars: BTreeSet<TensorId>,
     pub(crate) ops: Vec<VOp>,
 }
 

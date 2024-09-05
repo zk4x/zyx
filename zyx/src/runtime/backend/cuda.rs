@@ -27,7 +27,7 @@ pub struct CUDAError {
 }
 
 #[derive(Debug)]
-pub(crate) struct CUDAMemoryPool {
+pub(super) struct CUDAMemoryPool {
     // Just to close the connection
     #[allow(unused)]
     cuda: Rc<Library>,
@@ -44,14 +44,14 @@ pub(crate) struct CUDAMemoryPool {
 }
 
 #[derive(Debug)]
-pub(crate) struct CUDABuffer {
+pub(super) struct CUDABuffer {
     ptr: u64,
     context: CUcontext,
     bytes: usize,
 }
 
 #[derive(Debug)]
-pub(crate) struct CUDADevice {
+pub(super) struct CUDADevice {
     device: CUdevice,
     memory_pool_id: usize,
     dev_info: DeviceInfo,
@@ -69,7 +69,7 @@ pub(crate) struct CUDADevice {
 }
 
 #[derive(Debug)]
-pub(crate) struct CUDAProgram {
+pub(super) struct CUDAProgram {
     name: String,
     module: CUmodule,
     function: CUfunction,
@@ -78,7 +78,7 @@ pub(crate) struct CUDAProgram {
 }
 
 #[derive(Debug)]
-pub(crate) struct CUDAQueue {
+pub(super) struct CUDAQueue {
     stream: CUstream,
     load: usize,
     cuLaunchKernel: unsafe extern "C" fn(
@@ -102,7 +102,7 @@ unsafe impl Send for CUDABuffer {}
 unsafe impl Send for CUDAProgram {}
 unsafe impl Send for CUDAQueue {}
 
-pub(crate) fn initialize_cuda_backend(
+pub(super) fn initialize_backend(
     config: &CUDAConfig,
     debug_dev: bool,
 ) -> Result<(Vec<CUDAMemoryPool>, Vec<(CUDADevice, Vec<CUDAQueue>)>), CUDAError> {
@@ -269,11 +269,11 @@ pub(crate) fn initialize_cuda_backend(
 }
 
 impl CUDAMemoryPool {
-    pub(crate) fn free_bytes(&self) -> usize {
+    pub(super) fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    pub(crate) fn allocate(&mut self, bytes: usize) -> Result<CUDABuffer, CUDAError> {
+    pub(super) fn allocate(&mut self, bytes: usize) -> Result<CUDABuffer, CUDAError> {
         if bytes > self.free_bytes {
             return Err(CUDAError {
                 info: "Insufficient free memory.".into(),
@@ -290,19 +290,19 @@ impl CUDAMemoryPool {
         });
     }
 
-    pub(crate) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
+    pub(super) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
         unsafe { (self.cuMemFree)(buffer.ptr) }.check("Failed to free memory.")?;
         self.free_bytes += buffer.bytes;
         Ok(())
     }
 
-    pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
+    pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
         //println!("Copying {src:?} to {dst:?}");
         unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }
             .check("Failed to copy memory from host to pool.")
     }
 
-    pub(crate) fn pool_to_host(
+    pub(super) fn pool_to_host(
         &mut self,
         src: &CUDABuffer,
         dst: &mut [u8],
@@ -311,7 +311,7 @@ impl CUDAMemoryPool {
             .check("Failed to copy memory from pool to host.")
     }
 
-    pub(crate) fn pool_to_pool(
+    pub(super) fn pool_to_pool(
         &mut self,
         src: &CUDABuffer,
         dst: &CUDABuffer,
@@ -334,16 +334,16 @@ impl CUDADevice {
         Ok(v)
     }
 
-    pub(crate) fn info(&self) -> &DeviceInfo {
+    pub(super) fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(crate) fn memory_pool_id(&self) -> usize {
+    pub(super) fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
-    pub(crate) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<CUDAProgram, CUDAError> {
+    pub(super) fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<CUDAProgram, CUDAError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -820,7 +820,7 @@ impl CUDADevice {
 }
 
 impl CUDAQueue {
-    pub(crate) fn launch(
+    pub(super) fn launch(
         &mut self,
         program: &mut CUDAProgram,
         buffers: &mut IndexMap<CUDABuffer>,
@@ -851,12 +851,12 @@ impl CUDAQueue {
         .check("Failed to launch kernel.")
     }
 
-    pub(crate) fn sync(&mut self) -> Result<(), CUDAError> {
+    pub(super) fn sync(&mut self) -> Result<(), CUDAError> {
         self.load = 0;
         unsafe { (self.cuStreamSynchronize)(self.stream) }.check("Failed to synchronize CUDA stream.")
     }
 
-    pub(crate) fn load(&self) -> usize {
+    pub(super) fn load(&self) -> usize {
         self.load
     }
 }
@@ -1062,7 +1062,7 @@ enum CUdevice_attribute {
 }
 
 impl IRDType {
-    pub(crate) fn ptx(&self) -> &str {
+    pub(super) fn ptx(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
             IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
@@ -1130,7 +1130,7 @@ impl Var {
 }
 
 impl IRDType {
-    pub(crate) fn cu(&self) -> &str {
+    pub(super) fn cu(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
             IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),

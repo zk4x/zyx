@@ -2,17 +2,17 @@ use std::{collections::BTreeMap, fmt::Display};
 
 use crate::shape::{Axis, Dimension};
 
-pub(crate) type Stride = usize;
+pub(super) type Stride = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct StridedDim {
-    pub(crate) axis: Axis,
-    pub(crate) dim: Dimension,
-    pub(crate) stride: Stride,
+pub(super) struct StridedDim {
+    pub(super) axis: Axis,
+    pub(super) dim: Dimension,
+    pub(super) stride: Stride,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
-pub(crate) enum View {
+pub(super) enum View {
     None,
     //Contiguous(Vec<StridedDim>), // TODO perhaps later, mainly for cpu and perhaps wide loads on gpu
     Strided(Vec<StridedDim>),
@@ -24,8 +24,8 @@ pub(crate) enum View {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
-pub(crate) struct PaddedAxes {
-    pub(crate) axes: Vec<(Vec<Axis>, (isize, isize))>,
+pub(super) struct PaddedAxes {
+    pub(super) axes: Vec<(Vec<Axis>, (isize, isize))>,
 }
 
 impl PaddedAxes {
@@ -46,7 +46,7 @@ impl PaddedAxes {
 }
 
 impl View {
-    pub(crate) fn new(shape: &[usize]) -> Self {
+    pub(super) fn new(shape: &[usize]) -> Self {
         let mut stride = 1;
         let mut view: Vec<StridedDim> = shape
             .iter()
@@ -88,7 +88,7 @@ impl View {
         return View::Strided(view);
     }
 
-    pub(crate) fn shape(&self) -> Vec<usize> {
+    pub(super) fn shape(&self) -> Vec<usize> {
         match self {
             View::None => vec![1],
             View::Strided(dims) => dims.iter().map(|dim| dim.dim).collect(),
@@ -96,7 +96,7 @@ impl View {
         }
     }
 
-    pub(crate) fn rank(&self) -> usize {
+    pub(super) fn rank(&self) -> usize {
         match self {
             View::None => 1,
             View::Strided(dims) => dims.len(),
@@ -104,7 +104,7 @@ impl View {
         }
     }
 
-    pub(crate) fn requires_conditional_padding(&self) -> bool {
+    pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
         if let View::Padded(_, padded_axes) = self {
             return padded_axes.axes.iter().any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
@@ -116,7 +116,7 @@ impl View {
         self.0.iter().map(|dim| dim.dim).product()
     }*/
 
-    pub(crate) fn permute(&mut self, axes: &[usize]) {
+    pub(super) fn permute(&mut self, axes: &[usize]) {
         //println!("Permuting {self} by {axes:?}");
         assert_eq!(self.rank(), axes.len());
         match self {
@@ -147,7 +147,7 @@ impl View {
         todo!()
     }
 
-    pub(crate) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+    pub(super) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
         //println!("Padding view with {left_pad}, {right_pad}");
         match self {
             View::None => {}
@@ -163,7 +163,7 @@ impl View {
         }
     }
 
-    pub(crate) fn expand(&mut self, axis: Axis, dimension: Dimension) {
+    pub(super) fn expand(&mut self, axis: Axis, dimension: Dimension) {
         // TODO probably instead of changing stride to 0, we can simply
         // remove the dimension alltogether
         /*let _ = dimension;
@@ -213,7 +213,7 @@ impl View {
         }
     }
 
-    pub(crate) fn numel(&self) -> usize {
+    pub(super) fn numel(&self) -> usize {
         match self {
             View::None => 0,
             View::Strided(dims) => dims.iter().map(|dim| dim.dim).product(),
@@ -221,11 +221,11 @@ impl View {
         }
     }
 
-    pub(crate) fn is_contiguous(&self) -> bool {
+    pub(super) fn is_contiguous(&self) -> bool {
         &View::new(&self.shape()) == self
     }
 
-    pub(crate) fn split_axis(&mut self, axis: Axis, dimensions: &[usize]) {
+    pub(super) fn split_axis(&mut self, axis: Axis, dimensions: &[usize]) {
         match self {
             View::None => {}
             View::Strided(dims) => {

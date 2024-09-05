@@ -1,7 +1,7 @@
 use crate::{dtype::Constant, shape::Axis, tensor::TensorId, DType, Scalar};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub(crate) enum BOp {
+pub(super) enum BOp {
     Add,
     Sub,
     Mul,
@@ -14,7 +14,7 @@ pub(crate) enum BOp {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub(crate) enum UOp {
+pub(super) enum UOp {
     Cast(DType),
     ReLU,
     Neg,
@@ -29,13 +29,13 @@ pub(crate) enum UOp {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub(crate) enum ROp {
+pub(super) enum ROp {
     Sum,
     Max,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-pub(crate) enum Node {
+pub(super) enum Node {
     // Constant tensor baked into kernels
     Const {
         value: Constant,
@@ -81,7 +81,7 @@ impl Default for Node {
     }
 }
 
-pub(crate) struct NodeParametersIterator {
+pub(super) struct NodeParametersIterator {
     parameters: [TensorId; 2],
     len: u8,
     idx: u8,
@@ -126,14 +126,14 @@ impl Node {
         };
     }
 
-    pub(crate) fn is_movement(&self) -> bool {
+    pub(super) fn is_movement(&self) -> bool {
         matches!(
             self,
             Node::Pad { .. } | Node::Reshape { .. } | Node::Expand { .. } | Node::Permute { .. }
         )
     }
 
-    pub(crate) fn is_unary(&self) -> bool {
+    pub(super) fn is_unary(&self) -> bool {
         matches!(self, Node::Unary { .. })
     }
 }
@@ -164,7 +164,7 @@ trait CastDType: Scalar {
 impl<T: Scalar> CastDType for T {}
 
 impl Constant {
-    pub(crate) fn unary(self, uop: UOp) -> Constant {
+    pub(super) fn unary(self, uop: UOp) -> Constant {
         use std::mem::transmute as t;
         match uop {
             UOp::Cast(dtype) => match self {
@@ -388,7 +388,7 @@ impl Constant {
     }
 
     // Assumes both constants are the same dtype
-    pub(crate) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
+    pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
         todo!()
     }
 }

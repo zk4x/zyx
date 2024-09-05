@@ -23,19 +23,19 @@ pub struct WGSLConfig {
 pub struct WGSLError {}
 
 #[derive(Debug)]
-pub(crate) struct WGSLMemoryPool {
+pub(super) struct WGSLMemoryPool {
     free_bytes: usize,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 }
 
 #[derive(Debug)]
-pub(crate) struct WGSLBuffer {
+pub(super) struct WGSLBuffer {
     buffer: wgpu::Buffer,
 }
 
 #[derive(Debug)]
-pub(crate) struct WGSLDevice {
+pub(super) struct WGSLDevice {
     dev_info: DeviceInfo,
     memory_pool_id: usize,
     device: Arc<wgpu::Device>,
@@ -43,7 +43,7 @@ pub(crate) struct WGSLDevice {
 }
 
 #[derive(Debug)]
-pub(crate) struct WGSLProgram {
+pub(super) struct WGSLProgram {
     name: String,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
@@ -52,13 +52,13 @@ pub(crate) struct WGSLProgram {
 }
 
 #[derive(Debug)]
-pub(crate) struct WGSLQueue {
+pub(super) struct WGSLQueue {
     load: usize,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 }
 
-pub(crate) fn initialize_wgsl_backend(
+pub(super) fn initialize_wgsl_backend(
     config: &WGSLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
@@ -138,11 +138,11 @@ pub(crate) fn initialize_wgsl_backend(
 }
 
 impl WGSLMemoryPool {
-    pub(crate) fn free_bytes(&self) -> usize {
+    pub(super) fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    pub(crate) fn allocate(&mut self, bytes: usize) -> Result<WGSLBuffer, WGSLError> {
+    pub(super) fn allocate(&mut self, bytes: usize) -> Result<WGSLBuffer, WGSLError> {
         Ok(WGSLBuffer {
             buffer: self.device.create_buffer(&BufferDescriptor {
                 label: None,
@@ -157,12 +157,12 @@ impl WGSLMemoryPool {
         })
     }
 
-    pub(crate) fn deallocate(&mut self, buffer: WGSLBuffer) -> Result<(), WGSLError> {
+    pub(super) fn deallocate(&mut self, buffer: WGSLBuffer) -> Result<(), WGSLError> {
         buffer.buffer.destroy();
         Ok(())
     }
 
-    pub(crate) fn host_to_pool(&mut self, src: &[u8], dst: &WGSLBuffer) -> Result<(), WGSLError> {
+    pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &WGSLBuffer) -> Result<(), WGSLError> {
         self.queue.write_buffer(&dst.buffer, 0, src);
         let encoder = self
             .device
@@ -173,7 +173,7 @@ impl WGSLMemoryPool {
         Ok(())
     }
 
-    pub(crate) fn pool_to_host(
+    pub(super) fn pool_to_host(
         &mut self,
         src: &WGSLBuffer,
         dst: &mut [u8],
@@ -195,7 +195,7 @@ impl WGSLMemoryPool {
         Ok(())
     }
 
-    pub(crate) fn pool_to_pool(
+    pub(super) fn pool_to_pool(
         &mut self,
         src: &WGSLBuffer,
         dst: &WGSLBuffer,
@@ -205,16 +205,16 @@ impl WGSLMemoryPool {
 }
 
 impl WGSLDevice {
-    pub(crate) fn info(&self) -> &DeviceInfo {
+    pub(super) fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(crate) fn memory_pool_id(&self) -> usize {
+    pub(super) fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
-    pub(crate) fn compile(
+    pub(super) fn compile(
         &mut self,
         kernel: &IRKernel,
         debug_asm: bool,
@@ -390,7 +390,7 @@ impl WGSLDevice {
 }
 
 impl WGSLQueue {
-    pub(crate) fn launch(
+    pub(super) fn launch(
         &mut self,
         program: &mut WGSLProgram,
         buffers: &mut IndexMap<WGSLBuffer>,
@@ -485,14 +485,14 @@ impl WGSLQueue {
         Ok(())
     }
 
-    pub(crate) fn sync(&mut self) -> Result<(), WGSLError> {
+    pub(super) fn sync(&mut self) -> Result<(), WGSLError> {
         // TODO does wgpu even let us do that?
         self.device.poll(wgpu::MaintainBase::Wait);
         self.load = 0;
         Ok(())
     }
 
-    pub(crate) fn load(&self) -> usize {
+    pub(super) fn load(&self) -> usize {
         self.load
     }
 }

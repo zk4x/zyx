@@ -1,7 +1,5 @@
 use super::{
-    node::{BOp, Node},
-    view::View,
-    BufferId, TensorId,
+    backend::BufferId, node::{BOp, Node}, view::View, TensorId
 };
 use crate::{index_map::IndexMap, shape::Dimension, DType};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,7 +18,7 @@ pub(super) struct Graph {
 }
 
 impl Graph {
-    pub(crate) const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             nodes: IndexMap::new(),
             shapes: BTreeMap::new(),
@@ -29,12 +27,12 @@ impl Graph {
         }
     }
 
-    pub(crate) fn retain(&mut self, x: TensorId) {
+    pub(super) fn retain(&mut self, x: TensorId) {
         self.nodes[x].0 += 1;
     }
 
     /// Returns which tensors should be deallocated
-    pub(crate) fn release(&mut self, x: TensorId) -> BTreeSet<TensorId> {
+    pub(super) fn release(&mut self, x: TensorId) -> BTreeSet<TensorId> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
         let mut to_remove = BTreeSet::new();
@@ -52,7 +50,7 @@ impl Graph {
         to_remove
     }
 
-    pub(crate) fn push(&mut self, node: Node) -> TensorId {
+    pub(super) fn push(&mut self, node: Node) -> TensorId {
         //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
@@ -60,7 +58,7 @@ impl Graph {
         self.nodes.push((1, node))
     }
 
-    pub(crate) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
+    pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
         //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
@@ -70,7 +68,7 @@ impl Graph {
         id
     }
 
-    pub(crate) fn push_wdtype(&mut self, node: Node, dtype: DType) -> TensorId {
+    pub(super) fn push_wdtype(&mut self, node: Node, dtype: DType) -> TensorId {
         //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
@@ -80,7 +78,7 @@ impl Graph {
         id
     }
 
-    pub(crate) fn push_wshape_and_dtype(
+    pub(super) fn push_wshape_and_dtype(
         &mut self,
         node: Node,
         shape: Vec<Dimension>,
@@ -96,14 +94,14 @@ impl Graph {
         id
     }
 
-    pub(crate) fn add_shape_dtype(&mut self, id: TensorId) {
+    pub(super) fn add_shape_dtype(&mut self, id: TensorId) {
         let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
         let dtype = self.dtype(id);
         self.dtypes.insert(id, dtype);
     }
 
-    pub(crate) fn dtype(&self, tensor_id: TensorId) -> DType {
+    pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 1000000 {
@@ -119,7 +117,7 @@ impl Graph {
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
 
-    pub(crate) fn shape(&self, tensor_id: TensorId) -> &[usize] {
+    pub(super) fn shape(&self, tensor_id: TensorId) -> &[usize] {
         let mut tensor_id = tensor_id;
         let mut i = 0;
         while i < 10000 {
@@ -136,7 +134,7 @@ impl Graph {
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }
 
-    pub(crate) fn rc(&self, x: TensorId) -> u32 {
+    pub(super) fn rc(&self, x: TensorId) -> u32 {
         self.nodes[x].0
     }
 
@@ -146,7 +144,7 @@ impl Graph {
         }
     }
 
-    pub(crate) fn realize_graph(
+    pub(super) fn realize_graph(
         &self,
         tensors: &BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
