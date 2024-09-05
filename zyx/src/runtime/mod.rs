@@ -64,7 +64,7 @@ pub(crate) struct Runtime {
     // Are we in training mode?
     pub(crate) training: bool,
     pub(super) debug: u32,
-    //pub(super) beam_search: bool,
+    pub(super) beam_search: bool,
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
@@ -160,7 +160,7 @@ impl Runtime {
             ir_kernel_cache: BTreeMap::new(),
             training: false,
             debug: 0,
-            //beam_search: false,
+            beam_search: true,
         }
     }
 
@@ -630,6 +630,10 @@ impl Runtime {
 
     fn debug_asm(&self) -> bool {
         (self.debug >> 4) % 2 == 1
+    }
+
+    fn beam_search(&self) -> bool {
+        self.beam_search
     }
 
     // Initializes all available devices, creating a device for each compute
@@ -1330,6 +1334,15 @@ impl Device {
 
     fn compute(&self) -> u128 {
         self.info().compute
+    }
+
+    fn sync(&mut self, queue_id: usize) -> Result<(), ZyxError> {
+        match self {
+            Device::CUDA { queues, .. } => queues[queue_id].sync()?,
+            Device::HIP { queues, .. } => queues[queue_id].sync()?,
+            Device::OpenCL { queues, .. } => queues[queue_id].sync()?,
+        }
+        Ok(())
     }
 }
 

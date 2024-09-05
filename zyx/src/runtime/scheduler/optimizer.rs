@@ -1,26 +1,31 @@
-use crate::{runtime::{backend::DeviceInfo, scheduler::vop::VOp, view::View}, tensor::TensorId};
+use std::fmt::Display;
+
+use crate::{runtime::{backend::DeviceInfo, scheduler::vop::VOp}, shape::Dimension};
 use super::kernel::Kernel;
 
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct KernelOptimizations {
+    // Axis splits to give us global, local and register work sizes
+    splits: Vec<(usize, Vec<Dimension>)>,
+    // Permutation so that global and local work sizes are first
     permutation: Vec<usize>,
-    global_work_size: [usize; 3],
-    local_work_size: [usize; 3],
-    register_work_size: [usize; 3],
+    // Work per thread in reduce loops, one per each reduce
+    reduce_loop_wpt: Vec<usize>,
+
     // Load tensor first into local tile, then into registers
     // this is used mainly for expanded tensors, so use threads
     // from one local work group to load the tile and then sync loads
     // before loading into registers
-    local_tiles: Vec<(TensorId, View)>,
+    //local_tiles: Vec<(TensorId, View)>,
     // Unrolls loop with given id
-    unroll_loops: Vec<usize>,
+    //unroll_loops: Vec<usize>,
     // Converts all variables in loop into native vector dtypes
     // and removes the loop.
-    vectorize_loops: Vec<usize>,
+    //vectorize_loops: Vec<usize>,
     // Tile tensor in registers with given view
-    register_tiles: Vec<(TensorId, View)>,
+    //register_tiles: Vec<(TensorId, View)>,
     // TensorCores,
     // WMMA
 }
@@ -29,10 +34,64 @@ pub(crate) struct KernelOptimizations {
 // ir will be just a direct translation and can be removed if we replace it with something
 // like renderer to c style, assembly and such.
 impl Kernel {
+    pub(super) fn possible_optimizations(&self, dev_info: &DeviceInfo) -> Vec<KernelOptimizations> {
+        todo!()
+    }
+
+    pub(super) fn default_optimizations(&self, dev_info: &DeviceInfo) -> KernelOptimizations {
+        /*let num_loops = self
+            .ops
+            .iter()
+            .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
+            .unwrap();
+        assert_ne!(num_loops, 0);
+        if num_loops < 3 {
+            let dims: Vec<usize> = core::iter::repeat(1)
+                .take(3 - num_loops)
+                .chain([self.shape[0]])
+                .collect();
+            kernel.split_axis(0, &dims);
+        }
+        // Split first three loops into global and local loops.
+        for op in &kernel.ops {
+            if let VOp::Loop { axis, dimension } = op {
+                if *axis > 2 {
+                    break;
+                }
+                gws[*axis] = *dimension;
+            }
+        }
+        let lws = best_work_size(gws, dev_info.max_work_group_size);
+        gws[0] /= lws[0];
+        gws[1] /= lws[1];
+        gws[2] /= lws[2];
+        kernel.split_axis(0, &[gws[0], lws[0]]);
+        kernel.split_axis(2, &[gws[1], lws[1]]);
+        kernel.split_axis(4, &[gws[2], lws[2]]);
+        */
+        todo!()
+    }
+
     // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
     // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
     // tensor cores, just a ton of stuff. Later add search over different optimizations.
-    pub(super) fn optimize(&mut self, dev_info: &DeviceInfo) -> KernelOptimizations {
+    pub(super) fn optimize(&self, optimizations: &KernelOptimizations) -> Kernel {
+        let mut kernel = self.clone();
+        // Apply axis splits
+        for (op_id, dimensions) in &optimizations.splits {
+            kernel.split_axis(*op_id, dimensions);
+        }
+        // Apply permutation
+        kernel.permute(&optimizations.permutation);
+        kernel
+    }
+
+    /*
+        // First create a list of all possible global, local and register work sizes
+        // given max_work_group_size and number of register.
+        // Also needs to contain work per thread size for single reduce.
+        // like this: [gws0, gws1, gws2, lws0, lws1, lws2, rws0, rws1, rws2, rwsr]
+
         // Get the number of loops before any other operation
         let num_loops = self
             .ops
@@ -40,6 +99,8 @@ impl Kernel {
             .position(|kernel| !matches!(kernel, VOp::Loop { .. }))
             .unwrap();
         assert_ne!(num_loops, 0);
+
+        let mut kernel = self.clone();
 
         // If there is more loops than 3, pick first three loops as global loops,
         // rest is register loops.
@@ -50,14 +111,14 @@ impl Kernel {
                 .take(3 - num_loops)
                 .chain([self.shape[0]])
                 .collect();
-            self.split_axis(0, &dims);
+            kernel.split_axis(0, &dims);
         }
 
         // Set best local work sizes
         let mut gws = [1; 3];
         let lws = {
             // Split first three loops into global and local loops.
-            for op in &self.ops {
+            for op in &kernel.ops {
                 if let VOp::Loop { axis, dimension } = op {
                     if *axis > 2 {
                         break;
@@ -69,9 +130,9 @@ impl Kernel {
             gws[0] /= lws[0];
             gws[1] /= lws[1];
             gws[2] /= lws[2];
-            self.split_axis(0, &[gws[0], lws[0]]);
-            self.split_axis(2, &[gws[1], lws[1]]);
-            self.split_axis(4, &[gws[2], lws[2]]);
+            kernel.split_axis(0, &[gws[0], lws[0]]);
+            kernel.split_axis(2, &[gws[1], lws[1]]);
+            kernel.split_axis(4, &[gws[2], lws[2]]);
             lws
         };
 
@@ -83,19 +144,19 @@ impl Kernel {
                 gws[0] = gws[0]/rws[0];
                 gws[1] = gws[1]/rws[1];
                 gws[2] = gws[2]/rws[2];
-                self.split_axis(0, &[gws[0], rws[0]]);
-                self.split_axis(3, &[gws[1], rws[1]]);
-                self.split_axis(6, &[gws[2], rws[2]]);
+                kernel.split_axis(0, &[gws[0], rws[0]]);
+                kernel.split_axis(3, &[gws[1], rws[1]]);
+                kernel.split_axis(6, &[gws[2], rws[2]]);
                 // Permute so that work per thread loops are after global and local loops
-                self.permute(&[0, 2, 3, 5, 6, 8, 1, 4, 7]);
+                kernel.permute(&[0, 2, 3, 5, 6, 8, 1, 4, 7]);
 
-                if self.ops.iter().any(|op| matches!(op, VOp::Reduce { .. })) {
+                if kernel.ops.iter().any(|op| matches!(op, VOp::Reduce { .. })) {
                     // Handle reduce loops
                     // Split reduce loops for more work per thread
                     let mut splits = Vec::new();
-                    for (id, op) in self.ops[9..].iter().enumerate() {
+                    for (id, op) in kernel.ops[9..].iter().enumerate() {
                         if let VOp::Accumulator { .. } = op {
-                            let VOp::Loop { dimension, .. } = self.ops[id+10] else { todo!() };
+                            let VOp::Loop { dimension, .. } = kernel.ops[id+10] else { todo!() };
                             // TODO get this working if there is more than one reduce loop
                             // TODO get this working with different work per thread
                             splits.push((id+10, [dimension/8, 8]));
@@ -103,19 +164,19 @@ impl Kernel {
                     }
                     for split in splits {
                         println!("Splitting at {split:?}");
-                        self.split_axis(split.0, &split.1);
+                        kernel.split_axis(split.0, &split.1);
                     }
 
                     // Permute such that register loops come after reduce loops
                     // Just swap register loops after reduce loops
-                    let r0loop = self.ops.remove(6);
-                    let r1loop = self.ops.remove(6);
-                    let r2loop = self.ops.remove(6);
+                    let r0loop = kernel.ops.remove(6);
+                    let r1loop = kernel.ops.remove(6);
+                    let r2loop = kernel.ops.remove(6);
                     let mut start_reg_ids = Vec::new();
                     let mut end_reg_ids = Vec::new();
                     let mut last_loop_id = None;
-                    for id in 6..self.ops.len() {
-                        match self.ops[id] {
+                    for id in 6..kernel.ops.len() {
+                        match kernel.ops[id] {
                             VOp::Loop { .. } => if let Some(last_loop_id) = &mut last_loop_id {
                                 *last_loop_id = id;
                             } else {
@@ -142,7 +203,7 @@ impl Kernel {
 
         /*let mut local_loads = Vec::new();
         // Add local and register tiles for expanded tensor loads
-        for id in 0..self.ops.len() {
+        for id in 0..self.kernel.len() {
             //if matches!(self.ops[id], VOp::Load { .. }) {
             if let VOp::Load { z, zscope: scope, view, .. } = &mut self.ops[id] {
                 local_loads.push((*z, view.clone()));
@@ -156,17 +217,8 @@ impl Kernel {
         //self.debug();
 
         // Add local caching for loads
-        KernelOptimizations {
-            permutation: Vec::new(),
-            global_work_size: gws,
-            local_work_size: lws,
-            register_work_size: rws,
-            local_tiles: Vec::new(),
-            unroll_loops: Vec::new(),
-            vectorize_loops: Vec::new(),
-            register_tiles: Vec::new(),
-        }
-    }
+        kernel
+    }*/
 }
 
 // Takes global work size (gws) and maximum work group size (mwgs)
@@ -202,4 +254,10 @@ fn best_work_size(mut gws: [usize; 3], mwgs: usize) -> [usize; 3] {
     lws[1] *= n;
 
     return lws;
+}
+
+impl Display for KernelOptimizations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("splits {:?}, permute: {:?}, rwpt {:?}", self.splits, self.permutation, self.reduce_loop_wpt))
+    }
 }

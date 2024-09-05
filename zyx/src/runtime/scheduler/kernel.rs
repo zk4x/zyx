@@ -4,7 +4,7 @@ use crate::{runtime::{graph::Graph, ir::Scope, view::{StridedDim, View}}, shape:
 
 use super::{shape_to_loops, vop::VOp};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Kernel {
     // Current shape of the kernel after all current ops
     pub(crate) shape: Vec<Dimension>,

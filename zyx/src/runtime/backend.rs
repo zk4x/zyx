@@ -5,7 +5,7 @@ pub(crate) mod opencl;
 pub(crate) mod wgsl;
 
 /// Hardware information needed for applying optimizations
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,

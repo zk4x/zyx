@@ -23,7 +23,7 @@ let x = Tensor::randn([1024, 1024], DType::BF16);
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32);
 let b = Tensor::zeros([1024], DType::F16);
 let z = &x + &y;
-let z = (x.dot(&y), + b).gelu();
+let z = (x.dot(&y) + b).gelu();
 // Zyx allows for arbitrary differentiation
 let b_grad = z.backward([&b])[0].unwrap();
 // Also higher order derivatives
@@ -101,7 +101,8 @@ This function might get obsolete in the future once detection of repeating graph
 ## Rust version
 
 Zyx currently only supports latest rust stable version. Zyx also requires std,
-as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging) and also some other stuff that requires filesystem.
+as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging)
+and also some other stuff that requires filesystem and threads.
 
 ## Features
 
