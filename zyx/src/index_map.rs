@@ -38,7 +38,8 @@ impl<T> IndexMap<T> {
         }
     }
 
-    pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
+    pub(crate) fn remove(&mut self, id: Id) -> Option<T>
+    {
         if self.values.len() > id && !self.empty.contains(&id) {
             self.empty.push(id);
             //let x = std::mem::MaybeUninit::uninit();
