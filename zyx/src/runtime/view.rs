@@ -147,6 +147,21 @@ impl View {
         todo!()
     }
 
+    pub(super) fn pad_axis(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+        let paxis = axis;
+        match self {
+            View::None => {}
+            View::Strided(dims) => {
+                if dims.iter().any(|&StridedDim { axis, .. }| axis == paxis) {
+                    *self = View::Padded(dims.clone(), PaddedAxes { axes: vec![(vec![axis], (left_pad, right_pad))] });
+                }
+            }
+            View::Padded(dims, padding) => {
+                todo!()
+            }
+        }
+    }
+
     pub(super) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
         //println!("Padding view with {left_pad}, {right_pad}");
         match self {

@@ -736,6 +736,13 @@ fn generate_kernels(
                 //println!("\nKernels {kernels:?}\n");
             }
             Node::Pad { x, padding } => {
+
+
+
+                // TODO rewrite this pad using pad_axis on view, apply padding also on stores, so padding will be always fusable
+
+
+
                 let shape = graph.shape(nid);
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
@@ -754,6 +761,7 @@ fn generate_kernels(
                                 }
                             }
                         }
+                        // TODO perhaps we can pad Store too
                         VOp::Store { .. } => {
                             padding_possible = false;
                             break 'ops_loop;
@@ -768,6 +776,7 @@ fn generate_kernels(
                     kernel = kernels.last_mut().unwrap();
                 }
                 let mut padded_loops: BTreeSet<usize> = axes.clone();
+                kernel.debug();
                 'ops_loop: for op in kernel.ops.iter_mut().rev() {
                     match op {
                         VOp::Loop { axis, len: dimension } => {

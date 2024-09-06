@@ -191,3 +191,11 @@ fn t_17() {
     x = x.sum([]);
     println!("{x}");
 }
+
+#[test]
+fn t_18() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    let y = Tensor::from([[2, 3], [1, 2], [4, 1]]);
+    x = x.dot(y).pad_zeros([(2, 1)]);
+    println!("{x}");
+}
