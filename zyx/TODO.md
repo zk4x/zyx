@@ -50,19 +50,17 @@
 - [x] wgsl compilation
 - [x] wgsl program launch
 - [ ] tensor split
+- [ ] graph agnostic to tensor ids, this is quite difficult
 
 ### Release blockers
 
-- [ ] automatic optimizations with search on vkernel
-- [ ] saving of searched kernel to disk
-- [ ] kernel search using beam
+- [x] automatic optimizations with search on vkernel
+- [x] saving of searched kernel to disk
 - [x] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
-- [ ] test pad after reduce
 - [x] full reduce
-- [ ] test padded view permute
-- [ ] test expand after reduce
-- [ ] local memory caching
 - [x] more work per thread
+- [ ] more work per thread in reduce dim
+- [ ] local memory caching
 - [ ] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
@@ -77,6 +75,9 @@
 - [x] remove smadd, amadd
 - [x] fix reshape after reduce
 - [x] todo fix permute on reduced and reshaped kernel
+- [ ] test pad after reduce
+- [ ] test padded view permute
+- [ ] test expand after reduce
 - [ ] go over all todos in source code and check which are necessary
 
 ### Tests

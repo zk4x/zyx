@@ -6,6 +6,7 @@ use graph::Graph;
 use ir::IRKernel;
 use node::{BOp, Node, ROp, UOp};
 use scheduler::CompiledGraph;
+use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
@@ -55,10 +56,11 @@ pub(super) struct Runtime {
     compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
     // Cache which maps IRKernel to device and program id on the device
     ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
+    config_dir: Option<PathBuf>, // Why the is hell PathBuf::new not const???????
     // Are we in training mode?
     pub(super) training: bool,
-    pub(super) debug: u32,
     pub(super) beam_search: bool,
+    pub(super) debug: u32,
 }
 
 impl Runtime {
@@ -72,9 +74,10 @@ impl Runtime {
             devices: Vec::new(),
             memory_pools: Vec::new(),
             ir_kernel_cache: BTreeMap::new(),
+            config_dir: None,
             training: false,
-            debug: 0,
             beam_search: true,
+            debug: 0,
         }
     }
 

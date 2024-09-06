@@ -4,7 +4,7 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{OpenCLBuffer, OpenCLDevice, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue};
@@ -25,7 +25,7 @@ pub use opencl::{OpenCLConfig, OpenCLError};
 pub use wgsl::{WGSLConfig, WGSLError};
 
 /// Hardware information needed for applying optimizations
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(super) struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
@@ -140,13 +140,13 @@ impl Runtime {
             .map(|paths| {
                 paths.into_iter().find_map(|mut path| {
                     path.push("zyx/backend_config.json");
-                    std::fs::read_to_string(&path)
-                        /*.map_err(|e| {
-                            if self.debug_dev() {
-                                println!("Failed to read backend_config.json at {path:?}, {e}");
-                            }
-                        })*/
-                        .ok()
+                    if let Ok(file) = std::fs::read_to_string(&path) {
+                        path.pop();
+                        self.config_dir = Some(path);
+                        Some(file)
+                    } else {
+                        None
+                    }
                 })
             })
             .flatten()
@@ -573,32 +573,6 @@ impl std::fmt::Display for Device {
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
         }
-    }
-}
-
-impl Runtime {
-    // Compiles kernel using given optimizations
-    pub(super) fn compile_cached(&mut self, kernel: &Kernel, optimizations: &KernelOptimizations, device_id: DeviceId, graph: &Graph) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
-        //let timer = Timer::new();
-        let optimized_kernel = kernel.optimize(optimizations);
-        println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        let (ir_kernel, ir_args) = optimized_kernel.to_ir(&graph);
-        let mut program_id = None;
-        if let Some((dev_id, prog_id) ) = self.ir_kernel_cache.get(&ir_kernel) {
-            if *dev_id == device_id {
-                program_id = Some(*prog_id);
-            }
-        }
-        if program_id.is_none() {
-            if self.debug_ir() { ir_kernel.debug(); }
-            let debug_asm = self.debug_asm();
-            program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
-            self.ir_kernel_cache.insert(
-                ir_kernel,
-                (device_id, program_id.unwrap())
-            );
-        }
-        Ok((program_id.unwrap(), ir_args.into_iter().map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only)).collect()))
     }
 }
 
