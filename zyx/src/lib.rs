@@ -74,6 +74,8 @@ fn t4() {
     for _ in 0..20 {
         let z = x.dot(&y);
         Tensor::realize([&z]).unwrap();
+        drop(z);
+        //Tensor::plot_graph([], &format!("graph{i}"));
     }
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();

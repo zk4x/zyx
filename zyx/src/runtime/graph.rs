@@ -162,6 +162,9 @@ impl Graph {
                 }
             }
         }
+        // While visited only contains nodes up to realized nodes,
+        // following loops visit all children nodes up to leafs,
+        // because we need to know which parts of the graph can be dropped.
         // Get refcounts of all nodes
         let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
@@ -480,11 +483,13 @@ impl Graph {
         } else {
             ids.clone()
         };
+        //println!("{ids:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
         let mut rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                //println!("Access {nid:?}");
                 params.extend(self.nodes[nid].1.parameters());
                 1
             });

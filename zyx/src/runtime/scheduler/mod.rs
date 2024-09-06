@@ -426,7 +426,7 @@ impl Runtime {
     pub(super) fn compile_cached(&mut self, kernel: &Kernel, optimizations: &KernelOptimizations, device_id: DeviceId, graph: &Graph) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
         //let timer = Timer::new();
         let optimized_kernel = kernel.optimize(optimizations);
-        println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
+        //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
         let (ir_kernel, ir_args) = optimized_kernel.to_ir(&graph);
         let mut program_id = None;
         if let Some((dev_id, prog_id) ) = self.ir_kernel_cache.get(&ir_kernel) {

@@ -79,7 +79,7 @@ impl Runtime {
             ir_kernel_cache: BTreeMap::new(),
             config_dir: None,
             training: false,
-            beam_search: true,
+            beam_search: false,
             debug: 0,
         }
     }
@@ -582,13 +582,12 @@ impl Runtime {
         //println!("New leafs: {new_leafs:?}");
         // Compile and launch
         if !self.compiled_graph_cache.contains_key(&graph) {
-            // Also realize nodes that will become new leafs... but why?
-            //tensors.extend(&new_leafs);
             let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
             self.compiled_graph_cache
                 .insert(graph.clone(), compiled_graph);
         }
         self.launch_graph(&graph)?;
+        // Deallocate them from devices
         self.deallocate_tensors(to_delete.clone())?;
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
@@ -598,7 +597,6 @@ impl Runtime {
         }
         //println!("To delete: {to_delete:?}");
         // Delete the node, but do not use release function, just remove it from graph.nodes
-        // and deallocate it from device
         self.graph.delete_tensors(&to_delete);
         return Ok(());
     }

@@ -1,11 +1,11 @@
-use std::{mem::MaybeUninit, ops::{Index, IndexMut}};
+use std::{collections::BTreeSet, mem::MaybeUninit, ops::{Index, IndexMut}};
 
 type Id = usize;
 
 #[derive(Debug)]
 pub(crate) struct IndexMap<T> {
     values: Vec<MaybeUninit<T>>,
-    empty: Vec<Id>,
+    empty: BTreeSet<Id>,
 }
 
 impl<T> Drop for IndexMap<T> {
@@ -22,12 +22,12 @@ impl<T> IndexMap<T> {
     pub(crate) const fn new() -> IndexMap<T> {
         IndexMap {
             values: Vec::new(),
-            empty: Vec::new(),
+            empty: BTreeSet::new(),
         }
     }
 
     pub(crate) fn push(&mut self, value: T) -> Id {
-        if let Some(id) = self.empty.pop() {
+        if let Some(id) = self.empty.pop_first() {
             self.values[id] = MaybeUninit::new(value);
             //println!("Pushing to empty {id}");
             id
@@ -40,7 +40,7 @@ impl<T> IndexMap<T> {
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
         if self.values.len() > id && !self.empty.contains(&id) {
-            self.empty.push(id);
+            self.empty.insert(id);
             self.values.push(MaybeUninit::uninit());
             Some(unsafe { self.values.swap_remove(id).assume_init() })
         } else {
@@ -53,7 +53,7 @@ impl<T> IndexMap<T> {
     }
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-        (0..self.values.len()).skip_while(|x| self.empty.contains(x))
+        (0..self.values.len()).filter(|x| !self.empty.contains(x))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
@@ -66,6 +66,10 @@ impl<T> IndexMap<T> {
 
     pub(crate) fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Id, &'a mut T)> {
         self.values.iter_mut().enumerate().filter(|(id, _)| !self.empty.contains(id)).map(|(id, x)| (id, unsafe { x.assume_init_mut() }))
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.values.len() - self.empty.len()
     }
 }
 
@@ -87,12 +91,12 @@ impl<T> IndexMut<Id> for IndexMap<T> {
 impl<T> FromIterator<(Id, T)> for IndexMap<T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> IndexMap<T> {
         let mut values = Vec::new();
-        let mut empty = Vec::new();
+        let mut empty = BTreeSet::new();
         let mut i = 0;
         for (id, v) in iter {
             while id != i {
                 values.push(MaybeUninit::uninit());
-                empty.push(i);
+                empty.insert(i);
                 i += 1;
             }
             values.push(MaybeUninit::new(v));
@@ -107,6 +111,9 @@ impl<T> FromIterator<(Id, T)> for IndexMap<T> {
 
 impl<T: PartialEq> PartialEq for IndexMap<T> {
     fn eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
         self.iter().zip(other.iter()).all(|(x, y)| x == y)
     }
 }
