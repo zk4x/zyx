@@ -164,13 +164,6 @@ pub(super) fn initialize_backend(
     let mut driver_version = 0;
     unsafe { cuDriverGetVersion(&mut driver_version) }
         .check("Failed to get CUDA driver version")?;
-    if debug_dev {
-        println!(
-            "Using CUDA backend, driver version: {}.{} on devices:",
-            driver_version / 1000,
-            (driver_version - (driver_version / 1000 * 1000)) / 10
-        );
-    }
     let mut num_devices = 0;
     unsafe { cuDeviceGetCount(&mut num_devices) }.check("Failed to get CUDA device count")?;
     if num_devices == 0 {
@@ -179,17 +172,25 @@ pub(super) fn initialize_backend(
             status: CUDAStatus::CUDA_ERROR_UNKNOWN,
         });
     }
-
-    let cuda = Rc::new(cuda);
-    let mut memory_pools = Vec::new();
-    let mut devices = Vec::new();
-    for dev_id in (0..num_devices).filter(|id|
+    let device_ids: Vec<i32> = (0..num_devices).filter(|id|
         if let Some(ids) = config.device_ids.as_ref() {
             ids.contains(id)
         } else {
             true
         }
-    ) {
+    ).collect();
+    if debug_dev && device_ids.len() != 0 {
+        println!(
+            "Using CUDA backend, driver version: {}.{} on devices:",
+            driver_version / 1000,
+            (driver_version - (driver_version / 1000 * 1000)) / 10
+        );
+    }
+
+    let cuda = Rc::new(cuda);
+    let mut memory_pools = Vec::new();
+    let mut devices = Vec::new();
+    for dev_id in device_ids {
         let mut device = 0;
         unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
         let mut device_name = [0; 100];

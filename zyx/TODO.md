@@ -50,7 +50,6 @@
 - [x] wgsl compilation
 - [x] wgsl program launch
 - [ ] tensor split
-- [ ] graph agnostic to tensor ids, this is quite difficult
 
 ### Release blockers
 

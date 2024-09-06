@@ -1162,6 +1162,7 @@ fn get_compute(device_name: &str, debug_dev: bool) -> u128 {
         x if x.contains("ryzen 5 5500u") => 300 * 1024 * 1024 * 1024,
         x if x.contains("rx 550") => 1200 * 1024 * 1024 * 1024,
         x if x.contains("gtx 745") => 900 * 1024 * 1024 * 1024,
+        x if x.contains("rtx 2060") => 57 * 1024 * 1024 * 1024 * 1024,
         _ => {
             if debug_dev {
                 println!("Unknown device {device_name}, guessing compute capability");

@@ -75,7 +75,6 @@ impl Runtime {
             .collect();
         // Simulated tensor buffer map
         let mut tensor_buffer_map: BTreeMap<(TensorId, View), MemoryPoolId> = self
-            .graph
             .tensor_buffer_map
             .iter()
             .map(|(x, &BufferId { memory_pool_id, .. })| (x.clone(), memory_pool_id))
@@ -188,7 +187,7 @@ impl Runtime {
                 if self.debug_sched() { kernel.debug(); }
                 // Beam search
                 let dev_info = self.devices[device_id].info();
-                let optimization = if self.beam_search() {
+                let optimization = {
                     let mut cached_kernels: BTreeMap<(Kernel, DeviceInfo), (KernelOptimizations, u128)> = if let Some(config_dir) = self.config_dir.clone() {
                         let mut path = config_dir.clone();
                         path.push("cached_kernels");
@@ -208,9 +207,7 @@ impl Runtime {
                         BTreeMap::new()
                     };
                     let cache_key = (kernel.clone(), dev_info.clone());
-                    if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
-                        optimizations.clone()
-                    } else {
+                    if self.beam_search() {
                         // allocate space for inputs and outputs that are not allocated for this kernel
                         let mut allocated_temps = Vec::new();
                         let mpid = self.devices[device_id].memory_pool_id();
@@ -259,9 +256,11 @@ impl Runtime {
                             println!();
                         }
                         cached_kernels.get(&cache_key).unwrap().0.clone()
+                    } else if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
+                        optimizations.clone()
+                    } else {
+                        kernel.default_optimizations(dev_info)
                     }
-                } else {
-                    kernel.default_optimizations(dev_info)
                 };
 
                 // TODO rerun this function and the kernel multiple times and cache optimizations to the disk
@@ -354,7 +353,7 @@ impl Runtime {
                 SchedulerOp::Launch(vprogram) => {
                     let buffer_ids: Vec<usize> = vprogram.args.iter().map(|arg| {
                                 //println!("Arg {} {}", arg.0, arg.1);
-                                self.graph.tensor_buffer_map[&(arg.0, arg.1.clone())]
+                                self.tensor_buffer_map[&(arg.0, arg.1.clone())]
                                     .buffer_id
                             })
                             .collect();
@@ -378,7 +377,7 @@ impl Runtime {
                     let BufferId {
                         memory_pool_id,
                         buffer_id: src_buffer_id,
-                    } = self.graph.tensor_buffer_map[&(*tensor_id, view.clone())];
+                    } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
                     let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst);
                     let src_mp = &mut src_mps[memory_pool_id];
                     let dst_mp = &mut dst_mps[0];
@@ -393,7 +392,7 @@ impl Runtime {
                     view,
                 } => {
                     let buffer_id = self.memory_pools[*memory_pool_id].allocate(*bytes)?;
-                    self.graph.tensor_buffer_map.insert(
+                    self.tensor_buffer_map.insert(
                         (*tensor_id, view.clone()),
                         BufferId {
                             memory_pool_id: *memory_pool_id,
@@ -409,9 +408,9 @@ impl Runtime {
                     if let Some(BufferId {
                         memory_pool_id,
                         buffer_id
-                    }) = self.graph.tensor_buffer_map.get(key) {
+                    }) = self.tensor_buffer_map.get(key) {
                         self.memory_pools[*memory_pool_id].deallocate(*buffer_id)?;
-                        self.graph.tensor_buffer_map.remove(key).unwrap();
+                        self.tensor_buffer_map.remove(key).unwrap();
                     }
                 }
             }

@@ -50,10 +50,12 @@ pub(super) struct Runtime {
     // Random number generator
     #[cfg(feature = "rand")]
     rng: std::cell::OnceCell<SmallRng>,
-    devices: Vec<Device>,
-    memory_pools: Vec<MemoryPool>,
     // Cache for compiled graphs
     compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
+    memory_pools: Vec<MemoryPool>,
+    // Where are tensors stored
+    tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
+    devices: Vec<Device>,
     // Cache which maps IRKernel to device and program id on the device
     ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
     config_dir: Option<PathBuf>, // Why the is hell PathBuf::new not const???????
@@ -71,8 +73,9 @@ impl Runtime {
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             compiled_graph_cache: BTreeMap::new(),
-            devices: Vec::new(),
             memory_pools: Vec::new(),
+            tensor_buffer_map: BTreeMap::new(),
+            devices: Vec::new(),
             ir_kernel_cache: BTreeMap::new(),
             config_dir: None,
             training: false,
@@ -201,8 +204,7 @@ impl Runtime {
             // Search for first memory pool where we can put this tensor
             let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
             self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
-            self.graph
-                .tensor_buffer_map
+            self.tensor_buffer_map
                 .insert((id, View::new(self.shape(id))), BufferId { memory_pool_id, buffer_id });
             Ok(id)
         }
@@ -495,7 +497,6 @@ impl Runtime {
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
         if self
-            .graph
             .tensor_buffer_map
             .iter()
             .all(|((id, _), _)| *id != x)
@@ -506,7 +507,7 @@ impl Runtime {
         // the rest of the tensor in other devices
         let n: usize = self.shape(x).iter().product();
         let mut data: Vec<T> = Vec::with_capacity(n);
-        for ((tensor_id, view), buffer_id) in &self.graph.tensor_buffer_map {
+        for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
                     self.memory_pools[buffer_id.memory_pool_id].pool_to_host(buffer_id.buffer_id, &mut data)?;
@@ -522,6 +523,7 @@ impl Runtime {
     }
 
     pub(super) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+        //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
         // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
         // fourth pass for to_delete and new_leafs
@@ -530,8 +532,7 @@ impl Runtime {
             return Ok(());
         }
         if tensors.iter().all(|tensor| {
-            self.graph
-                .tensor_buffer_map
+            self.tensor_buffer_map
                 .iter()
                 .any(|((t, _), _)| tensor == t)
         }) {
@@ -541,9 +542,8 @@ impl Runtime {
             self.initialize_backends()?;
         }
         // Get rcs of nodes outside of realized graph
-        let (graph, outside_nodes, order) = self.graph.realize_graph(&tensors, |x| {
-            self.graph
-                .tensor_buffer_map
+        let (graph, outside_nodes, order) = self.graph.realize_graph(tensors.clone(), |x| {
+            self.tensor_buffer_map
                 .iter()
                 .any(|((id, _), _)| *id == x)
         });
@@ -607,7 +607,6 @@ impl Runtime {
         let mut buffers: Vec<BufferId> = Vec::new();
         for tensor in to_remove {
             for (_, buffer_id) in self
-                .graph
                 .tensor_buffer_map
                 .iter()
                 .filter(|((t, _), _)| *t == tensor)
@@ -615,8 +614,7 @@ impl Runtime {
                 buffers.push(*buffer_id);
             }
         }
-        self.graph
-            .tensor_buffer_map
+        self.tensor_buffer_map
             .retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
             self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;

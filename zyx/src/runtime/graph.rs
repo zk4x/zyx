@@ -1,6 +1,4 @@
-use super::{
-    backend::BufferId, node::{BOp, Node}, view::View, TensorId
-};
+use super::{node::{BOp, Node}, TensorId};
 use crate::{index_map::IndexMap, shape::Dimension, DType};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,21 +7,21 @@ use std::collections::{BTreeMap, BTreeSet};
 // even this way.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(super) struct Graph {
+    // Which nodes need to be evaluated
+    to_eval: BTreeSet<TensorId>,
     // First value is reference count, second is node
     nodes: IndexMap<(u32, Node)>,
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
     dtypes: BTreeMap<TensorId, DType>,
-    // In which device buffers tensors are stored, this is important for graph caching
-    pub(super) tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
 }
 
 impl Graph {
     pub(super) const fn new() -> Self {
         Self {
+            to_eval: BTreeSet::new(),
             nodes: IndexMap::new(),
             shapes: BTreeMap::new(),
             dtypes: BTreeMap::new(),
-            tensor_buffer_map: BTreeMap::new(),
         }
     }
 
@@ -146,7 +144,7 @@ impl Graph {
 
     pub(super) fn realize_graph(
         &self,
-        tensors: &BTreeSet<TensorId>,
+        tensors: BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
     ) -> (Graph, BTreeSet<TensorId>, Vec<TensorId>) {
         // First topo search for minimum number of required nodes and create graph from it
@@ -164,7 +162,6 @@ impl Graph {
                 }
             }
         }
-
         // Get refcounts of all nodes
         let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
@@ -192,8 +189,6 @@ impl Graph {
             }
         }
         order.reverse();
-
-        // TODO
         // Nodes required outside of realized graph: self.rcs - rcs > 0
         let outside_nodes = self
             .nodes
@@ -245,18 +240,8 @@ impl Graph {
         return (
             Graph {
                 shapes,
+                to_eval: tensors,
                 dtypes,
-                tensor_buffer_map: self
-                    .tensor_buffer_map
-                    .iter()
-                    .filter_map(|((t, v), b)| {
-                        if visited.contains(t) {
-                            Some(((*t, v.clone()), *b))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect(),
                 nodes: visited
                     .into_iter()
                     .map(|id| {

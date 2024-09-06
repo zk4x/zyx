@@ -576,12 +576,12 @@ impl std::fmt::Display for Device {
     }
 }
 
-struct Timer {
+pub(super) struct Timer {
     begin: std::time::Instant,
 }
 
 impl Timer {
-    fn new() -> Timer {
+    pub(crate) fn new() -> Timer {
         Timer {
             begin: std::time::Instant::now(),
         }
