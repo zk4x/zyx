@@ -50,7 +50,7 @@
 - [x] wgsl compilation
 - [x] wgsl program launch
 - [ ] tensor split op
-- [ ] simplify vops
+- [x] simplify vops
 
 ### Release blockers
 

@@ -196,14 +196,14 @@ impl Kernel {
                     });
                     vars.remove_var(at);
                 }
-                VOp::Loop { axis, dimension } => {
-                    let id = vars.add_axis(*axis);
+                &VOp::Loop { axis, len } => {
+                    let id = vars.add_axis(axis);
                     ops.push(IROp::Loop {
                         id,
-                        len: *dimension,
+                        len,
                     });
                     max_axis += 1;
-                    loops.push((id, *dimension));
+                    loops.push((id, len));
                 }
                 VOp::Accumulator { z, rop, view } => {
                     let dtype: DType = graph.dtype(*z).into();

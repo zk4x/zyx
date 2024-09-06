@@ -70,7 +70,7 @@ impl Kernel {
         let mut last_axis = axes.len() - 1;
         for op in self.ops.iter_mut().rev() {
             match op {
-                VOp::Loop { dimension, .. } => {
+                VOp::Loop { len: dimension, .. } => {
                     if skip_loops > 0 {
                         skip_loops -= 1;
                     } else {
@@ -114,7 +114,7 @@ impl Kernel {
         let mut dims = Vec::new();
         // Find which loops will be permuted
         for op in self.ops[op_id..].iter() {
-            if let VOp::Loop { axis, dimension } = op {
+            if let VOp::Loop { axis, len: dimension } = op {
                 axes.push(*axis);
                 dims.push(*dimension);
             }
@@ -127,7 +127,7 @@ impl Kernel {
         // apply permute to ops
         for op in self.ops[op_id..].iter_mut() {
             match op {
-                VOp::Loop { axis, dimension } => {
+                VOp::Loop { axis, len: dimension } => {
                     assert_eq!(axes[id], *axis);
                     *dimension = pdims[id];
                     id += 1;
@@ -143,7 +143,7 @@ impl Kernel {
     pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
-        let VOp::Loop { axis, dimension } = &mut self.ops[op_id] else {
+        let VOp::Loop { axis, len: dimension } = &mut self.ops[op_id] else {
             panic!()
         };
         *dimension = dimensions[0];
@@ -157,7 +157,7 @@ impl Kernel {
                 id,
                 VOp::Loop {
                     axis: temp_axis,
-                    dimension: *dim,
+                    len: *dim,
                 },
             );
         }
@@ -274,7 +274,7 @@ impl Kernel {
                 _ => {}
             }
         }
-        self.ops.insert(op_id, VOp::Loop { axis, dimension: 1 })
+        self.ops.insert(op_id, VOp::Loop { axis, len: 1 })
     }
 
     pub(super) fn shard_axis(&self) -> Option<(Axis, Dimension)> {
@@ -292,7 +292,7 @@ impl Kernel {
         let mut mem_write = 0;
         for op in &self.ops {
             match op {
-                VOp::Loop { axis, dimension } => {
+                VOp::Loop { axis, len: dimension } => {
                     shape.push(*dimension);
                 }
                 VOp::Const { z, value, view } => {}

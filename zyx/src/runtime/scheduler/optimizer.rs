@@ -49,7 +49,7 @@ impl Kernel {
             .ops
             .iter()
             .position(|op| {
-                if let VOp::Loop { dimension, .. } = op {
+                if let VOp::Loop { len: dimension, .. } = op {
                     gws_i -= 1;
                     gws[gws_i] = *dimension;
                 }

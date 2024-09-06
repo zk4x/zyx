@@ -23,7 +23,7 @@ pub(crate) enum VOp {
     },
     Loop {
         axis: Axis,
-        dimension: Dimension,
+        len: Dimension,
     },
     // TODO remove accumulator and use const + load
     // instead to create register tile
@@ -83,7 +83,7 @@ impl std::fmt::Display for VOp {
             VOp::Store { z, zscope, xscope, view } => f.write_fmt(format_args!(
                 "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {view}"
             )),
-            VOp::Loop { axis, dimension } => f.write_fmt(format_args!(
+            VOp::Loop { axis, len: dimension } => f.write_fmt(format_args!(
                 "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"
             )),
             VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!(

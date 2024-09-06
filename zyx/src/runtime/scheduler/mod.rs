@@ -207,7 +207,9 @@ impl Runtime {
                         BTreeMap::new()
                     };
                     let cache_key = (kernel.clone(), dev_info.clone());
-                    if self.beam_search() {
+                    if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
+                        optimizations.clone()
+                    } else { // if self.beam_search() { // TODO enable this once we have implemented default optimizations
                         // allocate space for inputs and outputs that are not allocated for this kernel
                         let mut allocated_temps = Vec::new();
                         let mpid = self.devices[device_id].memory_pool_id();
@@ -220,7 +222,7 @@ impl Runtime {
                         let flop_mem_rw = if self.debug_perf() { Some(kernel.flop_mem_rw()) } else { None };
                         println!("Searching over {} optimizations.", optimizations.len());
                         for optimization in optimizations {
-                            //if self.debug_sched() { println!("{optimization}"); }
+                            if self.debug_sched() { println!("{optimization}"); }
                             // Optimize and compile multiple kernels at once on different threads,
                             // since compilation takes ~50ms,
                             let (ir_kernel, _) = kernel.optimize(&optimization).to_ir(&graph);
@@ -256,10 +258,8 @@ impl Runtime {
                             println!();
                         }
                         cached_kernels.get(&cache_key).unwrap().0.clone()
-                    } else if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
-                        optimizations.clone()
-                    } else {
-                        kernel.default_optimizations(dev_info)
+                    //} else {
+                        //kernel.default_optimizations(dev_info)
                     }
                 };
 
@@ -530,7 +530,7 @@ fn generate_kernels(
                 let mut done_expanding = BTreeSet::new();
                 for op in kernel.ops.iter_mut().rev() {
                     match op {
-                        VOp::Loop { axis, dimension } => {
+                        VOp::Loop { axis, len: dimension } => {
                             if expand_axes.contains(axis) && done_expanding.insert(*axis) {
                                 assert_eq!(*dimension, 1);
                                 *dimension = shape[*axis];
@@ -681,7 +681,7 @@ fn generate_kernels(
                                 /*VOp::Reduce { num_axes, .. } => {
                                     skip_loops += num_axes;
                                 }*/
-                                VOp::Loop { dimension, .. } => {
+                                VOp::Loop { len: dimension, .. } => {
                                     if skip_loops > 0 {
                                         skip_loops -= 1;
                                     } else {
@@ -770,7 +770,7 @@ fn generate_kernels(
                 let mut padded_loops: BTreeSet<usize> = axes.clone();
                 'ops_loop: for op in kernel.ops.iter_mut().rev() {
                     match op {
-                        VOp::Loop { axis, dimension } => {
+                        VOp::Loop { axis, len: dimension } => {
                             if axes.contains(axis) {
                                 *dimension = shape[*axis];
                                 padded_loops.remove(axis);
@@ -1037,7 +1037,7 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
         .iter()
         .copied()
         .enumerate()
-        .map(|(axis, dimension)| VOp::Loop { axis, dimension })
+        .map(|(axis, dimension)| VOp::Loop { axis, len: dimension })
         .collect()
 }
 

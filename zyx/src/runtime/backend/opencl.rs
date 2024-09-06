@@ -513,12 +513,12 @@ impl OpenCLMemoryPool {
         src: &OpenCLBuffer,
         dst: &mut [u8],
     ) -> Result<(), OpenCLError> {
+        //println!("OpenCL to host src: {src:?}");
         assert!(
             !src.ptr.is_null(),
             "Trying to read null memory. Internal bug."
         );
         let mut event: *mut c_void = ptr::null_mut();
-        //println!("OpenCL to host src: {src:?}");
         unsafe {
             (self.clEnqueueReadBuffer)(
                 src.queue,
@@ -534,7 +534,8 @@ impl OpenCLMemoryPool {
         }
         .check("Failed to read buffer.")?;
         unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) }
-            .check("Failed to finish buffer write event.")
+            .check("Failed to finish buffer write event.")?;
+        Ok(())
     }
 
     pub(super) fn pool_to_pool(
@@ -871,7 +872,6 @@ impl OpenCLQueue {
         for arg in args {
             let arg = &mut buffers[*arg];
             //println!("Kernel arg: {arg:?}");
-            // This is POINTER MAGIC. Be careful.
             let ptr: *const _ = &arg.ptr;
             unsafe {
                 (self.clSetKernelArg)(
@@ -900,6 +900,7 @@ impl OpenCLQueue {
             )
         }
         .check("Failed to enqueue kernel.")?;
+        //unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
         //self.events.push(event);
         Ok(())
     }

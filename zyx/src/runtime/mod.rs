@@ -507,6 +507,7 @@ impl Runtime {
         // the rest of the tensor in other devices
         let n: usize = self.shape(x).iter().product();
         let mut data: Vec<T> = Vec::with_capacity(n);
+        unsafe { data.set_len(n) };
         for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
@@ -517,7 +518,6 @@ impl Runtime {
                 }
             }
         }
-        unsafe { data.set_len(n) };
         // for each device where tensor is stored load it
         Ok(data)
     }
