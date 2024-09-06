@@ -69,27 +69,24 @@ impl Kernel {
             }
             splits.push((0, dims));
         }
-
-        println!("Using gws {gws:?}");
-
-        loop {
-            let mut splits = splits.clone();
-
-            // Get splits for local and global work dims
-
-
-
-            // Permute, private loops last
-            opts.push(KernelOptimizations {
-                splits,
-                permutation: vec![0, 1, 2, 3, 4, 5],
-                reduce_loop_wpt: vec![1]
-            });
-            break;
+        //println!("Using gws {gws:?}");
+        for x in 1..=mlws.min(mlwd[0]) {
+            for y in 1..=(mlws/x).min(mlwd[1]) {
+                for z in 1..=(mlws/(x*y)).min(mlwd[2]) {
+                    // Get splits for local and global work dims
+                    let mut splits = splits.clone();
+                    splits.push((0, vec![gws[0]/x, x]));
+                    splits.push((2, vec![gws[1]/y, y]));
+                    splits.push((4, vec![gws[2]/z, z]));
+                    // Permute, private loops last
+                    opts.push(KernelOptimizations {
+                        splits,
+                        permutation: vec![0, 1, 2, 3, 4, 5],
+                        reduce_loop_wpt: vec![1]
+                    });
+                }
+            }
         }
-
-        todo!();
-
         opts
     }
 
@@ -138,6 +135,7 @@ impl Kernel {
         }
         // Apply permutation
         kernel.permute(&optimizations.permutation);
+        kernel.debug();
         kernel
     }
 

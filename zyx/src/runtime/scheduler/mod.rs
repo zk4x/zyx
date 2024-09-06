@@ -209,6 +209,7 @@ impl Runtime {
                         // Get seach space of possible optimizations
                         let optimizations = kernel.possible_optimizations(dev_info);
                         //let flop_mem_rw = if self.debug_perf() { Some(kernel.flop_mem_rw()) } else { None };
+                        println!("Searching over {} optimizations.", optimizations.len());
                         for optimization in optimizations {
                             if self.debug_sched() { println!("{optimization}"); }
                             let (program_id, args) = self.compile(kernel, &optimization, device_id, &graph)?;
