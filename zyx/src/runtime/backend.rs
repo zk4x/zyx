@@ -4,12 +4,14 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
-use std::{collections::BTreeMap, path::PathBuf};
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{OpenCLBuffer, OpenCLDevice, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue};
-use crate::{index_map::IndexMap, tensor::TensorId, Scalar};
-use super::{graph::Graph, ir::IRKernel, scheduler::{Kernel, KernelOptimizations, VProgram}, view::View, BackendConfig, Runtime, ZyxError};
+use crate::{index_map::IndexMap, Scalar};
+use super::{ir::IRKernel, BackendConfig, Runtime, ZyxError};
+
+#[cfg(feature = "wgsl")]
+use wgsl::{WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue};
 
 mod cuda;
 mod hip;
@@ -226,7 +228,7 @@ impl Runtime {
         }
         #[cfg(feature = "wgsl")]
         if let Ok((memory_pools, devices)) =
-            initialize_wgsl_backend(&backend_config.wgsl, self.debug_dev())
+            wgsl::initialize_backend(&backend_config.wgsl, self.debug_dev())
         {
             let n = self.memory_pools.len();
             self.memory_pools
@@ -370,7 +372,7 @@ impl MemoryPool {
             }
             #[cfg(feature = "wgsl")]
             MemoryPool::WGSL { memory_pool, buffers } => {
-                memory_pool.pool_to_host(&buffers[buffer_id.buffer_id], slice)?;
+                memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
         }
         Ok(())
@@ -425,7 +427,7 @@ impl MemoryPool {
             (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "wgsl")]
             #[rustfmt::skip]
-            (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { within_backend!(sm, sb, dm, db) }
+            (MemoryPool::WGSL { buffers: sb, .. }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; } 
         }
         Ok(())
     }
@@ -492,10 +494,9 @@ impl Device {
     pub(super) fn launch(&mut self, program_id: usize, memory_pool: &mut MemoryPool, buffer_ids: &[usize]) -> Result<usize, ZyxError> {
         Ok(match self {
             Device::CUDA {
-                device: _,
-                memory_pool_id: mpid,
                 programs,
-                queues
+                queues,
+                ..
             } => {
                 let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
                 if queue.load() > 10 {
@@ -507,10 +508,9 @@ impl Device {
                 id
             }
             Device::HIP {
-                device: _,
-                memory_pool_id: mpid,
                 programs,
-                queues
+                queues,
+                ..
             } => {
                 let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
                 if queue.load() > 10 {
@@ -522,10 +522,9 @@ impl Device {
                 id
             }
             Device::OpenCL {
-                device: _,
-                memory_pool_id: mpid,
                 programs,
                 queues,
+                ..
             } => {
                 let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
                 if queue.load() > 10 {
@@ -538,10 +537,9 @@ impl Device {
             }
             #[cfg(feature = "wgsl")]
             Device::WGSL {
-                device: _,
-                memory_pool_id: mpid,
                 programs,
                 queues,
+                ..
             } => {
                 let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
                 if queue.load() > 10 {
@@ -549,7 +547,7 @@ impl Device {
                     queue.sync()?;
                 }
                 let MemoryPool::WGSL { buffers, .. } = memory_pool else { panic!() };
-                queue.launch(&mut programs[program_id], buffers, &args)?;
+                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
                 id
             }
         })

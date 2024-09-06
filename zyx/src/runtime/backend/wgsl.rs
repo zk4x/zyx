@@ -58,7 +58,7 @@ pub(super) struct WGSLQueue {
     queue: Arc<wgpu::Queue>,
 }
 
-pub(super) fn initialize_wgsl_backend(
+pub(super) fn initialize_backend(
     config: &WGSLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
@@ -118,8 +118,9 @@ pub(super) fn initialize_wgsl_backend(
             adapter,
             dev_info: DeviceInfo {
                 compute: 1024*1024*1024*1024,
-                max_work_item_sizes: vec![1024, 1024, 1024],
-                max_work_group_size: 256,
+                max_global_work_dims: [1024, 1024, 1024],
+                max_local_threads: 256,
+                max_local_work_dims: [256, 256, 256],
                 preferred_vector_size: 4,
                 local_mem_size: 64 * 1024,
                 num_registers: 96,
