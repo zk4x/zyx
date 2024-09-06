@@ -30,9 +30,10 @@ pub(super) struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
     /// Biggest kernel dimensions
-    pub max_work_item_sizes: Vec<usize>,
+    pub max_global_work_dims: [usize; 3],
     /// Maximum local work size threads
-    pub max_work_group_size: usize,
+    pub max_local_threads: usize,
+    pub max_local_work_dims: [usize; 3],
     /// Preferred vector size in bytes
     pub preferred_vector_size: usize,
     /// Local memory size in bytes

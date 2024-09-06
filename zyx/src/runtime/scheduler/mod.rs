@@ -198,13 +198,14 @@ impl Runtime {
                         optimizations.clone()
                     } else {
                         // allocate space for inputs and outputs that are not allocated for this kernel
+                        let mut allocated_temps = Vec::new();
                         for &tid in kernel.inputs.iter().chain(&kernel.outputs) {
                             let view = View::new(graph.shape(tid));
                             let mpid = self.devices[device_id].memory_pool_id();
-                            //self.memory_pools[mpid].allocate();
+                            let buffer_id = self.memory_pools[mpid].allocate(graph.shape(tid).iter().product())?;
+                            allocated_temps.push((tid, view.clone()));
+                            self.graph.tensor_buffer_map.insert((tid, view), BufferId { memory_pool_id, buffer_id });
                         }
-
-
                         // Get seach space of possible optimizations
                         let optimizations = kernel.possible_optimizations(dev_info);
                         //let flop_mem_rw = if self.debug_perf() { Some(kernel.flop_mem_rw()) } else { None };
@@ -227,11 +228,12 @@ impl Runtime {
                             }
                         }
                         // Deallocate inputs and outputs that are used only for beam search
-
-
+                        for tw in allocated_temps {
+                            let b = self.graph.tensor_buffer_map.remove(&tw).unwrap();
+                            self.memory_pools[b.memory_pool_id].deallocate(b.buffer_id)?;
+                        }
 
                         // Store cached kernels back to disk
-
 
                         cached_kernels.get(&cache_key).unwrap().0.clone()
                     }

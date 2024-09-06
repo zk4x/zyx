@@ -517,10 +517,14 @@ impl OpenCLDevice {
         if debug_dev {
             println!("{device_name}");
         }
-        let max_work_item_dims =
+        let mut max_work_item_dims =
             u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
         let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
-        let mut max_work_item_sizes = Vec::with_capacity(max_work_item_dims);
+        let mut max_global_work_dims = [0; 3];
+        if max_work_item_dims > 3 {
+            println!("Found device with more than 3 work dimesions, WOW. Using only 3 dims for now.");
+            max_work_item_dims = 3;
+        }
         for i in 0..max_work_item_dims {
             let max_dim_size: usize = unsafe {
                 core::mem::transmute([
@@ -534,16 +538,18 @@ impl OpenCLDevice {
                     mwis[i * 8 + 7],
                 ])
             };
-            max_work_item_sizes.push(max_dim_size);
+            max_global_work_dims[i] = max_dim_size;
         }
+        let mlt = usize::from_ne_bytes(
+            self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?
+                .try_into()
+                .unwrap(),
+        );
         self.dev_info = DeviceInfo {
             compute: get_compute(&device_name, debug_dev),
-            max_work_item_sizes,
-            max_work_group_size: usize::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?
-                    .try_into()
-                    .unwrap(),
-            ),
+            max_global_work_dims,
+            max_local_threads: mlt,
+            max_local_work_dims: [mlt, mlt, mlt],
             preferred_vector_size: u32::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?
                     .try_into()

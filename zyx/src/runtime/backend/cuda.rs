@@ -13,7 +13,7 @@ use crate::index_map::IndexMap;
 use crate::runtime::ir::{IRDType, IROp, Scope, Var};
 use crate::runtime::node::{BOp, UOp};
 use crate::DType;
-use crate::{runtime::ir::IRKernel};
+use crate::runtime::ir::IRKernel;
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct CUDAConfig {
@@ -244,12 +244,13 @@ pub(super) fn initialize_backend(
             device,
             dev_info: DeviceInfo {
                 compute: 1024*1024*1024*1024,
-                max_work_item_sizes: vec![1024, 1024, 64],
-                max_work_group_size: 1,
-                preferred_vector_size: 8,
-                local_mem_size: 256*1024,
+                max_global_work_dims: [64, 64, 64],
+                max_local_threads: 1,
+                max_local_work_dims: [1, 1, 1],
+                local_mem_size: 0,
                 num_registers: 96,
-                tensor_cores: true,
+                preferred_vector_size: 16,
+                tensor_cores: major > 7,
             },
             memory_pool_id: 0,
             cuModuleLoadDataEx,
@@ -257,12 +258,24 @@ pub(super) fn initialize_backend(
             compute_capability: [major, minor],
         }, queues));
         let dev = &mut devices.last_mut().unwrap().0;
-        dev.dev_info.max_work_group_size = dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, cuDeviceGetAttribute)? as usize;
-        dev.dev_info.max_work_item_sizes = vec![
-            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)? as usize,
-            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)? as usize,
-            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)? as usize
-        ];
+        dev.dev_info = DeviceInfo {
+            compute: 1024*1024*1024*1024,
+            max_global_work_dims: [
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)? as usize,
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)? as usize,
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)? as usize
+            ],
+            max_local_threads: dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, cuDeviceGetAttribute)? as usize,
+            max_local_work_dims: [
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)? as usize,
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)? as usize,
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)? as usize
+            ],
+            local_mem_size: dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)? as usize,
+            num_registers: 96,
+            preferred_vector_size: 16,
+            tensor_cores: major > 7,
+        }
     }
 
     Ok((memory_pools, devices))
@@ -643,7 +656,7 @@ impl CUDADevice {
             self.compute_capability[0], self.compute_capability[1]
         );
         // Declare global variables
-        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
+        for (id, (_, _, read_only)) in kernel.addressables.iter().enumerate() {
             source += &format!("{indent}.param    .u64 g{id},\n");
         }
         source.pop();
@@ -654,7 +667,7 @@ impl CUDADevice {
         source += &format!("{indent}.reg  .s64    a0;\n");
         source += &format!("{indent}.reg  .s64    a1;\n");
         // Declare register variables
-        for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
+        for (id, (dtype, .. )) in kernel.registers.iter().enumerate() {
             source += &format!("{indent}.reg  .{}    r{id};\n", dtype.ptx());
         }
         // Add indices for global and local loops
@@ -796,7 +809,7 @@ impl CUDADevice {
                         c.ptx()
                     );
                 }
-                IROp::Loop { id, len } => {
+                IROp::Loop { id, .. } => {
                     source += &format!("LOOP_{id}:\n");
                 }
                 IROp::EndLoop { id, len } => {
@@ -807,7 +820,7 @@ impl CUDADevice {
                     // Branch
                     source += &format!("@p  bra    LOOP_{id};\n");
                 }
-                IROp::Barrier { scope } => todo!(),
+                IROp::Barrier { .. } => todo!(),
             }
         }
         // End kernel

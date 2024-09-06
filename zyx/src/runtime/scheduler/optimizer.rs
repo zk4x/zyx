@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::{runtime::backend::DeviceInfo, shape::Dimension};
+use crate::{runtime::{backend::DeviceInfo, scheduler::VOp}, shape::Dimension};
 use super::kernel::Kernel;
 
 // Optimizations get applied to existing kernels after
@@ -35,7 +35,62 @@ pub(crate) struct KernelOptimizations {
 // like renderer to c style, assembly and such.
 impl Kernel {
     pub(super) fn possible_optimizations(&self, dev_info: &DeviceInfo) -> Vec<KernelOptimizations> {
-        todo!()
+        let mut opts = Vec::new();
+
+        let mgwd = dev_info.max_global_work_dims;
+        let mlws = dev_info.max_local_threads;
+        let mlwd = dev_info.max_local_work_dims;
+        let mpws = dev_info.num_registers;
+
+        let mut gws = [0; 3];
+        let mut gws_i = 3;
+        let mut splits = Vec::new();
+        let num_loops = self
+            .ops
+            .iter()
+            .position(|op| {
+                if let VOp::Loop { dimension, .. } = op {
+                    gws_i -= 1;
+                    gws[gws_i] = *dimension;
+                }
+                !matches!(op, VOp::Loop { .. })
+            })
+            .unwrap();
+        assert_ne!(num_loops, 0);
+        if num_loops < 3 {
+            let dims: Vec<usize> = core::iter::repeat(1)
+                .take(3 - num_loops)
+                .chain([self.shape[0]])
+                .collect();
+            gws_i += 1;
+            for dim in dims.iter().rev() {
+                gws_i -= 1;
+                gws[gws_i] = *dim;
+            }
+            splits.push((0, dims));
+        }
+
+        println!("Using gws {gws:?}");
+
+        loop {
+            let mut splits = splits.clone();
+
+            // Get splits for local and global work dims
+
+
+
+            // Permute, private loops last
+            opts.push(KernelOptimizations {
+                splits,
+                permutation: vec![0, 1, 2, 3, 4, 5],
+                reduce_loop_wpt: vec![1]
+            });
+            break;
+        }
+
+        todo!();
+
+        opts
     }
 
     pub(super) fn default_optimizations(&self, dev_info: &DeviceInfo) -> KernelOptimizations {
