@@ -4,7 +4,7 @@ use crate::{
     tensor::TensorId,
 };
 use std::{collections::{BTreeMap, BTreeSet}, io::Write};
-use super::{backend::{DeviceInfo, MemoryPoolId}, BufferId, DeviceId};
+use super::{backend::{DeviceInfo, MemoryPoolId}, node::{BOp, ROp}, BufferId, DeviceId};
 
 // Export Kernel and VOp for IR
 pub(super) use kernel::Kernel;
@@ -596,7 +596,7 @@ fn generate_kernels(
                     VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
                         view.is_contiguous()
                     }
-                    VOp::Accumulator { .. } | VOp::Reduce { .. } | VOp::EndLoop => false,
+                    VOp::Accumulator { .. } | VOp::EndLoop => false, // | VOp::Reduce { .. }
                 }) {
                     //println!("Before reshape continuous.");
                     //kernel.debug();
@@ -678,9 +678,9 @@ fn generate_kernels(
                                 VOp::EndLoop => {
                                     skip_loops += 1;
                                 }
-                                VOp::Reduce { num_axes, .. } => {
+                                /*VOp::Reduce { num_axes, .. } => {
                                     skip_loops += num_axes;
-                                }
+                                }*/
                                 VOp::Loop { dimension, .. } => {
                                     if skip_loops > 0 {
                                         skip_loops -= 1;
@@ -841,13 +841,20 @@ fn generate_kernels(
                         view: View::None,
                     },
                 );
-                // End loops
-                kernel.ops.push(VOp::Reduce {
+                /*kernel.ops.push(VOp::Reduce {
                     num_axes: axes.len(),
                     rop: *rop,
                     z: nid,
                     x: *x,
-                });
+                });*/
+                kernel.ops.push(VOp::Binary { z: nid, x: *x, y: nid, bop: match rop {
+                    ROp::Sum => BOp::Add,
+                    ROp::Max => BOp::Max,
+                } });
+                for _ in 0..axes.len() {
+                    kernel.ops.push(VOp::EndLoop);
+                }
+
                 kernel.vars.insert(nid);
                 kernel.shape = shape.into();
 

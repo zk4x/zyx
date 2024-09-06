@@ -49,7 +49,8 @@
 - [x] wgsl memory copy
 - [x] wgsl compilation
 - [x] wgsl program launch
-- [ ] tensor split
+- [ ] tensor split op
+- [ ] simplify vops
 
 ### Release blockers
 

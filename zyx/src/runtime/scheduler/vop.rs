@@ -34,12 +34,12 @@ pub(crate) enum VOp {
     },
     // TODO probably just remove reduce and use
     // binary op and end loop
-    Reduce {
+    /*Reduce {
         z: TensorId,
         x: TensorId,
         num_axes: usize,
         rop: ROp,
-    },
+    },*/
     // End the latest loop
     EndLoop,
     // Move is noop, just a marker for easy debugging
@@ -91,14 +91,14 @@ impl std::fmt::Display for VOp {
                 view.shape()
             )),
             VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset} ")),
-            VOp::Reduce {
+            /*VOp::Reduce {
                 z,
                 x,
                 num_axes,
                 rop,
             } => f.write_fmt(format_args!(
                 "{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}"
-            )),
+            )),*/
             VOp::Move { z, x, mop } => f.write_fmt(format_args!(
                 "{color_white}Move{color_reset}.{mop:?}   {z} <- {x}"
             )),

@@ -167,7 +167,7 @@ impl Kernel {
                 &VOp::Load { z, zscope, x, xscope, ref view } => {
                     let dtype = graph.dtype(z).into();
                     let at = vars.generate_idx(view, &mut ops);
-                    let x = vars.get(x, Scope::Global);
+                    let x = vars.get(x, Scope::Global).unwrap();
                     let zvar = vars.add_var(z, 0, Scope::Register, graph.rc(z), graph.dtype(z).into(), None, false);
                     if view.requires_conditional_padding() {
                         let var = vars.generate_padding(view, &mut ops, zvar, graph.rc(z), graph.dtype(z), Some((x, at, dtype)));
@@ -186,8 +186,8 @@ impl Kernel {
                 &VOp::Store { z, zscope, xscope, ref view } => {
                     let dtype = graph.dtype(z).into();
                     let at = vars.generate_idx(view, &mut ops);
-                    let x = vars.get(z, Scope::Register);
-                    let z = vars.get(z, Scope::Global);
+                    let x = vars.get(z, Scope::Register).unwrap();
+                    let z = vars.get(z, Scope::Global).unwrap();
                     ops.push(IROp::Store {
                         z,
                         x,
@@ -228,7 +228,7 @@ impl Kernel {
                         },
                     });
                 }
-                VOp::Reduce {
+                /*VOp::Reduce {
                     z,
                     x,
                     num_axes,
@@ -255,19 +255,19 @@ impl Kernel {
                         vars.remove_axis(max_axis);
                         max_axis -= 1;
                     }
-                }
+                }*/
                 VOp::EndLoop => {
                     let (id, len) = loops.pop().unwrap();
                     ops.push(IROp::EndLoop { id, len });
                 }
                 VOp::Unary { z, x, uop } => {
                     //println!("IR Unary {uop:?} on {:?}", vars.get(*x, Scope::Register));
-                    if let Var::Const(v) = vars.get(*x, Scope::Register) {
+                    if let Var::Const(v) = vars.get(*x, Scope::Register).unwrap() {
                         vars.var_map.insert((*z, Scope::Register), Var::Const(v.unary(*uop)));
                     } else {
                         let x_tensor = *x;
                         let dtype = graph.dtype(*x).into();
-                        let x = vars.get(*x, Scope::Register);
+                        let x = vars.get(*x, Scope::Register).unwrap();
                         let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
                         ops.push(IROp::Unary {
                             z,
@@ -279,15 +279,15 @@ impl Kernel {
                     }
                 }
                 VOp::Binary { z, x, y, bop } => {
-                    if let (Var::Const(xv), Var::Const(yv)) = (vars.get(*x, Scope::Register), vars.get(*y, Scope::Register)) {
+                    if let (Var::Const(xv), Var::Const(yv)) = (vars.get(*x, Scope::Register).unwrap(), vars.get(*y, Scope::Register).unwrap()) {
                         vars.var_map.insert((*z, Scope::Register), Var::Const(Constant::binary(xv, yv, *bop)));
                     } else {
                         let x_tensor = *x;
                         let y_tensor = *y;
                         let dtype = graph.dtype(*z).into();
-                        let x = vars.get(*x, Scope::Register);
-                        let y = vars.get(*y, Scope::Register);
-                        let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
+                        let x = vars.get(*x, Scope::Register).unwrap();
+                        let y = vars.get(*y, Scope::Register).unwrap();
+                        let z = vars.get(*z, Scope::Register).unwrap_or_else(|| vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false));
                         ops.push(IROp::Binary {
                             z,
                             x,
@@ -345,8 +345,8 @@ impl VarMap {
         }
     }
 
-    fn get(&self, tensor_id: TensorId, scope: Scope) -> Var {
-        self.var_map[&(tensor_id, scope)]
+    fn get(&self, tensor_id: TensorId, scope: Scope) -> Option<Var> {
+        self.var_map.get(&(tensor_id, scope)).copied()
     }
 
     /// Decrease ref count if it isn't constant

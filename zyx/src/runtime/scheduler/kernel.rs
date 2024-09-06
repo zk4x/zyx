@@ -95,8 +95,11 @@ impl Kernel {
                     };
                     view.permute(&permute_axes);
                 }
-                VOp::Reduce { num_axes, .. } => {
+                /*VOp::Reduce { num_axes, .. } => {
                     skip_loops += *num_axes;
+                }*/
+                VOp::EndLoop => {
+                    skip_loops += 1;
                 }
                 _ => {}
             }
@@ -162,6 +165,19 @@ impl Kernel {
         // Update loops, loads and stores
         let mut reduce_end = false;
         for i in id + 1..self.ops.len() {
+            if self.ops[i] == VOp::EndLoop {
+                if num_loops == 0 {
+                    // TODO push more loop ends
+                    for _ in 0..dimensions.len() - 1 {
+                        self.ops.push(VOp::EndLoop);
+                    }
+                    reduce_end = true;
+                }
+                if num_loops == 0 {
+                    return
+                }
+                num_loops -= 1;
+            }
             match &mut self.ops[i] {
                 // Then change axis ids for all following loops
                 VOp::Loop { axis, .. } => {
@@ -171,7 +187,7 @@ impl Kernel {
                     *axis += dimensions.len() - 1;
                     num_loops += 1;
                 }
-                VOp::Reduce { num_axes, .. } => {
+                /*VOp::Reduce { num_axes, .. } => {
                     if num_loops == 0 {
                         *num_axes += dimensions.len() - 1;
                         reduce_end = true;
@@ -180,7 +196,7 @@ impl Kernel {
                         return
                     }
                     num_loops -= *num_axes;
-                }
+                }*/
                 // Then change all load and store operations in this loop in the same way.
                 VOp::Load { view, .. } | VOp::Const { view, .. } | VOp::Store { view, .. } => {
                     view.split_axis(axis, dimensions);
@@ -294,14 +310,14 @@ impl Kernel {
                     }
                 }
                 VOp::Accumulator { z, rop, view } => {}
-                VOp::Reduce { z, x, num_axes, rop } => {
+                /*VOp::Reduce { z, x, num_axes, rop } => {
                     flop += shape[..shape.len()-*num_axes].iter().copied()
                         .chain(shape[shape.len()-*num_axes..].iter().map(|&d| d - 1))
                         .product::<usize>() as u128 - 1;
                     for _ in 0..*num_axes {
                         shape.pop();
                     }
-                }
+                }*/
                 VOp::EndLoop => {
                     shape.pop();
                 }
