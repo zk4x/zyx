@@ -7,7 +7,7 @@ use super::{shape_to_loops, vop::VOp};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) struct Kernel {
     // Current shape of the kernel after all current ops
-    pub(super) shape: Vec<Dimension>,
+    pub(crate) shape: Vec<Dimension>,
     // Register variables
     pub(super) vars: BTreeSet<TensorId>,
     // Global loads
@@ -267,5 +267,53 @@ impl Kernel {
         // Since we do not locally cache axis 0, we can for now always just return that
         //Some((0, self.shape[0]))
         None
+    }
+
+    pub(super) fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        let mut shape = Vec::new();
+        let mut flop = 0;
+        let mut mem_read = 0;
+        let mut mem_write = 0;
+        for op in &self.ops {
+            match op {
+                VOp::Loop { axis, dimension } => {
+                    shape.push(*dimension);
+                }
+                VOp::Const { z, value, view } => {}
+                VOp::Load { z, zscope, x, xscope, view } => {
+                    // Note that this calculates actual read speed, even if the load accesses the same
+                    // value multiple times. This is usefull so that we can see whether the kernel
+                    // is compute bound or memory bound.
+                    if *xscope == Scope::Global {
+                        mem_read += shape.iter().product::<usize>() as u128;
+                    }
+                }
+                VOp::Store { z, zscope, xscope, view } => {
+                    if *zscope == Scope::Global {
+                        mem_write += shape.iter().product::<usize>() as u128;
+                    }
+                }
+                VOp::Accumulator { z, rop, view } => {}
+                VOp::Reduce { z, x, num_axes, rop } => {
+                    flop += shape[..shape.len()-*num_axes].iter().copied()
+                        .chain(shape[shape.len()-*num_axes..].iter().map(|&d| d - 1))
+                        .product::<usize>() as u128 - 1;
+                    for _ in 0..*num_axes {
+                        shape.pop();
+                    }
+                }
+                VOp::EndLoop => {
+                    shape.pop();
+                }
+                VOp::Move { z, x, mop } => {}
+                VOp::Unary { z, x, uop } => {
+                    flop += shape.iter().product::<usize>() as u128;
+                }
+                VOp::Binary { z, x, y, bop } => {
+                    flop += shape.iter().product::<usize>() as u128;
+                }
+            }
+        }
+        (flop, mem_read, mem_write)
     }
 }

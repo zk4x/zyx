@@ -9,7 +9,7 @@ use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{OpenCLBuffer, OpenCLDevice, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue};
 use crate::{index_map::IndexMap, tensor::TensorId, Scalar};
-use super::{graph::Graph, scheduler::{Kernel, KernelOptimizations, VProgram}, view::View, BackendConfig, Runtime, ZyxError};
+use super::{graph::Graph, ir::IRKernel, scheduler::{Kernel, KernelOptimizations, VProgram}, view::View, BackendConfig, Runtime, ZyxError};
 
 mod cuda;
 mod hip;
@@ -141,11 +141,11 @@ impl Runtime {
                 paths.into_iter().find_map(|mut path| {
                     path.push("zyx/backend_config.json");
                     std::fs::read_to_string(&path)
-                        .map_err(|e| {
+                        /*.map_err(|e| {
                             if self.debug_dev() {
                                 println!("Failed to read backend_config.json at {path:?}, {e}");
                             }
-                        })
+                        })*/
                         .ok()
                 })
             })
@@ -466,6 +466,94 @@ impl Device {
         }
         Ok(())
     }
+
+    pub(super) fn compile(&mut self, ir_kernel: &IRKernel, debug_asm: bool) -> Result<usize, ZyxError> {
+        Ok(match self {
+            Device::CUDA { device, programs, ..  } => {
+                programs.push(device.compile(&ir_kernel, debug_asm)?);
+                programs.len() - 1
+            }
+            Device::HIP { device, programs, ..  } => {
+                programs.push(device.compile(&ir_kernel, debug_asm)?);
+                programs.len() - 1
+            }
+            Device::OpenCL { device, programs, ..  } => {
+                programs.push(device.compile(&ir_kernel, debug_asm)?);
+                programs.len() - 1
+            }
+            #[cfg(feature = "wgsl")]
+            Device::WGSL { device, programs, ..  } => {
+                programs.push(device.compile(&ir_kernel, debug_asm)?);
+                programs.len() - 1
+            }
+        })
+    }
+
+    pub(super) fn launch(&mut self, program_id: usize, memory_pool: &mut MemoryPool, buffer_ids: &[usize]) -> Result<usize, ZyxError> {
+        Ok(match self {
+            Device::CUDA {
+                device: _,
+                memory_pool_id: mpid,
+                programs,
+                queues
+            } => {
+                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                if queue.load() > 10 {
+                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    queue.sync()?;
+                }
+                let MemoryPool::CUDA { buffers, .. } = memory_pool else { panic!() };
+                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                id
+            }
+            Device::HIP {
+                device: _,
+                memory_pool_id: mpid,
+                programs,
+                queues
+            } => {
+                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                if queue.load() > 10 {
+                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    queue.sync()?;
+                }
+                let MemoryPool::HIP { buffers, .. } = memory_pool else { panic!() };
+                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                id
+            }
+            Device::OpenCL {
+                device: _,
+                memory_pool_id: mpid,
+                programs,
+                queues,
+            } => {
+                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                if queue.load() > 10 {
+                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    queue.sync()?;
+                }
+                let MemoryPool::OpenCL { buffers, .. } = memory_pool else { panic!() };
+                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                id
+            }
+            #[cfg(feature = "wgsl")]
+            Device::WGSL {
+                device: _,
+                memory_pool_id: mpid,
+                programs,
+                queues,
+            } => {
+                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                if queue.load() > 10 {
+                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    queue.sync()?;
+                }
+                let MemoryPool::WGSL { buffers, .. } = memory_pool else { panic!() };
+                queue.launch(&mut programs[program_id], buffers, &args)?;
+                id
+            }
+        })
+    }
 }
 
 impl std::fmt::Display for Device {
@@ -489,85 +577,12 @@ impl std::fmt::Display for Device {
 }
 
 impl Runtime {
-    // Launches vprogram on most empty queue and returns id of that queue
-    pub(super) fn launch(devices: &mut [Device], memory_pools: &mut [MemoryPool], vprogram: &VProgram, tensor_buffer_map: &BTreeMap<(TensorId, View), BufferId>) -> Result<usize, ZyxError> {
-        // Same program can launch with different args. Thus in program map we also need args.
-        //println!("Launch {program_id:?} with args:");
-        let args: Vec<usize> = vprogram.args.iter()
-                            .map(|arg| {
-                                //println!("Arg {} {}", arg.0, arg.1);
-                                tensor_buffer_map[&(arg.0, arg.1.clone())]
-                                    .buffer_id
-                            })
-                            .collect();
-        Ok(match &mut devices[vprogram.device_id] {
-            Device::CUDA {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues
-            } => {
-                let MemoryPool::CUDA { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-            Device::HIP {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues
-            } => {
-                let MemoryPool::HIP { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-            Device::OpenCL {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues,
-            } => {
-                let MemoryPool::OpenCL { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-            #[cfg(feature = "wgsl")]
-            Device::WGSL {
-                device: _,
-                memory_pool_id: mpid,
-                programs,
-                queues,
-            } => {
-                let MemoryPool::WGSL { buffers, .. } = &mut memory_pools[*mpid] else { panic!() };
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
-                    queue.sync()?;
-                }
-                queue.launch(&mut programs[vprogram.program_id], buffers, &args)?;
-                id
-            }
-        })
-    }
-
     // Compiles kernel using given optimizations
-    pub(super) fn compile(&mut self, kernel: &Kernel, optimizations: &KernelOptimizations, device_id: DeviceId, graph: &Graph) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
-        let (ir_kernel, ir_args) = kernel.optimize(optimizations).to_ir(&graph);
+    pub(super) fn compile_cached(&mut self, kernel: &Kernel, optimizations: &KernelOptimizations, device_id: DeviceId, graph: &Graph) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
+        //let timer = Timer::new();
+        let optimized_kernel = kernel.optimize(optimizations);
+        println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
+        let (ir_kernel, ir_args) = optimized_kernel.to_ir(&graph);
         let mut program_id = None;
         if let Some((dev_id, prog_id) ) = self.ir_kernel_cache.get(&ir_kernel) {
             if *dev_id == device_id {
@@ -577,30 +592,30 @@ impl Runtime {
         if program_id.is_none() {
             if self.debug_ir() { ir_kernel.debug(); }
             let debug_asm = self.debug_asm();
-            program_id = Some(match &mut self.devices[device_id] {
-                Device::CUDA { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-                Device::HIP { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-                Device::OpenCL { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-                #[cfg(feature = "wgsl")]
-                Device::WGSL { device, programs, ..  } => {
-                    programs.push(device.compile(&ir_kernel, debug_asm)?);
-                    programs.len() - 1
-                }
-            });
+            program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
             self.ir_kernel_cache.insert(
                 ir_kernel,
                 (device_id, program_id.unwrap())
             );
         }
         Ok((program_id.unwrap(), ir_args.into_iter().map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only)).collect()))
+    }
+}
+
+struct Timer {
+    begin: std::time::Instant,
+}
+
+impl Timer {
+    fn new() -> Timer {
+        Timer {
+            begin: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
 }

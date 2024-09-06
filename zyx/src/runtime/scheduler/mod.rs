@@ -192,32 +192,33 @@ impl Runtime {
                     // Load cached kernels from disk, they contain unoptimized kernel with best optimization and it's execution time in nanaseconds
 
 
-                    let mut cached_kernels: BTreeMap<(Kernel, DeviceInfo), (KernelOptimizations, usize)> = BTreeMap::new();
+                    let mut cached_kernels: BTreeMap<(Kernel, DeviceInfo), (KernelOptimizations, u128)> = BTreeMap::new();
                     let cache_key = (kernel.clone(), dev_info.clone());
                     if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
                         optimizations.clone()
                     } else {
                         // allocate space for inputs and outputs that are not allocated for this kernel
                         let mut allocated_temps = Vec::new();
+                        let mpid = self.devices[device_id].memory_pool_id();
                         for &tid in kernel.inputs.iter().chain(&kernel.outputs) {
-                            let view = View::new(graph.shape(tid));
-                            let mpid = self.devices[device_id].memory_pool_id();
-                            let buffer_id = self.memory_pools[mpid].allocate(graph.shape(tid).iter().product())?;
-                            allocated_temps.push((tid, view.clone()));
-                            self.graph.tensor_buffer_map.insert((tid, view), BufferId { memory_pool_id, buffer_id });
+                            let buffer_id = self.memory_pools[mpid].allocate(graph.shape(tid).iter().product::<usize>()*graph.dtype(tid).byte_size())?;
+                            allocated_temps.push(buffer_id);
                         }
                         // Get seach space of possible optimizations
                         let optimizations = kernel.possible_optimizations(dev_info);
-                        //let flop_mem_rw = if self.debug_perf() { Some(kernel.flop_mem_rw()) } else { None };
+                        let flop_mem_rw = if self.debug_perf() { Some(kernel.flop_mem_rw()) } else { None };
                         println!("Searching over {} optimizations.", optimizations.len());
+                        // TODO parrallelize this loop, since compilation takes ~50ms,
+                        // we can compile on multiple threads to speed it up wignificantly
                         for optimization in optimizations {
-                            if self.debug_sched() { println!("{optimization}"); }
-                            let (program_id, args) = self.compile(kernel, &optimization, device_id, &graph)?;
+                            //if self.debug_sched() { println!("{optimization}"); }
+                            let (ir_kernel, _) = kernel.optimize(&optimization).to_ir(&graph);
+                            let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
                             let begin = std::time::Instant::now();
-                            let queue_id = Self::launch(&mut self.devices, &mut self.memory_pools, &VProgram { program_id, args, device_id }, &self.graph.tensor_buffer_map)?;
+                            let queue_id = self.devices[device_id].launch(program_id, &mut self.memory_pools[mpid], &allocated_temps)?;
                             self.devices[device_id].sync(queue_id)?;
-                            let exec_time = begin.elapsed().as_nanos() as usize;
-                            //if let Some(flop_mem_rw) = flop_mem_rw { print_perf(flop_mem_rw, exec_time); }
+                            let exec_time = begin.elapsed().as_nanos();
+                            if let Some((f, mr, mw)) = flop_mem_rw { print_perf(f, mr, mw, exec_time); }
                             // Cache best optimization
                             if let Some((opt, old_exec_time)) = cached_kernels.get_mut(&cache_key) {
                                 if exec_time < *old_exec_time {
@@ -227,11 +228,13 @@ impl Runtime {
                             } else {
                                 cached_kernels.insert(cache_key.clone(), (optimization, exec_time));
                             }
+                            //println!("Cached {cached_kernels:?}");
+                            //panic!();
                         }
+                        println!("Optimization has been finished.");
                         // Deallocate inputs and outputs that are used only for beam search
-                        for tw in allocated_temps {
-                            let b = self.graph.tensor_buffer_map.remove(&tw).unwrap();
-                            self.memory_pools[b.memory_pool_id].deallocate(b.buffer_id)?;
+                        for buffer_id in allocated_temps {
+                            self.memory_pools[mpid].deallocate(buffer_id)?;
                         }
 
                         // Store cached kernels back to disk
@@ -243,7 +246,7 @@ impl Runtime {
                 };
 
                 // TODO rerun this function and the kernel multiple times and cache optimizations to the disk
-                let (program_id, args)= self.compile(kernel, &optimization, device_id, &graph)?;
+                let (program_id, args)= self.compile_cached(kernel, &optimization, device_id, &graph)?;
                 // Since it is not sharded, sharding view is contiguous
                 device_program_map
                     .get_mut(&device_id)
@@ -330,7 +333,15 @@ impl Runtime {
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(vprogram) => {
-                    queues.insert(vprogram.clone(), Self::launch(&mut self.devices, &mut self.memory_pools, vprogram, &self.graph.tensor_buffer_map)?);
+                    let buffer_ids: Vec<usize> = vprogram.args.iter().map(|arg| {
+                                //println!("Arg {} {}", arg.0, arg.1);
+                                self.graph.tensor_buffer_map[&(arg.0, arg.1.clone())]
+                                    .buffer_id
+                            })
+                            .collect();
+                    let device = &mut self.devices[vprogram.device_id];
+                    let mpid = device.memory_pool_id();
+                    queues.insert(vprogram.clone(), device.launch(vprogram.program_id, &mut self.memory_pools[mpid], &buffer_ids)?);
                 }
                 SchedulerOp::Finish(program) => {
                     for (vprogram, queue) in &mut queues {
@@ -388,38 +399,7 @@ impl Runtime {
         }
         if self.debug_perf() {
             let duration = begin.elapsed();
-            let nanos = duration.as_nanos();
-
-            fn value_unit(x: u128) -> (u128, &'static str) {
-                match x {
-                    0..1000 => (x, ""),
-                    1000..1000000 => (x / 1000, "k"),
-                    1000_000..1000000000 => (x / 1000_000, "M"),
-                    1000_000_000..1000_000_000_000 => (x / 1000_000_000, "G"),
-                    1000_000_000_000..1000_000_000_000_000 => (x / 1000_000_000_000, "T"),
-                    1000_000_000_000_000..1000_000_000_000_000_000 => {
-                        (x / 1000_000_000_000_000, "P")
-                    }
-                    1000_000_000_000_000_000.. => (x / 1000_000_000_000_000_000, "E"),
-                }
-            }
-
-            let (f, f_u) = value_unit(compiled_graph.flop);
-            let (br, br_u) = value_unit(compiled_graph.bytes_read);
-            let (bw, bw_u) = value_unit(compiled_graph.bytes_written);
-            let (t_d, t_u) = match nanos {
-                0..1000 => (1, "ns"),
-                1000..1000_000 => (1000, "μs"),
-                1000_000..1000_000_000 => (1000_000, "ms"),
-                1000_000_000..1000_000_000_000 => (1000_000_000, "s"),
-                1000_000_000_000.. => (60_000_000_000, "min"),
-            };
-
-            let (fs, f_us) = value_unit(compiled_graph.flop * 1000_000_000 / nanos);
-            let (brs, br_us) = value_unit(compiled_graph.bytes_read * 1000_000_000 / nanos);
-            let (bws, bw_us) = value_unit(compiled_graph.bytes_written * 1000_000_000 / nanos);
-
-            println!("Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.", nanos/t_d);
+            print_perf(compiled_graph.flop, compiled_graph.bytes_read, compiled_graph.bytes_written, duration.as_nanos());
         }
         Ok(())
     }
@@ -1050,4 +1030,37 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
     } else {
         panic!()
     }
+}
+
+fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
+    fn value_unit(x: u128) -> (u128, &'static str) {
+        match x {
+            0..1000 => (x, ""),
+            1000..1000000 => (x / 1000, "k"),
+            1000_000..1000000000 => (x / 1000_000, "M"),
+            1000_000_000..1000_000_000_000 => (x / 1000_000_000, "G"),
+            1000_000_000_000..1000_000_000_000_000 => (x / 1000_000_000_000, "T"),
+            1000_000_000_000_000..1000_000_000_000_000_000 => {
+                (x / 1000_000_000_000_000, "P")
+            }
+            1000_000_000_000_000_000.. => (x / 1000_000_000_000_000_000, "E"),
+        }
+    }
+
+    let (f, f_u) = value_unit(flop);
+    let (br, br_u) = value_unit(bytes_read);
+    let (bw, bw_u) = value_unit(bytes_written);
+    let (t_d, t_u) = match nanos {
+        0..1000 => (1, "ns"),
+        1000..1000_000 => (1000, "μs"),
+        1000_000..1000_000_000 => (1000_000, "ms"),
+        1000_000_000..1000_000_000_000 => (1000_000_000, "s"),
+        1000_000_000_000.. => (60_000_000_000, "min"),
+    };
+
+    let (fs, f_us) = value_unit(flop * 1000_000_000 / nanos);
+    let (brs, br_us) = value_unit(bytes_read * 1000_000_000 / nanos);
+    let (bws, bw_us) = value_unit(bytes_written * 1000_000_000 / nanos);
+
+    println!("Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.", nanos/t_d);
 }
