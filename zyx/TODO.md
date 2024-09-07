@@ -87,7 +87,7 @@
 - [x] documentation for DType
 - [x] documentation for Scalar
 - [x] documentation for IntoShape
-- [ ] std::error::Error for ZyxError
+- [x] std::error::Error for ZyxError
 
 ### Tests
 

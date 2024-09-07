@@ -981,3 +981,20 @@ impl From<WGSLError> for ZyxError {
         ZyxError::WGSLError(value)
     }
 }
+
+impl std::fmt::Display for ZyxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ZyxError::EmptyTensor => f.write_str("Empty tensor"),
+            ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
+            ZyxError::WrongDType(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
+            ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
+            ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
+            ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
+            ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
+            ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
+        }
+    }
+}
+
+impl std::error::Error for ZyxError {}
