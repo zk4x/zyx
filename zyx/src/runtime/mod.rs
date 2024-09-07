@@ -2,6 +2,12 @@ use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
 use crate::shape::Dimension;
 use crate::tensor::TensorId;
+use backend::{
+    BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool,
+    OpenCLConfig, OpenCLError,
+};
+#[cfg(feature = "wgsl")]
+use backend::{WGSLConfig, WGSLError};
 use graph::Graph;
 use ir::IRKernel;
 use node::{BOp, Node, ROp, UOp};
@@ -13,9 +19,6 @@ use std::{
     vec::Vec,
 };
 use view::View;
-use backend::{BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool, OpenCLConfig, OpenCLError};
-#[cfg(feature = "wgsl")]
-use backend::{WGSLConfig, WGSLError};
 
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
@@ -204,8 +207,13 @@ impl Runtime {
             // Search for first memory pool where we can put this tensor
             let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
             self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
-            self.tensor_buffer_map
-                .insert((id, View::new(self.shape(id))), BufferId { memory_pool_id, buffer_id });
+            self.tensor_buffer_map.insert(
+                (id, View::new(self.shape(id))),
+                BufferId {
+                    memory_pool_id,
+                    buffer_id,
+                },
+            );
             Ok(id)
         }
     }
@@ -496,11 +504,7 @@ impl Runtime {
 
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
         // Check if tensor is evaluated
-        if self
-            .tensor_buffer_map
-            .iter()
-            .all(|((id, _), _)| *id != x)
-        {
+        if self.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
             self.realize(BTreeSet::from([x]))?;
         }
         // If at least part of tensor exists in some device, there must be
@@ -511,7 +515,8 @@ impl Runtime {
         for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
-                    self.memory_pools[buffer_id.memory_pool_id].pool_to_host(buffer_id.buffer_id, &mut data)?;
+                    self.memory_pools[buffer_id.memory_pool_id]
+                        .pool_to_host(buffer_id.buffer_id, &mut data)?;
                     break;
                 } else {
                     todo!()
@@ -531,11 +536,10 @@ impl Runtime {
         if tensors.len() == 0 {
             return Ok(());
         }
-        if tensors.iter().all(|tensor| {
-            self.tensor_buffer_map
-                .iter()
-                .any(|((t, _), _)| tensor == t)
-        }) {
+        if tensors
+            .iter()
+            .all(|tensor| self.tensor_buffer_map.iter().any(|((t, _), _)| tensor == t))
+        {
             return Ok(());
         }
         if self.devices.is_empty() {
@@ -543,9 +547,7 @@ impl Runtime {
         }
         // Get rcs of nodes outside of realized graph
         let (graph, outside_nodes, order) = self.graph.realize_graph(tensors.clone(), |x| {
-            self.tensor_buffer_map
-                .iter()
-                .any(|((id, _), _)| *id == x)
+            self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
         });
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         // New leafs never store data, so we can deallocate them if they are allocated.
@@ -612,8 +614,7 @@ impl Runtime {
                 buffers.push(*buffer_id);
             }
         }
-        self.tensor_buffer_map
-            .retain(|_, b| !buffers.contains(b));
+        self.tensor_buffer_map.retain(|_, b| !buffers.contains(b));
         for buffer in buffers {
             self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;
         }
@@ -932,16 +933,26 @@ fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
     }
 }
 
+/// Enumeration representing the various errors that can occur within the Zyx library.
 #[derive(Debug)]
 pub enum ZyxError {
+    /// Error indicating an empty tensor.
     EmptyTensor,
+    /// Backend configuration error
     BackendConfig(&'static str),
+    /// Wrong dtype for given operation
     WrongDType(&'static str),
+    /// There are no available backends
     NoBackendAvailable,
+    /// Memory allocation error
     AllocationError,
+    /// Error returned by the CUDA driver
     CUDAError(CUDAError),
+    /// Error returned by the HIP runtime
     HIPError(HIPError),
+    /// Error returned by the OpenCL runtime
     OpenCLError(OpenCLError),
+    /// This error is only applicable when the `wgsl` feature is enabled.
     #[cfg(feature = "wgsl")]
     WGSLError(WGSLError),
 }

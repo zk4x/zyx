@@ -117,25 +117,28 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static {
     /// Comparison for scalars,
     /// if they are floats, this checks for diffs > Self::epsilon()
     fn is_equal(self, rhs: Self) -> bool;
+    /// Cast into different dtype
     fn cast<T: Scalar>(self) -> T {
         use core::mem::transmute_copy as t;
-        return unsafe { match Self::dtype() {
-            #[cfg(feature = "half")]
-            DType::BF16 => T::from_bf16(t(&self)),
-            #[cfg(feature = "half")]
-            DType::F16 => T::from_f16(t(&self)),
-            DType::F32 => T::from_f32(t(&self)),
-            DType::F64 => T::from_f64(t(&self)),
-            #[cfg(feature = "complex")]
-            DType::CF32 => T::from_cf32(t(&self)),
-            #[cfg(feature = "complex")]
-            DType::CF64 => T::from_cf64(t(&self)),
-            DType::U8 => T::from_u8(t(&self)),
-            DType::I8 => T::from_i8(t(&self)),
-            DType::I16 => T::from_i16(t(&self)),
-            DType::I32 => T::from_i32(t(&self)),
-            DType::I64 => T::from_i64(t(&self)),
-            DType::Bool => T::from_bool(t(&self)),
-        }};
+        return unsafe {
+            match Self::dtype() {
+                #[cfg(feature = "half")]
+                DType::BF16 => T::from_bf16(t(&self)),
+                #[cfg(feature = "half")]
+                DType::F16 => T::from_f16(t(&self)),
+                DType::F32 => T::from_f32(t(&self)),
+                DType::F64 => T::from_f64(t(&self)),
+                #[cfg(feature = "complex")]
+                DType::CF32 => T::from_cf32(t(&self)),
+                #[cfg(feature = "complex")]
+                DType::CF64 => T::from_cf64(t(&self)),
+                DType::U8 => T::from_u8(t(&self)),
+                DType::I8 => T::from_i8(t(&self)),
+                DType::I16 => T::from_i16(t(&self)),
+                DType::I32 => T::from_i32(t(&self)),
+                DType::I64 => T::from_i64(t(&self)),
+                DType::Bool => T::from_bool(t(&self)),
+            }
+        };
     }
 }

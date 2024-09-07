@@ -186,9 +186,7 @@ impl Tensor {
     #[must_use]
     pub fn debug_guard(debug: u32) -> DebugGuard {
         let mut rt = RT.lock();
-        let guard = DebugGuard {
-            debug: rt.debug,
-        };
+        let guard = DebugGuard { debug: rt.debug };
         rt.debug = debug;
         guard
     }
@@ -365,7 +363,7 @@ impl Tensor {
         let nx = self.neg();
         let enx = nx.exp();
         let ex = self.exp();
-        (ex + enx)/2
+        (ex + enx) / 2
     }
 
     /// Applies dropout to the tensor with a given probability.
@@ -398,11 +396,11 @@ impl Tensor {
 
     /// Returns a new tensor with the exponential of 2 raised to the power of each element in self.
     #[must_use]
-    pub fn exp2(&self) -> Tensor { 
-        return Tensor { 
-            id: RT.lock().exp2(self.id), 
-         };
-     }
+    pub fn exp2(&self) -> Tensor {
+        return Tensor {
+            id: RT.lock().exp2(self.id),
+        };
+    }
 
     /// Computes the exponential of each element in the input tensor using base e.
     ///
@@ -414,9 +412,9 @@ impl Tensor {
     /// @return A new tensor with the same shape as the input, but with each element computed
     ///         as `e^input_element`.
     #[must_use]
-    pub fn exp(&self) -> Tensor { 
+    pub fn exp(&self) -> Tensor {
         let c: Tensor = std::f64::consts::E.log2().try_into().unwrap();
-        (self*c.cast(self.dtype())).exp2()
+        (self * c.cast(self.dtype())).exp2()
     }
 
     /// Returns a new tensor with the Gelu activation function applied to each element of self.
@@ -480,8 +478,8 @@ impl Tensor {
     /// A new tensor with the same shape as the input, but with each element computed as `ln(input_element)`.
     #[must_use]
     pub fn ln(&self) -> Tensor {
-        let c: Tensor = (1f64/std::f64::consts::E.log2()).try_into().unwrap();
-        self.log2()*c.cast(self.dtype())
+        let c: Tensor = (1f64 / std::f64::consts::E.log2()).try_into().unwrap();
+        self.log2() * c.cast(self.dtype())
     }
 
     /// Computes the multiplicative inverse of each element in the input tensor.
@@ -489,7 +487,7 @@ impl Tensor {
     /// This function returns a new tensor with the same shape as the input, where each element is the multiplicative inverse (i.e., reciprocal) of the corresponding element in the input tensor.
     ///
     /// **Parameters:**
-    /// 
+    ///
     /// * self: The input tensor.
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor.
@@ -639,7 +637,7 @@ impl Tensor {
         let nx = self.neg();
         let enx = nx.exp();
         let ex = self.exp();
-        (ex - enx)/2
+        (ex - enx) / 2
     }
 
     /// Applies the softplus function to each element in the input tensor with a given beta and threshold.
@@ -704,13 +702,41 @@ impl Tensor {
         self.sin() / self.cos()
     }
 
+    /// Returns the hyperbolic tangent of each element in the tensor.
+    ///
+    /// The hyperbolic tangent is calculated as `(exp(2x) + 1) / (exp(2x) - 1)`, where `exp` is the exponential function and `x` is an element of the input tensor. This function applies the hyperbolic tangent element-wise to the input tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tensors::Tensor;
+    ///
+    /// let t = Tensor::from_vec(vec![0.5, 1.0]);
+    /// assert_eq!(t.tanh(), Tensor::from_vec(vec![0.46211715738221946, 0.761594166564993]));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
         let e2x = (self + self).exp();
-        (&e2x + 1)/(e2x - 1)
+        (&e2x + 1) / (e2x - 1)
     }
 
     // movement
+    /// Expands this tensor by adding singleton dimensions at the front until its rank matches that of the target shape.
+    ///
+    /// If the target shape has a higher rank than the current tensor, singleton dimensions are added to the front of the tensor's shape.
+    /// If any dimension in the target shape does not match the corresponding dimension in the expanded tensor's shape,
+    /// an assertion failure occurs unless the expanded dimension is 1 (in which case it is ignored).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let t = Tensor::zeros((2, 3));
+    /// assert_eq!(t.expand((4, 2, 3)).shape(), &[4, 2, 3]);
+    /// ```
     #[must_use]
     pub fn expand(&self, shape: impl IntoShape) -> Tensor {
         assert!(shape.rank() > 0);
@@ -732,7 +758,7 @@ impl Tensor {
                         "Cannot expand {:?} into {:?}",
                         self.shape(),
                         shape
-                    )
+                    );
                 }
             }
             let x = self.reshape(sh);
@@ -745,6 +771,21 @@ impl Tensor {
         };
     }
 
+    /// Permutes the axes of this tensor.
+    ///
+    /// This function rearranges the dimensions of the tensor according to the provided axes. The axes must be a permutation of the original axes, i.e., they must contain each index once and only once. If the axes have a different length than the rank of the tensor, a panic will occur with an appropriate error message.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let t = Tensor::rand((3, 4));
+    /// let p = [1, 0];
+    /// let permuted_t = t.permute(p); // Results in a tensor with axes (4, 3)
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the length of `axes` is not equal to the rank of this tensor.
     #[must_use]
     pub fn permute(&self, axes: impl IntoAxes) -> Tensor {
         let rank = self.rank();
@@ -761,6 +802,25 @@ impl Tensor {
         };
     }
 
+    /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let t = array![1, 2, 3];
+    /// let padded = t.pad_zeros(1).into_shape((5,)).unwrap();
+    /// assert_eq!(padded, array![0., 1., 2., 3., 0.]);
+    ///
+    /// let padded = t.pad_zeros(Padding::new(1, 2));
+    /// assert_eq!(padded.shape(), &[5]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the padding configuration is invalid.
+    #[must_use]
     pub fn pad_zeros(&self, padding: impl IntoPadding) -> Tensor {
         return Tensor {
             id: RT.lock().pad_zeros(self.id, padding.into_padding()),
@@ -891,6 +951,18 @@ impl Tensor {
         }
     }
 
+    /// Applies a new shape to this tensor while preserving its total number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let t = Tensor::of_slice(&[1, 2, 3, 4]);
+    /// assert_eq!(t.reshape((2, 2)), Tensor::of_slice(&[[1, 2], [3, 4]]));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product of the new shape is not equal to the number of elements in this tensor.
     #[must_use]
     pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
         let shape: Vec<usize> = shape.into_shape().collect();
@@ -933,32 +1005,98 @@ impl Tensor {
     }
 
     // reduce
-    #[must_use]
+    /// Computes the natural logarithm of the softmax of the input tensor along the specified axes.
+    ///
+    /// This function first subtracts the maximum value along the given axes from the input tensor,
+    /// then computes the exponential of the result, sums over the specified axes using `sum_kd`,
+    /// and finally takes the natural logarithm of the sum before returning it.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The input tensor to compute the softmax and natural logarithm of.
+    /// * `axes` - A trait implementing `IntoAxes`, specifying along which axes the softmax should be computed.
+    ///
+    /// # Returns
+    ///
+    /// The resulting tensor after computing the natural logarithm of the softmax of `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if any of the specified axes are out-of-bounds for the input tensor.
     pub fn ln_softmax(&self, axes: impl IntoAxes) -> Tensor {
         let m = self - self.max_kd(axes.clone());
         &m - m.exp().sum_kd(axes).ln()
     }
 
+    /// Returns a new tensor containing the maximum value along the specified axes.
+    ///
+    /// # Arguments
+    ///
+    /// * `axes` - The axes along which to compute the maximum. This can be any type that implements `IntoAxes`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    /// let arr = array![1, 2, 3, 4];
+    /// assert_eq!(arr.max(0), array![4]);
+    /// assert_eq!(arr.max(1), array![2, 4]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the axes contain duplicates.
     #[must_use]
     pub fn max(&self, axes: impl IntoAxes) -> Tensor {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
-        {
-            let mut unique = BTreeSet::new();
-            for a in &axes {
-                assert!(unique.insert(a), "Axes contain duplicates.");
-            }
+        let mut unique = BTreeSet::new();
+        for a in &axes {
+            assert!(unique.insert(a), "Axes contain duplicates.");
         }
-        return Tensor {
+        Tensor {
             id: RT.lock().max_reduce(self.id, axes),
-        };
+        }
     }
 
+    /// Returns the maximum value along the specified axes.
+    ///
+    /// This function computes the maximum value of each slice determined by the `axes`.
+    /// It first calculates the maximum along the specified axes using the `max` method,
+    /// and then reshapes the result to have the same number of dimensions as the input tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let a = array![1, 2, 3, 4];
+    /// assert_eq!(a.max_kd(&[0]), &[4]);
+    /// assert_eq!(a.max_kd(&[1]), &[2, 4]);
+    /// ```
+    ///
     #[must_use]
     pub fn max_kd(&self, axes: impl IntoAxes) -> Tensor {
         self.max(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
+    /// Calculates the mean of a tensor along specified axes.
+    ///
+    /// This function computes the sum of all elements in the tensor along the specified axes and then divides by the product of their sizes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::Array2;
+    ///
+    /// let arr = Array2::eye(3);
+    /// assert_eq!(arr.mean((0,)), &[1.0, 1.0, 1.0]);
+    /// assert_eq!(arr.mean((1,)), &[1.5, 1.5]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the tensor is empty.
     #[must_use]
     pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
         let shape = self.shape();
@@ -969,21 +1107,91 @@ impl Tensor {
                 .product::<usize>() as i64
     }
 
+    /// Calculates the mean of this tensor along the specified axes and reshapes it using `reduce_kd_shape`.
+    ///
+    /// This function first calculates the mean of the input tensor along the specified axes using the `mean`
+    /// method. It then reshapes the resulting tensor using `reduce_kd_shape` to match the output shape expected
+    /// by the caller.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let a = array![1, 2, 3, 4];
+    /// assert_eq!(a.mean_kd(Axis(0)), tensor![2.5]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the input tensor is empty.
     #[must_use]
     pub fn mean_kd(&self, axes: impl IntoAxes) -> Tensor {
         self.mean(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
+    /// Calculates the product of elements along specified axes.
+    ///
+    /// This function first applies the natural logarithm element-wise (`ln()`), then sums along the specified axes,
+    /// and finally exponentiates the result element-wise (`exp()`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::Array2;
+    ///
+    /// let arr = Array2::new(&[[1.0, 2.0], [3.0, 4.0]])?;
+    /// assert_eq!(arr.product(Axes(1)), 6.0);
+    /// ```
     #[must_use]
     pub fn product(&self, axes: impl IntoAxes) -> Tensor {
         self.ln().sum(axes).exp()
     }
 
+    /// Calculates the standard deviation of the input tensor along specified axes.
+    ///
+    /// This function calculates the standard deviation by first computing the mean along the specified axes,
+    /// then subtracting that mean from each element, squaring the result, and finally taking the square root
+    /// of the average of those squared differences. If no axes are provided, it computes the standard deviation
+    /// over all elements in the tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let a = array![[1., 2., 3.], [4., 5., 6.]];
+    /// assert_eq!(a.std(), 1.5);
+    /// assert_eq!(a.var(0).std(), 0.5);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the input tensor is empty.
+    ///
     #[must_use]
     pub fn std(&self, axes: impl IntoAxes) -> Tensor {
         self.var(axes).sqrt()
     }
 
+    /// Creates a new tensor by applying standard deviation along specified axes.
+    ///
+    /// This function first computes the standard deviation of the input tensor along the specified axes,
+    /// and then reshapes the result to match the shape of the original tensor after reduction along those axes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tensor::Tensor;
+    ///
+    /// let t = Tensor::rand(3, 4);
+    /// let std_kd = t.std_kd([0, 1]);
+    /// assert_eq!(std_kd.shape(), [1, 2]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the input tensor has no elements.
     #[must_use]
     pub fn std_kd(&self, axes: impl IntoAxes) -> Tensor {
         self.std(axes.clone()).reshape(self.reduce_kd_shape(axes))
@@ -1019,6 +1227,7 @@ impl Tensor {
         self.sum(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
+    /// Comulative sum along axis.
     #[must_use]
     pub fn cumsum(&self, axis: isize) -> Tensor {
         let _ = axis;
@@ -1029,23 +1238,95 @@ impl Tensor {
         todo!()
     }
 
+    /// Calculates the softmax of this tensor along the specified axes.
+    ///
+    /// # Arguments
+    ///
+    /// * `axes`: The axes along which to calculate the softmax.
+    ///
+    /// # Returns
+    ///
+    /// * A new tensor containing the result of the softmax operation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tensor::Tensor;
+    ///
+    /// let t = Tensor::new(vec![1.0, 2.0, 3.0]);
+    /// let sm = t.softmax(Axes::new(0));
+    /// assert_eq!(sm.array(), vec![0.0900305748, 0.2447281546, 0.6652412706]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
         let e = (self - self.max_kd(axes.clone())).exp();
         &e / e.sum_kd(axes)
     }
 
+    /// Calculates the variance of this tensor along the specified axes.
+    ///
+    /// This function first computes the mean of the tensor along the provided axes,
+    /// then subtracts this mean from each element in the tensor, squares the result,
+    /// and finally sums these squared differences along the same axes to obtain the variance.
+    ///
+    /// # Arguments
+    ///
+    /// * `axes` - The axes along which to compute the mean and variance. This can be a single axis or a tuple of axes.
+    ///
+    /// # Returns
+    ///
+    /// * A new tensor containing the variance values computed for each axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::Array2;
+    ///
+    /// let arr = Array2::new(&[[1, 2], [3, 4]]);
+    /// let var = arr.var(0); // Compute variance along rows (axis=0)
+    /// assert_eq!(var, array![[5.0, 2.5]]); // Expected output: [[5.0, 2.5]]
+    ///
+    /// let var = arr.var(1); // Compute variance along columns (axis=1)
+    /// assert_eq!(var, array![[2.5], [2.5]]); // Expected output: [[2.5], [2.5]]
+    /// ```
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor {
         (self - self.mean(axes.clone())).pow(2).sum(axes)
     }
 
+    /// Calculates the variance along the specified axes.
+    ///
+    /// This function first calculates the mean along the specified axes using `var()`,
+    /// then subtracts that mean from the original tensor, squares the result,
+    /// and finally takes the mean of those squared values.
+    ///
+    /// # Arguments
+    ///
+    /// * `axes`: The axes to reduce over. If not provided, reduces over all axes.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor containing the variance along the specified axes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let a = array![[1., 2., 3.], [4., 5., 6.]];
+    /// assert_eq!(a.var_kd(Axis(0)), 1.5);
+    /// ```
     #[must_use]
     pub fn var_kd(&self, axes: impl IntoAxes) -> Tensor {
         self.var(axes.clone()).reshape(self.reduce_kd_shape(axes))
     }
 
     // index
+    /// Get function
     #[must_use]
     pub fn get(&self, index: impl IntoIndex) -> Tensor {
         let shape = self.shape();
@@ -1082,6 +1363,27 @@ impl Tensor {
         self.pad_zeros(padding)
     }
 
+    /// Returns a tensor containing only the diagonal elements of this tensor.
+    ///
+    /// The diagonal is obtained by flattening the input tensor, padding it with zeros to make its last dimension size equal
+    /// to the number of rows or columns in the original tensor, reshaping it into a 2D matrix, and then extracting the diagonal.
+    ///
+    /// # Returns
+    ///
+    /// * A new tensor containing only the diagonal elements of this tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::Array2;
+    ///
+    /// let arr = Array2::from_shape_vec((3, 3), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+    /// assert_eq!(arr.diagonal(), array![[1, 0, 0], [0, 5, 0], [0, 0, 9]]); // diagonal elements are [1, 5, 9]
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the input tensor has fewer than two dimensions.
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
         let n = *self.shape().last().unwrap();
@@ -1092,6 +1394,23 @@ impl Tensor {
     }
 
     // binary
+    /// Compares this tensor with another tensor element-wise.
+    ///
+    /// Returns a new tensor of boolean values indicating where `self` is less than `rhs`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zyx::Tensor;
+    ///
+    /// let a = Tensor::from_vec(&[1.0, 2.0, 3.0]);
+    /// let b = Tensor::from_vec(&[4.0, 5.0, 6.0]);
+    /// assert_eq!(a.cmplt(b), &[1., 1., 1.]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the tensors have different shapes.
     #[must_use]
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, rhs);
@@ -1100,6 +1419,7 @@ impl Tensor {
         };
     }
 
+    /// Elementwise maximum between two tensors.
     #[must_use]
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, rhs);
@@ -1108,6 +1428,7 @@ impl Tensor {
         };
     }
 
+    /// Matmul and dot
     #[must_use]
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Tensor {
         let rhs = rhs.into();
@@ -1148,6 +1469,24 @@ impl Tensor {
             )
     }
 
+    /// Returns a new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let arr = array![1.0, 2.0];
+    /// assert_eq!(arr.pow(array![2.0]), array![1.0, 4.0]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the exponent tensor contains any invalid or non-finite values.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
     #[must_use]
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, exponent);
@@ -1165,6 +1504,7 @@ impl Tensor {
     }
 
     // ternary
+    /// Where operation. Replaces elementwise true values with if_true and false values with if_false.
     #[must_use]
     pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Tensor {
         let (x, y) = Tensor::broadcast(self, if_true);
@@ -1175,21 +1515,107 @@ impl Tensor {
     }
 
     // loss functions
+    /// Calculates the cross-entropy loss for this tensor.
+    ///
+    /// This function takes a target tensor and axes as input. It first calculates the softmax of the input tensor along the specified axes,
+    /// then multiplies the result by the logarithm of the target tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::arr1;
+    /// let input = arr1(&[0.5, 0.2, 0.3]);
+    /// let target = arr1(&[1., 0., 0.]);
+    /// assert_eq!(input.cross_entropy_loss(target), arr1(&[-0.69314718]));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the input tensor and target tensor have different shapes.
     #[must_use]
     pub fn cross_entropy_loss(&self, target: impl Into<Tensor>, axes: impl IntoAxes) -> Tensor {
         self.ln_softmax(axes) * target
     }
 
+    /// Calculates the L1 loss between `self` and the target tensor.
+    ///
+    /// # Arguments
+    ///
+    /// * `target`: The target tensor to compare against. It will be converted into a `Tensor`.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` containing the absolute difference between `self` and the target tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use your_crate::Tensor;
+    ///
+    /// let self_tensor = Tensor::from_slice(&[1.0, 2.0, 3.0]);
+    /// let target_tensor = Tensor::from_slice(&[2.0, 3.0, 4.0]);
+    ///
+    /// assert_eq!(self_tensor.l1_loss(target_tensor), Tensor::from_slice(&[1.0, 1.0, 1.0]));
+    /// ```
     #[must_use]
     pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
         (self - target).abs()
     }
 
-    #[must_use]
+    /// Calculates the Mean Squared Error (MSE) loss.
+    ///
+    /// # Arguments
+    ///
+    /// * `target`: The target tensor to compare against the input tensor (`self`).
+    ///
+    /// # Returns
+    ///
+    /// * A new tensor containing the MSE loss values.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ndarray::Array1;
+    ///
+    /// let input = Array1::from([2.0, 3.0]);
+    /// let target = Array1::from([4.0, 5.0]);
+    ///
+    /// assert_eq!(input.mse_loss(target), Array1::from([1.0, 1.0]));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the input tensor and target tensor have different shapes.
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Tensor {
         (self - target).pow(2)
     }
 
+    /// Calculates the cosine similarity between this tensor and another.
+    ///
+    /// # Arguments
+    ///
+    /// * `rhs`: The other tensor to compare against. It will be converted into a `Tensor`.
+    /// * `eps`: A tolerance value for numerical stability, which will also be converted into a `Tensor`.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` containing the cosine similarity values.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use your_crate::Tensor;
+    ///
+    /// let tensor1 = Tensor::new([1.0, 2.0, 3.0]);
+    /// let tensor2 = Tensor::new([4.0, 5.0, 6.0]);
+    /// let eps = Tensor::new([1e-9]);
+    ///
+    /// let similarity = tensor1.cosine_similarity(tensor2, eps);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the input tensors have different shapes.
     #[must_use]
     pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Tensor {
         let rhs: Tensor = rhs.into();
@@ -1204,21 +1630,58 @@ impl Tensor {
     pub fn flatten(&self, axes: impl RangeBounds<isize>) -> Tensor {
         let shape = self.shape();
         let rank = shape.len();
-        let start_dim = to_axis(match axes.start_bound() {
-            Bound::Included(dim) => *dim,
-            Bound::Excluded(dim) => *dim+1,
-            Bound::Unbounded => 0,
-        }, rank);
-        let end_dim = to_axis(match axes.end_bound() {
-            Bound::Included(dim) => *dim,
-            Bound::Excluded(dim) => *dim-1,
-            Bound::Unbounded => 0,
-        }, rank);
+        let start_dim = to_axis(
+            match axes.start_bound() {
+                Bound::Included(dim) => *dim,
+                Bound::Excluded(dim) => *dim + 1,
+                Bound::Unbounded => 0,
+            },
+            rank,
+        );
+        let end_dim = to_axis(
+            match axes.end_bound() {
+                Bound::Included(dim) => *dim,
+                Bound::Excluded(dim) => *dim - 1,
+                Bound::Unbounded => 0,
+            },
+            rank,
+        );
         let dim = shape[start_dim..end_dim].iter().product();
-        let new_shape: Vec<usize> = shape[..start_dim].iter().copied().chain([dim]).chain(shape[end_dim..].iter().copied()).collect();
+        let new_shape: Vec<usize> = shape[..start_dim]
+            .iter()
+            .copied()
+            .chain([dim])
+            .chain(shape[end_dim..].iter().copied())
+            .collect();
         self.reshape(new_shape)
     }
 
+    /// Concatenates a list of tensors along a specified dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `tensors`: An iterator of tensor references to concatenate.
+    /// * `dim`: The dimension along which to concatenate. If negative, it is interpreted as counting from the end.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor containing the concatenated input tensors.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if any two tensors have different shapes except at the specified dimension.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::prelude::*;
+    ///
+    /// let a = array![[1, 2], [3, 4]];
+    /// let b = array![[5, 6], [7, 8]];
+    /// let c = concat_tensors(&[&a, &b], 0);
+    /// assert_eq!(c, array![[[1, 2], [5, 6]], [[3, 4], [7, 8]]]);
+    /// ```
+    ///
     #[must_use]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
@@ -1247,14 +1710,71 @@ impl Tensor {
         res
     }
 
+    /// Expands the dimensionality of a tensor by inserting singleton dimensions.
+    ///
+    /// # Arguments
+    ///
+    /// * `dim`: The dimension to insert the singleton dimension at. If negative, it is counted from the end.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor with expanded dimensionality.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tensor::Tensor;
+    ///
+    /// let t = Tensor::zeros(&[2, 3]);
+    /// assert_eq!(t.unsqueeze(1).shape(), &[2, 1, 3]);
+    /// assert_eq!(t.unsqueeze(-1).shape(), &[2, 3, 1]);
+    /// ```
     #[must_use]
     pub fn unsqueeze(&self, dim: isize) -> Tensor {
         let shape = self.shape();
         let rank = shape.len();
         let dim = (dim + rank as isize) as usize % rank;
-        return self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<usize>>())
+        return self.reshape(
+            shape[..dim]
+                .iter()
+                .copied()
+                .chain([1])
+                .chain(shape[dim..].iter().copied())
+                .collect::<Vec<usize>>(),
+        );
     }
 
+    /// Creates a new tensor by stacking the input tensors along the specified dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `tensors`: An iterator of tensor references to stack.
+    /// * `dim`: The dimension along which to stack the tensors.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor containing the stacked tensors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::stack;
+    /// let a = array![[1, 2], [3, 4]];
+    /// let b = array![[5, 6], [7, 8]];
+    /// assert_eq!(stack(&[&a, &b], 0), array![[[1, 2],
+    ///                                             [3, 4]],
+    ///
+    ///                                              [[5, 6],
+    ///                                               [7, 8]]]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the tensors have different shapes along the stacking dimension.
+    ///
+    /// # See also
+    ///
+    /// [`unsqueeze`](Tensor::unsqueeze), [`cat`](Tensor::cat)
     #[must_use]
     pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
         let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim)).collect();
@@ -1268,6 +1788,7 @@ impl Tensor {
         todo!()
     }*/
 
+    /// Pooling function with kernel size, stride and dilation
     #[must_use]
     pub fn pool(
         &self,
@@ -1315,13 +1836,19 @@ impl Tensor {
             .collect();
         let xup = self.repeat(repeats);
         // dilation
-        let padding: Vec<(isize, isize)> = k_.iter().copied().zip(i_.iter().copied()).zip(d_.iter().copied()).map(|((k, i), d)| (0, -((k*(i+d)) as isize))).collect();
+        let padding: Vec<(isize, isize)> = k_
+            .iter()
+            .copied()
+            .zip(i_.iter().copied())
+            .zip(d_.iter().copied())
+            .map(|((k, i), d)| (0, -((k * (i + d)) as isize)))
+            .collect();
         let xup = xup.pad_zeros(padding);
 
         //tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)])
 
         //let xup = xup.shrink(tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)]))
-            //.reshape(noop_ + flatten((k,i+d) for k,i,d in zip(k_, i_, d_)))
+        //.reshape(noop_ + flatten((k,i+d) for k,i,d in zip(k_, i_, d_)))
         // stride
         //xup = xup.shrink(
         //tuple(noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_)))).reshape(noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_)))
@@ -1346,6 +1873,25 @@ impl Tensor {
         todo!()
     }
 
+    /// Creates a new tensor by repeating the input tensor along its dimensions.
+    ///
+    /// The `repeats` parameter specifies how many times to repeat each dimension of the tensor. If the length of `repeats`
+    /// is less than the rank of the tensor, it will be padded with ones at the beginning.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::Array1;
+    ///
+    /// let arr = Array1::from_vec(vec![1, 2, 3]);
+    /// assert_eq!(arr.repeat(&vec![2]), Array1::from_vec(vec![1, 2, 3, 4, 5, 6]));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the input tensor has zero dimensions.
+    ///
+    /// Returns a new tensor with the repeated values.
     #[must_use]
     pub fn repeat(&self, repeats: impl IntoShape) -> Tensor {
         let repeats: Vec<usize> = repeats.into_shape().collect();

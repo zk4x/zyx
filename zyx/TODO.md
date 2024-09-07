@@ -55,6 +55,7 @@
 
 ### Release blockers
 
+- [ ] rewrite the AI generated docs, they are not very good
 - [ ] saving and loading for models from and to disk in safetensors format
 - [x] automatic optimizations with search on vkernel
 - [x] saving of searched kernel to disk
@@ -81,11 +82,11 @@
 - [ ] test padded view permute
 - [ ] test expand after reduce
 - [ ] go over all todos in source code and check which are necessary
-- [ ] documentation for tensor functions
-- [ ] documentation for Zyx Error
-- [ ] documentation for DType
-- [ ] documentation for Scalar
-- [ ] documentation for IntoShape
+- [x] documentation for tensor functions
+- [x] documentation for Zyx Error
+- [x] documentation for DType
+- [x] documentation for Scalar
+- [x] documentation for IntoShape
 - [ ] std::error::Error for ZyxError
 
 ### Tests

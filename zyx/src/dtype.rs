@@ -30,28 +30,28 @@ impl Constant {
         use core::mem::transmute_copy as t;
         match T::dtype() {
             #[cfg(feature = "half")]
-            DType::BF16 => Constant::BF16(unsafe {t(&x)}),
+            DType::BF16 => Constant::BF16(unsafe { t(&x) }),
             #[cfg(feature = "half")]
-            DType::F16 => Constant::F16(unsafe {t(&x)}),
-            DType::F32 => Constant::F32(unsafe {t(&x)}),
-            DType::F64 => Constant::F64(unsafe {t(&x)}),
+            DType::F16 => Constant::F16(unsafe { t(&x) }),
+            DType::F32 => Constant::F32(unsafe { t(&x) }),
+            DType::F64 => Constant::F64(unsafe { t(&x) }),
             #[cfg(feature = "complex")]
             DType::CF32 => {
                 let x: num_complex::Complex<f32> = x.cast();
                 unsafe { Constant::CF32(t(&x.re), t(&x.re)) }
-            },
+            }
             #[cfg(feature = "complex")]
             DType::CF64 => {
                 let x: num_complex::Complex<f64> = x.cast();
                 unsafe { Constant::CF64(t(&x.re), t(&x.re)) }
             }
-            DType::U8 => Constant::U8(unsafe {t(&x)}),
-            DType::I8 => Constant::I8(unsafe {t(&x)}),
-            DType::I16 => Constant::I16(unsafe {t(&x)}),
+            DType::U8 => Constant::U8(unsafe { t(&x) }),
+            DType::I8 => Constant::I8(unsafe { t(&x) }),
+            DType::I16 => Constant::I16(unsafe { t(&x) }),
             //DType::U32 => Constant::U32(unsafe {t(&x)}),
-            DType::I32 => Constant::I32(unsafe {t(&x)}),
-            DType::I64 => Constant::I64(unsafe {t(&x)}),
-            DType::Bool => Constant::Bool(unsafe {t(&x)}),
+            DType::I32 => Constant::I32(unsafe { t(&x) }),
+            DType::I64 => Constant::I64(unsafe { t(&x) }),
+            DType::Bool => Constant::Bool(unsafe { t(&x) }),
         }
     }
 
@@ -133,24 +133,37 @@ impl Display for Constant {
     }
 }
 
+/// Represents the data type used for operations.
 #[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub enum DType {
+    /// 16 bit bfloat data type.
     #[cfg(feature = "half")]
     BF16,
+    /// 16 bit float data type.
     #[cfg(feature = "half")]
     F16,
+    /// 32 bit float data type.
     F32,
+    /// 64 bit float data type.
     F64,
     #[cfg(feature = "complex")]
+    /// 32 bit complex float data type.
     CF32,
     #[cfg(feature = "complex")]
+    /// 64 bit complex float data type.
     CF64,
+    /// 8 bit unsigned integer data type.
     U8,
+    /// 8 bit signed integer data type.
     I8,
+    /// 16 bit signed integer data type.
     I16,
+    /// 32 bit signed integer data type.
     I32,
+    /// 64 bit signed integer data type.
     I64,
+    /// 8 bit boolean data type.
     Bool,
 }
 

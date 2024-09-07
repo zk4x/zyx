@@ -4,8 +4,11 @@ use core::ops::{Add, Range, RangeInclusive};
 pub(crate) type Dimension = usize;
 pub(crate) type Axis = usize;
 
+/// IntoShape trait
 pub trait IntoShape: Clone + Debug {
+    /// Convert value into shape (iterator over dimensions)
     fn into_shape(self) -> impl Iterator<Item = Dimension>;
+    /// Get the rank of the shape
     fn rank(&self) -> usize;
 }
 
@@ -91,7 +94,9 @@ impl IntoAxes for isize {
 impl IntoAxes for Vec<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         let n = self.len();
-        self.into_iter().map(move |a| to_axis(a, rank)).chain(if n == 0 { 0..rank } else { 0..0 })
+        self.into_iter()
+            .map(move |a| to_axis(a, rank))
+            .chain(if n == 0 { 0..rank } else { 0..0 })
     }
 
     fn len(&self) -> usize {
@@ -101,7 +106,9 @@ impl IntoAxes for Vec<isize> {
 
 impl<const N: usize> IntoAxes for [isize; N] {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        self.into_iter().map(move |a| to_axis(a, rank)).chain(if self.len() == 0 { 0..rank } else { 0..0 })
+        self.into_iter()
+            .map(move |a| to_axis(a, rank))
+            .chain(if self.len() == 0 { 0..rank } else { 0..0 })
     }
 
     fn len(&self) -> usize {
@@ -112,7 +119,11 @@ impl<const N: usize> IntoAxes for [isize; N] {
 impl IntoAxes for Range<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         let n = ExactSizeIterator::len(&self);
-        (to_axis(self.start, rank)..to_axis(self.end, rank)).chain(if n == 0 { 0..rank } else { 0..0 })
+        (to_axis(self.start, rank)..to_axis(self.end, rank)).chain(if n == 0 {
+            0..rank
+        } else {
+            0..0
+        })
     }
 
     fn len(&self) -> usize {
@@ -122,7 +133,11 @@ impl IntoAxes for Range<isize> {
 
 impl IntoAxes for RangeInclusive<isize> {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
-        (to_axis(*self.start(), rank)..to_axis(*self.end(), rank)).chain(if self.len() == 0 { 0..rank } else { 0..0 })
+        (to_axis(*self.start(), rank)..to_axis(*self.end(), rank)).chain(if self.len() == 0 {
+            0..rank
+        } else {
+            0..0
+        })
     }
 
     fn len(&self) -> usize {
