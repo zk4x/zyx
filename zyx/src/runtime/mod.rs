@@ -478,7 +478,7 @@ impl Runtime {
 }
 
 impl Runtime {
-    fn debug_dev(&self) -> bool {
+    pub(super) fn debug_dev(&self) -> bool {
         self.debug % 2 == 1
     }
 
@@ -955,6 +955,10 @@ pub enum ZyxError {
     /// This error is only applicable when the `wgsl` feature is enabled.
     #[cfg(feature = "wgsl")]
     WGSLError(WGSLError),
+    /// Error from file operations
+    IOError(std::io::Error),
+    /// Error parsing some data
+    ParseError(String),
 }
 
 impl From<CUDAError> for ZyxError {
@@ -982,6 +986,12 @@ impl From<WGSLError> for ZyxError {
     }
 }
 
+impl From<std::io::Error> for ZyxError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IOError(value)
+    }
+}
+
 impl std::fmt::Display for ZyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -993,6 +1003,8 @@ impl std::fmt::Display for ZyxError {
             ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
             ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
             ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
+            ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
+            ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
         }
     }
 }

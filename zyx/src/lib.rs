@@ -1,5 +1,4 @@
-//!
-
+#![doc = include_str!("../README.md")]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
 #![forbid(missing_docs)]
@@ -13,9 +12,12 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
+use std::{fs::File, path::Path};
+
 use crate::runtime::Runtime;
 
 mod dtype;
+mod index_map;
 mod mutex;
 #[cfg(feature = "py")]
 mod python_bindings;
@@ -23,15 +25,56 @@ mod runtime;
 mod scalar;
 mod shape;
 mod tensor;
-mod index_map;
 
 pub use dtype::DType;
+pub use runtime::ZyxError;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
-pub use runtime::ZyxError;
 
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
+
+/// Save tensors or modules
+pub trait ModuleSave {
+    /// Save tensors or modules
+    fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError>;
+}
+
+impl<'a, I: IntoIterator<Item = &'a Tensor>> ModuleSave for I {
+    fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError> {
+        use std::fmt::Write;
+        use std::io::Write as IOWrite;
+        let mut f = File::create(path)?;
+        let mut header = String::from("{");
+        let mut begin = 0;
+        let tensors: Vec<&Tensor> = self.into_iter().collect();
+        for tensor in &tensors {
+            let dtype = tensor.dtype();
+            //if let Some(label) = tensor.label() {
+            //write!(header, "\"{label}\":{{").unwrap();
+            //} else {
+            write!(header, "\"{}\":{{", tensor.id()).unwrap();
+            //}
+            write!(header, "\"dtype\":\"{}\",", dtype.safetensors()).unwrap();
+            let mut st_shape = format!("{:?}", tensor.shape());
+            st_shape.retain(|c| !c.is_whitespace());
+            write!(header, "\"shape\":{},", st_shape).unwrap();
+            let size = tensor.numel() * dtype.byte_size();
+            write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
+            begin += size;
+            write!(header, "}},").unwrap();
+        }
+        header.pop();
+        write!(header, "}}").unwrap();
+        let header_bytes = header.as_bytes();
+        f.write_all(&(header_bytes.len() as u64).to_le_bytes())?;
+        f.write_all(header_bytes)?;
+        for tensor in tensors {
+            f.write_all(&tensor.to_le_bytes()?)?;
+        }
+        Ok(())
+    }
+}
 
 #[test]
 fn t0() {

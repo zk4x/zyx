@@ -2,7 +2,7 @@ use core::fmt::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
 
-use crate::Scalar;
+use crate::{Scalar, ZyxError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) enum Constant {
@@ -235,5 +235,36 @@ impl DType {
 
     pub(super) fn min_constant(&self) -> Constant {
         todo!()
+    }
+
+    pub(super) fn safetensors(&self) -> &str {
+        match self {
+            DType::F32 => "F32",
+            DType::F64 => "F64",
+            DType::U8 => "U8",
+            DType::I8 => "I8",
+            DType::I16 => "I16",
+            DType::I32 => "I32",
+            DType::I64 => "I64",
+            DType::Bool => "BOOL",
+        }
+    }
+
+    pub(super) fn from_safetensors(text: &str) -> Result<Self, ZyxError> {
+        Ok(match text {
+            "F32" => DType::F32,
+            "F64" => DType::F64,
+            "U8" => DType::U8,
+            "I8" => DType::I8,
+            "I16" => DType::I16,
+            "I32" => DType::I32,
+            "I64" => DType::I64,
+            "BOOL" => DType::Bool,
+            _ => {
+                return Err(ZyxError::ParseError(format!(
+                    "Could not parse dtype {text}"
+                )))
+            }
+        })
     }
 }

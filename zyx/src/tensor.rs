@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::iter::repeat;
 use std::ops::{Bound, RangeBounds};
+use std::path::Path;
 
 use crate::runtime::ZyxError;
 use crate::RT;
@@ -1930,6 +1931,157 @@ impl Tensor {
     pub fn conv(&self) -> Tensor {
         todo!()
     }*/
+
+    // io
+    /// Load module from path
+    pub fn load<Module: FromIterator<Tensor>>(path: impl AsRef<Path>) -> Result<Module, ZyxError> {
+        let debug_print: bool = RT.lock().debug_dev();
+        use std::io::Read;
+        let mut f = std::fs::File::open(path)?;
+        let mut header_len = [0u8; 8];
+        f.read_exact(&mut header_len)?;
+        let mut header = vec![0u8; usize::try_from(u64::from_le_bytes(header_len)).unwrap()];
+        f.read_exact(&mut header)?;
+        let header = core::str::from_utf8(&header)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let mut text = String::with_capacity(10);
+        let mut begin_str = false;
+        let mut i = 0;
+        let mut tensors = Vec::new();
+        let mut dtype = DType::F32;
+        let mut shape = vec![1];
+        for x in header.chars() {
+            if ['"', '[', ']'].contains(&x) {
+                if begin_str {
+                    //std::println!("{text}");
+                    if i % 7 == 0 {
+                        //params[i / 7].set_label(&text);
+                    } else if i % 7 == 2 {
+                        dtype = DType::from_safetensors(&text)?;
+                    } else if i % 7 == 4 {
+                        shape = text
+                            .split(',')
+                            .map(|d| {
+                                d.parse::<usize>().map_err(|err| {
+                                    ZyxError::ParseError(format!(
+                                        "Cannot parse safetensors shape: {err}"
+                                    ))
+                                })
+                            })
+                            .collect::<Result<_, ZyxError>>()?;
+                    } else if i % 7 == 6 {
+                        // TODO assert offsets
+                        //std::println!("Offsets: {text}");
+                        let offsets = text
+                            .split(',')
+                            .map(|offset| {
+                                offset.parse::<usize>().map_err(|err| {
+                                    ZyxError::ParseError(format!(
+                                        "Could not parse safetensors offset: {err}"
+                                    ))
+                                })
+                            })
+                            .collect::<Result<Vec<usize>, ZyxError>>()?;
+                        //std::println!("Offsets: {offsets:?}");
+                        let bytes = shape.iter().product::<usize>() * dtype.byte_size();
+                        if offsets[tensors.len() + 1] != bytes {
+                            return Err(ZyxError::ParseError(
+                                "Safetensors shapes and offsets are incorrect.".into(),
+                            ));
+                        }
+                        let mut buf = vec![0u8; bytes];
+                        if debug_print {
+                            print!("Loading tensor with shape {shape:?}, {dtype:?} ...");
+                        }
+                        f.read_exact(&mut buf)?;
+                        if debug_print {
+                            println!(" DONE");
+                        }
+                        tensors.push(match dtype {
+                            DType::F32 => {
+                                let vec: Vec<f32> = buf
+                                    .chunks_exact(dtype.byte_size())
+                                    .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+                                    .collect();
+                                Tensor::from(vec).reshape(&shape)
+                            }
+                            DType::F64 => {
+                                let vec: Vec<f64> = buf
+                                    .chunks_exact(dtype.byte_size())
+                                    .map(|x| {
+                                        f64::from_le_bytes([
+                                            x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7],
+                                        ])
+                                    })
+                                    .collect();
+                                Tensor::from(vec).reshape(&shape)
+                            }
+                            DType::I32 => {
+                                let vec: Vec<i32> = buf
+                                    .chunks_exact(dtype.byte_size())
+                                    .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+                                    .collect();
+                                Tensor::from(vec).reshape(&shape)
+                            }
+                            _ => todo!(),
+                        });
+                    }
+                    i += 1;
+                    text.clear();
+                    begin_str = false;
+                } else {
+                    text.clear();
+                    begin_str = true;
+                }
+            } else {
+                text.push(x);
+            }
+        }
+        Ok(Module::from_iter(tensors))
+    }
+
+    /// All tensor elements as contiguous le_bytes vector in row major order
+    pub fn to_le_bytes(&self) -> Result<Vec<u8>, ZyxError> {
+        Ok(match self.dtype() {
+            DType::F32 => {
+                let data: Vec<f32> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::F64 => {
+                let data: Vec<f64> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::U8 => {
+                let data: Vec<u8> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::I8 => {
+                let data: Vec<i8> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::I16 => {
+                let data: Vec<i16> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::I32 => {
+                let data: Vec<i32> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::I64 => {
+                let data: Vec<i64> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::Bool => {
+                let data: Vec<bool> = self.clone().try_into()?;
+                unsafe { std::mem::transmute(data) }
+            }
+        })
+    }
+
+    /// Load tensor from le_bytes in row major order
+    pub fn from_le_bytes(&self, bytes: &[u8]) -> Result<(), ZyxError> {
+        todo!()
+    }
 }
 
 pub struct DebugGuard {
@@ -2017,6 +2169,10 @@ impl Tensor {
             shape[a] = 1;
         }
         shape
+    }
+
+    pub(super) fn id(&self) -> TensorId {
+        self.id
     }
 }
 

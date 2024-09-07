@@ -55,8 +55,8 @@
 
 ### Release blockers
 
-- [ ] rewrite the AI generated docs, they are not very good
-- [ ] saving and loading for models from and to disk in safetensors format
+- [ ] rewrite the AI generated docs, they are horrible
+- [x] saving and loading for models from and to disk in safetensors format
 - [x] automatic optimizations with search on vkernel
 - [x] saving of searched kernel to disk
 - [x] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
