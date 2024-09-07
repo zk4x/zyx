@@ -1,15 +1,22 @@
-use vop::MOp;
+use super::{
+    backend::{DeviceInfo, MemoryPoolId},
+    node::{BOp, ROp},
+    BufferId, DeviceId,
+};
 use crate::{
     runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
-use std::{collections::{BTreeMap, BTreeSet}, io::Write};
-use super::{backend::{DeviceInfo, MemoryPoolId}, node::{BOp, ROp}, BufferId, DeviceId};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Write,
+};
+use vop::MOp;
 
 // Export Kernel and VOp for IR
 pub(super) use kernel::Kernel;
-pub(super) use vop::VOp;
 pub(super) use optimizer::KernelOptimizations;
+pub(super) use vop::VOp;
 
 mod kernel;
 // Kernel optimizer, multi device scheduler is optimized elsewhere
@@ -57,7 +64,6 @@ pub(super) struct VProgram {
     pub(super) args: Vec<(TensorId, View, bool)>,
 }
 
-// TODO this function could take &mut Runtime
 impl Runtime {
     pub(super) fn compile_graph(
         &mut self,
@@ -184,11 +190,16 @@ impl Runtime {
                     sched_graph.push(SchedulerOp::Finish(vprogram));
                 }
                 // Prints unoptimized kernel
-                if self.debug_sched() { kernel.debug(); }
-                // Beam search
+                if self.debug_sched() {
+                    kernel.debug();
+                }
+                // Disk cached search, works across devices and platforms
                 let dev_info = self.devices[device_id].info();
                 let optimization = {
-                    let mut cached_kernels: BTreeMap<(Kernel, DeviceInfo), (KernelOptimizations, u128)> = if let Some(config_dir) = self.config_dir.clone() {
+                    let mut cached_kernels: BTreeMap<
+                        (Kernel, DeviceInfo),
+                        (KernelOptimizations, u128),
+                    > = if let Some(config_dir) = self.config_dir.clone() {
                         let mut path = config_dir.clone();
                         path.push("cached_kernels");
                         if let Ok(mut file) = std::fs::File::open(path) {
@@ -209,30 +220,51 @@ impl Runtime {
                     let cache_key = (kernel.clone(), dev_info.clone());
                     if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
                         optimizations.clone()
-                    } else { // if self.beam_search() { // TODO enable this once we have implemented default optimizations
+                    } else {
+                        // if self.beam_search() { // TODO enable this once we have implemented default optimizations
                         // allocate space for inputs and outputs that are not allocated for this kernel
                         let mut allocated_temps = Vec::new();
                         let mpid = self.devices[device_id].memory_pool_id();
                         for &tid in kernel.inputs.iter().chain(&kernel.outputs) {
-                            let buffer_id = self.memory_pools[mpid].allocate(graph.shape(tid).iter().product::<usize>()*graph.dtype(tid).byte_size())?;
+                            let buffer_id = self.memory_pools[mpid].allocate(
+                                graph.shape(tid).iter().product::<usize>()
+                                    * graph.dtype(tid).byte_size(),
+                            )?;
                             allocated_temps.push(buffer_id);
                         }
                         // Get seach space of possible optimizations
                         let optimizations = kernel.possible_optimizations(dev_info);
-                        let flop_mem_rw = if self.debug_perf() { Some(kernel.flop_mem_rw()) } else { None };
+                        let flop_mem_rw = if self.debug_perf() {
+                            Some(kernel.flop_mem_rw())
+                        } else {
+                            None
+                        };
                         println!("Searching over {} optimizations.", optimizations.len());
                         for optimization in optimizations {
-                            if self.debug_sched() { println!("{optimization}"); }
+                            if self.debug_sched() {
+                                println!("{optimization}");
+                            }
                             // Optimize and compile multiple kernels at once on different threads,
                             // since compilation takes ~50ms,
                             let (ir_kernel, _) = kernel.optimize(&optimization).to_ir(&graph);
                             let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
                             // Launch kernel and measure it's performance
                             let begin = std::time::Instant::now();
-                            let queue_id = self.devices[device_id].launch(program_id, &mut self.memory_pools[mpid], &allocated_temps)?;
-                            self.devices[device_id].sync(queue_id)?;
+                            let Ok(queue_id) = self.devices[device_id].launch(
+                                program_id,
+                                &mut self.memory_pools[mpid],
+                                &allocated_temps,
+                            ) else {
+                                continue;
+                            };
+                            let Ok(_) = self.devices[device_id].sync(queue_id) else {
+                                continue;
+                            };
                             let exec_time = begin.elapsed().as_nanos();
-                            if let Some((f, mr, mw)) = flop_mem_rw { print_perf(f, mr, mw, exec_time); }
+                            let _ = self.devices[device_id].release_program(program_id);
+                            if let Some((f, mr, mw)) = flop_mem_rw {
+                                print_perf(f, mr, mw, exec_time);
+                            }
                             // Cache best optimization
                             if let Some((opt, old_exec_time)) = cached_kernels.get_mut(&cache_key) {
                                 if exec_time < *old_exec_time {
@@ -243,7 +275,7 @@ impl Runtime {
                                 cached_kernels.insert(cache_key.clone(), (optimization, exec_time));
                             }
                         }
-                        println!("Optimization has been finished.");
+                        println!("Optimization has been finished.\n");
                         // Deallocate inputs and outputs that are used only for beam search
                         for buffer_id in allocated_temps {
                             self.memory_pools[mpid].deallocate(buffer_id)?;
@@ -258,13 +290,14 @@ impl Runtime {
                             println!();
                         }
                         cached_kernels.get(&cache_key).unwrap().0.clone()
-                    //} else {
+                        //} else {
                         //kernel.default_optimizations(dev_info)
                     }
                 };
 
                 // TODO rerun this function and the kernel multiple times and cache optimizations to the disk
-                let (program_id, args)= self.compile_cached(kernel, &optimization, device_id, &graph)?;
+                let (program_id, args) =
+                    self.compile_cached(kernel, &optimization, device_id, &graph)?;
                 // Since it is not sharded, sharding view is contiguous
                 device_program_map
                     .get_mut(&device_id)
@@ -298,12 +331,17 @@ impl Runtime {
         let mut unfinished_programs = BTreeSet::new();
         for sched_op in &sched_graph {
             match sched_op {
-                SchedulerOp::Launch(program) => { unfinished_programs.insert(program); }
-                SchedulerOp::Finish(program) => { unfinished_programs.remove(program); }
+                SchedulerOp::Launch(program) => {
+                    unfinished_programs.insert(program);
+                }
+                SchedulerOp::Finish(program) => {
+                    unfinished_programs.remove(program);
+                }
                 _ => {}
             }
         }
-        let unfinished_programs: BTreeSet<VProgram> = unfinished_programs.into_iter().cloned().collect();
+        let unfinished_programs: BTreeSet<VProgram> =
+            unfinished_programs.into_iter().cloned().collect();
         for program in unfinished_programs {
             sched_graph.push(SchedulerOp::Finish(program));
         }
@@ -314,7 +352,10 @@ impl Runtime {
                     SchedulerOp::Launch(program) => {
                         println!("Launch kernel {}", self.devices[program.device_id])
                     }
-                    SchedulerOp::Finish(program)=> println!("Finish kernel {} on device {}", program.program_id, program.device_id),
+                    SchedulerOp::Finish(program) => println!(
+                        "Finish kernel {} on device {}",
+                        program.program_id, program.device_id
+                    ),
                     SchedulerOp::Move {
                         tensor_id: tensor,
                         view,
@@ -351,15 +392,24 @@ impl Runtime {
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(vprogram) => {
-                    let buffer_ids: Vec<usize> = vprogram.args.iter().map(|arg| {
-                                //println!("Arg {} {}", arg.0, arg.1);
-                                self.tensor_buffer_map[&(arg.0, arg.1.clone())]
-                                    .buffer_id
-                            })
-                            .collect();
+                    let buffer_ids: Vec<usize> = vprogram
+                        .args
+                        .iter()
+                        .map(|arg| {
+                            //println!("Arg {} {}", arg.0, arg.1);
+                            self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id
+                        })
+                        .collect();
                     let device = &mut self.devices[vprogram.device_id];
                     let mpid = device.memory_pool_id();
-                    queues.insert(vprogram.clone(), device.launch(vprogram.program_id, &mut self.memory_pools[mpid], &buffer_ids)?);
+                    queues.insert(
+                        vprogram.clone(),
+                        device.launch(
+                            vprogram.program_id,
+                            &mut self.memory_pools[mpid],
+                            &buffer_ids,
+                        )?,
+                    );
                 }
                 SchedulerOp::Finish(program) => {
                     for (vprogram, queue) in &mut queues {
@@ -400,15 +450,13 @@ impl Runtime {
                         },
                     );
                 }
-                SchedulerOp::Deallocate {
-                    tensor_id,
-                    view,
-                } => {
+                SchedulerOp::Deallocate { tensor_id, view } => {
                     let key = &(*tensor_id, view.clone());
                     if let Some(BufferId {
                         memory_pool_id,
-                        buffer_id
-                    }) = self.tensor_buffer_map.get(key) {
+                        buffer_id,
+                    }) = self.tensor_buffer_map.get(key)
+                    {
                         self.memory_pools[*memory_pool_id].deallocate(*buffer_id)?;
                         self.tensor_buffer_map.remove(key).unwrap();
                     }
@@ -417,33 +465,50 @@ impl Runtime {
         }
         if self.debug_perf() {
             let duration = begin.elapsed();
-            print_perf(compiled_graph.flop, compiled_graph.bytes_read, compiled_graph.bytes_written, duration.as_nanos());
+            print_perf(
+                compiled_graph.flop,
+                compiled_graph.bytes_read,
+                compiled_graph.bytes_written,
+                duration.as_nanos(),
+            );
         }
         Ok(())
     }
 
     // Compiles kernel using given optimizations
-    pub(super) fn compile_cached(&mut self, kernel: &Kernel, optimizations: &KernelOptimizations, device_id: DeviceId, graph: &Graph) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
+    pub(super) fn compile_cached(
+        &mut self,
+        kernel: &Kernel,
+        optimizations: &KernelOptimizations,
+        device_id: DeviceId,
+        graph: &Graph,
+    ) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
         //let timer = Timer::new();
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
         let (ir_kernel, ir_args) = optimized_kernel.to_ir(&graph);
         let mut program_id = None;
-        if let Some((dev_id, prog_id) ) = self.ir_kernel_cache.get(&ir_kernel) {
+        if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
             if *dev_id == device_id {
                 program_id = Some(*prog_id);
             }
         }
         if program_id.is_none() {
-            if self.debug_ir() { ir_kernel.debug(); }
+            if self.debug_ir() {
+                ir_kernel.debug();
+            }
             let debug_asm = self.debug_asm();
             program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
-            self.ir_kernel_cache.insert(
-                ir_kernel,
-                (device_id, program_id.unwrap())
-            );
+            self.ir_kernel_cache
+                .insert(ir_kernel, (device_id, program_id.unwrap()));
         }
-        Ok((program_id.unwrap(), ir_args.into_iter().map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only)).collect()))
+        Ok((
+            program_id.unwrap(),
+            ir_args
+                .into_iter()
+                .map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only))
+                .collect(),
+        ))
     }
 }
 
@@ -530,7 +595,10 @@ fn generate_kernels(
                 let mut done_expanding = BTreeSet::new();
                 for op in kernel.ops.iter_mut().rev() {
                     match op {
-                        VOp::Loop { axis, len: dimension } => {
+                        VOp::Loop {
+                            axis,
+                            len: dimension,
+                        } => {
                             if expand_axes.contains(axis) && done_expanding.insert(*axis) {
                                 assert_eq!(*dimension, 1);
                                 *dimension = shape[*axis];
@@ -686,7 +754,10 @@ fn generate_kernels(
                                         skip_loops -= 1;
                                     } else {
                                         if let Some(dimensions) = splits.get(&loop_id) {
-                                            assert_eq!(*dimension, dimensions.iter().product::<usize>());
+                                            assert_eq!(
+                                                *dimension,
+                                                dimensions.iter().product::<usize>()
+                                            );
                                             split_ids.push(id);
                                         }
                                         if loop_id > 0 {
@@ -736,14 +807,45 @@ fn generate_kernels(
                 //println!("\nKernels {kernels:?}\n");
             }
             Node::Pad { x, padding } => {
+                // Pad shrinks or expands dimension of axes
+                let kernel = get_kernel(*x, &mut kernels, graph);
+                let rank = kernel.shape.len();
+                // Get which axes are padded
+                let mut padded_axes = BTreeMap::new();
+                for (op, &p) in kernel.ops[..rank].iter().rev().zip(padding) {
+                    let &VOp::Loop { axis, .. } = op else {
+                        panic!()
+                    };
+                    padded_axes.insert(axis, p);
+                }
+                // Apply padding
+                let mut num_paddings = padding.len();
+                for op in &mut kernel.ops {
+                    match op {
+                        VOp::Loop { axis, len } => {
+                            if let Some((lp, rp)) = padded_axes.get(axis) {
+                                *len = (*len as isize + lp + rp) as usize;
+                            }
+                        }
+                        VOp::EndLoop => {
+                            num_paddings -= 1;
+                            if num_paddings == 0 {
+                                break;
+                            }
+                        }
+                        VOp::Const { view, .. }
+                        | VOp::Load { view, .. }
+                        | VOp::Store { view, .. }
+                        | VOp::Accumulator { view, .. } => {
+                            for (&axis, &(lp, rp)) in &padded_axes {
+                                view.pad_axis(axis, lp, rp);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
 
-
-
-                // TODO rewrite this pad using pad_axis on view, apply padding also on stores, so padding will be always fusable
-
-
-
-                let shape = graph.shape(nid);
+                /*let shape = graph.shape(nid);
                 // Pad shrinks or expands dimension of axes, but if there is store,
                 // then it creates new kernel
                 let mut kernel = get_kernel(*x, &mut kernels, graph);
@@ -779,7 +881,10 @@ fn generate_kernels(
                 kernel.debug();
                 'ops_loop: for op in kernel.ops.iter_mut().rev() {
                     match op {
-                        VOp::Loop { axis, len: dimension } => {
+                        VOp::Loop {
+                            axis,
+                            len: dimension,
+                        } => {
                             if axes.contains(axis) {
                                 *dimension = shape[*axis];
                                 padded_loops.remove(axis);
@@ -798,8 +903,8 @@ fn generate_kernels(
                         }
                         _ => {}
                     }
-                }
-                kernel.shape = shape.into();
+                }*/
+                kernel.shape = graph.shape(nid).into();
                 kernel.ops.push(VOp::Move {
                     z: nid,
                     x: *x,
@@ -856,10 +961,15 @@ fn generate_kernels(
                     z: nid,
                     x: *x,
                 });*/
-                kernel.ops.push(VOp::Binary { z: nid, x: *x, y: nid, bop: match rop {
-                    ROp::Sum => BOp::Add,
-                    ROp::Max => BOp::Max,
-                } });
+                kernel.ops.push(VOp::Binary {
+                    z: nid,
+                    x: *x,
+                    y: nid,
+                    bop: match rop {
+                        ROp::Sum => BOp::Add,
+                        ROp::Max => BOp::Max,
+                    },
+                });
                 for _ in 0..axes.len() {
                     kernel.ops.push(VOp::EndLoop);
                 }
@@ -1046,7 +1156,10 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
         .iter()
         .copied()
         .enumerate()
-        .map(|(axis, dimension)| VOp::Loop { axis, len: dimension })
+        .map(|(axis, dimension)| VOp::Loop {
+            axis,
+            len: dimension,
+        })
         .collect()
 }
 
@@ -1098,9 +1211,7 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
             1000_000..1000000000 => (x / 1000_000, "M"),
             1000_000_000..1000_000_000_000 => (x / 1000_000_000, "G"),
             1000_000_000_000..1000_000_000_000_000 => (x / 1000_000_000_000, "T"),
-            1000_000_000_000_000..1000_000_000_000_000_000 => {
-                (x / 1000_000_000_000_000, "P")
-            }
+            1000_000_000_000_000..1000_000_000_000_000_000 => (x / 1000_000_000_000_000, "P"),
             1000_000_000_000_000_000.. => (x / 1000_000_000_000_000_000, "E"),
         }
     }

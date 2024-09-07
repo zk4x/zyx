@@ -117,10 +117,7 @@ pub(super) struct IRKernel {
 // but graph contains rcs across multiple kernels
 impl Kernel {
     /// Returns IRKernel and global arguments
-    pub(super) fn to_ir(
-        &self,
-        graph: &Graph,
-    ) -> (IRKernel, Vec<(TensorId, bool)>) {
+    pub(super) fn to_ir(&self, graph: &Graph) -> (IRKernel, Vec<(TensorId, bool)>) {
         let mut ops = Vec::new();
         let mut vars: VarMap = VarMap::new();
         let mut max_axis = 0;
@@ -155,7 +152,14 @@ impl Kernel {
             match vop {
                 &VOp::Const { z, value, ref view } => {
                     let var = if view.requires_conditional_padding() {
-                        vars.generate_padding(view, &mut ops, Var::Const(value), graph.rc(z), value.dtype(), None)
+                        vars.generate_padding(
+                            view,
+                            &mut ops,
+                            Var::Const(value),
+                            graph.rc(z),
+                            value.dtype(),
+                            None,
+                        )
                     } else {
                         Var::Const(value)
                     };
@@ -164,13 +168,34 @@ impl Kernel {
                 VOp::Move { z, x, .. } => {
                     vars.noop(*z, *x, graph.rc(*z));
                 }
-                &VOp::Load { z, zscope, x, xscope, ref view } => {
+                &VOp::Load {
+                    z,
+                    zscope,
+                    x,
+                    xscope,
+                    ref view,
+                } => {
                     let dtype = graph.dtype(z).into();
                     let at = vars.generate_idx(view, &mut ops);
                     let x = vars.get(x, Scope::Global).unwrap();
-                    let zvar = vars.add_var(z, 0, Scope::Register, graph.rc(z), graph.dtype(z).into(), None, false);
+                    let zvar = vars.add_var(
+                        z,
+                        0,
+                        Scope::Register,
+                        graph.rc(z),
+                        graph.dtype(z).into(),
+                        None,
+                        false,
+                    );
                     if view.requires_conditional_padding() {
-                        let var = vars.generate_padding(view, &mut ops, zvar, graph.rc(z), graph.dtype(z), Some((x, at, dtype)));
+                        let var = vars.generate_padding(
+                            view,
+                            &mut ops,
+                            zvar,
+                            graph.rc(z),
+                            graph.dtype(z),
+                            Some((x, at, dtype)),
+                        );
                         vars.var_map.remove(&(z, Scope::Register));
                         vars.var_map.insert((z, Scope::Register), var);
                     } else {
@@ -183,25 +208,22 @@ impl Kernel {
                         vars.remove_var(at);
                     }
                 }
-                &VOp::Store { z, zscope, xscope, ref view } => {
+                &VOp::Store {
+                    z,
+                    zscope,
+                    xscope,
+                    ref view,
+                } => {
                     let dtype = graph.dtype(z).into();
                     let at = vars.generate_idx(view, &mut ops);
                     let x = vars.get(z, Scope::Register).unwrap();
                     let z = vars.get(z, Scope::Global).unwrap();
-                    ops.push(IROp::Store {
-                        z,
-                        x,
-                        at,
-                        dtype,
-                    });
+                    ops.push(IROp::Store { z, x, at, dtype });
                     vars.remove_var(at);
                 }
                 &VOp::Loop { axis, len } => {
                     let id = vars.add_axis(axis);
-                    ops.push(IROp::Loop {
-                        id,
-                        len,
-                    });
+                    ops.push(IROp::Loop { id, len });
                     max_axis += 1;
                     loops.push((id, len));
                 }
@@ -263,12 +285,21 @@ impl Kernel {
                 VOp::Unary { z, x, uop } => {
                     //println!("IR Unary {uop:?} on {:?}", vars.get(*x, Scope::Register));
                     if let Var::Const(v) = vars.get(*x, Scope::Register).unwrap() {
-                        vars.var_map.insert((*z, Scope::Register), Var::Const(v.unary(*uop)));
+                        vars.var_map
+                            .insert((*z, Scope::Register), Var::Const(v.unary(*uop)));
                     } else {
                         let x_tensor = *x;
                         let dtype = graph.dtype(*x).into();
                         let x = vars.get(*x, Scope::Register).unwrap();
-                        let z = vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false);
+                        let z = vars.add_var(
+                            *z,
+                            0,
+                            Scope::Register,
+                            graph.rc(*z),
+                            graph.dtype(*z).into(),
+                            None,
+                            false,
+                        );
                         ops.push(IROp::Unary {
                             z,
                             x,
@@ -279,15 +310,31 @@ impl Kernel {
                     }
                 }
                 VOp::Binary { z, x, y, bop } => {
-                    if let (Var::Const(xv), Var::Const(yv)) = (vars.get(*x, Scope::Register).unwrap(), vars.get(*y, Scope::Register).unwrap()) {
-                        vars.var_map.insert((*z, Scope::Register), Var::Const(Constant::binary(xv, yv, *bop)));
+                    if let (Var::Const(xv), Var::Const(yv)) = (
+                        vars.get(*x, Scope::Register).unwrap(),
+                        vars.get(*y, Scope::Register).unwrap(),
+                    ) {
+                        vars.var_map.insert(
+                            (*z, Scope::Register),
+                            Var::Const(Constant::binary(xv, yv, *bop)),
+                        );
                     } else {
                         let x_tensor = *x;
                         let y_tensor = *y;
                         let dtype = graph.dtype(*z).into();
                         let x = vars.get(*x, Scope::Register).unwrap();
                         let y = vars.get(*y, Scope::Register).unwrap();
-                        let z = vars.get(*z, Scope::Register).unwrap_or_else(|| vars.add_var(*z, 0, Scope::Register, graph.rc(*z), graph.dtype(*z).into(), None, false));
+                        let z = vars.get(*z, Scope::Register).unwrap_or_else(|| {
+                            vars.add_var(
+                                *z,
+                                0,
+                                Scope::Register,
+                                graph.rc(*z),
+                                graph.dtype(*z).into(),
+                                None,
+                                false,
+                            )
+                        });
                         ops.push(IROp::Binary {
                             z,
                             x,
@@ -313,7 +360,18 @@ impl Kernel {
             args.push((tensor.unwrap(), read_only));
         }
 
-        (IRKernel { addressables, registers: vars.registers.into_iter().map(|(_, dtype, read_only)| (dtype, read_only)).collect(), ops }, args)
+        (
+            IRKernel {
+                addressables,
+                registers: vars
+                    .registers
+                    .into_iter()
+                    .map(|(_, dtype, read_only)| (dtype, read_only))
+                    .collect(),
+                ops,
+            },
+            args,
+        )
     }
 }
 
@@ -361,7 +419,16 @@ impl VarMap {
         }
     }
 
-    fn add_var(&mut self, x: TensorId, len: usize, scope: Scope, rc: u32, dtype: IRDType, tensor: Option<TensorId>, read_only: bool) -> Var {
+    fn add_var(
+        &mut self,
+        x: TensorId,
+        len: usize,
+        scope: Scope,
+        rc: u32,
+        dtype: IRDType,
+        tensor: Option<TensorId>,
+        read_only: bool,
+    ) -> Var {
         /*if let Some(var) = self.var_map.get(&x) {
             return *var;
         }*/
@@ -376,7 +443,18 @@ impl VarMap {
             View::None => Var::Const(Constant::U32(0)),
             View::Strided(dims) => {
                 let z = self.zero_u32_var(ops);
-                let numel: usize = dims.iter().flat_map(|StridedDim { dim, stride, .. }| if *stride != 0 { Some(*dim) } else { None }).product();
+                let numel: usize = dims
+                    .iter()
+                    .flat_map(
+                        |StridedDim { dim, stride, .. }| {
+                            if *stride != 0 {
+                                Some(*dim)
+                            } else {
+                                None
+                            }
+                        },
+                    )
+                    .product();
                 for StridedDim { axis, stride, .. } in dims {
                     if *stride != 0 && *stride != numel {
                         let a = self.get_axis(*axis);
@@ -399,16 +477,48 @@ impl VarMap {
                         .iter()
                         .find(|(axes, _)| axes.iter().max().unwrap() == axis)
                     {
-                        println!("Padding {axis} with {lp}");
+                        //println!("Padding {axis} with {lp}");
                         if *lp > 0 {
-                            let t = Var::Id(self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8, Scope::Register);
-                            ops.push(IROp::Binary { z: t, x: self.get_axis(*axis), y: Var::Const(Constant::U32(*lp as u32)), bop: BOp::Sub, dtype: IRDType::U32 });
-                            ops.push(IROp::MAdd { z, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: z, dtype: IRDType::U32 } );
+                            let t = Var::Id(
+                                self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false)
+                                    as u8,
+                                Scope::Register,
+                            );
+                            ops.push(IROp::Binary {
+                                z: t,
+                                x: self.get_axis(*axis),
+                                y: Var::Const(Constant::U32(*lp as u32)),
+                                bop: BOp::Sub,
+                                dtype: IRDType::U32,
+                            });
+                            ops.push(IROp::MAdd {
+                                z,
+                                a: t,
+                                b: Var::Const(Constant::U32(*stride as u32)),
+                                c: z,
+                                dtype: IRDType::U32,
+                            });
                         } else if *lp < 0 {
                             let lp = -lp;
-                            let t = Var::Id(self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false) as u8, Scope::Register);
-                            ops.push(IROp::Binary { z: t, x: self.get_axis(*axis), y: Var::Const(Constant::U32(lp as u32)), bop: BOp::Add, dtype: IRDType::U32 });
-                            ops.push(IROp::MAdd { z, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: z, dtype: IRDType::U32 } );
+                            let t = Var::Id(
+                                self.get_empty_id(1, 0, IRDType::U32, Scope::Register, None, false)
+                                    as u8,
+                                Scope::Register,
+                            );
+                            ops.push(IROp::Binary {
+                                z: t,
+                                x: self.get_axis(*axis),
+                                y: Var::Const(Constant::U32(lp as u32)),
+                                bop: BOp::Add,
+                                dtype: IRDType::U32,
+                            });
+                            ops.push(IROp::MAdd {
+                                z,
+                                a: t,
+                                b: Var::Const(Constant::U32(*stride as u32)),
+                                c: z,
+                                dtype: IRDType::U32,
+                            });
                         } else {
                             ops.push(IROp::MAdd {
                                 z,
@@ -437,12 +547,23 @@ impl VarMap {
     // Takes self, view, ops and var without padding, returns var with padding applied
     // It does it all branchlessly
     // TODO this is little ugly, make it more straigthforward
-    fn generate_padding(&mut self, view: &View, ops: &mut Vec<IROp>, var: Var, rc: u32, dtype: DType, load: Option<(Var, Var, IRDType)>) -> Var {
-        let View::Padded(dims, padding) = view  else { panic!() };
+    fn generate_padding(
+        &mut self,
+        view: &View,
+        ops: &mut Vec<IROp>,
+        var: Var,
+        rc: u32,
+        dtype: DType,
+        load: Option<(Var, Var, IRDType)>,
+    ) -> Var {
+        let View::Padded(dims, padding) = view else {
+            panic!()
+        };
         //std::println!("Using padded index");
 
         // When the padding does not apply
-        let padding_condition = self.get_empty_id(1, 0, IRDType::Bool, Scope::Register, None, false) as u8;
+        let padding_condition =
+            self.get_empty_id(1, 0, IRDType::Bool, Scope::Register, None, false) as u8;
         ops.push(IROp::Set {
             z: padding_condition,
             len: 0,
@@ -450,7 +571,7 @@ impl VarMap {
         });
         let padding_condition = Var::Id(padding_condition, Scope::Register);
         let mut pc = String::new();
-            println!("Padding: {:?}", padding.axes);
+        println!("Padding: {:?}", padding.axes);
         for StridedDim { axis, .. } in dims {
             if let Some((axes, (lp, rp))) = padding
                 .axes
@@ -490,7 +611,10 @@ impl VarMap {
 
                 if *lp > 0 {
                     //padding_condition += &format!("{idx} < {lp} || ");
-                    let temp = Var::Id(self.get_empty_id(1, 0, IRDType::Bool, Scope::Register, None, false) as u8, Scope::Register);
+                    let temp = Var::Id(
+                        self.get_empty_id(1, 0, IRDType::Bool, Scope::Register, None, false) as u8,
+                        Scope::Register,
+                    );
                     ops.push(IROp::Binary {
                         z: temp,
                         x: idx,
@@ -509,7 +633,10 @@ impl VarMap {
                 }
                 if *rp > 0 {
                     //padding_condition += &format!("{idx} > {} || ", dim as isize - rp - 1);
-                    let temp = Var::Id(self.get_empty_id(1, 0, IRDType::Bool, Scope::Register, None, false) as u8, Scope::Register);
+                    let temp = Var::Id(
+                        self.get_empty_id(1, 0, IRDType::Bool, Scope::Register, None, false) as u8,
+                        Scope::Register,
+                    );
                     ops.push(IROp::Binary {
                         z: temp,
                         x: idx,
@@ -531,7 +658,10 @@ impl VarMap {
         }
         println!("Padding condition: {pc}");
         // padding_condition * 0 + !padding_condition * var
-        let temp = Var::Id(self.get_empty_id(1, 0, dtype.into(), Scope::Register, None, false) as u8, Scope::Register);
+        let temp = Var::Id(
+            self.get_empty_id(1, 0, dtype.into(), Scope::Register, None, false) as u8,
+            Scope::Register,
+        );
         ops.push(IROp::Binary {
             z: temp,
             x: padding_condition,
@@ -561,7 +691,10 @@ impl VarMap {
             });
             self.remove_var(at);
         }
-        let temp1 = Var::Id(self.get_empty_id(1, 0, dtype.into(), Scope::Register, None, false) as u8, Scope::Register);
+        let temp1 = Var::Id(
+            self.get_empty_id(1, 0, dtype.into(), Scope::Register, None, false) as u8,
+            Scope::Register,
+        );
         ops.push(IROp::Binary {
             z: temp1,
             x: padding_condition,
@@ -569,7 +702,10 @@ impl VarMap {
             bop: BOp::Mul,
             dtype: dtype.into(),
         });
-        let res = Var::Id(self.get_empty_id(rc, 0, dtype.into(), Scope::Register, None, false) as u8, Scope::Register);
+        let res = Var::Id(
+            self.get_empty_id(rc, 0, dtype.into(), Scope::Register, None, false) as u8,
+            Scope::Register,
+        );
         ops.push(IROp::Binary {
             z: res,
             x: temp,
@@ -623,7 +759,15 @@ impl VarMap {
         }
     }
 
-    fn get_empty_id(&mut self, rc: u32, len: usize, dtype: IRDType, scope: Scope, tensor: Option<TensorId>, read_only: bool) -> usize {
+    fn get_empty_id(
+        &mut self,
+        rc: u32,
+        len: usize,
+        dtype: IRDType,
+        scope: Scope,
+        tensor: Option<TensorId>,
+        read_only: bool,
+    ) -> usize {
         // This finds variable with the same dtype, however
         // we often can use registers that can hold variables of different dtypes,
         // so the dtype equality check will be disabled for some devices.

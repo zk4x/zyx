@@ -192,7 +192,7 @@ impl Drop for OpenCLQueue {
     }
 }
 
-pub(super) fn initialize_backend(
+pub(super) fn initialize_devices(
     config: &OpenCLConfig,
     debug_dev: bool,
 ) -> Result<(Vec<OpenCLMemoryPool>, Vec<(OpenCLDevice, Vec<OpenCLQueue>)>), OpenCLError> {
@@ -370,7 +370,7 @@ pub(super) fn initialize_backend(
                 }
             };
             println!(
-                "Using OpenCL backend, platform id {platform_id}, name {} on devices:",
+                "Using OpenCL platform, platform id {platform_id}, name {} on devices:",
                 String::from_utf8(platform_name).unwrap()
             );
         }
@@ -786,12 +786,12 @@ impl OpenCLDevice {
 
         let local_work_size = local_work_size;
         let name = format!(
-            "k__{}_{}__{}_{}__{}_{}",
+            "k__{}_{}_{}__{}_{}_{}",
             global_work_size[0],
-            local_work_size[0],
             global_work_size[1],
-            local_work_size[1],
             global_work_size[2],
+            local_work_size[0],
+            local_work_size[1],
             local_work_size[2],
         );
         for (i, lwd) in local_work_size.iter().enumerate() {
@@ -958,6 +958,11 @@ impl OpenCLStatus {
 }
 
 impl OpenCLDevice {
+    pub(super) fn release_program(&self, program: OpenCLProgram) -> Result<(), OpenCLError> {
+        unsafe { (self.clReleaseProgram)(program.program) }
+            .check("Failed to release OpenCL program")
+    }
+
     fn get_program_build_data(
         &mut self,
         program: *mut c_void,

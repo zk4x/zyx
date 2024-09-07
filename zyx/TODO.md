@@ -55,6 +55,7 @@
 
 ### Release blockers
 
+- [ ] go over all todos in source code and check which are necessary
 - [ ] rewrite the AI generated docs, they are horrible
 - [x] saving and loading for models from and to disk in safetensors format
 - [x] automatic optimizations with search on vkernel
@@ -81,7 +82,6 @@
 - [ ] test pad after reduce
 - [ ] test padded view permute
 - [ ] test expand after reduce
-- [ ] go over all todos in source code and check which are necessary
 - [x] documentation for tensor functions
 - [x] documentation for Zyx Error
 - [x] documentation for DType

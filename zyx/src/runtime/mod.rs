@@ -38,7 +38,7 @@ mod view;
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(serde::Deserialize, Debug, Default)]
-pub struct BackendConfig {
+pub struct DeviceConfig {
     pub cuda: CUDAConfig,
     pub hip: HIPConfig,
     pub opencl: OpenCLConfig,
@@ -177,7 +177,7 @@ impl Runtime {
             let id = self
                 .graph
                 .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
-            self.initialize_backends()?;
+            self.initialize_devices()?;
             let bytes = data.len() * T::byte_size();
             // Put it into memory pool with fastest device out of memory pools with enough free capacity
             let mem_pools: Vec<usize> = self
@@ -543,7 +543,7 @@ impl Runtime {
             return Ok(());
         }
         if self.devices.is_empty() {
-            self.initialize_backends()?;
+            self.initialize_devices()?;
         }
         // Get rcs of nodes outside of realized graph
         let (graph, outside_nodes, order) = self.graph.realize_graph(tensors.clone(), |x| {

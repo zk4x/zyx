@@ -4,11 +4,11 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
+use super::{ir::IRKernel, DeviceConfig, Runtime, ZyxError};
+use crate::{index_map::IndexMap, Scalar};
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{OpenCLBuffer, OpenCLDevice, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue};
-use crate::{index_map::IndexMap, Scalar};
-use super::{ir::IRKernel, BackendConfig, Runtime, ZyxError};
 
 #[cfg(feature = "wgsl")]
 use wgsl::{WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue};
@@ -27,7 +27,9 @@ pub use opencl::{OpenCLConfig, OpenCLError};
 pub use wgsl::{WGSLConfig, WGSLError};
 
 /// Hardware information needed for applying optimizations
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode,
+)]
 pub(super) struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
@@ -110,7 +112,7 @@ impl Runtime {
     // Does nothing if devices were already initialized.
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
-    pub(super) fn initialize_backends(&mut self) -> Result<(), ZyxError> {
+    pub(super) fn initialize_devices(&mut self) -> Result<(), ZyxError> {
         if !self.devices.is_empty() {
             return Ok(());
         }
@@ -127,7 +129,7 @@ impl Runtime {
 
         // Search through config directories and find zyx/backend_config.json
         // If not found or failed to parse, use defaults.
-        let backend_config = xdg::BaseDirectories::new()
+        let device_config = xdg::BaseDirectories::new()
             .map_err(|e| {
                 if self.debug_dev() {
                     println!("Failed to find config directories for backend_config.json, {e}");
@@ -172,11 +174,11 @@ impl Runtime {
                 if self.debug_dev() {
                     println!("Failed to get backend config, using defaults.");
                 }
-                BackendConfig::default()
+                DeviceConfig::default()
             });
 
         if let Ok((memory_pools, devices)) =
-            cuda::initialize_backend(&backend_config.cuda, self.debug_dev())
+            cuda::initialize_devices(&device_config.cuda, self.debug_dev())
         {
             let n = self.memory_pools.len();
             self.memory_pools
@@ -193,7 +195,7 @@ impl Runtime {
                 }));
         }
         if let Ok((memory_pools, devices)) =
-            hip::initialize_backend(&backend_config.hip, self.debug_dev())
+            hip::initialize_device(&device_config.hip, self.debug_dev())
         {
             let n = self.memory_pools.len();
             self.memory_pools
@@ -210,7 +212,7 @@ impl Runtime {
                 }));
         }
         if let Ok((memory_pools, devices)) =
-            opencl::initialize_backend(&backend_config.opencl, self.debug_dev())
+            opencl::initialize_devices(&device_config.opencl, self.debug_dev())
         {
             let n = self.memory_pools.len();
             self.memory_pools
@@ -287,20 +289,32 @@ impl MemoryPool {
 
     pub(super) fn deallocate(&mut self, buffer_id: usize) -> Result<(), ZyxError> {
         match self {
-            MemoryPool::CUDA { memory_pool, buffers } => {
+            MemoryPool::CUDA {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::HIP { memory_pool, buffers } => {
+            MemoryPool::HIP {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::OpenCL { memory_pool, buffers } => {
+            MemoryPool::OpenCL {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL { memory_pool, buffers } => {
+            MemoryPool::WGSL {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
@@ -308,7 +322,11 @@ impl MemoryPool {
         Ok(())
     }
 
-    pub(super) fn host_to_pool<T: Scalar>(&mut self, data: &[T], buffer_id: usize) -> Result<(), ZyxError> {
+    pub(super) fn host_to_pool<T: Scalar>(
+        &mut self,
+        data: &[T],
+        buffer_id: usize,
+    ) -> Result<(), ZyxError> {
         let bytes = data.len() * T::byte_size();
         match self {
             MemoryPool::CUDA {
@@ -356,22 +374,38 @@ impl MemoryPool {
         Ok(())
     }
 
-    pub(super) fn pool_to_host<T: Scalar>(&mut self, buffer_id: usize, data: &mut [T]) -> Result<(), ZyxError> {
+    pub(super) fn pool_to_host<T: Scalar>(
+        &mut self,
+        buffer_id: usize,
+        data: &mut [T],
+    ) -> Result<(), ZyxError> {
         let slice = unsafe {
             std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size())
         };
         match self {
-            MemoryPool::CUDA { memory_pool, buffers } => {
+            MemoryPool::CUDA {
+                memory_pool,
+                buffers,
+            } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
-            MemoryPool::HIP { memory_pool, buffers } => {
+            MemoryPool::HIP {
+                memory_pool,
+                buffers,
+            } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
-            MemoryPool::OpenCL { memory_pool, buffers } => {
+            MemoryPool::OpenCL {
+                memory_pool,
+                buffers,
+            } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL { memory_pool, buffers } => {
+            MemoryPool::WGSL {
+                memory_pool,
+                buffers,
+            } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
         }
@@ -390,7 +424,7 @@ impl MemoryPool {
         }
         match (self, dst_mp) {
             #[rustfmt::skip]
-            (MemoryPool::CUDA { buffers: sb, .. }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; } 
+            (MemoryPool::CUDA { buffers: sb, .. }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[rustfmt::skip]
             (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
@@ -401,7 +435,7 @@ impl MemoryPool {
             #[rustfmt::skip]
             (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
-            (MemoryPool::HIP { buffers: sb, .. }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; } 
+            (MemoryPool::HIP { buffers: sb, .. }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[rustfmt::skip]
             (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "wgsl")]
@@ -412,7 +446,7 @@ impl MemoryPool {
             #[rustfmt::skip]
             (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
-            (MemoryPool::OpenCL { buffers: sb, .. }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; } 
+            (MemoryPool::OpenCL { buffers: sb, .. }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[cfg(feature = "wgsl")]
             #[rustfmt::skip]
             (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
@@ -427,13 +461,14 @@ impl MemoryPool {
             (MemoryPool::WGSL { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "wgsl")]
             #[rustfmt::skip]
-            (MemoryPool::WGSL { buffers: sb, .. }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; } 
+            (MemoryPool::WGSL { buffers: sb, .. }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
         }
         Ok(())
     }
 }
 
 impl Device {
+    // NOTE returns memory pool id out of runtime memory pools
     pub(super) fn memory_pool_id(&self) -> MemoryPoolId {
         match self {
             Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
@@ -469,84 +504,152 @@ impl Device {
         Ok(())
     }
 
-    pub(super) fn compile(&mut self, ir_kernel: &IRKernel, debug_asm: bool) -> Result<usize, ZyxError> {
+    pub(super) fn release_program(&mut self, program_id: usize) -> Result<(), ZyxError> {
+        match self {
+            Device::CUDA {
+                device, programs, ..
+            } => device.release_program(programs.remove(program_id))?,
+            Device::HIP {
+                device, programs, ..
+            } => device.release_program(programs.remove(program_id))?,
+            Device::OpenCL {
+                device, programs, ..
+            } => device.release_program(programs.remove(program_id))?,
+            #[cfg(feature = "wgsl")]
+            Device::WGSL {
+                device, programs, ..
+            } => device.release_program(programs.remove(program_id))?,
+        }
+        Ok(())
+    }
+
+    pub(super) fn compile(
+        &mut self,
+        ir_kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<usize, ZyxError> {
         Ok(match self {
-            Device::CUDA { device, programs, ..  } => {
+            Device::CUDA {
+                device, programs, ..
+            } => {
                 programs.push(device.compile(&ir_kernel, debug_asm)?);
                 programs.len() - 1
             }
-            Device::HIP { device, programs, ..  } => {
+            Device::HIP {
+                device, programs, ..
+            } => {
                 programs.push(device.compile(&ir_kernel, debug_asm)?);
                 programs.len() - 1
             }
-            Device::OpenCL { device, programs, ..  } => {
+            Device::OpenCL {
+                device, programs, ..
+            } => {
                 programs.push(device.compile(&ir_kernel, debug_asm)?);
                 programs.len() - 1
             }
             #[cfg(feature = "wgsl")]
-            Device::WGSL { device, programs, ..  } => {
+            Device::WGSL {
+                device, programs, ..
+            } => {
                 programs.push(device.compile(&ir_kernel, debug_asm)?);
                 programs.len() - 1
             }
         })
     }
 
-    pub(super) fn launch(&mut self, program_id: usize, memory_pool: &mut MemoryPool, buffer_ids: &[usize]) -> Result<usize, ZyxError> {
+    pub(super) fn launch(
+        &mut self,
+        program_id: usize,
+        memory_pool: &mut MemoryPool,
+        buffer_ids: &[usize],
+    ) -> Result<usize, ZyxError> {
         Ok(match self {
             Device::CUDA {
-                programs,
-                queues,
-                ..
+                programs, queues, ..
             } => {
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                let (mut id, mut queue) = queues
+                    .iter_mut()
+                    .enumerate()
+                    .min_by_key(|(_, queue)| queue.load())
+                    .unwrap();
                 if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    (id, queue) = queues
+                        .iter_mut()
+                        .enumerate()
+                        .max_by_key(|(_, queue)| queue.load())
+                        .unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::CUDA { buffers, .. } = memory_pool else { panic!() };
+                let MemoryPool::CUDA { buffers, .. } = memory_pool else {
+                    panic!()
+                };
                 queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
                 id
             }
             Device::HIP {
-                programs,
-                queues,
-                ..
+                programs, queues, ..
             } => {
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                let (mut id, mut queue) = queues
+                    .iter_mut()
+                    .enumerate()
+                    .min_by_key(|(_, queue)| queue.load())
+                    .unwrap();
                 if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    (id, queue) = queues
+                        .iter_mut()
+                        .enumerate()
+                        .max_by_key(|(_, queue)| queue.load())
+                        .unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::HIP { buffers, .. } = memory_pool else { panic!() };
+                let MemoryPool::HIP { buffers, .. } = memory_pool else {
+                    panic!()
+                };
                 queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
                 id
             }
             Device::OpenCL {
-                programs,
-                queues,
-                ..
+                programs, queues, ..
             } => {
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                let (mut id, mut queue) = queues
+                    .iter_mut()
+                    .enumerate()
+                    .min_by_key(|(_, queue)| queue.load())
+                    .unwrap();
                 if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    (id, queue) = queues
+                        .iter_mut()
+                        .enumerate()
+                        .max_by_key(|(_, queue)| queue.load())
+                        .unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::OpenCL { buffers, .. } = memory_pool else { panic!() };
+                let MemoryPool::OpenCL { buffers, .. } = memory_pool else {
+                    panic!()
+                };
                 queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
                 id
             }
             #[cfg(feature = "wgsl")]
             Device::WGSL {
-                programs,
-                queues,
-                ..
+                programs, queues, ..
             } => {
-                let (mut id, mut queue) = queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
+                let (mut id, mut queue) = queues
+                    .iter_mut()
+                    .enumerate()
+                    .min_by_key(|(_, queue)| queue.load())
+                    .unwrap();
                 if queue.load() > 10 {
-                    (id, queue) = queues.iter_mut().enumerate().max_by_key(|(_, queue)| queue.load()).unwrap();
+                    (id, queue) = queues
+                        .iter_mut()
+                        .enumerate()
+                        .max_by_key(|(_, queue)| queue.load())
+                        .unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::WGSL { buffers, .. } = memory_pool else { panic!() };
+                let MemoryPool::WGSL { buffers, .. } = memory_pool else {
+                    panic!()
+                };
                 queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
                 id
             }
@@ -557,17 +660,17 @@ impl Device {
 impl std::fmt::Display for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Device::CUDA { memory_pool_id, ..  } => f.write_fmt(format_args!(
+            Device::CUDA { memory_pool_id, .. } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
-            Device::HIP { memory_pool_id, ..  } => f.write_fmt(format_args!(
+            Device::HIP { memory_pool_id, .. } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
-            Device::OpenCL { memory_pool_id, ..  } => f.write_fmt(format_args!(
+            Device::OpenCL { memory_pool_id, .. } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
             #[cfg(feature = "wgsl")]
-            Device::WGSL { memory_pool_id, ..  } => f.write_fmt(format_args!(
+            Device::WGSL { memory_pool_id, .. } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
         }

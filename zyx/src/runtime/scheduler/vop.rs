@@ -1,8 +1,23 @@
-use crate::{dtype::Constant, runtime::{ir::Scope, node::{BOp, ROp, UOp}, view::View}, shape::{Axis, Dimension}, tensor::TensorId};
+use crate::{
+    dtype::Constant,
+    runtime::{
+        ir::Scope,
+        node::{BOp, ROp, UOp},
+        view::View,
+    },
+    shape::{Axis, Dimension},
+    tensor::TensorId,
+};
 
 // Should be just Unary, Binary, Const, Copy, Loop, Reduce
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) enum VOp {
+    Loop {
+        axis: Axis,
+        len: Dimension,
+    },
+    // End the latest loop
+    EndLoop,
     Const {
         z: TensorId,
         value: Constant,
@@ -21,10 +36,6 @@ pub(crate) enum VOp {
         xscope: Scope,
         view: View,
     },
-    Loop {
-        axis: Axis,
-        len: Dimension,
-    },
     // TODO remove accumulator and use const + load
     // instead to create register tile
     Accumulator {
@@ -32,16 +43,6 @@ pub(crate) enum VOp {
         rop: ROp,
         view: View,
     },
-    // TODO probably just remove reduce and use
-    // binary op and end loop
-    /*Reduce {
-        z: TensorId,
-        x: TensorId,
-        num_axes: usize,
-        rop: ROp,
-    },*/
-    // End the latest loop
-    EndLoop,
     // Move is noop, just a marker for easy debugging
     // and to keep track of tensor ids
     Move {
@@ -77,13 +78,27 @@ impl std::fmt::Display for VOp {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
                 "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"
             )),
-            VOp::Load { z, zscope, x, xscope, view } => f.write_fmt(format_args!(
+            VOp::Load {
+                z,
+                zscope,
+                x,
+                xscope,
+                view,
+            } => f.write_fmt(format_args!(
                 "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}], {view}"
             )),
-            VOp::Store { z, zscope, xscope, view } => f.write_fmt(format_args!(
+            VOp::Store {
+                z,
+                zscope,
+                xscope,
+                view,
+            } => f.write_fmt(format_args!(
                 "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {view}"
             )),
-            VOp::Loop { axis, len: dimension } => f.write_fmt(format_args!(
+            VOp::Loop {
+                axis,
+                len: dimension,
+            } => f.write_fmt(format_args!(
                 "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"
             )),
             VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!(

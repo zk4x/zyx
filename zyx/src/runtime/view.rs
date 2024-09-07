@@ -107,7 +107,10 @@ impl View {
     pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
         if let View::Padded(_, padded_axes) = self {
-            return padded_axes.axes.iter().any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
+            return padded_axes
+                .axes
+                .iter()
+                .any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
         }
         false
     }
@@ -133,7 +136,8 @@ impl View {
                     dim.axis = a;
                 }
                 // TODO is this correct?
-                let axes_map: BTreeMap<usize, usize> = (0..axes.len()).zip(axes.iter().copied()).collect();
+                let axes_map: BTreeMap<usize, usize> =
+                    (0..axes.len()).zip(axes.iter().copied()).collect();
                 for (axes, _) in &mut padding.axes {
                     for d in axes {
                         *d = axes_map[d];
@@ -153,11 +157,28 @@ impl View {
             View::None => {}
             View::Strided(dims) => {
                 if dims.iter().any(|&StridedDim { axis, .. }| axis == paxis) {
-                    *self = View::Padded(dims.clone(), PaddedAxes { axes: vec![(vec![axis], (left_pad, right_pad))] });
+                    *self = View::Padded(
+                        dims.clone(),
+                        PaddedAxes {
+                            axes: vec![(vec![axis], (left_pad, right_pad))],
+                        },
+                    );
                 }
             }
             View::Padded(dims, padding) => {
-                todo!()
+                if dims.iter().any(|&StridedDim { axis, .. }| axis == paxis) {
+                    if let Some((_, (lp, rp))) = padding
+                        .axes
+                        .iter_mut()
+                        .find(|(axes, _)| axes.contains(&axis))
+                    {
+                        *lp += left_pad;
+                        *rp += right_pad;
+                    } else {
+                        padding.axes.push((vec![axis], (left_pad, right_pad)));
+                        padding.axes.sort();
+                    }
+                }
             }
         }
     }
@@ -250,7 +271,11 @@ impl View {
                         st_dim.axis += dimensions.len() - 1;
                     }
                 }
-                if let Some((id, st_dim)) = dims.iter_mut().enumerate().find(|(_, dim)| dim.axis == axis) {
+                if let Some((id, st_dim)) = dims
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, dim)| dim.axis == axis)
+                {
                     let mut stride = st_dim.stride;
                     dims.remove(id);
                     let mut temp_axis = axis + dimensions.len();
@@ -275,7 +300,11 @@ impl View {
                         st_dim.axis += dim_len - 1;
                     }
                 }
-                if let Some((id, st_dim)) = dims.iter_mut().enumerate().find(|(_, dim)| dim.axis == axis) {
+                if let Some((id, st_dim)) = dims
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, dim)| dim.axis == axis)
+                {
                     let mut stride = st_dim.stride;
                     dims.remove(id);
                     let mut temp_axis = axis + dimensions.len();
