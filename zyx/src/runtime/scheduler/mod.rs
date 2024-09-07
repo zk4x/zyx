@@ -4,7 +4,7 @@ use super::{
     BufferId, DeviceId,
 };
 use crate::{
-    runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
+    runtime::{graph::Graph, ir::{self, Scope}, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
 use std::{
@@ -246,7 +246,7 @@ impl Runtime {
                             }
                             // Optimize and compile multiple kernels at once on different threads,
                             // since compilation takes ~50ms,
-                            let (ir_kernel, _) = kernel.optimize(&optimization).to_ir(&graph);
+                            let (ir_kernel, _) = ir::to_ir(&kernel.optimize(&optimization).ops);
                             let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
                             // Launch kernel and measure it's performance
                             let begin = std::time::Instant::now();
@@ -486,7 +486,7 @@ impl Runtime {
         //let timer = Timer::new();
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        let (ir_kernel, ir_args) = optimized_kernel.to_ir(&graph);
+        let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops);
         let mut program_id = None;
         if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
             if *dev_id == device_id {
@@ -494,9 +494,8 @@ impl Runtime {
             }
         }
         if program_id.is_none() {
-            if self.debug_ir() {
-                ir_kernel.debug();
-            }
+            // TODO
+            //if self.debug_ir() { ir_kernel.debug(); }
             let debug_asm = self.debug_asm();
             program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
             self.ir_kernel_cache
@@ -506,7 +505,7 @@ impl Runtime {
             program_id.unwrap(),
             ir_args
                 .into_iter()
-                .map(|(arg, read_only)| (arg, View::new(graph.shape(arg)), read_only))
+                .map(|arg| (arg, View::new(graph.shape(arg)), !kernel.outputs.contains(&arg)))
                 .collect(),
         ))
     }
