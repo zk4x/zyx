@@ -322,10 +322,10 @@ impl Kernel {
                     shape.pop();
                 }
                 VOp::Move { z, x, mop } => {}
-                VOp::Unary { z, x, uop } => {
+                VOp::Unary { z, x, uop, view } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
-                VOp::Binary { z, x, y, bop } => {
+                VOp::Binary { z, zview, x, xview, y, yview, bop } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
             }

@@ -13,6 +13,8 @@ pub(crate) struct KernelOptimizations {
     pub(crate) permutation: Vec<usize>,
     // Work per thread in reduce loops, one per each reduce
     pub(crate) reduce_loop_wpt: Vec<usize>,
+    // Enable local tiling
+    pub(crate) local_tiles: bool,
 
     // Load tensor first into local tile, then into registers
     // this is used mainly for expanded tensors, so use threads
@@ -85,7 +87,8 @@ impl Kernel {
                                 opts.push(KernelOptimizations {
                                     splits,
                                     permutation: vec![0, 1, 2, 3, 4, 5],
-                                    reduce_loop_wpt: vec![1]
+                                    reduce_loop_wpt: vec![1],
+                                    local_tiles: true,
                                 });
                             }
                         }
@@ -141,6 +144,12 @@ impl Kernel {
         }
         // Apply permutation
         kernel.permute(&optimizations.permutation);
+        if optimizations.local_tiles {
+            // Local tile all loads that do not use all loop axes
+            // Local tiles use local dimensions and register dimensions
+            // i.e. [rws[0]*lws[0], rws[1]*lws[1], rws[2]*lws[2]]
+            // TODO
+        }
         kernel
     }
 

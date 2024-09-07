@@ -962,8 +962,11 @@ fn generate_kernels(
                 });*/
                 kernel.ops.push(VOp::Binary {
                     z: nid,
+                    zview: View::None,
                     x: *x,
+                    xview: View::None,
                     y: nid,
+                    yview: View::None,
                     bop: match rop {
                         ROp::Sum => BOp::Add,
                         ROp::Max => BOp::Max,
@@ -988,6 +991,7 @@ fn generate_kernels(
                     z: nid,
                     x: *x,
                     uop: *uop,
+                    view: View::None,
                 });
                 kernel.vars.insert(nid);
             }
@@ -1017,8 +1021,11 @@ fn generate_kernels(
                     };
                     kernel.ops.push(VOp::Binary {
                         z: nid,
+                        zview: View::None,
                         x: *x,
+                        xview: View::None,
                         y: *y,
+                        yview: View::None,
                         bop: *bop,
                     });
                     kernel.vars.insert(nid);
@@ -1102,8 +1109,11 @@ fn generate_kernels(
                         kernel_y.ops.extend(kernel_x_ops);
                         kernel_y.ops.push(VOp::Binary {
                             z: nid,
+                            zview: View::None,
                             x: *x,
+                            xview: View::None,
                             y: *y,
+                            yview: View::None,
                             bop: *bop,
                         });
                         kernel_y.inputs.extend(kernel_x.inputs);

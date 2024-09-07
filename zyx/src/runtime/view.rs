@@ -104,6 +104,13 @@ impl View {
         }
     }
 
+    pub(super) fn used_axes(&self) -> Vec<Axis> {
+        match self {
+            View::None => Vec::new(),
+            View::Strided(dims) | View::Padded(dims, _) => dims.iter().flat_map(|x| if x.stride != 0 { Some(x.axis) } else { None }).collect()
+        }
+    }
+
     pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
         if let View::Padded(_, padded_axes) = self {
@@ -115,9 +122,23 @@ impl View {
         false
     }
 
-    /*fn numel(&self) -> usize {
-        self.0.iter().map(|dim| dim.dim).product()
-    }*/
+    pub(super) fn original_numel(&self) -> usize {
+        match self {
+            View::None => 1,
+            View::Strided(dims) => {
+                dims.iter().map(|dim| if dim.stride != 0 { dim.dim } else { 1 }).product()
+            }
+            View::Padded(dims, PaddedAxes { axes }) => {
+                dims.iter().map(|dim| if dim.stride != 0 {
+                    if let Some((lp, rp)) = axes.iter().find_map(|(a, (lp, rp))| if *a.last().unwrap() == dim.axis { Some((lp, rp)) } else { None }) {
+                        (dim.dim as isize - lp - rp) as usize
+                    } else {
+                        dim.dim
+                    }
+                } else { 1 }).product()
+            }
+        }
+    }
 
     pub(super) fn permute(&mut self, axes: &[usize]) {
         //println!("Permuting {self} by {axes:?}");

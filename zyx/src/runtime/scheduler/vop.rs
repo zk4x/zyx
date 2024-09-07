@@ -54,11 +54,15 @@ pub(crate) enum VOp {
         z: TensorId,
         x: TensorId,
         uop: UOp,
+        view: View,
     },
     Binary {
         z: TensorId,
+        zview: View,
         x: TensorId,
+        xview: View,
         y: TensorId,
+        yview: View,
         bop: BOp,
     },
 }
@@ -117,18 +121,18 @@ impl std::fmt::Display for VOp {
             VOp::Move { z, x, mop } => f.write_fmt(format_args!(
                 "{color_white}Move{color_reset}.{mop:?}   {z} <- {x}"
             )),
-            VOp::Unary { z, x, uop } => {
+            VOp::Unary { z, x, uop, view } => {
                 let mut len = format!("{uop:?}").len();
                 if len > 5 {
                     len = 5;
                 }
                 f.write_fmt(format_args!(
-                    "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
+                    "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}, {view}",
                     core::iter::repeat(" ").take(5 - len).collect::<String>()
                 ))
             }
-            VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!(
-                "{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}"
+            VOp::Binary { z, zview, x, xview, y, yview, bop } => f.write_fmt(format_args!(
+                "{color_white}Binary{color_reset}.{bop:?}  {z}[{zview}] <- {x}[{xview}], {y}[{yview}]"
             )),
         }
     }

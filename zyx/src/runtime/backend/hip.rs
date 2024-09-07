@@ -324,7 +324,7 @@ impl HIPDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
-            if let IROp::Loop { id, len } = op {
+            if let IROp::While { id, len } = op {
                 if id % 2 == 0 {
                     global_work_size[*id as usize / 2] = *len;
                 } else {
@@ -346,9 +346,9 @@ impl HIPDevice {
         source.pop();
         source += "\n) {\n";
         // Declare register variables
-        for (id, (dtype, read_only)) in kernel.registers.iter().enumerate() {
+        for (id, (len, dtype, read_only)) in kernel.registers.iter().enumerate() {
             source += &format!(
-                "{indent}{}{} r{id};\n",
+                "{indent}{}{} r{id}[{len}];\n",
                 if *read_only { "const " } else { "" },
                 dtype.hip()
             );
@@ -426,7 +426,7 @@ impl HIPDevice {
                         c.hip()
                     );
                 }
-                IROp::Loop { id, len } => {
+                IROp::While { id, len } => {
                     source += &format!(
                         "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
                     );

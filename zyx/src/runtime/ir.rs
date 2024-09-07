@@ -1,18 +1,13 @@
 use crate::{
-    dtype::Constant,
-    runtime::{
-        node::{BOp, ROp, UOp},
-    },
-    tensor::TensorId,
-    DType,
+    dtype::Constant, runtime::node::{BOp, ROp, UOp}, shape::Axis, tensor::TensorId, DType
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::scheduler::{Kernel, VOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Var {
-    Id(u8, Scope),
+    Id(u16, Scope),
     Const(Constant),
 }
 
@@ -26,7 +21,7 @@ pub(super) enum Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IROp {
     Set {
-        z: u8,
+        z: u16,
         len: usize,
         value: Constant,
     },
@@ -64,12 +59,13 @@ pub(super) enum IROp {
         c: Var,
         dtype: IRDType,
     },
-    Loop {
-        id: u8,
+    // while id < len
+    While {
+        id: u16,
         len: usize,
     },
     EndLoop {
-        id: u8,
+        id: u16,
         len: usize,
     },
     Barrier {
@@ -104,8 +100,8 @@ pub(super) struct IRKernel {
     // Index of var is it's Id
     // len, dtype, read_only
     pub(super) addressables: Vec<(usize, IRDType, bool)>,
-    // dtype, read_only
-    pub(super) registers: Vec<(IRDType, bool)>,
+    // len, dtype, read_only
+    pub(super) registers: Vec<(usize, IRDType, bool)>,
     pub(super) ops: Vec<IROp>,
 }
 
@@ -195,9 +191,150 @@ impl std::fmt::Display for Scope {
 // and so that it does work properly
 
 // Returns IRKernel and order in which tensors are passed to it
-pub(super) fn to_ir(ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
-    for op in ops {
-        println!("{op}");
+pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
+    // What we need to calculate (outputs of this function)
+    let mut addressables = Vec::new();
+    let mut registers = Vec::new();
+    let mut ops = Vec::new();
+    let mut args = Vec::new();
+
+    // Get reference counts for all tensors and axes
+    let mut tensor_rcs: BTreeMap<TensorId, u32>  = BTreeMap::new();
+    let mut axes_rcs: BTreeMap<Axis, u32> = BTreeMap::new();
+    for op in kernel_ops {
+        match op {
+            &VOp::Loop { axis, .. } => {
+                axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            VOp::EndLoop => {}
+            &VOp::Const { ref view, .. } => {
+                // Constants are always valid, they do not need ref count
+                for axis in view.used_axes() {
+                    axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+            &VOp::Load { z, zscope, x, xscope, ref view } => {
+                for axis in view.used_axes() {
+                    axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+            VOp::Store { z, zscope, xscope, view } => {
+                for axis in view.used_axes() {
+                    axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+            VOp::Accumulator { z, rop, view } => {
+                for axis in view.used_axes() {
+                    axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+            &VOp::Move { z, x, .. } => {
+                tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            &VOp::Unary { z, x, uop, ref view } => {
+                tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            &VOp::Binary { z, x, y, bop, ref zview, ref xview, ref yview } => {
+                tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                tensor_rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+        }
     }
-    todo!()
+    let tensor_rcs = tensor_rcs;
+
+    // Allocate register space for axes.
+    // This way axes also have the same id in registers.
+    for (&axis, &rc) in &axes_rcs {
+        registers.push((1, IRDType::U32, false, rc));
+    }
+
+    // Maps from tensors to registers
+    let mut tensor_var_map: BTreeMap<TensorId, Var> = BTreeMap::new();
+
+    fn fill_empty_register(registers: &mut Vec<(usize, IRDType, bool, u32)>, len: usize, ir_dtype: IRDType, read_only: bool, rc: u32) -> u16 {
+        if let Some(id) = registers.iter().enumerate().find_map(|(id, &(l, d, r, c))| if c == 0 && l == len && ir_dtype == d && read_only == r { Some(id as u16) } else { None }) {
+            registers[id as usize] = (len, ir_dtype, read_only, rc);
+            id
+        } else {
+            registers.push((len, ir_dtype, read_only, rc));
+            (registers.len() - 1) as u16
+        }
+    }
+
+    // Actual transpiling from Kernel to IRKernel
+    let mut last_loop = (0, 0);
+    for op in kernel_ops {
+        println!("{op}");
+        match op {
+            &VOp::Loop { axis, len } => {
+                // Axis always maps to register ids
+                let id = axis as u16;
+                ops.push(IROp::While { id, len });
+                last_loop = (id, len);
+            }
+            VOp::EndLoop => {
+                ops.push(IROp::EndLoop { id: last_loop.0, len: last_loop.1 });
+            }
+            &VOp::Const { z, value, ref view } => {
+                tensor_var_map.insert(z, Var::Const(value));
+            }
+            &VOp::Load { z, zscope, x, xscope, ref view } => {
+                match zscope {
+                    Scope::Global => todo!(),
+                    Scope::Local => {
+                        todo!()
+                    }
+                    Scope::Register => {
+                        //registers.push((len, IRDType::F32, false));
+                        // TODO
+                        //tensor_var_map.insert();
+                    }
+                }
+            }
+            VOp::Store { z, zscope, xscope, view } => {
+                todo!()
+            }
+            &VOp::Accumulator { z, rop, ref view } => {
+                let ir_dtype = IRDType::F32;
+                let len = view.original_numel();
+                let id = fill_empty_register(&mut registers, len, ir_dtype, false, tensor_rcs[&z]);
+                tensor_var_map.insert(z, Var::Id(id, Scope::Register));
+            }
+            VOp::Move { z, x, .. } => {
+                tensor_var_map.insert(*z, tensor_var_map[x]);
+                todo!()
+            }
+            &VOp::Unary { z, x, uop, ref view } => {
+                // TODO unary can have view
+                if let Var::Const(value) = tensor_var_map[&x] {
+                    tensor_var_map.insert(z, Var::Const(value.unary(uop)));
+                } else {
+                    let ir_dtype = IRDType::F32;
+                    let id = fill_empty_register(&mut registers, 1, ir_dtype, false, tensor_rcs[&z]);
+                    let zvar = Var::Id(id, Scope::Register);
+                    tensor_var_map.insert(z, zvar);
+                    ops.push(IROp::Unary { z: zvar, x: tensor_var_map[&x], uop, dtype: ir_dtype });
+                    if let Var::Id(id, _) = tensor_var_map[&x] {
+                        registers[id as usize].3 -= 1u32;
+                    }
+                }
+            }
+            &VOp::Binary { z, ref zview, x, ref xview, y, ref yview, bop } => {
+                // TODO binary can have view, for example if it is accumulator
+                let dtype = IRDType::F32;
+                let id = fill_empty_register(&mut registers, 1, dtype, false, tensor_rcs[&z]);
+                let zvar = Var::Id(id, Scope::Register);
+                tensor_var_map.insert(z, zvar);
+                ops.push(IROp::Binary { z: zvar, x: tensor_var_map[&x], y: tensor_var_map[&y], bop, dtype });
+                if let Var::Id(id, _) = tensor_var_map[&x] {
+                    registers[id as usize].3 -= 1u32;
+                }
+                if let Var::Id(id, _) = tensor_var_map[&y] {
+                    registers[id as usize].3 -= 1u32;
+                }
+            }
+        }
+    }
+
+    (IRKernel { addressables, registers: todo!(), ops }, args)
 }
