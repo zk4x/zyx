@@ -51,9 +51,11 @@
 - [x] wgsl program launch
 - [ ] tensor split op
 - [x] simplify vops
+- [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
 
 ### Release blockers
 
+- [ ] saving and loading for models from and to disk in safetensors format
 - [x] automatic optimizations with search on vkernel
 - [x] saving of searched kernel to disk
 - [x] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
@@ -79,6 +81,12 @@
 - [ ] test padded view permute
 - [ ] test expand after reduce
 - [ ] go over all todos in source code and check which are necessary
+- [ ] documentation for tensor functions
+- [ ] documentation for Zyx Error
+- [ ] documentation for DType
+- [ ] documentation for Scalar
+- [ ] documentation for IntoShape
+- [ ] std::error::Error for ZyxError
 
 ### Tests
 
@@ -95,7 +103,7 @@
 - [ ] combination of movent, unary and binary
 - [ ] combination of all ops
 - [x] fuzzy tester with simple cpu tensor, mostly takes care of all combination testing. The longer it runs, the more certain we can be there are no bugs.
-- [ ] we need test for big modules like transformer. If transformer gives correct outputs, it's likely everything else is correct too.
+- [ ] we need tests for big modules like transformer. If transformer gives correct outputs, it's likely everything else is correct too.
 
 ## Advanced graph caching
 

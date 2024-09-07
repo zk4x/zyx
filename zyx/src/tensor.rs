@@ -22,6 +22,8 @@ use num_complex::Complex;
 
 pub(crate) type TensorId = usize;
 
+/// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
+/// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {
     id: TensorId,
@@ -111,6 +113,7 @@ impl Tensor {
     ///     x = x.detach() + z;
     /// }
     /// ```
+    #[must_use]
     pub fn detach(self) -> Tensor {
         // TODO remove realization from here
         let shape = self.shape();
@@ -212,6 +215,8 @@ impl Tensor {
         }
     }
 
+    /// Manually sets the seed for the random number generator.
+    /// This function is only available if the `rand` feature is enabled.
     #[cfg(feature = "rand")]
     pub fn manual_seed(seed: u64) {
         RT.lock().manual_seed(seed);
@@ -353,6 +358,7 @@ impl Tensor {
         }
     }
 
+    /// `cosh(x) = (exp(x) + exp(-x)) / 2`.
     #[must_use]
     pub fn cosh(&self) -> Tensor {
         // (e^x + e^-x) / 2
@@ -362,38 +368,61 @@ impl Tensor {
         (ex + enx)/2
     }
 
-    /// During training, randomly zeroes some of the elements of the input tensor with probability.
-    /// The zeroed elements are chosen independently for each forward call and are sampled from a Bernoulli distribution.
-    /// Each channel will be zeroed out independently on every forward call.
-    /// Furthermore, the outputs are scaled by a factor of 11−p1−p1​ during training.
-    /// This means that during evaluation the module simply computes an identity function.
+    /// Applies dropout to the tensor with a given probability.
+    ///
+    /// This function randomly sets elements of the input tensor to zero based on the provided probability.
+    /// The output tensor has the same shape as the input tensor. Elements are preserved with probability `1 - probability`
+    /// and set to zero with probability `probability`.
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
+        // TODO fix this for training
         Tensor::from(probability)
             .cmplt(Tensor::uniform(self.shape(), 0f32..1.0))
             .cast(self.dtype())
             * self
     }
 
+    /// Applies the Exponential Linear Unit function element-wise.
+    ///
+    /// The ELU function is defined as:
+    /// ```
+    /// f(x) = x if x > 0
+    ///       α(e^x - 1) otherwise
+    /// ```
+    /// where `α` is a given scaling factor. This function helps mitigate the "dying ReLU" problem.
     #[must_use]
     pub fn elu(&self, alpha: impl Scalar) -> Tensor {
         self.relu() - (Tensor::ones(1, self.dtype()) - self.exp()).relu() * alpha
     }
 
+    /// Returns a new tensor with the exponential of 2 raised to the power of each element in self.
     #[must_use]
-    pub fn exp2(&self) -> Tensor {
-        return Tensor {
-            id: RT.lock().exp2(self.id),
-        };
-    }
+    pub fn exp2(&self) -> Tensor { 
+        return Tensor { 
+            id: RT.lock().exp2(self.id), 
+         };
+     }
 
+    /// Computes the exponential of each element in the input tensor using base e.
+    ///
+    /// This function returns a new tensor that is computed by taking the exponential of each
+    /// element in the input tensor. The output will have the same shape as the input tensor,
+    /// and its elements will be calculated as `e^input_element`.
+    ///
+    /// @param self The input tensor.
+    /// @return A new tensor with the same shape as the input, but with each element computed
+    ///         as `e^input_element`.
     #[must_use]
-    pub fn exp(&self) -> Tensor {
+    pub fn exp(&self) -> Tensor { 
         let c: Tensor = std::f64::consts::E.log2().try_into().unwrap();
         (self*c.cast(self.dtype())).exp2()
     }
 
+    /// Returns a new tensor with the Gelu activation function applied to each element of self.
+    ///
+    /// The Gelu activation function is defined as:
+    /// `gelu(x) = x * 0.5 * (1 + tanh(sqrt(2 / π) * (x + x^3 * 0.044715)))`.
     #[must_use]
     pub fn gelu(&self) -> Tensor {
         self * 0.5f32
@@ -402,11 +431,33 @@ impl Tensor {
                 + 1f32)
     }
 
+    /// Applies the Leaky ReLU activation function element-wise.
+    ///
+    /// This function computes the Leaky ReLU of each element in the input tensor. If the element is greater than
+    /// or equal to zero, it returns the element itself; otherwise, it returns `neg_slope * element`.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    /// * neg_slope: The negative slope coefficient (`α` in the formula) for the Leaky ReLU function.
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor with the same shape as the input, but with each element computed as `max(0., x) + neg_slope * min(0., x)`.
     #[must_use]
     pub fn leaky_relu(&self, neg_slope: impl Scalar) -> Tensor {
         self.relu() - (self * (-Tensor::from(neg_slope))).relu()
     }
 
+    /// Computes the base-2 logarithm of each element in the input tensor.
+    ///
+    /// This function returns a new tensor that is computed by taking the base-2 logarithm of each
+    /// element in the input tensor. The output will have the same shape as the input tensor,
+    /// and its elements will be calculated as `log2(input_element)`.
+    ///
+    /// @param self The input tensor.
+    /// @return A new tensor with the same shape as the input, but with each element computed
+    ///         as `log2(input_element)`.
     #[must_use]
     pub fn log2(&self) -> Tensor {
         return Tensor {
@@ -414,12 +465,34 @@ impl Tensor {
         };
     }
 
+    /// Computes the natural logarithm (ln) of each element in the input tensor.
+    ///
+    /// This function returns a new tensor that is computed by taking the natural logarithm of each
+    /// element in the input tensor. The output will have the same shape as the input tensor,
+    /// and its elements will be calculated as `ln(input_element)`.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor with the same shape as the input, but with each element computed as `ln(input_element)`.
     #[must_use]
     pub fn ln(&self) -> Tensor {
         let c: Tensor = (1f64/std::f64::consts::E.log2()).try_into().unwrap();
         self.log2()*c.cast(self.dtype())
     }
 
+    /// Computes the multiplicative inverse of each element in the input tensor.
+    ///
+    /// This function returns a new tensor with the same shape as the input, where each element is the multiplicative inverse (i.e., reciprocal) of the corresponding element in the input tensor.
+    ///
+    /// **Parameters:**
+    /// 
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor.
     #[must_use]
     pub fn inv(&self) -> Tensor {
         return Tensor {
@@ -427,16 +500,43 @@ impl Tensor {
         };
     }
 
+    /// Computes the Mish activation function for each element in the input tensor.
+    ///
+    /// The Mish activation function is a continuous, non-monotonic function that behaves like ReLU for positive inputs and like sigmoid for negative inputs. It is defined as `x * tanh(softplus(x))`.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Mish(input_element)`.
     #[must_use]
     pub fn mish(&self) -> Tensor {
         self * self.softplus(1, 20).tanh()
     }
 
+    /// Computes the quick GELU activation function for each element in the input tensor.
+    ///
+    /// The QuickGELU activation function is an approximation of the Gaussian Error Linear Unit (GELU) function that uses a sigmoid function to compute the approximation. It is defined as `x * sigmoid(1.702 * x)`.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `QuickGELU(input_element)`.
     #[must_use]
     pub fn quick_gelu(&self) -> Tensor {
         self * (1.702f32 * self).sigmoid()
     }
 
+    /// Computes the multiplicative inverse of each element in the input tensor using a faster implementation.
+    ///
+    /// This function returns a new tensor with the same shape as the input, where each element is the multiplicative inverse (i.e., reciprocal) of the corresponding element in the input tensor. This implementation uses `1.0 / self` which is generally faster than calling the `inv()` method directly.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor using a faster implementation.
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
         return Tensor {
@@ -444,6 +544,15 @@ impl Tensor {
         };
     }
 
+    /// Applies the Rectified Linear Unit (ReLU) activation function to each element in the input tensor.
+    ///
+    /// The ReLU function returns `max(0, x)`, i.e., it replaces negative values with zero and leaves positive values unchanged. This makes it a popular choice for use in hidden layers of neural networks due to its simplicity and effectiveness.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
     pub fn relu(&self) -> Tensor {
         return Tensor {
@@ -451,11 +560,29 @@ impl Tensor {
         };
     }
 
+    /// Computes the reciprocal square root of each element in the input tensor.
+    ///
+    /// This function returns a new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor. This operation can be useful for scaling and stabilizing certain types of computations.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor.
     #[must_use]
     pub fn rsqrt(&self) -> Tensor {
         self.reciprocal().sqrt()
     }
 
+    /// Applies the Self-Normalized Linear Unit (Selu) activation function to each element in the input tensor.
+    ///
+    /// The Selu activation function is designed to maintain the mean and variance of the activations approximately constant when training deep neural networks with residual connections. It combines the benefits of both ReLU and sigmoid functions, making it a good choice for certain types of problems.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Selu(input_element)`.
     #[must_use]
     pub fn selu(&self) -> Tensor {
         1.0507009873554804934193349852946f32
@@ -465,6 +592,15 @@ impl Tensor {
                 .relu())
     }
 
+    /// Applies the sigmoid activation function to each element in the input tensor.
+    ///
+    /// The sigmoid function returns `1 / (1 + exp(-x))`, i.e., it maps any real-valued input onto a value between 0 and 1. This function is commonly used for binary classification problems or as an activation function in neural networks.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `sigmoid(input_element)`.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor {
         let one = Tensor::ones(1, self.dtype());
@@ -472,6 +608,15 @@ impl Tensor {
         return &exp_x / (&one + &exp_x);
     }
 
+    /// Applies the sine function to each element in the input tensor.
+    ///
+    /// This function returns a new tensor with the same shape as the input, where each element is the sine of the corresponding element in the input tensor. The sine function is useful for various mathematical and scientific computations involving angles or periodic phenomena.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is the sine of the corresponding element in the input tensor.
     #[must_use]
     pub fn sin(&self) -> Tensor {
         return Tensor {
@@ -479,6 +624,15 @@ impl Tensor {
         };
     }
 
+    /// Applies the hyperbolic sine function to each element in the input tensor.
+    ///
+    /// The hyperbolic sine function returns `(e^x - e^-x) / 2`, i.e., it maps any real-valued input onto a value that grows exponentially. This function is useful for computations involving exponential growth or decay, such as in physics and engineering applications.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `sinh(input_element)`.
     #[must_use]
     pub fn sinh(&self) -> Tensor {
         // (e^x - e^-x) / 2
@@ -488,6 +642,17 @@ impl Tensor {
         (ex - enx)/2
     }
 
+    /// Applies the softplus function to each element in the input tensor with a given beta and threshold.
+    ///
+    /// The softplus function returns `log(exp(x) + 1)` for inputs greater than the threshold, and x otherwise. This function is useful for bounding outputs between zero and infinity when applying the ReLU function.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    /// * beta: A scalar multiplier applied to each element of the input tensor before comparison with the threshold.
+    /// * threshold: The threshold value below which the input is returned unchanged, and above which the softplus function is applied.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the softplus function with the given beta and threshold.
     #[must_use]
     pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor {
         let x = self * beta;
@@ -495,6 +660,15 @@ impl Tensor {
             .where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
     }
 
+    /// Applies the square root function to each element in the input tensor.
+    ///
+    /// This function returns a new tensor with the same shape as the input, where each element is the square root of the corresponding element in the input tensor. The square root function is useful for various mathematical computations involving squares or square roots.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is the square root of the corresponding element in the input tensor.
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         return Tensor {
@@ -502,11 +676,29 @@ impl Tensor {
         };
     }
 
+    /// Applies the Swish activation function to each element in the input tensor.
+    ///
+    /// The Swish function returns `x * sigmoid(x)`, where `sigmoid(x) = 1 / (1 + exp(-x))`. This function is useful for various deep learning applications, as it has been shown to improve convergence speed and generalization performance compared to other activation functions like ReLU.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the Swish function.
     #[must_use]
     pub fn swish(&self) -> Tensor {
         self * self.sigmoid()
     }
 
+    /// Applies the tangent function to each element in the input tensor.
+    ///
+    /// The tangent function returns the sine of the input divided by the cosine of the input. This function is useful for various mathematical computations involving angles and trigonometry.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the tangent function.
     #[must_use]
     pub fn tan(&self) -> Tensor {
         self.sin() / self.cos()
