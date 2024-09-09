@@ -219,6 +219,7 @@ impl Runtime {
                     };
                     let cache_key = (kernel.clone(), dev_info.clone());
                     if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
+                        // TODO optimizations.best().clone()
                         optimizations.clone()
                     } else {
                         // if self.beam_search() { // TODO enable this once we have implemented default optimizations
@@ -247,7 +248,7 @@ impl Runtime {
                             // Optimize and compile multiple kernels at once on different threads,
                             // since compilation takes ~50ms,
                             let (ir_kernel, _) = ir::to_ir(&kernel.optimize(&optimization).ops);
-                            let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
+                            let program_id = self.devices[device_id].compile(&ir_kernel, true)?;
                             // Launch kernel and measure it's performance
                             let begin = std::time::Instant::now();
                             let Ok(queue_id) = self.devices[device_id].launch(

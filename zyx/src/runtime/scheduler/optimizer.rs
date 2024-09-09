@@ -3,6 +3,24 @@ use std::fmt::Display;
 use crate::{runtime::{backend::DeviceInfo, scheduler::VOp}, shape::Dimension};
 use super::kernel::Kernel;
 
+
+// TODO rewrite this optimizer like this:
+// cached_kernels: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>
+
+struct KernelOptimizer {
+    optimizations: Vec<KernelOptimizations>,
+    // exec time for each optimization
+    exec_time: Vec<u128>,
+}
+
+// Upon loading this from disk, we would just
+// search over 200 more optimizations,
+// with optimization being more likely applied to fastest kernels
+// We would need a way to only try optimizations that were not tried yet.
+
+
+
+
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
 #[derive(Debug, Clone, bitcode::Encode, bitcode::Decode)]

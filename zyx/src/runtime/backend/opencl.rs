@@ -654,9 +654,14 @@ impl OpenCLDevice {
         // Declare register variables
         for (id, (len, dtype, read_only)) in kernel.registers.iter().enumerate() {
             source += &format!(
-                "{indent}{}{} r{id}[{len}];\n",
+                "{indent}{}{} r{id}{};\n",
                 if *read_only { "const " } else { "" },
-                dtype.ocl()
+                dtype.ocl(),
+                if *len > 1 {
+                    format!("[{len}]")
+                } else {
+                    String::new()
+                }
             );
         }
 
@@ -924,20 +929,20 @@ impl IRDType {
     fn ocl(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
-            IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
             #[cfg(feature = "half")]
-            IRDType::F16 => "half",
-            IRDType::F32 => "float",
-            IRDType::F64 => "double",
+            IRDType::F16(v) => "half",
+            IRDType::F32(v) => "float",
+            IRDType::F64(v) => "double",
             #[cfg(feature = "complex")]
-            IRDType::CF32 => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64 => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8 => "unsigned char",
-            IRDType::I8 => "char",
-            IRDType::I16 => "short",
-            IRDType::I32 => "int",
-            IRDType::I64 => "long",
+            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::U8(v) => "unsigned char",
+            IRDType::I8(v) => "char",
+            IRDType::I16(v) => "short",
+            IRDType::I32(v) => "int",
+            IRDType::I64(v) => "long",
             IRDType::Bool => "bool",
             IRDType::U32 => "unsigned int",
         };

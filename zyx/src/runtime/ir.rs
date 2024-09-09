@@ -76,23 +76,32 @@ pub(super) enum IROp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IRDType {
     #[cfg(feature = "half")]
-    BF16,
+    BF16(IRVec),
     #[cfg(feature = "half")]
-    F16,
-    F32,
-    F64,
+    F16(IRVec),
+    F32(IRVec),
+    F64(IRVec),
     #[cfg(feature = "complex")]
-    CF32,
+    CF32(IRVec),
     #[cfg(feature = "complex")]
-    CF64,
-    U8,
-    I8,
-    I16,
-    I32,
-    I64,
+    CF64(IRVec),
+    U8(IRVec),
+    I8(IRVec),
+    I16(IRVec),
+    I32(IRVec),
+    I64(IRVec),
     Bool,
     // For indexing, usually u32
     U32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum IRVec {
+    Scalar,
+    V2,
+    V4,
+    V8,
+    V16,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -105,24 +114,36 @@ pub(super) struct IRKernel {
     pub(super) ops: Vec<IROp>,
 }
 
+impl IRVec {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            IRVec::Scalar => 1,
+            IRVec::V2 => 2,
+            IRVec::V4 => 4,
+            IRVec::V8 => 8,
+            IRVec::V16 => 16,
+        }
+    }
+}
+
 impl IRDType {
     pub(super) fn byte_size(&self) -> usize {
         match self {
             #[cfg(feature = "half")]
-            IRDType::F16 => 2,
+            IRDType::F16(v) => 2 * v.len(),
             #[cfg(feature = "half")]
-            IRDType::BF16 => 2,
-            IRDType::F32 => 4,
-            IRDType::F64 => 8,
+            IRDType::BF16(v) => 2 * v.len(),
+            IRDType::F32(v) => 4 * v.len(),
+            IRDType::F64(v) => 8 * v.len(),
             #[cfg(feature = "complex")]
-            IRDType::CF32 => 8,
+            IRDType::CF32(v) => 8 * v.len(),
             #[cfg(feature = "complex")]
-            IRDType::CF64 => 16,
-            IRDType::U8 => 1,
-            IRDType::I8 => 1,
-            IRDType::I16 => 2,
-            IRDType::I32 => 4,
-            IRDType::I64 => 8,
+            IRDType::CF64(v) => 16 * v.len(),
+            IRDType::U8(v) => 1 * v.len(),
+            IRDType::I8(v) => 1 * v.len(),
+            IRDType::I16(v) => 2 * v.len(),
+            IRDType::I32(v) => 4 * v.len(),
+            IRDType::I64(v) => 8 * v.len(),
             IRDType::Bool => 1,
             IRDType::U32 => 4,
         }
@@ -131,20 +152,20 @@ impl IRDType {
     pub(super) fn dtype(&self) -> DType {
         match self {
             #[cfg(feature = "half")]
-            IRDType::BF16 => DType::BF16,
+            IRDType::BF16(_) => DType::BF16,
             #[cfg(feature = "half")]
-            IRDType::F16 => DType::F16,
-            IRDType::F32 => DType::F32,
-            IRDType::F64 => DType::F64,
+            IRDType::F16(_) => DType::F16,
+            IRDType::F32(_) => DType::F32,
+            IRDType::F64(_) => DType::F64,
             #[cfg(feature = "complex")]
-            IRDType::CF32 => DType::CF32,
+            IRDType::CF32(_) => DType::CF32,
             #[cfg(feature = "complex")]
-            IRDType::CF64 => DType::CF64,
-            IRDType::U8 => DType::U8,
-            IRDType::I8 => DType::I8,
-            IRDType::I16 => DType::I16,
-            IRDType::I32 => DType::I32,
-            IRDType::I64 => DType::I64,
+            IRDType::CF64(_) => DType::CF64,
+            IRDType::U8(_) => DType::U8,
+            IRDType::I8(_) => DType::I8,
+            IRDType::I16(_) => DType::I16,
+            IRDType::I32(_) => DType::I32,
+            IRDType::I64(_) => DType::I64,
             IRDType::Bool => DType::Bool,
             IRDType::U32 => panic!(),
         }
@@ -155,20 +176,20 @@ impl From<DType> for IRDType {
     fn from(value: DType) -> Self {
         match value {
             #[cfg(feature = "half")]
-            DType::BF16 => IRDType::BF16,
+            DType::BF16 => IRDType::BF16(IRVec::Scalar),
             #[cfg(feature = "half")]
-            DType::F16 => IRDType::F16,
-            DType::F32 => IRDType::F32,
-            DType::F64 => IRDType::F64,
+            DType::F16 => IRDType::F16(IRVec::Scalar),
+            DType::F32 => IRDType::F32(IRVec::Scalar),
+            DType::F64 => IRDType::F64(IRVec::Scalar),
             #[cfg(feature = "complex")]
-            DType::CF32 => IRDType::CF32,
+            DType::CF32 => IRDType::CF32(IRVec::Scalar),
             #[cfg(feature = "complex")]
-            DType::CF64 => IRDType::CF64,
-            DType::U8 => IRDType::U8,
-            DType::I8 => IRDType::I8,
-            DType::I16 => IRDType::I16,
-            DType::I32 => IRDType::I32,
-            DType::I64 => IRDType::I64,
+            DType::CF64 => IRDType::CF64(IRVec::Scalar),
+            DType::U8 => IRDType::U8(IRVec::Scalar),
+            DType::I8 => IRDType::I8(IRVec::Scalar),
+            DType::I16 => IRDType::I16(IRVec::Scalar),
+            DType::I32 => IRDType::I32(IRVec::Scalar),
+            DType::I64 => IRDType::I64(IRVec::Scalar),
             DType::Bool => IRDType::Bool,
         }
     }
@@ -262,7 +283,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     }
 
     // Actual transpiling from Kernel to IRKernel
-    let mut last_loop = (0, 0);
+    let mut loops = Vec::new();
     for op in kernel_ops {
         println!("{op}");
         match op {
@@ -270,10 +291,12 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 // Axis always maps to register ids
                 let id = axis as u16;
                 ops.push(IROp::While { id, len });
-                last_loop = (id, len);
+                loops.push((id, len));
             }
             VOp::EndLoop => {
-                ops.push(IROp::EndLoop { id: last_loop.0, len: last_loop.1 });
+                if let Some((id, len)) = loops.pop() {
+                    ops.push(IROp::EndLoop { id, len });
+                }
             }
             &VOp::Const { z, value, ref view } => {
                 tensor_var_map.insert(z, Var::Const(value));
@@ -285,31 +308,31 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                         todo!()
                     }
                     Scope::Register => {
-                        //registers.push((len, IRDType::F32, false));
-                        // TODO
-                        //tensor_var_map.insert();
+                        let ir_dtype = IRDType::F32(IRVec::Scalar);
+                        let id = fill_empty_register(&mut registers, 1, ir_dtype, true, tensor_rcs[&z]);
+                        let zvar = Var::Id(id, Scope::Register);
+                        tensor_var_map.insert(z, zvar);
                     }
                 }
             }
             VOp::Store { z, zscope, xscope, view } => {
-                todo!()
+                //todo!()
             }
             &VOp::Accumulator { z, rop, ref view } => {
-                let ir_dtype = IRDType::F32;
+                let ir_dtype = IRDType::F32(IRVec::Scalar);
                 let len = view.original_numel();
                 let id = fill_empty_register(&mut registers, len, ir_dtype, false, tensor_rcs[&z]);
                 tensor_var_map.insert(z, Var::Id(id, Scope::Register));
             }
-            VOp::Move { z, x, .. } => {
-                tensor_var_map.insert(*z, tensor_var_map[x]);
-                todo!()
+            &VOp::Move { z, x, .. } => {
+                tensor_var_map.insert(z, tensor_var_map[&x]);
             }
             &VOp::Unary { z, x, uop, ref view } => {
                 // TODO unary can have view
                 if let Var::Const(value) = tensor_var_map[&x] {
                     tensor_var_map.insert(z, Var::Const(value.unary(uop)));
                 } else {
-                    let ir_dtype = IRDType::F32;
+                    let ir_dtype = IRDType::F32(IRVec::Scalar);
                     let id = fill_empty_register(&mut registers, 1, ir_dtype, false, tensor_rcs[&z]);
                     let zvar = Var::Id(id, Scope::Register);
                     tensor_var_map.insert(z, zvar);
@@ -321,7 +344,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
             }
             &VOp::Binary { z, ref zview, x, ref xview, y, ref yview, bop } => {
                 // TODO binary can have view, for example if it is accumulator
-                let dtype = IRDType::F32;
+                let dtype = IRDType::F32(IRVec::Scalar);
                 let id = fill_empty_register(&mut registers, 1, dtype, false, tensor_rcs[&z]);
                 let zvar = Var::Id(id, Scope::Register);
                 tensor_var_map.insert(z, zvar);
@@ -336,5 +359,9 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
         }
     }
 
-    (IRKernel { addressables, registers: todo!(), ops }, args)
+    while let Some((id, len)) = loops.pop() {
+        ops.push(IROp::EndLoop { id, len });
+    }
+
+    (IRKernel { addressables, registers: registers.into_iter().map(|(len, dtype, ro, _)| (len, dtype, ro)).collect(), ops }, args)
 }

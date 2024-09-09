@@ -1145,20 +1145,20 @@ impl IRDType {
     pub(super) fn ptx(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
-            IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
             #[cfg(feature = "half")]
-            IRDType::F16 => "f16",
-            IRDType::F32 => "f32",
-            IRDType::F64 => "f64",
+            IRDType::F16(v) => "f16",
+            IRDType::F32(v) => "f32",
+            IRDType::F64(v) => "f64",
             #[cfg(feature = "complex")]
-            IRDType::CF32 => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64 => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8 => "u8",
-            IRDType::I8 => "s8",
-            IRDType::I16 => "s16",
-            IRDType::I32 => "s32",
-            IRDType::I64 => "s64",
+            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::U8(v) => "u8",
+            IRDType::I8(v) => "s8",
+            IRDType::I16(v) => "s16",
+            IRDType::I32(v) => "s32",
+            IRDType::I64(v) => "s64",
             IRDType::Bool => "b8",
             IRDType::U32 => "u32",
         };
@@ -1213,20 +1213,20 @@ impl IRDType {
     pub(super) fn cu(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
-            IRDType::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
             #[cfg(feature = "half")]
-            IRDType::F16 => "half",
-            IRDType::F32 => "float",
-            IRDType::F64 => "double",
+            IRDType::F16(v) => "half",
+            IRDType::F32(v) => "float",
+            IRDType::F64(v) => "double",
             #[cfg(feature = "complex")]
-            IRDType::CF32 => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64 => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8 => "unsigned char",
-            IRDType::I8 => "char",
-            IRDType::I16 => "short",
-            IRDType::I32 => "int",
-            IRDType::I64 => "long",
+            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::U8(v) => "unsigned char",
+            IRDType::I8(v) => "char",
+            IRDType::I16(v) => "short",
+            IRDType::I32(v) => "int",
+            IRDType::I64(v) => "long",
             IRDType::Bool => "bool",
             IRDType::U32 => "unsigned int",
         };
