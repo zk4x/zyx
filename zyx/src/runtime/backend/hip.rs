@@ -338,7 +338,7 @@ impl HIPDevice {
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
-                    "{indent}{}{}* a{id},\n",
+                    "{indent}{}{}* p{id},\n",
                     if *read_only { "const " } else { "" },
                     dtype.hip(),
                 );
@@ -367,10 +367,10 @@ impl HIPDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}{} = a{address}[{}];\n", z.hip(), offset.hip());
+                    source += &format!("{indent}{} = p{address}[{}];\n", z.hip(), offset.hip());
                 }
                 IROp::Store { address, offset, x } => {
-                    source += &format!("{indent}a{address}[{}] = {};\n", offset.hip(), x.hip());
+                    source += &format!("{indent}p{address}[{}] = {};\n", offset.hip(), x.hip());
                 }
                 IROp::Unary { z, x, uop } => {
                     let Var::Id(id) = z else { panic!() };

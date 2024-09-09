@@ -642,7 +642,7 @@ impl OpenCLDevice {
         for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
-                    "{indent}__global {}{}* g{id},\n",
+                    "{indent}__global {}{}* p{id},\n",
                     if *read_only { "const " } else { "" },
                     dtype.ocl(),
                 );
@@ -695,10 +695,10 @@ impl OpenCLDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}{} = a{address}[{}];\n", z.ocl(), offset.ocl());
+                    source += &format!("{indent}{} = p{address}[{}];\n", z.ocl(), offset.ocl());
                 }
                 IROp::Store { address, offset, x } => {
-                    source += &format!("{indent}a{address}[{}] = {};\n", offset.ocl(), x.ocl());
+                    source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
                 }
                 IROp::Unary { z, x, uop } => {
                     let Var::Id(id) = z else { panic!() };

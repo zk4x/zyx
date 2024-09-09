@@ -435,7 +435,7 @@ impl CUDADevice {
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
-                    "{indent}{}{}* g{id},\n",
+                    "{indent}{}{}* p{id},\n",
                     if *read_only { "const " } else { "" },
                     dtype.cu(),
                 );
@@ -468,10 +468,10 @@ impl CUDADevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}{} = a{address}[{}];\n", z.cu(), offset.cu());
+                    source += &format!("{indent}{} = p{address}[{}];\n", z.cu(), offset.cu());
                 }
                 IROp::Store { address, offset, x } => {
-                    source += &format!("{indent}a{address}[{}] = {};\n", offset.cu(), x.cu());
+                    source += &format!("{indent}p{address}[{}] = {};\n", offset.cu(), x.cu());
                 }
                 IROp::Unary { z, x, uop } => {
                     let Var::Id(id) = x else { panic!() };
