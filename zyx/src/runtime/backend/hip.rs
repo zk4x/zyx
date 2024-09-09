@@ -335,12 +335,14 @@ impl HIPDevice {
             }
         }
         // Declare global variables
-        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
-            source += &format!(
-                "{indent}{}{}* g{id},\n",
-                if *read_only { "const " } else { "" },
-                dtype.hip(),
-            );
+        for (id, (_, dtype, read_only, scope)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "{indent}{}{}* g{id},\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.hip(),
+                );
+            }
         }
         source.pop();
         source.pop();

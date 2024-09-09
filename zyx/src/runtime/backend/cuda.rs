@@ -432,12 +432,14 @@ impl CUDADevice {
         }
 
         // Declare global variables
-        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
-            source += &format!(
-                "{indent}{}{}* g{id},\n",
-                if *read_only { "const " } else { "" },
-                dtype.cu(),
-            );
+        for (id, (_, dtype, read_only, scope)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "{indent}{}{}* g{id},\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.cu(),
+                );
+            }
         }
 
         source.pop();
@@ -722,12 +724,17 @@ impl CUDADevice {
             self.compute_capability[0], self.compute_capability[1]
         );
         // Declare global variables
-        for (id, (_, _, read_only)) in kernel.addressables.iter().enumerate() {
-            source += &format!("{indent}.param    .u64 g{id},\n");
+        for (id, (_, _, read_only, scope)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!("{indent}.param    .u64 g{id},\n");
+            }
         }
         source.pop();
         source.pop();
         source += "\n) {\n";
+
+        // TOOD declare local variables
+
         // Temporaries
         source += &format!("{indent}.reg  .pred    p;\n");
         source += &format!("{indent}.reg  .s64    a0;\n");

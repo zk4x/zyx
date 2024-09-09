@@ -639,17 +639,21 @@ impl OpenCLDevice {
         }
 
         // Declare global variables
-        for (id, (_, dtype, read_only)) in kernel.addressables.iter().enumerate() {
-            source += &format!(
-                "{indent}__global {}{}* g{id},\n",
-                if *read_only { "const " } else { "" },
-                dtype.ocl(),
-            );
+        for (id, (_, dtype, read_only, scope)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "{indent}__global {}{}* g{id},\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.ocl(),
+                );
+            }
         }
 
         source.pop();
         source.pop();
         source += "\n) {\n";
+
+        // TODO declare local variables
 
         // Declare register variables
         for (id, (len, dtype, read_only)) in kernel.registers.iter().enumerate() {

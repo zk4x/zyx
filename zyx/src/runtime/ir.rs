@@ -1,9 +1,8 @@
 use crate::{
-    dtype::Constant, runtime::node::{BOp, ROp, UOp}, shape::Axis, tensor::TensorId, DType
+    dtype::Constant, runtime::node::{BOp, UOp}, shape::Axis, tensor::TensorId, DType
 };
-use std::collections::{BTreeMap, BTreeSet};
-
-use super::scheduler::{Kernel, VOp};
+use std::collections::BTreeMap;
+use super::{scheduler::VOp, view::View};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Var {
@@ -107,8 +106,10 @@ pub(super) enum IRVec {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct IRKernel {
     // Index of var is it's Id
-    // len, dtype, read_only
-    pub(super) addressables: Vec<(usize, IRDType, bool)>,
+    // Addressables contain all variables accessible from outside of the kernel,
+    // that is global and local memory
+    // len, dtype, read_only, scope
+    pub(super) addressables: Vec<(usize, IRDType, bool, Scope)>,
     // len, dtype, read_only
     pub(super) registers: Vec<(usize, IRDType, bool)>,
     pub(super) ops: Vec<IROp>,
@@ -270,17 +271,40 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     }
 
     // Maps from tensors to registers
-    let mut tensor_var_map: BTreeMap<TensorId, Var> = BTreeMap::new();
+    let mut tensor_var_map: BTreeMap<(TensorId, Scope), Var> = BTreeMap::new();
 
-    fn fill_empty_register(registers: &mut Vec<(usize, IRDType, bool, u32)>, len: usize, ir_dtype: IRDType, read_only: bool, rc: u32) -> u16 {
-        if let Some(id) = registers.iter().enumerate().find_map(|(id, &(l, d, r, c))| if c == 0 && l == len && ir_dtype == d && read_only == r { Some(id as u16) } else { None }) {
-            registers[id as usize] = (len, ir_dtype, read_only, rc);
-            id
-        } else {
-            registers.push((len, ir_dtype, read_only, rc));
-            (registers.len() - 1) as u16
+    // Initialize global arguments
+    for op in kernel_ops {
+        match op {
+            &VOp::Load { x, xscope, ref view, .. } => {
+                if xscope == Scope::Global && !tensor_var_map.contains_key(&(x, xscope)) {
+                    let dtype = IRDType::F32(IRVec::Scalar);
+                    addressables.push((view.original_numel(), dtype, true, xscope));
+                    let id = (addressables.len() - 1) as u16;
+                    tensor_var_map.insert((x, xscope), Var::Id(id, xscope));
+                }
+            }
+            &VOp::Store { z, zscope, xscope, ref view } => {
+                if zscope == Scope::Global {
+                    let dtype = IRDType::F32(IRVec::Scalar);
+                    tensor_var_map.entry((z, zscope)).and_modify(|&mut var| {
+                        if let Var::Id(id, scope) = var {
+                            assert_eq!(scope, Scope::Global);
+                            // set it to read-write
+                            addressables[id as usize].2 = false;
+                        }
+                    }).or_insert_with(|| {
+                        addressables.push((view.original_numel(), dtype, false, zscope));
+                        let id = (addressables.len() - 1) as u16;
+                        Var::Id(id, xscope)
+                    });
+                }
+            }
+            _ => {}
         }
     }
+
+    // TODO Initialize local variables
 
     // Actual transpiling from Kernel to IRKernel
     let mut loops = Vec::new();
@@ -299,7 +323,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 }
             }
             &VOp::Const { z, value, ref view } => {
-                tensor_var_map.insert(z, Var::Const(value));
+                tensor_var_map.insert((z, Scope::Register), Var::Const(value));
             }
             &VOp::Load { z, zscope, x, xscope, ref view } => {
                 match zscope {
@@ -311,7 +335,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                         let ir_dtype = IRDType::F32(IRVec::Scalar);
                         let id = fill_empty_register(&mut registers, 1, ir_dtype, true, tensor_rcs[&z]);
                         let zvar = Var::Id(id, Scope::Register);
-                        tensor_var_map.insert(z, zvar);
+                        tensor_var_map.insert((z, Scope::Register), zvar);
                     }
                 }
             }
@@ -322,22 +346,22 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 let ir_dtype = IRDType::F32(IRVec::Scalar);
                 let len = view.original_numel();
                 let id = fill_empty_register(&mut registers, len, ir_dtype, false, tensor_rcs[&z]);
-                tensor_var_map.insert(z, Var::Id(id, Scope::Register));
+                tensor_var_map.insert((z, Scope::Register), Var::Id(id, Scope::Register));
             }
             &VOp::Move { z, x, .. } => {
-                tensor_var_map.insert(z, tensor_var_map[&x]);
+                tensor_var_map.insert((z, Scope::Register), tensor_var_map[&(x, Scope::Register)]);
             }
             &VOp::Unary { z, x, uop, ref view } => {
                 // TODO unary can have view
-                if let Var::Const(value) = tensor_var_map[&x] {
-                    tensor_var_map.insert(z, Var::Const(value.unary(uop)));
+                if let Var::Const(value) = tensor_var_map[&(x, Scope::Register)] {
+                    tensor_var_map.insert((z, Scope::Register), Var::Const(value.unary(uop)));
                 } else {
                     let ir_dtype = IRDType::F32(IRVec::Scalar);
                     let id = fill_empty_register(&mut registers, 1, ir_dtype, false, tensor_rcs[&z]);
                     let zvar = Var::Id(id, Scope::Register);
-                    tensor_var_map.insert(z, zvar);
-                    ops.push(IROp::Unary { z: zvar, x: tensor_var_map[&x], uop, dtype: ir_dtype });
-                    if let Var::Id(id, _) = tensor_var_map[&x] {
+                    tensor_var_map.insert((z, Scope::Register), zvar);
+                    ops.push(IROp::Unary { z: zvar, x: tensor_var_map[&(x, Scope::Register)], uop, dtype: ir_dtype });
+                    if let Var::Id(id, _) = tensor_var_map[&(x, Scope::Register)] {
                         registers[id as usize].3 -= 1u32;
                     }
                 }
@@ -347,12 +371,12 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 let dtype = IRDType::F32(IRVec::Scalar);
                 let id = fill_empty_register(&mut registers, 1, dtype, false, tensor_rcs[&z]);
                 let zvar = Var::Id(id, Scope::Register);
-                tensor_var_map.insert(z, zvar);
-                ops.push(IROp::Binary { z: zvar, x: tensor_var_map[&x], y: tensor_var_map[&y], bop, dtype });
-                if let Var::Id(id, _) = tensor_var_map[&x] {
+                tensor_var_map.insert((z, Scope::Register), zvar);
+                ops.push(IROp::Binary { z: zvar, x: tensor_var_map[&(x, Scope::Register)], y: tensor_var_map[&(y, Scope::Register)], bop, dtype });
+                if let Var::Id(id, _) = tensor_var_map[&(x, Scope::Register)] {
                     registers[id as usize].3 -= 1u32;
                 }
-                if let Var::Id(id, _) = tensor_var_map[&y] {
+                if let Var::Id(id, _) = tensor_var_map[&(y, Scope::Register)] {
                     registers[id as usize].3 -= 1u32;
                 }
             }
@@ -364,4 +388,18 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     }
 
     (IRKernel { addressables, registers: registers.into_iter().map(|(len, dtype, ro, _)| (len, dtype, ro)).collect(), ops }, args)
+}
+
+fn fill_empty_register(registers: &mut Vec<(usize, IRDType, bool, u32)>, len: usize, ir_dtype: IRDType, read_only: bool, rc: u32) -> u16 {
+    if let Some(id) = registers.iter().enumerate().find_map(|(id, &(l, d, r, c))| if c == 0 && l == len && ir_dtype == d && read_only == r { Some(id as u16) } else { None }) {
+        registers[id as usize] = (len, ir_dtype, read_only, rc);
+        id
+    } else {
+        registers.push((len, ir_dtype, read_only, rc));
+        (registers.len() - 1) as u16
+    }
+}
+
+fn create_indexed_register(registers: &mut Vec<(usize, IRDType, bool, u32)>, len: usize, ir_dtype: IRDType, read_only: bool, rc: u32, view: &View) -> u16 {
+    todo!()
 }
