@@ -32,9 +32,10 @@ impl Kernel {
         ops.push(VOp::Load {
             z: x,
             zscope: Scope::Register,
+            zview: View::None,
             x,
             xscope: Scope::Global,
-            view: View::new(&shape),
+            xview: View::new(&shape),
         });
         Kernel {
             shape,
@@ -48,9 +49,10 @@ impl Kernel {
     pub(super) fn store(&mut self, z: TensorId, graph: &Graph) {
         let store_op = VOp::Store {
             z,
+            zview: View::new(graph.shape(z)),
             zscope: Scope::Global,
             xscope: Scope::Register,
-            view: View::new(graph.shape(z)),
+            xview: View::None,
         };
         if self.ops.last().unwrap() != &store_op {
             self.ops.push(store_op);
@@ -80,7 +82,7 @@ impl Kernel {
                         }
                     }
                 }
-                VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
+                VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } | VOp::Accumulator { view, .. } => {
                     let n = view.rank();
                     let permute_axes: Vec<usize> = if last_axis > n {
                         // We actually need to check which axis view refers to, then check which loops those were
@@ -132,7 +134,7 @@ impl Kernel {
                     *dimension = pdims[id];
                     id += 1;
                 }
-                VOp::Const { view, .. } | VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Accumulator { view, .. } => {
+                VOp::Const { view, .. } | VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Accumulator { view, .. } => {
                     view.arbitrary_permute(&paxes);
                 }
                 _ => {}
@@ -187,18 +189,8 @@ impl Kernel {
                     *axis += dimensions.len() - 1;
                     num_loops += 1;
                 }
-                /*VOp::Reduce { num_axes, .. } => {
-                    if num_loops == 0 {
-                        *num_axes += dimensions.len() - 1;
-                        reduce_end = true;
-                    }
-                    if *num_axes > num_loops {
-                        return
-                    }
-                    num_loops -= *num_axes;
-                }*/
                 // Then change all load and store operations in this loop in the same way.
-                VOp::Load { view, .. } | VOp::Const { view, .. } | VOp::Store { view, .. } => {
+                VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } | VOp::Accumulator { view, .. } => {
                     view.split_axis(axis, dimensions);
                 }
                 _ => {}
@@ -260,7 +252,7 @@ impl Kernel {
         let naxis = axis;
         for op in &mut self.ops {
             match op {
-                VOp::Const { view, .. } | VOp::Load { view, .. } | VOp::Store { view, .. } => match view {
+                VOp::Const { view, .. } | VOp::Store { zview: view, .. } | VOp::Load { xview: view, .. } | VOp::Accumulator { view, .. } => match view {
                     View::None => {}
                     View::Strided(dims) => {
                         dims.iter_mut().for_each(|StridedDim { axis, .. }| if *axis >= naxis { *axis += 1 });
@@ -296,7 +288,7 @@ impl Kernel {
                     shape.push(*dimension);
                 }
                 VOp::Const { z, value, view } => {}
-                VOp::Load { z, zscope, x, xscope, view } => {
+                VOp::Load { z, zscope, x, xscope, .. } => {
                     // Note that this calculates actual read speed, even if the load accesses the same
                     // value multiple times. This is usefull so that we can see whether the kernel
                     // is compute bound or memory bound.
@@ -304,7 +296,7 @@ impl Kernel {
                         mem_read += shape.iter().product::<usize>() as u128;
                     }
                 }
-                VOp::Store { z, zscope, xscope, view } => {
+                VOp::Store { z, zscope, xscope, .. } => {
                     if *zscope == Scope::Global {
                         mem_write += shape.iter().product::<usize>() as u128;
                     }

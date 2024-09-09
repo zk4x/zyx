@@ -420,7 +420,7 @@ impl CUDADevice {
         let mut local_work_size = [0; 3];
 
         for op in &kernel.ops[..6] {
-            if let IROp::While { id, len } = op {
+            if let IROp::Loop { id, len } = op {
                 if id % 2 == 0 {
                     global_work_size[*id as usize / 2] = *len;
                 } else {
@@ -432,7 +432,7 @@ impl CUDADevice {
         }
 
         // Declare global variables
-        for (id, (_, dtype, read_only, scope)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
                     "{indent}{}{}* g{id},\n",
@@ -447,10 +447,9 @@ impl CUDADevice {
         source += "\n) {\n";
 
         // Declare register variables
-        for (id, (len, dtype, read_only)) in kernel.registers.iter().enumerate() {
+        for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!(
-                "{indent}{}{} r{id}[{len}];\n",
-                if *read_only { "const " } else { "" },
+                "{indent}{} r{id};\n",
                 dtype.cu()
             );
         }
@@ -465,16 +464,18 @@ impl CUDADevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, len: _, value } => {
+                IROp::Set { z, value } => {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
-                IROp::Load { z, x, at, dtype: _ } => {
-                    source += &format!("{indent}{} = {}[{}];\n", z.cu(), x.cu(), at.cu());
+                IROp::Load { z, address, offset } => {
+                    source += &format!("{indent}{} = a{address}[{}];\n", z.cu(), offset.cu());
                 }
-                IROp::Store { z, x, at, dtype: _ } => {
-                    source += &format!("{indent}{}[{}] = {};\n", z.cu(), at.cu(), x.cu());
+                IROp::Store { address, offset, x } => {
+                    source += &format!("{indent}a{address}[{}] = {};\n", offset.cu(), x.cu());
                 }
-                IROp::Unary { z, x, uop, dtype } => {
+                IROp::Unary { z, x, uop } => {
+                    let Var::Id(id) = x else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     let zero = Constant::new(0).unary(UOp::Cast(dtype.dtype())).cu();
                     source += &match uop {
                         UOp::Cast(_) => {
@@ -492,13 +493,7 @@ impl CUDADevice {
                         UOp::Nonzero => format!("{indent}{} = {} != {};\n", z.cu(), x.cu(), zero),
                     };
                 }
-                IROp::Binary {
-                    z,
-                    x,
-                    y,
-                    bop,
-                    dtype: _,
-                } => {
+                IROp::Binary { z, x, y, bop } => {
                     source += &format!(
                         "{indent}{} = {};\n",
                         z.cu(),
@@ -515,22 +510,10 @@ impl CUDADevice {
                         }
                     );
                 }
-                IROp::MAdd {
-                    z,
-                    a,
-                    b,
-                    c,
-                    dtype: _,
-                } => {
-                    source += &format!(
-                        "{indent}{} = {} * {} + {};\n",
-                        z.cu(),
-                        a.cu(),
-                        b.cu(),
-                        c.cu()
-                    );
+                IROp::MAdd { z, a, b, c } => {
+                    source += &format!("{indent}{} = {} * {} + {};\n", z.cu(), a.cu(), b.cu(), c.cu());
                 }
-                IROp::While { id, len } => {
+                IROp::Loop { id, len } => {
                     source += &format!(
                         "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
                     );
@@ -555,8 +538,6 @@ impl CUDADevice {
         }
         source += "}\n";
 
-        let global_work_size = global_work_size;
-        let local_work_size = local_work_size;
         let mut name = format!(
             "k__{}_{}_{}__{}_{}_{}",
             global_work_size[0],
@@ -697,7 +678,7 @@ impl CUDADevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
-            if let IROp::While { id, len } = op {
+            if let IROp::Loop { id, len } = op {
                 if id % 2 == 0 {
                     global_work_size[*id as usize / 2] = *len;
                 } else {
@@ -724,7 +705,7 @@ impl CUDADevice {
             self.compute_capability[0], self.compute_capability[1]
         );
         // Declare global variables
-        for (id, (_, _, read_only, scope)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, _, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!("{indent}.param    .u64 g{id},\n");
             }
@@ -740,7 +721,7 @@ impl CUDADevice {
         source += &format!("{indent}.reg  .s64    a0;\n");
         source += &format!("{indent}.reg  .s64    a1;\n");
         // Declare register variables
-        for (id, (len, dtype, ..)) in kernel.registers.iter().enumerate() {
+        for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!("{indent}.reg  .{}    r{id};\n", dtype.ptx());
         }
         // Add indices for global and local loops
@@ -753,49 +734,33 @@ impl CUDADevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, len, value } => {
+                IROp::Set { z, value } => {
                     let dtype: IRDType = value.dtype().into();
                     source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.ptx());
                 }
-                IROp::Load { z, x, at, dtype } => {
+                IROp::Load { z, address, offset } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     // Get address
-                    source += &format!("{indent}ld.param.u64    a0, [{}];\n", x.ptx());
+                    source += &format!("{indent}ld.param.u64    a0, [a{address}+{}];\n", offset.ptx());
                     // Convert address to global
                     source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
-                    // Shift by {at}
-                    // Multiply at by byte width of dtype
-                    source += &format!(
-                        "{indent}shl.b32    {0}, {0}, {1};\n",
-                        at.ptx(),
-                        dtype.byte_size().ilog2()
-                    );
-                    // Convert at to s64
-                    source += &format!("{indent}cvt.s64.u32    a0, {};\n", at.ptx());
-                    // Add at to address
-                    source += &format!("{indent}add.s64    a1, a1, a0;\n");
                     // Load from global to register
                     source += &format!("{indent}ld.global.{}    {}, [a1];\n", dtype.ptx(), z.ptx());
                 }
-                IROp::Store { z, x, at, dtype } => {
+                IROp::Store { address, offset, x } => {
+                    let Var::Id(id) = x else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     // Get address
-                    source += &format!("{indent}ld.param.u64    a0, [{}];\n", z.ptx());
+                    source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
                     // Convert address to global
                     source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
-                    // Shift by {at}
-                    // Multiply at by byte width of dtype
-                    source += &format!(
-                        "{indent}shl.b32    {0}, {0}, {1};\n",
-                        at.ptx(),
-                        dtype.byte_size().ilog2()
-                    );
-                    // Convert at to s64
-                    source += &format!("{indent}cvt.s64.u32    a0, {};\n", at.ptx());
-                    // Add at to address
-                    source += &format!("{indent}add.s64    a1, a1, a0;\n");
                     // Load from global to register
                     source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.ptx());
                 }
-                IROp::Unary { z, x, uop, dtype } => {
+                IROp::Unary { z, x, uop } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(cdt) => format!(
                             "{indent}cvt.{}.{}    {}, {};\n",
@@ -850,8 +815,9 @@ impl CUDADevice {
                     x,
                     y,
                     bop,
-                    dtype,
                 } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     //println!("Adding binary {bop:?}");
                     source += &format!(
                         "{indent}{}.{}   {}, {}, {};\n",
@@ -872,7 +838,9 @@ impl CUDADevice {
                         y.ptx()
                     );
                 }
-                IROp::MAdd { z, a, b, c, dtype } => {
+                IROp::MAdd { z, a, b, c } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     source += &format!(
                         "{indent}mad.lo.{}    {}, {}, {}, {};\n",
                         dtype.ptx(),
@@ -882,7 +850,7 @@ impl CUDADevice {
                         c.ptx()
                     );
                 }
-                IROp::While { id, .. } => {
+                IROp::Loop { id, .. } => {
                     source += &format!("LOOP_{id}:\n");
                 }
                 IROp::EndLoop { id, len } => {
@@ -1210,7 +1178,7 @@ impl Constant {
 impl Var {
     fn ptx(&self) -> String {
         match self {
-            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Id(id) => format!("r{id}"),
             Var::Const(value) => format!("{}", value.ptx()),
         }
     }
@@ -1243,7 +1211,7 @@ impl IRDType {
 impl Var {
     fn cu(&self) -> String {
         match self {
-            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Id(id) => format!("r{id}"),
             Var::Const(value) => format!("{}", value.cu()),
         }
     }

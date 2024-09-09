@@ -26,15 +26,17 @@ pub(crate) enum VOp {
     Load {
         z: TensorId,
         zscope: Scope,
+        zview: View,
         x: TensorId,
         xscope: Scope,
-        view: View,
+        xview: View,
     },
     Store {
         z: TensorId,
         zscope: Scope,
+        zview: View,
         xscope: Scope,
-        view: View,
+        xview: View,
     },
     // TODO remove accumulator and use const + load
     // instead to create register tile
@@ -85,19 +87,21 @@ impl std::fmt::Display for VOp {
             VOp::Load {
                 z,
                 zscope,
+                zview,
                 x,
                 xscope,
-                view,
+                xview,
             } => f.write_fmt(format_args!(
-                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}], {view}"
+                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}], {xview}"
             )),
             VOp::Store {
                 z,
+                zview,
                 zscope,
                 xscope,
-                view,
+                xview,
             } => f.write_fmt(format_args!(
-                "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {view}"
+                "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {zview}"
             )),
             VOp::Loop {
                 axis,
@@ -110,14 +114,6 @@ impl std::fmt::Display for VOp {
                 view.shape()
             )),
             VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset} ")),
-            /*VOp::Reduce {
-                z,
-                x,
-                num_axes,
-                rop,
-            } => f.write_fmt(format_args!(
-                "{color_magenta}Reduce{color_reset}.{rop:?}  {z} <- {x}, num_axes: {num_axes}"
-            )),*/
             VOp::Move { z, x, mop } => f.write_fmt(format_args!(
                 "{color_white}Move{color_reset}.{mop:?}   {z} <- {x}"
             )),

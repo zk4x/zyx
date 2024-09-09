@@ -627,7 +627,7 @@ impl OpenCLDevice {
         let mut local_work_size = [0; 3];
 
         for op in &kernel.ops[..6] {
-            if let IROp::While { id, len } = op {
+            if let IROp::Loop { id, len } = op {
                 if id % 2 == 0 {
                     global_work_size[*id as usize / 2] = *len;
                 } else {
@@ -639,7 +639,7 @@ impl OpenCLDevice {
         }
 
         // Declare global variables
-        for (id, (_, dtype, read_only, scope)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
                     "{indent}__global {}{}* g{id},\n",
@@ -656,16 +656,10 @@ impl OpenCLDevice {
         // TODO declare local variables
 
         // Declare register variables
-        for (id, (len, dtype, read_only)) in kernel.registers.iter().enumerate() {
+        for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!(
-                "{indent}{}{} r{id}{};\n",
-                if *read_only { "const " } else { "" },
+                "{indent}{} r{id};\n",
                 dtype.ocl(),
-                if *len > 1 {
-                    format!("[{len}]")
-                } else {
-                    String::new()
-                }
             );
         }
 
@@ -697,18 +691,18 @@ impl OpenCLDevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, len: _, value } => {
+                IROp::Set { z, value } => {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
-                IROp::Load { z, x, at, dtype: _ } => {
-                    //source += &format!("{indent}if ({0} > 1048575) {{ printf(\"Load %d\\n\", {0}); }}\n", at.ocl());
-                    source += &format!("{indent}{} = {}[{}];\n", z.ocl(), x.ocl(), at.ocl());
+                IROp::Load { z, address, offset } => {
+                    source += &format!("{indent}{} = a{address}[{}];\n", z.ocl(), offset.ocl());
                 }
-                IROp::Store { z, x, at, dtype: _ } => {
-                    //source += &format!("{indent}if ({0} > 1048570) {{ printf(\"Store %d\\n\", {0}); }}\n", at.ocl());
-                    source += &format!("{indent}{}[{}] = {};\n", z.ocl(), at.ocl(), x.ocl());
+                IROp::Store { address, offset, x } => {
+                    source += &format!("{indent}a{address}[{}] = {};\n", offset.ocl(), x.ocl());
                 }
-                IROp::Unary { z, x, uop, dtype } => {
+                IROp::Unary { z, x, uop } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(_) => {
                             format!("{indent}{} = ({}){};\n", z.ocl(), dtype.ocl(), x.ocl())
@@ -730,13 +724,7 @@ impl OpenCLDevice {
                         UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.ocl(), x.ocl()),
                     };
                 }
-                IROp::Binary {
-                    z,
-                    x,
-                    y,
-                    bop,
-                    dtype: _,
-                } => {
+                IROp::Binary { z, x, y, bop } => {
                     source += &format!(
                         "{indent}{} = {};\n",
                         z.ocl(),
@@ -753,13 +741,7 @@ impl OpenCLDevice {
                         }
                     );
                 }
-                IROp::MAdd {
-                    z,
-                    a,
-                    b,
-                    c,
-                    dtype: _,
-                } => {
+                IROp::MAdd { z, a, b, c } => {
                     source += &format!(
                         "{indent}{} = {} * {} + {};\n",
                         z.ocl(),
@@ -768,7 +750,7 @@ impl OpenCLDevice {
                         c.ocl()
                     );
                 }
-                IROp::While { id, len } => {
+                IROp::Loop { id, len } => {
                     source += &format!(
                         "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
                     );
@@ -1215,7 +1197,7 @@ impl Constant {
 impl Var {
     fn ocl(&self) -> String {
         match self {
-            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Id(id) => format!("r{id}"),
             Var::Const(value) => format!("{}", value.ocl()),
         }
     }

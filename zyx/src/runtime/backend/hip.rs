@@ -324,7 +324,7 @@ impl HIPDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
-            if let IROp::While { id, len } = op {
+            if let IROp::Loop { id, len } = op {
                 if id % 2 == 0 {
                     global_work_size[*id as usize / 2] = *len;
                 } else {
@@ -335,10 +335,10 @@ impl HIPDevice {
             }
         }
         // Declare global variables
-        for (id, (_, dtype, read_only, scope)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
-                    "{indent}{}{}* g{id},\n",
+                    "{indent}{}{}* a{id},\n",
                     if *read_only { "const " } else { "" },
                     dtype.hip(),
                 );
@@ -348,10 +348,9 @@ impl HIPDevice {
         source.pop();
         source += "\n) {\n";
         // Declare register variables
-        for (id, (len, dtype, read_only)) in kernel.registers.iter().enumerate() {
+        for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!(
-                "{indent}{}{} r{id}[{len}];\n",
-                if *read_only { "const " } else { "" },
+                "{indent}{} r{id};\n",
                 dtype.hip()
             );
         }
@@ -364,16 +363,18 @@ impl HIPDevice {
         source += &format!("  r5 = threadIdx.z;   /* 0..{} */\n", local_work_size[2]);
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, len: _, value } => {
+                IROp::Set { z, value } => {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
-                IROp::Load { z, x, at, dtype: _ } => {
-                    source += &format!("{indent}{} = {}[{}];\n", z.hip(), x.hip(), at.hip());
+                IROp::Load { z, address, offset } => {
+                    source += &format!("{indent}{} = a{address}[{}];\n", z.hip(), offset.hip());
                 }
-                IROp::Store { z, x, at, dtype: _ } => {
-                    source += &format!("{indent}{}[{}] = {};\n", z.hip(), at.hip(), x.hip());
+                IROp::Store { address, offset, x } => {
+                    source += &format!("{indent}a{address}[{}] = {};\n", offset.hip(), x.hip());
                 }
-                IROp::Unary { z, x, uop, dtype } => {
+                IROp::Unary { z, x, uop } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(_) => {
                             format!("{indent}{} = ({}){};\n", z.hip(), dtype.hip(), x.hip())
@@ -390,13 +391,7 @@ impl HIPDevice {
                         UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.hip(), x.hip()),
                     };
                 }
-                IROp::Binary {
-                    z,
-                    x,
-                    y,
-                    bop,
-                    dtype: _,
-                } => {
+                IROp::Binary { z, x, y, bop } => {
                     source += &format!(
                         "{indent}{} = {};\n",
                         z.hip(),
@@ -413,13 +408,7 @@ impl HIPDevice {
                         }
                     );
                 }
-                IROp::MAdd {
-                    z,
-                    a,
-                    b,
-                    c,
-                    dtype: _,
-                } => {
+                IROp::MAdd { z, a, b, c } => {
                     source += &format!(
                         "{indent}{} = {} * {} + {};\n",
                         z.hip(),
@@ -428,7 +417,7 @@ impl HIPDevice {
                         c.hip()
                     );
                 }
-                IROp::While { id, len } => {
+                IROp::Loop { id, len } => {
                     source += &format!(
                         "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
                     );
@@ -452,8 +441,6 @@ impl HIPDevice {
             }
         }
         source += "}\n";
-        let mut global_work_size = global_work_size;
-        let local_work_size = local_work_size;
         let mut name = format!(
             "k__{}_{}__{}_{}__{}_{}",
             global_work_size[0],
@@ -677,7 +664,7 @@ impl IRDType {
 impl Var {
     fn hip(&self) -> String {
         match self {
-            Var::Id(id, scope) => format!("{scope}{id}"),
+            Var::Id(id) => format!("r{id}"),
             Var::Const(value) => format!("{}", value.hip()),
         }
     }

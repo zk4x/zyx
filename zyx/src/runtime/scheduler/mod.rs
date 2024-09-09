@@ -556,9 +556,10 @@ fn generate_kernels(
                     kernel.ops.push(VOp::Load {
                         z: nid,
                         zscope: Scope::Register,
+                        zview: View::None,
                         x: nid,
                         xscope: Scope::Global,
-                        view: View::new(shape),
+                        xview: View::new(shape),
                     });
                     kernel.inputs.insert(nid);
                     kernel.vars.insert(nid);
@@ -604,19 +605,19 @@ fn generate_kernels(
                                 *dimension = shape[*axis];
                             }
                         }
-                        VOp::Load { view, .. } | VOp::Const { view, .. } => {
+                        VOp::Load { xview: view, .. } | VOp::Const { view, .. } => {
                             // Done expanding marks which loops are behind us,
                             // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
                             for a in expand_axes.difference(&done_expanding) {
                                 view.expand(*a, shape[*a]);
                             }
                         }
-                        VOp::Store { view, .. } => {
+                        VOp::Store { zview, .. } => {
                             // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
                             // perhaps doing only single write during the whole loop using if condition, but that could also be added
                             // to View in VOp::Store as optimization when converting to IROps
                             for a in expand_axes.difference(&done_expanding) {
-                                view.expand(*a, shape[*a]);
+                                zview.expand(*a, shape[*a]);
                             }
                         }
                         _ => {}
@@ -661,7 +662,7 @@ fn generate_kernels(
                     | VOp::Unary { .. }
                     | VOp::Binary { .. }
                     | VOp::Move { .. } => true,
-                    VOp::Load { view, .. } | VOp::Store { view, .. } | VOp::Const { view, .. } => {
+                    VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } => {
                         view.is_contiguous()
                     }
                     VOp::Accumulator { .. } | VOp::EndLoop => false, // | VOp::Reduce { .. }
@@ -679,9 +680,9 @@ fn generate_kernels(
                     // Change Reshape loads and stores
                     for op in &mut kernel.ops {
                         match op {
-                            VOp::Load { view, .. }
+                            VOp::Load { xview: view, .. }
                             | VOp::Const { view, .. }
-                            | VOp::Store { view, .. } => {
+                            | VOp::Store { zview: view, .. } => {
                                 *view = View::new(shape);
                             }
                             _ => {}
@@ -791,9 +792,10 @@ fn generate_kernels(
                         ops.push(VOp::Load {
                             z: nid,
                             zscope: Scope::Register,
+                            zview: View::None,
                             x: *x,
                             xscope: Scope::Global,
-                            view: View::new(shape),
+                            xview: View::new(shape),
                         });
                         kernels.push(Kernel {
                             shape: shape.into(),
@@ -842,8 +844,8 @@ fn generate_kernels(
                             }
                         }
                         VOp::Const { view, .. }
-                        | VOp::Load { view, .. }
-                        | VOp::Store { view, .. }
+                        | VOp::Load { xview: view, .. }
+                        | VOp::Store { zview: view, .. }
                         | VOp::Accumulator { view, .. } => {
                             for (&axis, &(lp, rp)) in &padded_axes {
                                 view.pad_axis(axis, lp, rp);
@@ -957,9 +959,10 @@ fn generate_kernels(
                         kernel.ops.push(VOp::Load {
                             z: *y,
                             zscope: Scope::Register,
+                            zview: View::None,
                             x: *y,
                             xscope: Scope::Global,
-                            view: View::new(graph.shape(*y)),
+                            xview: View::new(graph.shape(*y)),
                         });
                         kernel.vars.insert(*y);
                         kernel.inputs.insert(*y);
