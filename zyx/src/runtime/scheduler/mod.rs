@@ -807,8 +807,16 @@ fn generate_kernels(
                 //println!("\nKernels {kernels:?}\n");
             }
             Node::Pad { x, padding } => {
-                // Pad shrinks or expands dimension of axes
-                let kernel = get_kernel(*x, &mut kernels, graph);
+                // Pad shrinks or expands dimension of axes, this is ZERO padding
+                let mut kernel = get_kernel(*x, &mut kernels, graph);
+                // Kernel cannot be padded if it containe max reduce.
+                // For now kernel also won't be padded if it contains store,
+                // but that can be changed.
+                if !kernel.can_be_zero_padded() {
+                    kernel.store(*x, graph);
+                    kernels.push(Kernel::load(graph, *x));
+                    kernel = kernels.last_mut().unwrap();
+                }
                 let rank = kernel.shape.len();
                 // Get which axes are padded
                 let mut padded_axes = BTreeMap::new();
@@ -844,66 +852,6 @@ fn generate_kernels(
                         _ => {}
                     }
                 }
-
-                /*let shape = graph.shape(nid);
-                // Pad shrinks or expands dimension of axes, but if there is store,
-                // then it creates new kernel
-                let mut kernel = get_kernel(*x, &mut kernels, graph);
-                let axes: BTreeSet<usize> = (shape.len() - padding.len()..shape.len()).collect();
-                //println!("Shape: {shape:?}, padding: {padding:?}, axes: {axes:?}");
-                let mut padded_loops: BTreeSet<usize> = axes.clone();
-                let mut padding_possible = true;
-                'ops_loop: for op in kernel.ops.iter_mut().rev() {
-                    match op {
-                        VOp::Loop { axis, .. } => {
-                            if axes.contains(axis) {
-                                padded_loops.remove(axis);
-                                if padded_loops.is_empty() {
-                                    break 'ops_loop;
-                                }
-                            }
-                        }
-                        // TODO perhaps we can pad Store too
-                        VOp::Store { .. } => {
-                            padding_possible = false;
-                            break 'ops_loop;
-                        }
-                        _ => {}
-                    }
-                }
-                //println!("Padding possible: {padding_possible}");
-                if !padding_possible {
-                    kernel.store(*x, graph);
-                    kernels.push(Kernel::load(graph, *x));
-                    kernel = kernels.last_mut().unwrap();
-                }
-                let mut padded_loops: BTreeSet<usize> = axes.clone();
-                kernel.debug();
-                'ops_loop: for op in kernel.ops.iter_mut().rev() {
-                    match op {
-                        VOp::Loop {
-                            axis,
-                            len: dimension,
-                        } => {
-                            if axes.contains(axis) {
-                                *dimension = shape[*axis];
-                                padded_loops.remove(axis);
-                                if padded_loops.is_empty() {
-                                    break 'ops_loop;
-                                }
-                            }
-                        }
-                        VOp::Load { view, .. } | VOp::Const { view, .. } => {
-                            let n = view.rank();
-                            let mut a = n;
-                            for (lp, rp) in &padding[shape.len() - n..] {
-                                a -= 1;
-                                view.pad(a, *lp, *rp);
-                            }
-                        }
-                        _ => {}
-                    }
-                }*/
                 kernel.shape = graph.shape(nid).into();
                 kernel.ops.push(VOp::Move {
                     z: nid,

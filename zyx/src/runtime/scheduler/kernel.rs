@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::{runtime::{graph::Graph, ir::Scope, view::{StridedDim, View}}, shape::{Axis, Dimension}, tensor::TensorId};
+use crate::{runtime::{graph::Graph, ir::Scope, node::ROp, view::{StridedDim, View}}, shape::{Axis, Dimension}, tensor::TensorId};
 
 use super::{shape_to_loops, vop::VOp};
 
@@ -331,5 +331,15 @@ impl Kernel {
             }
         }
         (flop, mem_read, mem_write)
+    }
+
+    pub(super) fn can_be_zero_padded(&self) -> bool {
+        self.ops.iter().all(|op| match op {
+            VOp::Accumulator { rop, .. } => matches!(rop, ROp::Sum),
+            // TODO this can be later removed, but it's a trade-off,
+            // it makes kernels bigger,  but they will have to contain branches.
+            VOp::Store { .. } => false,
+            _ => true,
+        })
     }
 }
