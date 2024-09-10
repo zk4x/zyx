@@ -1,5 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
+#![allow(unused)]
 
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
@@ -419,13 +420,15 @@ impl CUDADevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        for op in &kernel.ops[..6] {
+        let mut loop_ids = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
-                if id % 2 == 0 {
-                    global_work_size[*id as usize / 2] = *len;
+                if i % 2 == 0 {
+                    global_work_size[i as usize / 2] = *len;
                 } else {
-                    local_work_size[*id as usize / 2] = *len;
+                    local_work_size[i as usize / 2] = *len;
                 }
+                loop_ids[i] = *id;
             } else {
                 panic!()
             }
@@ -455,12 +458,12 @@ impl CUDADevice {
         }
 
         // Add indices for global and local loops
-        source += &format!("  r0 = blockIdx.x;   /* 0..{} */\n", global_work_size[0]);
-        source += &format!("  r1 = threadIdx.x;   /* 0..{} */\n", local_work_size[0]);
-        source += &format!("  r2 = blockIdx.y;   /* 0..{} */\n", global_work_size[1]);
-        source += &format!("  r3 = threadIdx.y;   /* 0..{} */\n", local_work_size[1]);
-        source += &format!("  r4 = blockIdx.z;   /* 0..{} */\n", global_work_size[2]);
-        source += &format!("  r5 = threadIdx.z;   /* 0..{} */\n", local_work_size[2]);
+        source += &format!("  r{} = blockIdx.x;   /* 0..{} */\n", loop_ids[0], global_work_size[0]);
+        source += &format!("  r{} = threadIdx.x;   /* 0..{} */\n", loop_ids[1], local_work_size[0]);
+        source += &format!("  r{} = blockIdx.y;   /* 0..{} */\n", loop_ids[2], global_work_size[1]);
+        source += &format!("  r{} = threadIdx.y;   /* 0..{} */\n", loop_ids[3], local_work_size[1]);
+        source += &format!("  r{} = blockIdx.z;   /* 0..{} */\n", loop_ids[4], global_work_size[2]);
+        source += &format!("  r{} = threadIdx.z;   /* 0..{} */\n", loop_ids[5], local_work_size[2]);
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {

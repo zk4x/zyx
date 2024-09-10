@@ -123,8 +123,14 @@ impl Runtime {
                 self.debug = x;
             }
         }
-        if let Ok(_) = std::env::var("ZYX_BEAM") {
-            self.beam_search = true;
+
+        // ZYX_SEARCH is number of variations of one kernel that will be tried
+        // during each run of the program. Timings are cached to disk,
+        // so rerunning the same kernels will continue the search where it left of.
+        if let Ok(x) = std::env::var("ZYX_SEARCH") {
+            if let Ok(x) = x.parse() {
+                self.search_iterations = x;
+            }
         }
 
         // Search through config directories and find zyx/backend_config.json

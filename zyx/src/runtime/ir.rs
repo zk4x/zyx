@@ -318,7 +318,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     // Actual transpiling from Kernel to IRKernel
     let mut loops = Vec::new();
     for op in kernel_ops {
-        println!("{op}");
+        //println!("{op}");
         match op {
             &VOp::Loop { axis, len } => {
                 // Axis always maps to register ids
@@ -454,6 +454,8 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     }
 
     // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
+
+    //for op in &ops { println!("{op:?}"); }
 
     (IRKernel { addressables, registers: registers.into_iter().map(|(dtype, _)| dtype).collect(), ops }, args)
 }

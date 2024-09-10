@@ -64,7 +64,7 @@ pub(super) struct Runtime {
     config_dir: Option<PathBuf>, // Why the is hell PathBuf::new not const???????
     // Are we in training mode?
     pub(super) training: bool,
-    pub(super) beam_search: bool,
+    pub(super) search_iterations: u32,
     pub(super) debug: u32,
 }
 
@@ -82,7 +82,7 @@ impl Runtime {
             ir_kernel_cache: BTreeMap::new(),
             config_dir: None,
             training: false,
-            beam_search: false,
+            search_iterations: 100,
             debug: 0,
         }
     }
@@ -496,10 +496,6 @@ impl Runtime {
 
     fn debug_asm(&self) -> bool {
         (self.debug >> 4) % 2 == 1
-    }
-
-    fn beam_search(&self) -> bool {
-        self.beam_search
     }
 
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {

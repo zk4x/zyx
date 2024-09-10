@@ -11,11 +11,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
 };
+use optimizer::KernelOptimizer;
 use vop::MOp;
 
 // Export Kernel and VOp for IR
 pub(super) use kernel::Kernel;
-pub(super) use optimizer::KernelOptimizations;
+pub(super) use optimizer::KernelOptimization;
 pub(super) use vop::VOp;
 
 mod kernel;
@@ -194,121 +195,12 @@ impl Runtime {
                     kernel.debug();
                 }
                 // Disk cached search, works across devices and platforms
-                let dev_info = self.devices[device_id].info();
-                let optimization = {
-                    let mut cached_kernels: BTreeMap<
-                        (Kernel, DeviceInfo),
-                        (KernelOptimizations, u128),
-                    > = if let Some(config_dir) = self.config_dir.clone() {
-                        let mut path = config_dir.clone();
-                        path.push("cached_kernels");
-                        if let Ok(mut file) = std::fs::File::open(path) {
-                            use std::io::Read;
-                            let mut buf = Vec::new();
-                            file.read_to_end(&mut buf).unwrap();
-                            if let Ok(cached_kernels) = bitcode::decode(&buf) {
-                                cached_kernels
-                            } else {
-                                BTreeMap::new()
-                            }
-                        } else {
-                            BTreeMap::new()
-                        }
-                    } else {
-                        BTreeMap::new()
-                    };
-                    let cache_key = (kernel.clone(), dev_info.clone());
-                    if let Some((optimizations, _)) = cached_kernels.get(&cache_key) {
-                        // TODO optimizations.best().clone()
-                        optimizations.clone()
-                    } else {
-                        // if self.beam_search() { // TODO enable this once we have implemented default optimizations
-                        // allocate space for inputs and outputs that are not allocated for this kernel
-                        let mut allocated_temps = Vec::new();
-                        let mpid = self.devices[device_id].memory_pool_id();
-                        for &tid in kernel.inputs.iter().chain(&kernel.outputs) {
-                            let buffer_id = self.memory_pools[mpid].allocate(
-                                graph.shape(tid).iter().product::<usize>()
-                                    * graph.dtype(tid).byte_size(),
-                            )?;
-                            allocated_temps.push(buffer_id);
-                        }
-                        // Get seach space of possible optimizations
-                        let optimizations = kernel.possible_optimizations(dev_info);
-                        let flop_mem_rw = if self.debug_perf() {
-                            Some(kernel.flop_mem_rw())
-                        } else {
-                            None
-                        };
-                        println!("Searching over {} optimizations.", optimizations.len());
-                        for optimization in optimizations {
-                            if self.debug_sched() {
-                                println!("{optimization}");
-                            }
-                            // Optimize and compile multiple kernels at once on different threads,
-                            // since compilation takes ~50ms,
-                            let (ir_kernel, _) = ir::to_ir(&kernel.optimize(&optimization).ops);
-                            let program_id = self.devices[device_id].compile(&ir_kernel, true)?;
-                            // Launch kernel and measure it's performance
-                            let begin = std::time::Instant::now();
-                            let Ok(queue_id) = self.devices[device_id].launch(
-                                program_id,
-                                &mut self.memory_pools[mpid],
-                                &allocated_temps,
-                            ) else {
-                                continue;
-                            };
-                            let Ok(_) = self.devices[device_id].sync(queue_id) else {
-                                continue;
-                            };
-                            let exec_time = begin.elapsed().as_nanos();
-                            let _ = self.devices[device_id].release_program(program_id);
-                            if let Some((f, mr, mw)) = flop_mem_rw {
-                                print_perf(f, mr, mw, exec_time);
-                            }
-                            // Cache best optimization
-                            if let Some((opt, old_exec_time)) = cached_kernels.get_mut(&cache_key) {
-                                if exec_time < *old_exec_time {
-                                    *opt = optimization;
-                                    *old_exec_time = exec_time;
-                                }
-                            } else {
-                                cached_kernels.insert(cache_key.clone(), (optimization, exec_time));
-                            }
-                        }
-                        println!("Optimization has been finished.\n");
-                        // Deallocate inputs and outputs that are used only for beam search
-                        for buffer_id in allocated_temps {
-                            self.memory_pools[mpid].deallocate(buffer_id)?;
-                        }
-
-                        // Store cached kernels back to disk
-                        if let Some(mut path) = self.config_dir.clone() {
-                            path.push("cached_kernels");
-                            let mut file = std::fs::File::create(path).unwrap();
-                            file.write_all(&bitcode::encode(&cached_kernels)).unwrap();
-                        } else {
-                            println!();
-                        }
-                        cached_kernels.get(&cache_key).unwrap().0.clone()
-                        //} else {
-                        //kernel.default_optimizations(dev_info)
-                    }
-                };
-
-                // TODO rerun this function and the kernel multiple times and cache optimizations to the disk
+                let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
                 let (program_id, args) =
                     self.compile_cached(kernel, &optimization, device_id, &graph)?;
                 // Since it is not sharded, sharding view is contiguous
-                device_program_map
-                    .get_mut(&device_id)
-                    .unwrap()
-                    .push(program_id);
-                sched_graph.push(SchedulerOp::Launch(VProgram {
-                    device_id,
-                    program_id,
-                    args,
-                }));
+                device_program_map.get_mut(&device_id).unwrap().push(program_id);
+                sched_graph.push(SchedulerOp::Launch(VProgram { device_id, program_id, args }));
                 // Deallocate kernel inputs that will not be used by other kernels
                 let mut unneeded_tensors = temp_tensors.clone();
                 if kid + 1 < kernels.len() {
@@ -476,11 +368,111 @@ impl Runtime {
         Ok(())
     }
 
+    fn search_kernel_optimization(&mut self, kernel: &Kernel, device_id: DeviceId, graph: &Graph) -> Result<KernelOptimization, ZyxError> {
+        let dev_info = self.devices[device_id].info();
+        let mut cached_kernels: BTreeMap<
+            (Kernel, DeviceInfo),
+            KernelOptimizer,
+        > = if let Some(config_dir) = self.config_dir.clone() {
+            let mut path = config_dir.clone();
+            path.push("cached_kernels");
+            if let Ok(mut file) = std::fs::File::open(path) {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf).unwrap();
+                if let Ok(cached_kernels) = bitcode::decode(&buf) {
+                    cached_kernels
+                } else {
+                    BTreeMap::new()
+                }
+            } else {
+                BTreeMap::new()
+            }
+        } else {
+            BTreeMap::new()
+        };
+        let cache_key = (kernel.clone(), dev_info.clone());
+        if let Some(KernelOptimizer::Optimized(optimizations, _)) = cached_kernels.get(&cache_key) {
+            Ok(optimizations.clone())
+        } else {
+            // allocate space for inputs and outputs that are not allocated for this kernel
+            let mut allocated_temps = Vec::new();
+            let mpid = self.devices[device_id].memory_pool_id();
+            for &tid in kernel.inputs.iter().chain(&kernel.outputs) {
+                let buffer_id = self.memory_pools[mpid].allocate(
+                    graph.shape(tid).iter().product::<usize>()
+                        * graph.dtype(tid).byte_size(),
+                )?;
+                allocated_temps.push(buffer_id);
+            }
+
+            // Get search space of possible optimizations
+            let optimizer = cached_kernels.entry(cache_key.clone()).or_insert_with(|| kernel.new_optimizer(dev_info));
+
+            let flop_mem_rw = if self.debug_perf() {
+                Some(kernel.flop_mem_rw())
+            } else {
+                None
+            };
+            println!("Searching over {} out of {} remaining optimizations.", self.search_iterations, optimizer.remaining());
+            for i in 0..self.search_iterations {
+                let Some(optimization_id) = optimizer.next() else {
+                    println!("All optimizations were tried and fastest kernel has been selected.");
+                    break
+                };
+                if self.debug_sched() {
+                    println!("{i:>6}/{} {}", self.search_iterations, optimizer[optimization_id]);
+                }
+                // Optimize and compile multiple kernels at once on different threads,
+                // since compilation takes ~50ms,
+                let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
+                //optimized_kernel.debug();
+                //panic!();
+                let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops);
+                let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
+                // Launch kernel and measure it's performance
+                let begin = std::time::Instant::now();
+                let Ok(queue_id) = self.devices[device_id].launch(
+                    program_id,
+                    &mut self.memory_pools[mpid],
+                    &allocated_temps,
+                ) else {
+                    continue;
+                };
+                let Ok(_) = self.devices[device_id].sync(queue_id) else {
+                    continue;
+                };
+                let exec_time = begin.elapsed().as_nanos();
+                let _ = self.devices[device_id].release_program(program_id);
+                if let Some((f, mr, mw)) = flop_mem_rw {
+                    print_perf(f, mr, mw, exec_time);
+                }
+                // We have to put clone here because borrowck is stupid
+                // and it would take some effort to write a workaround
+                optimizer.set_exec_time(optimization_id, exec_time);
+            }
+            println!("Optimization has been finished.\n");
+            // Deallocate inputs and outputs that are used only for beam search
+            for buffer_id in allocated_temps {
+                self.memory_pools[mpid].deallocate(buffer_id)?;
+            }
+            // Store cached kernels back to disk
+            if let Some(mut path) = self.config_dir.clone() {
+                path.push("cached_kernels");
+                let mut file = std::fs::File::create(path).unwrap();
+                file.write_all(&bitcode::encode(&cached_kernels)).unwrap();
+            } else {
+                println!();
+            }
+            Ok(cached_kernels.get(&cache_key).unwrap().best().clone())
+        }
+    }
+
     // Compiles kernel using given optimizations
     pub(super) fn compile_cached(
         &mut self,
         kernel: &Kernel,
-        optimizations: &KernelOptimizations,
+        optimizations: &KernelOptimization,
         device_id: DeviceId,
         graph: &Graph,
     ) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
@@ -1192,5 +1184,5 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (brs, br_us) = value_unit(bytes_read * 1000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1000_000_000 / nanos);
 
-    println!("Graph {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.", nanos/t_d);
+    println!("        {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {fs} {f_us}FLOP/s, {brs} {br_us}B/s read, {bws} {bw_us}B/s write.", nanos/t_d);
 }

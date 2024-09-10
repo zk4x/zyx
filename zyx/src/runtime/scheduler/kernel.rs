@@ -82,7 +82,7 @@ impl Kernel {
                         }
                     }
                 }
-                VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } | VOp::Accumulator { view, .. } => {
+                VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } => { //| VOp::Accumulator { view, .. } => {
                     let n = view.rank();
                     let permute_axes: Vec<usize> = if last_axis > n {
                         // We actually need to check which axis view refers to, then check which loops those were
@@ -149,6 +149,7 @@ impl Kernel {
             panic!()
         };
         *dimension = dimensions[0];
+        let new_dim_count = dimensions.len() - 1;
         let axis = *axis;
         let mut temp_axis = axis;
         let mut id = op_id;
@@ -165,28 +166,20 @@ impl Kernel {
         }
         let mut num_loops = 0;
         // Update loops, loads and stores
-        let mut reduce_end = false;
-        for i in id + 1..self.ops.len() {
+        for i in id+1..self.ops.len() {
             if self.ops[i] == VOp::EndLoop {
                 if num_loops == 0 {
-                    // TODO push more loop ends
-                    for _ in 0..dimensions.len() - 1 {
-                        self.ops.push(VOp::EndLoop);
+                    for _ in 0..new_dim_count {
+                        self.ops.insert(i, VOp::EndLoop);
                     }
-                    reduce_end = true;
-                }
-                if num_loops == 0 {
-                    return
+                    break;
                 }
                 num_loops -= 1;
             }
             match &mut self.ops[i] {
                 // Then change axis ids for all following loops
                 VOp::Loop { axis, .. } => {
-                    if reduce_end {
-                        break;
-                    }
-                    *axis += dimensions.len() - 1;
+                    *axis += new_dim_count;
                     num_loops += 1;
                 }
                 // Then change all load and store operations in this loop in the same way.
@@ -196,9 +189,12 @@ impl Kernel {
                 _ => {}
             }
         }
-        self.shape.remove(axis);
-        for dim in dimensions.iter().rev() {
-            self.shape.insert(axis, *dim);
+        //self.debug();
+        if axis < self.shape.len() {
+            self.shape.remove(axis);
+            for dim in dimensions.iter().rev() {
+                self.shape.insert(axis, *dim);
+            }
         }
     }
 
