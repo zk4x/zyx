@@ -1001,6 +1001,8 @@ impl std::fmt::Display for ZyxError {
             ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
             ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
             ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
+            #[cfg(feature = "wgsl")]
+            ZyxError::WGSLError(_) => todo!(),
         }
     }
 }

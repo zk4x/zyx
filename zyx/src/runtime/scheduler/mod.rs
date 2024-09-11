@@ -196,6 +196,15 @@ impl Runtime {
                 }
                 // Disk cached search, works across devices and platforms
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
+                /*let optimization = KernelOptimization {
+                    //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![2, 1, 1]), (1, vec![1, 1, 2]), (0, vec![1, 1, 1])],
+                    splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![1, 2, 1]), (1, vec![1, 2, 1]), (0, vec![1, 1, 1])],
+                    permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
+                    local_tiles: false,
+                };*/
+                if self.debug_sched() {
+                    println!("Using optimization {optimization}");
+                }
                 let (program_id, args) =
                     self.compile_cached(kernel, &optimization, device_id, &graph)?;
                 // Since it is not sharded, sharding view is contiguous

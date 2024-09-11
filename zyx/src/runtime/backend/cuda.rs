@@ -542,7 +542,7 @@ impl CUDADevice {
         source += "}\n";
 
         let mut name = format!(
-            "k__{}_{}_{}__{}_{}_{}",
+            "k_{}_{}_{}__{}_{}_{}",
             global_work_size[0],
             global_work_size[1],
             global_work_size[2],

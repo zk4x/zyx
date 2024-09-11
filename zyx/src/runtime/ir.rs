@@ -541,7 +541,7 @@ impl Display for IRVec {
 }
 
 impl DType {
-    fn ir_dtype(&self) -> IRDType {
+    pub(crate) fn ir_dtype(&self) -> IRDType {
         match self {
             DType::F32 => IRDType::F32(IRVec::Scalar),
             DType::F64 => IRDType::F64(IRVec::Scalar),

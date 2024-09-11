@@ -445,7 +445,7 @@ impl HIPDevice {
         }
         source += "}\n";
         let mut name = format!(
-            "k__{}_{}__{}_{}__{}_{}",
+            "k_{}_{}__{}_{}__{}_{}",
             global_work_size[0],
             local_work_size[0],
             global_work_size[1],

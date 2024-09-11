@@ -2,7 +2,6 @@
 #![allow(non_snake_case)]
 
 use libloading::Library;
-
 use crate::{
     dtype::Constant,
     index_map::IndexMap,
@@ -16,7 +15,6 @@ use std::{
     ptr,
     rc::Rc,
 };
-
 use super::DeviceInfo;
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -796,7 +794,7 @@ impl OpenCLDevice {
 
         let local_work_size = local_work_size;
         let name = format!(
-            "k__{}_{}_{}__{}_{}_{}",
+            "k_{}_{}_{}__{}_{}_{}",
             global_work_size[0],
             global_work_size[1],
             global_work_size[2],
