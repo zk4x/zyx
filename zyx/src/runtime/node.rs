@@ -387,8 +387,7 @@ impl Constant {
         }
     }
 
+    // TODO binary constant evaluation
     // Assumes both constants are the same dtype
-    pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
-        todo!()
-    }
+    //pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant { todo!() }
 }

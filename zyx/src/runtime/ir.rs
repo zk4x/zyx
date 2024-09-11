@@ -1,8 +1,8 @@
 use crate::{
     dtype::Constant, runtime::{node::{BOp, UOp}, view::StridedDim}, shape::Axis, tensor::TensorId, DType
 };
-use std::collections::BTreeMap;
-use super::{scheduler::VOp, view::View};
+use std::{collections::BTreeMap, fmt::{Display, Write}};
+use super::{node::ROp, scheduler::VOp, view::View};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Var {
@@ -395,7 +395,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                         }
                         //todo!()
                     }
-                    _ => panic!("Ivalid store scopes")
+                    _ => panic!("Invalid store scopes")
                 }
             }
             &VOp::Accumulator { z, rop, ref view } => {
@@ -403,8 +403,29 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 let len = view.original_numel();
                 let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
                 if len > 1 {
-                    //ops.push(IROp::Store { address: (), offset: (), x: () });
-                    todo!()
+                    let numel = view.original_numel();
+                    match view {
+                        View::None => todo!(),
+                        View::Strided(dims) => {
+                            let offset = get_empty_register(&mut registers, IRDType::U32, 0);
+                            ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
+                            for StridedDim { axis, stride, .. } in dims {
+                                if *stride != 0 && *stride != numel {
+                                    ops.push(IROp::MAdd {
+                                        z: Var::Id(offset),
+                                        a: Var::Id(*axis as u16),
+                                        b: Var::Const(Constant::U32(*stride as u32)),
+                                        c: Var::Id(offset),
+                                    });
+                                }
+                            }
+                            ops.push(IROp::Store { address: addressables_map[&(z, Scope::Register)], offset: Var::Id(offset), x: Var::Const(match rop {
+                                ROp::Sum => dtype.dtype().zero_constant(),
+                                ROp::Max => dtype.dtype().min_constant(),
+                            }) });
+                        }
+                        View::Padded(_, _) => todo!(),
+                    }
                 } else {
                     ops.push(IROp::Set { z: id, value: Constant::new(0).unary(UOp::Cast(dtype.dtype())) });
                 }
@@ -414,7 +435,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 register_map.insert(z, register_map[&x]);
             }
             &VOp::Unary { z, x, uop, ref view } => {
-                // TODO unary can have view
+                // TODO unary can have view, but this will probably be only used for vectorization
                 if let Var::Const(value) = register_map[&x] {
                     register_map.insert(z, Var::Const(value.unary(uop)));
                 } else {
@@ -467,5 +488,25 @@ fn get_empty_register(registers: &mut Vec<(IRDType, u32)>, ir_dtype: IRDType, rc
     } else {
         registers.push((ir_dtype, rc));
         (registers.len() - 1) as u16
+    }
+}
+
+impl IRKernel {
+    pub(super) fn debug(&self) {
+        for op in &self.ops {
+            println!("{op:?}");
+        }
+    }
+}
+
+impl Display for IRVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IRVec::Scalar => f.write_str(""),
+            IRVec::V2 => f.write_char('2'),
+            IRVec::V4 => f.write_char('4'),
+            IRVec::V8 => f.write_char('8'),
+            IRVec::V16 => f.write_str("16"),
+        }
     }
 }

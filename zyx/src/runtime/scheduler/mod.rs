@@ -488,7 +488,7 @@ impl Runtime {
         }
         if program_id.is_none() {
             // TODO
-            //if self.debug_ir() { ir_kernel.debug(); }
+            if self.debug_ir() { ir_kernel.debug(); }
             let debug_asm = self.debug_asm();
             program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
             self.ir_kernel_cache

@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(unused)]
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
@@ -323,13 +324,15 @@ impl HIPDevice {
         let mut indent = String::from("  ");
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
-        for op in &kernel.ops[..6] {
+        let mut loops = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
-                if id % 2 == 0 {
-                    global_work_size[*id as usize / 2] = *len;
+                if i % 2 == 0 {
+                    global_work_size[i as usize / 2] = *len;
                 } else {
-                    local_work_size[*id as usize / 2] = *len;
+                    local_work_size[i as usize / 2] = *len;
                 }
+                loops[i] = *id;
             } else {
                 panic!()
             }
@@ -355,12 +358,12 @@ impl HIPDevice {
             );
         }
         // Add indices for global and local loops
-        source += &format!("  r0 = blockIdx.x;   /* 0..{} */\n", global_work_size[0]);
-        source += &format!("  r1 = threadIdx.x;   /* 0..{} */\n", local_work_size[0]);
-        source += &format!("  r2 = blockIdx.y;   /* 0..{} */\n", global_work_size[1]);
-        source += &format!("  r3 = threadIdx.y;   /* 0..{} */\n", local_work_size[1]);
-        source += &format!("  r4 = blockIdx.z;   /* 0..{} */\n", global_work_size[2]);
-        source += &format!("  r5 = threadIdx.z;   /* 0..{} */\n", local_work_size[2]);
+        source += &format!("  r{} = blockIdx.x;   /* 0..{} */\n", loops[0], global_work_size[0]);
+        source += &format!("  r{} = threadIdx.x;   /* 0..{} */\n", loops[1], local_work_size[0]);
+        source += &format!("  r{} = blockIdx.y;   /* 0..{} */\n", loops[2], global_work_size[1]);
+        source += &format!("  r{} = threadIdx.y;   /* 0..{} */\n", loops[3], local_work_size[1]);
+        source += &format!("  r{} = blockIdx.z;   /* 0..{} */\n", loops[4], global_work_size[2]);
+        source += &format!("  r{} = threadIdx.z;   /* 0..{} */\n", loops[5], local_work_size[2]);
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, value } => {

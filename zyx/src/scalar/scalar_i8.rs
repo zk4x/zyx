@@ -182,10 +182,10 @@ impl Scalar for i8 {
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        (self > rhs) as i8
     }
     
     fn or(self, rhs: Self) -> Self {
-        todo!()
+        (self != 0 || rhs != 0) as i8
     }
 }

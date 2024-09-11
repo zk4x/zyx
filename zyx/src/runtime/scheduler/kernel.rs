@@ -110,7 +110,7 @@ impl Kernel {
     }
 
     // Permutes first found loops, not the kernel as a whole
-    pub(super) fn permute_loops(&mut self, op_id: usize, naxes: &[usize]) {
+    /*pub(super) fn permute_loops(&mut self, op_id: usize, naxes: &[usize]) {
         if naxes.is_empty() { return }
         let mut axes = Vec::new();
         let mut dims = Vec::new();
@@ -140,7 +140,7 @@ impl Kernel {
                 _ => {}
             }
         }
-    }
+    }*/
 
     pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
         //println!("Splitting {op_id} into {dimensions:?}");
@@ -280,40 +280,32 @@ impl Kernel {
         let mut mem_write = 0;
         for op in &self.ops {
             match op {
-                VOp::Loop { axis, len: dimension } => {
-                    shape.push(*dimension);
+                &VOp::Loop { len, .. } => {
+                    shape.push(len);
                 }
-                VOp::Const { z, value, view } => {}
-                VOp::Load { z, zscope, x, xscope, .. } => {
+                VOp::Const { .. } => {}
+                &VOp::Load { xscope, .. } => {
                     // Note that this calculates actual read speed, even if the load accesses the same
                     // value multiple times. This is usefull so that we can see whether the kernel
                     // is compute bound or memory bound.
-                    if *xscope == Scope::Global {
+                    if xscope == Scope::Global {
                         mem_read += shape.iter().product::<usize>() as u128;
                     }
                 }
-                VOp::Store { z, zscope, xscope, .. } => {
-                    if *zscope == Scope::Global {
+                &VOp::Store { zscope, .. } => {
+                    if zscope == Scope::Global {
                         mem_write += shape.iter().product::<usize>() as u128;
                     }
                 }
-                VOp::Accumulator { z, rop, view } => {}
-                /*VOp::Reduce { z, x, num_axes, rop } => {
-                    flop += shape[..shape.len()-*num_axes].iter().copied()
-                        .chain(shape[shape.len()-*num_axes..].iter().map(|&d| d - 1))
-                        .product::<usize>() as u128 - 1;
-                    for _ in 0..*num_axes {
-                        shape.pop();
-                    }
-                }*/
+                VOp::Accumulator { .. } => {}
                 VOp::EndLoop => {
                     shape.pop();
                 }
-                VOp::Move { z, x, mop } => {}
-                VOp::Unary { z, x, uop, view } => {
+                VOp::Move { .. } => {}
+                VOp::Unary { .. } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
-                VOp::Binary { z, zview, x, xview, y, yview, bop } => {
+                VOp::Binary { .. } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
             }

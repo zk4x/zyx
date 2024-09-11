@@ -683,7 +683,7 @@ impl std::fmt::Display for Device {
     }
 }
 
-pub(super) struct Timer {
+/*pub(super) struct Timer {
     begin: std::time::Instant,
 }
 
@@ -699,4 +699,4 @@ impl Drop for Timer {
     fn drop(&mut self) {
         println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
-}
+}*/

@@ -42,14 +42,15 @@ pub(crate) struct KernelOptimization {
 // ir will be just a direct translation and can be removed if we replace it with something
 // like renderer to c style, assembly and such.
 impl Kernel {
-    pub(crate) fn new_optimizer(&self, dev_info: &DeviceInfo) -> KernelOptimizer {
+    pub(super) fn new_optimizer(&self, dev_info: &DeviceInfo) -> KernelOptimizer {
         let mut opts = Vec::new();
 
-        let mgwd = dev_info.max_global_work_dims;
+        //let mgwd = dev_info.max_global_work_dims;
         let mlws = dev_info.max_local_threads;
         let mlwd = dev_info.max_local_work_dims;
         let mrws = dev_info.num_registers;
         let mrwd = [16, 16, 16]; // For now 16, can be raised to 32 on some hardware perhaps
+        let maxrr = 8; // Max reduce register work dimension
 
         let mut gws = [0; 3];
         let mut gws_i = 3;
@@ -106,7 +107,7 @@ impl Kernel {
                                         reduce_found = true;
                                         let VOp::Loop { len, .. } = self.ops[id-1+num_loops] else { panic!() };
                                         // Register work size in the reduce loop
-                                        for rr in (1..=16).filter(|rr| len % rr == 0) {
+                                        for rr in (1..=maxrr).filter(|rr| len % rr == 0) {
                                             // Get splits for local and global work dims
                                             let mut splits = splits.clone();
                                             splits.insert(0, (id-1+num_loops, vec![len/rr, rr]));
@@ -147,7 +148,7 @@ impl Kernel {
     // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
     // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
     // tensor cores, just a ton of stuff. Later add search over different optimizations.
-    pub(crate) fn optimize(&self, optimization: &KernelOptimization) -> Kernel {
+    pub(super) fn optimize(&self, optimization: &KernelOptimization) -> Kernel {
         let mut kernel = self.clone();
         // Apply axis splits
         for (op_id, dimensions) in &optimization.splits {
@@ -165,14 +166,13 @@ impl Kernel {
 
         // Reorder so that register work threads are last
         // Register threads are op_id 1, 4 and 7
-        let mut threaded = false;
+        let mut threaded = true;
         let rlz = kernel.ops.remove(8);
         let rly = kernel.ops.remove(5);
         let rlx = kernel.ops.remove(2);
         kernel.ops.insert(6, rlz.clone());
         kernel.ops.insert(6, rly.clone());
         kernel.ops.insert(6, rlx.clone());
-        threaded = true;
         let mut id = 9;
         while id < kernel.ops.len() {
             if threaded && matches!(kernel.ops[id], VOp::Loop { .. }) {
@@ -231,7 +231,7 @@ impl Display for KernelOptimization {
 
 impl KernelOptimizer {
     // Get next optimization, returns None if fully optimized
-    pub(crate) fn next(&mut self) -> Option<usize> {
+    pub(super) fn next(&mut self) -> Option<usize> {
         // Ideally we want to pick random value from normal distribution
         // where mean would be around the best time, we would set standard deviation
         // and the value would be in range 0..opt.len(), but exclude those that have nonzero exec time
@@ -251,7 +251,7 @@ impl KernelOptimizer {
         }
     }
 
-    pub(crate) fn set_exec_time(&mut self, optimization_id: usize, exec_time: u128) {
+    pub(super) fn set_exec_time(&mut self, optimization_id: usize, exec_time: u128) {
         if let KernelOptimizer::Optimizing(opts, best) = self {
             opts[optimization_id].1 = exec_time;
             if exec_time < opts[*best].1 || opts[*best].1 == 0 {
@@ -260,14 +260,14 @@ impl KernelOptimizer {
         }
     }
 
-    pub(crate) fn best(&self) -> &KernelOptimization {
+    pub(super) fn best(&self) -> &KernelOptimization {
         match self {
             KernelOptimizer::Optimized(optimization, _) => optimization,
             KernelOptimizer::Optimizing(opts, best) => &opts[*best].0,
         }
     }
 
-    pub(crate) fn remaining(&self) -> usize {
+    pub(super) fn remaining(&self) -> usize {
         match self {
             KernelOptimizer::Optimized(_, _) => 0,
             KernelOptimizer::Optimizing(opts, _) => (0..opts.len()).filter(|&id| opts[id].1 == 0).count(),

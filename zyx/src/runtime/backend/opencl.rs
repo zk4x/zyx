@@ -626,13 +626,15 @@ impl OpenCLDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        for op in &kernel.ops[..6] {
+        let mut loops = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
-                if id % 2 == 0 {
-                    global_work_size[*id as usize / 2] = *len;
+                if i % 2 == 0 {
+                    global_work_size[i as usize / 2] = *len;
                 } else {
-                    local_work_size[*id as usize / 2] = *len;
+                    local_work_size[i as usize / 2] = *len;
                 }
+                loops[i] = *id;
             } else {
                 panic!()
             }
@@ -665,27 +667,33 @@ impl OpenCLDevice {
 
         // Add indices for global and local loops
         source += &format!(
-            "  r0 = get_group_id(0);   /* 0..{} */\n",
+            "  r{} = get_group_id(0);   /* 0..{} */\n",
+            loops[0],
             global_work_size[0]
         );
         source += &format!(
-            "  r1 = get_local_id(0);   /* 0..{} */\n",
+            "  r{} = get_local_id(0);   /* 0..{} */\n",
+            loops[1],
             local_work_size[0]
         );
         source += &format!(
-            "  r2 = get_group_id(1);   /* 0..{} */\n",
+            "  r{} = get_group_id(1);   /* 0..{} */\n",
+            loops[2],
             global_work_size[1]
         );
         source += &format!(
-            "  r3 = get_local_id(1);   /* 0..{} */\n",
+            "  r{} = get_local_id(1);   /* 0..{} */\n",
+            loops[3],
             local_work_size[1]
         );
         source += &format!(
-            "  r4 = get_group_id(2);   /* 0..{} */\n",
+            "  r{} = get_group_id(2);   /* 0..{} */\n",
+            loops[4],
             global_work_size[2]
         );
         source += &format!(
-            "  r5 = get_local_id(2);   /* 0..{} */\n",
+            "  r{} = get_local_id(2);   /* 0..{} */\n",
+            loops[5],
             local_work_size[2]
         );
 
@@ -912,25 +920,25 @@ impl OpenCLQueue {
 }
 
 impl IRDType {
-    fn ocl(&self) -> &str {
+    fn ocl(&self) -> String {
         return match self {
             #[cfg(feature = "half")]
             IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
             #[cfg(feature = "half")]
             IRDType::F16(v) => "half",
-            IRDType::F32(v) => "float",
-            IRDType::F64(v) => "double",
+            IRDType::F32(v) => format!("float{v}"),
+            IRDType::F64(v) => format!("double{v}"),
             #[cfg(feature = "complex")]
             IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
             IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8(v) => "unsigned char",
-            IRDType::I8(v) => "char",
-            IRDType::I16(v) => "short",
-            IRDType::I32(v) => "int",
-            IRDType::I64(v) => "long",
-            IRDType::Bool => "bool",
-            IRDType::U32 => "unsigned int",
+            IRDType::U8(v) => format!("unsigned char{v}"),
+            IRDType::I8(v) => format!("char{v}"),
+            IRDType::I16(v) => format!("short{v}"),
+            IRDType::I32(v) => format!("int{v}"),
+            IRDType::I64(v) => format!("long{v}"),
+            IRDType::Bool => format!("bool"),
+            IRDType::U32 => format!("unsigned int"),
         };
     }
 }

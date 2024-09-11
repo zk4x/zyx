@@ -179,10 +179,10 @@ impl Scalar for bool {
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        self > rhs
     }
     
     fn or(self, rhs: Self) -> Self {
-        todo!()
+        self || rhs
     }
 }

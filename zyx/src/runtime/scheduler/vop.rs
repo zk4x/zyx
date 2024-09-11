@@ -70,7 +70,7 @@ pub(crate) enum VOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
-pub(super) enum MOp {
+pub(crate) enum MOp {
     Expa,
     Perm,
     Resh,
@@ -78,7 +78,7 @@ pub(super) enum MOp {
 }
 
 impl std::fmt::Display for VOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
@@ -87,7 +87,7 @@ impl std::fmt::Display for VOp {
             VOp::Load {
                 z,
                 zscope,
-                zview,
+                zview: _,
                 x,
                 xscope,
                 xview,
@@ -99,7 +99,7 @@ impl std::fmt::Display for VOp {
                 zview,
                 zscope,
                 xscope,
-                xview,
+                xview: _,
             } => f.write_fmt(format_args!(
                 "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {zview}"
             )),

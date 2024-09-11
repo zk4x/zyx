@@ -28,7 +28,7 @@ pub(super) struct PaddedAxes {
     pub(super) axes: Vec<(Vec<Axis>, (isize, isize))>,
 }
 
-impl PaddedAxes {
+/*impl PaddedAxes {
     fn new(axis: Axis, left_pad: isize, right_pad: isize) -> Self {
         Self {
             axes: vec![(vec![axis], (left_pad, right_pad))],
@@ -43,7 +43,7 @@ impl PaddedAxes {
             self.axes.push((vec![axis], (left_pad, right_pad)));
         }
     }
-}
+}*/
 
 impl View {
     pub(super) fn new(shape: &[usize]) -> Self {
@@ -111,7 +111,7 @@ impl View {
         }
     }
 
-    pub(super) fn requires_conditional_padding(&self) -> bool {
+    /*pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
         if let View::Padded(_, padded_axes) = self {
             return padded_axes
@@ -120,7 +120,7 @@ impl View {
                 .any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
         }
         false
-    }
+    }*/
 
     pub(super) fn original_numel(&self) -> usize {
         match self {
@@ -168,9 +168,7 @@ impl View {
         }
     }
 
-    pub(super) fn arbitrary_permute(&mut self, axes: &[usize]) {
-        todo!()
-    }
+    //pub(super) fn arbitrary_permute(&mut self, axes: &[usize]) { todo!() }
 
     pub(super) fn pad_axis(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
         let paxis = axis;
@@ -204,7 +202,7 @@ impl View {
         }
     }
 
-    pub(super) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+    /*pub(super) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
         //println!("Padding view with {left_pad}, {right_pad}");
         match self {
             View::None => {}
@@ -218,7 +216,7 @@ impl View {
                 padding.pad(axis, left_pad, right_pad);
             }
         }
-    }
+    }*/
 
     pub(super) fn expand(&mut self, axis: Axis, dimension: Dimension) {
         // TODO probably instead of changing stride to 0, we can simply

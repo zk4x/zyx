@@ -177,10 +177,10 @@ impl Scalar for i32 {
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        (self > rhs) as Self
     }
     
     fn or(self, rhs: Self) -> Self {
-        todo!()
+        (self != 0 || rhs != 0) as Self
     }
 }
