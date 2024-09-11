@@ -110,3 +110,11 @@ Don't write clean code, rather write debuggable == understandable code.
 
 Don't use abstractions. Simply duplicate code. Once most of the stuff works abstractions come automatically by removing duplicate code. So refactor and remove duplicate code,
 thus adding good enough abstractions.
+
+## Duplication
+
+Always duplicate. This is extremely powerfull. Typical approach involves doing software design where we decide on the right abstractions, then implementation
+and the product should be done. But after implementation it turns out the current abstraction is wrong, so there comes a refactor. Better approach is to
+just design the user API and write a list of requirements. Afterwards just write the simplest code that makes that user API work. Do not add abstraction
+or classes. If you need to use similar code in different places, just duplicate it. Just copy it. Once the program passes some integration tests,
+just remove the duplication by adding abstraction. The resulting abstraction will be much less likely to need a refactor.

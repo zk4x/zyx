@@ -235,7 +235,16 @@ pub(super) fn initialize_device(
         devices.push((
             HIPDevice {
                 device,
-                dev_info: DeviceInfo::default(),
+                dev_info: DeviceInfo {
+                    compute: 1024*1024*1024*1024,
+                    max_global_work_dims: [1024, 1024, 1024],
+                    max_local_threads: 256,
+                    max_local_work_dims: [256, 256, 256],
+                    preferred_vector_size: 4,
+                    local_mem_size: 256*1024,
+                    num_registers: 96,
+                    tensor_cores: false,
+                },
                 memory_pool_id: 0,
                 compute_capability: [major, minor],
             },
@@ -352,18 +361,33 @@ impl HIPDevice {
         source += "\n) {\n";
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!(
-                "{indent}{} r{id};\n",
-                dtype.hip()
-            );
+            source += &format!("{indent}{} r{id};\n", dtype.hip());
         }
         // Add indices for global and local loops
-        source += &format!("  r{} = blockIdx.x;   /* 0..{} */\n", loops[0], global_work_size[0]);
-        source += &format!("  r{} = threadIdx.x;   /* 0..{} */\n", loops[1], local_work_size[0]);
-        source += &format!("  r{} = blockIdx.y;   /* 0..{} */\n", loops[2], global_work_size[1]);
-        source += &format!("  r{} = threadIdx.y;   /* 0..{} */\n", loops[3], local_work_size[1]);
-        source += &format!("  r{} = blockIdx.z;   /* 0..{} */\n", loops[4], global_work_size[2]);
-        source += &format!("  r{} = threadIdx.z;   /* 0..{} */\n", loops[5], local_work_size[2]);
+        source += &format!(
+            "  r{} = blockIdx.x;   /* 0..{} */\n",
+            loops[0], global_work_size[0]
+        );
+        source += &format!(
+            "  r{} = threadIdx.x;   /* 0..{} */\n",
+            loops[1], local_work_size[0]
+        );
+        source += &format!(
+            "  r{} = blockIdx.y;   /* 0..{} */\n",
+            loops[2], global_work_size[1]
+        );
+        source += &format!(
+            "  r{} = threadIdx.y;   /* 0..{} */\n",
+            loops[3], local_work_size[1]
+        );
+        source += &format!(
+            "  r{} = blockIdx.z;   /* 0..{} */\n",
+            loops[4], global_work_size[2]
+        );
+        source += &format!(
+            "  r{} = threadIdx.z;   /* 0..{} */\n",
+            loops[5], local_work_size[2]
+        );
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, value } => {
