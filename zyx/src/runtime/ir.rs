@@ -2,7 +2,7 @@ use crate::{
     dtype::Constant, runtime::{node::{BOp, UOp}, view::StridedDim}, shape::Axis, tensor::TensorId, DType
 };
 use std::{collections::BTreeMap, fmt::{Display, Write}};
-use super::{node::ROp, scheduler::VOp, view::View};
+use super::{graph::Graph, node::ROp, scheduler::VOp, view::View};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Var {
@@ -215,7 +215,7 @@ impl std::fmt::Display for Scope {
 // and so that it does work properly
 
 // Returns IRKernel and order in which tensors are passed to it
-pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
+pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorId>) {
     // What we need to calculate (outputs of this function)
     let mut addressables = Vec::new();
     let mut registers = Vec::new();
@@ -290,7 +290,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
             &VOp::Load { x, xscope, ref xview, .. } => {
                 if xscope == Scope::Global && !addressables_map.contains_key(&(x, xscope)) {
                     args.push(x);
-                    let dtype = IRDType::F32(IRVec::Scalar);
+                    let dtype = graph.dtype(x).ir_dtype();
                     addressables.push((xscope, dtype, xview.original_numel(), true));
                     let id = (addressables.len() - 1) as u16;
                     addressables_map.insert((x, xscope), id);
@@ -298,7 +298,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
             }
             &VOp::Store { z, zscope, ref zview, xscope, .. } => {
                 if zscope == Scope::Global {
-                    let dtype = IRDType::F32(IRVec::Scalar);
+                    let dtype = graph.dtype(z).ir_dtype();
                     addressables_map.entry((z, zscope)).and_modify(|&mut id| {
                         assert_eq!(xscope, Scope::Global);
                         // set it to read-write
@@ -320,7 +320,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     // TODO if we have multiple accumulators with the same size, we must reuse them
     for op in kernel_ops {
         if let &VOp::Accumulator { z, rop, ref view } = op {
-            let dtype = IRDType::F32(IRVec::Scalar);
+            let dtype = graph.dtype(z).ir_dtype();
             addressables.push((Scope::Register, dtype, view.original_numel(), false));
             let id = (addressables.len() - 1) as u16;
             addressables_map.insert((z, Scope::Register), id);
@@ -352,7 +352,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 match (zscope, xscope) {
                     (Scope::Local, Scope::Global) => { todo!() }
                     (Scope::Register, Scope::Global) => {
-                        let ir_dtype = IRDType::F32(IRVec::Scalar);
+                        let ir_dtype = graph.dtype(z).ir_dtype();
                         let id = get_empty_register(&mut registers, ir_dtype, tensor_rcs[&z]);
                         let address = addressables_map[&(x, xscope)];
                         load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
@@ -366,7 +366,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                     (Scope::Local, Scope::Register) => { todo!() }
                     (Scope::Global, Scope::Register) => {
                         let address = addressables_map[&(z, zscope)];
-                        let dtype = IRDType::F32(IRVec::Scalar);
+                        let dtype = graph.dtype(z).ir_dtype();
                         let x = if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
                             let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
                             load_indexed(var, address, xview, &mut registers, &mut ops);
@@ -380,7 +380,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 }
             }
             &VOp::Accumulator { z, rop, ref view } => {
-                let dtype = IRDType::F32(IRVec::Scalar);
+                let dtype = graph.dtype(z).ir_dtype();
                 store_indexed(addressables_map[&(z, Scope::Register)], Var::Const(match rop {
                     ROp::Sum => dtype.dtype().zero_constant(),
                     ROp::Max => dtype.dtype().min_constant(),
@@ -394,7 +394,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 if let Var::Const(value) = register_map[&x] {
                     register_map.insert(z, Var::Const(value.unary(uop)));
                 } else {
-                    let dtype = IRDType::F32(IRVec::Scalar);
+                    let dtype = graph.dtype(z).ir_dtype();
                     let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
                     let zvar = Var::Id(id);
                     register_map.insert(z, zvar);
@@ -406,7 +406,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
             }
             &VOp::Binary { z, ref zview, x, ref xview, y, ref yview, bop } => {
                 // TODO binary can have view, for example if it is accumulator
-                let dtype = IRDType::F32(IRVec::Scalar);
+                let dtype = graph.dtype(z).ir_dtype();
                 let id = if let Some(&Var::Id(id)) = register_map.get(&z) {
                     id
                 } else {
@@ -536,6 +536,21 @@ impl Display for IRVec {
             IRVec::V4 => f.write_char('4'),
             IRVec::V8 => f.write_char('8'),
             IRVec::V16 => f.write_str("16"),
+        }
+    }
+}
+
+impl DType {
+    fn ir_dtype(&self) -> IRDType {
+        match self {
+            DType::F32 => IRDType::F32(IRVec::Scalar),
+            DType::F64 => IRDType::F64(IRVec::Scalar),
+            DType::U8 => IRDType::U8(IRVec::Scalar),
+            DType::I8 => IRDType::I8(IRVec::Scalar),
+            DType::I16 => IRDType::I16(IRVec::Scalar),
+            DType::I32 => IRDType::I32(IRVec::Scalar),
+            DType::I64 => IRDType::I64(IRVec::Scalar),
+            DType::Bool => IRDType::Bool,
         }
     }
 }

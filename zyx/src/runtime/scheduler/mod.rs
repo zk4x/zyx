@@ -428,7 +428,7 @@ impl Runtime {
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
                 //optimized_kernel.debug();
                 //panic!();
-                let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops);
+                let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
                 let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
                 //panic!();
                 // Launch kernel and measure it's performance
@@ -480,7 +480,7 @@ impl Runtime {
         //let timer = Timer::new();
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops);
+        let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops, graph);
         let mut program_id = None;
         if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
             if *dev_id == device_id {

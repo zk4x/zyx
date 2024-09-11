@@ -706,6 +706,7 @@ impl OpenCLDevice {
             loops[5],
             local_work_size[2]
         );
+        //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
@@ -729,7 +730,7 @@ impl OpenCLDevice {
                             "{indent}{} = max({}, {});\n",
                             z.ocl(),
                             x.ocl(),
-                            Constant::new(0).unary(UOp::Cast(dtype.dtype())).ocl()
+                            dtype.dtype().zero_constant().ocl()
                         ),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.ocl(), x.ocl()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.ocl(), x.ocl()),
@@ -743,7 +744,6 @@ impl OpenCLDevice {
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    //source += &format!("{indent}printf(\"%f, %f\", r13, r14);\n");
                     source += &format!(
                         "{indent}{} = {};\n",
                         z.ocl(),

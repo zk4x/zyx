@@ -236,7 +236,7 @@ impl Runtime {
         }
         #[cfg(feature = "wgsl")]
         if let Ok((memory_pools, devices)) =
-            wgsl::initialize_backend(&backend_config.wgsl, self.debug_dev())
+            wgsl::initialize_backend(&device_config.wgsl, self.debug_dev())
         {
             let n = self.memory_pools.len();
             self.memory_pools
