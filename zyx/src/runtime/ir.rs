@@ -252,6 +252,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 for axis in zview.used_axes() {
                     axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
                 }
+                tensor_rcs.entry(*z).and_modify(|rc| *rc += 1).or_insert(1);
             }
             VOp::Accumulator { z, rop, view } => {
                 for axis in view.used_axes() {

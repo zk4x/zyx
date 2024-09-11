@@ -1816,6 +1816,7 @@ impl Tensor {
         };
         // noop_ = [None] * len(self.shape[:-len(k_)])
         let noop_: Vec<Option<()>> = repeat(None).take(rank - k_.len()).collect();
+        let _ = noop_;
         let i_ = &shape[rank - k_.len()..];
         let o_ = i_
             .iter()
@@ -1824,6 +1825,7 @@ impl Tensor {
             .zip(k_.iter().cloned())
             .zip(s_.iter().cloned())
             .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s));
+        let _ = o_;
 
         let repeats: Vec<usize> = repeat(1)
             .take(rank - k_.len())
@@ -1845,6 +1847,7 @@ impl Tensor {
             .map(|((k, i), d)| (0, -((k * (i + d)) as isize)))
             .collect();
         let xup = xup.pad_zeros(padding);
+        let _ = xup;
 
         //tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)])
 
@@ -2080,6 +2083,7 @@ impl Tensor {
 
     /// Load tensor from le_bytes in row major order
     pub fn from_le_bytes(&self, bytes: &[u8]) -> Result<(), ZyxError> {
+        let _ = bytes;
         todo!()
     }
 }

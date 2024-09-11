@@ -35,12 +35,12 @@ pub use tensor::Tensor;
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 
 /// Save tensors or modules
-pub trait ModuleSave {
+pub trait TensorSave {
     /// Save tensors or modules
     fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError>;
 }
 
-impl<'a, I: IntoIterator<Item = &'a Tensor>> ModuleSave for I {
+impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError> {
         use std::fmt::Write;
         use std::io::Write as IOWrite;

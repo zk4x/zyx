@@ -2,7 +2,7 @@ use std::rc::Rc;
 use rand::{distributions::Uniform, Rng, SeedableRng};
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
-//#[test]
+#[test]
 fn fuzzy() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;
@@ -45,7 +45,7 @@ fn fuzzy() -> Result<(), ZyxError> {
         // apply that op
         // Assert that CPUTensor and zyx::Tensor give the same result
         let x = rng.gen_range(0..num_t);
-        let y = rng.gen_range(0..num_t);
+        //let y = rng.gen_range(0..num_t);
         match rng.gen_range(0..10) {
             // Unary
             0 => {

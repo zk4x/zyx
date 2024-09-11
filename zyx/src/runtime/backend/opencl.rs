@@ -487,7 +487,6 @@ impl OpenCLMemoryPool {
         dst: &OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
         //println!("Storing {src:?} to {dst:?}");
-        //println!("Storing to {dst:?}");
         let mut event = ptr::null_mut();
         unsafe {
             (self.clEnqueueWriteBuffer)(
@@ -744,6 +743,7 @@ impl OpenCLDevice {
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
+                    //source += &format!("{indent}printf(\"%f, %f\", r13, r14);\n");
                     source += &format!(
                         "{indent}{} = {};\n",
                         z.ocl(),
