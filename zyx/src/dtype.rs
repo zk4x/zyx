@@ -234,7 +234,24 @@ impl DType {
     }
 
     pub(super) fn min_constant(&self) -> Constant {
-        todo!()
+        return match self {
+            #[cfg(feature = "half")]
+            DType::BF16 => Constant::BF16(unsafe { core::mem::transmute(bf16::MIN) }),
+            #[cfg(feature = "half")]
+            DType::F16 => Constant::F16(unsafe { core::mem::transmute(f16::MIN) }),
+            DType::F32 => Constant::F32(unsafe { core::mem::transmute(f32::MIN) }),
+            DType::F64 => Constant::F64(unsafe { core::mem::transmute(f64::MIN) }),
+            #[cfg(feature = "complex")]
+            DType::CF32 => todo!(),
+            #[cfg(feature = "complex")]
+            DType::CF64 => todo!(),
+            DType::U8 => Constant::U8(u8::MIN),
+            DType::I8 => Constant::I8(i8::MIN),
+            DType::I16 => Constant::I16(i16::MIN),
+            DType::I32 => Constant::I32(i32::MIN),
+            DType::I64 => Constant::I64(i64::MIN),
+            DType::Bool => Constant::Bool(false),
+        };
     }
 
     pub(super) fn safetensors(&self) -> &str {
