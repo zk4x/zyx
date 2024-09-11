@@ -274,7 +274,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
 
     // Allocate register space for axes.
     // This way axes also have the same id in registers.
-    for (&axis, &rc) in &axes_rcs {
+    for (_, &rc) in &axes_rcs {
         registers.push((IRDType::U32, rc));
     }
 
@@ -283,7 +283,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     // Map from addressables to registers
     let mut addressables_map: BTreeMap<(TensorId, Scope), u16> = BTreeMap::new();
 
-    // Initialize global arguments
+    // Declare global arguments
     for op in kernel_ops {
         match op {
             &VOp::Load { x, xscope, ref xview, .. } => {
@@ -313,7 +313,18 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
         }
     }
 
-    // TODO Initialize local variables
+    // TODO Declare local variables
+
+    // Declare accumulators
+    // TODO if we have multiple accumulators with the same size, we must reuse them
+    for op in kernel_ops {
+        if let &VOp::Accumulator { z, rop, ref view } = op {
+            let dtype = IRDType::F32(IRVec::Scalar);
+            addressables.push((Scope::Register, dtype, view.original_numel(), false));
+            let id = (addressables.len() - 1) as u16;
+            addressables_map.insert((z, Scope::Register), id);
+        }
+    }
 
     // Actual transpiling from Kernel to IRKernel
     let mut loops = Vec::new();
@@ -342,28 +353,9 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                     (Scope::Register, Scope::Global) => {
                         let ir_dtype = IRDType::F32(IRVec::Scalar);
                         let id = get_empty_register(&mut registers, ir_dtype, tensor_rcs[&z]);
-                        let numel = xview.original_numel();
-                        match xview {
-                            View::None => todo!(),
-                            View::Strided(dims) => {
-                                let offset = get_empty_register(&mut registers, IRDType::U32, 0);
-                                ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
-                                for StridedDim { axis, stride, .. } in dims {
-                                    if *stride != 0 && *stride != numel {
-                                        ops.push(IROp::MAdd {
-                                            z: Var::Id(offset),
-                                            a: Var::Id(*axis as u16),
-                                            b: Var::Const(Constant::U32(*stride as u32)),
-                                            c: Var::Id(offset),
-                                        });
-                                    }
-                                }
-                                ops.push(IROp::Load { z: Var::Id(id), address: addressables_map[&(x, xscope)], offset: Var::Id(offset) });
-                            }
-                            View::Padded(_, _) => todo!(),
-                        }
+                        let address = addressables_map[&(x, xscope)];
+                        load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
                         register_map.insert(z, Var::Id(id));
-                        //todo!()
                     }
                     _ => panic!("Invalid load scopes"),
                 }
@@ -372,64 +364,26 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 match (zscope, xscope) {
                     (Scope::Local, Scope::Register) => { todo!() }
                     (Scope::Global, Scope::Register) => {
-                        let ir_dtype = IRDType::F32(IRVec::Scalar);
-                        let numel = zview.original_numel();
-                        match zview {
-                            View::None => todo!(),
-                            View::Strided(dims) => {
-                                let offset = get_empty_register(&mut registers, IRDType::U32, 0);
-                                ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
-                                for StridedDim { axis, stride, .. } in dims {
-                                    if *stride != 0 && *stride != numel {
-                                        ops.push(IROp::MAdd {
-                                            z: Var::Id(offset),
-                                            a: Var::Id(*axis as u16),
-                                            b: Var::Const(Constant::U32(*stride as u32)),
-                                            c: Var::Id(offset),
-                                        });
-                                    }
-                                }
-                                ops.push(IROp::Store { address: addressables_map[&(z, zscope)], x: register_map[&z], offset: Var::Id(offset) });
-                            }
-                            View::Padded(_, _) => todo!(),
-                        }
-                        //todo!()
+                        let address = addressables_map[&(z, zscope)];
+                        let dtype = IRDType::F32(IRVec::Scalar);
+                        let x = if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
+                            let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
+                            load_indexed(var, address, xview, &mut registers, &mut ops);
+                            var
+                        } else {
+                            register_map[&z]
+                        };
+                        store_indexed(address, x, zview, &mut registers, &mut ops);
                     }
                     _ => panic!("Invalid store scopes")
                 }
             }
             &VOp::Accumulator { z, rop, ref view } => {
                 let dtype = IRDType::F32(IRVec::Scalar);
-                let len = view.original_numel();
-                let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
-                if len > 1 {
-                    let numel = view.original_numel();
-                    match view {
-                        View::None => todo!(),
-                        View::Strided(dims) => {
-                            let offset = get_empty_register(&mut registers, IRDType::U32, 0);
-                            ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
-                            for StridedDim { axis, stride, .. } in dims {
-                                if *stride != 0 && *stride != numel {
-                                    ops.push(IROp::MAdd {
-                                        z: Var::Id(offset),
-                                        a: Var::Id(*axis as u16),
-                                        b: Var::Const(Constant::U32(*stride as u32)),
-                                        c: Var::Id(offset),
-                                    });
-                                }
-                            }
-                            ops.push(IROp::Store { address: addressables_map[&(z, Scope::Register)], offset: Var::Id(offset), x: Var::Const(match rop {
-                                ROp::Sum => dtype.dtype().zero_constant(),
-                                ROp::Max => dtype.dtype().min_constant(),
-                            }) });
-                        }
-                        View::Padded(_, _) => todo!(),
-                    }
-                } else {
-                    ops.push(IROp::Set { z: id, value: Constant::new(0).unary(UOp::Cast(dtype.dtype())) });
-                }
-                register_map.insert(z, Var::Id(id));
+                store_indexed(addressables_map[&(z, Scope::Register)], Var::Const(match rop {
+                    ROp::Sum => dtype.dtype().zero_constant(),
+                    ROp::Max => dtype.dtype().min_constant(),
+                }), view, &mut registers, &mut ops);
             }
             &VOp::Move { z, x, .. } => {
                 register_map.insert(z, register_map[&x]);
@@ -459,12 +413,36 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
                 };
                 let zvar = Var::Id(id);
                 register_map.insert(z, zvar);
-                ops.push(IROp::Binary { z: zvar, x: register_map[&x], y: register_map[&y], bop });
+
+                let bin_op = IROp::Binary {
+                    z: zvar,
+                    x: if let Some(&address) = addressables_map.get(&(x, Scope::Register)) {
+                        let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
+                        load_indexed(var, address, xview, &mut registers, &mut ops);
+                        var
+                    } else {
+                        register_map[&x]
+                    },
+                    y: if let Some(&address) = addressables_map.get(&(y, Scope::Register)) {
+                        let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
+                        load_indexed(var, address, yview, &mut registers, &mut ops);
+                        var
+                    } else {
+                        register_map[&y]
+                    },
+                    bop
+                };
+                ops.push(bin_op);
+
                 if let Var::Id(id) = register_map[&x] {
                     registers[id as usize].1 -= 1u32;
                 }
                 if let Var::Id(id) = register_map[&y] {
                     registers[id as usize].1 -= 1u32;
+                }
+
+                if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
+                    store_indexed(address, zvar, zview, &mut registers, &mut ops);
                 }
             }
         }
@@ -479,6 +457,56 @@ pub(super) fn to_ir(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
     //for op in &ops { println!("{op:?}"); }
 
     (IRKernel { addressables, registers: registers.into_iter().map(|(dtype, _)| dtype).collect(), ops }, args)
+}
+
+fn store_indexed(address: u16, x: Var, view: &View, registers: &mut Vec<(IRDType, u32)>, ops: &mut Vec<IROp>) {
+    let numel = view.original_numel();
+    match view {
+        View::None => {
+            ops.push(IROp::Store { address, x, offset: Var::Const(Constant::U32(0)) });
+        }
+        View::Strided(dims) => {
+            let offset = get_empty_register(registers, IRDType::U32, 0);
+            ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
+            for StridedDim { axis, stride, .. } in dims {
+                if *stride != 0 && *stride != numel {
+                    ops.push(IROp::MAdd {
+                        z: Var::Id(offset),
+                        a: Var::Id(*axis as u16),
+                        b: Var::Const(Constant::U32(*stride as u32)),
+                        c: Var::Id(offset),
+                    });
+                }
+            }
+            ops.push(IROp::Store { address, x, offset: Var::Id(offset) });
+        }
+        View::Padded(_, _) => todo!(),
+    }
+}
+
+fn load_indexed(z: Var, address: u16, view: &View, registers: &mut Vec<(IRDType, u32)>, ops: &mut Vec<IROp>) {
+    let numel = view.original_numel();
+    match view {
+        View::None => {
+            ops.push(IROp::Load { z, address, offset: Var::Const(Constant::U32(0)) });
+        }
+        View::Strided(dims) => {
+            let offset = get_empty_register(registers, IRDType::U32, 0);
+            ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
+            for StridedDim { axis, stride, .. } in dims {
+                if *stride != 0 && *stride != numel {
+                    ops.push(IROp::MAdd {
+                        z: Var::Id(offset),
+                        a: Var::Id(*axis as u16),
+                        b: Var::Const(Constant::U32(*stride as u32)),
+                        c: Var::Id(offset),
+                    });
+                }
+            }
+            ops.push(IROp::Load { z, address, offset: Var::Id(offset) });
+        }
+        View::Padded(_, _) => todo!(),
+    }
 }
 
 fn get_empty_register(registers: &mut Vec<(IRDType, u32)>, ir_dtype: IRDType, rc: u32) -> u16 {

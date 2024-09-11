@@ -1,6 +1,6 @@
-use std::fmt::Display;
+use std::{collections::BTreeSet, fmt::Display};
 
-use crate::{runtime::{backend::DeviceInfo, scheduler::VOp, view::View}, shape::Dimension};
+use crate::{runtime::{backend::DeviceInfo, ir::Scope, scheduler::VOp, view::View}, shape::Dimension};
 use super::kernel::Kernel;
 
 #[derive(Debug, bitcode::Encode, bitcode::Decode)]
@@ -203,10 +203,29 @@ impl Kernel {
         }
         // Since we have swaped our threads around, we need bigger accumulator,
         // otherwise the results would be incorrect
+        let acc_view = View::binded(&rws, &[2, 5, 8]);
+        let mut accs = BTreeSet::new();
         for op in &mut kernel.ops {
             match op {
-                VOp::Accumulator { view, .. } => {
-                    *view = View::binded(&rws, &[2, 5, 8]);
+                VOp::Accumulator { view, z, .. } => {
+                    *view = acc_view.clone();
+                    accs.insert(*z);
+                }
+                VOp::Store { z, xscope, xview, .. } => {
+                    if accs.contains(z) && *xscope == Scope::Register {
+                        *xview = acc_view.clone();
+                    }
+                }
+                VOp::Binary { z, zview, x, xview, y, yview, .. }  => {
+                    if accs.contains(z) {
+                        *zview = acc_view.clone();
+                    }
+                    if accs.contains(x) {
+                        *xview = acc_view.clone();
+                    }
+                    if accs.contains(y) {
+                        *yview = acc_view.clone();
+                    }
                 }
                 _ => {}
             }

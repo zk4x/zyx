@@ -657,6 +657,17 @@ impl OpenCLDevice {
 
         // TODO declare local variables
 
+        // Declare register accumulators
+        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Register {
+                source += &format!(
+                    "{indent}{}{} p{id}[{len}];\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.ocl(),
+                );
+            }
+        }
+
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!(
@@ -667,32 +678,32 @@ impl OpenCLDevice {
 
         // Add indices for global and local loops
         source += &format!(
-            "  r{} = get_group_id(0);   /* 0..{} */\n",
+            "{indent}r{} = get_group_id(0);   /* 0..{} */\n",
             loops[0],
             global_work_size[0]
         );
         source += &format!(
-            "  r{} = get_local_id(0);   /* 0..{} */\n",
+            "{indent}r{} = get_local_id(0);   /* 0..{} */\n",
             loops[1],
             local_work_size[0]
         );
         source += &format!(
-            "  r{} = get_group_id(1);   /* 0..{} */\n",
+            "{indent}r{} = get_group_id(1);   /* 0..{} */\n",
             loops[2],
             global_work_size[1]
         );
         source += &format!(
-            "  r{} = get_local_id(1);   /* 0..{} */\n",
+            "{indent}r{} = get_local_id(1);   /* 0..{} */\n",
             loops[3],
             local_work_size[1]
         );
         source += &format!(
-            "  r{} = get_group_id(2);   /* 0..{} */\n",
+            "{indent}r{} = get_group_id(2);   /* 0..{} */\n",
             loops[4],
             global_work_size[2]
         );
         source += &format!(
-            "  r{} = get_local_id(2);   /* 0..{} */\n",
+            "{indent}r{} = get_local_id(2);   /* 0..{} */\n",
             loops[5],
             local_work_size[2]
         );

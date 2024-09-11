@@ -430,6 +430,7 @@ impl Runtime {
                 //panic!();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops);
                 let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
+                //panic!();
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
                 let Ok(queue_id) = self.devices[device_id].launch(
@@ -487,7 +488,6 @@ impl Runtime {
             }
         }
         if program_id.is_none() {
-            // TODO
             if self.debug_ir() { ir_kernel.debug(); }
             let debug_asm = self.debug_asm();
             program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
