@@ -82,7 +82,7 @@ pub(super) enum Device {
     CUDA {
         memory_pool_id: MemoryPoolId,
         device: CUDADevice,
-        programs: Vec<CUDAProgram>,
+        programs: <CUDAProgram>,
         queues: Vec<CUDAQueue>,
     },
     HIP {

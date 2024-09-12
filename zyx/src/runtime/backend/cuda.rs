@@ -449,6 +449,17 @@ impl CUDADevice {
         source.pop();
         source += "\n) {\n";
 
+        // Declare accumulators
+        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Register {
+                source += &format!(
+                    "{indent}{}{} p{id}[{len}];\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.cu(),
+                );
+            }
+        }
+
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!(

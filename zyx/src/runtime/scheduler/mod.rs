@@ -9,7 +9,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
+    io::Write, u128,
 };
 use optimizer::KernelOptimizer;
 use vop::MOp;
@@ -447,9 +447,11 @@ impl Runtime {
                     &mut self.memory_pools[mpid],
                     &allocated_temps,
                 ) else {
+                    optimizer.set_exec_time(optimization_id, u128::MAX);
                     continue;
                 };
                 let Ok(_) = self.devices[device_id].sync(queue_id) else {
+                    optimizer.set_exec_time(optimization_id, u128::MAX);
                     continue;
                 };
                 let exec_time = begin.elapsed().as_nanos();
