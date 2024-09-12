@@ -2217,22 +2217,18 @@ impl TryFrom<Tensor> for f16 {
 impl TryFrom<Tensor> for f32 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0.];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl TryFrom<Tensor> for f64 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0.];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
@@ -2263,73 +2259,92 @@ impl TryFrom<Tensor> for Complex<f64> {
 impl TryFrom<Tensor> for u8 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl TryFrom<Tensor> for i8 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl TryFrom<Tensor> for i16 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl TryFrom<Tensor> for i32 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl TryFrom<Tensor> for i64 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl TryFrom<Tensor> for bool {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [false];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
 impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock().load(value.id)
+        let numel = value.numel();
+        let mut data = Vec::with_capacity(numel);
+        unsafe { data.set_len(numel) };
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data)
+    }
+}
+
+impl<T: Scalar, const D0: usize> TryFrom<Tensor> for [T; D0] {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [T::zero(); D0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data)
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize> TryFrom<Tensor> for [[T; D1]; D0] {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [[T::zero(); D1]; D0];
+        RT.lock().load(value.id, data.as_flattened_mut())?;
+        Ok(data)
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TryFrom<Tensor> for [[[T; D2]; D1]; D0] {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [[[T::zero(); D2]; D1]; D0];
+        RT.lock().load(value.id, data.as_flattened_mut().as_flattened_mut())?;
+        Ok(data)
     }
 }
 
@@ -2761,6 +2776,39 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         return Tensor {
             id: RT.lock().variable(vec![D0, D1, D2, D3], data).unwrap(),
         };
+    }
+}
+
+impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
+    fn eq(&self, other: &[T; D0]) -> bool {
+        if let Ok(data) = self.clone().try_into() {
+            let data: [T; D0] = data;
+            &data == other
+        } else {
+            false
+        }
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for Tensor {
+    fn eq(&self, other: &[[T; D1]; D0]) -> bool {
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[T; D1]; D0] = data;
+            &data == other
+        } else {
+            false
+        }
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[T; D2]; D1]; D0]> for Tensor {
+    fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[[T; D2]; D1]; D0] = data;
+            &data == other
+        } else {
+            false
+        }
     }
 }
 

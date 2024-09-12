@@ -82,7 +82,7 @@
 - [x] todo fix permute on reduced and reshaped kernel
 - [x] test pad after reshape after pad
 - [ ] test pad after reduce
-- [ ] test padded view permute
+- [x] test padded view permute
 - [ ] test expand after reduce
 - [x] documentation for tensor functions
 - [x] documentation for Zyx Error

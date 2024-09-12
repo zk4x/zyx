@@ -82,7 +82,7 @@ impl Runtime {
             ir_kernel_cache: BTreeMap::new(),
             config_dir: None,
             training: false,
-            search_iterations: 100,
+            search_iterations: 25,
             debug: 0,
         }
     }
@@ -501,29 +501,31 @@ impl Runtime {
         (self.debug >> 4) % 2 == 1
     }
 
-    pub(super) fn load<T: Scalar>(&mut self, x: TensorId) -> Result<Vec<T>, ZyxError> {
+    /// Loads data with beginning elements of the tensor x.
+    /// If data.len() == x.numel(), then it loads the whole tensor.
+    pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
+        let n: usize = self.shape(x).iter().product();
+        assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if self.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
             self.realize(BTreeSet::from([x]))?;
         }
         // If at least part of tensor exists in some device, there must be
         // the rest of the tensor in other devices
-        let n: usize = self.shape(x).iter().product();
-        let mut data: Vec<T> = Vec::with_capacity(n);
-        unsafe { data.set_len(n) };
         for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
                     self.memory_pools[buffer_id.memory_pool_id]
-                        .pool_to_host(buffer_id.buffer_id, &mut data)?;
+                        .pool_to_host(buffer_id.buffer_id, data)?;
                     break;
                 } else {
                     todo!()
                 }
             }
         }
+        //println!("{data:?}, {}", data.len());
         // for each device where tensor is stored load it
-        Ok(data)
+        Ok(())
     }
 
     pub(super) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
