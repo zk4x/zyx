@@ -82,26 +82,26 @@ pub(super) enum Device {
     CUDA {
         memory_pool_id: MemoryPoolId,
         device: CUDADevice,
-        programs: <CUDAProgram>,
+        programs: IndexMap<CUDAProgram>,
         queues: Vec<CUDAQueue>,
     },
     HIP {
         memory_pool_id: MemoryPoolId,
         device: HIPDevice,
-        programs: Vec<HIPProgram>,
+        programs: IndexMap<HIPProgram>,
         queues: Vec<HIPQueue>,
     },
     OpenCL {
         memory_pool_id: MemoryPoolId,
         device: OpenCLDevice,
-        programs: Vec<OpenCLProgram>,
+        programs: IndexMap<OpenCLProgram>,
         queues: Vec<OpenCLQueue>,
     },
     #[cfg(feature = "wgsl")]
     WGSL {
         memory_pool_id: MemoryPoolId,
         device: WGSLDevice,
-        programs: Vec<WGSLProgram>,
+        programs: IndexMap<WGSLProgram>,
         queues: Vec<WGSLQueue>,
     },
 }
@@ -196,7 +196,7 @@ impl Runtime {
                 .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
-                    programs: Vec::new(),
+                    programs: IndexMap::new(),
                     queues,
                 }));
         }
@@ -213,7 +213,7 @@ impl Runtime {
                 .extend(devices.into_iter().map(|(device, queues)| Device::HIP {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
-                    programs: Vec::new(),
+                    programs: IndexMap::new(),
                     queues,
                 }));
         }
@@ -230,7 +230,7 @@ impl Runtime {
                 .extend(devices.into_iter().map(|(device, queues)| Device::OpenCL {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
-                    programs: Vec::new(),
+                    programs: IndexMap::new(),
                     queues,
                 }));
         }
@@ -514,17 +514,17 @@ impl Device {
         match self {
             Device::CUDA {
                 device, programs, ..
-            } => device.release_program(programs.remove(program_id))?,
+            } => device.release_program(programs.remove(program_id).unwrap())?,
             Device::HIP {
                 device, programs, ..
-            } => device.release_program(programs.remove(program_id))?,
+            } => device.release_program(programs.remove(program_id).unwrap())?,
             Device::OpenCL {
                 device, programs, ..
-            } => device.release_program(programs.remove(program_id))?,
+            } => device.release_program(programs.remove(program_id).unwrap())?,
             #[cfg(feature = "wgsl")]
             Device::WGSL {
                 device, programs, ..
-            } => device.release_program(programs.remove(program_id))?,
+            } => device.release_program(programs.remove(program_id).unwrap())?,
         }
         Ok(())
     }
@@ -538,27 +538,23 @@ impl Device {
             Device::CUDA {
                 device, programs, ..
             } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?);
-                programs.len() - 1
+                programs.push(device.compile(&ir_kernel, debug_asm)?)
             }
             Device::HIP {
                 device, programs, ..
             } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?);
-                programs.len() - 1
+                programs.push(device.compile(&ir_kernel, debug_asm)?)
             }
             Device::OpenCL {
                 device, programs, ..
             } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?);
-                programs.len() - 1
+                programs.push(device.compile(&ir_kernel, debug_asm)?)
             }
             #[cfg(feature = "wgsl")]
             Device::WGSL {
                 device, programs, ..
             } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?);
-                programs.len() - 1
+                programs.push(device.compile(&ir_kernel, debug_asm)?)
             }
         })
     }
