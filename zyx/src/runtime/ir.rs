@@ -348,7 +348,51 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 }
             }
             &VOp::Const { z, value, ref view } => {
-                register_map.insert(z, Var::Const(value));
+                let var = if view.requires_conditional_padding() {
+                    println!("View: {view}");
+                    let View::Padded(dims, padding) = view else { panic!() };
+                    let padding_condition = get_empty_register(&mut registers, IRDType::Bool, 1);
+                    ops.push(IROp::Set { z: padding_condition, value: Constant::Bool(true) });
+                    let padding_condition = Var::Id(padding_condition);
+                    for StridedDim { axis, .. } in dims {
+                        if let Some((axes, (lp, rp))) = padding
+                            .iter()
+                            .find(|(axes, _)| axes.iter().max().unwrap() == axis)
+                        {
+                            if *lp > 0 || *rp > 0 {
+                                let idx_id = get_empty_register(&mut registers, IRDType::U32, 1);
+                                ops.push(IROp::Set { z: idx_id, value: Constant::U32(0) });
+                                let idx = Var::Id(idx_id);
+                                let mut st = 1;
+                                let mut dim = 1;
+                                for axis in axes.iter().rev() {
+                                    ops.push(IROp::MAdd { z: idx, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(st as u32)), c: idx });
+                                    st *= dims[*axis].dim;
+                                    dim *= dims[*axis].dim;
+                                }
+                                if *lp > 0 {
+                                    let temp = Var::Id(get_empty_register(&mut registers, IRDType::Bool, 0));
+                                    ops.push(IROp::Binary { z: temp, x: idx, y: Var::Const(Constant::U32(*lp as u32 - 1)), bop: BOp::Cmpgt });
+                                    ops.push(IROp::Binary { z: padding_condition, x: temp, y: padding_condition, bop: BOp::And });
+                                }
+                                if *rp > 0 {
+                                    let temp = Var::Id(get_empty_register(&mut registers, IRDType::Bool, 0));
+                                    ops.push(IROp::Binary { z: temp, x: idx, y: Var::Const(Constant::U32((dim as isize - *rp) as u32)), bop: BOp::Cmplt });
+                                    ops.push(IROp::Binary { z: padding_condition, x: temp, y: padding_condition, bop: BOp::And });
+                                }
+                                registers[idx_id as usize].1 = 0;
+                            }
+                        }
+                    }
+                    // Nullify z if padding condition is false (if there is padding at that index)
+                    let var = Var::Id(get_empty_register(&mut registers, value.dtype().ir_dtype(), tensor_rcs[&z]));
+                    ops.push(IROp::Binary { z: var, x: padding_condition, y: Var::Const(value), bop: BOp::Mul });
+                    if let Var::Id(pc) = padding_condition { registers[pc as usize].1 = 0; }
+                    var
+                } else {
+                    Var::Const(value)
+                };
+                register_map.insert(z, var);
             }
             &VOp::Load { z, zscope, ref zview, x, xscope, ref xview } => {
                 match (zscope, xscope) {

@@ -109,16 +109,15 @@ impl View {
         }
     }
 
-    /*pub(super) fn requires_conditional_padding(&self) -> bool {
+    pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
-        if let View::Padded(_, padded_axes) = self {
-            return padded_axes
-                .axes
+        if let View::Padded(_, padding) = self {
+            return padding
                 .iter()
                 .any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
         }
         false
-    }*/
+    }
 
     pub(super) fn original_numel(&self) -> usize {
         //println!("Original numel {self}");
