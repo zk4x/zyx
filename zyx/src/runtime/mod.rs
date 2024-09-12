@@ -141,7 +141,7 @@ impl Runtime {
                 self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
                 let rng = self.rng.get_mut().unwrap();
                 let data: Vec<f32> = (0..n).map(|_| rng.sample(&range)).collect();
-                self.temp(shape, &data)
+                self.variable(shape, &data)
             }
             DType::F64 => todo!(),
             #[cfg(feature = "complex")]
@@ -153,7 +153,7 @@ impl Runtime {
                 self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
                 let rng = self.rng.get_mut().unwrap();
                 let data: Vec<u8> = (0..n).map(|_| rng.sample(&range)).collect();
-                self.temp(shape, &data)
+                self.variable(shape, &data)
             }
             DType::I8 => todo!(),
             DType::I16 => todo!(),
@@ -163,114 +163,117 @@ impl Runtime {
         }
     }
 
-    pub(super) fn temp<T: Scalar>(
+    pub(super) fn variable<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,
         data: &[T],
     ) -> Result<TensorId, ZyxError> {
         assert_eq!(shape.iter().product::<usize>(), data.len());
-        if data.len() == 1 {
-            Ok(self.graph.push(Node::Const {
-                value: Constant::new(data[0]),
-            }))
-        } else {
-            let id = self
-                .graph
-                .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
-            self.initialize_devices()?;
-            let bytes = data.len() * T::byte_size();
-            // Put it into memory pool with fastest device out of memory pools with enough free capacity
-            let mem_pools: Vec<usize> = self
-                .memory_pools
-                .iter()
-                .enumerate()
-                .filter_map(|(id, mp)| {
-                    if mp.free_bytes() > bytes {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if mem_pools.is_empty() {
-                return Err(ZyxError::AllocationError);
-            }
-            // Pick memory pool with fastest device
-            let mut memory_pool_id = mem_pools[0];
-            let mut max_compute = 0;
-            for dev in &self.devices {
-                if dev.compute() > max_compute && mem_pools.contains(&dev.memory_pool_id()) {
-                    max_compute = dev.compute();
-                    memory_pool_id = dev.memory_pool_id();
+        let id = self
+            .graph
+            .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
+        self.initialize_devices()?;
+        let bytes = data.len() * T::byte_size();
+        // Put it into memory pool with fastest device out of memory pools with enough free capacity
+        let mem_pools: Vec<usize> = self
+            .memory_pools
+            .iter()
+            .enumerate()
+            .filter_map(|(id, mp)| {
+                if mp.free_bytes() > bytes {
+                    Some(id)
+                } else {
+                    None
                 }
-            }
-            // Search for first memory pool where we can put this tensor
-            let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
-            self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
-            self.tensor_buffer_map.insert(
-                (id, View::new(self.shape(id))),
-                BufferId {
-                    memory_pool_id,
-                    buffer_id,
-                },
-            );
-            Ok(id)
+            })
+            .collect();
+        if mem_pools.is_empty() {
+            return Err(ZyxError::AllocationError);
         }
+        // Pick memory pool with fastest device
+        let mut memory_pool_id = mem_pools[0];
+        let mut max_compute = 0;
+        for dev in &self.devices {
+            if dev.compute() > max_compute && mem_pools.contains(&dev.memory_pool_id()) {
+                max_compute = dev.compute();
+                memory_pool_id = dev.memory_pool_id();
+            }
+        }
+        // Search for first memory pool where we can put this tensor
+        let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
+        self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
+        self.tensor_buffer_map.insert(
+            (id, View::new(self.shape(id))),
+            BufferId {
+                memory_pool_id,
+                buffer_id,
+            },
+        );
+        Ok(id)
+    }
+
+    #[must_use]
+    pub(super) fn constant(&mut self, value: impl Scalar) -> TensorId {
+        self.graph.push(Node::Const { value: Constant::new(value) })
     }
 
     // Initialization
     #[must_use]
-    pub(super) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> TensorId {
-        let one = self.graph.push(Node::Const {
-            value: Constant::new(value),
-        });
-        let expanded = self.expand(one, shape);
-        self.release(one).unwrap();
-        return expanded;
+    pub(super) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> Result<TensorId, ZyxError> {
+        let x = self.variable(vec![1], &[value])?;
+        let expanded = self.expand(x, shape);
+        self.release(x).unwrap();
+        return Ok(expanded);
     }
 
     #[must_use]
     pub(super) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
-        return match dtype {
+        let x = match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.full(shape, bf16::ONE),
             #[cfg(feature = "half")]
             DType::F16 => self.full(shape, f16::ONE),
-            DType::F32 => self.full(shape, 1f32),
-            DType::F64 => self.full(shape, 1f64),
+            DType::F32 => self.constant(1f32),
+            DType::F64 => self.constant(1f64),
             #[cfg(feature = "complex")]
             DType::CF32 => self.full(shape, Complex::new(1f32, 0.)),
             #[cfg(feature = "complex")]
             DType::CF64 => self.full(shape, Complex::new(1f64, 0.)),
-            DType::U8 => self.full(shape, 1u8),
-            DType::I8 => self.full(shape, 1i8),
-            DType::I16 => self.full(shape, 1i16),
-            DType::I32 => self.full(shape, 1i32),
-            DType::I64 => self.full(shape, 1i64),
-            DType::Bool => self.full(shape, true),
+            DType::U8 => self.constant(1u8),
+            DType::I8 => self.constant(1i8),
+            DType::I16 => self.constant(1i16),
+            DType::I32 => self.constant(1i32),
+            DType::I64 => self.constant(1i64),
+            DType::Bool => self.constant(true),
         };
+        let expanded = self.expand(x, shape);
+        self.release(x).unwrap();
+        return expanded;
     }
 
     #[must_use]
     pub(super) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
-        return match dtype {
+        let x = match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.full(shape, bf16::ZERO),
             #[cfg(feature = "half")]
             DType::F16 => self.full(shape, f16::ZERO),
-            DType::F32 => self.full(shape, 0f32),
-            DType::F64 => self.full(shape, 0f64),
+            DType::F32 => self.constant(0f32),
+            DType::F64 => self.constant(0f64),
             #[cfg(feature = "complex")]
             DType::CF32 => self.full(shape, Complex::new(0f32, 0.)),
             #[cfg(feature = "complex")]
             DType::CF64 => self.full(shape, Complex::new(0f64, 0.)),
-            DType::U8 => self.full(shape, 0u8),
-            DType::I8 => self.full(shape, 0i8),
-            DType::I16 => self.full(shape, 0i16),
-            DType::I32 => self.full(shape, 0i32),
-            DType::I64 => self.full(shape, 0i64),
-            DType::Bool => self.full(shape, false),
+            DType::U8 => self.constant(0u8),
+            DType::I8 => self.constant(0i8),
+            DType::I16 => self.constant(0i16),
+            DType::I32 => self.constant(0i32),
+            DType::I64 => self.constant(0i64),
+            DType::Bool => self.constant(false),
         };
+        let expanded = self.expand(x, shape);
+        self.release(x).unwrap();
+        return expanded;
     }
 
     // Unary ops
@@ -784,17 +787,21 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::Exp2 => {
-                        let temp = self.full(self.shape(x).into(), std::f64::consts::E.log2());
-                        let temp2 = self.mul(nid, temp);
+                        let temp = self.constant(std::f64::consts::E.log2());
+                        let temp1  = self.expand(temp, self.shape(x).into());
                         self.release(temp).unwrap();
+                        let temp2 = self.mul(nid, temp1);
+                        self.release(temp1).unwrap();
                         let grad = self.mul(nid, temp2);
                         self.release(temp2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Log2 => {
-                        let temp = self.full(self.shape(x).into(), std::f64::consts::E.log2());
-                        let temp2 = self.mul(x, temp);
+                        let temp = self.constant(std::f64::consts::E.log2());
+                        let temp1  = self.expand(temp, self.shape(x).into());
                         self.release(temp).unwrap();
+                        let temp2 = self.mul(x, temp1);
+                        self.release(temp1).unwrap();
                         let grad = self.div(grad, temp2);
                         self.release(temp2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);

@@ -315,7 +315,7 @@ impl Tensor {
     #[must_use]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
         return Tensor {
-            id: RT.lock().full(shape.into_shape().collect(), value),
+            id: RT.lock().full(shape.into_shape().collect(), value).unwrap(),
         };
     }
 
@@ -326,6 +326,16 @@ impl Tensor {
             .pad_zeros([(0, n as isize)])
             .reshape([n + 1, n])
             .get((..-1, ..));
+    }
+
+    /// Create constant that will be baked into compiled kernels.
+    /// Using different value in graph in place of this constnat will force
+    /// recompilation of one or more kernels.
+    /// For performance reason use this if the value does not
+    /// change during the run of the program or if there are only few repeating variations.
+    #[must_use]
+    pub fn constant(value: impl Scalar) -> Tensor {
+        Tensor { id: RT.lock().constant(value) }
     }
 
     // unary
@@ -2684,7 +2694,7 @@ impl From<&Tensor> for Tensor {
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
         return Tensor {
-            id: RT.lock().temp(vec![1], &[value]).unwrap(),
+            id: RT.lock().variable(vec![1], &[value]).unwrap(),
         };
     }
 }
@@ -2692,7 +2702,7 @@ impl<T: Scalar> From<T> for Tensor {
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
         return Tensor {
-            id: RT.lock().temp(vec![data.len()], &data).unwrap(),
+            id: RT.lock().variable(vec![data.len()], &data).unwrap(),
         };
     }
 }
@@ -2700,7 +2710,7 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
 impl<T: Scalar> From<&Vec<T>> for Tensor {
     fn from(data: &Vec<T>) -> Self {
         return Tensor {
-            id: RT.lock().temp(vec![data.len()], &data).unwrap(),
+            id: RT.lock().variable(vec![data.len()], &data).unwrap(),
         };
     }
 }
@@ -2709,7 +2719,7 @@ impl<T: Scalar> From<&[T]> for Tensor {
     fn from(data: &[T]) -> Self {
         let n = data.len();
         return Tensor {
-            id: RT.lock().temp(vec![n], data).unwrap(),
+            id: RT.lock().variable(vec![n], data).unwrap(),
         };
     }
 }
@@ -2717,7 +2727,7 @@ impl<T: Scalar> From<&[T]> for Tensor {
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
         return Tensor {
-            id: RT.lock().temp(vec![D0], &data).unwrap(),
+            id: RT.lock().variable(vec![D0], &data).unwrap(),
         };
     }
 }
@@ -2726,7 +2736,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
         return Tensor {
-            id: RT.lock().temp(vec![D0, D1], data).unwrap(),
+            id: RT.lock().variable(vec![D0, D1], data).unwrap(),
         };
     }
 }
@@ -2737,7 +2747,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
         return Tensor {
-            id: RT.lock().temp(vec![D0, D1, D2], data).unwrap(),
+            id: RT.lock().variable(vec![D0, D1, D2], data).unwrap(),
         };
     }
 }
@@ -2749,7 +2759,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
         return Tensor {
-            id: RT.lock().temp(vec![D0, D1, D2, D3], data).unwrap(),
+            id: RT.lock().variable(vec![D0, D1, D2, D3], data).unwrap(),
         };
     }
 }
