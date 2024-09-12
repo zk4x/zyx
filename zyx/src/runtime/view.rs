@@ -121,7 +121,7 @@ impl View {
     }*/
 
     pub(super) fn original_numel(&self) -> usize {
-        println!("Original numel {self}");
+        //println!("Original numel {self}");
         match self {
             View::None => 1,
             View::Strided(dims) => dims
@@ -221,7 +221,7 @@ impl View {
                 }
             }
         }
-        println!("Result {self}");
+        //println!("Result {self}");
     }
 
     pub(super) fn expand(&mut self, axis: Axis, dimension: Dimension) {
@@ -287,7 +287,7 @@ impl View {
     }
 
     pub(super) fn split_axis(&mut self, axis: Axis, dimensions: &[usize]) {
-        println!("{axis}, {dimensions:?}");
+        //println!("{axis}, {dimensions:?}");
         match self {
             View::None => {}
             View::Strided(dims) => {

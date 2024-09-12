@@ -763,6 +763,9 @@ impl Runtime {
                     BOp::Or => {
                         todo!("Or backward.");
                     }
+                    BOp::And => {
+                        todo!("And backward.");
+                    }
                 },
                 Node::Unary { x, uop } => match uop {
                     UOp::Inv => {

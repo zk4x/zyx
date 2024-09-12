@@ -11,6 +11,7 @@ pub(super) enum BOp {
     Cmpgt,
     Max,
     Or,
+    And,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]

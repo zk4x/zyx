@@ -521,6 +521,7 @@ impl CUDADevice {
                             BOp::Cmpgt => format!("{} > {}", x.cu(), y.cu()),
                             BOp::Max => format!("max({}, {})", x.cu(), y.cu()),
                             BOp::Or => format!("{} || {}", x.cu(), y.cu()),
+                            BOp::And => format!("{} && {}", x.cu(), y.cu()),
                         }
                     );
                 }
@@ -845,6 +846,7 @@ impl CUDADevice {
                             BOp::Cmpgt => "set.gt",
                             BOp::Max => todo!(),
                             BOp::Or => todo!(),
+                            BOp::And => todo!(),
                         },
                         dtype.ptx(),
                         z.ptx(),

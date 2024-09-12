@@ -78,7 +78,7 @@ impl Kernel {
                 gws_i += 1;
             }
         }
-        println!("Using gws {gws:?}");
+        //println!("Using gws {gws:?}");
         // Local work size
         for lx in (1..=mlws.min(mlwd[0])).filter(|x| gws[0] % x == 0) {
             for ly in (1..=(mlws/lx).min(mlwd[1])).filter(|y| gws[1] % y == 0) {
@@ -153,6 +153,7 @@ impl Kernel {
         for (op_id, dimensions) in &optimization.splits {
             kernel.split_axis(*op_id, dimensions);
         }
+
         let mut rws = [0; 3];
         let VOp::Loop { len, .. } = kernel.ops[2] else { panic!() };
         rws[0] = len;

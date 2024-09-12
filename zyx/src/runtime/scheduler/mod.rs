@@ -198,7 +198,8 @@ impl Runtime {
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
                 /*let optimization = KernelOptimization {
                     //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![2, 1, 1]), (1, vec![1, 1, 2]), (0, vec![1, 1, 1])],
-                    splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![1, 2, 1]), (1, vec![1, 2, 1]), (0, vec![1, 1, 1])],
+                    //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![1, 2, 1]), (1, vec![1, 2, 1]), (0, vec![1, 1, 1])],
+                    splits: vec![(0, vec![1, 5]), (2, vec![9, 1]), (1, vec![5, 1]), (0, vec![1, 1])],
                     permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
                     local_tiles: false,
                 };*/
@@ -436,10 +437,8 @@ impl Runtime {
                 // since compilation takes ~50ms,
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
                 //optimized_kernel.debug();
-                //panic!();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
                 let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
-                //panic!();
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
                 let Ok(queue_id) = self.devices[device_id].launch(

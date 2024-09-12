@@ -432,6 +432,7 @@ impl HIPDevice {
                             BOp::Cmpgt => format!("{} > {}", x.hip(), y.hip()),
                             BOp::Max => format!("max({}, {})", x.hip(), y.hip()),
                             BOp::Or => format!("{} || {}", x.hip(), y.hip()),
+                            BOp::And => format!("{} && {}", x.hip(), y.hip()),
                         }
                     );
                 }
