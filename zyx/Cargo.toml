@@ -25,7 +25,7 @@ serde_json = { version = "*", default-features = false, features = ["std"] } # M
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # for caching of beam searched kernels
-bitcode = { version = "*", default-features = false, features = ["std", "derive"] }
+bitcode = { version = "0.6.3", default-features = false, features = ["std", "derive"] } # MIT or Apache 2.0
 # For nice colorful debug logging
 inline_colorization = { version = "0.1.6", default-features = false } # MIT
 
@@ -38,8 +38,8 @@ half = { version = "2.4.1", default-features = false, optional = true } # MIT or
 num-complex = { version = "0.4.6", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "*", default-features = false, features = ["wgsl"], optional = true }
-# Futures for wgpu axync
+wgpu = { version = "22.1.0", default-features = false, features = ["wgsl"], optional = true }
+# Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
 futures = { version = "0.3", default-features = false, features = ["executor"], optional = true }
 
 # Pyo3 is used only for python bindings
@@ -51,7 +51,7 @@ crate-type = ["lib", "cdylib"]
 [features]
 default = [
     "rand",
-    "wgsl",
+    #"wgsl",
     #"half",
     #"complex",
     #"py",

@@ -13,7 +13,7 @@
 - [x] repeat
 - [ ] hsa/hsail backend
 - [ ] vulkan backend
-- [ ] clean up ir.rs
+- [x] clean up ir.rs
 - [ ] automatic optimizations for scheduler
 - [x] depends_on function for binary ops resolution
 - [x] multiple tensors depending on single one (rc > 1)
@@ -29,7 +29,7 @@
 - [x] Just write the scheduler, temporary variables and stuff does not matter whatsoever
 - [x] multiple kernel executors (with different performance)
 - [ ] PTX compiler
-- [ ] comgr compiler instead of broken hiprtc
+- [ ] comgr compiler instead of broken hiprtc, although amd's compute firmware is broken, so isn't vulkan better anyway?
 - [x] ability to use env vars in code blocks
 - [x] uniform function
 - [x] compiled graph execution performance metrics
@@ -63,9 +63,10 @@
 - [x] remove events and instead use queues/cuda streams to launch multiple kernels concurrently with clFinish/cudaStreamSynchronize
 - [x] full reduce
 - [x] more work per thread
-- [ ] more work per thread in reduce dim
-- [ ] local memory caching
-- [ ] bigger accumulators
+- [x] more work per thread in reduce dim
+- [ ] local memory tiling
+- [ ] register tiling
+- [x] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
 - [x] tensor detach (for recurrent nets)
