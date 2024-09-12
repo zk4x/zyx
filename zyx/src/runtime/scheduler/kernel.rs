@@ -255,7 +255,7 @@ impl Kernel {
                     }
                     View::Padded(dims, axes) => {
                         dims.iter_mut().for_each(|StridedDim { axis, .. }| if *axis >= naxis { *axis += 1 });
-                        axes.axes.iter_mut().for_each(|(axes, _)| axes.iter_mut().for_each(|a| if *a >= naxis { *a += 1 }));
+                        axes.iter_mut().for_each(|(axes, _)| axes.iter_mut().for_each(|a| if *a >= naxis { *a += 1 }));
                     }
                 }
                 VOp::Loop { axis, .. } => if *axis >= naxis { *axis += 1 }

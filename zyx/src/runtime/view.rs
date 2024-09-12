@@ -18,14 +18,9 @@ pub(super) enum View {
     Strided(Vec<StridedDim>),
     // First is typical strided, second is group of axes and their padding. Very ugly, but works.
     // If you can make it nicer, please do.
-    Padded(Vec<StridedDim>, PaddedAxes),
+    Padded(Vec<StridedDim>, Vec<(Vec<Axis>, (isize, isize))>),
     //Reshaped(), // TODO perhaps for some weird optimizations, but it may actually reduce performace
     // since then loads are very unpredictable
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
-pub(super) struct PaddedAxes {
-    pub(super) axes: Vec<(Vec<Axis>, (isize, isize))>,
 }
 
 /*impl PaddedAxes {
@@ -107,7 +102,10 @@ impl View {
     pub(super) fn used_axes(&self) -> Vec<Axis> {
         match self {
             View::None => Vec::new(),
-            View::Strided(dims) | View::Padded(dims, _) => dims.iter().flat_map(|x| if x.stride != 0 { Some(x.axis) } else { None }).collect()
+            View::Strided(dims) | View::Padded(dims, _) => dims
+                .iter()
+                .flat_map(|x| if x.stride != 0 { Some(x.axis) } else { None })
+                .collect(),
         }
     }
 
@@ -123,20 +121,29 @@ impl View {
     }*/
 
     pub(super) fn original_numel(&self) -> usize {
+        println!("Original numel {self}");
         match self {
             View::None => 1,
-            View::Strided(dims) => {
-                dims.iter().map(|dim| if dim.stride != 0 { dim.dim } else { 1 }).product()
-            }
-            View::Padded(dims, PaddedAxes { axes }) => {
-                dims.iter().map(|dim| if dim.stride != 0 {
-                    if let Some((lp, rp)) = axes.iter().find_map(|(a, (lp, rp))| if *a.last().unwrap() == dim.axis { Some((lp, rp)) } else { None }) {
-                        (dim.dim as isize - lp - rp) as usize
-                    } else {
-                        dim.dim
-                    }
-                } else { 1 }).product()
-            }
+            View::Strided(dims) => dims
+                .iter()
+                .map(|dim| if dim.stride != 0 { dim.dim } else { 1 })
+                .product(),
+            View::Padded(dims, axes) => axes
+                .iter()
+                .map(|(axes, (lp, rp))| {
+                    let numel: usize = dims.iter()
+                        .filter_map(|StridedDim { axis, dim, .. }| {
+                            if axes.contains(axis) {
+                                Some(*dim)
+                            } else {
+                                None
+                            }
+                        })
+                        .product();
+                    //println!("{numel}, {lp}, {rp}");
+                    (numel as isize - lp - rp) as usize
+                })
+                .product(),
         }
     }
 
@@ -159,7 +166,7 @@ impl View {
                 // TODO is this correct?
                 let axes_map: BTreeMap<usize, usize> =
                     (0..axes.len()).zip(axes.iter().copied()).collect();
-                for (axes, _) in &mut padding.axes {
+                for (axes, _) in padding {
                     for d in axes {
                         *d = axes_map[d];
                     }
@@ -171,52 +178,51 @@ impl View {
     //pub(super) fn arbitrary_permute(&mut self, axes: &[usize]) { todo!() }
 
     pub(super) fn pad_axis(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+        //println!("Padding {axis} with {left_pad}, {right_pad}");
         let paxis = axis;
         match self {
             View::None => {}
             View::Strided(dims) => {
                 if dims.iter().any(|&StridedDim { axis, .. }| axis == paxis) {
                     *self = View::Padded(
-                        dims.clone(),
-                        PaddedAxes {
-                            axes: vec![(vec![axis], (left_pad, right_pad))],
-                        },
+                        dims.iter()
+                            .map(|&StridedDim { axis, dim, stride }| {
+                                if axis == paxis {
+                                    StridedDim {
+                                        axis,
+                                        dim: (dim as isize + left_pad + right_pad) as usize,
+                                        stride,
+                                    }
+                                } else {
+                                    StridedDim { axis, dim, stride }
+                                }
+                            })
+                            .collect(),
+                        vec![(vec![axis], (left_pad, right_pad))],
                     );
                 }
             }
             View::Padded(dims, padding) => {
-                if dims.iter().any(|&StridedDim { axis, .. }| axis == paxis) {
-                    if let Some((_, (lp, rp))) = padding
-                        .axes
-                        .iter_mut()
-                        .find(|(axes, _)| axes.contains(&axis))
+                if let Some(StridedDim { dim, .. }) = dims
+                    .iter_mut()
+                    .find(|StridedDim { axis, .. }| *axis == paxis)
+                {
+                    //println!("Padding axis {axis}, dim {dim} with {left_pad}, {right_pad}");
+                    *dim = (*dim as isize + left_pad + right_pad) as usize;
+                    if let Some((_, (lp, rp))) =
+                        padding.iter_mut().find(|(axes, _)| axes.contains(&axis))
                     {
                         *lp += left_pad;
                         *rp += right_pad;
                     } else {
-                        padding.axes.push((vec![axis], (left_pad, right_pad)));
-                        padding.axes.sort();
+                        padding.push((vec![axis], (left_pad, right_pad)));
+                        padding.sort();
                     }
                 }
             }
         }
+        println!("Result {self}");
     }
-
-    /*pub(super) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
-        //println!("Padding view with {left_pad}, {right_pad}");
-        match self {
-            View::None => {}
-            View::Strided(dims) => {
-                let mut dims = dims.clone();
-                dims[axis].dim = (dims[axis].dim as isize + left_pad + right_pad) as usize;
-                *self = View::Padded(dims, PaddedAxes::new(axis, left_pad, right_pad));
-            }
-            View::Padded(dims, padding) => {
-                dims[axis].dim = (dims[axis].dim as isize + left_pad + right_pad) as usize;
-                padding.pad(axis, left_pad, right_pad);
-            }
-        }
-    }*/
 
     pub(super) fn expand(&mut self, axis: Axis, dimension: Dimension) {
         // TODO probably instead of changing stride to 0, we can simply
@@ -281,6 +287,7 @@ impl View {
     }
 
     pub(super) fn split_axis(&mut self, axis: Axis, dimensions: &[usize]) {
+        println!("{axis}, {dimensions:?}");
         match self {
             View::None => {}
             View::Strided(dims) => {
@@ -341,7 +348,7 @@ impl View {
                     }
                 }
                 // If key in padding axes is greater than axis, then add dim_len - 1 to it
-                for (axes, _) in padding.axes.iter_mut() {
+                for (axes, _) in padding.iter_mut() {
                     for a in axes {
                         if *a > axis {
                             *a += dim_len - 1;
@@ -349,7 +356,7 @@ impl View {
                     }
                 }
                 // Split padding
-                if let Some((axes, _)) = padding.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
+                if let Some((axes, _)) = padding.iter_mut().find(|(k, _)| k.contains(&axis)) {
                     //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
                     for a in axis + 1..axis + dim_len {
                         axes.push(a);
@@ -377,7 +384,7 @@ impl Display for View {
                 dims.iter().map(|d| d.axis).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.dim).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.stride).collect::<Vec<Stride>>(),
-                padding.axes,
+                padding,
             )),
         }
     }

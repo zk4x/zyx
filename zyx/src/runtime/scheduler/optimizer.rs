@@ -52,34 +52,33 @@ impl Kernel {
         let mrwd = [16, 16, 16]; // For now 16, can be raised to 32 on some hardware perhaps
         let maxrr = 8; // Max reduce register work dimension
 
-        let mut gws = [0; 3];
-        let mut gws_i = 3;
         let mut splits = Vec::new();
         let num_loops = self
             .ops
             .iter()
-            .position(|op| {
-                if let VOp::Loop { len: dimension, .. } = op {
-                    gws_i -= 1;
-                    gws[gws_i] = *dimension;
-                }
-                !matches!(op, VOp::Loop { .. })
-            })
+            .position(|op| !matches!(op, VOp::Loop { .. } ))
             .unwrap();
         assert_ne!(num_loops, 0);
+        let mut gws = [1; 3];
         if num_loops < 3 {
             let dims: Vec<usize> = core::iter::repeat(1)
                 .take(3 - num_loops)
                 .chain([self.shape[0]])
                 .collect();
-            gws_i += 1;
-            for dim in dims.iter().rev() {
-                gws_i -= 1;
-                gws[gws_i] = *dim;
-            }
             splits.push((0, dims));
+            let mut gws_i = 3 - num_loops;
+            for d in &self.shape {
+                gws[gws_i] = *d;
+                gws_i += 1;
+            }
+        } else {
+            let mut gws_i = 0;
+            for d in &self.shape[..3] {
+                gws[gws_i] = *d;
+                gws_i += 1;
+            }
         }
-        //println!("Using gws {gws:?}");
+        println!("Using gws {gws:?}");
         // Local work size
         for lx in (1..=mlws.min(mlwd[0])).filter(|x| gws[0] % x == 0) {
             for ly in (1..=(mlws/lx).min(mlwd[1])).filter(|y| gws[1] % y == 0) {

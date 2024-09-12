@@ -237,7 +237,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                     axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
                 }
             }
-            &VOp::Load { z, zscope, ref zview, x, xscope, ref xview } => {
+            VOp::Load { zview, xview, .. } => {
                 for axis in xview.used_axes() {
                     axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
                 }
@@ -245,7 +245,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                     axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
                 }
             }
-            VOp::Store { z, zscope, ref zview, xscope, ref xview } => {
+            VOp::Store { z, ref zview, ref xview, .. } => {
                 for axis in xview.used_axes() {
                     axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
                 }
@@ -254,18 +254,20 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 }
                 tensor_rcs.entry(*z).and_modify(|rc| *rc += 1).or_insert(1);
             }
-            VOp::Accumulator { z, rop, view } => {
+            VOp::Accumulator { view, .. } => {
                 for axis in view.used_axes() {
                     axes_rcs.entry(axis).and_modify(|rc| *rc += 1).or_insert(1);
                 }
             }
-            &VOp::Move { z, x, .. } => {
+            &VOp::Move { x, .. } => {
                 tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
-            &VOp::Unary { z, x, uop, ref view } => {
+            // TODO should we put view into axes_rcs, or should we remove axes_rcs alltogether?
+            &VOp::Unary { x, .. } => {
                 tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
-            &VOp::Binary { z, x, y, bop, ref zview, ref xview, ref yview } => {
+            // TODO should we put view into axes_rcs, or should we remove axes_rcs alltogether?
+            &VOp::Binary { x, y, .. } => {
                 tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 tensor_rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
             }
@@ -319,7 +321,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
     // Declare accumulators
     // TODO if we have multiple accumulators with the same size, we must reuse them
     for op in kernel_ops {
-        if let &VOp::Accumulator { z, rop, ref view } = op {
+        if let &VOp::Accumulator { z, ref view, .. } = op {
             let dtype = graph.dtype(z).ir_dtype();
             addressables.push((Scope::Register, dtype, view.original_numel(), false));
             let id = (addressables.len() - 1) as u16;
@@ -352,10 +354,10 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 match (zscope, xscope) {
                     (Scope::Local, Scope::Global) => { todo!() }
                     (Scope::Register, Scope::Global) => {
-                        let ir_dtype = graph.dtype(z).ir_dtype();
-                        let id = get_empty_register(&mut registers, ir_dtype, tensor_rcs[&z]);
+                        let dtype = graph.dtype(z).ir_dtype();
+                        let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
                         let address = addressables_map[&(x, xscope)];
-                        load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
+                        load_indexed(Var::Id(id), address, xview, dtype, &mut registers, &mut ops);
                         register_map.insert(z, Var::Id(id));
                     }
                     _ => panic!("Invalid load scopes"),
@@ -369,7 +371,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                         let dtype = graph.dtype(z).ir_dtype();
                         let x = if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
                             let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
-                            load_indexed(var, address, xview, &mut registers, &mut ops);
+                            load_indexed(var, address, xview, dtype, &mut registers, &mut ops);
                             var
                         } else {
                             register_map[&z]
@@ -389,7 +391,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
             &VOp::Move { z, x, .. } => {
                 register_map.insert(z, register_map[&x]);
             }
-            &VOp::Unary { z, x, uop, ref view } => {
+            &VOp::Unary { z, x, uop, view: _ } => {
                 // TODO unary can have view, but this will probably be only used for vectorization
                 if let Var::Const(value) = register_map[&x] {
                     register_map.insert(z, Var::Const(value.unary(uop)));
@@ -419,14 +421,14 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                     z: zvar,
                     x: if let Some(&address) = addressables_map.get(&(x, Scope::Register)) {
                         let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
-                        load_indexed(var, address, xview, &mut registers, &mut ops);
+                        load_indexed(var, address, xview, dtype, &mut registers, &mut ops);
                         var
                     } else {
                         register_map[&x]
                     },
                     y: if let Some(&address) = addressables_map.get(&(y, Scope::Register)) {
                         let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
-                        load_indexed(var, address, yview, &mut registers, &mut ops);
+                        load_indexed(var, address, yview, dtype, &mut registers, &mut ops);
                         var
                     } else {
                         register_map[&y]
@@ -485,7 +487,7 @@ fn store_indexed(address: u16, x: Var, view: &View, registers: &mut Vec<(IRDType
     }
 }
 
-fn load_indexed(z: Var, address: u16, view: &View, registers: &mut Vec<(IRDType, u32)>, ops: &mut Vec<IROp>) {
+fn load_indexed(z: Var, address: u16, view: &View, dtype: IRDType, registers: &mut Vec<(IRDType, u32)>, ops: &mut Vec<IROp>) {
     let numel = view.original_numel();
     match view {
         View::None => {
@@ -506,7 +508,92 @@ fn load_indexed(z: Var, address: u16, view: &View, registers: &mut Vec<(IRDType,
             }
             ops.push(IROp::Load { z, address, offset: Var::Id(offset) });
         }
-        View::Padded(_, _) => todo!(),
+        View::Padded(dims, padding) => {
+            let offset = get_empty_register(registers, IRDType::U32, 1);
+            ops.push(IROp::Set { z: offset, value: Constant::U32(0) });
+            let offset = Var::Id(offset);
+            for StridedDim { axis, stride, .. } in dims {
+                if *stride != 0 && *stride != numel {
+                    ops.push(IROp::MAdd {
+                        z: offset,
+                        a: Var::Id(*axis as u16),
+                        b: Var::Const(Constant::U32(*stride as u32)),
+                        c: offset,
+                    });
+                }
+            }
+            for StridedDim { axis, stride, .. } in dims {
+                if let Some((_, (lp, _))) = padding
+                    .iter()
+                    .find(|(axes, _)| axes.iter().max().unwrap() == axis)
+                {
+                    println!("Padding {axis} with {lp}");
+                    if *lp > 0 {
+                        let t = Var::Id(get_empty_register(registers, IRDType::U32, 0));
+                        ops.push(IROp::Binary { z: t, x: Var::Id(*axis as u16), y: Var::Const(Constant::U32(*lp as u32)), bop: BOp::Sub });
+                        ops.push(IROp::MAdd { z, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: z } );
+                    } else if *lp < 0 {
+                        let lp = -lp;
+                        let t = Var::Id(get_empty_register(registers, IRDType::U32, 0));
+                        ops.push(IROp::Binary { z: t, x: Var::Id(*axis as u16), y: Var::Const(Constant::U32(lp as u32)), bop: BOp::Add });
+                        ops.push(IROp::MAdd { z, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: z } );
+                    } else {
+                        ops.push(IROp::MAdd { z, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(*stride as u32)), c: z });
+                    }
+                    //std::println!("dim: {dim}, paddding {lp}, {rp}");
+                } else {
+                    ops.push(IROp::MAdd { z, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(*stride as u32)), c: z });
+                }
+            }
+            let padding_condition = get_empty_register(registers, IRDType::Bool, 1);
+            ops.push(IROp::Set { z: padding_condition, value: Constant::Bool(false) });
+            let padding_condition = Var::Id(padding_condition);
+            //let mut pc = String::new();
+            println!("Padding: {:?}", padding);
+            for StridedDim { axis, .. } in dims {
+                if let Some((axes, (lp, rp))) = padding
+                    .iter()
+                    .find(|(axes, _)| axes.iter().max().unwrap() == axis)
+                {
+                    let idx_id = get_empty_register(registers, IRDType::U32, 1);
+                    ops.push(IROp::Set { z: idx_id, value: Constant::U32(0) });
+                    let idx = Var::Id(idx_id);
+                    let mut st = 1;
+                    let mut dim = 1;
+                    for axis in axes.iter().rev() {
+                        ops.push(IROp::MAdd { z: idx, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(st as u32)), c: idx });
+                        st *= dims[*axis].dim;
+                        dim *= dims[*axis].dim;
+                    }
+                    if *lp > 0 {
+                        //padding_condition += &format!("{idx} < {lp} || ");
+                        let temp = Var::Id(get_empty_register(registers, IRDType::Bool, 0));
+                        ops.push(IROp::Binary { z: temp, x: idx, y: Var::Const(Constant::U32(*lp as u32)), bop: BOp::Cmplt });
+                        ops.push(IROp::Binary { z: padding_condition, x: temp, y: padding_condition, bop: BOp::Or });
+                    }
+                    if *rp > 0 {
+                        //padding_condition += &format!("{idx} > {} || ", dim as isize - rp - 1);
+                        let temp = Var::Id(get_empty_register(registers, IRDType::Bool, 0));
+                        ops.push(IROp::Binary { z: temp, x: idx, y: Var::Const(Constant::U32((dim as isize - *rp - 1) as u32)), bop: BOp::Cmpgt });
+                        ops.push(IROp::Binary { z: padding_condition, x: temp, y: padding_condition, bop: BOp::Or });
+                    }
+                    registers[idx_id as usize].1 = 0;
+                }
+            }
+            //println!("Padding condition: {pc}");
+            // padding_condition * 0 + !padding_condition * var
+            let temp = Var::Id(get_empty_register(registers, dtype, 1));
+            ops.push(IROp::Binary { z: temp, x: padding_condition, y: Var::Const(dtype.dtype().zero_constant()), bop: BOp::Mul });
+            ops.push(IROp::Unary { z: padding_condition, x: padding_condition, uop: UOp::Not });
+            ops.push(IROp::Binary { z: offset, x: padding_condition, y: offset, bop: BOp::Mul });
+            ops.push(IROp::Load { z, address, offset });
+            if let Var::Id(offset) = offset { registers[offset as usize].1 = 0; }
+            let temp1 = Var::Id(get_empty_register(registers, dtype, 0));
+            ops.push(IROp::Binary { z: temp1, x: padding_condition, y: z, bop: BOp::Mul });
+            ops.push(IROp::Binary { z, x: temp, y: temp1, bop: BOp::Add });
+            if let Var::Id(temp) = temp { registers[temp as usize].1 = 0; }
+            if let Var::Id(pc) = padding_condition { registers[pc as usize].1 = 0; }
+        }
     }
 }
 
@@ -541,7 +628,7 @@ impl Display for IRVec {
 }
 
 impl DType {
-    pub(crate) fn ir_dtype(&self) -> IRDType {
+    pub(super) fn ir_dtype(&self) -> IRDType {
         match self {
             DType::F32 => IRDType::F32(IRVec::Scalar),
             DType::F64 => IRDType::F64(IRVec::Scalar),
