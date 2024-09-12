@@ -349,17 +349,34 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
             }
             &VOp::Const { z, value, ref view } => {
                 let var = if view.requires_conditional_padding() {
-                    println!("View: {view}");
+                    //println!("View: {view}");
                     let View::Padded(dims, padding) = view else { panic!() };
                     let padding_condition = get_empty_register(&mut registers, IRDType::Bool, 1);
                     ops.push(IROp::Set { z: padding_condition, value: Constant::Bool(true) });
                     let padding_condition = Var::Id(padding_condition);
+                    let mut pc = String::new();
                     for StridedDim { axis, .. } in dims {
                         if let Some((axes, (lp, rp))) = padding
                             .iter()
                             .find(|(axes, _)| axes.iter().max().unwrap() == axis)
                         {
                             if *lp > 0 || *rp > 0 {
+                                let mut idx = String::new();
+                                let mut st = 1;
+                                let mut dim = 1;
+                                for axis in axes.iter().rev() {
+                                    idx = format!("i{axis}*{st}+{idx}");
+                                    st *= dims[*axis].dim;
+                                    dim *= dims[*axis].dim;
+                                }
+                                idx.pop();
+                                if *lp > 0 {
+                                    pc += &format!("{idx} < {lp} || ");
+                                }
+                                if *rp > 0 {
+                                    pc += &format!("{idx} > {} || ", dim as isize - rp - 1);
+                                }
+
                                 let idx_id = get_empty_register(&mut registers, IRDType::U32, 1);
                                 ops.push(IROp::Set { z: idx_id, value: Constant::U32(0) });
                                 let idx = Var::Id(idx_id);
@@ -384,6 +401,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                             }
                         }
                     }
+                    //println!("Padding condition: {pc}");
                     // Nullify z if padding condition is false (if there is padding at that index)
                     let var = Var::Id(get_empty_register(&mut registers, value.dtype().ir_dtype(), tensor_rcs[&z]));
                     ops.push(IROp::Binary { z: var, x: padding_condition, y: Var::Const(value), bop: BOp::Mul });

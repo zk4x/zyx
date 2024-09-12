@@ -80,6 +80,7 @@
 - [x] remove smadd, amadd
 - [x] fix reshape after reduce
 - [x] todo fix permute on reduced and reshaped kernel
+- [x] test pad after reshape after pad
 - [ ] test pad after reduce
 - [ ] test padded view permute
 - [ ] test expand after reduce

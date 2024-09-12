@@ -154,6 +154,8 @@ impl Kernel {
             kernel.split_axis(*op_id, dimensions);
         }
 
+        //return kernel;
+
         let mut rws = [0; 3];
         let VOp::Loop { len, .. } = kernel.ops[2] else { panic!() };
         rws[0] = len;

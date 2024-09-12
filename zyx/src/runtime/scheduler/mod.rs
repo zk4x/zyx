@@ -199,7 +199,7 @@ impl Runtime {
                 /*let optimization = KernelOptimization {
                     //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![2, 1, 1]), (1, vec![1, 1, 2]), (0, vec![1, 1, 1])],
                     //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![1, 2, 1]), (1, vec![1, 2, 1]), (0, vec![1, 1, 1])],
-                    splits: vec![(0, vec![1, 5]), (2, vec![9, 1]), (1, vec![5, 1]), (0, vec![1, 1])],
+                    splits: vec![(0, vec![1, 8]), (2, vec![8, 1]), (1, vec![8, 1]), (0, vec![1, 1])],
                     permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
                     local_tiles: false,
                 };*/
@@ -431,7 +431,7 @@ impl Runtime {
                     break
                 };
                 if self.debug_sched() {
-                    println!("{i:>6}/{} {}", self.search_iterations, optimizer[optimization_id]);
+                    println!("{:>6}/{} {}", i + 1, self.search_iterations, optimizer[optimization_id]);
                 }
                 // Optimize and compile multiple kernels at once on different threads,
                 // since compilation takes ~50ms,
@@ -669,7 +669,7 @@ fn generate_kernels(
                     }
                     VOp::Accumulator { .. } | VOp::EndLoop => false, // | VOp::Reduce { .. }
                 }) {
-                    //println!("Before reshape continuous.");
+                    println!("Before reshape continuous.");
                     //kernel.debug();
                     // Remove old loops
                     for _ in 0..kernel.shape.len() {
@@ -703,7 +703,7 @@ fn generate_kernels(
                     // TODO we could also merge axes if possible
                     let mut splits = Some(BTreeMap::new());
                     let prev_shape = graph.shape(*x);
-                    if prev_shape.len() > shape.len() {
+                    if shape.len() < prev_shape.len() {
                         splits = None;
                     } else {
                         // Example split
@@ -738,8 +738,11 @@ fn generate_kernels(
                             splits.as_mut().unwrap().insert(i, dimensions);
                         }
                     }
+                    if splits.as_ref().is_some_and(|x| x.is_empty()) {
+                        splits = None;
+                    }
                     //kernel.debug();
-                    //println!("Splits: {splits:?}");
+                    println!("Splits: {splits:?}");
                     if let Some(splits) = splits {
                         let mut loop_id = kernel.shape.len() - 1;
                         let mut skip_loops = 0;
