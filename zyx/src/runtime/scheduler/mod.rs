@@ -715,6 +715,10 @@ fn generate_kernels(
                         // Example split
                         //    2, 4,    4,    3
                         // 1, 2, 4, 2, 2, 1, 3
+
+                        //       5, 6
+                        // 2, 1, 3, 5
+                        // dims 5
                         let mut dimensions = Vec::new();
                         let mut i = prev_shape.len() - 1;
                         let mut dim = 1;
@@ -731,7 +735,7 @@ fn generate_kernels(
                                     dimensions = vec![d];
                                     dim = d;
                                     i -= 1;
-                                } else if dim > prev_shape[i] {
+                                } else {
                                     splits = None;
                                     break;
                                 }
@@ -743,9 +747,9 @@ fn generate_kernels(
                         if dimensions.len() > 1 {
                             splits.as_mut().unwrap().insert(i, dimensions);
                         }
-                    }
-                    if splits.as_ref().is_some_and(|x| x.is_empty()) {
-                        splits = None;
+                        if splits.as_ref().is_some_and(|x| x.is_empty()) {
+                            splits = None;
+                        }
                     }
                     // For now we disable splits on reduced kernels
                     // TODO later handle this properly by adding a new loop
