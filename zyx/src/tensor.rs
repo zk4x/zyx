@@ -1804,6 +1804,7 @@ impl Tensor {
         stride: impl IntoShape,
         dilation: impl IntoShape,
     ) -> Tensor {
+        // What a complex function ...
         let k_: Vec<usize> = kernel_size.into_shape().collect();
         let stride: Vec<usize> = stride.into_shape().collect();
         let dilation: Vec<usize> = dilation.into_shape().collect();
@@ -1821,19 +1822,16 @@ impl Tensor {
         } else {
             dilation
         };
-        // noop_ = [None] * len(self.shape[:-len(k_)])
-        let noop_: Vec<Option<()>> = repeat(None).take(rank - k_.len()).collect();
-        let _ = noop_;
         let i_ = &shape[rank - k_.len()..];
-        let o_ = i_
+        //println!("{s_:?}, {d_:?}, {noop_:?}, {i_:?}");
+        let o_: Vec<usize> = i_
             .iter()
             .cloned()
             .zip(d_.iter().cloned())
             .zip(k_.iter().cloned())
             .zip(s_.iter().cloned())
-            .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s));
-        let _ = o_;
-
+            .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s)).collect();
+        //println!("{o_:?}");
         let repeats: Vec<usize> = repeat(1)
             .take(rank - k_.len())
             .chain(
@@ -1841,47 +1839,80 @@ impl Tensor {
                     .copied()
                     .zip(i_.iter().copied())
                     .zip(d_.iter().copied())
-                    .map(|((k, i), d)| k * (i + d).div_ceil(i)),
+                    .map(|((k, i), d)| (k * (i + d)).div_ceil(i)),
             )
             .collect();
-        let xup = self.repeat(repeats);
+        //println!("{repeats:?}");
+        let mut xup = self.repeat(repeats);
+
         // dilation
-        let padding: Vec<(isize, isize)> = k_
+        let padding: Vec<Range<isize>> = k_
             .iter()
             .copied()
             .zip(i_.iter().copied())
             .zip(d_.iter().copied())
-            .map(|((k, i), d)| (0, -((k * (i + d)) as isize)))
+            .map(|((k, i), d)| (0..(k * (i + d)) as isize))
             .collect();
-        let xup = xup.pad_zeros(padding);
-        let _ = xup;
+        xup = xup.get(padding);
+        let sh: Vec<usize> = k_
+            .iter()
+            .copied()
+            .zip(i_.iter().copied())
+            .zip(d_.iter().copied())
+            .map(|((k, i), d)| [k, i+d])
+            .flatten()
+            .collect();
+        xup = xup.reshape(sh);
 
-        //tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)])
-
-        //let xup = xup.shrink(tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)]))
-        //.reshape(noop_ + flatten((k,i+d) for k,i,d in zip(k_, i_, d_)))
         // stride
-        //xup = xup.shrink(
-        //tuple(noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_)))).reshape(noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_)))
-        //xup = xup.shrink(tuple(noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_)))).reshape(noop_ + flatten((k,o) for k,o in zip(k_, o_)))
+        // padding = noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_))
+        // xup = xup.shrink(padding)
+        let padding: Vec<Range<isize>> = k_
+            .iter()
+            .copied()
+            .zip(o_.iter().copied())
+            .zip(s_.iter().copied())
+            .map(|((k, o), s)| [(0..k as isize), (0..(o*s) as isize)])
+            .flatten()
+            .collect();
+        xup = xup.get(padding);
+        // sh = noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_))
+        // xup = xup.reshape(sh)
+        let sh: Vec<usize> = k_
+            .iter()
+            .copied()
+            .zip(o_.iter().copied())
+            .zip(s_.iter().copied())
+            .map(|((k, o), s)| [k, o, s])
+            .flatten()
+            .collect();
+        xup = xup.reshape(sh);
+        // padding = noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_))
+        // xup = xup.shrink(padding)
+        let padding: Vec<Range<isize>> = k_
+            .iter()
+            .copied()
+            .zip(o_.iter().copied())
+            .map(|(k, o)| [(0..k as isize), (0..o as isize), (0..1)])
+            .flatten()
+            .collect();
+        xup = xup.get(padding);
+        // sh = noop_ + flatten((k,o) for k,o in zip(k_, o_))
+        // xup = xup.reshape(sh)
+        let sh: Vec<usize> = k_
+            .iter()
+            .copied()
+            .zip(o_.iter().copied())
+            .map(|(k, o)| [k, o])
+            .flatten()
+            .collect();
+        xup = xup.reshape(sh);
 
-        /*if any(k > s for k,s in zip(k_, s_)) or any(d != 1 for d in d_):
-        # repeats such that we don't need padding
-        xup = self.repeat([1]*len(noop_) + [math.ceil(k*(i+d) / i) for k,i,d in zip(k_, i_, d_)])
-        # handle dilation
-        xup = xup.shrink(tuple(noop_ + [(0,k*(i+d)) for k,i,d in zip(k_, i_, d_)])).reshape(noop_ + flatten((k,i+d) for k,i,d in zip(k_, i_, d_)))
-        # handle stride
-        xup = xup.shrink(
-            tuple(noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_)))).reshape(noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_)))
-        xup = xup.shrink(tuple(noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_)))).reshape(noop_ + flatten((k,o) for k,o in zip(k_, o_)))
-        # permute to move reduce to the end
-        return xup.permute(*range(len(noop_)), *[len(noop_)+i*2+1 for i in range(len(i_))], *[len(noop_)+i*2 for i in range(len(i_))])*/
+        // xup.permute(*range(len(noop_)), *[len(noop_)+i*2+1 for i in range(len(i_))], *[len(noop_)+i*2 for i in range(len(i_))])
+        let axes: Vec<isize> = (0..rank-k_.len()).chain((0..i_.len()).map(|i| rank-k_.len()+i*2+1)).chain((0..i_.len()).map(|i| rank-k_.len()+i*2)).map(|i| i as isize).collect();
+        xup = xup.permute(axes);
 
-        //xup = self.pad(tuple(noop_ + [(0, max(0,o*s-i)) for i,o,s in zip(i_, o_, s_)])).shrink(tuple(noop_ + [(0,o*s) for o,s in zip(o_, s_)]))
-        //xup = xup.reshape(noop_ + flatten(((o,s) for o,s in zip(o_, s_))))
-        //xup = xup.shrink(tuple(noop_ + flatten(((0,o), (0,k)) for o,k in zip(o_, k_))))
-        //return xup.permute(*range(len(noop_)), *[len(noop_)+i*2 for i in range(len(i_))], *[len(noop_)+i*2+1 for i in range(len(i_))])
-        todo!()
+        xup
     }
 
     /// Creates a new tensor by repeating the input tensor along its dimensions.
@@ -1908,6 +1939,7 @@ impl Tensor {
         let repeats: Vec<usize> = repeats.into_shape().collect();
         let shape = self.shape();
         let rank = shape.len();
+        assert!(repeats.len() >= rank, "Repeats must be greater or equal to rank of the tensor.");
 
         let base_shape: Vec<usize> = repeat(1)
             .take(repeats.len() - rank)
@@ -2575,6 +2607,12 @@ pub trait IntoIndex {
     fn into_index(self) -> impl IntoIterator<Item = Range<isize>>;
 }
 
+impl IntoIndex for Vec<Range<isize>> {
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+        self.into_iter()
+    }
+}
+
 impl<I: IntoRange> IntoIndex for &[I] {
     fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
         self.iter().cloned().map(IntoRange::into_range)
@@ -2700,6 +2738,13 @@ impl<
 impl From<&Tensor> for Tensor {
     fn from(value: &Tensor) -> Self {
         value.clone()
+    }
+}
+
+impl<T: Scalar> From<Range<T>> for Tensor {
+    fn from(r: Range<T>) -> Self {
+        // TODO use cumsum and stuff to make this without collecting into vec on the CPU
+        todo!();
     }
 }
 

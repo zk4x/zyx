@@ -58,7 +58,7 @@
 ### Release blockers
 
 - [ ] go over all todos in source code and check which are necessary
-- [ ] rewrite the AI generated docs, they are horrible
+- [x] rewrite the AI generated docs, they are horrible
 - [x] saving and loading for models from and to disk in safetensors format
 - [x] automatic optimizations with search on vkernel
 - [x] saving of searched kernel to disk
@@ -72,7 +72,7 @@
 - [x] tensor detach (for recurrent nets)
 - [x] unsqueeze
 - [x] stack
-- [ ] pool
+- [x] pool
 - [ ] cumsum
 - [ ] randn
 - [x] cuda backend
