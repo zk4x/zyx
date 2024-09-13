@@ -38,7 +38,6 @@ fn expand_reduce() {
 fn pad_reshape_expand() {
     let mut x = Tensor::from([[2, 4, 3, 3, 4], [1, 2, 1, 5, 1]]);
     x = x.pad_zeros([(1, 0), (2, 1)]);
-    println!("{:?}", x.shape());
     x = x.reshape([2, 1, 3, 5]);
     println!("{x}");
 }
