@@ -118,3 +118,37 @@ and the product should be done. But after implementation it turns out the curren
 just design the user API and write a list of requirements. Afterwards just write the simplest code that makes that user API work. Do not add abstraction
 or classes. If you need to use similar code in different places, just duplicate it. Just copy it. Once the program passes some integration tests,
 just remove the duplication by adding abstraction. The resulting abstraction will be much less likely to need a refactor.
+
+## Multiplication
+
+Code deduplication and solving the more general case is amazing, because we easily increase feature set and general
+capabilities of the library with multiplicative effect. For example in zyx adding a backend implements all ops for this
+backend and all kernels are automatically optimized for that backend. All backends get all of those optimizations.
+Similarly adding a new dtype adds this to all backends and all ops. Adding a new op adds it to all backends and all dtypes
+and so on.
+
+This is what programmers mean when they talk about ideal abstractions. Ideal abstractions are about making new features
+additive (the complexity of the program should scale linearly), but effects being multiplicative (capabiliries of the program
+should scale exponentially).
+
+For example in operating systems if everything is a file, including networking, then improving file throughput should improve
+network throughput. However this is mostly not the case, so the abstraction is badly implemented. However I am not saying
+that the fact that network is handled differently from disk is wrong. There is a trade-off. Ideal abstraction takes more time
+to implement in the first place, while scales batter later on. Less ideal abstraction can be implemented quickly, but it
+does not scale very well. This is why I think the best of both worlds is duplication. Implement minimal product with as little
+abstraction as possible, duplicate everything and once some basic integration tests pass, then introduce ideal abstraction
+by simply deduplicating your code.
+
+## Requirements
+
+The important part of project is precise specification of it's requirements. The idea that programs should be able to adapt
+to changing requirements is false. Programs can only scale in preplanned direction. For example zyx is a machine learning
+library, but it is a tensor library. It can eventually do most of linear algebra, but it can not pivot into being
+a GUI library. Some requirements can change, but the primary requirements must remain set in stone since the beginning
+and this is why we should think thoroughly about those initial requirements.
+
+Once we have our requirements, we write down basic data structures that we will need. Try to add as little intermediate
+values as possible. Inputs should map to outputs as directly as possible. That is the only way to keep the program small.
+When we have our core data structures defined, there is only so many ways how to write algorithms/application logic
+that connects them together. Application logic takes the most time to do, some algorithms can be pretty complex,
+but at the same time it should be straightforward. The program should not significantly change at this point.

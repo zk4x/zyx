@@ -424,10 +424,14 @@ impl Runtime {
             } else {
                 None
             };
-            println!("Searching over {} out of {} remaining optimizations.", self.search_iterations, optimizer.remaining());
+            if self.debug_sched() {
+                println!("Searching over {} out of {} remaining optimizations.", self.search_iterations, optimizer.remaining());
+            }
             for i in 0..self.search_iterations {
                 let Some(optimization_id) = optimizer.next() else {
-                    println!("All optimizations were tried and fastest kernel has been selected.");
+                    if self.debug_sched() {
+                        println!("All optimizations were tried and fastest kernel has been selected.");
+                    }
                     break
                 };
                 if self.debug_sched() {
@@ -462,7 +466,9 @@ impl Runtime {
                 // and it would take some effort to write a workaround
                 optimizer.set_exec_time(optimization_id, exec_time);
             }
-            println!("Optimization has been finished.\n");
+            if self.debug_sched() {
+                println!("Optimization has been finished.\n");
+            }
             // Deallocate inputs and outputs that are used only for beam search
             for buffer_id in allocated_temps {
                 self.memory_pools[mpid].deallocate(buffer_id)?;

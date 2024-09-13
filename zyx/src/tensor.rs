@@ -1239,12 +1239,17 @@ impl Tensor {
     /// Comulative sum along axis.
     #[must_use]
     pub fn cumsum(&self, axis: isize) -> Tensor {
-        let _ = axis;
-        //let axis = to_axis(axis, self.rank());
-        //let pl_sz = (self.shape()[axis] - 1) as isize;
-        //let axis = axis as isize;
-        //return self.transpose(axis,-1).pad_zeros([(pl_sz, 0)]).pool(self.shape[axis]).sum(-1).transpose(axis,-1)
-        todo!()
+        let axis = to_axis(axis, self.rank());
+        let pl_sz = (self.shape()[axis] - 1) as isize;
+        let k = self.shape()[axis];
+        let axis = axis as isize;
+        let mut x = self.transpose(axis,-1);
+        x = x.pad_zeros([(pl_sz, 0)]);
+        println!("Kernel {k:?}");
+        x = x.pool(k, 1, 1);
+        //x = x.sum(-1);
+        //x = x.transpose(axis,-1);
+        return x
     }
 
     /// Calculates the softmax of this tensor along the specified axes.
@@ -1823,7 +1828,6 @@ impl Tensor {
             dilation
         };
         let i_ = &shape[rank - k_.len()..];
-        //println!("{s_:?}, {d_:?}, {noop_:?}, {i_:?}");
         let o_: Vec<usize> = i_
             .iter()
             .cloned()
@@ -1831,7 +1835,7 @@ impl Tensor {
             .zip(k_.iter().cloned())
             .zip(s_.iter().cloned())
             .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s)).collect();
-        //println!("{o_:?}");
+        println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
         let repeats: Vec<usize> = repeat(1)
             .take(rank - k_.len())
             .chain(
@@ -1842,8 +1846,9 @@ impl Tensor {
                     .map(|((k, i), d)| (k * (i + d)).div_ceil(i)),
             )
             .collect();
-        //println!("{repeats:?}");
+        println!("repeats {repeats:?}");
         let mut xup = self.repeat(repeats);
+        //println!("{xup}");
 
         // dilation
         let padding: Vec<Range<isize>> = k_
@@ -1963,10 +1968,15 @@ impl Tensor {
             .map(|(r, d)| r * d)
             .collect();
 
-        return self
-            .reshape(new_shape)
-            .expand(expand_shape)
-            .reshape(final_shape);
+        println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
+
+        //println!("{}", self);
+        let mut x = self.reshape(new_shape);
+        x = x.expand(expand_shape);
+        println!("{x}");
+        //println!("{x}");
+        x = x.reshape(final_shape);
+        return x
     }
 
     /*#[must_use]
@@ -2373,6 +2383,15 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TryFrom<Tenso
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         let mut data = [[[T::zero(); D2]; D1]; D0];
         RT.lock().load(value.id, data.as_flattened_mut().as_flattened_mut())?;
+        Ok(data)
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TryFrom<Tensor> for [[[[T; D3]; D2]; D1]; D0] {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [[[[T::zero(); D3]; D2]; D1]; D0];
+        RT.lock().load(value.id, data.as_flattened_mut().as_flattened_mut().as_flattened_mut())?;
         Ok(data)
     }
 }
@@ -2847,6 +2866,17 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
     fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
         if let Ok(data) = self.clone().try_into() {
             let data: [[[T; D2]; D1]; D0] = data;
+            &data == other
+        } else {
+            false
+        }
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> PartialEq<[[[[T; D3]; D2]; D1]; D0]> for Tensor {
+    fn eq(&self, other: &[[[[T; D3]; D2]; D1]; D0]) -> bool {
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[[[T; D3]; D2]; D1]; D0] = data;
             &data == other
         } else {
             false
