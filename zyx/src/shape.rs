@@ -12,13 +12,33 @@ pub trait IntoShape: Clone + Debug {
     fn rank(&self) -> usize;
 }
 
-impl IntoShape for usize {
+impl IntoShape for Dimension {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
         return [self].into_iter();
     }
 
     fn rank(&self) -> usize {
         return 1;
+    }
+}
+
+impl IntoShape for (Dimension, Dimension) {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+        return [self.0, self.1].into_iter();
+    }
+
+    fn rank(&self) -> usize {
+        return 2;
+    }
+}
+
+impl IntoShape for (Dimension, Dimension, Dimension) {
+    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+        return [self.0, self.1, self.2].into_iter();
+    }
+
+    fn rank(&self) -> usize {
+        return 3;
     }
 }
 

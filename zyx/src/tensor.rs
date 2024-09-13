@@ -184,6 +184,7 @@ impl Tensor {
     /// 0000 0100 DEBUG_SCHED
     /// 0000 1000 DEBUG_IR
     /// 0001 0000 DEBUG_ASM
+    /// For more look at ENV_VARS.md
     #[must_use]
     pub fn debug_guard(debug: u32) -> DebugGuard {
         let mut rt = RT.lock();
@@ -385,7 +386,7 @@ impl Tensor {
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
-        // TODO fix this for training
+        // TODO fix this for training (dropout in training is just scaling)
         Tensor::from(probability)
             .cmplt(Tensor::uniform(self.shape(), 0f32..1.0))
             .cast(self.dtype())
@@ -720,10 +721,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
-    /// use tensors::Tensor;
+    /// use zyx::Tensor;
     ///
-    /// let t = Tensor::from_vec(vec![0.5, 1.0]);
-    /// assert_eq!(t.tanh(), Tensor::from_vec(vec![0.46211715738221946, 0.761594166564993]));
+    /// let t = Tensor::from(vec![0.5, 1.0]);
+    /// assert_eq!(t.tanh(), Tensor::from(vec![0.46211715738221946, 0.761594166564993]));
     /// ```
     ///
     /// # Panics
@@ -818,13 +819,13 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let t = array![1, 2, 3];
+    /// let t = Tensor::from([1, 2, 3]);
     /// let padded = t.pad_zeros(1).into_shape((5,)).unwrap();
-    /// assert_eq!(padded, array![0., 1., 2., 3., 0.]);
+    /// assert_eq!(padded, [0., 1., 2., 3., 0.]);
     ///
-    /// let padded = t.pad_zeros(Padding::new(1, 2));
+    /// let padded = t.pad_zeros([(1, 2)]);
     /// assert_eq!(padded.shape(), &[5]);
     /// ```
     ///
@@ -967,8 +968,8 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
-    /// let t = Tensor::of_slice(&[1, 2, 3, 4]);
-    /// assert_eq!(t.reshape((2, 2)), Tensor::of_slice(&[[1, 2], [3, 4]]));
+    /// let t = Tensor::from(&[1, 2, 3, 4]);
+    /// assert_eq!(t.reshape((2, 2)), Tensor::from(&[[1, 2], [3, 4]]));
     /// ```
     ///
     /// # Panics
@@ -1048,10 +1049,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
-    /// let arr = array![1, 2, 3, 4];
-    /// assert_eq!(arr.max(0), array![4]);
-    /// assert_eq!(arr.max(1), array![2, 4]);
+    /// use zyx::Tensor
+    /// let arr = Tensor::from([1, 2, 3, 4]);
+    /// assert_eq!(arr.max(0), [4]);
+    /// assert_eq!(arr.max(1), [2, 4]);
     /// ```
     ///
     /// # Panics
@@ -1079,11 +1080,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let a = array![1, 2, 3, 4];
-    /// assert_eq!(a.max_kd(&[0]), &[4]);
-    /// assert_eq!(a.max_kd(&[1]), &[2, 4]);
+    /// let a = Tensor::from([1, 2, 3, 4]);
+    /// assert_eq!(a.max_kd(&[0]), &[[4]]);
     /// ```
     ///
     #[must_use]
@@ -1098,11 +1098,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::Array2;
+    /// use zyx::Tensor;
     ///
-    /// let arr = Array2::eye(3);
-    /// assert_eq!(arr.mean((0,)), &[1.0, 1.0, 1.0]);
-    /// assert_eq!(arr.mean((1,)), &[1.5, 1.5]);
+    /// let arr = Tensor::eye(3, DType::F32);
+    /// assert_eq!(arr.mean(0, &[1.0, 1.0, 1.0]);
     /// ```
     ///
     /// # Panics
@@ -1127,10 +1126,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let a = array![1, 2, 3, 4];
-    /// assert_eq!(a.mean_kd(Axis(0)), tensor![2.5]);
+    /// let a = Tensor::from([1, 2, 3, 4]);
+    /// assert_eq!(a.mean_kd(0), [2.5]);
     /// ```
     ///
     /// # Panics
@@ -1149,10 +1148,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::Array2;
+    /// use zyx::Tensor;
     ///
-    /// let arr = Array2::new(&[[1.0, 2.0], [3.0, 4.0]])?;
-    /// assert_eq!(arr.product(Axes(1)), 6.0);
+    /// let arr = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    /// assert_eq!(arr.product(1), [3., 8.]);
     /// ```
     #[must_use]
     pub fn product(&self, axes: impl IntoAxes) -> Tensor {
@@ -1169,11 +1168,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let a = array![[1., 2., 3.], [4., 5., 6.]];
-    /// assert_eq!(a.std(), 1.5);
-    /// assert_eq!(a.var(0).std(), 0.5);
+    /// let a = Tensor::from([[1., 2., 3.], [4., 5., 6.]]);
+    /// assert_eq!(a.std(()), 1.5);
     /// ```
     ///
     /// # Panics
@@ -1193,9 +1191,9 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use tensor::Tensor;
+    /// use zyx::Tensor;
     ///
-    /// let t = Tensor::rand(3, 4);
+    /// let t = Tensor::rand([3, 4]);
     /// let std_kd = t.std_kd([0, 1]);
     /// assert_eq!(std_kd.shape(), [1, 2]);
     /// ```
@@ -1262,11 +1260,11 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use tensor::Tensor;
+    /// use zyx::Tensor;
     ///
-    /// let t = Tensor::new(vec![1.0, 2.0, 3.0]);
-    /// let sm = t.softmax(Axes::new(0));
-    /// assert_eq!(sm.array(), vec![0.0900305748, 0.2447281546, 0.6652412706]);
+    /// let t = Tensor::from(vec![1.0, 2.0, 3.0]);
+    /// let sm = t.softmax(0);
+    /// assert_eq!(sm, [0.0900305748, 0.2447281546, 0.6652412706]);
     /// ```
     ///
     /// # Panics
@@ -1295,14 +1293,14 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::Array2;
+    /// use zyx::Tensor;
     ///
-    /// let arr = Array2::new(&[[1, 2], [3, 4]]);
+    /// let arr = Tensor::from([[1, 2], [3, 4]]);
     /// let var = arr.var(0); // Compute variance along rows (axis=0)
-    /// assert_eq!(var, array![[5.0, 2.5]]); // Expected output: [[5.0, 2.5]]
+    /// assert_eq!(var, [[5.0, 2.5]]); // Expected output: [[5.0, 2.5]]
     ///
     /// let var = arr.var(1); // Compute variance along columns (axis=1)
-    /// assert_eq!(var, array![[2.5], [2.5]]); // Expected output: [[2.5], [2.5]]
+    /// assert_eq!(var, [[2.5], [2.5]]); // Expected output: [[2.5], [2.5]]
     /// ```
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Tensor {
@@ -1326,10 +1324,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let a = array![[1., 2., 3.], [4., 5., 6.]];
-    /// assert_eq!(a.var_kd(Axis(0)), 1.5);
+    /// let a = Tensor([[1., 2., 3.], [4., 5., 6.]]);
+    /// assert_eq!(a.var_kd(0), 1.5);
     /// ```
     #[must_use]
     pub fn var_kd(&self, axes: impl IntoAxes) -> Tensor {
@@ -1386,10 +1384,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::Array2;
+    /// use zyx::Tensor;
     ///
-    /// let arr = Array2::from_shape_vec((3, 3), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
-    /// assert_eq!(arr.diagonal(), array![[1, 0, 0], [0, 5, 0], [0, 0, 9]]); // diagonal elements are [1, 5, 9]
+    /// let arr = Tensor::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).reshape([3, 3]);
+    /// assert_eq!(arr.diagonal(), [[1, 0, 0], [0, 5, 0], [0, 0, 9]]); // diagonal elements are [1, 5, 9]
     /// ```
     ///
     /// # Panics
@@ -1414,8 +1412,8 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let a = Tensor::from_vec(&[1.0, 2.0, 3.0]);
-    /// let b = Tensor::from_vec(&[4.0, 5.0, 6.0]);
+    /// let a = Tensor::from(&[1.0, 2.0, 3.0]);
+    /// let b = Tensor::from(&[4.0, 5.0, 6.0]);
     /// assert_eq!(a.cmplt(b), &[1., 1., 1.]);
     /// ```
     ///
@@ -1485,10 +1483,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let arr = array![1.0, 2.0];
-    /// assert_eq!(arr.pow(array![2.0]), array![1.0, 4.0]);
+    /// let arr = Tensor::from([1.0, 2.0]);
+    /// assert_eq!(arr.pow(2.0), [1.0, 4.0]);
     /// ```
     ///
     /// # Panics
@@ -1534,10 +1532,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::arr1;
-    /// let input = arr1(&[0.5, 0.2, 0.3]);
-    /// let target = arr1(&[1., 0., 0.]);
-    /// assert_eq!(input.cross_entropy_loss(target), arr1(&[-0.69314718]));
+    /// use zyx::Tensor;
+    /// let input = Tensor::from([0.5, 0.2, 0.3]);
+    /// let target = Tensor::from([1., 0., 0.]);
+    /// assert_eq!(input.cross_entropy_loss(target), -0.69314718);
     /// ```
     ///
     /// # Panics
@@ -1561,12 +1559,12 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use your_crate::Tensor;
+    /// use zyx::Tensor;
     ///
-    /// let self_tensor = Tensor::from_slice(&[1.0, 2.0, 3.0]);
-    /// let target_tensor = Tensor::from_slice(&[2.0, 3.0, 4.0]);
+    /// let self_tensor = Tensor::from(&[1.0, 2.0, 3.0]);
+    /// let target_tensor = Tensor::from(&[2.0, 3.0, 4.0]);
     ///
-    /// assert_eq!(self_tensor.l1_loss(target_tensor), Tensor::from_slice(&[1.0, 1.0, 1.0]));
+    /// assert_eq!(self_tensor.l1_loss(target_tensor), Tensor::from(&[1.0, 1.0, 1.0]));
     /// ```
     #[must_use]
     pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
@@ -1586,12 +1584,12 @@ impl Tensor {
     /// # Example
     ///
     /// ```
-    /// use ndarray::Array1;
+    /// use zyx::Tensor;
     ///
-    /// let input = Array1::from([2.0, 3.0]);
-    /// let target = Array1::from([4.0, 5.0]);
+    /// let input = Tensor::from([2.0, 3.0]);
+    /// let target = Tensor::from([4.0, 5.0]);
     ///
-    /// assert_eq!(input.mse_loss(target), Array1::from([1.0, 1.0]));
+    /// assert_eq!(input.mse_loss(target), Tensor::from([1.0, 1.0]));
     /// ```
     ///
     /// # Panics
@@ -1615,11 +1613,11 @@ impl Tensor {
     /// # Example
     ///
     /// ```
-    /// use your_crate::Tensor;
+    /// use zyx::Tensor;
     ///
-    /// let tensor1 = Tensor::new([1.0, 2.0, 3.0]);
-    /// let tensor2 = Tensor::new([4.0, 5.0, 6.0]);
-    /// let eps = Tensor::new([1e-9]);
+    /// let tensor1 = Tensor::from([1.0, 2.0, 3.0]);
+    /// let tensor2 = Tensor::from([4.0, 5.0, 6.0]);
+    /// let eps = Tensor::from([1e-9]);
     ///
     /// let similarity = tensor1.cosine_similarity(tensor2, eps);
     /// ```
@@ -1685,12 +1683,12 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::prelude::*;
+    /// use zyx::Tensor;
     ///
-    /// let a = array![[1, 2], [3, 4]];
-    /// let b = array![[5, 6], [7, 8]];
-    /// let c = concat_tensors(&[&a, &b], 0);
-    /// assert_eq!(c, array![[[1, 2], [5, 6]], [[3, 4], [7, 8]]]);
+    /// let a = Tensor::from([[1, 2], [3, 4]]);
+    /// let b = Tensor::from([[5, 6], [7, 8]]);
+    /// let c = Tensor::cat([&a, &b], 0);
+    /// assert_eq!(c, [[[1, 2], [5, 6]], [[3, 4], [7, 8]]]);
     /// ```
     ///
     #[must_use]
@@ -1734,7 +1732,7 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use tensor::Tensor;
+    /// use zyx::Tensor;
     ///
     /// let t = Tensor::zeros(&[2, 3]);
     /// assert_eq!(t.unsqueeze(1).shape(), &[2, 1, 3]);
@@ -1769,14 +1767,13 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::stack;
-    /// let a = array![[1, 2], [3, 4]];
-    /// let b = array![[5, 6], [7, 8]];
-    /// assert_eq!(stack(&[&a, &b], 0), array![[[1, 2],
-    ///                                             [3, 4]],
-    ///
-    ///                                              [[5, 6],
-    ///                                               [7, 8]]]);
+    /// use zyx::Tensor;
+    /// let a = Tensor::from([[1, 2], [3, 4]]);
+    /// let b = Tensor::from([[5, 6], [7, 8]]);
+    /// assert_eq!(Tensor::stack([&a, &b], 0), array![[[1, 2],
+    ///                                                [3, 4]],
+    ///                                               [[5, 6],
+    ///                                                [7, 8]]]);
     /// ```
     ///
     /// # Panics
@@ -1895,10 +1892,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use ndarray::Array1;
+    /// use zyx::Tensor;
     ///
-    /// let arr = Array1::from_vec(vec![1, 2, 3]);
-    /// assert_eq!(arr.repeat(&vec![2]), Array1::from_vec(vec![1, 2, 3, 4, 5, 6]));
+    /// let arr = Tensor::from(vec![1, 2, 3]);
+    /// assert_eq!(arr.repeat([2]), Tensor::from(vec![1, 2, 3, 4, 5, 6]));
     /// ```
     ///
     /// # Panics

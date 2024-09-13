@@ -669,7 +669,7 @@ fn generate_kernels(
                     }
                     VOp::Accumulator { .. } | VOp::EndLoop => false, // | VOp::Reduce { .. }
                 }) {
-                    println!("Before reshape continuous.");
+                    //println!("Before reshape continuous.");
                     //kernel.debug();
                     // Remove old loops
                     for _ in 0..kernel.shape.len() {
@@ -741,8 +741,17 @@ fn generate_kernels(
                     if splits.as_ref().is_some_and(|x| x.is_empty()) {
                         splits = None;
                     }
+                    // For now we disable splits on reduced kernels
+                    // TODO later handle this properly by adding a new loop
+                    if splits.is_some() {
+                        for op in &kernel.ops {
+                            if matches!(op, VOp::Accumulator { .. }) {
+                                splits = None;
+                            }
+                        }
+                    }
                     //kernel.debug();
-                    println!("Splits: {splits:?}");
+                    //println!("Splits: {splits:?}");
                     if let Some(splits) = splits {
                         let mut loop_id = kernel.shape.len() - 1;
                         let mut skip_loops = 0;

@@ -52,6 +52,8 @@
 - [ ] tensor split op
 - [x] simplify vops
 - [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
+- [ ] local memory tiling
+- [ ] register tiling
 
 ### Release blockers
 
@@ -64,8 +66,6 @@
 - [x] full reduce
 - [x] more work per thread
 - [x] more work per thread in reduce dim
-- [ ] local memory tiling
-- [ ] register tiling
 - [x] bigger accumulators
 - [x] deallocation of intermediate buffers in scheduler
 - [x] check caching of compiled graphs
@@ -81,9 +81,9 @@
 - [x] fix reshape after reduce
 - [x] todo fix permute on reduced and reshaped kernel
 - [x] test pad after reshape after pad
-- [ ] test pad after reduce
+- [x] test pad after reduce
 - [x] test padded view permute
-- [ ] test expand after reduce
+- [x] test expand after reduce
 - [x] documentation for tensor functions
 - [x] documentation for Zyx Error
 - [x] documentation for DType
