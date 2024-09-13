@@ -1247,8 +1247,8 @@ impl Tensor {
         x = x.pad_zeros([(pl_sz, 0)]);
         println!("Kernel {k:?}");
         x = x.pool(k, 1, 1);
-        //x = x.sum(-1);
-        //x = x.transpose(axis,-1);
+        x = x.sum(-1);
+        x = x.transpose(axis,-1);
         return x
     }
 
@@ -1847,69 +1847,75 @@ impl Tensor {
             )
             .collect();
         println!("repeats {repeats:?}");
+        let pad_b: Vec<Range<isize>> = shape[..rank-k_.len()].iter().map(|&d| 0..d as isize).collect();
+        let sh_b: Vec<usize> = shape[..rank-k_.len()].into();
         let mut xup = self.repeat(repeats);
-        //println!("{xup}");
 
         // dilation
-        let padding: Vec<Range<isize>> = k_
+        println!("{xup:?} before padding");
+        // TODO padding is incorrect, because it is too short if rank > k_.len()
+        let padding: Vec<Range<isize>> = pad_b.iter().cloned().chain(k_
             .iter()
             .copied()
             .zip(i_.iter().copied())
             .zip(d_.iter().copied())
-            .map(|((k, i), d)| (0..(k * (i + d)) as isize))
+            .map(|((k, i), d)| (0..(k * (i + d)) as isize)))
             .collect();
+        println!("Padding {padding:?}");
         xup = xup.get(padding);
-        let sh: Vec<usize> = k_
+        println!("{xup} padded");
+        let sh: Vec<usize> = sh_b.iter().copied().chain(k_
             .iter()
             .copied()
             .zip(i_.iter().copied())
             .zip(d_.iter().copied())
             .map(|((k, i), d)| [k, i+d])
-            .flatten()
+            .flatten())
             .collect();
+        println!("Reshape {sh:?}");
         xup = xup.reshape(sh);
 
         // stride
         // padding = noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_))
         // xup = xup.shrink(padding)
-        let padding: Vec<Range<isize>> = k_
+        let padding: Vec<Range<isize>> = pad_b.iter().cloned().chain(k_
             .iter()
             .copied()
             .zip(o_.iter().copied())
             .zip(s_.iter().copied())
             .map(|((k, o), s)| [(0..k as isize), (0..(o*s) as isize)])
-            .flatten()
+            .flatten())
             .collect();
         xup = xup.get(padding);
         // sh = noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_))
         // xup = xup.reshape(sh)
-        let sh: Vec<usize> = k_
+        let sh: Vec<usize> = sh_b.iter().copied().chain(k_
             .iter()
             .copied()
             .zip(o_.iter().copied())
             .zip(s_.iter().copied())
             .map(|((k, o), s)| [k, o, s])
-            .flatten()
+            .flatten())
             .collect();
         xup = xup.reshape(sh);
         // padding = noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_))
         // xup = xup.shrink(padding)
-        let padding: Vec<Range<isize>> = k_
+        let padding: Vec<Range<isize>> = pad_b.iter().cloned().chain(k_
             .iter()
             .copied()
             .zip(o_.iter().copied())
             .map(|(k, o)| [(0..k as isize), (0..o as isize), (0..1)])
-            .flatten()
+            .flatten())
             .collect();
         xup = xup.get(padding);
         // sh = noop_ + flatten((k,o) for k,o in zip(k_, o_))
         // xup = xup.reshape(sh)
-        let sh: Vec<usize> = k_
+        let sh: Vec<usize> = sh_b.iter().copied().chain(k_
             .iter()
             .copied()
             .zip(o_.iter().copied())
             .map(|(k, o)| [k, o])
-            .flatten()
+            .flatten())
             .collect();
         xup = xup.reshape(sh);
 
@@ -1970,12 +1976,11 @@ impl Tensor {
 
         println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
 
-        //println!("{}", self);
         let mut x = self.reshape(new_shape);
+        println!("Repeat {x}");
         x = x.expand(expand_shape);
-        println!("{x}");
-        //println!("{x}");
         x = x.reshape(final_shape);
+        //println!("End {x}");
         return x
     }
 
