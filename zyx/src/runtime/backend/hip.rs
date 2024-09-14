@@ -459,7 +459,7 @@ impl HIPDevice {
                     indent.pop();
                     source += &format!("{indent}}}\n");
                 }
-                IROp::Barrier { scope } => {
+                /*IROp::Barrier { scope } => {
                     source += &format!(
                         "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
                         match scope {
@@ -468,7 +468,7 @@ impl HIPDevice {
                             Scope::Register => panic!(),
                         }
                     );
-                }
+                }*/
             }
         }
         source += "}\n";

@@ -207,7 +207,7 @@ impl Tensor {
             .arg(format!("{name}.png"))
             .output();
         if let Err(err) = output {
-            std::println!("Graph png could not be created: {err}");
+            println!("Graph png could not be created: {err}");
         } else {
             let _ = std::fs::remove_file(format!("{name}.dot"));
         }
@@ -220,40 +220,114 @@ impl Tensor {
         RT.lock().manual_seed(seed);
     }
 
+    /// Create random value in range 0f..1f with float dtype
+    /// or 0..int::MAX if it is integer
+    #[cfg(feature = "rand")]
+    #[must_use]
+    pub fn rand(shape: impl IntoShape, dtype: DType) -> Tensor {
+        const SEED: u64 = 69420;
+        use std::i32;
+
+        use rand::Rng;
+        use rand::rngs::SmallRng;
+        use rand::distributions::Uniform;
+        use rand::SeedableRng;
+        let shape: Vec<usize> = shape.into_shape().collect();
+        let n = shape.iter().product();
+        if dtype.is_float() {
+            // TODO later use threefry
+            let mut rt = RT.lock();
+            rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
+            let rng = rt.rng.get_mut().unwrap();
+            match dtype {
+                DType::F32 => {
+                    let range = Uniform::new(0., 1.);
+                    let data: Vec<f32> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                DType::F64 => {
+                    let range = Uniform::new(0., 1.);
+                    let data: Vec<f64> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                _ => panic!(),
+            }
+        } else {
+            let mut rt = RT.lock();
+            rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
+            let rng = rt.rng.get_mut().unwrap();
+            match dtype {
+                DType::U8 => {
+                    let range = Uniform::new(0, u8::MAX);
+                    let data: Vec<u8> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                DType::I8 => {
+                    let range = Uniform::new(0, i8::MAX);
+                    let data: Vec<i8> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                DType::I16 => {
+                    let range = Uniform::new(0, i16::MAX);
+                    let data: Vec<i16> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                DType::I32 => {
+                    let range = Uniform::new(0, i32::MAX);
+                    let data: Vec<i32> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                DType::I64 => {
+                    let range = Uniform::new(0, i64::MAX);
+                    let data: Vec<i64> = (0..n).map(|_| rng.sample(&range)).collect();
+                    Tensor { id: rt.variable(shape, &data).unwrap() }
+                }
+                _ => panic!(),
+            }
+        }
+        /*# threefry
+        if (num := math.ceil(((num_ := prod(shape)) * dtype.itemsize) / 4)) == 0: return Tensor.zeros(shape, device=device, dtype=dtype, **kwargs)
+        if not had_counter: Tensor._rng_counter.assign(Tensor._rng_counter + num)
+        counts1 = (Tensor.arange(math.ceil(num / 2), device=device, dtype=dtypes.uint32, requires_grad=False)+Tensor._rng_counter.to(device))
+        counts2 = counts1 + math.ceil(num / 2)*/
+
+        /*# threefry random bits
+        x = counts2.cast(dtypes.uint64) << 32 | counts1.cast(dtypes.uint64)
+        x = F.Threefry.apply(*x._broadcasted(Tensor._seed))
+        counts1, counts2 = (x & 0xffffffff).cast(dtypes.uint32), ((x >> 32) & 0xffffffff).cast(dtypes.uint32)
+        bits = counts1.cat(counts2)[:num]
+
+        # bitcast to uint with same number of bits
+        _, nmant = dtypes.finfo(dtype)
+        uint_dtype = {1: dtypes.uint8, 2: dtypes.uint16, 4: dtypes.uint32, 8: dtypes.uint64}[dtype.itemsize]
+        bits = bits.bitcast(uint_dtype)
+        # only randomize the mantissa bits and set the exponent to 1
+        one = Tensor.ones_like(bits, device=bits.device, dtype=dtype).bitcast(uint_dtype)
+        bits = bits.rshift((dtype.itemsize * 8) - nmant).bitwise_or(one)
+
+        # bitcast back to the original dtype
+        out = bits.bitcast(dtype)[:num_].sub(1).reshape(shape)
+        out.requires_grad = kwargs.get("requires_grad")
+        return out.contiguous()*/
+    }
+
     // Initializers
     /// Create tensor sampled from standard distribution.
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
-        // TODO just use threefry
-        // This can be generated from uniform or just generate on cpu
-        // and pass into device whole buffer
-
+        // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
         // src = Tensor.rand((2, *argfix(*shape)), **{**kwargs, "dtype": dtypes.float32})
         // return src[0].mul(2*math.pi).cos().mul((1 - src[1]).log().mul(-2).sqrt()).cast(dtype or dtypes.default_float)
 
-        match dtype {
-            #[cfg(feature = "half")]
-            DType::BF16 => todo!(),
-            #[cfg(feature = "half")]
-            DType::F16 => todo!(),
-            DType::F32 => {
-                Tensor::uniform(shape.clone(), -1f32..1f32) / Tensor::uniform(shape, -1f32..1f32)
-            }
-            DType::F64 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF32 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF64 => todo!(),
-            DType::U8 => {
-                Tensor::uniform(shape.clone(), 0u8..255u8) / Tensor::uniform(shape, 0u8..255u8)
-            }
-            DType::I8 => todo!(),
-            DType::I16 => todo!(),
-            DType::I32 => todo!(),
-            DType::I64 => todo!(),
-            DType::Bool => todo!(),
-        }
+        let shape: Vec<usize> = [2].into_iter().chain(shape.into_shape()).collect();
+        let src = Tensor::rand(shape, dtype);
+        let x = src.get(0).mul(Tensor::constant(2f32*std::f32::consts::PI)).cos();
+        let mut y = Tensor::constant(1f32) - src.get(1);
+        //println!("{y} minus");
+        y = y.ln().mul(Tensor::constant(-2f32)).sqrt();
+        //println!("{y}");
+        x.mul(y).cast(dtype)
     }
 
     /// Create tensor sampled from uniform distribution
@@ -265,22 +339,17 @@ impl Tensor {
         range: impl core::ops::RangeBounds<T>,
     ) -> Tensor {
         use core::ops::Bound;
-        let start = match range.start_bound() {
+        let low = match range.start_bound() {
             Bound::Included(value) => *value,
             Bound::Excluded(value) => *value,
             Bound::Unbounded => T::min_value(),
         };
-        let end = match range.end_bound() {
+        let high = match range.end_bound() {
             Bound::Included(value) => *value,
             Bound::Excluded(value) => *value,
             Bound::Unbounded => T::max_value(),
         };
-        Tensor {
-            id: RT
-                .lock()
-                .uniform(shape.into_shape().collect(), start, end)
-                .unwrap(),
-        }
+        Tensor::rand(shape, T::dtype()) * high.sub(low) + low
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
@@ -338,10 +407,10 @@ impl Tensor {
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
         let n: i64 = stop.sub(start).div(step).cast();
         let n = n as usize;
-        println!("Shape {n}");
+        //println!("Shape {n}");
         let m = start.sub(step);
         let x = Tensor::full(n, step);
-        println!("{x}");
+        //println!("{x}");
         let x = x.cumsum(0);
         x + m
     }
@@ -403,10 +472,11 @@ impl Tensor {
     #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout(&self, probability: impl Scalar) -> Tensor {
+        let dtype = self.dtype();
+        assert!(dtype.is_float(), "Dropout only works on floating dtype tensors.");
         // TODO fix this for training (dropout in training is just scaling)
         Tensor::from(probability)
-            .cmplt(Tensor::uniform(self.shape(), 0f32..1.0))
-            .cast(self.dtype())
+            .cmplt(Tensor::rand(self.shape(), dtype))
             * self
     }
 
@@ -507,8 +577,9 @@ impl Tensor {
     /// A new tensor with the same shape as the input, but with each element computed as `ln(input_element)`.
     #[must_use]
     pub fn ln(&self) -> Tensor {
-        let c: Tensor = (1f64 / std::f64::consts::E.log2()).try_into().unwrap();
-        self.log2() * c.cast(self.dtype())
+        let x = self.float_cast();
+        let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
+        x.log2() * c.cast(x.dtype())
     }
 
     /// Computes the multiplicative inverse of each element in the input tensor.
@@ -771,6 +842,8 @@ impl Tensor {
         assert!(shape.rank() > 0);
         let mut sh = self.shape();
         let shape: Vec<usize> = shape.into_shape().collect();
+        //println!("Expand to {shape:?}");
+        assert!(shape.rank() >= sh.rank());
         if shape.rank() > sh.rank() {
             let mut i = sh.len();
             for d in shape.iter().copied().rev() {
@@ -1268,6 +1341,7 @@ impl Tensor {
         x = x.sum(-1);
         //println!("{x:?} summed");
         x = x.transpose(axis,-1);
+        //println!("{x:?} transposed");
         return x
     }
 
@@ -1872,7 +1946,6 @@ impl Tensor {
 
         // dilation
         //println!("{xup:?} before padding");
-        // TODO padding is incorrect, because it is too short if rank > k_.len()
         let padding: Vec<Range<isize>> = pad_b.iter().cloned().chain(k_
             .iter()
             .copied()
@@ -2170,6 +2243,25 @@ impl Drop for DebugGuard {
 }
 
 impl Tensor {
+    /// If self is not float, then cast it to float
+    #[must_use]
+    fn float_cast(&self) -> Tensor {
+        let dtype = self.dtype();
+        if !dtype.is_float() {
+            return match dtype.byte_size() {
+                #[cfg(feature = "half")]
+                1 | 2 => self.cast(DType::F16),
+                #[cfg(feature = "half")]
+                4 => self.cast(DType::F32),
+                #[cfg(not(feature = "half"))]
+                1 | 2 | 4 => self.cast(DType::F32),
+                8 => self.cast(DType::F64),
+                _ => panic!(),
+            }
+        }
+        self.clone()
+    }
+
     /// Braodcasts to synchronize shapes and casts to synchronize dtypss
     /// This does both automatic expand AND automatic casting between dtypes.
     // TODO Both of these can be disable by changing a setting in the backend.
@@ -2228,12 +2320,17 @@ impl Tensor {
         for (x, y) in x_shape.iter().zip(y_shape.iter()) {
             eshape.push(*x.max(y));
         }
+        // NOTE this is a bit ugly, but necessary
+        x = x.reshape(&x_shape);
         if x_shape != eshape {
-            x = x.expand(&*eshape);
+            x = x.expand(&eshape);
         }
+        y = y.reshape(&y_shape);
         if y_shape != eshape {
-            y = y.expand(eshape);
+            y = y.expand(&eshape);
         }
+        //println!("Broadcasted to {eshape:?}");
+        //println!("y shape {:?}", y.shape());
         return (x, y);
     }
 

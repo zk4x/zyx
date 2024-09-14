@@ -68,9 +68,10 @@ pub(super) enum IROp {
         id: u16,
         len: usize,
     },
-    Barrier {
+    // TODO
+    /*Barrier {
         scope: Scope,
-    },
+    },*/
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -95,6 +96,8 @@ pub(super) enum IRDType {
     U32,
 }
 
+// TODO add vectorization
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IRVec {
     Scalar,
@@ -118,6 +121,8 @@ pub(super) struct IRKernel {
 }
 
 impl IRVec {
+    // TODO vectorization
+    #[allow(unused)]
     pub(super) fn len(&self) -> usize {
         match self {
             IRVec::Scalar => 1,
@@ -130,6 +135,8 @@ impl IRVec {
 }
 
 impl IRDType {
+    // TODO vectorization
+    #[allow(unused)]
     pub(super) fn byte_size(&self) -> usize {
         match self {
             #[cfg(feature = "half")]
@@ -337,8 +344,6 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
             &VOp::Loop { axis, len } => {
                 // Axis always maps to register ids
                 let id = axis as u16;
-                // TODO convert this constant to the correct dtype
-                //ops.push(IROp::Set { z: id, value: Constant::new(0).unary(UOp::Cast(DType::F32)) });
                 ops.push(IROp::Loop { id, len });
                 loops.push((id, len));
             }
@@ -412,7 +417,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 };
                 register_map.insert(z, var);
             }
-            &VOp::Load { z, zscope, ref zview, x, xscope, ref xview } => {
+            &VOp::Load { z, zscope, zview: _, x, xscope, ref xview } => {
                 match (zscope, xscope) {
                     (Scope::Local, Scope::Global) => { todo!() }
                     (Scope::Register, Scope::Global) => {

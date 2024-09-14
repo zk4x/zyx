@@ -52,7 +52,7 @@ pub(super) struct Runtime {
     graph: Graph,
     // Random number generator
     #[cfg(feature = "rand")]
-    rng: std::cell::OnceCell<SmallRng>,
+    pub(super) rng: std::cell::OnceCell<SmallRng>,
     // Cache for compiled graphs
     compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
     memory_pools: Vec<MemoryPool>,
@@ -116,51 +116,6 @@ impl Runtime {
     #[must_use]
     pub(super) fn dtype(&self, x: TensorId) -> DType {
         return self.graph.dtype(x);
-    }
-
-    #[cfg(feature = "rand")]
-    #[must_use]
-    pub(super) fn uniform<T: Scalar>(
-        &mut self,
-        shape: Vec<Dimension>,
-        start: T,
-        end: T,
-    ) -> Result<TensorId, ZyxError> {
-        use rand::{distributions::Uniform, Rng, SeedableRng};
-        const SEED: u64 = 69420;
-        // Pass in few numbers generated randomly on cpu and then add
-        // some nodes for bitshifts and such.
-        let n: usize = shape.iter().product();
-        match T::dtype() {
-            #[cfg(feature = "half")]
-            DType::BF16 => todo!(),
-            #[cfg(feature = "half")]
-            DType::F16 => todo!(),
-            DType::F32 => {
-                let range = Uniform::new(start.cast::<f32>(), end.cast::<f32>());
-                self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-                let rng = self.rng.get_mut().unwrap();
-                let data: Vec<f32> = (0..n).map(|_| rng.sample(&range)).collect();
-                self.variable(shape, &data)
-            }
-            DType::F64 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF32 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF64 => todo!(),
-            DType::U8 => {
-                let range = Uniform::new(start.cast::<u8>(), end.cast::<u8>());
-                self.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-                let rng = self.rng.get_mut().unwrap();
-                let data: Vec<u8> = (0..n).map(|_| rng.sample(&range)).collect();
-                self.variable(shape, &data)
-            }
-            DType::I8 => todo!(),
-            DType::I16 => todo!(),
-            DType::I32 => todo!(),
-            DType::I64 => todo!(),
-            DType::Bool => todo!(),
-        }
     }
 
     pub(super) fn variable<T: Scalar>(
@@ -352,6 +307,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+        //println!("reshaping to {shape:?}, {:?}", self.shape(x));
         if &shape == self.shape(x) {
             self.retain(x);
             return x;
@@ -640,7 +596,7 @@ impl Runtime {
     ) -> BTreeMap<TensorId, TensorId> {
         // Does not allocate new tensors, only constant and op nodes
         let topo = self.graph.build_topo(x, &sources);
-        //std::println!("Topo: {topo:?}");
+        //println!("Topo: {topo:?}");
 
         let req_grad: BTreeSet<TensorId> = topo
             .iter()
@@ -654,7 +610,7 @@ impl Runtime {
         let sh: Vec<Dimension> = self.shape(x).into();
         grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad1 }, sh));
         self.release(grad1).unwrap();
-        //std::println!("{:?}", self.nodes.last().unwrap());
+        //println!("{:?}", self.nodes.last().unwrap());
 
         fn insert_or_add_grad(
             r: &mut Runtime,

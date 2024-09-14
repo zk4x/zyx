@@ -55,10 +55,12 @@
 - [ ] local memory tiling
 - [ ] register tiling
 - [x] tensor arange initialization
+- [x] fix weird bug in graph realization when accessing multiple graphs concurrently (delete tensors did not delete shapes and dtypes)
+- [ ] fix another weird bug in graph realization when accessing multiple graphs concurrently
 
 ### Release blockers
 
-- [ ] go over all todos in source code and check which are necessary
+- [x] go over all todos in source code and check which are necessary
 - [x] fix bug in scheduler when testing cumsum (it was a bug in view)
 - [x] rewrite the AI generated docs, they are horrible
 - [x] saving and loading for models from and to disk in safetensors format
@@ -76,7 +78,7 @@
 - [x] stack
 - [x] pool
 - [x] cumsum
-- [ ] randn
+- [x] randn
 - [x] cuda backend
 - [x] hip backend
 - [x] remove smadd, amadd

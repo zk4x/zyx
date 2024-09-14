@@ -49,7 +49,20 @@ impl Graph {
     }
 
     pub(super) fn push(&mut self, node: Node) -> TensorId {
-        //libc_print::libc_println!("Pushing {node:?}");
+        //println!("Pushing {node:?}");
+        // checks, remove in release builds, aren't really necessary,
+        // needed just for debugging
+        {
+            let mut shape = None;
+            for nid in node.parameters() {
+                if let Some(sh) = shape {
+                    assert_eq!(sh, self.shape(nid));
+                } else {
+                    shape = Some(self.shape(nid));
+                }
+            }
+        }
+
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
         }
@@ -57,7 +70,7 @@ impl Graph {
     }
 
     pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
-        //libc_print::libc_println!("Pushing {node:?}");
+        //println!("Pushing wshape {node:?}");
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
         }
@@ -67,8 +80,8 @@ impl Graph {
     }
 
     pub(super) fn push_wdtype(&mut self, node: Node, dtype: DType) -> TensorId {
-        //libc_print::libc_println!("Pushing {node:?}");
         for nid in node.parameters() {
+            //println!("Pushing wdtype {node:?}, {:?}", self.shape(nid));
             self.nodes[nid].0 += 1;
         }
         let id = self.nodes.push((1, node));
@@ -82,7 +95,7 @@ impl Graph {
         shape: Vec<Dimension>,
         dtype: DType,
     ) -> TensorId {
-        //libc_print::libc_println!("Pushing {node:?}");
+        //println!("Pushing {node:?}");
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
         }
@@ -120,6 +133,7 @@ impl Graph {
         let mut i = 0;
         while i < 10000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {
+                //println!("Found shape {shape:?} for tensor {tensor_id}");
                 return shape;
             } else if let Node::Const { .. } = self.nodes[tensor_id].1 {
                 return &[1];
@@ -139,6 +153,8 @@ impl Graph {
     pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
         for &tensor in tensors {
             self.nodes.remove(tensor);
+            self.shapes.remove(&tensor);
+            self.dtypes.remove(&tensor);
         }
     }
 
@@ -312,7 +328,7 @@ impl Graph {
         for nid in &order {
             std::println!("{nid} -> {:?}", self.nodes[nid]);
             }*/
-        let mut node_swap = true;
+        let mut node_swap = false;
         while node_swap {
             node_swap = false;
             for (&nid, &nid1) in order.iter().zip(order.iter().skip(1)) {

@@ -75,6 +75,35 @@ fn cumsum() {
 
 #[test]
 fn arange() {
-    let x = Tensor::arange(0, 10, 1);
+    let x = Tensor::arange(0, 10, 2);
+    //println!("{x}");
+    assert_eq!(x, [0, 2, 4, 6, 8]);
+}
+
+#[test]
+fn rand() {
+    use zyx::DType;
+    let x = Tensor::randn([10, 10], DType::F32);
+    //Tensor::plot_graph([], "graph0");
+    Tensor::realize([&x]).unwrap();
     println!("{x}");
+}
+
+#[test]
+fn const_() {
+    let x = Tensor::from([[3f32, 4., 2.], [4., 3., 2.]]);
+    let mut y = Tensor::constant(1) + x; //.get(1);
+    println!("{y}'");
+    //Tensor::plot_graph([], "graph0");
+    //let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
+    //y = y.log2() * c.cast(y.dtype());
+    y = y.ln();
+    println!("{y}'");
+}
+
+#[test]
+fn graph_shapes() {
+    let x = Tensor::constant(2);
+    let y = x.expand([1, 1]);
+    println!("{y}");
 }

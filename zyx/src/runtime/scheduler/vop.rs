@@ -38,8 +38,6 @@ pub(crate) enum VOp {
         xscope: Scope,
         xview: View,
     },
-    // TODO remove accumulator and use const + load
-    // instead to create register tile
     Accumulator {
         z: TensorId,
         rop: ROp,
