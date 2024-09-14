@@ -16,6 +16,7 @@ use crate::runtime::ir::{IRDType, IROp, Scope, Var};
 use crate::runtime::node::{BOp, UOp};
 use crate::DType;
 
+/// CUDA configuration
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct CUDAConfig {
     device_ids: Option<Vec<i32>>,

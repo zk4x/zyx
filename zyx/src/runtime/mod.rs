@@ -36,12 +36,17 @@ mod node;
 mod scheduler;
 mod view;
 
+/// Device configuration
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(serde::Deserialize, Debug, Default)]
 pub struct DeviceConfig {
+    /// CUDA configuration
     pub cuda: CUDAConfig,
+    /// HIP configuration
     pub hip: HIPConfig,
+    /// OpenCL configuration
     pub opencl: OpenCLConfig,
+    /// WGSL configuration
     #[cfg(feature = "wgsl")]
     pub wgsl: WGSLConfig,
 }

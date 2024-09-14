@@ -1191,7 +1191,7 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let arr = Tensor::eye(3, DType::F32);
-    /// assert_eq!(arr.mean(0, &[1.0, 1.0, 1.0]);
+    /// assert_eq!(arr.mean(0, &[1.0, 1.0, 1.0]));
     /// ```
     ///
     /// # Panics
@@ -1299,7 +1299,7 @@ impl Tensor {
     /// Sum reduce. Removes tensor dimensions.
     /// Equivalent to pytorch sum(axes, keepdim=False)
     /// If you want to keep reduce dimensions, see [sum_kd](Tensor::sum_kd)
-    /// Passing empty axes executes reduce across all dimensions and result will have shape [1]
+    /// Passing empty axes executes reduce across all dimensions and result will have shape `[1]`
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
         let rank = self.rank();

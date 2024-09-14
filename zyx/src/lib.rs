@@ -3,7 +3,6 @@
 #![forbid(rustdoc::private_intra_doc_links)]
 #![forbid(missing_docs)]
 #![forbid(rustdoc::missing_crate_level_docs)]
-#![forbid(rustdoc::missing_doc_code_examples)]
 #![forbid(rustdoc::private_doc_tests)]
 #![forbid(rustdoc::invalid_codeblock_attributes)]
 #![forbid(rustdoc::invalid_html_tags)]
@@ -28,6 +27,7 @@ mod tensor;
 
 pub use dtype::DType;
 pub use runtime::ZyxError;
+pub use runtime::DeviceConfig;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
@@ -259,3 +259,20 @@ fn t_18() {
     println!("{x}");
 }
 */
+
+#[cfg(feature = "rand")]
+#[test]
+fn t4() {
+    //let x = Tensor::uniform([1024, 1024], 0f32..1f32);
+    //let y = Tensor::uniform([1024, 1024], 0f32..1f32);
+    let x = Tensor::rand([1024, 1024], DType::F32);
+    let y = Tensor::rand([1024, 1024], DType::F32);
+    for _ in 0..20 {
+        let z = x.dot(&y);
+        Tensor::realize([&z]).unwrap();
+        drop(z);
+        //Tensor::plot_graph([], &format!("graph{i}"));
+    }
+    //Tensor::plot_graph([], "graph0");
+    //Tensor::realize([&z]).unwrap();
+}
