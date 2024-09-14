@@ -496,6 +496,7 @@ impl Runtime {
         //let timer = Timer::new();
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
+        optimized_kernel.debug();
         let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops, graph);
         let mut program_id = None;
         if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {

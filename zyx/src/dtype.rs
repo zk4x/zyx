@@ -191,7 +191,16 @@ impl Display for DType {
 }
 
 impl DType {
-    pub(crate) fn byte_size(&self) -> usize {
+    /// Is this dtype floating point?
+    pub fn is_float(&self) -> bool {
+        match self {
+            DType::F32 | DType::F64 => true,
+            DType::U8 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => false,
+        }
+    }
+
+    /// Get the size of this dtype in bytes
+    pub fn byte_size(&self) -> usize {
         return match self {
             #[cfg(feature = "half")]
             DType::BF16 => 2,

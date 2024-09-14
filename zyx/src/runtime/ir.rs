@@ -580,20 +580,25 @@ fn load_indexed(z: Var, address: u16, view: &View, registers: &mut Vec<(IRDType,
                     .iter()
                     .find(|(axes, _)| axes.iter().max().unwrap() == axis)
                 {
-                    if *lp > 0 {
+                    let t = if *lp > 0 {
                         let t = Var::Id(get_empty_register(registers, IRDType::U32, 0));
                         ops.push(IROp::Binary { z: t, x: Var::Id(*axis as u16), y: Var::Const(Constant::U32(*lp as u32)), bop: BOp::Sub });
-                        ops.push(IROp::MAdd { z: offset, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: offset } );
+                        t
                     } else if *lp < 0 {
                         let lp = -lp;
                         let t = Var::Id(get_empty_register(registers, IRDType::U32, 0));
                         ops.push(IROp::Binary { z: t, x: Var::Id(*axis as u16), y: Var::Const(Constant::U32(lp as u32)), bop: BOp::Add });
-                        ops.push(IROp::MAdd { z: offset, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: offset } );
+                        t
                     } else {
-                        ops.push(IROp::MAdd { z: offset, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(*stride as u32)), c: offset });
+                        Var::Id(*axis as u16)
+                    };
+                    if *stride != 0 { //&& *stride != numel {
+                        ops.push(IROp::MAdd { z: offset, a: t, b: Var::Const(Constant::U32(*stride as u32)), c: offset } );
                     }
                 } else {
-                    ops.push(IROp::MAdd { z: offset, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(*stride as u32)), c: offset });
+                    if *stride != 0 { //&& *stride != numel {
+                        ops.push(IROp::MAdd { z: offset, a: Var::Id(*axis as u16), b: Var::Const(Constant::U32(*stride as u32)), c: offset });
+                    }
                 }
             }
             let padding_condition = get_empty_register(registers, IRDType::Bool, 1);

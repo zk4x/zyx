@@ -255,7 +255,7 @@ impl View {
                     }
                 }
             }
-            View::Padded(dims, _) => {
+            View::Padded(dims, padding) => {
                 for StridedDim {
                     axis: paxis,
                     dim,
@@ -267,6 +267,12 @@ impl View {
                         assert_eq!(*dim, 1);
                         *stride = 0;
                         *dim = dimension;
+                        // Remove expanded axes from padding
+                        for (axes, _) in padding.iter_mut() {
+                            if let Some(id) = axes.iter().position(|&a| a == axis) {
+                                axes.remove(id);
+                            }
+                        }
                     }
                 }
             }
@@ -358,7 +364,9 @@ impl View {
                 if let Some((axes, _)) = padding.iter_mut().find(|(k, _)| k.contains(&axis)) {
                     //std::println!("Original: {axes:?} splitting into: {axis}..{}", axis+dim_len);
                     for a in axis + 1..axis + dim_len {
-                        axes.push(a);
+                        if dims.iter().find(|dim| dim.axis == a).unwrap().dim != 1 {
+                            axes.push(a);
+                        }
                     }
                     // Would not be needed on btreeset
                     axes.sort();

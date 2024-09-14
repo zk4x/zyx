@@ -54,10 +54,12 @@
 - [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
 - [ ] local memory tiling
 - [ ] register tiling
+- [ ] tensor from range initialization
 
 ### Release blockers
 
 - [ ] go over all todos in source code and check which are necessary
+- [x] fix bug in scheduler when testing cumsum (it was a bug in view)
 - [x] rewrite the AI generated docs, they are horrible
 - [x] saving and loading for models from and to disk in safetensors format
 - [x] automatic optimizations with search on vkernel
@@ -73,7 +75,7 @@
 - [x] unsqueeze
 - [x] stack
 - [x] pool
-- [ ] cumsum
+- [x] cumsum
 - [ ] randn
 - [x] cuda backend
 - [x] hip backend

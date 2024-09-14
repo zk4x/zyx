@@ -2,14 +2,13 @@ use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{to_axis, IntoAxes, IntoPadding, IntoShape};
 use core::cmp::Ordering;
-use core::ops::{
+use std::ops::{
     Add, Div, Mul, Neg, Not, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
-    RangeToInclusive, Sub,
+    RangeToInclusive, Sub, Bound, RangeBounds
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::iter::repeat;
-use std::ops::{Bound, RangeBounds};
 use std::path::Path;
 
 use crate::runtime::ZyxError;
@@ -230,6 +229,10 @@ impl Tensor {
         // TODO just use threefry
         // This can be generated from uniform or just generate on cpu
         // and pass into device whole buffer
+
+        // src = Tensor.rand((2, *argfix(*shape)), **{**kwargs, "dtype": dtypes.float32})
+        // return src[0].mul(2*math.pi).cos().mul((1 - src[1]).log().mul(-2).sqrt()).cast(dtype or dtypes.default_float)
+
         match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => todo!(),
@@ -1245,7 +1248,7 @@ impl Tensor {
         let axis = axis as isize;
         let mut x = self.transpose(axis,-1);
         x = x.pad_zeros([(pl_sz, 0)]);
-        println!("Kernel {k:?}");
+        //println!("Kernel {k:?}");
         x = x.pool(k, 1, 1);
         x = x.sum(-1);
         x = x.transpose(axis,-1);
@@ -1977,10 +1980,8 @@ impl Tensor {
         println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
 
         let mut x = self.reshape(new_shape);
-        println!("Repeat {x}");
         x = x.expand(expand_shape);
         x = x.reshape(final_shape);
-        //println!("End {x}");
         return x
     }
 

@@ -712,6 +712,11 @@ impl OpenCLDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
+                    if let Var::Id(id) = offset {
+                        if id == 11 {
+                            source += &format!("{indent}printf(\"%u, \", r11);\n");
+                        }
+                    }
                     source += &format!("{indent}{} = p{address}[{}];\n", z.ocl(), offset.ocl());
                 }
                 IROp::Store { address, offset, x } => {
