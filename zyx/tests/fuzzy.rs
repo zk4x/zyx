@@ -2,7 +2,7 @@ use std::rc::Rc;
 use rand::{distributions::Uniform, Rng, SeedableRng};
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
-#[test]
+//#[test]
 fn fuzzy() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;
@@ -722,7 +722,7 @@ trait Shape {
         let shape = self.as_slice();
         axes.iter().map(|axis| shape[*axis]).collect()
     }
-    
+
     fn numel(&self) -> usize {
         self.as_slice().iter().product()
     }

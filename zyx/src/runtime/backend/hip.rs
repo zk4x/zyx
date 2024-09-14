@@ -433,6 +433,9 @@ impl HIPDevice {
                             BOp::Max => format!("max({}, {})", x.hip(), y.hip()),
                             BOp::Or => format!("{} || {}", x.hip(), y.hip()),
                             BOp::And => format!("{} && {}", x.hip(), y.hip()),
+                            BOp::BitOr => format!("{} | {}", x.hip(), y.hip()),
+                            BOp::BitXor => format!("{} ^ {}", x.hip(), y.hip()),
+                            BOp::BitAnd => format!("{} & {}", x.hip(), y.hip()),
                         }
                     );
                 }

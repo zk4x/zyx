@@ -12,6 +12,9 @@ pub(super) enum BOp {
     Max,
     Or,
     And,
+    BitXor,
+    BitOr,
+    BitAnd,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]

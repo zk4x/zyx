@@ -54,7 +54,7 @@
 - [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
 - [ ] local memory tiling
 - [ ] register tiling
-- [ ] tensor from range initialization
+- [x] tensor arange initialization
 
 ### Release blockers
 

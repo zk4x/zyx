@@ -72,3 +72,9 @@ fn cumsum() {
     x = x.cumsum(1);
     assert_eq!(x, [[0, 1, 3], [3, 7, 12], [6, 13, 21]]);
 }
+
+#[test]
+fn arange() {
+    let x = Tensor::arange(0, 10, 1);
+    println!("{x}");
+}

@@ -3,8 +3,7 @@ use crate::scalar::Scalar;
 use crate::shape::{to_axis, IntoAxes, IntoPadding, IntoShape};
 use core::cmp::Ordering;
 use std::ops::{
-    Add, Div, Mul, Neg, Not, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
-    RangeToInclusive, Sub, Bound, RangeBounds
+    Add, BitAnd, BitOr, BitXor, Bound, Div, Mul, Neg, Not, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
@@ -330,6 +329,21 @@ impl Tensor {
             .pad_zeros([(0, n as isize)])
             .reshape([n + 1, n])
             .get((..-1, ..));
+    }
+
+    /// Arange method, create range from start, stop, step
+    #[must_use]
+    pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Tensor {
+        // if (stop-start)/step <= 0: return Tensor([], dtype=dtype, **kwargs)
+        // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
+        let n: i64 = stop.sub(start).div(step).cast();
+        let n = n as usize;
+        println!("Shape {n}");
+        let m = start.sub(step);
+        let x = Tensor::full(n, step);
+        println!("{x}");
+        let x = x.cumsum(0);
+        x + m
     }
 
     /// Create constant that will be baked into compiled kernels.
@@ -1248,9 +1262,11 @@ impl Tensor {
         let axis = axis as isize;
         let mut x = self.transpose(axis,-1);
         x = x.pad_zeros([(pl_sz, 0)]);
-        //println!("Kernel {k:?}");
+        //println!("{x:?} padded");
         x = x.pool(k, 1, 1);
+        //println!("{x:?} pooled");
         x = x.sum(-1);
+        //println!("{x:?} summed");
         x = x.transpose(axis,-1);
         return x
     }
@@ -1838,7 +1854,7 @@ impl Tensor {
             .zip(k_.iter().cloned())
             .zip(s_.iter().cloned())
             .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s)).collect();
-        println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
+        //println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
         let repeats: Vec<usize> = repeat(1)
             .take(rank - k_.len())
             .chain(
@@ -1849,13 +1865,13 @@ impl Tensor {
                     .map(|((k, i), d)| (k * (i + d)).div_ceil(i)),
             )
             .collect();
-        println!("repeats {repeats:?}");
+        //println!("repeats {repeats:?}");
         let pad_b: Vec<Range<isize>> = shape[..rank-k_.len()].iter().map(|&d| 0..d as isize).collect();
         let sh_b: Vec<usize> = shape[..rank-k_.len()].into();
         let mut xup = self.repeat(repeats);
 
         // dilation
-        println!("{xup:?} before padding");
+        //println!("{xup:?} before padding");
         // TODO padding is incorrect, because it is too short if rank > k_.len()
         let padding: Vec<Range<isize>> = pad_b.iter().cloned().chain(k_
             .iter()
@@ -1864,9 +1880,9 @@ impl Tensor {
             .zip(d_.iter().copied())
             .map(|((k, i), d)| (0..(k * (i + d)) as isize)))
             .collect();
-        println!("Padding {padding:?}");
+        //println!("Padding {padding:?}");
         xup = xup.get(padding);
-        println!("{xup} padded");
+        //println!("{xup} padded");
         let sh: Vec<usize> = sh_b.iter().copied().chain(k_
             .iter()
             .copied()
@@ -1875,7 +1891,7 @@ impl Tensor {
             .map(|((k, i), d)| [k, i+d])
             .flatten())
             .collect();
-        println!("Reshape {sh:?}");
+        //println!("Reshape {sh:?}");
         xup = xup.reshape(sh);
 
         // stride
@@ -1977,7 +1993,7 @@ impl Tensor {
             .map(|(r, d)| r * d)
             .collect();
 
-        println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
+        //println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
 
         let mut x = self.reshape(new_shape);
         x = x.expand(expand_shape);
@@ -2766,13 +2782,6 @@ impl From<&Tensor> for Tensor {
     }
 }
 
-impl<T: Scalar> From<Range<T>> for Tensor {
-    fn from(r: Range<T>) -> Self {
-        // TODO use cumsum and stuff to make this without collecting into vec on the CPU
-        todo!();
-    }
-}
-
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
         return Tensor {
@@ -2984,10 +2993,6 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        // We have to do this using temporary variable,
-        // otherwise rust drops tensor before dropping mutexguard,
-        // causing deadlock. But with temporary variable
-        // it works. Welcome to most beloved language of all time.
         let tensor = Tensor {
             id: RT.lock().div(x.id, y.id),
         };
@@ -2999,12 +3004,74 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs);
-        // We have to do this using temporary variable,
-        // otherwise rust drops tensor before dropping mutexguard,
-        // causing deadlock. But with temporary variable
-        // it works. Welcome to most beloved language of all time.
         let tensor = Tensor {
             id: RT.lock().div(x.id, y.id),
+        };
+        return tensor;
+    }
+}
+
+impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
+    type Output = Tensor;
+    fn bitor(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        let tensor = Tensor {
+            id: RT.lock().bitor(x.id, y.id),
+        };
+        return tensor;
+    }
+}
+
+impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
+    type Output = Tensor;
+    fn bitor(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        let tensor = Tensor {
+            id: RT.lock().bitor(x.id, y.id),
+        };
+        return tensor;
+    }
+}
+
+impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
+    type Output = Tensor;
+    fn bitxor(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        let tensor = Tensor {
+            id: RT.lock().bitxor(x.id, y.id),
+        };
+        return tensor;
+    }
+}
+
+impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
+    type Output = Tensor;
+    fn bitxor(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        let tensor = Tensor {
+            id: RT.lock().bitxor(x.id, y.id),
+        };
+        return tensor;
+    }
+}
+
+impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
+    type Output = Tensor;
+    fn bitand(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        let tensor = Tensor {
+            id: RT.lock().bitand(x.id, y.id),
+        };
+        return tensor;
+    }
+}
+
+impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
+    type Output = Tensor;
+    fn bitand(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs);
+        let tensor = Tensor {
+            id: RT.lock().bitand(x.id, y.id),
         };
         return tensor;
     }
@@ -3051,14 +3118,14 @@ macro_rules! impl_trait {
         impl $trait<Tensor> for $type {
             type Output = Tensor;
             fn $fn_name(self, rhs: Tensor) -> Self::Output {
-                rhs * self
+                rhs.$fn_name(self)
             }
         }
 
         impl $trait<&Tensor> for $type {
             type Output = Tensor;
             fn $fn_name(self, rhs: &Tensor) -> Self::Output {
-                rhs * self
+                rhs.$fn_name(self)
             }
         }
     };
@@ -3131,3 +3198,54 @@ impl_trait!(Div for i16, div);
 impl_trait!(Div for i32, div);
 impl_trait!(Div for i64, div);
 impl_trait!(Div for bool, div);
+
+#[cfg(feature = "half")]
+impl_trait!(BitXor for bf16, bitxor);
+#[cfg(feature = "half")]
+impl_trait!(BitXor for f16, bitxor);
+impl_trait!(BitXor for f32, bitxor);
+impl_trait!(BitXor for f64, bitxor);
+#[cfg(feature = "complex")]
+impl_trait!(BitXor for Complex<f32>, bitxor);
+#[cfg(feature = "complex")]
+impl_trait!(BitXor for Complex<f64>, bitxor);
+impl_trait!(BitXor for u8, bitxor);
+impl_trait!(BitXor for i8, bitxor);
+impl_trait!(BitXor for i16, bitxor);
+impl_trait!(BitXor for i32, bitxor);
+impl_trait!(BitXor for i64, bitxor);
+impl_trait!(BitXor for bool, bitxor);
+
+#[cfg(feature = "half")]
+impl_trait!(BitOr for bf16, bitor);
+#[cfg(feature = "half")]
+impl_trait!(BitOr for f16, bitor);
+impl_trait!(BitOr for f32, bitor);
+impl_trait!(BitOr for f64, bitor);
+#[cfg(feature = "complex")]
+impl_trait!(BitOr for Complex<f32>, bitor);
+#[cfg(feature = "complex")]
+impl_trait!(BitOr for Complex<f64>, bitor);
+impl_trait!(BitOr for u8, bitor);
+impl_trait!(BitOr for i8, bitor);
+impl_trait!(BitOr for i16, bitor);
+impl_trait!(BitOr for i32, bitor);
+impl_trait!(BitOr for i64, bitor);
+impl_trait!(BitOr for bool, bitor);
+
+#[cfg(feature = "half")]
+impl_trait!(BitAnd for bf16, bitand);
+#[cfg(feature = "half")]
+impl_trait!(BitAnd for f16, bitand);
+impl_trait!(BitAnd for f32, bitand);
+impl_trait!(BitAnd for f64, bitand);
+#[cfg(feature = "complex")]
+impl_trait!(BitAnd for Complex<f32>, bitand);
+#[cfg(feature = "complex")]
+impl_trait!(BitAnd for Complex<f64>, bitand);
+impl_trait!(BitAnd for u8, bitand);
+impl_trait!(BitAnd for i8, bitand);
+impl_trait!(BitAnd for i16, bitand);
+impl_trait!(BitAnd for i32, bitand);
+impl_trait!(BitAnd for i64, bitand);
+impl_trait!(BitAnd for bool, bitand);

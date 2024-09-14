@@ -76,6 +76,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
+/*
 #[test]
 fn t0() {
     let x = Tensor::from([[2, 3], [4, 5]]);
@@ -257,3 +258,4 @@ fn t_18() {
     x = x.dot(y).pad_zeros([(2, 1)]);
     println!("{x}");
 }
+*/

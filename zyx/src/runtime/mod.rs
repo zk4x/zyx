@@ -445,11 +445,22 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Div,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Div })
+    }
+
+    #[must_use]
+    pub(super) fn bitor(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary { x, y, bop: BOp::BitOr })
+    }
+
+    #[must_use]
+    pub(super) fn bitxor(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary { x, y, bop: BOp::BitXor })
+    }
+
+    #[must_use]
+    pub(super) fn bitand(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary { x, y, bop: BOp::BitAnd })
     }
 
     #[must_use]
@@ -770,6 +781,15 @@ impl Runtime {
                     }
                     BOp::And => {
                         todo!("And backward.");
+                    }
+                    BOp::BitAnd => {
+                        todo!("BitAnd backward.");
+                    }
+                    BOp::BitOr => {
+                        todo!("BitOr backward.");
+                    }
+                    BOp::BitXor => {
+                        todo!("BitXor backward.");
                     }
                 },
                 Node::Unary { x, uop } => match uop {
