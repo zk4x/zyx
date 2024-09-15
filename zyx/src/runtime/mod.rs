@@ -87,7 +87,7 @@ impl Runtime {
             ir_kernel_cache: BTreeMap::new(),
             config_dir: None,
             training: false,
-            search_iterations: 25,
+            search_iterations: 5,
             debug: 0,
         }
     }
@@ -174,12 +174,18 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn constant(&mut self, value: impl Scalar) -> TensorId {
-        self.graph.push(Node::Const { value: Constant::new(value) })
+        self.graph.push(Node::Const {
+            value: Constant::new(value),
+        })
     }
 
     // Initialization
     #[must_use]
-    pub(super) fn full(&mut self, shape: Vec<usize>, value: impl Scalar) -> Result<TensorId, ZyxError> {
+    pub(super) fn full(
+        &mut self,
+        shape: Vec<usize>,
+        value: impl Scalar,
+    ) -> Result<TensorId, ZyxError> {
         let x = self.variable(vec![1], &[value])?;
         let expanded = self.expand(x, shape);
         self.release(x).unwrap();
@@ -254,60 +260,60 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn reciprocal(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Inv });
+        self.graph.push(Node::Unary { x, uop: UOp::Inv })
     }
 
     #[must_use]
     pub(super) fn neg(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Neg });
+        self.graph.push(Node::Unary { x, uop: UOp::Neg })
     }
 
     #[must_use]
     pub(super) fn relu(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::ReLU });
+        self.graph.push(Node::Unary { x, uop: UOp::ReLU })
     }
 
     #[must_use]
     pub(super) fn exp2(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Exp2 });
+        self.graph.push(Node::Unary { x, uop: UOp::Exp2 })
     }
 
     #[must_use]
     pub(super) fn log2(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Log2 });
+        self.graph.push(Node::Unary { x, uop: UOp::Log2 })
     }
 
     #[must_use]
     pub(super) fn inv(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Inv });
+        self.graph.push(Node::Unary { x, uop: UOp::Inv })
     }
 
     #[must_use]
     pub(super) fn sin(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Sin });
+        self.graph.push(Node::Unary { x, uop: UOp::Sin })
     }
 
     #[must_use]
     pub(super) fn cos(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Cos });
+        self.graph.push(Node::Unary { x, uop: UOp::Cos })
     }
 
     #[must_use]
     pub(super) fn sqrt(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Sqrt });
+        self.graph.push(Node::Unary { x, uop: UOp::Sqrt })
     }
 
     #[must_use]
     pub(super) fn nonzero(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary {
+        self.graph.push(Node::Unary {
             x,
             uop: UOp::Nonzero,
-        });
+        })
     }
 
     #[must_use]
     pub(super) fn not(&mut self, x: TensorId) -> TensorId {
-        return self.graph.push(Node::Unary { x, uop: UOp::Not });
+        self.graph.push(Node::Unary { x, uop: UOp::Not })
     }
 
     #[must_use]
@@ -406,22 +412,38 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Div })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Div,
+        })
     }
 
     #[must_use]
     pub(super) fn bitor(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::BitOr })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::BitOr,
+        })
     }
 
     #[must_use]
     pub(super) fn bitxor(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::BitXor })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::BitXor,
+        })
     }
 
     #[must_use]
     pub(super) fn bitand(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::BitAnd })
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::BitAnd,
+        })
     }
 
     #[must_use]
@@ -771,7 +793,7 @@ impl Runtime {
                     }
                     UOp::Exp2 => {
                         let temp = self.constant(std::f64::consts::E.log2());
-                        let temp1  = self.expand(temp, self.shape(x).into());
+                        let temp1 = self.expand(temp, self.shape(x).into());
                         self.release(temp).unwrap();
                         let temp2 = self.mul(nid, temp1);
                         self.release(temp1).unwrap();
@@ -781,7 +803,7 @@ impl Runtime {
                     }
                     UOp::Log2 => {
                         let temp = self.constant(std::f64::consts::E.log2());
-                        let temp1  = self.expand(temp, self.shape(x).into());
+                        let temp1 = self.expand(temp, self.shape(x).into());
                         self.release(temp).unwrap();
                         let temp2 = self.mul(x, temp1);
                         self.release(temp1).unwrap();

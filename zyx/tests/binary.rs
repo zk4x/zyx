@@ -21,6 +21,7 @@ fn sub() -> Result<(), ZyxError> {
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
     let z = x - y;
+    println!("{z}");
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         assert_eq!(x-y, z);

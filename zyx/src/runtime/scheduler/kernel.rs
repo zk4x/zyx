@@ -1,6 +1,14 @@
 use std::collections::BTreeSet;
 
-use crate::{runtime::{graph::Graph, ir::Scope, view::{StridedDim, View}}, shape::{Axis, Dimension}, tensor::TensorId};
+use crate::{
+    runtime::{
+        graph::Graph,
+        ir::Scope,
+        view::{StridedDim, View},
+    },
+    shape::{Axis, Dimension},
+    tensor::TensorId,
+};
 
 use super::{shape_to_loops, vop::VOp};
 
@@ -19,7 +27,10 @@ pub(crate) struct Kernel {
 
 impl Kernel {
     pub(super) fn debug(&self) {
-        println!("Kernel shape: {:?}", self.shape);
+        println!(
+            "Kernel shape: {:?}, inputs: {:?}, outputs: {:?}",
+            self.shape, self.inputs, self.outputs
+        );
         for vop in &self.ops {
             println!("{vop}");
         }
@@ -57,6 +68,7 @@ impl Kernel {
         if self.ops.last().unwrap() != &store_op {
             self.ops.push(store_op);
             self.outputs.insert(z);
+            //println!("Storing {z}");
         }
     }
 
@@ -82,7 +94,10 @@ impl Kernel {
                         }
                     }
                 }
-                VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } => { //| VOp::Accumulator { view, .. } => {
+                VOp::Load { xview: view, .. }
+                | VOp::Store { zview: view, .. }
+                | VOp::Const { view, .. } => {
+                    //| VOp::Accumulator { view, .. } => {
                     let n = view.rank();
                     let permute_axes: Vec<usize> = if last_axis > n {
                         // We actually need to check which axis view refers to, then check which loops those were
@@ -145,7 +160,11 @@ impl Kernel {
     pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
-        let VOp::Loop { axis, len: dimension } = &mut self.ops[op_id] else {
+        let VOp::Loop {
+            axis,
+            len: dimension,
+        } = &mut self.ops[op_id]
+        else {
             panic!()
         };
         *dimension = dimensions[0];
@@ -166,7 +185,7 @@ impl Kernel {
         }
         let mut num_loops = 0;
         // Update loops, loads and stores
-        for i in id+1..self.ops.len() {
+        for i in id + 1..self.ops.len() {
             if self.ops[i] == VOp::EndLoop {
                 if num_loops == 0 {
                     for _ in 0..new_dim_count {
@@ -183,7 +202,10 @@ impl Kernel {
                     num_loops += 1;
                 }
                 // Then change all load and store operations in this loop in the same way.
-                VOp::Load { xview: view, .. } | VOp::Store { zview: view, .. } | VOp::Const { view, .. } | VOp::Accumulator { view, .. } => {
+                VOp::Load { xview: view, .. }
+                | VOp::Store { zview: view, .. }
+                | VOp::Const { view, .. }
+                | VOp::Accumulator { view, .. } => {
                     view.split_axis(axis, dimensions);
                 }
                 _ => {}
@@ -248,17 +270,38 @@ impl Kernel {
         let naxis = axis;
         for op in &mut self.ops {
             match op {
-                VOp::Const { view, .. } | VOp::Store { zview: view, .. } | VOp::Load { xview: view, .. } | VOp::Accumulator { view, .. } => match view {
+                VOp::Const { view, .. }
+                | VOp::Store { zview: view, .. }
+                | VOp::Load { xview: view, .. }
+                | VOp::Accumulator { view, .. } => match view {
                     View::None => {}
                     View::Strided(dims) => {
-                        dims.iter_mut().for_each(|StridedDim { axis, .. }| if *axis >= naxis { *axis += 1 });
+                        dims.iter_mut().for_each(|StridedDim { axis, .. }| {
+                            if *axis >= naxis {
+                                *axis += 1
+                            }
+                        });
                     }
                     View::Padded(dims, axes) => {
-                        dims.iter_mut().for_each(|StridedDim { axis, .. }| if *axis >= naxis { *axis += 1 });
-                        axes.iter_mut().for_each(|(axes, _)| axes.iter_mut().for_each(|a| if *a >= naxis { *a += 1 }));
+                        dims.iter_mut().for_each(|StridedDim { axis, .. }| {
+                            if *axis >= naxis {
+                                *axis += 1
+                            }
+                        });
+                        axes.iter_mut().for_each(|(axes, _)| {
+                            axes.iter_mut().for_each(|a| {
+                                if *a >= naxis {
+                                    *a += 1
+                                }
+                            })
+                        });
+                    }
+                },
+                VOp::Loop { axis, .. } => {
+                    if *axis >= naxis {
+                        *axis += 1
                     }
                 }
-                VOp::Loop { axis, .. } => if *axis >= naxis { *axis += 1 }
                 _ => {}
             }
         }

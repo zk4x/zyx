@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use libloading::Library;
+use super::DeviceInfo;
 use crate::{
     dtype::Constant,
     index_map::IndexMap,
@@ -10,12 +10,12 @@ use crate::{
         node::{BOp, UOp},
     },
 };
+use libloading::Library;
 use std::{
     ffi::{c_void, CString},
     ptr,
     rc::Rc,
 };
-use super::DeviceInfo;
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct OpenCLConfig {
@@ -667,42 +667,33 @@ impl OpenCLDevice {
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!(
-                "{indent}{} r{id};\n",
-                dtype.ocl(),
-            );
+            source += &format!("{indent}{} r{id};\n", dtype.ocl(),);
         }
 
         // Add indices for global and local loops
         source += &format!(
             "{indent}r{} = get_group_id(0);   /* 0..{} */\n",
-            loops[0],
-            global_work_size[0]
+            loops[0], global_work_size[0]
         );
         source += &format!(
             "{indent}r{} = get_local_id(0);   /* 0..{} */\n",
-            loops[1],
-            local_work_size[0]
+            loops[1], local_work_size[0]
         );
         source += &format!(
             "{indent}r{} = get_group_id(1);   /* 0..{} */\n",
-            loops[2],
-            global_work_size[1]
+            loops[2], global_work_size[1]
         );
         source += &format!(
             "{indent}r{} = get_local_id(1);   /* 0..{} */\n",
-            loops[3],
-            local_work_size[1]
+            loops[3], local_work_size[1]
         );
         source += &format!(
             "{indent}r{} = get_group_id(2);   /* 0..{} */\n",
-            loops[4],
-            global_work_size[2]
+            loops[4], global_work_size[2]
         );
         source += &format!(
             "{indent}r{} = get_local_id(2);   /* 0..{} */\n",
-            loops[5],
-            local_work_size[2]
+            loops[5], local_work_size[2]
         );
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
@@ -786,17 +777,16 @@ impl OpenCLDevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                }
-                /*IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                        match scope {
-                            Scope::Global => "GLOB",
-                            Scope::Local => "LOC",
-                            Scope::Register => panic!(),
-                        }
-                    );
-                }*/
+                } /*IROp::Barrier { scope } => {
+                      source += &format!(
+                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                          match scope {
+                              Scope::Global => "GLOB",
+                              Scope::Local => "LOC",
+                              Scope::Register => panic!(),
+                          }
+                      );
+                  }*/
             }
         }
         source += "}\n";
@@ -888,7 +878,7 @@ impl OpenCLQueue {
         let mut i = 0;
         for arg in args {
             let arg = &mut buffers[*arg];
-            //println!("Kernel arg: {arg:?}");
+            //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.ptr;
             unsafe {
                 (self.clSetKernelArg)(
@@ -898,7 +888,7 @@ impl OpenCLQueue {
                     ptr.cast(),
                 )
             }
-            .check("Failend to set kernel arg.")?;
+            .check("Failed to set kernel arg.")?;
             i += 1;
         }
         let mut event: *mut c_void = ptr::null_mut();

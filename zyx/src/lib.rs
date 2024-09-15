@@ -26,8 +26,8 @@ mod shape;
 mod tensor;
 
 pub use dtype::DType;
-pub use runtime::ZyxError;
 pub use runtime::DeviceConfig;
+pub use runtime::ZyxError;
 pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
@@ -263,10 +263,10 @@ fn t_18() {
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
-    //let x = Tensor::uniform([1024, 1024], 0f32..1f32);
-    //let y = Tensor::uniform([1024, 1024], 0f32..1f32);
-    let x = Tensor::rand([1024, 1024], DType::F32);
-    let y = Tensor::rand([1024, 1024], DType::F32);
+    let x = Tensor::uniform([5, 5], 0f32..1f32);
+    let y = Tensor::uniform([5, 5], 0f32..1f32);
+    //let x = Tensor::rand([1024, 1024], DType::F32);
+    //let y = Tensor::rand([1024, 1024], DType::F32);
     for _ in 0..20 {
         let z = x.dot(&y);
         Tensor::realize([&z]).unwrap();
@@ -275,4 +275,28 @@ fn t4() {
     }
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
+}
+
+#[test]
+fn t_15() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    for _ in 0..10 {
+        x = &x + &x;
+        //println!("{x}");
+        //Tensor::plot_graph([], &format!("graph{i}"));
+        Tensor::realize([&x]).unwrap();
+    }
+    println!("{x}");
+}
+
+#[test]
+fn t_12() {
+    let mut x = Tensor::from([2, 3, 1]);
+    let w = Tensor::from([[2, 3, 2], [2, 1, 1], [4, 1, 4]]);
+    let b = Tensor::from([2, 3, 5]);
+    for _ in 0..10 {
+        x = x.dot(&w) + &b;
+        //Tensor::realize([&x]).unwrap();
+    }
+    println!("{x}");
 }
