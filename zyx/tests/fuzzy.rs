@@ -3,6 +3,7 @@ use rand::{distributions::Uniform, Rng, SeedableRng};
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 //#[test]
+#[allow(unused)]
 fn fuzzy() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;

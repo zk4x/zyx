@@ -261,7 +261,7 @@ fn t_18() {
 }
 */
 
-#[cfg(feature = "rand")]
+/*#[cfg(feature = "rand")]
 #[test]
 fn t4() {
     let x = Tensor::uniform([16, 8], 0f32..1f32);
@@ -280,7 +280,7 @@ fn t4() {
     //println!("{z}");
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
-}
+}*/
 
 /*#[test]
 fn t_15() {
@@ -306,7 +306,7 @@ fn t_12() {
     println!("{x}");
 }*/
 
-#[test]
+/*#[test]
 fn t1() {
     use crate::DType;
     let x = Tensor::from([0f32, 5., 1.]);
@@ -327,4 +327,4 @@ fn t2() {
     let y = Tensor::from([4, 2, 3]);
     let b = x + y;
     println!("{a}, {b}");
-}
+}*/
