@@ -14,8 +14,6 @@ use super::{shape_to_loops, vop::VOp};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) struct Kernel {
-    // Current shape of the kernel after all current ops
-    pub(crate) shape: Vec<Dimension>,
     // Global loads
     pub(crate) inputs: BTreeSet<TensorId>,
     // Global stores
@@ -27,12 +25,27 @@ impl Kernel {
     pub(super) fn debug(&self) {
         println!(
             "Kernel shape: {:?}, inputs: {:?}, outputs: {:?}",
-            self.shape, self.inputs, self.outputs
+            self.shape(),
+            self.inputs,
+            self.outputs
         );
         for vop in &self.ops {
             println!("{vop}");
         }
         println!();
+    }
+
+    pub(super) fn shape(&self) -> Vec<usize> {
+        self.ops
+            .iter()
+            .map_while(|op| {
+                if let VOp::Loop { len, .. } = op {
+                    Some(*len)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub(super) fn vars(&self) -> BTreeSet<TensorId> {
@@ -69,7 +82,6 @@ impl Kernel {
             xview: View::new(&shape),
         });
         Kernel {
-            shape,
             inputs: BTreeSet::from([x]),
             outputs: BTreeSet::new(),
             ops,
@@ -97,7 +109,7 @@ impl Kernel {
             // no permute
             return;
         }
-        let shape: Vec<usize> = axes.iter().map(|a| self.shape[*a]).collect();
+        let shape: Vec<usize> = axes.iter().map(|a| self.shape()[*a]).collect();
         //let mut permuted_loops: BTreeSet<usize> = axes.iter().copied().collect();
         let mut skip_loops = 0;
         let mut last_axis = axes.len() - 1;
@@ -140,7 +152,6 @@ impl Kernel {
                 _ => {}
             }
         }
-        self.shape = shape.clone();
     }
 
     // Permutes first found loops, not the kernel as a whole
@@ -231,12 +242,6 @@ impl Kernel {
             }
         }
         //self.debug();
-        if axis < self.shape.len() {
-            self.shape.remove(axis);
-            for dim in dimensions.iter().rev() {
-                self.shape.insert(axis, *dim);
-            }
-        }
     }
 
     /*fn merge_axes(&mut self, op_id: usize, num_loops: usize) {

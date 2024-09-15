@@ -592,7 +592,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     view: View::new(&[1]),
                 });
                 kernels.push(Kernel {
-                    shape: vec![1],
                     inputs: BTreeSet::new(),
                     outputs: BTreeSet::new(),
                     ops,
@@ -661,12 +660,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     // and sets strides in those axes to 0 for both loads and stores
                     //println!("Expanding");
                     //kernel.debug();
-                    assert_eq!(shape.len(), kernel.shape.len());
+                    assert_eq!(shape.len(), kernel.shape().len());
                     let mut expand_axes = BTreeSet::new();
-                    for a in 0..kernel.shape.len() {
-                        if kernel.shape[a] != shape[a] {
-                            assert_eq!(kernel.shape[a], 1);
-                            kernel.shape[a] = shape[a];
+                    for a in 0..kernel.shape().len() {
+                        if kernel.shape()[a] != shape[a] {
+                            assert_eq!(kernel.shape()[a], 1);
                             expand_axes.insert(a);
                         }
                     }
@@ -707,7 +705,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x,
                     mop: MOp::Expa,
                 });
-                kernel.shape = shape.into();
                 //println!("Into");
                 //kernel.debug();
             }
@@ -749,7 +746,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     //println!("Before reshape continuous.");
                     //kernel.debug();
                     // Remove old loops
-                    for _ in 0..kernel.shape.len() {
+                    for _ in 0..kernel.shape().len() {
                         kernel.ops.remove(0);
                     }
                     // Put in new loops
@@ -767,7 +764,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             _ => {}
                         }
                     }
-                    kernel.shape = shape.into();
                     kernel.ops.push(VOp::Move {
                         z: nid,
                         x: *x,
@@ -834,7 +830,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     //kernel.debug();
                     //println!("Splits: {splits:?}");
                     if let Some(splits) = splits {
-                        let mut loop_id = kernel.shape.len() - 1;
+                        let mut loop_id = kernel.shape().len() - 1;
                         let mut skip_loops = 0;
                         let mut split_ids = Vec::new();
                         for (id, vop) in kernel.ops.iter().enumerate().rev() {
@@ -872,7 +868,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
                         // However we also need to make sure all code can work with out of order loop ids.
 
-                        kernel.shape = shape.into();
                         kernel.ops.push(VOp::Move {
                             z: nid,
                             x: *x,
@@ -892,7 +887,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             xview: View::new(shape),
                         });
                         kernels.push(Kernel {
-                            shape: shape.into(),
                             inputs: BTreeSet::from([*x]),
                             outputs: BTreeSet::new(),
                             ops,
@@ -912,7 +906,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     kernels.push(Kernel::load(graph, *x));
                     kernel = kernels.last_mut().unwrap();
                 }
-                let rank = kernel.shape.len();
+                let rank = kernel.shape().len();
                 // Get which axes are padded
                 let mut padded_axes = BTreeMap::new();
                 for (op, &p) in kernel.ops[..rank].iter().rev().zip(padding) {
@@ -947,7 +941,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         _ => {}
                     }
                 }
-                kernel.shape = graph.shape(nid).into();
                 kernel.ops.push(VOp::Move {
                     z: nid,
                     x: *x,
@@ -955,7 +948,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 });
             }
             Node::Reduce { x, axes, rop } => {
-                let shape = graph.shape(nid);
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 //println!("Axes {axes:?}");
@@ -1019,9 +1011,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     kernel.ops.push(VOp::EndLoop);
                 }
 
-                kernel.shape = shape.into();
-
-                if kernel.shape == [1] && !matches!(kernel.ops[0], VOp::Loop { .. }) {
+                if kernel.shape() == [1] && !matches!(kernel.ops[0], VOp::Loop { .. }) {
                     kernel.insert_loop(0, 0);
                 }
                 // Optionally merge axes (if possible) for potentially better performance
@@ -1047,7 +1037,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     .position(|kernel| kernel.vars().is_superset(&[*x, *y].into()))
                 {
                     // If both inputs are in the same kernel
-                    let kernel = if kernels[id].shape != graph.shape(*x) {
+                    let kernel = if kernels[id].shape() != graph.shape(*x) {
                         // create new kernel using already predefined stores of both x and y
                         let mut kernel = Kernel::load(graph, *x);
                         kernel.ops.push(VOp::Load {
@@ -1115,11 +1105,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     }
 
                     let shape = graph.shape(*x);
-                    if kernels[kernel_x_id].shape != shape {
+                    if kernels[kernel_x_id].shape() != shape {
                         kernels.push(Kernel::load(graph, *x));
                         kernel_x_id = kernels.len() - 1;
                     }
-                    if kernels[kernel_y_id].shape != shape {
+                    if kernels[kernel_y_id].shape() != shape {
                         kernels.push(Kernel::load(graph, *y));
                         kernel_y_id = kernels.len() - 1
                     }
@@ -1142,7 +1132,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         (kernel_y, kernel_x)
                     };
 
-                    assert_eq!(kernel_x.shape, kernel_y.shape);
+                    assert_eq!(kernel_x.shape(), kernel_y.shape());
 
                     // We cannot have both loops from kernel_x and kernel_y
                     // We have to remove one set of loops
@@ -1247,7 +1237,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         .position(|kernel| kernel.vars().contains(&x))
     {
         //println!("Get kernel shapes: {:?}, {:?}", kernels[id].shape, graph.shape(x));
-        if kernels[id].shape != graph.shape(x) {
+        if kernels[id].shape() != graph.shape(x) {
             // create new kernel using already predefined store
             kernels.push(Kernel::load(graph, x));
             kernels.last_mut().unwrap()

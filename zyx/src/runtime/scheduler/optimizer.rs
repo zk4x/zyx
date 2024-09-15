@@ -1,7 +1,10 @@
 use std::{collections::BTreeSet, fmt::Display};
 
-use crate::{runtime::{backend::DeviceInfo, ir::Scope, scheduler::VOp, view::View}, shape::Dimension};
 use super::kernel::Kernel;
+use crate::{
+    runtime::{backend::DeviceInfo, ir::Scope, scheduler::VOp, view::View},
+    shape::Dimension,
+};
 
 #[derive(Debug, bitcode::Encode, bitcode::Decode)]
 pub(super) enum KernelOptimizer {
@@ -21,7 +24,6 @@ pub(crate) struct KernelOptimization {
     pub(crate) permutation: Vec<usize>,
     // Enable local tiling
     pub(crate) local_tiles: bool,
-
     // Load tensor first into local tile, then into registers
     // this is used mainly for expanded tensors, so use threads
     // from one local work group to load the tile and then sync loads
@@ -56,24 +58,24 @@ impl Kernel {
         let num_loops = self
             .ops
             .iter()
-            .position(|op| !matches!(op, VOp::Loop { .. } ))
+            .position(|op| !matches!(op, VOp::Loop { .. }))
             .unwrap();
         assert_ne!(num_loops, 0);
         let mut gws = [1; 3];
         if num_loops < 3 {
             let dims: Vec<usize> = core::iter::repeat(1)
                 .take(3 - num_loops)
-                .chain([self.shape[0]])
+                .chain([self.shape()[0]])
                 .collect();
             splits.push((0, dims));
             let mut gws_i = 3 - num_loops;
-            for d in &self.shape {
+            for d in &self.shape() {
                 gws[gws_i] = *d;
                 gws_i += 1;
             }
         } else {
             let mut gws_i = 0;
-            for d in &self.shape[..3] {
+            for d in &self.shape()[..3] {
                 gws[gws_i] = *d;
                 gws_i += 1;
             }
@@ -81,17 +83,20 @@ impl Kernel {
         //println!("Using gws {gws:?}");
         // Local work size
         for lx in (1..=mlws.min(mlwd[0])).filter(|x| gws[0] % x == 0) {
-            for ly in (1..=(mlws/lx).min(mlwd[1])).filter(|y| gws[1] % y == 0) {
-                for lz in (1..=(mlws/(lx*ly)).min(mlwd[2])).filter(|z| gws[2] % z == 0) {
+            for ly in (1..=(mlws / lx).min(mlwd[1])).filter(|y| gws[1] % y == 0) {
+                for lz in (1..=(mlws / (lx * ly)).min(mlwd[2])).filter(|z| gws[2] % z == 0) {
                     // register work size
-                    for rx in (1..=mrws.min(mrwd[0])).filter(|x| (gws[0]/lx) % x == 0) {
-                        for ry in (1..=(mrws/rx).min(mrwd[1])).filter(|y| (gws[1]/ly) % y == 0) {
-                            for rz in (1..=(mrws/(rx*ry)).min(mrwd[2])).filter(|z| (gws[2]/lz) % z == 0) {
+                    for rx in (1..=mrws.min(mrwd[0])).filter(|x| (gws[0] / lx) % x == 0) {
+                        for ry in (1..=(mrws / rx).min(mrwd[1])).filter(|y| (gws[1] / ly) % y == 0)
+                        {
+                            for rz in (1..=(mrws / (rx * ry)).min(mrwd[2]))
+                                .filter(|z| (gws[2] / lz) % z == 0)
+                            {
                                 // Get splits for local and global work dims
                                 let mut splits = splits.clone();
-                                splits.push((2, vec![gws[2]/(lz*rz), lz, rz]));
-                                splits.push((1, vec![gws[1]/(ly*ry), ly, ry]));
-                                splits.push((0, vec![gws[0]/(lx*rx), lx, rx]));
+                                splits.push((2, vec![gws[2] / (lz * rz), lz, rz]));
+                                splits.push((1, vec![gws[1] / (ly * ry), ly, ry]));
+                                splits.push((0, vec![gws[0] / (lx * rx), lx, rx]));
 
                                 // For each reduce loop
                                 let mut acc_found = false;
@@ -104,18 +109,27 @@ impl Kernel {
                                         loop_found = false;
                                         acc_found = false;
                                         reduce_found = true;
-                                        let VOp::Loop { len, .. } = self.ops[id-1+num_loops] else { panic!() };
+                                        let VOp::Loop { len, .. } = self.ops[id - 1 + num_loops]
+                                        else {
+                                            panic!()
+                                        };
                                         // Register work size in the reduce loop
                                         for rr in (1..=maxrr).filter(|rr| len % rr == 0) {
                                             // Get splits for local and global work dims
                                             let mut splits = splits.clone();
-                                            splits.insert(0, (id-1+num_loops, vec![len/rr, rr]));
+                                            splits.insert(
+                                                0,
+                                                (id - 1 + num_loops, vec![len / rr, rr]),
+                                            );
                                             // Permute, private loops last
-                                            opts.push((KernelOptimization {
-                                                splits,
-                                                permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
-                                                local_tiles: true,
-                                            }, 0));
+                                            opts.push((
+                                                KernelOptimization {
+                                                    splits,
+                                                    permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
+                                                    local_tiles: true,
+                                                },
+                                                0,
+                                            ));
                                         }
                                     }
                                     if acc_found && matches!(op, VOp::Loop { .. }) {
@@ -129,11 +143,14 @@ impl Kernel {
                                 }
                                 if !reduce_found {
                                     // Permute, private loops last
-                                    opts.push((KernelOptimization {
-                                        splits,
-                                        permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
-                                        local_tiles: true,
-                                    }, 0));
+                                    opts.push((
+                                        KernelOptimization {
+                                            splits,
+                                            permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
+                                            local_tiles: true,
+                                        },
+                                        0,
+                                    ));
                                 }
                             }
                         }
@@ -157,11 +174,17 @@ impl Kernel {
         //return kernel;
 
         let mut rws = [0; 3];
-        let VOp::Loop { len, .. } = kernel.ops[2] else { panic!() };
+        let VOp::Loop { len, .. } = kernel.ops[2] else {
+            panic!()
+        };
         rws[0] = len;
-        let VOp::Loop { len, .. } = kernel.ops[5] else { panic!() };
+        let VOp::Loop { len, .. } = kernel.ops[5] else {
+            panic!()
+        };
         rws[1] = len;
-        let VOp::Loop { len, .. } = kernel.ops[8] else { panic!() };
+        let VOp::Loop { len, .. } = kernel.ops[8] else {
+            panic!()
+        };
         rws[2] = len;
         // Apply permutation
         kernel.permute(&optimization.permutation);
@@ -175,7 +198,11 @@ impl Kernel {
         kernel.ops.insert(6, rlz.clone());
         kernel.ops.insert(6, rly.clone());
         kernel.ops.insert(6, rlx.clone());
-        if kernel.ops.iter().any(|op| matches!(op, VOp::Accumulator { .. })) {
+        if kernel
+            .ops
+            .iter()
+            .any(|op| matches!(op, VOp::Accumulator { .. }))
+        {
             let mut id = 9;
             while id < kernel.ops.len() {
                 if threaded && matches!(kernel.ops[id], VOp::Loop { .. }) {
@@ -214,12 +241,22 @@ impl Kernel {
                         *view = acc_view.clone();
                         accs.insert(*z);
                     }
-                    VOp::Store { z, xscope, xview, .. } => {
+                    VOp::Store {
+                        z, xscope, xview, ..
+                    } => {
                         if accs.contains(z) && *xscope == Scope::Register {
                             *xview = acc_view.clone();
                         }
                     }
-                    VOp::Binary { z, zview, x, xview, y, yview, .. }  => {
+                    VOp::Binary {
+                        z,
+                        zview,
+                        x,
+                        xview,
+                        y,
+                        yview,
+                        ..
+                    } => {
                         if accs.contains(z) {
                             *zview = acc_view.clone();
                         }
@@ -248,7 +285,10 @@ impl Kernel {
 
 impl Display for KernelOptimization {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("splits {:?}, permute: {:?}", self.splits, self.permutation))
+        f.write_fmt(format_args!(
+            "splits {:?}, permute: {:?}",
+            self.splits, self.permutation
+        ))
     }
 }
 
@@ -293,7 +333,9 @@ impl KernelOptimizer {
     pub(super) fn remaining(&self) -> usize {
         match self {
             KernelOptimizer::Optimized(_, _) => 0,
-            KernelOptimizer::Optimizing(opts, _) => (0..opts.len()).filter(|&id| opts[id].1 == 0).count(),
+            KernelOptimizer::Optimizing(opts, _) => {
+                (0..opts.len()).filter(|&id| opts[id].1 == 0).count()
+            }
         }
     }
 }
