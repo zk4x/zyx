@@ -591,7 +591,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     shape: vec![1],
                     inputs: BTreeSet::new(),
                     outputs: BTreeSet::new(),
-                    vars: BTreeSet::from([nid]),
                     ops,
                 })
             }
@@ -607,7 +606,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         xview: View::new(shape),
                     });
                     kernel.inputs.insert(nid);
-                    kernel.vars.insert(nid);
                 } else {
                     kernels.push(Kernel::load(graph, nid));
                 }
@@ -689,7 +687,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x,
                     mop: MOp::Expa,
                 });
-                kernel.vars.insert(nid);
                 kernel.shape = shape.into();
                 //println!("Into");
                 //kernel.debug();
@@ -705,7 +702,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x: *x,
                     mop: MOp::Perm,
                 });
-                kernel.vars.insert(nid);
             }
             Node::Reshape { x } => {
                 // If we really want, we can get reshape working with loads and stores
@@ -757,7 +753,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         x: *x,
                         mop: MOp::Resh,
                     });
-                    kernel.vars.insert(nid);
                     //println!("Reshaping continuous.");
                     //kernel.debug();
                 } else {
@@ -863,7 +858,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             x: *x,
                             mop: MOp::Resh,
                         });
-                        kernel.vars.insert(nid);
                         //kernel.debug();
                     } else {
                         // else create new kernel after storing results of previous kernel
@@ -881,7 +875,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             shape: shape.into(),
                             inputs: BTreeSet::from([*x]),
                             outputs: BTreeSet::new(),
-                            vars: BTreeSet::from([nid]),
                             ops,
                         });
                     }
@@ -940,7 +933,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x: *x,
                     mop: MOp::Padd,
                 });
-                kernel.vars.insert(nid);
             }
             Node::Reduce { x, axes, rop } => {
                 let shape = graph.shape(nid);
@@ -1007,7 +999,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     kernel.ops.push(VOp::EndLoop);
                 }
 
-                kernel.vars.insert(nid);
                 kernel.shape = shape.into();
 
                 if kernel.shape == [1] && !matches!(kernel.ops[0], VOp::Loop { .. }) {
@@ -1026,7 +1017,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     uop: *uop,
                     view: View::None,
                 });
-                kernel.vars.insert(nid);
                 //println!("Unary done");
                 //kernel.debug();
             }
@@ -1034,7 +1024,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 // Binary ops may allow us to join two kernels together
                 if let Some(id) = kernels
                     .iter_mut()
-                    .position(|kernel| kernel.vars.is_superset(&[*x, *y].into()))
+                    .position(|kernel| kernel.vars().is_superset(&[*x, *y].into()))
                 {
                     // If both inputs are in the same kernel
                     let kernel = if kernels[id].shape != graph.shape(*x) {
@@ -1048,7 +1038,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             xscope: Scope::Global,
                             xview: View::new(graph.shape(*y)),
                         });
-                        kernel.vars.insert(*y);
                         kernel.inputs.insert(*y);
                         kernels.push(kernel);
                         kernels.last_mut().unwrap()
@@ -1064,15 +1053,14 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         yview: View::None,
                         bop: *bop,
                     });
-                    kernel.vars.insert(nid);
                 } else {
                     let Some(mut kernel_x_id) =
-                        kernels.iter().position(|kernel| kernel.vars.contains(x))
+                        kernels.iter().position(|kernel| kernel.vars().contains(x))
                     else {
                         panic!()
                     };
                     let Some(mut kernel_y_id) =
-                        kernels.iter().position(|kernel| kernel.vars.contains(y))
+                        kernels.iter().position(|kernel| kernel.vars().contains(y))
                     else {
                         panic!()
                     };
@@ -1160,8 +1148,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     kernel_y.inputs.extend(kernel_x.inputs);
                     //println!("Extending with {:?}", kernel_x.outputs);
                     kernel_y.outputs.extend(kernel_x.outputs);
-                    kernel_y.vars.extend(kernel_x.vars);
-                    kernel_y.vars.insert(nid);
                 }
             }
         }
@@ -1169,7 +1155,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
         if graph.to_eval.contains(&nid)
             || (graph.rc(nid) > 1 && !matches!(graph[nid], Node::Leaf { .. } | Node::Const { .. }))
         {
-            if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {
+            if let Some(kernel) = kernels
+                .iter_mut()
+                .find(|kernel| kernel.vars().contains(&nid))
+            {
                 kernel.store(nid, graph);
             } else {
                 panic!()
@@ -1235,7 +1224,7 @@ fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> boo
 fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &'a mut Kernel {
     if let Some(id) = kernels
         .iter_mut()
-        .position(|kernel| kernel.vars.contains(&x))
+        .position(|kernel| kernel.vars().contains(&x))
     {
         //println!("Get kernel shapes: {:?}, {:?}", kernels[id].shape, graph.shape(x));
         if kernels[id].shape != graph.shape(x) {

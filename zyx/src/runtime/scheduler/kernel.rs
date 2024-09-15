@@ -16,8 +16,6 @@ use super::{shape_to_loops, vop::VOp};
 pub(crate) struct Kernel {
     // Current shape of the kernel after all current ops
     pub(crate) shape: Vec<Dimension>,
-    // Register variables
-    pub(super) vars: BTreeSet<TensorId>,
     // Global loads
     pub(crate) inputs: BTreeSet<TensorId>,
     // Global stores
@@ -37,6 +35,28 @@ impl Kernel {
         println!();
     }
 
+    pub(super) fn vars(&self) -> BTreeSet<TensorId> {
+        let mut res = BTreeSet::new();
+        for op in &self.ops {
+            match op {
+                VOp::Const { z, .. }
+                | VOp::Accumulator { z, .. }
+                | VOp::Move { z, .. }
+                | VOp::Unary { z, .. }
+                | VOp::Binary { z, .. } => {
+                    res.insert(*z);
+                }
+                VOp::Load { z, zscope, .. } => {
+                    if *zscope == Scope::Register {
+                        res.insert(*z);
+                    }
+                }
+                _ => {}
+            }
+        }
+        res
+    }
+
     pub(super) fn load(graph: &Graph, x: TensorId) -> Kernel {
         let shape: Vec<usize> = graph.shape(x).into();
         let mut ops: Vec<VOp> = shape_to_loops(&shape);
@@ -52,7 +72,6 @@ impl Kernel {
             shape,
             inputs: BTreeSet::from([x]),
             outputs: BTreeSet::new(),
-            vars: BTreeSet::from([x]),
             ops,
         }
     }
