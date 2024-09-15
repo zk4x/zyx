@@ -76,12 +76,11 @@ impl Runtime {
     pub(super) fn compile_graph(
         &mut self,
         #[allow(unused_mut)] mut graph: Graph,
-        to_eval: &BTreeSet<TensorId>,
     ) -> Result<CompiledGraph, ZyxError> {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
-        let (order, flop, bytes_read, bytes_written) = graph.execution_order(to_eval);
+        let (order, flop, bytes_read, bytes_written) = graph.execution_order();
         // create vop representation
-        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order, &to_eval);
+        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order);
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
         // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
         let mut device_program_map: BTreeMap<DeviceId, Vec<usize>> = (0..self.devices.len())
@@ -185,7 +184,7 @@ impl Runtime {
 
                 for input in &kernel.inputs {
                     let view = View::new(graph.shape(*input));
-                    //println!("Can't find {input}");
+                    //println!("Tensor map tensor {input}");
                     let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                     if buf_mpid != memory_pool_id {
@@ -238,7 +237,7 @@ impl Runtime {
                         }
                     }
                 }
-                for tensor in to_eval {
+                for tensor in &graph.to_eval {
                     unneeded_tensors.remove(tensor);
                 }
                 //println!("Unneeded tensors: {unneeded_tensors:?}, kernel inputs {:?} tensor_buffer_map {tensor_buffer_map:?}", &kernels[kid].inputs);
@@ -448,11 +447,11 @@ impl Runtime {
             } else {
                 None
             };
+            let rem_opts = optimizer.remaining();
             if self.debug_sched() {
                 println!(
                     "Searching over {} out of {} remaining optimizations.",
-                    self.search_iterations,
-                    optimizer.remaining()
+                    self.search_iterations, rem_opts
                 );
             }
             for i in 0..self.search_iterations {
@@ -468,7 +467,7 @@ impl Runtime {
                     println!(
                         "{:>6}/{} {}",
                         i + 1,
-                        self.search_iterations,
+                        self.search_iterations.min(rem_opts),
                         optimizer[optimization_id]
                     );
                 }
@@ -569,11 +568,7 @@ impl Runtime {
     }
 }
 
-fn generate_kernels(
-    graph: &Graph,
-    order: &[TensorId],
-    to_eval: &BTreeSet<TensorId>,
-) -> Vec<Kernel> {
+fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
     // This function defines loops, loads, stores and elementwise ops.
     // The aim is to sort nodes in such a way, that maximum performance is attained.
@@ -617,59 +612,81 @@ fn generate_kernels(
                     kernels.push(Kernel::load(graph, nid));
                 }
             }
-            Node::Expand { x } => {
+            &Node::Expand { x } => {
                 let shape = graph.shape(nid);
-                assert_eq!(shape.len(), graph.shape(*x).len());
-                let kernel = get_kernel(*x, &mut kernels, graph);
-                // Expand can just add loops
-                // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
-                // Expand increases axes with dimension of 1 to bigger dimension
-                // and sets strides in those axes to 0 for both loads and stores
-                //println!("Expanding");
-                //kernel.debug();
-                assert_eq!(shape.len(), kernel.shape.len());
-                let mut expand_axes = BTreeSet::new();
-                for a in 0..kernel.shape.len() {
-                    if kernel.shape[a] != shape[a] {
-                        assert_eq!(kernel.shape[a], 1);
-                        kernel.shape[a] = shape[a];
-                        expand_axes.insert(a);
+                assert_eq!(shape.len(), graph.shape(x).len());
+                let mut kernel = get_kernel(x, &mut kernels, graph);
+                if let Some(op_id) = kernel
+                    .ops
+                    .iter()
+                    .position(|op| matches!(op, VOp::Store { .. }))
+                {
+                    // This avoids multiple writes to a single memory location
+                    // It is not a perfect solution, but it works
+                    // Later we will make big kernels
+                    let VOp::Store { z: store_id, .. } = kernel.ops[op_id] else {
+                        panic!()
+                    };
+                    let mut new_kernel = Kernel::load(graph, store_id);
+                    let op_id = op_id + 1;
+                    while kernel.ops.len() > op_id {
+                        new_kernel.ops.push(kernel.ops.remove(op_id));
                     }
-                }
-                // We go over ops in reverse, increasing last loops dimension
-                let mut done_expanding = BTreeSet::new();
-                for op in kernel.ops.iter_mut().rev() {
-                    match op {
-                        VOp::Loop {
-                            axis,
-                            len: dimension,
-                        } => {
-                            if expand_axes.contains(axis) && done_expanding.insert(*axis) {
-                                assert_eq!(*dimension, 1);
-                                *dimension = shape[*axis];
-                            }
+                    // Remove all ops after last store from the kernel,
+                    // Create new kernel with those ops, but expanded.
+                    kernels.push(new_kernel);
+                    kernel = kernels.last_mut().unwrap();
+                } else {
+                    // Expand can just add loops
+                    // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
+                    // Expand increases axes with dimension of 1 to bigger dimension
+                    // and sets strides in those axes to 0 for both loads and stores
+                    //println!("Expanding");
+                    //kernel.debug();
+                    assert_eq!(shape.len(), kernel.shape.len());
+                    let mut expand_axes = BTreeSet::new();
+                    for a in 0..kernel.shape.len() {
+                        if kernel.shape[a] != shape[a] {
+                            assert_eq!(kernel.shape[a], 1);
+                            kernel.shape[a] = shape[a];
+                            expand_axes.insert(a);
                         }
-                        VOp::Load { xview: view, .. } | VOp::Const { view, .. } => {
-                            // Done expanding marks which loops are behind us,
-                            // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
-                            for a in expand_axes.difference(&done_expanding) {
-                                view.expand(*a, shape[*a]);
+                    }
+                    // We go over ops in reverse, increasing last loops dimension
+                    let mut done_expanding = BTreeSet::new();
+                    for op in kernel.ops.iter_mut().rev() {
+                        match op {
+                            VOp::Loop {
+                                axis,
+                                len: dimension,
+                            } => {
+                                if expand_axes.contains(axis) && done_expanding.insert(*axis) {
+                                    assert_eq!(*dimension, 1);
+                                    *dimension = shape[*axis];
+                                }
                             }
-                        }
-                        VOp::Store { zview, .. } => {
-                            // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
-                            // perhaps doing only single write during the whole loop using if condition, but that could also be added
-                            // to View in VOp::Store as optimization when converting to IROps
-                            for a in expand_axes.difference(&done_expanding) {
-                                zview.expand(*a, shape[*a]);
+                            VOp::Load { xview: view, .. } | VOp::Const { view, .. } => {
+                                // Done expanding marks which loops are behind us,
+                                // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
+                                for a in expand_axes.difference(&done_expanding) {
+                                    view.expand(*a, shape[*a]);
+                                }
                             }
+                            VOp::Store { zview, .. } => {
+                                // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
+                                // perhaps doing only single write during the whole loop using if condition, but that could also be added
+                                // to View in VOp::Store as optimization when converting to IROps
+                                for a in expand_axes.difference(&done_expanding) {
+                                    zview.expand(*a, shape[*a]);
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
                 kernel.ops.push(VOp::Move {
                     z: nid,
-                    x: *x,
+                    x,
                     mop: MOp::Expa,
                 });
                 kernel.vars.insert(nid);
@@ -1149,7 +1166,7 @@ fn generate_kernels(
             }
         }
         //println!("nid: {nid} to_eval {to_eval:?}");
-        if to_eval.contains(&nid)
+        if graph.to_eval.contains(&nid)
             || (graph.rc(nid) > 1 && !matches!(graph[nid], Node::Leaf { .. } | Node::Const { .. }))
         {
             if let Some(kernel) = kernels.iter_mut().find(|kernel| kernel.vars.contains(&nid)) {
@@ -1162,7 +1179,7 @@ fn generate_kernels(
     // Remove unnecessary stores not for tensors moved across kernels
     // and not in to_eval that were inserted for rc > 1, but ops got merged,
     // and these stores were not used.
-    let mut necessary_stores = to_eval.clone();
+    let mut necessary_stores = graph.to_eval.clone();
     for kernel in &kernels {
         necessary_stores.extend(kernel.inputs.iter());
     }

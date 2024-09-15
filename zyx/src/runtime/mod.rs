@@ -69,7 +69,7 @@ pub(super) struct Runtime {
     config_dir: Option<PathBuf>, // Why the is hell PathBuf::new not const???????
     // Are we in training mode?
     pub(super) training: bool,
-    pub(super) search_iterations: u32,
+    pub(super) search_iterations: usize,
     pub(super) debug: u32,
 }
 
@@ -541,7 +541,7 @@ impl Runtime {
             self.initialize_devices()?;
         }
         // Get rcs of nodes outside of realized graph
-        let (graph, outside_nodes, order) = self.graph.realize_graph(tensors.clone(), |x| {
+        let (mut graph, outside_nodes, order) = self.graph.realize_graph(tensors.clone(), |x| {
             self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
         });
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
@@ -561,13 +561,14 @@ impl Runtime {
                 if self.graph[*tensor]
                     .parameters()
                     .all(|tensor| to_delete.contains(&tensor))
-                    && !outside_nodes.contains(tensor)
                 {
-                    to_delete.insert(*tensor);
-                } else if self.graph[*tensor]
-                    .parameters()
-                    .any(|tensor| to_delete.contains(&tensor))
-                {
+                    if !outside_nodes.contains(tensor) {
+                        to_delete.insert(*tensor);
+                    } else {
+                        graph.to_eval.insert(*tensor);
+                        new_leafs.insert(*tensor);
+                    }
+                } else {
                     for param in self.graph[*tensor].parameters() {
                         if to_delete.contains(&param) {
                             new_leafs.insert(param);
@@ -577,9 +578,10 @@ impl Runtime {
             }
         }
         //println!("New leafs: {new_leafs:?}");
+        //println!("Realizing {:?}", graph.to_eval);
         // Compile and launch
         if !self.compiled_graph_cache.contains_key(&graph) {
-            let compiled_graph = self.compile_graph(graph.clone(), &tensors)?;
+            let compiled_graph = self.compile_graph(graph.clone())?;
             self.compiled_graph_cache
                 .insert(graph.clone(), compiled_graph);
         }

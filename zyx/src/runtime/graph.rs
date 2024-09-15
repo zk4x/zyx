@@ -1,4 +1,7 @@
-use super::{node::{BOp, Node}, TensorId};
+use super::{
+    node::{BOp, Node},
+    TensorId,
+};
 use crate::{index_map::IndexMap, shape::Dimension, DType};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub(super) struct Graph {
     // Which nodes need to be evaluated
-    to_eval: BTreeSet<TensorId>,
+    pub(super) to_eval: BTreeSet<TensorId>,
     // First value is reference count, second is node
     nodes: IndexMap<(u32, Node)>,
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
@@ -38,6 +41,7 @@ impl Graph {
             let node = &mut self.nodes[x];
             node.0 -= 1;
             if node.0 == 0 {
+                //println!("Dropping {x}");
                 params.extend(node.1.parameters());
                 to_remove.insert(x);
                 self.nodes.remove(x);
@@ -71,20 +75,13 @@ impl Graph {
 
     pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
         //println!("Pushing wshape {node:?}");
-        for nid in node.parameters() {
-            self.nodes[nid].0 += 1;
-        }
-        let id = self.nodes.push((1, node));
+        let id = self.push(node);
         self.shapes.insert(id, shape);
         id
     }
 
     pub(super) fn push_wdtype(&mut self, node: Node, dtype: DType) -> TensorId {
-        for nid in node.parameters() {
-            //println!("Pushing wdtype {node:?}, {:?}", self.shape(nid));
-            self.nodes[nid].0 += 1;
-        }
-        let id = self.nodes.push((1, node));
+        let id = self.push(node);
         self.dtypes.insert(id, dtype);
         id
     }
@@ -284,11 +281,8 @@ impl Graph {
     // 1. moves all unary ops before movement ops
     // 2. removes unnecessary ops (like exp followed by ln), adding 0, multiply by 0, divide by 1, etc.
     // This function should be pretty fast, because it's also used by the interpreter, which does not do any caching
-    pub(super) fn execution_order(
-        &mut self,
-        to_eval: &BTreeSet<TensorId>,
-    ) -> (Vec<TensorId>, u128, u128, u128) {
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+    pub(super) fn execution_order(&mut self) -> (Vec<TensorId>, u128, u128, u128) {
+        let mut params: Vec<TensorId> = self.to_eval.iter().copied().collect();
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
@@ -299,7 +293,7 @@ impl Graph {
         // Order them using rcs reference counts
         let mut order = Vec::new();
         let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut params: Vec<TensorId> = self.to_eval.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
                 if rc
@@ -318,7 +312,7 @@ impl Graph {
         for (id, (rc, _)) in self.nodes.iter_mut().filter(|(rc, ..)| *rc == 0) {
             *rc = rcs[&id];
         }
-        for &id in to_eval {
+        for &id in &self.to_eval {
             self.nodes[id].0 += 1;
         }
         //std::println!("Execution order: {order:?}");
@@ -334,8 +328,8 @@ impl Graph {
             for (&nid, &nid1) in order.iter().zip(order.iter().skip(1)) {
                 if self.nodes[nid].1.is_movement()
                     && self.nodes[nid1].1.is_unary()
-                    && !to_eval.contains(&nid)
-                    && !to_eval.contains(&nid1)
+                    && !self.to_eval.contains(&nid)
+                    && !self.to_eval.contains(&nid1)
                     && self.nodes[nid].0 == 1
                     && self.nodes[nid1].0 == 1
                 {
@@ -385,7 +379,7 @@ impl Graph {
             }
         }
         let mut bytes_written = 0;
-        for &nid in to_eval {
+        for &nid in &self.to_eval {
             bytes_written +=
                 self.shape(nid).iter().product::<usize>() * self.dtype(nid).byte_size();
         }

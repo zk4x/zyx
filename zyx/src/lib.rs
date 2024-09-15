@@ -263,21 +263,24 @@ fn t_18() {
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
-    let x = Tensor::uniform([5, 5], 0f32..1f32);
-    let y = Tensor::uniform([5, 5], 0f32..1f32);
+    let x = Tensor::uniform([1024, 8], 0f32..1f32);
+    let y = Tensor::uniform([8, 8], 0f32..1f32);
     //let x = Tensor::rand([1024, 1024], DType::F32);
     //let y = Tensor::rand([1024, 1024], DType::F32);
     for _ in 0..20 {
         let z = x.dot(&y);
+        //Tensor::plot_graph([], "graph0");
         Tensor::realize([&z]).unwrap();
+        //Tensor::plot_graph([], &format!("graph0"));
         drop(z);
-        //Tensor::plot_graph([], &format!("graph{i}"));
+        //Tensor::plot_graph([], "graph1");
+        //Tensor::plot_graph([], &format!("graph"));
     }
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
 }
 
-#[test]
+/*#[test]
 fn t_15() {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
     for _ in 0..10 {
@@ -299,4 +302,4 @@ fn t_12() {
         //Tensor::realize([&x]).unwrap();
     }
     println!("{x}");
-}
+}*/

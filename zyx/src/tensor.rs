@@ -890,9 +890,8 @@ impl Tensor {
                 }
             }
             let x = self.reshape(sh);
-            return Tensor {
-                id: RT.lock().expand(x.id, shape),
-            };
+            let id = RT.lock().expand(x.id, shape);
+            return Tensor { id };
         };
         return Tensor {
             id: RT.lock().expand(self.id, shape),
@@ -2381,15 +2380,18 @@ impl Tensor {
         for (x, y) in x_shape.iter().zip(y_shape.iter()) {
             eshape.push(*x.max(y));
         }
-        // NOTE this is a bit ugly, but necessary
         x = x.reshape(&x_shape);
         if x_shape != eshape {
             x = x.expand(&eshape);
         }
+        //println!("Second broadcast operand {y}");
         y = y.reshape(&y_shape);
+        //println!("After reshape second broadcast operand {y}");
+        //Tensor::plot_graph([], "graph");
         if y_shape != eshape {
             y = y.expand(&eshape);
         }
+        //println!("Second broadcast operand {y}");
         //println!("Broadcasted to {eshape:?}");
         //println!("y shape {:?}", y.shape());
         return (x, y);
@@ -3134,11 +3136,14 @@ impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
 impl<IT: Into<Tensor>> Mul<IT> for Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
+        let rhs = rhs.into();
+        //println!("Multiply by {}", rhs);
         let (x, y) = Tensor::broadcast(self, rhs);
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
+        //println!("Multiply by {y}");
         let tensor = Tensor {
             id: RT.lock().mul(x.id, y.id),
         };
@@ -3149,11 +3154,14 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
 impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
+        let rhs = rhs.into();
+        println!("Multiply ref by {}", rhs);
         let (x, y) = Tensor::broadcast(self, rhs);
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
+        println!("Multiply ref by {y}");
         let tensor = Tensor {
             id: RT.lock().mul(x.id, y.id),
         };
