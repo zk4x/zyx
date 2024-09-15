@@ -14,8 +14,6 @@ use super::{shape_to_loops, vop::VOp};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) struct Kernel {
-    // Global loads
-    pub(crate) inputs: BTreeSet<TensorId>,
     // Global stores
     pub(crate) outputs: BTreeSet<TensorId>,
     pub(crate) ops: Vec<VOp>,
@@ -26,7 +24,7 @@ impl Kernel {
         println!(
             "Kernel shape: {:?}, inputs: {:?}, outputs: {:?}",
             self.shape(),
-            self.inputs,
+            self.inputs(),
             self.outputs
         );
         for vop in &self.ops {
@@ -41,6 +39,24 @@ impl Kernel {
             .map_while(|op| {
                 if let VOp::Loop { len, .. } = op {
                     Some(*len)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Tensor ids that are read only
+    pub(super) fn inputs(&self) -> BTreeSet<TensorId> {
+        self.ops
+            .iter()
+            .flat_map(|op| {
+                if let VOp::Load { x, xscope, .. } = op {
+                    if *xscope == Scope::Register {
+                        Some(*x)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -82,7 +98,6 @@ impl Kernel {
             xview: View::new(&shape),
         });
         Kernel {
-            inputs: BTreeSet::from([x]),
             outputs: BTreeSet::new(),
             ops,
         }
