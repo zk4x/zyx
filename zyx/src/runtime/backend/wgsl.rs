@@ -1,6 +1,7 @@
 use std::{borrow::Cow, sync::Arc};
 use wgpu::{
-    util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule, ShaderModuleDescriptor, ShaderSource
+    util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule,
+    ShaderModuleDescriptor, ShaderSource,
 };
 
 use super::DeviceInfo;
@@ -120,7 +121,7 @@ pub(super) fn initialize_backend(
             device: device.clone(),
             adapter,
             dev_info: DeviceInfo {
-                compute: 1024*1024*1024*1024,
+                compute: 1024 * 1024 * 1024 * 1024,
                 max_global_work_dims: [1024, 1024, 1024],
                 max_local_threads: 256,
                 max_local_work_dims: [256, 256, 256],
@@ -289,19 +290,34 @@ impl WGSLDevice {
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!(
-                "{indent}var r{id}: {};\n",
-                dtype.wgsl()
-            );
+            source += &format!("{indent}var r{id}: {};\n", dtype.wgsl());
         }
 
         // Add indices for global and local loops
-        source += &format!("  r{} = gid.x;   /* 0..{} */\n", loops[0], global_work_size[0]);
-        source += &format!("  r{} = lid.x;   /* 0..{} */\n", loops[1], local_work_size[0]);
-        source += &format!("  r{} = gid.y;   /* 0..{} */\n", loops[2], global_work_size[1]);
-        source += &format!("  r{} = lid.y;   /* 0..{} */\n", loops[3], local_work_size[1]);
-        source += &format!("  r{} = gid.z;   /* 0..{} */\n", loops[4], global_work_size[2]);
-        source += &format!("  r{} = lid.z;   /* 0..{} */\n", loops[5], local_work_size[2]);
+        source += &format!(
+            "  r{} = gid.x;   /* 0..{} */\n",
+            loops[0], global_work_size[0]
+        );
+        source += &format!(
+            "  r{} = lid.x;   /* 0..{} */\n",
+            loops[1], local_work_size[0]
+        );
+        source += &format!(
+            "  r{} = gid.y;   /* 0..{} */\n",
+            loops[2], global_work_size[1]
+        );
+        source += &format!(
+            "  r{} = lid.y;   /* 0..{} */\n",
+            loops[3], local_work_size[1]
+        );
+        source += &format!(
+            "  r{} = gid.z;   /* 0..{} */\n",
+            loops[4], global_work_size[2]
+        );
+        source += &format!(
+            "  r{} = lid.z;   /* 0..{} */\n",
+            loops[5], local_work_size[2]
+        );
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
@@ -317,7 +333,12 @@ impl WGSLDevice {
                 IROp::Unary { z, x, uop } => {
                     source += &match uop {
                         UOp::Cast(dtype) => {
-                            format!("{indent}{} = ({}){};\n", z.wgsl(), dtype.ir_dtype().wgsl(), x.wgsl())
+                            format!(
+                                "{indent}{} = ({}){};\n",
+                                z.wgsl(),
+                                dtype.ir_dtype().wgsl(),
+                                x.wgsl()
+                            )
                         }
                         UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.wgsl(), x.wgsl()),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.wgsl(), x.wgsl()),
@@ -331,12 +352,7 @@ impl WGSLDevice {
                         UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.wgsl(), x.wgsl()),
                     };
                 }
-                IROp::Binary {
-                    z,
-                    x,
-                    y,
-                    bop,
-                } => {
+                IROp::Binary { z, x, y, bop } => {
                     source += &format!(
                         "{indent}{} = {};\n",
                         z.wgsl(),
@@ -350,15 +366,14 @@ impl WGSLDevice {
                             BOp::Cmpgt => format!("{} > {}", x.wgsl(), y.wgsl()),
                             BOp::Max => format!("max({}, {})", x.wgsl(), y.wgsl()),
                             BOp::Or => format!("{} || {}", x.wgsl(), y.wgsl()),
+                            BOp::And => format!("{} && {}", x.wgsl(), y.wgsl()),
+                            BOp::BitOr => format!("{} | {}", x.wgsl(), y.wgsl()),
+                            BOp::BitXor => format!("{} ^ {}", x.wgsl(), y.wgsl()),
+                            BOp::BitAnd => format!("{} & {}", x.wgsl(), y.wgsl()),
                         }
                     );
                 }
-                IROp::MAdd {
-                    z,
-                    a,
-                    b,
-                    c,
-                } => {
+                IROp::MAdd { z, a, b, c } => {
                     source += &format!(
                         "{indent}{} = {} * {} + {};\n",
                         z.wgsl(),
@@ -377,17 +392,16 @@ impl WGSLDevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                }
-                IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                        match scope {
-                            Scope::Global => "GLOB",
-                            Scope::Local => "LOC",
-                            Scope::Register => panic!(),
-                        }
-                    );
-                }
+                } /*IROp::Barrier { scope } => {
+                      source += &format!(
+                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                          match scope {
+                              Scope::Global => "GLOB",
+                              Scope::Local => "LOC",
+                              Scope::Register => panic!(),
+                          }
+                      );
+                  }*/
             }
         }
         source += "}\n";

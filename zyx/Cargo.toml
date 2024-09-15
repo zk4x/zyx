@@ -19,28 +19,42 @@ maintenance = { status = "experimental" }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.5", default-features = false } # ISC
 # serde is used to read backend config
-serde = { version = "1.0.209", default-features = false, features = ["std", "derive"] } # MIT or Apache 2.0
+serde = { version = "1.0.209", default-features = false, features = [
+    "std",
+    "derive",
+] } # MIT or Apache 2.0
 # JSON is used to read backend config
-serde_json = { version = "*", default-features = false, features = ["std"] } # MIT or Apache 2.0
+serde_json = { version = "*", default-features = false, features = [
+    "std",
+] } # MIT or Apache 2.0
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # for caching of beam searched kernels
-bitcode = { version = "0.6.3", default-features = false, features = ["std", "derive"] } # MIT or Apache 2.0
+bitcode = { version = "0.6.3", default-features = false, features = [
+    "std",
+    "derive",
+] } # MIT or Apache 2.0
 # For nice colorful debug logging
 inline_colorization = { version = "0.1.6", default-features = false } # MIT
 
 # Optional dependencies
 # Support for random number generation
-rand = { version = "0.8.5", default-features = false, features = ["small_rng"], optional = true } # MIT or Apache 2.0
+rand = { version = "0.8.5", default-features = false, features = [
+    "small_rng",
+], optional = true } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1", default-features = false, optional = true } # MIT or Apache 2.0
 # Support for cf32 and cf64 dtypes
 num-complex = { version = "0.4.6", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "22.1.0", default-features = false, features = ["wgsl"], optional = true }
+wgpu = { version = "22.1.0", default-features = false, features = [
+    "wgsl",
+], optional = true }
 # Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
-futures = { version = "0.3", default-features = false, features = ["executor"], optional = true }
+futures = { version = "0.3", default-features = false, features = [
+    "executor",
+], optional = true }
 
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.22.2", optional = true } # MIT or Apache 2.0
@@ -72,17 +86,17 @@ py = ["dep:pyo3", "rand", "half", "complex"]
 wgsl = ["dep:wgpu", "dep:futures"]
 
 # Optimize for linking time, 'cause linker is so slow...
-[profile.dev]            # Modify profile settings via config.
-opt-level = 0            # Optimization level.
-debug = false            # Include debug info.
+[profile.dev] # Modify profile settings via config.
+opt-level = 0 # Optimization level.
+debug = false # Include debug info.
 #split-debuginfo = '...'  # Debug info splitting behavior.
-strip = true             # Removes symbols or debuginfo.
-debug-assertions = true  # Enables debug assertions.
-overflow-checks = true   # Enables runtime integer overflow checks.
-lto = false              # Sets link-time optimization.
-panic = 'unwind'         # The panic strategy.
-incremental = true       # Incremental compilation.
-codegen-units = 16       # Number of code generation units.
+strip = true            # Removes symbols or debuginfo.
+debug-assertions = true # Enables debug assertions.
+overflow-checks = true  # Enables runtime integer overflow checks.
+lto = false             # Sets link-time optimization.
+panic = 'unwind'        # The panic strategy.
+incremental = true      # Incremental compilation.
+codegen-units = 16      # Number of code generation units.
 #rpath = false            # Sets the rpath linking option.
 
 # This is just a runtime, no need for o3 vectorization and crazy function inlining

@@ -248,7 +248,7 @@ impl Runtime {
                 .extend(devices.into_iter().map(|(device, queues)| Device::WGSL {
                     memory_pool_id: device.memory_pool_id() + n,
                     device,
-                    programs: Vec::new(),
+                    programs: IndexMap::new(),
                     queues,
                 }));
         }
@@ -537,25 +537,17 @@ impl Device {
         Ok(match self {
             Device::CUDA {
                 device, programs, ..
-            } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?)
-            }
+            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
             Device::HIP {
                 device, programs, ..
-            } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?)
-            }
+            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
             Device::OpenCL {
                 device, programs, ..
-            } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?)
-            }
+            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
             #[cfg(feature = "wgsl")]
             Device::WGSL {
                 device, programs, ..
-            } => {
-                programs.push(device.compile(&ir_kernel, debug_asm)?)
-            }
+            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
         })
     }
 
