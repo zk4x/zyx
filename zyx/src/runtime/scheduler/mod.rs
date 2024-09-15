@@ -578,7 +578,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
+        println!(
+            "ID({nid})x{}: {node:?}, sh: {:?}",
+            graph.rc(nid),
+            graph.shape(nid)
+        );
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);
@@ -595,37 +599,52 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 })
             }
             Node::Leaf => {
-                let shape = graph.shape(nid);
-                if let Some(kernel) = kernels.iter_mut().find(|kernel| &kernel.shape == shape) {
-                    kernel.ops.push(VOp::Load {
-                        z: nid,
-                        zscope: Scope::Register,
-                        zview: View::None,
-                        x: nid,
-                        xscope: Scope::Global,
-                        xview: View::new(shape),
-                    });
-                    kernel.inputs.insert(nid);
-                } else {
-                    kernels.push(Kernel::load(graph, nid));
-                }
+                kernels.push(Kernel::load(graph, nid));
             }
             &Node::Expand { x } => {
                 let shape = graph.shape(nid);
                 assert_eq!(shape.len(), graph.shape(x).len());
                 let mut kernel = get_kernel(x, &mut kernels, graph);
-                if let Some(op_id) = kernel
+                if let Some(_) = kernel
                     .ops
                     .iter()
                     .position(|op| matches!(op, VOp::Store { .. }))
                 {
+                    kernel.store(x, graph);
+                    kernels.push(Kernel::load(graph, x));
+                    kernel = kernels.last_mut().unwrap();
                     // This avoids multiple writes to a single memory location
                     // It is not a perfect solution, but it works
                     // Later we will make big kernels
-                    let VOp::Store { z: store_id, .. } = kernel.ops[op_id] else {
+                    /*let &VOp::Store {
+                        z: store_id,
+                        ref xview,
+                        ..
+                    } = &kernel.ops[op_id]
+                    else {
                         panic!()
                     };
-                    let mut new_kernel = Kernel::load(graph, store_id);
+                    // Copy loops from previous kernel
+                    let mut ops: Vec<VOp> = kernel
+                        .ops
+                        .iter()
+                        .take_while(|op| matches!(op, VOp::Loop { .. }))
+                        .cloned()
+                        .collect();
+                    ops.push(VOp::Load {
+                        z: store_id,
+                        zscope: Scope::Register,
+                        zview: View::None,
+                        x: store_id,
+                        xscope: Scope::Global,
+                        xview: xview.clone(),
+                    });
+                    let mut new_kernel = Kernel {
+                        ops,
+                        shape: shape.into(),
+                        inputs: BTreeSet::from([store_id]),
+                        outputs: BTreeSet::new(),
+                    };
                     let op_id = op_id + 1;
                     while kernel.ops.len() > op_id {
                         new_kernel.ops.push(kernel.ops.remove(op_id));
@@ -634,6 +653,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     // Create new kernel with those ops, but expanded.
                     kernels.push(new_kernel);
                     kernel = kernels.last_mut().unwrap();
+                    kernel.debug();*/
                 } else {
                     // Expand can just add loops
                     // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
