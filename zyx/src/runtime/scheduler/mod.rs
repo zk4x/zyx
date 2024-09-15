@@ -162,20 +162,20 @@ impl Runtime {
 
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
                 // Allocate memory for outputs
-                for output in &kernel.outputs {
-                    let key = (*output, View::new(graph.shape(*output)));
+                for output in kernel.outputs() {
+                    let key = (output, View::new(graph.shape(output)));
                     if !tensor_buffer_map.contains_key(&key) {
-                        let shape = graph.shape(*output);
+                        let shape = graph.shape(output);
                         let view = View::new(shape);
                         sched_graph.push(SchedulerOp::Allocate {
-                            tensor_id: *output,
+                            tensor_id: output,
                             memory_pool_id,
                             bytes: shape.iter().product::<usize>()
-                                * graph.dtype(*output).byte_size(),
+                                * graph.dtype(output).byte_size(),
                             view: view.clone(),
                         });
-                        temp_tensors.insert(*output);
-                        tensor_buffer_map.insert((*output, view), memory_pool_id);
+                        temp_tensors.insert(output);
+                        tensor_buffer_map.insert((output, view), memory_pool_id);
                     }
                 }
                 // Move necessary inputs to memory pool associated with this device
@@ -429,7 +429,7 @@ impl Runtime {
             let mut allocated_temps = Vec::new();
             let mpid = self.devices[device_id].memory_pool_id();
             let mut temp_ids: BTreeSet<TensorId> = kernel.inputs();
-            temp_ids.extend(&kernel.outputs);
+            temp_ids.extend(&kernel.outputs());
             for tid in temp_ids {
                 let buffer_id = self.memory_pools[mpid].allocate(
                     graph.shape(tid).iter().product::<usize>() * graph.dtype(tid).byte_size(),
@@ -560,7 +560,7 @@ impl Runtime {
                     (
                         arg,
                         View::new(graph.shape(arg)),
-                        !kernel.outputs.contains(&arg),
+                        !kernel.outputs().contains(&arg),
                     )
                 })
                 .collect(),
@@ -591,10 +591,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     value: *value,
                     view: View::new(&[1]),
                 });
-                kernels.push(Kernel {
-                    outputs: BTreeSet::new(),
-                    ops,
-                })
+                kernels.push(Kernel { ops })
             }
             Node::Leaf => {
                 kernels.push(Kernel::load(graph, nid));
@@ -885,10 +882,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             xscope: Scope::Global,
                             xview: View::new(shape),
                         });
-                        kernels.push(Kernel {
-                            outputs: BTreeSet::new(),
-                            ops,
-                        });
+                        kernels.push(Kernel { ops });
                     }
                 }
                 //println!("\nKernels {kernels:?}\n");
@@ -1153,7 +1147,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         bop: *bop,
                     });
                     //println!("Extending with {:?}", kernel_x.outputs);
-                    kernel_y.outputs.extend(kernel_x.outputs);
                 }
             }
         }
@@ -1184,7 +1177,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
             if let VOp::Store { z, .. } = kernel.ops[i] {
                 if !necessary_stores.contains(&z) {
                     kernel.ops.remove(i);
-                    kernel.outputs.remove(&z);
                 }
             }
             i += 1;
@@ -1208,7 +1200,7 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
 // Checks if kernel_x depends on kernel_y
 fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
     let mut kernel_x_inputs = kernels[kernel_x_id].inputs();
-    let kernel_y_outputs = &kernels[kernel_y_id].outputs;
+    let kernel_y_outputs = &kernels[kernel_y_id].outputs();
     let mut visited = BTreeSet::new();
     while let Some(x) = kernel_x_inputs.pop_last() {
         if visited.insert(x) {
@@ -1216,7 +1208,7 @@ fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> boo
                 return true;
             } else {
                 for kernel in kernels.iter().rev() {
-                    if kernel.outputs.contains(&x) {
+                    if kernel.outputs().contains(&x) {
                         kernel_x_inputs.extend(kernel.inputs());
                         break;
                     }

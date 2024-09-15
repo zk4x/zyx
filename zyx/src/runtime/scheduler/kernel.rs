@@ -14,8 +14,6 @@ use super::{shape_to_loops, vop::VOp};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
 pub(crate) struct Kernel {
-    // Global stores
-    pub(crate) outputs: BTreeSet<TensorId>,
     pub(crate) ops: Vec<VOp>,
 }
 
@@ -25,7 +23,7 @@ impl Kernel {
             "Kernel shape: {:?}, inputs: {:?}, outputs: {:?}",
             self.shape(),
             self.inputs(),
-            self.outputs
+            self.outputs()
         );
         for vop in &self.ops {
             println!("{vop}");
@@ -46,14 +44,32 @@ impl Kernel {
             .collect()
     }
 
-    /// Tensor ids that are read only
+    /// Tensor ids that are read (maybe also written)
     pub(super) fn inputs(&self) -> BTreeSet<TensorId> {
         self.ops
             .iter()
             .flat_map(|op| {
                 if let VOp::Load { x, xscope, .. } = op {
-                    if *xscope == Scope::Register {
+                    if *xscope == Scope::Global {
                         Some(*x)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Tensor ids that are written (maybe also read)
+    pub(super) fn outputs(&self) -> BTreeSet<TensorId> {
+        self.ops
+            .iter()
+            .flat_map(|op| {
+                if let VOp::Store { z, zscope, .. } = op {
+                    if *zscope == Scope::Global {
+                        Some(*z)
                     } else {
                         None
                     }
@@ -97,10 +113,7 @@ impl Kernel {
             xscope: Scope::Global,
             xview: View::new(&shape),
         });
-        Kernel {
-            outputs: BTreeSet::new(),
-            ops,
-        }
+        Kernel { ops }
     }
 
     pub(super) fn store(&mut self, z: TensorId, graph: &Graph) {
@@ -113,7 +126,6 @@ impl Kernel {
         };
         if self.ops.last().unwrap() != &store_op {
             self.ops.push(store_op);
-            self.outputs.insert(z);
             //println!("Storing {z}");
         }
     }
