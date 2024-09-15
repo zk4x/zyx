@@ -32,7 +32,8 @@ pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 
-static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
+//static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
+static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Save tensors or modules
 pub trait TensorSave {

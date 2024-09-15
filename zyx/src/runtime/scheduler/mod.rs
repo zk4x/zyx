@@ -184,7 +184,7 @@ impl Runtime {
 
                 for input in &kernel.inputs() {
                     let view = View::new(graph.shape(*input));
-                    println!("Tensor map tensor {input}");
+                    //println!("Tensor map tensor {input}");
                     let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                     if buf_mpid != memory_pool_id {
