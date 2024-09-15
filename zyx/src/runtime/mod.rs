@@ -110,6 +110,7 @@ impl Runtime {
     /// Creates dot plot of graph between given tensors
     #[must_use]
     pub(super) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
+        println!("Tensor storage {:?}", self.tensor_buffer_map);
         self.graph.plot_dot_graph(tensors)
     }
 

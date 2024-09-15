@@ -476,7 +476,7 @@ impl Runtime {
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
                 //optimized_kernel.debug();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
-                let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
+                let program_id = self.devices[device_id].compile(&ir_kernel, true)?;
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
                 let queue_id = match self.devices[device_id].launch(
@@ -578,11 +578,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!(
-            "ID({nid})x{}: {node:?}, sh: {:?}",
-            graph.rc(nid),
-            graph.shape(nid)
-        );
+        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);

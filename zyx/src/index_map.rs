@@ -1,4 +1,4 @@
-use std::{
+/*use std::{
     collections::BTreeMap,
     ops::{Index, IndexMut},
 };
@@ -79,16 +79,18 @@ impl<T> FromIterator<(Id, T)> for IndexMap<T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> IndexMap<T> {
         IndexMap(iter.into_iter().collect())
     }
-}
+}*/
 
-/*use std::{
+use std::{
     collections::BTreeSet,
     mem::MaybeUninit,
     ops::{Index, IndexMut},
 };
 
+type Id = usize;
+
 #[derive(Debug)]
-pub(crate) struct IndexMap2<T> {
+pub(crate) struct IndexMap<T> {
     values: Vec<MaybeUninit<T>>,
     empty: BTreeSet<Id>,
 }
@@ -258,4 +260,4 @@ impl<T: Clone> Clone for IndexMap<T> {
             empty: self.empty.clone(),
         }
     }
-}*/
+}

@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::{borrow::Cow, sync::Arc};
 use wgpu::{
     util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule,

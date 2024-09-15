@@ -32,8 +32,8 @@ pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 
-//static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
-static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
+static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
+//static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Save tensors or modules
 pub trait TensorSave {
@@ -264,7 +264,7 @@ fn t_18() {
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
-    let x = Tensor::uniform([1024, 8], 0f32..1f32);
+    let x = Tensor::uniform([16, 8], 0f32..1f32);
     let y = Tensor::uniform([8, 8], 0f32..1f32);
     //let x = Tensor::rand([1024, 1024], DType::F32);
     //let y = Tensor::rand([1024, 1024], DType::F32);
@@ -277,6 +277,7 @@ fn t4() {
         //Tensor::plot_graph([], "graph1");
         //Tensor::plot_graph([], &format!("graph"));
     }
+    //println!("{z}");
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
 }
@@ -304,3 +305,26 @@ fn t_12() {
     }
     println!("{x}");
 }*/
+
+#[test]
+fn t1() {
+    use crate::DType;
+    let x = Tensor::from([0f32, 5., 1.]);
+    let y = Tensor::rand([3, 5], DType::F32);
+    let a = x.dot(y);
+    let x = Tensor::from([0f32, 5., 1.]);
+    let y = Tensor::rand([3, 5], DType::F32);
+    let b = x.dot(y);
+    println!("{a}, {b}");
+}
+
+#[test]
+fn t2() {
+    let x = Tensor::from([4, 2, 3]);
+    let y = Tensor::from([4, 2, 3]);
+    let a = x + y;
+    let x = Tensor::from([4, 2, 3]);
+    let y = Tensor::from([4, 2, 3]);
+    let b = x + y;
+    println!("{a}, {b}");
+}

@@ -1,4 +1,4 @@
-use std::sync::MutexGuard;
+/*use std::sync::MutexGuard;
 
 pub(super) struct Mutex<T>(std::sync::Mutex<T>);
 
@@ -10,10 +10,13 @@ impl<T> Mutex<T> {
     pub(crate) fn lock(&self) -> MutexGuard<T> {
         self.0.lock().ok().unwrap()
     }
-}
+}*/
 
-/*
-// TODO replace this with std Mutex
+use std::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
 // Standard spinlock, but will panic if it fails to lock after more than N tries
 pub(super) struct Mutex<T, const N: usize> {
     data: UnsafeCell<T>,
@@ -85,4 +88,4 @@ impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.store(false, Ordering::Release)
     }
-}*/
+}

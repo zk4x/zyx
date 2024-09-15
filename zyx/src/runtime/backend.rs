@@ -272,7 +272,7 @@ impl MemoryPool {
 
     // Allocates bytes on memory pool and returns buffer id
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<usize, ZyxError> {
-        Ok(match self {
+        let id = match self {
             MemoryPool::CUDA {
                 memory_pool,
                 buffers,
@@ -290,10 +290,13 @@ impl MemoryPool {
                 memory_pool,
                 buffers,
             } => buffers.push(memory_pool.allocate(bytes)?),
-        })
+        };
+        println!("Allocate {bytes} into buffer id {id}");
+        Ok(id)
     }
 
     pub(super) fn deallocate(&mut self, buffer_id: usize) -> Result<(), ZyxError> {
+        println!("Deallocate buffer id {buffer_id}");
         match self {
             MemoryPool::CUDA {
                 memory_pool,
@@ -511,6 +514,7 @@ impl Device {
     }
 
     pub(super) fn release_program(&mut self, program_id: usize) -> Result<(), ZyxError> {
+        //println!("Release program {program_id}");
         match self {
             Device::CUDA {
                 device, programs, ..
@@ -534,7 +538,7 @@ impl Device {
         ir_kernel: &IRKernel,
         debug_asm: bool,
     ) -> Result<usize, ZyxError> {
-        Ok(match self {
+        let id = match self {
             Device::CUDA {
                 device, programs, ..
             } => programs.push(device.compile(&ir_kernel, debug_asm)?),
@@ -548,7 +552,9 @@ impl Device {
             Device::WGSL {
                 device, programs, ..
             } => programs.push(device.compile(&ir_kernel, debug_asm)?),
-        })
+        };
+        //println!("Compile program {id}");
+        Ok(id)
     }
 
     pub(super) fn launch(
