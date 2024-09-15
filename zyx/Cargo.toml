@@ -24,7 +24,7 @@ serde = { version = "1.0.209", default-features = false, features = [
     "derive",
 ] } # MIT or Apache 2.0
 # JSON is used to read backend config
-serde_json = { version = "*", default-features = false, features = [
+serde_json = { version = "1.0.128", default-features = false, features = [
     "std",
 ] } # MIT or Apache 2.0
 # xdg is used to read backend config
