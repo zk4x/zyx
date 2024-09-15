@@ -184,7 +184,7 @@ impl Runtime {
 
                 for input in &kernel.inputs() {
                     let view = View::new(graph.shape(*input));
-                    //println!("Tensor map tensor {input}");
+                    println!("Tensor map tensor {input}");
                     let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                     if buf_mpid != memory_pool_id {
@@ -608,92 +608,49 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     kernel.store(x, graph);
                     kernels.push(Kernel::load(graph, x));
                     kernel = kernels.last_mut().unwrap();
-                    // This avoids multiple writes to a single memory location
-                    // It is not a perfect solution, but it works
-                    // Later we will make big kernels
-                    /*let &VOp::Store {
-                        z: store_id,
-                        ref xview,
-                        ..
-                    } = &kernel.ops[op_id]
-                    else {
-                        panic!()
-                    };
-                    // Copy loops from previous kernel
-                    let mut ops: Vec<VOp> = kernel
-                        .ops
-                        .iter()
-                        .take_while(|op| matches!(op, VOp::Loop { .. }))
-                        .cloned()
-                        .collect();
-                    ops.push(VOp::Load {
-                        z: store_id,
-                        zscope: Scope::Register,
-                        zview: View::None,
-                        x: store_id,
-                        xscope: Scope::Global,
-                        xview: xview.clone(),
-                    });
-                    let mut new_kernel = Kernel {
-                        ops,
-                        shape: shape.into(),
-                        inputs: BTreeSet::from([store_id]),
-                        outputs: BTreeSet::new(),
-                    };
-                    let op_id = op_id + 1;
-                    while kernel.ops.len() > op_id {
-                        new_kernel.ops.push(kernel.ops.remove(op_id));
+                }
+                // Expand can just add loops
+                // Expand increases axes with dimension of 1 to bigger dimension
+                // and sets strides in those axes to 0 for both loads and stores
+                //println!("Expanding");
+                //kernel.debug();
+                assert_eq!(shape.len(), kernel.shape().len());
+                let mut expand_axes = BTreeSet::new();
+                for a in 0..kernel.shape().len() {
+                    if kernel.shape()[a] != shape[a] {
+                        assert_eq!(kernel.shape()[a], 1);
+                        expand_axes.insert(a);
                     }
-                    // Remove all ops after last store from the kernel,
-                    // Create new kernel with those ops, but expanded.
-                    kernels.push(new_kernel);
-                    kernel = kernels.last_mut().unwrap();
-                    kernel.debug();*/
-                } else {
-                    // Expand can just add loops
-                    // Expand means that global buffer is accessed multiple times. Thus we need to add caching (local, register) here.
-                    // Expand increases axes with dimension of 1 to bigger dimension
-                    // and sets strides in those axes to 0 for both loads and stores
-                    //println!("Expanding");
-                    //kernel.debug();
-                    assert_eq!(shape.len(), kernel.shape().len());
-                    let mut expand_axes = BTreeSet::new();
-                    for a in 0..kernel.shape().len() {
-                        if kernel.shape()[a] != shape[a] {
-                            assert_eq!(kernel.shape()[a], 1);
-                            expand_axes.insert(a);
+                }
+                // We go over ops in reverse, increasing last loops dimension
+                let mut done_expanding = BTreeSet::new();
+                for op in kernel.ops.iter_mut().rev() {
+                    match op {
+                        VOp::Loop {
+                            axis,
+                            len: dimension,
+                        } => {
+                            if expand_axes.contains(axis) && done_expanding.insert(*axis) {
+                                assert_eq!(*dimension, 1);
+                                *dimension = shape[*axis];
+                            }
                         }
-                    }
-                    // We go over ops in reverse, increasing last loops dimension
-                    let mut done_expanding = BTreeSet::new();
-                    for op in kernel.ops.iter_mut().rev() {
-                        match op {
-                            VOp::Loop {
-                                axis,
-                                len: dimension,
-                            } => {
-                                if expand_axes.contains(axis) && done_expanding.insert(*axis) {
-                                    assert_eq!(*dimension, 1);
-                                    *dimension = shape[*axis];
-                                }
+                        VOp::Load { xview: view, .. } | VOp::Const { view, .. } => {
+                            // Done expanding marks which loops are behind us,
+                            // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
+                            for a in expand_axes.difference(&done_expanding) {
+                                view.expand(*a, shape[*a]);
                             }
-                            VOp::Load { xview: view, .. } | VOp::Const { view, .. } => {
-                                // Done expanding marks which loops are behind us,
-                                // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
-                                for a in expand_axes.difference(&done_expanding) {
-                                    view.expand(*a, shape[*a]);
-                                }
-                            }
-                            VOp::Store { zview, .. } => {
-                                // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
-                                // perhaps doing only single write during the whole loop using if condition, but that could also be added
-                                // to View in VOp::Store as optimization when converting to IROps
-                                for a in expand_axes.difference(&done_expanding) {
-                                    zview.expand(*a, shape[*a]);
-                                }
-                            }
-                            _ => {}
                         }
+                        VOp::Store { zview, .. } => {
+                            // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
+                            // perhaps doing only single write during the whole loop using if condition, but that could also be added
+                            // to View in VOp::Store as optimization when converting to IROps
+                            for a in expand_axes.difference(&done_expanding) {
+                                zview.expand(*a, shape[*a]);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 kernel.ops.push(VOp::Move {
@@ -1095,7 +1052,15 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         }
                     }
 
-                    let shape = graph.shape(*x);
+                    //println!("Kernel x");
+                    //kernels[kernel_x_id].debug();
+                    //println!("Kernel y");
+                    //kernels[kernel_y_id].debug();
+                    let shape = graph.shape(nid);
+                    assert_eq!(kernels[kernel_x_id].shape(), shape);
+                    assert_eq!(kernels[kernel_y_id].shape(), shape);
+                    // If the shape is not the same, these are used multiple
+                    // times in different places in the graph
                     if kernels[kernel_x_id].shape() != shape {
                         kernels.push(Kernel::load(graph, *x));
                         kernel_x_id = kernels.len() - 1;
@@ -1105,10 +1070,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         kernel_y_id = kernels.len() - 1
                     }
 
-                    //println!("Kernel x");
-                    //kernels[kernel_x_id].debug();
-                    //println!("Kernel y");
-                    //kernels[kernel_y_id].debug();
                     let (kernel_x, kernel_y) = if kernel_y_id > kernel_x_id {
                         let kernel_x = kernels.remove(kernel_x_id);
                         // we have just removed kernel before this one

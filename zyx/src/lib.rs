@@ -267,7 +267,7 @@ fn t4() {
     let y = Tensor::uniform([8, 8], 0f32..1f32);
     //let x = Tensor::rand([1024, 1024], DType::F32);
     //let y = Tensor::rand([1024, 1024], DType::F32);
-    for _ in 0..20 {
+    for _ in 0..2 {
         let z = x.dot(&y);
         //Tensor::plot_graph([], "graph0");
         Tensor::realize([&z]).unwrap();
