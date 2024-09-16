@@ -236,12 +236,12 @@ pub(super) fn initialize_device(
             HIPDevice {
                 device,
                 dev_info: DeviceInfo {
-                    compute: 1024*1024*1024*1024,
+                    compute: 1024 * 1024 * 1024 * 1024,
                     max_global_work_dims: [1024, 1024, 1024],
                     max_local_threads: 256,
                     max_local_work_dims: [256, 256, 256],
                     preferred_vector_size: 4,
-                    local_mem_size: 256*1024,
+                    local_mem_size: 256 * 1024,
                     num_registers: 96,
                     tensor_cores: false,
                 },
@@ -256,6 +256,10 @@ pub(super) fn initialize_device(
 }
 
 impl HIPMemoryPool {
+    pub(super) fn deinitialize(self) -> Result<(), HIPError> {
+        todo!()
+    }
+
     pub(super) fn free_bytes(&self) -> usize {
         self.free_bytes
     }
@@ -311,6 +315,10 @@ impl Drop for HIPMemoryPool {
 }
 
 impl HIPDevice {
+    pub(super) fn deinitialize(self) -> Result<(), HIPError> {
+        todo!()
+    }
+
     pub(super) fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
@@ -321,6 +329,10 @@ impl HIPDevice {
     }
 
     pub(super) fn release_program(&self, program: HIPProgram) -> Result<(), HIPError> {
+        todo!()
+    }
+
+    pub(super) fn release_queue(&self, queue: HIPQueue) -> Result<(), HIPError> {
         todo!()
     }
 
@@ -458,17 +470,16 @@ impl HIPDevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                }
-                /*IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                        match scope {
-                            Scope::Global => "GLOB",
-                            Scope::Local => "LOC",
-                            Scope::Register => panic!(),
-                        }
-                    );
-                }*/
+                } /*IROp::Barrier { scope } => {
+                      source += &format!(
+                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                          match scope {
+                              Scope::Global => "GLOB",
+                              Scope::Local => "LOC",
+                              Scope::Register => panic!(),
+                          }
+                      );
+                  }*/
             }
         }
         source += "}\n";

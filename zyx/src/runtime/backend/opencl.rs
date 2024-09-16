@@ -109,6 +109,7 @@ pub(super) struct OpenCLDevice {
         *mut c_void,
     ) -> OpenCLStatus,
     clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+    clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clCreateKernel: unsafe extern "C" fn(*mut c_void, *const i8, *mut OpenCLStatus) -> *mut c_void,
     clGetDeviceInfo:
         unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
@@ -127,7 +128,6 @@ pub(super) struct OpenCLProgram {
     kernel: *mut c_void,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
-    clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 }
 
 #[derive(Debug)]
@@ -136,7 +136,7 @@ pub(super) struct OpenCLQueue {
     load: usize,
     //events: Vec<*mut c_void>,
     // Functions
-    clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+    //clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clSetKernelArg:
         unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
     clEnqueueNDRangeKernel: unsafe extern "C" fn(
@@ -169,24 +169,20 @@ impl OpenCLDevice {
     pub(super) fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
-}
 
-impl Drop for OpenCLMemoryPool {
-    fn drop(&mut self) {
-        unsafe { (self.clReleaseContext)(self.context) };
-        unsafe { (self.clReleaseCommandQueue)(self.queue) };
+    pub(super) fn deinitialize(self) -> Result<(), OpenCLError> {
+        // cuReleaseDevice is OpenCL 1.2 only, but we support 1.0, so nothing to do here
+        Ok(())
     }
 }
 
-impl Drop for OpenCLProgram {
-    fn drop(&mut self) {
-        unsafe { (self.clReleaseProgram)(self.program) };
-    }
-}
-
-impl Drop for OpenCLQueue {
-    fn drop(&mut self) {
-        let _ = unsafe { (self.clReleaseCommandQueue)(self.queue) };
+impl OpenCLMemoryPool {
+    pub(super) fn deinitialize(self) -> Result<(), OpenCLError> {
+        unsafe { (self.clReleaseContext)(self.context) }
+            .check("Failed to release OpenCL context.")?;
+        unsafe { (self.clReleaseCommandQueue)(self.queue) }
+            .check("Failed to release OpenCL command queue.")?;
+        Ok(())
     }
 }
 
@@ -384,7 +380,7 @@ pub(super) fn initialize_devices(
                     //clWaitForEvents,
                     clEnqueueNDRangeKernel,
                     clFinish,
-                    clReleaseCommandQueue,
+                    //clReleaseCommandQueue,
                 });
                 let Ok(_) = status.check("Failed to create device command queue") else {
                     continue;
@@ -398,6 +394,7 @@ pub(super) fn initialize_devices(
                 clGetProgramBuildInfo,
                 clBuildProgram,
                 clReleaseProgram,
+                clReleaseCommandQueue,
                 clCreateKernel,
                 clGetDeviceInfo,
                 clCreateProgramWithSource,
@@ -860,7 +857,6 @@ impl OpenCLDevice {
             program,
             global_work_size,
             local_work_size,
-            clReleaseProgram: self.clReleaseProgram,
         })
     }
 }
@@ -971,13 +967,14 @@ impl OpenCLStatus {
 
 impl OpenCLDevice {
     pub(super) fn release_program(&self, program: OpenCLProgram) -> Result<(), OpenCLError> {
-        println!("Releasing {:?}", program);
-        assert!(
-            !program.program.is_null(),
-            "Releasing null program is invalid"
-        );
+        //println!("Releasing {:?}", program);
         unsafe { (self.clReleaseProgram)(program.program) }
             .check("Failed to release OpenCL program")
+    }
+
+    pub(super) fn release_queue(&self, queue: OpenCLQueue) -> Result<(), OpenCLError> {
+        unsafe { (self.clReleaseCommandQueue)(queue.queue) }
+            .check("Failed to release OpenCL queue.")
     }
 
     fn get_program_build_data(

@@ -59,7 +59,8 @@
 - [ ] fix another weird bug in graph realization when accessing multiple graphs concurrently - perhaps this is due to the way
       allocation works and perhaps we are just not using the correct queues and memory pools, if that is the case,
       multi device graph execution is bugged
-- [ ] deinitialize the runtime once number of tensors drops to zero in the Runtime::release function
+- [x] deinitialize the runtime once number of tensors drops to zero in the Runtime::release function
+- [x] fix double free opencl command queue
 - [ ] amd WMMA cores
 - [ ] nvidia tensor cores
 - [ ] better fusion by making expand add new loops to the end of the kernel

@@ -261,6 +261,45 @@ impl Runtime {
 }
 
 impl MemoryPool {
+    pub(super) fn deinitialize(self) -> Result<(), ZyxError> {
+        match self {
+            MemoryPool::CUDA {
+                mut memory_pool,
+                mut buffers,
+            } => {
+                let ids: Vec<usize> = buffers.ids().collect();
+                for id in ids {
+                    let buffer = buffers.remove(id).unwrap();
+                    memory_pool.deallocate(buffer)?;
+                }
+                memory_pool.deinitialize()?;
+            }
+            MemoryPool::HIP {
+                mut memory_pool,
+                mut buffers,
+            } => {
+                let ids: Vec<usize> = buffers.ids().collect();
+                for id in ids {
+                    let buffer = buffers.remove(id).unwrap();
+                    memory_pool.deallocate(buffer)?;
+                }
+                memory_pool.deinitialize()?;
+            }
+            MemoryPool::OpenCL {
+                mut memory_pool,
+                mut buffers,
+            } => {
+                let ids: Vec<usize> = buffers.ids().collect();
+                for id in ids {
+                    let buffer = buffers.remove(id).unwrap();
+                    memory_pool.deallocate(buffer)?;
+                }
+                memory_pool.deinitialize()?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn free_bytes(&self) -> usize {
         match self {
             MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
@@ -478,6 +517,60 @@ impl MemoryPool {
 }
 
 impl Device {
+    pub(super) fn deinitialize(self) -> Result<(), ZyxError> {
+        match self {
+            Device::CUDA {
+                device,
+                mut queues,
+                mut programs,
+                ..
+            } => {
+                let ids: Vec<usize> = programs.ids().collect();
+                for id in ids {
+                    let program = programs.remove(id).unwrap();
+                    device.release_program(program)?;
+                }
+                while let Some(queue) = queues.pop() {
+                    device.release_queue(queue)?;
+                }
+                device.deinitialize()?;
+            }
+            Device::HIP {
+                device,
+                mut programs,
+                mut queues,
+                ..
+            } => {
+                let ids: Vec<usize> = programs.ids().collect();
+                for id in ids {
+                    let program = programs.remove(id).unwrap();
+                    device.release_program(program)?;
+                }
+                while let Some(queue) = queues.pop() {
+                    device.release_queue(queue)?;
+                }
+                device.deinitialize()?;
+            }
+            Device::OpenCL {
+                device,
+                mut programs,
+                mut queues,
+                ..
+            } => {
+                let ids: Vec<usize> = programs.ids().collect();
+                for id in ids {
+                    let program = programs.remove(id).unwrap();
+                    device.release_program(program)?;
+                }
+                while let Some(queue) = queues.pop() {
+                    device.release_queue(queue)?;
+                }
+                device.deinitialize()?;
+            }
+        }
+        Ok(())
+    }
+
     // NOTE returns memory pool id out of runtime memory pools
     pub(super) fn memory_pool_id(&self) -> MemoryPoolId {
         match self {

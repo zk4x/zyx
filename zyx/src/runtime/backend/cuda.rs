@@ -68,6 +68,7 @@ pub(super) struct CUDADevice {
     cuModuleGetFunction:
         unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
     cuModuleUnload: unsafe extern "C" fn(CUmodule) -> CUDAStatus,
+    cuStreamDestroy: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -161,6 +162,7 @@ pub(super) fn initialize_devices(
     let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
         *unsafe { cuda.get(b"cuStreamCreate\0") }.unwrap();
     let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
+    let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
     let cuModuleUnload = *unsafe { cuda.get(b"cuModuleUnload\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
@@ -270,6 +272,7 @@ pub(super) fn initialize_devices(
                 cuModuleLoadDataEx,
                 cuModuleGetFunction,
                 cuModuleUnload,
+                cuStreamDestroy,
                 compute_capability: [major, minor],
             },
             queues,
@@ -323,6 +326,11 @@ pub(super) fn initialize_devices(
 }
 
 impl CUDAMemoryPool {
+    pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
+        unsafe { (self.cuCtxDestroy)(self.context) }.check("Failed to destroy CUDA context.")?;
+        Ok(())
+    }
+
     pub(super) fn free_bytes(&self) -> usize {
         self.free_bytes
     }
@@ -375,13 +383,11 @@ impl CUDAMemoryPool {
     }
 }
 
-impl Drop for CUDAMemoryPool {
-    fn drop(&mut self) {
-        unsafe { (self.cuCtxDestroy)(self.context) };
-    }
-}
-
 impl CUDADevice {
+    pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
+        todo!()
+    }
+
     fn get(
         &mut self,
         attr: CUdevice_attribute,
@@ -408,6 +414,10 @@ impl CUDADevice {
 
     pub(super) fn release_program(&self, program: CUDAProgram) -> Result<(), CUDAError> {
         unsafe { (self.cuModuleUnload)(program.module) }.check("Failed to release CUDA program.")
+    }
+
+    pub(super) fn release_queue(&self, queue: CUDAQueue) -> Result<(), CUDAError> {
+        unsafe { (self.cuStreamDestroy)(queue.stream) }.check("Failed to release CUDA stream.")
     }
 
     pub(super) fn compile(
@@ -463,19 +473,34 @@ impl CUDADevice {
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!(
-                "{indent}{} r{id};\n",
-                dtype.cu()
-            );
+            source += &format!("{indent}{} r{id};\n", dtype.cu());
         }
 
         // Add indices for global and local loops
-        source += &format!("  r{} = blockIdx.x;   /* 0..{} */\n", loop_ids[0], global_work_size[0]);
-        source += &format!("  r{} = threadIdx.x;   /* 0..{} */\n", loop_ids[1], local_work_size[0]);
-        source += &format!("  r{} = blockIdx.y;   /* 0..{} */\n", loop_ids[2], global_work_size[1]);
-        source += &format!("  r{} = threadIdx.y;   /* 0..{} */\n", loop_ids[3], local_work_size[1]);
-        source += &format!("  r{} = blockIdx.z;   /* 0..{} */\n", loop_ids[4], global_work_size[2]);
-        source += &format!("  r{} = threadIdx.z;   /* 0..{} */\n", loop_ids[5], local_work_size[2]);
+        source += &format!(
+            "  r{} = blockIdx.x;   /* 0..{} */\n",
+            loop_ids[0], global_work_size[0]
+        );
+        source += &format!(
+            "  r{} = threadIdx.x;   /* 0..{} */\n",
+            loop_ids[1], local_work_size[0]
+        );
+        source += &format!(
+            "  r{} = blockIdx.y;   /* 0..{} */\n",
+            loop_ids[2], global_work_size[1]
+        );
+        source += &format!(
+            "  r{} = threadIdx.y;   /* 0..{} */\n",
+            loop_ids[3], local_work_size[1]
+        );
+        source += &format!(
+            "  r{} = blockIdx.z;   /* 0..{} */\n",
+            loop_ids[4], global_work_size[2]
+        );
+        source += &format!(
+            "  r{} = threadIdx.z;   /* 0..{} */\n",
+            loop_ids[5], local_work_size[2]
+        );
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
@@ -530,7 +555,13 @@ impl CUDADevice {
                     );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source += &format!("{indent}{} = {} * {} + {};\n", z.cu(), a.cu(), b.cu(), c.cu());
+                    source += &format!(
+                        "{indent}{} = {} * {} + {};\n",
+                        z.cu(),
+                        a.cu(),
+                        b.cu(),
+                        c.cu()
+                    );
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
@@ -542,17 +573,16 @@ impl CUDADevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                }
-                /*IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                        match scope {
-                            Scope::Global => "GLOB",
-                            Scope::Local => "LOC",
-                            Scope::Register => panic!(),
-                        }
-                    );
-                }*/
+                } /*IROp::Barrier { scope } => {
+                      source += &format!(
+                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                          match scope {
+                              Scope::Global => "GLOB",
+                              Scope::Local => "LOC",
+                              Scope::Register => panic!(),
+                          }
+                      );
+                  }*/
             }
         }
         source += "}\n";
@@ -761,7 +791,10 @@ impl CUDADevice {
                     let Var::Id(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     // Get address
-                    source += &format!("{indent}ld.param.u64    a0, [a{address}+{}];\n", offset.ptx());
+                    source += &format!(
+                        "{indent}ld.param.u64    a0, [a{address}+{}];\n",
+                        offset.ptx()
+                    );
                     // Convert address to global
                     source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
                     // Load from global to register
@@ -829,12 +862,7 @@ impl CUDADevice {
                         UOp::Nonzero => todo!(),
                     };
                 }
-                IROp::Binary {
-                    z,
-                    x,
-                    y,
-                    bop,
-                } => {
+                IROp::Binary { z, x, y, bop } => {
                     let Var::Id(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     //println!("Adding binary {bop:?}");
@@ -883,8 +911,7 @@ impl CUDADevice {
                     source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
                     // Branch
                     source += &format!("@p  bra    LOOP_{id};\n");
-                }
-                //IROp::Barrier { .. } => todo!(),
+                } //IROp::Barrier { .. } => todo!(),
             }
         }
         // End kernel
