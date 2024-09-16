@@ -49,14 +49,22 @@
 - [x] wgsl memory copy
 - [x] wgsl compilation
 - [x] wgsl program launch
-- [ ] tensor split op
+- [x] tensor split op
 - [x] simplify vops
 - [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
 - [ ] local memory tiling
 - [ ] register tiling
 - [x] tensor arange initialization
 - [x] fix weird bug in graph realization when accessing multiple graphs concurrently (delete tensors did not delete shapes and dtypes)
-- [ ] fix another weird bug in graph realization when accessing multiple graphs concurrently
+- [ ] fix another weird bug in graph realization when accessing multiple graphs concurrently - perhaps this is due to the way
+      allocation works and perhaps we are just not using the correct queues and memory pools, if that is the case,
+      multi device graph execution is bugged
+- [ ] deinitialize the runtime once number of tensors drops to zero in the Runtime::release function
+- [ ] amd WMMA cores
+- [ ] nvidia tensor cores
+- [ ] better fusion by making expand add new loops to the end of the kernel
+- [ ] better fusion by making reshape add new loops to the end of the kernel
+- [ ] faster softmax and fast attention
 
 ### Release blockers
 

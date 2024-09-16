@@ -152,3 +152,9 @@ values as possible. Inputs should map to outputs as directly as possible. That i
 When we have our core data structures defined, there is only so many ways how to write algorithms/application logic
 that connects them together. Application logic takes the most time to do, some algorithms can be pretty complex,
 but at the same time it should be straightforward. The program should not significantly change at this point.
+
+## Fake it till you make it
+
+Use the best approach you want to use and then fake it till you make if the programming language does not support your way.
+This is especially true for Rust, since it wants to impose it's way on users, but in order to be compatible with other
+languages, you just have to make compromises.

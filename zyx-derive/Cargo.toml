@@ -1,7 +1,7 @@
 [package]
 name = "zyx-derive"
 version = "0.2.0"
-edition.workspace = true
+edition = "2021"
 authors = ["zk4x"]
 description = "Zyx procedural macros"
 documentation = "https://docs.rs/zyx-derive"
@@ -15,7 +15,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { workspace = true }
+zyx = { path = "../zyx" }
 syn = { version = "2.0.49", features = ["full", "fold"] }
 quote = { version = "1.0.35" }
 

@@ -77,14 +77,14 @@ impl Runtime {
     #[must_use]
     pub(super) const fn new() -> Self {
         Runtime {
+            compiled_graph_cache: BTreeMap::new(),
+            tensor_buffer_map: BTreeMap::new(),
             graph: Graph::new(),
+            ir_kernel_cache: BTreeMap::new(),
+            devices: Vec::new(),
+            memory_pools: Vec::new(),
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
-            compiled_graph_cache: BTreeMap::new(),
-            memory_pools: Vec::new(),
-            tensor_buffer_map: BTreeMap::new(),
-            devices: Vec::new(),
-            ir_kernel_cache: BTreeMap::new(),
             config_dir: None,
             training: false,
             search_iterations: 5,
@@ -98,7 +98,36 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
-        self.deallocate_tensors(to_remove)
+        self.deallocate_tensors(to_remove)?;
+        // TODO Check the number of tensors. If there are no tensors remaining, deinitialize the runtime,
+        // since rust does not implement drop for us.
+        if self.graph.is_empty() && self.tensor_buffer_map.is_empty() {
+            self.deinitialize()?;
+        }
+        Ok(())
+    }
+
+    /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
+    /// It does not reset the rng and it does not change debug, search, training and config_dir fields
+    fn deinitialize(&mut self) -> Result<(), ZyxError> {
+        println!("Deinitialize");
+        // drop compiled graph cache
+        self.compiled_graph_cache = BTreeMap::new();
+        // drop tensor buffer_map
+        self.tensor_buffer_map = BTreeMap::new();
+        // drop graph
+        self.graph = Graph::new();
+        // drop ir kernel cache
+        self.ir_kernel_cache = BTreeMap::new();
+        // drop devices
+        while let Some(dev) = self.devices.pop() {
+            dev.deinitialize()?;
+        }
+        // drop memory pools
+        while let Some(mp) = self.memory_pools.pop() {
+            mp.deinitialize()?;
+        }
+        Ok(())
     }
 
     #[cfg(feature = "rand")]
@@ -110,7 +139,7 @@ impl Runtime {
     /// Creates dot plot of graph between given tensors
     #[must_use]
     pub(super) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
-        println!("Tensor storage {:?}", self.tensor_buffer_map);
+        //println!("Tensor storage {:?}", self.tensor_buffer_map);
         self.graph.plot_dot_graph(tensors)
     }
 

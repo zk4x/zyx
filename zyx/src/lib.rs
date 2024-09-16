@@ -32,6 +32,7 @@ pub use scalar::Scalar;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 
+// Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 //static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
@@ -261,7 +262,7 @@ fn t_18() {
 }
 */
 
-/*#[cfg(feature = "rand")]
+#[cfg(feature = "rand")]
 #[test]
 fn t4() {
     let x = Tensor::uniform([16, 8], 0f32..1f32);
@@ -273,14 +274,14 @@ fn t4() {
         //Tensor::plot_graph([], "graph0");
         Tensor::realize([&z]).unwrap();
         //Tensor::plot_graph([], &format!("graph0"));
+        println!("{z}");
         drop(z);
         //Tensor::plot_graph([], "graph1");
         //Tensor::plot_graph([], &format!("graph"));
     }
-    //println!("{z}");
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
-}*/
+}
 
 /*#[test]
 fn t_15() {
@@ -331,3 +332,11 @@ fn t2() {
     println!("{b}");
 }
 
+#[test]
+fn t3() {
+    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
+    let tensors = x.split([2, 1], 1);
+    for t in tensors {
+        println!("{t}");
+    }
+}

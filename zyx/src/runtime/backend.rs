@@ -113,6 +113,7 @@ impl Runtime {
     // Returns error if all devices failed to initialize
     // DeviceParameters allows to disable some devices if requested
     pub(super) fn initialize_devices(&mut self) -> Result<(), ZyxError> {
+        println!("Initializing");
         if !self.devices.is_empty() {
             return Ok(());
         }

@@ -1912,12 +1912,34 @@ impl Tensor {
         Tensor::cat(&tensors, dim)
     }
 
-    /*#[must_use]
-    pub fn split(&self, sizes: &[usize], dim: isize) -> Vec<Tensor> {
-        let _ = sizes;
-        let _ = dim;
-        todo!()
-    }*/
+    /// Split tensor into multiple tensors at given dim/axis
+    #[must_use]
+    pub fn split(&self, sizes: impl IntoShape, dim: isize) -> Vec<Tensor> {
+        // assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
+        // dim = self._resolve_dim(dim)
+        // if isinstance(sizes, int): sizes = [min(sizes, self.shape[dim]-i) for i in range(0, max(1, self.shape[dim]), max(1, sizes))]
+        // assert sum(sizes) == self.shape[dim], f"expect sizes to sum exactly to {self.shape[dim]}, but got {sum(sizes)}"
+        // return tuple(self[sl] for sl in [tuple([slice(None)]*dim + [slice(sum(sizes[:i]), sum(sizes[:i + 1]))]) for i in range(len(sizes))])
+        let sizes: Vec<usize> = sizes.into_shape().collect();
+        let shape = self.shape();
+        let rank = shape.rank();
+        let dim: usize = if dim < 0 { dim + rank as isize } else { dim } as usize;
+        assert_eq!(sizes.iter().sum::<usize>(), shape[dim], "Sizes must sum exactly to {}, but got {:?}, which sums to {}", shape[dim], sizes, sizes.iter().sum::<usize>());
+
+        let mut res = Vec::new();
+        let mut acc_size = 0;
+        for size in sizes {
+            let size = size as isize;
+            let mut index = Vec::new();
+            for i in 0..dim {
+                index.push(0..shape[i] as isize);
+            }
+            index.push(acc_size..size);
+            res.push(self.get(index));
+            acc_size += size;
+        }
+        res
+    }
 
     /// Pooling function with kernel size, stride and dilation
     #[must_use]

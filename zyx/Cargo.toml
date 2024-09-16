@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.13.0"
+version = "0.13.1"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx machine learning library"
@@ -65,7 +65,7 @@ crate-type = ["lib", "cdylib"]
 [features]
 default = [
     "rand",
-    "wgsl",
+    #"wgsl",
     #"half",
     #"complex",
     #"py",

@@ -28,6 +28,10 @@ impl Graph {
         }
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.nodes.len() == 0
+    }
+
     pub(super) fn retain(&mut self, x: TensorId) {
         self.nodes[x].0 += 1;
     }

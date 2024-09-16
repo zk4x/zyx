@@ -32,3 +32,7 @@ pub use rms_norm::RMSNorm;
 // Recurrent layers
 mod rnn_cell;
 pub use rnn_cell::RNNCell;
+
+// Attention
+mod causal_self_attention;
+pub use causal_self_attention::CausalSelfAttention;
