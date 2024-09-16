@@ -316,15 +316,18 @@ fn t1() {
     let y = Tensor::rand([3, 5], DType::F32);
     let b = x.dot(y);
     println!("{a}, {b}");
-}
+}*/
 
 #[test]
 fn t2() {
     let x = Tensor::from([4, 2, 3]);
     let y = Tensor::from([4, 2, 3]);
     let a = x + y;
+    println!("{a}");
+    drop(a);
     let x = Tensor::from([4, 2, 3]);
     let y = Tensor::from([4, 2, 3]);
     let b = x + y;
-    println!("{a}, {b}");
-}*/
+    println!("{b}");
+}
+

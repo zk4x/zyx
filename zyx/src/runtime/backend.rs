@@ -291,12 +291,12 @@ impl MemoryPool {
                 buffers,
             } => buffers.push(memory_pool.allocate(bytes)?),
         };
-        println!("Allocate {bytes} into buffer id {id}");
+        //println!("Allocate {bytes} bytes into buffer id {id}");
         Ok(id)
     }
 
     pub(super) fn deallocate(&mut self, buffer_id: usize) -> Result<(), ZyxError> {
-        println!("Deallocate buffer id {buffer_id}");
+        //println!("Deallocate buffer id {buffer_id}");
         match self {
             MemoryPool::CUDA {
                 memory_pool,
