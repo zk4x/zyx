@@ -949,8 +949,22 @@ impl Tensor {
     /// This function will panic if the padding configuration is invalid.
     #[must_use]
     pub fn pad_zeros(&self, padding: impl IntoPadding) -> Tensor {
+        // TODO asserts
+        let padding = padding.into_padding();
+        for &(l, r) in &padding {
+            match (l > 0, r > 0) {
+                (true, true) => {
+                    //assert!(l < shape[i].rank());
+                    //assert!(r < shape[i].rank());
+                    assert!(l < r);
+                }
+                (true, false) => {}
+                (false, true) => {}
+                (false, false) => {}
+            }
+        }
         return Tensor {
-            id: RT.lock().pad_zeros(self.id, padding.into_padding()),
+            id: RT.lock().pad_zeros(self.id, padding),
         };
     }
 
@@ -1934,7 +1948,8 @@ impl Tensor {
             for i in 0..dim {
                 index.push(0..shape[i] as isize);
             }
-            index.push(acc_size..size);
+            index.push(acc_size..acc_size+size);
+            //println!("Index {index:?}");
             res.push(self.get(index));
             acc_size += size;
         }

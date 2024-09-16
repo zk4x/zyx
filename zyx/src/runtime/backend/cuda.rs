@@ -385,7 +385,7 @@ impl CUDAMemoryPool {
 
 impl CUDADevice {
     pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
-        todo!()
+        Ok(())
     }
 
     fn get(

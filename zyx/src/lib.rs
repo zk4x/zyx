@@ -340,3 +340,9 @@ fn t3() {
         println!("{t}");
     }
 }
+
+#[test]
+fn t5() {
+    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
+    println!("{}", x.get((.., 2..3)));
+}
