@@ -29,7 +29,8 @@
 - [x] Just write the scheduler, temporary variables and stuff does not matter whatsoever
 - [x] multiple kernel executors (with different performance)
 - [ ] PTX compiler
-- [ ] comgr compiler instead of broken hiprtc, although amd's compute firmware is broken, so isn't vulkan better anyway?
+- [ ] comgr compiler instead of broken hiprtc, although amd's compute firmware is broken,
+      so isn't vulkan better anyway? - not on CDNA, but can we even test that?
 - [x] ability to use env vars in code blocks
 - [x] uniform function
 - [x] compiled graph execution performance metrics
@@ -66,9 +67,6 @@
 - [ ] better fusion by making expand add new loops to the end of the kernel
 - [ ] better fusion by making reshape add new loops to the end of the kernel
 - [ ] faster softmax and fast attention
-
-### Release blockers
-
 - [x] go over all todos in source code and check which are necessary
 - [x] fix bug in scheduler when testing cumsum (it was a bug in view)
 - [x] rewrite the AI generated docs, they are horrible

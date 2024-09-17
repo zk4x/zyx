@@ -1956,6 +1956,12 @@ impl Tensor {
         res
     }
 
+    /// Masked fill
+    #[must_use]
+    pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Tensor {
+        mask.into().where_(value, self)
+    }
+
     /// Pooling function with kernel size, stride and dilation
     #[must_use]
     pub fn pool(
