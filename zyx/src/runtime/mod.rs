@@ -218,7 +218,7 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let x = self.variable(vec![1], &[value])?;
         let expanded = self.expand(x, shape);
-        self.release(x).unwrap();
+        self.release(x)?;
         return Ok(expanded);
     }
 

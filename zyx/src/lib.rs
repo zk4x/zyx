@@ -265,8 +265,8 @@ fn t_18() {
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
-    let x = Tensor::uniform([16, 8], 0f32..1f32);
-    let y = Tensor::uniform([8, 8], 0f32..1f32);
+    let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
+    let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();
     //let x = Tensor::rand([1024, 1024], DType::F32);
     //let y = Tensor::rand([1024, 1024], DType::F32);
     for _ in 0..2 {

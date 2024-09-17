@@ -158,3 +158,17 @@ but at the same time it should be straightforward. The program should not signif
 Use the best approach you want to use and then fake it till you make if the programming language does not support your way.
 This is especially true for Rust, since it wants to impose it's way on users, but in order to be compatible with other
 languages, you just have to make compromises.
+
+## Code creep
+
+Do not split the project into too many short files. If there are short files, they tend to grow larger. If there
+are few large files, they tend to be refactored thoroughly to make them smaller. So add files only if truly
+necessary. This way you can keep the complexity small.
+
+## Understandability
+
+Every project should be understandable by a newbie in a few hours of reading it's source code. If there are too many files,
+then it is not possible. Also adding internal project documentation, for example docs in the beginning of each file
+explaining what that file does is very usefull.
+
+

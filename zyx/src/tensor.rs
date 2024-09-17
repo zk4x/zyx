@@ -114,62 +114,62 @@ impl Tensor {
     /// }
     /// ```
     #[must_use]
-    pub fn detach(self) -> Tensor {
+    pub fn detach(self) -> Result<Tensor, ZyxError> {
         // TODO remove realization from here
         let shape = self.shape();
         let dtype = self.dtype();
         match dtype {
             #[cfg(feature = "half")]
             DType::F16 => {
-                let data: Vec<f16> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<f16> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             #[cfg(feature = "half")]
             DType::BF16 => {
-                let data: Vec<bf16> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<bf16> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::F32 => {
-                let data: Vec<f32> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<f32> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::F64 => {
-                let data: Vec<f64> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<f64> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             #[cfg(feature = "complex")]
             DType::CF32 => {
-                let data: Vec<Complex<f32>> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<Complex<f32>> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             #[cfg(feature = "complex")]
             DType::CF64 => {
-                let data: Vec<Complex<f64>> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<Complex<f64>> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::U8 => {
-                let data: Vec<u8> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<u8> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::I8 => {
-                let data: Vec<i8> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<i8> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::I16 => {
-                let data: Vec<i16> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<i16> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::I32 => {
-                let data: Vec<i32> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<i32> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::I64 => {
-                let data: Vec<i64> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<i64> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
             DType::Bool => {
-                let data: Vec<bool> = self.try_into().unwrap();
-                Tensor::from(data).reshape(shape)
+                let data: Vec<bool> = self.try_into()?;
+                Ok(Tensor::from(data).reshape(shape))
             }
         }
     }
@@ -195,12 +195,15 @@ impl Tensor {
     /// Write graph of operations between tensors as png image with given filename
     /// Expects dot program to be in the path. Otherwise create dot graph file
     /// without converting it to png.
-    pub fn plot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) {
+    pub fn plot_graph<'a>(
+        tensors: impl IntoIterator<Item = &'a Tensor>,
+        name: &str,
+    ) -> Result<(), std::io::Error> {
         use std::format;
         let graph = RT
             .lock()
             .plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
-        std::fs::write(format!("{name}.dot"), graph).unwrap();
+        std::fs::write(format!("{name}.dot"), graph)?;
         let output = std::process::Command::new("dot")
             .arg("-Tpng")
             .arg(format!("{name}.dot"))
@@ -212,6 +215,7 @@ impl Tensor {
         } else {
             let _ = std::fs::remove_file(format!("{name}.dot"));
         }
+        Ok(())
     }
 
     /// Manually sets the seed for the random number generator.
@@ -225,7 +229,7 @@ impl Tensor {
     /// or 0..int::MAX if it is integer
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn rand(shape: impl IntoShape, dtype: DType) -> Tensor {
+    pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         const SEED: u64 = 69420;
         use std::i32;
 
@@ -239,63 +243,67 @@ impl Tensor {
             // TODO later use threefry
             let mut rt = RT.lock();
             rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-            let rng = rt.rng.get_mut().unwrap();
+            let Some(rng) = rt.rng.get_mut() else {
+                panic!()
+            };
             match dtype {
                 DType::F32 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f32> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 DType::F64 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f64> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 _ => panic!(),
             }
         } else {
             let mut rt = RT.lock();
             rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-            let rng = rt.rng.get_mut().unwrap();
+            let Some(rng) = rt.rng.get_mut() else {
+                panic!()
+            };
             match dtype {
                 DType::U8 => {
                     let range = Uniform::new(0, u8::MAX);
                     let data: Vec<u8> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 DType::I8 => {
                     let range = Uniform::new(0, i8::MAX);
                     let data: Vec<i8> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 DType::I16 => {
                     let range = Uniform::new(0, i16::MAX);
                     let data: Vec<i16> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 DType::I32 => {
                     let range = Uniform::new(0, i32::MAX);
                     let data: Vec<i32> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 DType::I64 => {
                     let range = Uniform::new(0, i64::MAX);
                     let data: Vec<i64> = (0..n).map(|_| rng.sample(&range)).collect();
-                    Tensor {
-                        id: rt.variable(shape, &data).unwrap(),
-                    }
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
                 }
                 _ => panic!(),
             }
@@ -330,13 +338,13 @@ impl Tensor {
     /// Create tensor sampled from standard distribution.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn randn(shape: impl IntoShape, dtype: DType) -> Tensor {
+    pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
         // src = Tensor.rand((2, *argfix(*shape)), **{**kwargs, "dtype": dtypes.float32})
         // return src[0].mul(2*math.pi).cos().mul((1 - src[1]).log().mul(-2).sqrt()).cast(dtype or dtypes.default_float)
 
         let shape: Vec<usize> = [2].into_iter().chain(shape.into_shape()).collect();
-        let src = Tensor::rand(shape, dtype);
+        let src = Tensor::rand(shape, dtype)?;
         let x = src
             .get(0)
             .mul(Tensor::constant(2f32 * std::f32::consts::PI))
@@ -345,7 +353,7 @@ impl Tensor {
         //println!("{y} minus");
         y = y.ln().mul(Tensor::constant(-2f32)).sqrt();
         //println!("{y}");
-        x.mul(y).cast(dtype)
+        Ok(x.mul(y).cast(dtype))
     }
 
     /// Create tensor sampled from uniform distribution
@@ -355,7 +363,7 @@ impl Tensor {
     pub fn uniform<T: Scalar>(
         shape: impl IntoShape,
         range: impl core::ops::RangeBounds<T>,
-    ) -> Tensor {
+    ) -> Result<Tensor, ZyxError> {
         use core::ops::Bound;
         let low = match range.start_bound() {
             Bound::Included(value) => *value,
@@ -367,13 +375,13 @@ impl Tensor {
             Bound::Excluded(value) => *value,
             Bound::Unbounded => T::max_value(),
         };
-        Tensor::rand(shape, T::dtype()) * high.sub(low) + low
+        Ok(Tensor::rand(shape, T::dtype())? * high.sub(low) + low)
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, a: T) -> Tensor {
+    pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
         let n = T::from_i64(shape.clone().into_shape().skip(1).product::<usize>() as i64);
         // bound = math.sqrt(3.0) * math.sqrt(2.0 / (1 + a ** 2)) / math.sqrt(prod(argfix(*shape)[1:]))
         let one = T::one();
@@ -403,10 +411,10 @@ impl Tensor {
 
     /// Create tensor filled with value.
     #[must_use]
-    pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
-        return Tensor {
-            id: RT.lock().full(shape.into_shape().collect(), value).unwrap(),
-        };
+    pub fn full(shape: impl IntoShape, value: impl Scalar) -> Result<Tensor, ZyxError> {
+        return Ok(Tensor {
+            id: RT.lock().full(shape.into_shape().collect(), value)?,
+        });
     }
 
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
@@ -420,17 +428,17 @@ impl Tensor {
 
     /// Arange method, create range from start, stop, step
     #[must_use]
-    pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Tensor {
+    pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Result<Tensor, ZyxError> {
         // if (stop-start)/step <= 0: return Tensor([], dtype=dtype, **kwargs)
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
         let n: i64 = stop.sub(start).div(step).cast();
         let n = n as usize;
         //println!("Shape {n}");
         let m = start.sub(step);
-        let x = Tensor::full(n, step);
+        let x = Tensor::full(n, step)?;
         //println!("{x}");
         let x = x.cumsum(0);
-        x + m
+        Ok(x + m)
     }
 
     /// Create constant that will be baked into compiled kernels.
@@ -492,14 +500,14 @@ impl Tensor {
     /// and set to zero with probability `probability`.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn dropout(&self, probability: impl Scalar) -> Tensor {
+    pub fn dropout(&self, probability: impl Scalar) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         assert!(
             dtype.is_float(),
             "Dropout only works on floating dtype tensors."
         );
         // TODO fix this for training (dropout in training is just scaling)
-        Tensor::from(probability).cmplt(Tensor::rand(self.shape(), dtype)) * self
+        Ok(Tensor::from(probability).cmplt(Tensor::rand(self.shape(), dtype)?) * self)
     }
 
     /// Applies the Exponential Linear Unit function element-wise.
@@ -937,7 +945,7 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let t = Tensor::from([1, 2, 3]);
-    /// let padded = t.pad_zeros(1).into_shape((5,)).unwrap();
+    /// let padded = t.pad_zeros(1).into_shape((5,))?;
     /// assert_eq!(padded, [0., 1., 2., 3., 0.]);
     ///
     /// let padded = t.pad_zeros([(1, 2)]);
@@ -999,7 +1007,11 @@ impl Tensor {
     /// # Panics
     /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
     #[must_use]
-    pub fn pad(&self, padding: impl IntoPadding, value: impl Into<Tensor>) -> Tensor {
+    pub fn pad(
+        &self,
+        padding: impl IntoPadding,
+        value: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         let value: Tensor = value.into();
         assert_eq!(
@@ -1032,63 +1044,63 @@ impl Tensor {
             && match dtype {
                 #[cfg(feature = "half")]
                 DType::BF16 => {
-                    let x: bf16 = value.clone().try_into().unwrap();
+                    let x: bf16 = value.clone().try_into()?;
                     x == bf16::ZERO
                 }
                 #[cfg(feature = "half")]
                 DType::F16 => {
-                    let x: f16 = value.clone().try_into().unwrap();
+                    let x: f16 = value.clone().try_into()?;
                     x == f16::ZERO
                 }
                 DType::F32 => {
-                    let x: f32 = value.clone().try_into().unwrap();
+                    let x: f32 = value.clone().try_into()?;
                     x == 0.
                 }
                 DType::F64 => {
-                    let x: f64 = value.clone().try_into().unwrap();
+                    let x: f64 = value.clone().try_into()?;
                     x == 0.
                 }
                 #[cfg(feature = "complex")]
                 DType::CF32 => {
-                    let x: Complex<f32> = value.clone().try_into().unwrap();
+                    let x: Complex<f32> = value.clone().try_into()?;
                     x == Complex::new(0., 0.)
                 }
                 #[cfg(feature = "complex")]
                 DType::CF64 => {
-                    let x: Complex<f64> = value.clone().try_into().unwrap();
+                    let x: Complex<f64> = value.clone().try_into()?;
                     x == Complex::new(0., 0.)
                 }
                 DType::U8 => {
-                    let x: u8 = value.clone().try_into().unwrap();
+                    let x: u8 = value.clone().try_into()?;
                     x == 0
                 }
                 DType::I8 => {
-                    let x: i8 = value.clone().try_into().unwrap();
+                    let x: i8 = value.clone().try_into()?;
                     x == 0
                 }
                 DType::I16 => {
-                    let x: i16 = value.clone().try_into().unwrap();
+                    let x: i16 = value.clone().try_into()?;
                     x == 0
                 }
                 DType::I32 => {
-                    let x: i32 = value.clone().try_into().unwrap();
+                    let x: i32 = value.clone().try_into()?;
                     x == 0
                 }
                 DType::I64 => {
-                    let x: i64 = value.clone().try_into().unwrap();
+                    let x: i64 = value.clone().try_into()?;
                     x == 0
                 }
                 DType::Bool => {
-                    let x: bool = value.clone().try_into().unwrap();
+                    let x: bool = value.clone().try_into()?;
                     x == false
                 }
             }
         {
-            t0
+            Ok(t0)
         } else {
             let ones = Tensor::ones(sh.clone(), dtype);
             let zeros = Tensor::zeros(sh, self.dtype());
-            t0 + ones.pad_zeros(padding).where_(zeros, value)
+            Ok(t0 + ones.pad_zeros(padding).where_(zeros, value))
         }
     }
 
@@ -1532,7 +1544,9 @@ impl Tensor {
     /// This function panics if the input tensor has fewer than two dimensions.
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
-        let n = *self.shape().last().unwrap();
+        let Some(&n) = self.shape().last() else {
+            panic!("Shape in invalid state. Internal bug.")
+        };
         self.flatten(..)
             .pad_zeros([(0, n as isize)])
             .reshape([n, n + 1])
@@ -1938,7 +1952,14 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.rank();
         let dim: usize = if dim < 0 { dim + rank as isize } else { dim } as usize;
-        assert_eq!(sizes.iter().sum::<usize>(), shape[dim], "Sizes must sum exactly to {}, but got {:?}, which sums to {}", shape[dim], sizes, sizes.iter().sum::<usize>());
+        assert_eq!(
+            sizes.iter().sum::<usize>(),
+            shape[dim],
+            "Sizes must sum exactly to {}, but got {:?}, which sums to {}",
+            shape[dim],
+            sizes,
+            sizes.iter().sum::<usize>()
+        );
 
         let mut res = Vec::new();
         let mut acc_size = 0;
@@ -1948,7 +1969,7 @@ impl Tensor {
             for i in 0..dim {
                 index.push(0..shape[i] as isize);
             }
-            index.push(acc_size..acc_size+size);
+            index.push(acc_size..acc_size + size);
             //println!("Index {index:?}");
             res.push(self.get(index));
             acc_size += size;
@@ -1961,6 +1982,23 @@ impl Tensor {
     pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Tensor {
         mask.into().where_(value, self)
     }
+
+    /*#[must_use]
+    fn tri(n: usize, dtype: DType) -> Tensor {
+        // if r == 0 or c == 0 or diagonal >= c: return Tensor.zeros(r,c,**kwargs)
+        // if r+diagonal <= 0: return Tensor.ones(r,c,**kwargs)
+        // s = r+c-1
+        // # build a (s, s) upper triangle
+        // t = Tensor.ones(s,s,**kwargs).pad((None,(0,s))).flatten().shrink(((0,s*(2*s-1)),)).reshape(s,-1).shrink((None,(0,s)))
+        // return t[:r,-diagonal:c-diagonal] if diagonal <= 0 else t[diagonal:r+diagonal,:c]
+        Tensor::ones([n * n / 2], dtype).pad_zeros([(0, n * n / 2)])
+    }*/
+
+    // Returns upper triangular part of the input tensor, other elements are set to zero
+    /*#[must_use]
+    pub fn triu(&self, diagonal: isize) -> Tensor {
+        todo!()
+    }*/
 
     /// Pooling function with kernel size, stride and dilation
     #[must_use]
@@ -2190,7 +2228,12 @@ impl Tensor {
         let mut f = std::fs::File::open(path)?;
         let mut header_len = [0u8; 8];
         f.read_exact(&mut header_len)?;
-        let mut header = vec![0u8; usize::try_from(u64::from_le_bytes(header_len)).unwrap()];
+        let n = usize::try_from(u64::from_le_bytes(header_len)).map_err(|e| {
+            ZyxError::ParseError(format!(
+                "Failed to parse header len in safetensors file. {e}"
+            ))
+        })?;
+        let mut header = vec![0u8; n];
         f.read_exact(&mut header)?;
         let header = core::str::from_utf8(&header)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;

@@ -82,7 +82,7 @@ fn cumsum() {
 
 #[test]
 fn arange() {
-    let x = Tensor::arange(0, 10, 2);
+    let x = Tensor::arange(0, 10, 2).unwrap();
     //println!("{x}");
     assert_eq!(x, [0, 2, 4, 6, 8]);
 }
@@ -90,7 +90,7 @@ fn arange() {
 #[test]
 fn rand() {
     use zyx::DType;
-    let x = Tensor::randn([10, 10], DType::F32);
+    let x = Tensor::randn([10, 10], DType::F32).unwrap();
     //Tensor::plot_graph([], "graph0");
     Tensor::realize([&x]).unwrap();
     println!("{x}");
@@ -120,8 +120,8 @@ fn uni_matmul() {
     //use zyx::DType;
     //let x = Tensor::rand([5, 5], DType::F32) * 2f32 + 3f32;
     //let y = Tensor::rand([5, 5], DType::F32) * 3f32 + 4f32;
-    let x = Tensor::uniform([5, 5], -1f32..2f32);
-    let y = Tensor::uniform([5, 5], -1f32..5f32);
+    let x = Tensor::uniform([5, 5], -1f32..2f32).unwrap();
+    let y = Tensor::uniform([5, 5], -1f32..5f32).unwrap();
     let z = x.dot(y);
     println!("{z}");
 }
