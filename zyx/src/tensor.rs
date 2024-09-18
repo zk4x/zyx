@@ -862,8 +862,8 @@ impl Tensor {
     /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        let e2x = (self + self).exp();
-        (&e2x + 1) / (e2x - 1)
+        let x = (self + self).sigmoid();
+        (&x + &x) - Tensor::constant(1).cast(self.dtype())
     }
 
     // movement
@@ -3282,7 +3282,6 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let rhs = rhs.into();
-        //println!("Multiply by {}", rhs);
         let (x, y) = Tensor::broadcast(self, rhs);
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
@@ -3300,7 +3299,6 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let rhs = rhs.into();
-        println!("Multiply ref by {}", rhs);
         let (x, y) = Tensor::broadcast(self, rhs);
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,

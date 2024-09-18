@@ -15,7 +15,7 @@
 - [ ] vulkan backend
 - [x] clean up ir.rs
 - [ ] automatic optimizations for scheduler
-- [x] depends_on function for binary ops resolution
+- [x] depends on function for binary ops resolution
 - [x] multiple tensors depending on single one (rc > 1)
 - [x] multiple tensors depending on single one (rc > 1) for binary ops
 - [x] padding
@@ -57,7 +57,8 @@
 - [ ] register tiling
 - [x] tensor arange initialization
 - [x] fix weird bug in graph realization when accessing multiple graphs concurrently (delete tensors did not delete shapes and dtypes)
-- [ ] fix another weird bug in graph realization when accessing multiple graphs concurrently - perhaps this is due to the way
+- [x] fix another weird bug in graph realization when accessing multiple graphs concurrently - perhaps this is due to the way
+- [ ] runtime should be multithreaded using channels, so that backends are accessed only from one thread
       allocation works and perhaps we are just not using the correct queues and memory pools, if that is the case,
       multi device graph execution is bugged
 - [x] deinitialize the runtime once number of tensors drops to zero in the Runtime::release function
