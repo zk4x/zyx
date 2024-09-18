@@ -1,3 +1,8 @@
+//! Index map using unsinged integer indices to index
+//! into vector of T. Pushing new values returns their
+//! index. Removing elements is O(1), does not reallocate
+//! and it does not change existing indices.
+
 /*use std::{
     collections::BTreeMap,
     ops::{Index, IndexMut},

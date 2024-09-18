@@ -1,3 +1,5 @@
+//! DType and constant
+
 use core::fmt::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};

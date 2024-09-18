@@ -1,3 +1,7 @@
+//! Tensor
+//!
+//! Tensors are at the core of all machine learning.
+
 use crate::dtype::DType;
 use crate::scalar::Scalar;
 use crate::shape::{to_axis, IntoAxes, IntoPadding, IntoShape};
@@ -1123,6 +1127,22 @@ impl Tensor {
             shape.iter().product::<usize>(),
             self.numel(),
             "Invalid reshape {:?} into {:?}",
+            self.shape(),
+            shape
+        );
+        Tensor {
+            id: RT.lock().reshape(self.id, shape),
+        }
+    }
+
+    /// An alias to reshape
+    #[must_use]
+    pub fn view(&self, shape: impl IntoShape) -> Tensor {
+        let shape: Vec<usize> = shape.into_shape().collect();
+        assert_eq!(
+            shape.iter().product::<usize>(),
+            self.numel(),
+            "Invalid view of {:?} into {:?}",
             self.shape(),
             shape
         );

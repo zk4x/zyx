@@ -1,3 +1,5 @@
+//! Trait describing required operations on scalar values
+
 #[cfg(feature = "half")]
 mod scalar_bf16;
 mod scalar_bool;

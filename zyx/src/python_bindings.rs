@@ -1,8 +1,16 @@
+//! Python bindings for zyx
+
 use pyo3::{
-    exceptions::PyOSError, pymethods, pymodule, types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple}, Bound, PyAny, PyErr, PyResult
+    exceptions::PyOSError,
+    pymethods, pymodule,
+    types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple},
+    Bound, PyAny, PyErr, PyResult,
 };
 
-use crate::{runtime::{BackendConfig, ZyxError}, DType, Tensor};
+use crate::{
+    runtime::{BackendConfig, ZyxError},
+    DType, Tensor,
+};
 
 impl From<ZyxError> for PyErr {
     fn from(err: ZyxError) -> Self {
@@ -15,7 +23,10 @@ impl Tensor {
     #[staticmethod]
     #[pyo3(name = "plot_dot_graph")]
     pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) {
-        let tensors: Vec<Tensor> = tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
+        let tensors: Vec<Tensor> = tensors
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
+            .collect();
         Tensor::plot_dot_graph(&tensors, name);
     }
 
@@ -47,14 +58,20 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "backward")]
     pub fn backward_py(&self, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
-        let sources: Vec<Tensor> = sources.into_iter().map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)")).collect();
+        let sources: Vec<Tensor> = sources
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
+            .collect();
         self.backward(&sources)
     }
 
     #[staticmethod]
     #[pyo3(name = "realize")]
     pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
-        let tensors: Vec<Tensor> = tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
+        let tensors: Vec<Tensor> = tensors
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
+            .collect();
         Tensor::realize(&tensors)
     }
 

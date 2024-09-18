@@ -1,3 +1,5 @@
+//! Graph of tensor operations.
+
 use super::{
     node::{BOp, Node},
     TensorId,

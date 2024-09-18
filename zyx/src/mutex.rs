@@ -1,3 +1,5 @@
+//! Simple implementation of mutex based on spinlock.
+
 /*use std::sync::MutexGuard;
 
 pub(super) struct Mutex<T>(std::sync::Mutex<T>);

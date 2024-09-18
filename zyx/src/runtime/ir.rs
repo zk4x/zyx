@@ -1,3 +1,7 @@
+//! Intermediate representation that is close to assembly.
+//! It is passed into different backends. Each backend
+//! compiles IR into their own bytecode.
+
 use super::{graph::Graph, node::ROp, scheduler::VOp, view::View};
 use crate::{
     dtype::Constant,

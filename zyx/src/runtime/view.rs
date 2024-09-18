@@ -1,3 +1,6 @@
+//! View handles movement operations on nodes.
+//! It is midlayer between graph and IR representation of movement ops.
+
 use std::{collections::BTreeMap, fmt::Display};
 
 use crate::shape::{Axis, Dimension};
@@ -112,9 +115,7 @@ impl View {
     pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
         if let View::Padded(_, padding) = self {
-            return padding
-                .iter()
-                .any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
+            return padding.iter().any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
         }
         false
     }
@@ -130,7 +131,8 @@ impl View {
             View::Padded(dims, axes) => axes
                 .iter()
                 .map(|(axes, (lp, rp))| {
-                    let numel: usize = dims.iter()
+                    let numel: usize = dims
+                        .iter()
                         .filter_map(|StridedDim { axis, dim, .. }| {
                             if axes.contains(axis) {
                                 Some(*dim)

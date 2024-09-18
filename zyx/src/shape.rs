@@ -1,3 +1,5 @@
+//! Few traits that describe shapes, axes, padding, etc.
+
 use core::fmt::Debug;
 use core::ops::{Add, Range, RangeInclusive};
 
