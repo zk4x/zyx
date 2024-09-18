@@ -255,7 +255,7 @@ impl Runtime {
         if self.devices.is_empty() {
             return Err(ZyxError::NoBackendAvailable);
         }
-        println!("Initializing");
+        //println!("Initializing");
         Ok(())
     }
 }

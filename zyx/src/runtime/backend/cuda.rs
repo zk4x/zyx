@@ -42,6 +42,7 @@ pub(super) struct CUDAMemoryPool {
     cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
     cuMemcpyPeer:
         unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
+    cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
     cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
 }
 
@@ -100,10 +101,10 @@ pub(super) struct CUDAQueue {
     cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
-unsafe impl Send for CUDAMemoryPool {}
-unsafe impl Send for CUDABuffer {}
-unsafe impl Send for CUDAProgram {}
-unsafe impl Send for CUDAQueue {}
+//unsafe impl Send for CUDAMemoryPool {}
+//unsafe impl Send for CUDABuffer {}
+//unsafe impl Send for CUDAProgram {}
+//unsafe impl Send for CUDAQueue {}
 
 pub(super) fn initialize_devices(
     config: &CUDAConfig,
@@ -155,6 +156,7 @@ pub(super) fn initialize_devices(
     let cuMemFree = *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
     let cuMemcpyDtoH = *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
     let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
+    let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
     let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
     let cuModuleLoadDataEx = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
     let cuModuleGetFunction = *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
@@ -164,6 +166,7 @@ pub(super) fn initialize_devices(
     let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
     let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
     let cuModuleUnload = *unsafe { cuda.get(b"cuModuleUnload\0") }.unwrap();
+    let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
     let mut driver_version = 0;
@@ -225,11 +228,15 @@ pub(super) fn initialize_devices(
             continue;
         };
         let mut context: CUcontext = ptr::null_mut();
-        let Ok(_) =
-            unsafe { cuCtxCreate(&mut context, 0, device) }.check("Failed to create CUDA context.")
-        else {
+        if let Err(e) = unsafe { cuCtxCreate(&mut context, 0, device) }.check("Failed to create CUDA context.") {
+            println!("{e:?}");
             continue;
-        };
+        }
+        /*if let Err(e) = unsafe { cuDevicePrimaryCtxRetain(&mut context, device) }.check("Failed to create CUDA context.") {
+            println!("{e:?}");
+            continue;
+        }*/
+        //println!("Using context {context:?} and device {device:?}");
         memory_pools.push(CUDAMemoryPool {
             cuda: cuda.clone(),
             context,
@@ -238,6 +245,7 @@ pub(super) fn initialize_devices(
             cuMemAlloc,
             cuMemcpyHtoD,
             cuMemFree,
+            cuCtxSetCurrent,
             cuMemcpyDtoH,
             cuMemcpyPeer,
             cuCtxDestroy,
@@ -327,7 +335,7 @@ pub(super) fn initialize_devices(
 
 impl CUDAMemoryPool {
     pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
-        unsafe { (self.cuCtxDestroy)(self.context) }.check("Failed to destroy CUDA context.")?;
+        //unsafe { (self.cuCtxDestroy)(self.context) }.check("Failed to destroy CUDA context.")?;
         Ok(())
     }
 
@@ -342,8 +350,10 @@ impl CUDAMemoryPool {
                 status: CUDAStatus::CUDA_ERROR_OUT_OF_MEMORY,
             });
         }
+        //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
         self.free_bytes -= bytes;
         let mut ptr = self.device as u64;
+        //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
         return Ok(CUDABuffer {
             ptr,
@@ -360,6 +370,7 @@ impl CUDAMemoryPool {
 
     pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
         //println!("Copying {src:?} to {dst:?}");
+        //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }
             .check("Failed to copy memory from host to pool.")
     }

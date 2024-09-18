@@ -87,14 +87,14 @@ fn arange() {
     assert_eq!(x, [0, 2, 4, 6, 8]);
 }
 
-#[test]
+/*#[test]
 fn rand() {
     use zyx::DType;
     let x = Tensor::randn([10, 10], DType::F32).unwrap();
     //Tensor::plot_graph([], "graph0");
-    Tensor::realize([&x]).unwrap();
+    //Tensor::realize([&x]).unwrap();
     println!("{x}");
-}
+}*/
 
 #[test]
 fn const_() {

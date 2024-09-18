@@ -459,7 +459,7 @@ impl OpenCLMemoryPool {
             )
         };
         status.check("Failed to allocate memory.")?;
-        println!("Allocated buffer {ptr:?}, bytes {bytes}");
+        //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes -= bytes;
         Ok(OpenCLBuffer {
             ptr,
@@ -469,7 +469,7 @@ impl OpenCLMemoryPool {
     }
 
     pub(super) fn deallocate(&mut self, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
-        println!("Deallocate {:?}", buffer.ptr);
+        //println!("Deallocate {:?}", buffer.ptr);
         assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
         unsafe { (self.clReleaseMemObject)(buffer.ptr) }
             .check("Failed to free allocated memory")?;
@@ -482,7 +482,7 @@ impl OpenCLMemoryPool {
         src: &[u8],
         dst: &OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
-        println!("Storing {src:?} to {dst:?}");
+        //println!("Storing {src:?} to {dst:?}");
         let mut event = ptr::null_mut();
         unsafe {
             (self.clEnqueueWriteBuffer)(
@@ -508,7 +508,7 @@ impl OpenCLMemoryPool {
         src: &OpenCLBuffer,
         dst: &mut [u8],
     ) -> Result<(), OpenCLError> {
-        println!("OpenCL to host src: {src:?}");
+        //println!("OpenCL to host src: {src:?}");
         assert!(
             !src.ptr.is_null(),
             "Trying to read null memory. Internal bug."
@@ -868,18 +868,18 @@ impl OpenCLQueue {
         buffers: &mut IndexMap<OpenCLBuffer>,
         args: &[usize],
     ) -> Result<(), OpenCLError> {
-        println!(
+        /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             program.kernel,
             program.program,
             self.queue,
             program.global_work_size,
             program.local_work_size
-        );
+        );*/
         let mut i = 0;
         for arg in args {
             let arg = &mut buffers[*arg];
-            println!("Kernel arg: {arg:?} at index {i}");
+            //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.ptr;
             unsafe {
                 (self.clSetKernelArg)(
@@ -914,7 +914,7 @@ impl OpenCLQueue {
     }
 
     pub(super) fn sync(&mut self) -> Result<(), OpenCLError> {
-        println!("Syncing {:?}", self);
+        //println!("Syncing {:?}", self);
         unsafe { (self.clFinish)(self.queue) }.check("Failed to synchronize device queue.")?;
         self.load = 0;
         //self.events.clear();

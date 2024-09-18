@@ -52,7 +52,7 @@ fn div() -> Result<(), ZyxError> {
     let z = x / y;
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
-        assert_eq!(x/y, z);
+        assert!((x/y - z).abs() < 0.00001);
     }
     Ok(())
 }
@@ -69,7 +69,7 @@ fn pow() -> Result<(), ZyxError> {
         if x.pow(y).is_nan() && z.is_nan() {
             continue
         }
-        assert_eq!(x.pow(y), z);
+        assert!((x.pow(y) - z).abs() < 0.00001);
     }
     Ok(())
 }

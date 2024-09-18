@@ -110,7 +110,7 @@ impl Runtime {
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
     /// It does not reset the rng and it does not change debug, search, training and config_dir fields
     fn deinitialize(&mut self) -> Result<(), ZyxError> {
-        println!("Deinitialize");
+        //println!("Deinitialize");
         // drop compiled graph cache
         self.compiled_graph_cache = BTreeMap::new();
         // drop tensor buffer_map

@@ -349,10 +349,10 @@ impl Tensor {
 
         let shape: Vec<usize> = [2].into_iter().chain(shape.into_shape()).collect();
         let src = Tensor::rand(shape, dtype)?;
-        let x = src
-            .get(0)
-            .mul(Tensor::constant(2f32 * std::f32::consts::PI))
-            .cos();
+        let mut x = src.get(0);
+        x = x.mul(Tensor::constant(2f32 * std::f32::consts::PI));
+        //panic!();
+        x = x.cos();
         let mut y = Tensor::constant(1f32) - src.get(1);
         //println!("{y} minus");
         y = y.ln().mul(Tensor::constant(-2f32)).sqrt();
@@ -482,9 +482,10 @@ impl Tensor {
     #[must_use]
     pub fn cos(&self) -> Tensor {
         let x = self.float_cast();
-        Tensor {
+        let x = Tensor {
             id: RT.lock().cos(x.id),
-        }
+        };
+        x
     }
 
     /// `cosh(x) = (exp(x) + exp(-x)) / 2`.
@@ -531,9 +532,10 @@ impl Tensor {
     #[must_use]
     pub fn exp2(&self) -> Tensor {
         let x = self.float_cast();
-        Tensor {
+        let x = Tensor {
             id: RT.lock().exp2(x.id),
-        }
+        };
+        x
     }
 
     /// Computes the exponential of each element in the input tensor using base e.
@@ -754,9 +756,10 @@ impl Tensor {
     #[must_use]
     pub fn sin(&self) -> Tensor {
         let x = self.float_cast();
-        Tensor {
+        let x = Tensor {
             id: RT.lock().sin(x.id),
-        }
+        };
+        x
     }
 
     /// Applies the hyperbolic sine function to each element in the input tensor.
@@ -807,9 +810,10 @@ impl Tensor {
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         let x = self.float_cast();
-        return Tensor {
+        let x = Tensor {
             id: RT.lock().sqrt(x.id),
         };
+        x
     }
 
     /// Applies the Swish activation function to each element in the input tensor.
@@ -850,7 +854,7 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let t = Tensor::from(vec![0.5, 1.0]);
-    /// assert_eq!(t.tanh(), Tensor::from(vec![0.46211715738221946, 0.761594166564993]));
+    /// assert_eq!(t.tanh(), [0.46211715738221946, 0.761594166564993]);
     /// ```
     ///
     /// # Panics
@@ -963,17 +967,17 @@ impl Tensor {
     pub fn pad_zeros(&self, padding: impl IntoPadding) -> Tensor {
         // TODO asserts
         let padding = padding.into_padding();
-        for &(l, r) in &padding {
-            match (l > 0, r > 0) {
-                (true, true) => {
-                    //assert!(l < shape[i].rank());
-                    //assert!(r < shape[i].rank());
-                    assert!(l < r);
-                }
-                (true, false) => {}
-                (false, true) => {}
-                (false, false) => {}
+        for (i, &(l, r)) in padding.iter().enumerate() {
+            let shape = self.shape();
+            let rank = shape.len();
+            let mut total = 0;
+            if l < 0 {
+                total -= l;
             }
+            if r < 0 {
+                total -= r;
+            }
+            assert!((total as usize) < shape[rank-i-1]);
         }
         return Tensor {
             id: RT.lock().pad_zeros(self.id, padding),
@@ -1352,9 +1356,9 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use zyx::Tensor;
+    /// use zyx::{Tensor, DType};
     ///
-    /// let t = Tensor::rand([3, 4]);
+    /// let t = Tensor::rand([3, 4], DType::F32).unwrap();
     /// let std_kd = t.std_kd([0, 1]);
     /// assert_eq!(std_kd.shape(), [1, 2]);
     /// ```
@@ -1495,7 +1499,7 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let a = Tensor([[1., 2., 3.], [4., 5., 6.]]);
+    /// let a = Tensor::from([[1., 2., 3.], [4., 5., 6.]]);
     /// assert_eq!(a.var_kd(0), 1.5);
     /// ```
     #[must_use]
@@ -1903,25 +1907,38 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use zyx::Tensor;
+    /// use zyx::{Tensor, DType};
     ///
-    /// let t = Tensor::zeros(&[2, 3]);
+    /// let t = Tensor::zeros([2, 3], DType::I8);
     /// assert_eq!(t.unsqueeze(1).shape(), &[2, 1, 3]);
     /// assert_eq!(t.unsqueeze(-1).shape(), &[2, 3, 1]);
     /// ```
     #[must_use]
     pub fn unsqueeze(&self, dim: isize) -> Tensor {
         let shape = self.shape();
-        let rank = shape.len();
-        let dim = (dim + rank as isize) as usize % rank;
-        return self.reshape(
-            shape[..dim]
-                .iter()
-                .copied()
-                .chain([1])
-                .chain(shape[dim..].iter().copied())
-                .collect::<Vec<usize>>(),
-        );
+        if dim < 0 {
+            let rank = shape.len();
+            let dim = (-dim) as usize;
+            let dim = rank - dim + 1;
+            return self.reshape(
+                shape[..dim]
+                    .iter()
+                    .copied()
+                    .chain([1])
+                    .chain(shape[dim..].iter().copied())
+                    .collect::<Vec<usize>>(),
+            );
+        } else {
+            let dim = dim as usize;
+            return self.reshape(
+                shape[..dim]
+                    .iter()
+                    .copied()
+                    .chain([1])
+                    .chain(shape[dim..].iter().copied())
+                    .collect::<Vec<usize>>(),
+            );
+        }
     }
 
     /// Creates a new tensor by stacking the input tensors along the specified dimension.
@@ -3131,6 +3148,28 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     }
 }
 
+impl PartialEq<f32> for Tensor {
+    fn eq(&self, other: &f32) -> bool {
+        if let Ok(data) = self.clone().try_into() {
+            let data: f32 = data;
+            &data == other
+        } else {
+            false
+        }
+    }
+}
+
+impl PartialEq<i32> for Tensor {
+    fn eq(&self, other: &i32) -> bool {
+        if let Ok(data) = self.clone().try_into() {
+            let data: i32 = data;
+            &data == other
+        } else {
+            false
+        }
+    }
+}
+
 impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
     fn eq(&self, other: &[T; D0]) -> bool {
         if let Ok(data) = self.clone().try_into() {
@@ -3267,7 +3306,6 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        println!("Multiply ref by {y}");
         let tensor = Tensor {
             id: RT.lock().mul(x.id, y.id),
         };

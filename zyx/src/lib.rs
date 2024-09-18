@@ -346,3 +346,14 @@ fn t5() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     println!("{}", x.get((.., 2..3)));
 }
+
+/*#[test]
+fn t6() {
+    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
+    let handle = std::thread::spawn(|| {
+        let y = Tensor::from([2, 3]);
+        println!("{y}");
+    });
+    println!("{x}");
+    handle.join().unwrap();
+}*/
