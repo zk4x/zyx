@@ -921,7 +921,8 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
-    /// let t = Tensor::rand((3, 4));
+    /// use zyx::Tensor;
+    /// let t = Tensor::rand((3, 4)).unwrap();
     /// let p = [1, 0];
     /// let permuted_t = t.permute(p); // Results in a tensor with axes (4, 3)
     /// ```
@@ -1117,8 +1118,9 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
-    /// let t = Tensor::from(&[1, 2, 3, 4]);
-    /// assert_eq!(t.reshape((2, 2)), Tensor::from(&[[1, 2], [3, 4]]));
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([1, 2, 3, 4]);
+    /// assert_eq!(t.reshape((2, 2)), [[1, 2], [3, 4]]);
     /// ```
     ///
     /// # Panics
@@ -1863,12 +1865,13 @@ impl Tensor {
     /// let a = Tensor::from([[1, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
     /// let c = Tensor::cat([&a, &b], 0);
-    /// assert_eq!(c, [[[1, 2], [5, 6]], [[3, 4], [7, 8]]]);
+    /// assert_eq!(c, [[1, 2], [5, 6], [3, 4], [7, 8]]);
     /// ```
     ///
     #[must_use]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
+        assert!(tensors.len() > 1, "Cat requires two or more tensors.");
         let shape = tensors[0].shape();
         let rank = shape.rank();
         let dim = if dim < 0 { dim + rank as isize } else { dim } as usize;
@@ -1881,17 +1884,25 @@ impl Tensor {
             }
         }
         let mut offset = 0isize;
-        let mut res = Tensor::zeros(tensors[0].shape(), tensors[0].dtype());
+        let mut offset2 = tensors.iter().fold(0, |acc, t| acc + t.shape()[dim] as isize);
+        let mut shape = tensors[0].shape();
+        shape[dim] = offset2 as usize;
+        let mut res = None;
         for tensor in tensors {
-            res = res
-                + tensor.pad_zeros(
-                    core::iter::repeat((0isize, 0isize))
-                        .take(rank - dim - 1)
-                        .chain([(offset, 0isize)]),
-                );
-            offset += tensor.shape()[dim] as isize;
+            let d = tensor.shape()[dim] as isize;
+            offset2 -= d;
+            let padding: Vec<(isize, isize)> = core::iter::repeat((0isize, 0isize))
+                    .take(rank - dim - 1)
+                    .chain([(offset, offset2)]).collect();
+            let t = tensor.pad_zeros(padding);
+            if let Some(r) = res {
+                res = Some(r + t);
+            } else {
+                res = Some(t);
+            }
+            offset += d;
         }
-        res
+        res.unwrap()
     }
 
     /// Expands the dimensionality of a tensor by inserting singleton dimensions.
@@ -2204,7 +2215,7 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let arr = Tensor::from(vec![1, 2, 3]);
-    /// assert_eq!(arr.repeat([2]), Tensor::from(vec![1, 2, 3, 4, 5, 6]));
+    /// assert_eq!(arr.repeat([2]), vec![1, 2, 3, 4, 5, 6]);
     /// ```
     ///
     /// # Panics

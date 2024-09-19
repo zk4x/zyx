@@ -349,7 +349,9 @@ impl Runtime {
     #[must_use]
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         //println!("reshaping to {shape:?}, {:?}", self.shape(x));
-        if &shape == self.shape(x) {
+        let sh = self.shape(x);
+        assert_eq!(shape.iter().product::<usize>(), sh.iter().product::<usize>());
+        if &shape == sh {
             self.retain(x);
             return x;
         }
@@ -358,7 +360,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
-        if &shape == self.shape(x) {
+        let sh = self.shape(x);
+        assert_eq!(shape.len(), sh.len());
+        if &shape == sh {
             self.retain(x);
             return x;
         }
@@ -959,6 +963,7 @@ impl Runtime {
 }
 
 fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    assert_eq!(shape.len(), axes.len());
     axes.iter().map(|a| shape[*a]).collect()
 }
 

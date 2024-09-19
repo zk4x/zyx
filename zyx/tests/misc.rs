@@ -125,3 +125,14 @@ fn uni_matmul() {
     let z = x.dot(y);
     println!("{z}");
 }
+
+#[test]
+fn cat() {
+    use zyx::Tensor;
+    let a = Tensor::from([[1, 2], [3, 4]]);
+    let b = Tensor::from([[5, 6], [7, 8]]);
+    let c = Tensor::cat([&a, &b], 0);
+    assert_eq!(c, [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]);
+    let c = Tensor::cat([&a, &b], 1);
+    assert_eq!(c, [[1, 2, 5, 6], [3, 4, 7, 8]]);
+}

@@ -103,6 +103,16 @@ pub trait IntoAxes: Clone {
     fn len(&self) -> usize;
 }
 
+impl IntoAxes for () {
+    fn into_axes(self, _: usize) -> impl Iterator<Item = usize> {
+        return [].into_iter();
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+}
+
 impl IntoAxes for isize {
     fn into_axes(self, rank: usize) -> impl Iterator<Item = usize> {
         return [to_axis(self, rank)].into_iter();
