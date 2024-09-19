@@ -132,18 +132,52 @@ impl Kernel {
         Kernel { ops }
     }
 
-    pub(super) fn store(&mut self, z: TensorId, graph: &Graph) {
+    /// Store z just after the last operation was executed with it
+    pub(super) fn store(&mut self, z: TensorId, zview: View) {
         let store_op = VOp::Store {
             z,
-            zview: View::new(graph.shape(z)),
+            zview: zview.clone(),
             zscope: Scope::Global,
             xscope: Scope::Register,
             xview: View::None,
         };
-        if self.ops.last().unwrap() != &store_op {
-            self.ops.push(store_op);
-            //println!("Storing {z}");
+        for (id, op) in self.ops.iter().enumerate().rev() {
+            match op {
+                VOp::Load { x, xview, .. } => {
+                    if *x == z && xview == &zview {
+                        return
+                    }
+                }
+                VOp::Store { z: x, zview: xview, .. } => {
+                    if *x == z && xview == &zview {
+                        return
+                    }
+                }
+                VOp::Move { z: x, .. } => {
+                    if z == *x {
+                        self.ops.insert(id+1, store_op);
+                        return
+                    }
+                }
+                VOp::Unary { z: x, .. } => {
+                    if z == *x {
+                        self.ops.insert(id+1, store_op);
+                        return
+                    }
+                }
+                VOp::Binary { z: x, .. } => {
+                    if z == *x {
+                        self.ops.insert(id+1, store_op);
+                        return
+                    }
+                }
+                _ => {}
+            }
         }
+    }
+
+    pub(super) fn is_reduce(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, VOp::Accumulator { .. }))
     }
 
     pub(super) fn permute(&mut self, axes: &[usize]) {

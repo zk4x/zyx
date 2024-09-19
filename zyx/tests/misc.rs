@@ -142,12 +142,12 @@ fn softmax() {
     //let y = x.softmax([]);
     let y = x.max_kd([]);
     //println!("{y:?}");
-    let e = (x - y).exp2();
-    println!("{e:?}");
-    panic!();
+    let e = (x - y).exp();
+    //println!("{e:?}");
+    //panic!();
 
-    //y = &e / e.sum_kd([]);
+    let y = &e / e.sum_kd([]);
 
     //Tensor::plot_graph([], "graph").unwrap();
-    //println!("{y:?}");
+    println!("{y:?}");
 }
