@@ -19,8 +19,8 @@ Zyx uses syntax similar to pytorch.
 ```rust
 use zyx::{Tensor, DType};
 
-let x = Tensor::randn([1024, 1024], DType::BF16);
-let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32);
+let x = Tensor::randn([1024, 1024], DType::BF16).unwrap();
+let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32).unwrap();
 let b = Tensor::zeros([1024], DType::F16);
 let z = &x + &y;
 let z = (x.dot(&y) + b).gelu();
@@ -48,8 +48,6 @@ cargo add zyx-nn;
 ```rust
 use zyx::{Tensor, DType};
 use zyx_nn::Linear;
-
-Tensor::set_default_device_best();
 
 let l0 = Linear::new(3, 1024, DType::F16);
 let l1 = Linear::new(1024, 2, DType::F16);

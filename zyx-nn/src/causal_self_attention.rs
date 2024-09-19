@@ -1,4 +1,4 @@
-use zyx::{Tensor, DType};
+use zyx::{DType, Tensor, ZyxError};
 use crate::Linear;
 
 /// Causal self attention
@@ -11,18 +11,20 @@ pub struct CausalSelfAttention {
 }
 
 impl CausalSelfAttention {
-    pub fn new(n_embd: usize, n_head: usize, bias: bool, dropout_p: f32, dtype: DType) -> CausalSelfAttention {
-        CausalSelfAttention {
-            c_attn: Linear::new(n_embd, 3*n_embd, bias, dtype),
-            c_proj: Linear::new(n_embd, n_embd, bias, dtype),
+    /// New causal self attention
+    pub fn new(n_embd: usize, n_head: usize, bias: bool, dropout_p: f32, dtype: DType) -> Result<CausalSelfAttention, ZyxError> {
+        Ok(CausalSelfAttention {
+            c_attn: Linear::new(n_embd, 3*n_embd, bias, dtype)?,
+            c_proj: Linear::new(n_embd, n_embd, bias, dtype)?,
             n_head,
             n_embd,
             dropout_p,
-        }
+        })
     }
 
-    pub fn forward(&self, x: impl Into<Tensor>) -> Tensor {
-        let mut x: Tensor = x.into();
+    /// Forward pass of causal self attention
+    pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let x: Tensor = x.into();
         let [b, t, c] = x.shape()[..] else { panic!("x must have 3 dims") };
         let mut splits = self.c_attn.forward(x).split(self.n_embd, 2);
         let mut v = splits.pop().unwrap();
@@ -37,11 +39,11 @@ impl CausalSelfAttention {
         // TODO rewrite this
         //att = att.masked_fill(self.bias.get((.., .., ..T, ..T)) == 0, f32::INF);
         att = att.softmax(1);
-        att = att.dropout(self.dropout_p);
+        att = att.dropout(self.dropout_p)?;
         let mut y = att.dot(v);
         y = y.transpose(1, 2).reshape([b, t, c]);
         y = self.c_proj.forward(y);
-        y = y.dropout(self.dropout_p);
-        return y;
+        y = y.dropout(self.dropout_p)?;
+        return Ok(y);
     }
 }

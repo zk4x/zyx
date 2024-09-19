@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// Layer norm layer
@@ -15,13 +15,13 @@ pub struct LayerNorm {
 
 impl LayerNorm {
     /// Initialize LayerNorm layer
-    pub fn new(normalized_shape: impl zyx::IntoShape, dtype: DType) -> LayerNorm {
-        LayerNorm {
+    pub fn new(normalized_shape: impl zyx::IntoShape, dtype: DType) -> Result<LayerNorm, ZyxError> {
+        Ok(LayerNorm {
             d_dims: normalized_shape.rank(),
-            weight: Some(Tensor::randn(normalized_shape.clone(), dtype)),
-            bias: Some(Tensor::randn(normalized_shape, dtype)),
+            weight: Some(Tensor::randn(normalized_shape.clone(), dtype)?),
+            bias: Some(Tensor::randn(normalized_shape, dtype)?),
             eps: 1e-5,
-        }
+        })
     }
 
     /// Forward function for layer_norm.

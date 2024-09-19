@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// An Elman RNN cell without nonlinearity
@@ -16,16 +16,16 @@ pub struct RNNCell {
 
 impl RNNCell {
     /// Initialize linear layer in device self
-    pub fn new(self, input_size: usize, hidden_size: usize, dtype: DType) -> RNNCell {
+    pub fn new(self, input_size: usize, hidden_size: usize, dtype: DType) -> Result<RNNCell, ZyxError> {
         use zyx::Scalar;
         let l = Scalar::sqrt(-(1. / (hidden_size as f32)));
         let u = Scalar::sqrt(1. / (hidden_size as f32));
-        RNNCell {
-            weight_ih: Tensor::uniform([hidden_size, input_size], l..u).cast(dtype),
-            weight_hh: Tensor::uniform([hidden_size, hidden_size], l..u).cast(dtype),
-            bias_ih: Some(Tensor::uniform([hidden_size], l..u).cast(dtype)),
-            bias_hh: Some(Tensor::uniform([hidden_size], l..u).cast(dtype)),
-        }
+        Ok(RNNCell {
+            weight_ih: Tensor::uniform([hidden_size, input_size], l..u)?.cast(dtype),
+            weight_hh: Tensor::uniform([hidden_size, hidden_size], l..u)?.cast(dtype),
+            bias_ih: Some(Tensor::uniform([hidden_size], l..u)?.cast(dtype)),
+            bias_hh: Some(Tensor::uniform([hidden_size], l..u)?.cast(dtype)),
+        })
     }
 
     /// Forward function for RNNCell.

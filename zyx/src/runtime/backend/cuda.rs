@@ -101,10 +101,11 @@ pub(super) struct CUDAQueue {
     cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
-//unsafe impl Send for CUDAMemoryPool {}
-//unsafe impl Send for CUDABuffer {}
-//unsafe impl Send for CUDAProgram {}
-//unsafe impl Send for CUDAQueue {}
+// This is currently just wrong ...
+unsafe impl Send for CUDAMemoryPool {}
+unsafe impl Send for CUDABuffer {}
+unsafe impl Send for CUDAProgram {}
+unsafe impl Send for CUDAQueue {}
 
 pub(super) fn initialize_devices(
     config: &CUDAConfig,
