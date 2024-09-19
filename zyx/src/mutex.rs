@@ -30,18 +30,11 @@ pub(super) struct MutexGuard<'a, T: 'a> {
     data: &'a UnsafeCell<T>,
 }
 
-// This is backend dependent. CUDA requires thread local contexts, which
-// we can't guarantee. So we need some way to ensure that this always runs
-// on the same threat, or fix CUDA backend to be Sendable. Also we will
-// need to fix OpenCL backend for that, so more general solution
-// would be to make sure that backends always run on single threat.
-unsafe impl<T, const N: usize> Sync for Mutex<T, N> {}
+unsafe impl<T: Send, const N: usize> Sync for Mutex<T, N> {}
+unsafe impl<T: Send, const N: usize> Send for Mutex<T, N> {}
 
-//unsafe impl<T: Send, const N: usize> Sync for Mutex<T, N> {}
-//unsafe impl<T: Send, const N: usize> Send for Mutex<T, N> {}
-
-//unsafe impl<T: Sync> Sync for MutexGuard<'_, T> {}
-//unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
+unsafe impl<T: Sync> Sync for MutexGuard<'_, T> {}
+unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
 
 impl<T, const N: usize> Mutex<T, N> {
     pub(super) const fn new(data: T) -> Self {
