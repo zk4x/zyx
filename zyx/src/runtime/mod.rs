@@ -1,6 +1,6 @@
 use crate::dtype::{Constant, DType};
 use crate::scalar::Scalar;
-use crate::shape::Dimension;
+use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
 use backend::{
     BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool,
@@ -392,8 +392,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn sum_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
-        let shape = reduce(self.shape(x), &axes);
+    pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<usize>) -> TensorId {
+        let sh = self.shape(x);
+        if axes.is_empty() {
+            axes = (0..sh.len()).collect();
+        };
+        let shape = reduce(sh, &axes);
         self.graph.push_wshape(
             Node::Reduce {
                 x,
@@ -405,8 +409,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn max_reduce(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
-        let shape = reduce(self.shape(x), &axes);
+    pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<usize>) -> TensorId {
+        let sh = self.shape(x);
+        if axes.is_empty() {
+            axes = (0..sh.len()).collect();
+        };
+        let shape = reduce(sh, &axes);
         self.graph.push_wshape(
             Node::Reduce {
                 x,
@@ -959,25 +967,6 @@ impl Runtime {
             }
         }
         return res;
-    }
-}
-
-fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    assert_eq!(shape.len(), axes.len());
-    axes.iter().map(|a| shape[*a]).collect()
-}
-
-fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    let res: Vec<usize> = shape
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
-        .collect();
-    if res.is_empty() {
-        vec![1]
-    } else {
-        res
     }
 }
 

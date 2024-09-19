@@ -1195,6 +1195,15 @@ impl Tensor {
     /// * `self` - The input tensor to compute the softmax and natural logarithm of.
     /// * `axes` - A trait implementing `IntoAxes`, specifying along which axes the softmax should be computed.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zyx::Tensor;
+    /// let x = Tensor::from([2f32, 3., 4.]);
+    /// let y = x.ln_softmax([]);
+    /// println!("{y}");
+    /// ```
+    ///
     /// # Returns
     ///
     /// The resulting tensor after computing the natural logarithm of the softmax of `self`.
@@ -1589,9 +1598,9 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let a = Tensor::from(&[1.0, 2.0, 3.0]);
-    /// let b = Tensor::from(&[4.0, 5.0, 6.0]);
-    /// assert_eq!(a.cmplt(b), &[1., 1., 1.]);
+    /// let a = Tensor::from([1.0, 2.0, 3.0]);
+    /// let b = Tensor::from([4.0, 5.0, 6.0]);
+    /// assert_eq!(a.cmplt(b), [1., 1., 1.]);
     /// ```
     ///
     /// # Panics
@@ -1712,7 +1721,7 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let input = Tensor::from([0.5, 0.2, 0.3]);
     /// let target = Tensor::from([1., 0., 0.]);
-    /// assert_eq!(input.cross_entropy_loss(target), -0.69314718);
+    /// assert_eq!(input.cross_entropy_loss(target, ()), -0.69314718);
     /// ```
     ///
     /// # Panics
@@ -1865,7 +1874,7 @@ impl Tensor {
     /// let a = Tensor::from([[1, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
     /// let c = Tensor::cat([&a, &b], 0);
-    /// assert_eq!(c, [[1, 2], [5, 6], [3, 4], [7, 8]]);
+    /// assert_eq!(c, [[1, 2], [3, 4], [5, 6], [7, 8]]);
     /// ```
     ///
     #[must_use]
@@ -2520,6 +2529,7 @@ impl Tensor {
         }
         //println!("Second broadcast operand {y}");
         y = y.reshape(&y_shape);
+        //println!("{x_shape:?}, {y_shape:?}, {eshape:?}");
         //println!("After reshape second broadcast operand {y}");
         //Tensor::plot_graph([], "graph");
         if y_shape != eshape {
@@ -3183,6 +3193,9 @@ impl PartialEq<i32> for Tensor {
 
 impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
     fn eq(&self, other: &[T; D0]) -> bool {
+        if self.shape() != [D0] {
+            return false
+        }
         if let Ok(data) = self.clone().try_into() {
             let data: [T; D0] = data;
             &data == other
@@ -3194,6 +3207,9 @@ impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
 
 impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for Tensor {
     fn eq(&self, other: &[[T; D1]; D0]) -> bool {
+        if self.shape() != [D0, D1] {
+            return false
+        }
         if let Ok(data) = self.clone().try_into() {
             let data: [[T; D1]; D0] = data;
             &data == other
@@ -3207,6 +3223,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
     for Tensor
 {
     fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
+        if self.shape() != [D0, D1, D2] {
+            return false
+        }
         if let Ok(data) = self.clone().try_into() {
             let data: [[[T; D2]; D1]; D0] = data;
             &data == other
@@ -3220,6 +3239,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     PartialEq<[[[[T; D3]; D2]; D1]; D0]> for Tensor
 {
     fn eq(&self, other: &[[[[T; D3]; D2]; D1]; D0]) -> bool {
+        if self.shape() != [D0, D1, D2, D3] {
+            return false
+        }
         if let Ok(data) = self.clone().try_into() {
             let data: [[[[T; D3]; D2]; D1]; D0] = data;
             &data == other

@@ -578,7 +578,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
+        println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);
@@ -654,6 +654,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x,
                     mop: MOp::Expa,
                 });
+                assert_eq!(kernel.shape(), graph.shape(nid));
                 //println!("Into");
                 //kernel.debug();
             }
@@ -668,8 +669,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x: *x,
                     mop: MOp::Perm,
                 });
+                assert_eq!(kernel.shape(), graph.shape(nid));
             }
             Node::Reshape { x } => {
+                // Reshape needs to add new loops to the end of the kernel if it is unsqueeze
                 // If we really want, we can get reshape working with loads and stores
                 // simply by using view for loads to have multiple reshapes in single view.
                 // But for now it is much simpler to just add new kernel.
@@ -822,6 +825,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             x: *x,
                             mop: MOp::Resh,
                         });
+                        assert_eq!(kernel.shape(), graph.shape(nid));
                         //kernel.debug();
                     } else {
                         // else create new kernel after storing results of previous kernel
@@ -891,6 +895,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     x: *x,
                     mop: MOp::Padd,
                 });
+                assert_eq!(kernel.shape(), graph.shape(nid));
             }
             Node::Reduce { x, axes, rop } => {
                 let kernel = get_kernel(*x, &mut kernels, graph);
@@ -955,8 +960,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 for _ in 0..axes.len() {
                     kernel.ops.push(VOp::EndLoop);
                 }
-
-                if kernel.shape() == [1] && !matches!(kernel.ops[0], VOp::Loop { .. }) {
+                if kernel.shape().is_empty() {
                     kernel.insert_loop(0, 0);
                 }
                 // Optionally merge axes (if possible) for potentially better performance
@@ -981,6 +985,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     .iter_mut()
                     .position(|kernel| kernel.vars().is_superset(&[*x, *y].into()))
                 {
+                    for kernel in &kernels {
+                        kernel.debug();
+                    }
+                    // TODO what if one of the variables is in different loop than the other?
                     // If both inputs are in the same kernel
                     let kernel = if kernels[id].shape() != graph.shape(*x) {
                         // create new kernel using already predefined stores of both x and y
@@ -1048,10 +1056,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         }
                     }
 
-                    //println!("Kernel x");
-                    //kernels[kernel_x_id].debug();
-                    //println!("Kernel y");
-                    //kernels[kernel_y_id].debug();
+                    println!("Kernel x");
+                    kernels[kernel_x_id].debug();
+                    println!("Kernel y");
+                    kernels[kernel_y_id].debug();
                     let shape = graph.shape(nid);
                     assert_eq!(kernels[kernel_x_id].shape(), shape);
                     assert_eq!(kernels[kernel_y_id].shape(), shape);

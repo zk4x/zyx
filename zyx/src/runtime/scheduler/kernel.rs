@@ -25,8 +25,24 @@ impl Kernel {
             self.inputs(),
             self.outputs()
         );
+        let mut first_loops = true;
+        let mut indent = String::new();
         for vop in &self.ops {
-            println!("{vop}");
+            println!("{indent}{vop}");
+            match vop {
+                VOp::Loop { .. } => {
+                    if !first_loops {
+                        indent += "  ";
+                    }
+                }
+                VOp::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                }
+                _ => {
+                    first_loops = false;
+                }
+            }
         }
         println!();
     }

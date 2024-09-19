@@ -128,11 +128,26 @@ fn uni_matmul() {
 
 #[test]
 fn cat() {
-    use zyx::Tensor;
     let a = Tensor::from([[1, 2], [3, 4]]);
     let b = Tensor::from([[5, 6], [7, 8]]);
     let c = Tensor::cat([&a, &b], 0);
-    assert_eq!(c, [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]);
+    assert_eq!(c, [[1, 2], [3, 4], [5, 6], [7, 8]]);
     let c = Tensor::cat([&a, &b], 1);
     assert_eq!(c, [[1, 2, 5, 6], [3, 4, 7, 8]]);
+}
+
+#[test]
+fn softmax() {
+    let x = Tensor::from([2f32, 4., 3.]);
+    //let y = x.softmax([]);
+    let y = x.max_kd([]);
+    //println!("{y:?}");
+    let e = (x - y).exp2();
+    println!("{e:?}");
+    panic!();
+
+    //y = &e / e.sum_kd([]);
+
+    //Tensor::plot_graph([], "graph").unwrap();
+    //println!("{y:?}");
 }

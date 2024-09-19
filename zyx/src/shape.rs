@@ -186,3 +186,22 @@ impl<I: IntoIterator<Item = (isize, isize)>> IntoPadding for I {
         self.into_iter().collect()
     }
 }
+
+pub(crate) fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    assert_eq!(shape.len(), axes.len());
+    axes.iter().map(|a| shape[*a]).collect()
+}
+
+pub(crate) fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+    let res: Vec<usize> = shape
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
+        .collect();
+    if res.is_empty() {
+        vec![1]
+    } else {
+        res
+    }
+}
