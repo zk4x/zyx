@@ -262,27 +262,6 @@ fn t_18() {
 }
 */
 
-#[cfg(feature = "rand")]
-#[test]
-fn t4() {
-    let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
-    let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();
-    //let x = Tensor::rand([1024, 1024], DType::F32);
-    //let y = Tensor::rand([1024, 1024], DType::F32);
-    for _ in 0..2 {
-        let z = x.dot(&y);
-        //Tensor::plot_graph([], "graph0");
-        Tensor::realize([&z]).unwrap();
-        //Tensor::plot_graph([], &format!("graph0"));
-        println!("{z}");
-        drop(z);
-        //Tensor::plot_graph([], "graph1");
-        //Tensor::plot_graph([], &format!("graph"));
-    }
-    //Tensor::plot_graph([], "graph0");
-    //Tensor::realize([&z]).unwrap();
-}
-
 /*#[test]
 fn t_15() {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
@@ -339,6 +318,27 @@ fn t3() {
     for t in tensors {
         println!("{t}");
     }
+}
+
+#[cfg(feature = "rand")]
+#[test]
+fn t4() {
+    //let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
+    //let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();
+    let x = Tensor::rand([1024, 1024], DType::F32).unwrap();
+    let y = Tensor::rand([1024, 1024], DType::F32).unwrap();
+    for _ in 0..20 {
+        let z = x.dot(&y);
+        //Tensor::plot_graph([], "graph0");
+        Tensor::realize([&z]).unwrap();
+        //Tensor::plot_graph([], &format!("graph0"));
+        //println!("{z}");
+        drop(z);
+        //Tensor::plot_graph([], "graph1");
+        //Tensor::plot_graph([], &format!("graph"));
+    }
+    //Tensor::plot_graph([], "graph0");
+    //Tensor::realize([&z]).unwrap();
 }
 
 #[test]

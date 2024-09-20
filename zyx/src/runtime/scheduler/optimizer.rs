@@ -191,7 +191,7 @@ impl Kernel {
 
         // Reorder so that register work threads are last
         // Register threads are op_id 1, 4 and 7
-        /*let mut threaded = true;
+        let mut threaded = true;
         let rlz = kernel.ops.remove(8);
         let rly = kernel.ops.remove(5);
         let rlx = kernel.ops.remove(2);
@@ -270,7 +270,7 @@ impl Kernel {
                     _ => {}
                 }
             }
-        }*/
+        }
 
         // Local tiling
         if optimization.local_tiles {

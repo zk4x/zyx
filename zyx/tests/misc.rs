@@ -137,6 +137,27 @@ fn cat() {
 }
 
 #[test]
+fn matmul_1024() {
+    //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
+    //let y = xy.pop().unwrap();
+    //let x = xy.pop().unwrap();
+    let mut xyz: Vec<Tensor> = Tensor::load("xyz.safetensors").unwrap();
+    let z = xyz.pop().unwrap();
+    let y = xyz.pop().unwrap();
+    let x = xyz.pop().unwrap();
+    let dataz: Vec<f32> = z.try_into().unwrap();
+    let zz = x.matmul(y);
+    let datazz: Vec<f32> = zz.try_into().unwrap();
+
+    for (x, y) in dataz.iter().zip(datazz) {
+        //println!("{x}, {y}");
+        assert!((x - y).abs() < 0.01);
+    }
+
+    //println!("{z}");
+}
+
+/*#[test]
 fn softmax() {
     let x = Tensor::from([2f32, 4., 3.]);
     //let y = x.softmax([]);
@@ -150,4 +171,4 @@ fn softmax() {
 
     //Tensor::plot_graph([], "graph").unwrap();
     println!("{y:?}");
-}
+}*/

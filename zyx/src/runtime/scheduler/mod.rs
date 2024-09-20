@@ -900,6 +900,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
             Node::Reduce { x, axes, rop } => {
+                // TODO do not apply reduce on a previously fully reduced and expanded kernel, this
+                // happens in softmax
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 //println!("Axes {axes:?}");
@@ -1061,10 +1063,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         }
                     }
 
-                    println!("Kernel x");
-                    kernels[kernel_x_id].debug();
-                    println!("Kernel y");
-                    kernels[kernel_y_id].debug();
+                    //println!("Kernel x");
+                    //kernels[kernel_x_id].debug();
+                    //println!("Kernel y");
+                    //kernels[kernel_y_id].debug();
                     let shape = graph.shape(nid);
                     assert_eq!(kernels[kernel_x_id].shape(), shape);
                     assert_eq!(kernels[kernel_y_id].shape(), shape);
@@ -1128,7 +1130,9 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 .iter_mut()
                 .find(|kernel| kernel.vars().contains(&nid))
             {
-                kernel.store(nid, View::new(graph.shape(nid)));
+                //kernel.store(nid, View::new(graph.shape(nid)));
+                kernel.ops.push(VOp::Store { z: nid, zview: View::new(graph.shape(nid)),
+                    zscope: Scope::Global, xview: View::None, xscope: Scope::Register });
             } else {
                 panic!()
             }
@@ -1210,7 +1214,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
-            0..1000 => (x, ""),
+            0..1000 => (x/100, ""),
             1000..1000000 => (x / 10, "k"),
             1000_000..1000000000 => (x / 1000_0, "M"),
             1000_000_000..1000_000_000_000 => (x / 1000_000_0, "G"),
@@ -1224,24 +1228,25 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (br, br_u) = value_unit(bytes_read);
     let (bw, bw_u) = value_unit(bytes_written);
     let (t_d, t_u) = match nanos {
-        0..1000 => (1, "ns"),
-        1000..1000_000 => (1000, "μs"),
-        1000_000..1000_000_000 => (1000_000, "ms"),
-        1000_000_000..1000_000_000_000 => (1000_000_000, "s"),
-        1000_000_000_000.. => (60_000_000_000, "min"),
+        0..1000 => (1/10, "ns"),
+        1000..1000_000 => (100, "μs"),
+        1000_000..1000_000_000 => (1000_00, "ms"),
+        1000_000_000..1000_000_000_000 => (1000_000_00, "s"),
+        1000_000_000_000.. => (60_000_000_00, "min"),
     };
 
     let (fs, f_us) = value_unit(flop * 1000_000_000 / nanos);
     let (brs, br_us) = value_unit(bytes_read * 1000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1000_000_000 / nanos);
 
-    println!("        {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write, took {} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write.",
-        nanos/t_d,
+    println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write",
+        nanos/(t_d*10),
+        (nanos/t_d)%10,
         fs/100,
         fs%100,
         brs/100,
         brs%100,
         bws/100,
-        bws%100
+        bws%100,
     );
 }

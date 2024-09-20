@@ -296,6 +296,17 @@ impl MemoryPool {
                 }
                 memory_pool.deinitialize()?;
             }
+            MemoryPool::WGSL {
+                mut memory_pool,
+                mut buffers,
+            } => {
+                let ids: Vec<usize> = buffers.ids().collect();
+                for id in ids {
+                    let buffer = buffers.remove(id).unwrap();
+                    memory_pool.deallocate(buffer)?;
+                }
+                memory_pool.deinitialize()?;
+            }
         }
         Ok(())
     }
@@ -552,6 +563,22 @@ impl Device {
                 device.deinitialize()?;
             }
             Device::OpenCL {
+                device,
+                mut programs,
+                mut queues,
+                ..
+            } => {
+                let ids: Vec<usize> = programs.ids().collect();
+                for id in ids {
+                    let program = programs.remove(id).unwrap();
+                    device.release_program(program)?;
+                }
+                while let Some(queue) = queues.pop() {
+                    device.release_queue(queue)?;
+                }
+                device.deinitialize()?;
+            }
+            Device::WGSL {
                 device,
                 mut programs,
                 mut queues,

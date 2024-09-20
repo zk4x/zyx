@@ -149,6 +149,10 @@ impl WGSLMemoryPool {
         self.free_bytes
     }
 
+    pub(super) fn deinitialize(self) -> Result<(), WGSLError> {
+        Ok(())
+    }
+
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<WGSLBuffer, WGSLError> {
         Ok(WGSLBuffer {
             buffer: self.device.create_buffer(&BufferDescriptor {
@@ -224,6 +228,14 @@ impl WGSLDevice {
 
     pub(super) fn release_program(&self, program: WGSLProgram) -> Result<(), WGSLError> {
         drop(program);
+        Ok(())
+    }
+
+    pub(super) fn release_queue(&self, queue: WGSLQueue) -> Result<(), WGSLError> {
+        Ok(())
+    }
+
+    pub(super) fn deinitialize(self) -> Result<(), WGSLError> {
         Ok(())
     }
 

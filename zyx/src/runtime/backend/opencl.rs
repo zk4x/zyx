@@ -171,7 +171,9 @@ impl OpenCLDevice {
     }
 
     pub(super) fn deinitialize(self) -> Result<(), OpenCLError> {
-        // cuReleaseDevice is OpenCL 1.2 only, but we support 1.0, so nothing to do here
+        // cuReleaseDevice is OpenCL 1.2 only, but we support 1.0, so nothing to do here?
+        // TODO better do it conditionally, if the function exists in .so, then load it, do nothing
+        // otherwise
         Ok(())
     }
 }

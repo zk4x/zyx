@@ -1664,6 +1664,12 @@ impl Tensor {
             )
     }
 
+    /// Matmul is just alias to dot
+    #[must_use]
+    pub fn matmul(&self, rhs: impl Into<Tensor>) -> Tensor {
+        self.dot(rhs)
+    }
+
     /// Returns a new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
     ///
     /// # Examples
@@ -2332,9 +2338,9 @@ impl Tensor {
                                 })
                             })
                             .collect::<Result<Vec<usize>, ZyxError>>()?;
-                        //std::println!("Offsets: {offsets:?}");
+                        std::println!("Offsets: {offsets:?}");
                         let bytes = shape.iter().product::<usize>() * dtype.byte_size();
-                        if offsets[tensors.len() + 1] != bytes {
+                        if offsets[1] - offsets[0] != bytes {
                             return Err(ZyxError::ParseError(
                                 "Safetensors shapes and offsets are incorrect.".into(),
                             ));
