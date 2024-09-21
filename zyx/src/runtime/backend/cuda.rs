@@ -458,7 +458,7 @@ impl CUDADevice {
         }
 
         // Declare global variables
-        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
                     "{indent}{}{}* p{id},\n",
@@ -471,6 +471,17 @@ impl CUDADevice {
         source.pop();
         source.pop();
         source += "\n) {\n";
+
+        // Declare local variables
+        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Local {
+                source += &format!(
+                    "{indent}__shared__ {} p{id}[{len}];\n",
+                    //if *read_only { "const " } else { "" },
+                    dtype.cu(),
+                );
+            }
+        }
 
         // Declare accumulators
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
