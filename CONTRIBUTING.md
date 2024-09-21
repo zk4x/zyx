@@ -15,3 +15,7 @@ zyx has pretty comprehensive integration test suite, no test suite can catch all
 is very easy to understand, it will probably get rejected. However if you can produce extremely good code that significantly
 increases the performance of at least some devices (>10% perf improvement), then this is the best thing you can do to
 help zyx grow.
+
+- Find bugs - finding a bug is amazing news, because correctness is no. ! goal
+
+- Fix bugs - this is good too, but finding new bugs is even better
