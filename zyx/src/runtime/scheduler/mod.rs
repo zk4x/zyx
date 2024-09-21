@@ -473,7 +473,7 @@ impl Runtime {
                 }
                 // Optimize and compile multiple kernels at once on different threads,
                 // since compilation takes ~50ms,
-                let optimized_kernel = if kernel.is_reduce() {
+                /*let optimized_kernel = if kernel.is_reduce() {
                     kernel.optimize(&KernelOptimization {
                         local_tiles: true,
                         permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
@@ -481,11 +481,12 @@ impl Runtime {
                     })
                 } else {
                     kernel.optimize(&optimizer[optimization_id])
-                };
-                optimized_kernel.debug();
+                };*/
+                let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
+                //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
-                let program_id = self.devices[device_id].compile(&ir_kernel, true)?;
+                let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
                 let queue_id = match self.devices[device_id].launch(

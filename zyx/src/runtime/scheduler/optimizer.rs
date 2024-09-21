@@ -124,12 +124,22 @@ impl Kernel {
                                             // Permute, private loops last
                                             opts.push((
                                                 KernelOptimization {
-                                                    splits,
+                                                    splits: splits.clone(),
                                                     permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
-                                                    local_tiles: true,
+                                                    local_tiles: false,
                                                 },
                                                 0,
                                             ));
+                                            if rr == ly && rr == lz {
+                                                opts.push((
+                                                    KernelOptimization {
+                                                        splits,
+                                                        permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
+                                                        local_tiles: true,
+                                                    },
+                                                    0,
+                                                ));
+                                            }
                                         }
                                     }
                                     if acc_found && matches!(op, VOp::Loop { .. }) {
@@ -147,7 +157,7 @@ impl Kernel {
                                         KernelOptimization {
                                             splits,
                                             permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
-                                            local_tiles: true,
+                                            local_tiles: false,
                                         },
                                         0,
                                     ));
@@ -299,6 +309,7 @@ impl Kernel {
         // more loop and then they will just need to be dividable without remainder.
         // TODO also take lws[0] into consideration
         if optimization.local_tiles && lws[1] == reduce_ws && lws[2] == reduce_ws {
+            println!("Using local tiling");
             // Local tile all loads that do not use all loop axes
             // Local tiles use local dimensions and register dimensions
             // i.e. [rws[0]*lws[0], rws[1]*lws[1], rws[2]*lws[2]]

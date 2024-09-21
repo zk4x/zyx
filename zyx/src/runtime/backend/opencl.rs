@@ -652,7 +652,15 @@ impl OpenCLDevice {
         source.pop();
         source += "\n) {\n";
 
-        // TODO declare local variables
+        // Declare local variables
+        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Local {
+                source += &format!(
+                    "{indent}__local {} p{id}[{len}];\n",
+                    dtype.ocl(),
+                );
+            }
+        }
 
         // Declare register accumulators
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {

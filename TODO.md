@@ -53,7 +53,7 @@
 - [x] tensor split op
 - [x] simplify vops
 - [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
-- [ ] local memory tiling
+- [x] local memory tiling
 - [ ] register tiling
 - [x] tensor arange initialization
 - [x] fix weird bug in graph realization when accessing multiple graphs concurrently (delete tensors did not delete shapes and dtypes)
@@ -65,9 +65,10 @@
 - [x] fix double free opencl command queue
 - [ ] amd WMMA cores
 - [ ] nvidia tensor cores
-- [ ] better fusion by making expand add new loops to the end of the kernel
+- [x] better fusion by making expand add new loops to the end of the kernel (expand now requires reshape, so this is no longer needed)
 - [ ] better fusion by making reshape add new loops to the end of the kernel
-- [ ] faster softmax and fast attention
+- [ ] faster softmax
+- [ ] fast attention
 - [x] go over all todos in source code and check which are necessary
 - [x] fix bug in scheduler when testing cumsum (it was a bug in view)
 - [x] rewrite the AI generated docs, they are horrible
