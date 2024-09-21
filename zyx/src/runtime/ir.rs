@@ -83,9 +83,9 @@ pub(super) enum IROp {
         len: usize,
     },
     // TODO
-    /*Barrier {
+    Barrier {
         scope: Scope,
-    },*/
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -297,6 +297,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 tensor_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 tensor_rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
             }
+            VOp::Barrier { .. } => {}
         }
     }
     let tensor_rcs = tensor_rcs;
@@ -357,6 +358,35 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
     }
 
     // TODO Declare local variables
+    for op in kernel_ops {
+        match op {
+            &VOp::Load {
+                x,
+                xscope,
+                ref xview,
+                ..
+            } => {
+                if xscope == Scope::Local && !addressables_map.contains_key(&(x, xscope)) {
+                    let dtype = graph.dtype(x).ir_dtype();
+                    addressables.push((xscope, dtype, xview.original_numel(), true));
+                    let id = (addressables.len() - 1) as u16;
+                    addressables_map.insert((x, xscope), id);
+                }
+            }
+            &VOp::Store {
+                z,
+                zscope,
+                ref zview,
+                xscope,
+                ..
+            } => {
+                if zscope == Scope::Local {
+                    todo!()
+                }
+            }
+            _ => {}
+        }
+    }
 
     // Declare accumulators
     // TODO if we have multiple accumulators with the same size, we must reuse them
@@ -505,13 +535,26 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
             &VOp::Load {
                 z,
                 zscope,
-                zview: _,
+                ref zview,
                 x,
                 xscope,
                 ref xview,
             } => match (zscope, xscope) {
                 (Scope::Local, Scope::Global) => {
-                    todo!()
+                    let dtype = graph.dtype(z).ir_dtype();
+                    let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
+                    let address = addressables_map[&(x, xscope)];
+                    load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
+                    register_map.insert(z, Var::Id(id));
+                    let address = addressables_map[&(z, zscope)];
+                    store_indexed(address, Var::Id(id), zview, &mut registers, &mut ops);
+                }
+                (Scope::Register, Scope::Local) => {
+                    let dtype = graph.dtype(z).ir_dtype();
+                    let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
+                    let address = addressables_map[&(x, xscope)];
+                    load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
+                    register_map.insert(z, Var::Id(id));
                 }
                 (Scope::Register, Scope::Global) => {
                     let dtype = graph.dtype(z).ir_dtype();
@@ -630,6 +673,9 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
                     store_indexed(address, zvar, zview, &mut registers, &mut ops);
                 }
+            }
+            &VOp::Barrier { scope } => {
+                ops.push(IROp::Barrier { scope });
             }
         }
     }

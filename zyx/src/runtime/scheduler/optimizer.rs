@@ -171,7 +171,19 @@ impl Kernel {
             kernel.split_axis(*op_id, dimensions);
         }
 
-        //return kernel;
+        let mut lws = [0; 3];
+        let VOp::Loop { len, .. } = kernel.ops[1] else {
+            panic!()
+        };
+        lws[0] = len;
+        let VOp::Loop { len, .. } = kernel.ops[4] else {
+            panic!()
+        };
+        lws[1] = len;
+        let VOp::Loop { len, .. } = kernel.ops[7] else {
+            panic!()
+        };
+        lws[2] = len;
 
         let mut rws = [0; 3];
         let VOp::Loop { len, .. } = kernel.ops[2] else {
@@ -272,12 +284,112 @@ impl Kernel {
             }
         }
 
-        // Local tiling
-        if optimization.local_tiles {
+        // TODO local tiling in elementwise kernels
+        let mut reduce_ws = 0;
+        for op in &kernel.ops {
+            if let &VOp::Loop { axis, len } = op {
+                if axis > 9 {
+                    reduce_ws = len;
+                }
+            }
+        }
+
+        // Local tiling, for now possible only if both local dims equal reduce work size
+        // TODO For now local work sizes must be equal to reduce_ws, later we can add one
+        // more loop and then they will just need to be dividable without remainder.
+        // TODO also take lws[0] into consideration
+        if optimization.local_tiles && lws[1] == reduce_ws && lws[2] == reduce_ws {
             // Local tile all loads that do not use all loop axes
             // Local tiles use local dimensions and register dimensions
             // i.e. [rws[0]*lws[0], rws[1]*lws[1], rws[2]*lws[2]]
             // TODO
+            let mut axes = Vec::new();
+            let mut lengths = Vec::new();
+            let mut rl_id = 0; // id of the global reduce loop
+            let mut id = 0;
+            while id < kernel.ops.len() {
+                match &mut kernel.ops[id] {
+                    &mut VOp::Loop { axis, len } => {
+                        axes.push(axis);
+                        lengths.push(len);
+                        if axis > 8 {
+                            rl_id = id-1;
+                        }
+                        if axis == 2 && rl_id != 0 {
+                            //kernel.ops.insert(id, kernel.ops[rl_id].clone());
+                            kernel.ops.insert(id-1, VOp::Barrier { scope: Scope::Local });
+                            //kernel.ops.insert(id, VOp::EndLoop);
+                            id += 1;
+                        }
+                    }
+                    VOp::EndLoop => {
+                        if let Some(axis) = axes.pop() {
+                            if let Some(&VOp::Loop { axis: raxis, .. }) = kernel.ops.get(rl_id) {
+                                if axis == raxis {
+                                    kernel.ops.insert(id, VOp::Barrier { scope: Scope::Local });
+                                    id += 1;
+                                }
+                            }
+                            if axis == 9 {
+                                rl_id = 0;
+                            }
+                        }
+                        lengths.pop().unwrap();
+                    }
+                    VOp::Load { z, zscope, zview, x, xscope, xview } => {
+                        if *zscope == Scope::Register && *xscope == Scope::Global && zview == &View::None {
+                            let mut sorted_axes = axes.clone();
+                            sorted_axes.sort();
+                            let used_axes = xview.used_axes();
+                            if used_axes != sorted_axes {
+                                let global_view = xview.clone();
+                                // TODO add rws[0]
+                                let axes = if used_axes.contains(&5) {
+                                    [4, 7, 5]
+                                } else {
+                                    [4, 7, 8]
+                                };
+                                let dims = if used_axes.contains(&5) {
+                                    [lws[1], lws[2], rws[1]]
+                                } else {
+                                    [lws[1], lws[2], rws[2]]
+                                };
+                                let local_view = View::binded(&dims, &axes);
+
+                                *xview = local_view.clone();
+                                *xscope = Scope::Local;
+                                let z = *z;
+                                let x = *x;
+
+                                kernel.ops.insert(rl_id+1, VOp::EndLoop);
+                                kernel.ops.insert(rl_id+1, VOp::Load {
+                                    z,
+                                    zscope: Scope::Local,
+                                    zview: local_view,
+                                    x,
+                                    xscope: Scope::Global,
+                                    xview: global_view,
+                                });
+                                if used_axes.contains(&8) {
+                                    kernel.ops.insert(rl_id+1, VOp::Loop {
+                                        axis: 8,
+                                        len: rws[2],
+                                    });
+                                }
+                                if used_axes.contains(&5) {
+                                    kernel.ops.insert(rl_id+1, VOp::Loop {
+                                        axis: 5,
+                                        len: rws[1],
+                                    });
+                                }
+                                id += 3;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                id += 1;
+            }
         }
         kernel
     }

@@ -2327,7 +2327,7 @@ impl Tensor {
                             .collect::<Result<_, ZyxError>>()?;
                     } else if i % 7 == 6 {
                         // TODO assert offsets
-                        //std::println!("Offsets: {text}");
+                        //println!("Offsets: {text}");
                         let offsets = text
                             .split(',')
                             .map(|offset| {
@@ -2338,7 +2338,7 @@ impl Tensor {
                                 })
                             })
                             .collect::<Result<Vec<usize>, ZyxError>>()?;
-                        std::println!("Offsets: {offsets:?}");
+                        //println!("Offsets: {offsets:?}");
                         let bytes = shape.iter().product::<usize>() * dtype.byte_size();
                         if offsets[1] - offsets[0] != bytes {
                             return Err(ZyxError::ParseError(

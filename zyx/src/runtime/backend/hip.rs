@@ -470,16 +470,17 @@ impl HIPDevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                } /*IROp::Barrier { scope } => {
-                      source += &format!(
-                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                          match scope {
-                              Scope::Global => "GLOB",
-                              Scope::Local => "LOC",
-                              Scope::Register => panic!(),
-                          }
-                      );
-                  }*/
+                }
+                IROp::Barrier { scope } => {
+                    source += &format!(
+                        "{};\n",
+                        match scope {
+                            Scope::Global => "__threadfence()",
+                            Scope::Local => "__syncthreads()",
+                            Scope::Register => panic!(),
+                        }
+                    );
+                }
             }
         }
         source += "}\n";

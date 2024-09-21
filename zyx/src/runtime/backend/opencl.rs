@@ -777,7 +777,8 @@ impl OpenCLDevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                } /*IROp::Barrier { scope } => {
+                }
+                IROp::Barrier { scope } => {
                       source += &format!(
                           "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
                           match scope {
@@ -786,7 +787,7 @@ impl OpenCLDevice {
                               Scope::Register => panic!(),
                           }
                       );
-                  }*/
+                  }
             }
         }
         source += "}\n";

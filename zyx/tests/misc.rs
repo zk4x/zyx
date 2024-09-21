@@ -145,6 +145,8 @@ fn matmul_1024() {
     let z = xyz.pop().unwrap();
     let y = xyz.pop().unwrap();
     let x = xyz.pop().unwrap();
+    println!("{:?}", x.shape());
+    println!("{:?}", y.shape());
     let dataz: Vec<f32> = z.try_into().unwrap();
     let zz = x.matmul(y);
     let datazz: Vec<f32> = zz.try_into().unwrap();

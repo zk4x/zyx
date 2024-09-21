@@ -585,16 +585,17 @@ impl CUDADevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                } /*IROp::Barrier { scope } => {
-                      source += &format!(
-                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                          match scope {
-                              Scope::Global => "GLOB",
-                              Scope::Local => "LOC",
-                              Scope::Register => panic!(),
-                          }
-                      );
-                  }*/
+                }
+                IROp::Barrier { scope } => {
+                    source += &format!(
+                        "{};\n",
+                        match scope {
+                            Scope::Global => "__threadfence()",
+                            Scope::Local => "__syncthreads()",
+                            Scope::Register => panic!(),
+                        }
+                    );
+                }
             }
         }
         source += "}\n";
@@ -923,7 +924,17 @@ impl CUDADevice {
                     source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
                     // Branch
                     source += &format!("@p  bra    LOOP_{id};\n");
-                } //IROp::Barrier { .. } => todo!(),
+                }
+                IROp::Barrier { scope } => {
+                    source += &format!(
+                        "{};\n",
+                        match scope {
+                            Scope::Global => "__threadfence()",
+                            Scope::Local => "__syncthreads()",
+                            Scope::Register => panic!(),
+                        }
+                    );
+                }
             }
         }
         // End kernel

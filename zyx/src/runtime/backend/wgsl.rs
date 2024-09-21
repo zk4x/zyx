@@ -276,6 +276,18 @@ impl WGSLDevice {
             }
             read_only_args.push(*read_only);
         }
+        source += "\n";
+        // Declare local variables
+        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Local {
+                source += &format!(
+                    "var<workgroup> p{id}: array<{}, {len}>;\n",
+                    dtype.wgsl(),
+                );
+            }
+        }
+
+        // Function declaration and name
         source += &format!(
             "\n@compute @workgroup_size({}, {}, {})\n",
             local_work_size[0], local_work_size[1], local_work_size[2]
@@ -408,16 +420,14 @@ impl WGSLDevice {
                     indent.pop();
                     indent.pop();
                     source += &format!("{indent}}}\n");
-                } /*IROp::Barrier { scope } => {
-                      source += &format!(
-                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                          match scope {
-                              Scope::Global => "GLOB",
-                              Scope::Local => "LOC",
-                              Scope::Register => panic!(),
-                          }
-                      );
-                  }*/
+                }
+                IROp::Barrier { scope } => {
+                      match scope {
+                          Scope::Global => source += &format!("{indent}storageBarrier();\n"),
+                          Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
+                          Scope::Register => panic!(),
+                      }
+                  }
             }
         }
         source += "}\n";

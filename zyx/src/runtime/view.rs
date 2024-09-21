@@ -26,23 +26,6 @@ pub(super) enum View {
     // since then loads are very unpredictable
 }
 
-/*impl PaddedAxes {
-    fn new(axis: Axis, left_pad: isize, right_pad: isize) -> Self {
-        Self {
-            axes: vec![(vec![axis], (left_pad, right_pad))],
-        }
-    }
-
-    fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
-        if let Some((_, (lp, rp))) = self.axes.iter_mut().find(|(k, _)| k.contains(&axis)) {
-            *lp += left_pad;
-            *rp += right_pad;
-        } else {
-            self.axes.push((vec![axis], (left_pad, right_pad)));
-        }
-    }
-}*/
-
 impl View {
     pub(super) fn new(shape: &[usize]) -> Self {
         let mut stride = 1;
@@ -102,13 +85,18 @@ impl View {
         }
     }
 
+    /// Returns sorted used axes
     pub(super) fn used_axes(&self) -> Vec<Axis> {
         match self {
             View::None => Vec::new(),
-            View::Strided(dims) | View::Padded(dims, _) => dims
-                .iter()
-                .flat_map(|x| if x.stride != 0 { Some(x.axis) } else { None })
-                .collect(),
+            View::Strided(dims) | View::Padded(dims, _) => {
+                let mut res: Vec<Axis> = dims
+                    .iter()
+                    .flat_map(|x| if x.stride != 0 { Some(x.axis) } else { None })
+                    .collect();
+                res.sort();
+                res
+            }
         }
     }
 
@@ -383,13 +371,13 @@ impl Display for View {
         match self {
             View::None => f.write_str("View::None"),
             View::Strided(dims) => f.write_fmt(format_args!(
-                "View::Strided axes: {:?}, shape: {:?}, strides: {:?}",
+                "V:S ax{:?} sh{:?} st{:?}",
                 dims.iter().map(|d| d.axis).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.dim).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.stride).collect::<Vec<Stride>>()
             )),
             View::Padded(dims, padding) => f.write_fmt(format_args!(
-                "View::Padded axes: {:?}, shape: {:?}, strides: {:?}, padding: {:?}",
+                "V:P ax{:?} sh{:?} st{:?} pd{:?}",
                 dims.iter().map(|d| d.axis).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.dim).collect::<Vec<Dimension>>(),
                 dims.iter().map(|d| d.stride).collect::<Vec<Stride>>(),

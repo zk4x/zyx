@@ -296,6 +296,7 @@ impl MemoryPool {
                 }
                 memory_pool.deinitialize()?;
             }
+            #[cfg(feature = "wgsl")]
             MemoryPool::WGSL {
                 mut memory_pool,
                 mut buffers,
@@ -578,6 +579,7 @@ impl Device {
                 }
                 device.deinitialize()?;
             }
+            #[cfg(feature = "wgsl")]
             Device::WGSL {
                 device,
                 mut programs,

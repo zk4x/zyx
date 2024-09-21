@@ -473,10 +473,19 @@ impl Runtime {
                 }
                 // Optimize and compile multiple kernels at once on different threads,
                 // since compilation takes ~50ms,
-                let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
-                //optimized_kernel.debug();
+                let optimized_kernel = if kernel.is_reduce() {
+                    kernel.optimize(&KernelOptimization {
+                        local_tiles: true,
+                        permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
+                        splits: vec![(3, vec![64, 16]), (0, vec![1, 1024]), (2, vec![8, 16, 8]), (1, vec![8, 16, 8]), (0, vec![1, 1, 1])],
+                    })
+                } else {
+                    kernel.optimize(&optimizer[optimization_id])
+                };
+                optimized_kernel.debug();
+                //panic!();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
-                let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
+                let program_id = self.devices[device_id].compile(&ir_kernel, true)?;
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
                 let queue_id = match self.devices[device_id].launch(
@@ -578,11 +587,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!(
+        /*println!(
             "ID({nid})x{}: {node:?}, sh: {:?}",
             graph.rc(nid),
             graph.shape(nid)
-        );
+        );*/
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);
@@ -694,6 +703,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     VOp::Loop { .. }
                     | VOp::Unary { .. }
                     | VOp::Binary { .. }
+                    | VOp::Barrier { .. }
                     | VOp::Move { .. } => true,
                     VOp::Load { xview: view, .. }
                     | VOp::Store { zview: view, .. }

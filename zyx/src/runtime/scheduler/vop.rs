@@ -65,6 +65,10 @@ pub(crate) enum VOp {
         yview: View,
         bop: BOp,
     },
+    // Synchronization for local and global memory
+    Barrier {
+        scope: Scope,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
@@ -128,6 +132,7 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             VOp::Binary { z, zview, x, xview, y, yview, bop } => f.write_fmt(format_args!(
                 "{color_white}Binary{color_reset}.{bop:?}  {z}[{zview}] <- {x}[{xview}], {y}[{yview}]"
             )),
+            VOp::Barrier { scope } => f.write_fmt(format_args!("{color_magenta}Barrier{color_reset}({scope})")),
         }
     }
 }

@@ -28,9 +28,9 @@ impl Kernel {
         let mut first_loops = true;
         let mut indent = String::new();
         for vop in &self.ops {
-            println!("{indent}{vop}");
             match vop {
                 VOp::Loop { .. } => {
+                    println!("{indent}{vop}");
                     if !first_loops {
                         indent += "  ";
                     }
@@ -38,8 +38,10 @@ impl Kernel {
                 VOp::EndLoop => {
                     indent.pop();
                     indent.pop();
+                    println!("{indent}{vop}");
                 }
                 _ => {
+                    println!("{indent}{vop}");
                     first_loops = false;
                 }
             }
@@ -220,9 +222,6 @@ impl Kernel {
                     };
                     view.permute(&permute_axes);
                 }
-                /*VOp::Reduce { num_axes, .. } => {
-                    skip_loops += *num_axes;
-                }*/
                 VOp::EndLoop => {
                     skip_loops += 1;
                 }
@@ -452,6 +451,7 @@ impl Kernel {
                 VOp::Binary { .. } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
+                VOp::Barrier { .. } => {}
             }
         }
         (flop, mem_read, mem_write)
