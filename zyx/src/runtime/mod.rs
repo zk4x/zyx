@@ -976,7 +976,7 @@ pub enum ZyxError {
     /// Invalid shapes for operation
     ShapeError(String),
     /// Wrong dtype for given operation
-    DTypeError(&'static str),
+    DTypeError(String),
     /// Backend configuration error
     BackendConfig(&'static str),
     /// Error from file operations

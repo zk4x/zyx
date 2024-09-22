@@ -300,7 +300,8 @@ impl Kernel {
         // TODO For now local work sizes must be equal to reduce_ws, later we can add one
         // more loop and then they will just need to be dividable without remainder.
         // TODO also take lws[0] into consideration
-        if optimization.local_tiles && lws[1] == reduce_ws && lws[2] == reduce_ws {
+        if false {
+        //if optimization.local_tiles && lws[1] == reduce_ws && lws[2] == reduce_ws {
             println!("Using local tiling");
             // Local tile all loads that do not use all loop axes
             // Local tiles use local dimensions and register dimensions

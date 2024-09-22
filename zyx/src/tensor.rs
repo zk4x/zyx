@@ -344,9 +344,6 @@ impl Tensor {
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        // src = Tensor.rand((2, *argfix(*shape)), **{**kwargs, "dtype": dtypes.float32})
-        // return src[0].mul(2*math.pi).cos().mul((1 - src[1]).log().mul(-2).sqrt()).cast(dtype or dtypes.default_float)
-
         let shape: Vec<usize> = [2].into_iter().chain(shape.into_shape()).collect();
         let src = Tensor::rand(shape, dtype)?;
         let mut x = src.get(0)?;
@@ -387,7 +384,6 @@ impl Tensor {
     #[must_use]
     pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
         let n = T::from_i64(shape.clone().into_shape().skip(1).product::<usize>() as i64);
-        // bound = math.sqrt(3.0) * math.sqrt(2.0 / (1 + a ** 2)) / math.sqrt(prod(argfix(*shape)[1:]))
         let one = T::one();
         let x = Scalar::add(one, Scalar::mul(a, a));
         let two = Scalar::add(one, one);
@@ -643,8 +639,8 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Mish(input_element)`.
     #[must_use]
-    pub fn mish(&self) -> Result<Tensor, ZyxError> {
-        Ok(self * self.softplus(1, 20)?.tanh())
+    pub fn mish(&self) -> Tensor {
+        self * self.softplus(1, 20).tanh()
     }
 
     /// Computes the quick GELU activation function for each element in the input tensor.
@@ -789,9 +785,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the softplus function with the given beta and threshold.
     #[must_use]
-    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Result<Tensor, ZyxError> {
+    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor {
         let x = self * beta;
-        x.cmplt(threshold)?.where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
+        x.cmplt(threshold).unwrap().where_(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }
 
     /// Applies the square root function to each element in the input tensor.
@@ -877,11 +873,12 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        assert!(shape.rank() > 0);
         let mut sh = self.shape();
         let shape: Vec<usize> = shape.into_shape().collect();
         //println!("Expand to {shape:?}");
-        assert!(shape.rank() >= sh.rank());
+        if shape.rank() < sh.rank() {
+            return Err(ZyxError::ShapeError(format!("Cannot expand {:?} into {:?}", self.shape(), shape)));
+        }
         if shape.rank() > sh.rank() {
             let mut i = sh.len();
             for d in shape.iter().copied().rev() {
@@ -925,13 +922,9 @@ impl Tensor {
     pub fn permute(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
-        assert_eq!(
-            rank,
-            axes.len(),
-            "Axes has rank {}, but tensor has rank {}. It must be the same for permute.",
-            axes.len(),
-            rank
-        );
+        if rank != axes.len() {
+            return Err(ZyxError::ShapeError(format!("Axes has rank {}, but tensor has rank {}. It must be the same for permute.", axes.len(), rank)));
+        }
         Ok(Tensor { id: RT.lock().permute(self.id, axes) })
     }
 
@@ -955,7 +948,6 @@ impl Tensor {
     /// This function will panic if the padding configuration is invalid.
     #[must_use]
     pub fn pad_zeros(&self, padding: impl IntoPadding) -> Result<Tensor, ZyxError> {
-        // TODO asserts
         let padding = padding.into_padding();
         for (i, &(l, r)) in padding.iter().enumerate() {
             let shape = self.shape();
@@ -1012,31 +1004,14 @@ impl Tensor {
     ) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         let value: Tensor = value.into();
-        assert_eq!(
-            value.dtype(),
-            dtype,
-            "Cannot pad tensor with dtype {} with value of dtype {}",
-            dtype,
-            value.dtype()
-        );
         let padding = padding.into_padding();
         let sh = self.shape();
-        assert!(
-            padding.len() <= sh.rank()
-                && padding
-                    .iter()
-                    .zip(sh.iter().rev())
-                    .all(|((lp, rp), d)| if *lp < 0 {
-                        ((-*lp) as usize) <= *d
-                    } else {
-                        true
-                    } && if *rp < 0 {
-                        ((-*rp) as usize) <= *d
-                    } else {
-                        true
-                    }),
-            "Cannot pad tensor with shape {sh:?} with padding {padding:?}"
-        );
+        if value.dtype() != dtype {
+            return Err(ZyxError::DTypeError(format!("Cannot pad tensor with dtype {} with value of dtype {}", dtype, value.dtype())));
+        }
+        if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|((lp, rp), d)| if *lp < 0 { ((-*lp) as usize) <= *d } else { true } && if *rp < 0 { ((-*rp) as usize) <= *d } else { true }) {
+            return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}")));
+        }
         let t0 = self.pad_zeros(padding.clone());
         if value.numel() == 1
             && match dtype {
@@ -1126,18 +1101,8 @@ impl Tensor {
 
     /// An alias to reshape
     #[must_use]
-    pub fn view(&self, shape: impl IntoShape) -> Tensor {
-        let shape: Vec<usize> = shape.into_shape().collect();
-        assert_eq!(
-            shape.iter().product::<usize>(),
-            self.numel(),
-            "Invalid view of {:?} into {:?}",
-            self.shape(),
-            shape
-        );
-        Tensor {
-            id: RT.lock().reshape(self.id, shape),
-        }
+    pub fn view(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
+        self.reshape(shape)
     }
 
     /// Transpose last two dimensions of this tensor.
@@ -1241,7 +1206,9 @@ impl Tensor {
         let axes: Vec<usize> = axes.into_axes(rank).collect();
         let mut unique = BTreeSet::new();
         for a in &axes {
-            assert!(unique.insert(a), "Axes contain duplicates.");
+            if !unique.insert(a) {
+                return Err(ZyxError::ShapeError("Axes contain duplicates.".into()));
+            }
         }
         Ok(Tensor { id: RT.lock().max_reduce(self.id, axes) })
     }
@@ -1387,13 +1354,16 @@ impl Tensor {
     /// Passing empty axes executes reduce across all dimensions and result will have shape `[1]`
     #[must_use]
     pub fn sum(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        // TODO handle axes out of range error
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
         {
             // We can add checks for axes being less than rank and axes not containing duplicates
             let mut unique = BTreeSet::new();
             for a in &axes {
-                assert!(unique.insert(a), "Axes contain duplicates.");
+                if !unique.insert(a) {
+                    return Err(ZyxError::ShapeError("Axes contains duplicates.".into()));
+                }
                 // This is checked by into_axes function
                 //assert!(a < rank, "Axes are too high");
             }
@@ -1632,12 +1602,10 @@ impl Tensor {
         let yshape = y.shape();
         let xrank = xshape.rank();
         let yrank = yshape.rank();
-        assert_eq!(
-            xshape[xrank - 1],
-            yshape[yrank - 1],
+        if xshape[xrank - 1] != yshape[yrank - 1] {
             //yshape[-(yrank.min(2) as i64)],
-            "Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}",
-        );
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}")));
+        }
         let x_shape = xshape[..xrank - 1]
             .iter()
             .copied()
@@ -1885,7 +1853,9 @@ impl Tensor {
     #[must_use]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Result<Tensor, ZyxError> {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
-        assert!(tensors.len() > 1, "Cat requires two or more tensors.");
+        if tensors.len() < 2 {
+            return Err(ZyxError::ShapeError("Cat requires two or more tensors.".into()));
+        }
         let shape = tensors[0].shape();
         let rank = shape.rank();
         let dim = if dim < 0 { dim + rank as isize } else { dim } as usize;
@@ -1893,7 +1863,9 @@ impl Tensor {
         for tensor in &tensors {
             for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
                 if i != dim {
-                    assert_eq!(*d1, *d2, "Cannot concatenate these tensors.");
+                    if *d1 != *d2 {
+                        return Err(ZyxError::ShapeError("Cannot concatenate these tensors.".into()));
+                    }
                 }
             }
         }
@@ -2015,14 +1987,9 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.rank();
         let dim: usize = if dim < 0 { dim + rank as isize } else { dim } as usize;
-        assert_eq!(
-            sizes.iter().sum::<usize>(),
-            shape[dim],
-            "Sizes must sum exactly to {}, but got {:?}, which sums to {}",
-            shape[dim],
-            sizes,
-            sizes.iter().sum::<usize>()
-        );
+        if sizes.iter().sum::<usize>() != shape[dim] {
+            return Err(ZyxError::ShapeError(format!("Sizes must sum exactly to {}, but got {:?}, which sums to {}", shape[dim], sizes, sizes.iter().sum::<usize>())));
+        }
 
         let mut res = Vec::new();
         let mut acc_size = 0;
@@ -2243,10 +2210,9 @@ impl Tensor {
         let repeats: Vec<usize> = repeats.into_shape().collect();
         let shape = self.shape();
         let rank = shape.len();
-        assert!(
-            repeats.len() >= rank,
-            "Repeats must be greater or equal to rank of the tensor."
-        );
+        if repeats.len() < rank {
+            return Err(ZyxError::ShapeError("Repeats must be greater or equal to rank of the tensor.".into()));
+        }
 
         let base_shape: Vec<usize> = repeat(1)
             .take(repeats.len() - rank)
