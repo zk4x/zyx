@@ -184,3 +184,6 @@ impl Scalar for bf16 {
         todo!()
     }
 }
+
+impl Float for bf16 {}
+

@@ -144,3 +144,5 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
         };
     }
 }
+
+pub trait Float: Scalar {}

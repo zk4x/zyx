@@ -1,5 +1,5 @@
 use crate::dtype::DType;
-use crate::scalar::Scalar;
+use crate::scalar::{Scalar, Float};
 use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
@@ -182,3 +182,6 @@ impl Scalar for f16 {
         todo!()
     }
 }
+
+impl Float for f16 {}
+

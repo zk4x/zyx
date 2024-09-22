@@ -3,7 +3,7 @@
 //! Tensors are at the core of all machine learning.
 
 use crate::dtype::DType;
-use crate::scalar::Scalar;
+use crate::scalar::{Scalar, Float};
 use crate::shape::{to_axis, IntoAxes, IntoPadding, IntoShape};
 use core::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -505,14 +505,9 @@ impl Tensor {
     /// and set to zero with probability `probability`.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn dropout<P: Scalar>(&self, probability: P) -> Result<Tensor, ZyxError> {
-        let dtype = P::dtype();
-        assert!(
-            dtype.is_float(),
-            "Dropout only works on floating dtype probability."
-        );
+    pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Result<Tensor, ZyxError> {
         // TODO fix this for training (dropout in training is just scaling)
-        Ok(Tensor::from(probability).cmplt(Tensor::rand(self.shape(), dtype)?)? * self)
+        Ok(Tensor::from(probability).cmplt(Tensor::rand(self.shape(), P::dtype())?)? * self)
     }
 
     /// Applies the Exponential Linear Unit function element-wise.

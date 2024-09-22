@@ -1,5 +1,5 @@
 use crate::dtype::DType;
-use crate::scalar::Scalar;
+use crate::scalar::{Scalar, Float};
 #[cfg(feature = "half")]
 use half::{bf16, f16};
 #[cfg(feature = "complex")]
@@ -187,3 +187,6 @@ impl Scalar for f64 {
         (self != 0. || rhs != 0.) as i32 as f64
     }
 }
+
+impl Float for f64 {}
+
