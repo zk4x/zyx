@@ -19,11 +19,11 @@ Zyx uses syntax similar to pytorch.
 ```rust
 use zyx::{Tensor, DType};
 
-let x = Tensor::randn([1024, 1024], DType::BF16).unwrap();
-let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32).unwrap();
+let x = Tensor::randn([1024, 1024], DType::BF16)?;
+let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
 let b = Tensor::zeros([1024], DType::F16);
 let z = &x + &y;
-let z = (x.dot(&y) + b).gelu();
+let z = (x.dot(&y)? + b).gelu();
 // Zyx allows for arbitrary differentiation
 let b_grad = z.backward([&b])[0].unwrap();
 // Also higher order derivatives
@@ -67,7 +67,7 @@ let train_steps = 100;
 for _ in 0..train_steps {
     let y = l0.forward(&x).relu();
     let y = l1.forward(&y).sigmoid();
-    let loss = y.mse_loss(&target):
+    let loss = y.mse_loss(&target)?:
     let grads = loss.backward(l0.into_iter().chain(l1.into_iter()));
     optim.update(l0.into_iter().chain(l1.into_iter()), grads);
 }
