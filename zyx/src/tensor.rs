@@ -1127,7 +1127,7 @@ impl Tensor {
     pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         if dim0 < 0 {
-            if (-dim0) as usize >= rank {
+            if (-dim0) as usize > rank {
                 return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}")));
             }
         } else {
@@ -1136,7 +1136,7 @@ impl Tensor {
             }
         }
         if dim1 < 0 {
-            if (-dim1) as usize >= rank {
+            if (-dim1) as usize > rank {
                 return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}")));
             }
         } else {
@@ -1186,7 +1186,7 @@ impl Tensor {
     ///
     /// # Arguments
     ///
-    /// * `axes` - The axes along which to compute the maximum. This can be any type that implements `IntoAxes`.
+    /// * `axes` - The axes along which to compute the maximum. This can be any type that implements `IntoAxes`
     ///
     /// # Examples
     ///
@@ -1578,18 +1578,16 @@ impl Tensor {
     #[must_use]
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, rhs)?;
-        Ok(Tensor {
-            id: RT.lock().cmplt(x.id, y.id),
-        })
+        let id = RT.lock().cmplt(x.id, y.id);
+        Ok(Tensor { id })
     }
 
     /// Elementwise maximum between two tensors.
     #[must_use]
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, rhs)?;
-        Ok(Tensor {
-            id: RT.lock().maximum(x.id, y.id),
-        })
+        let id = RT.lock().maximum(x.id, y.id);
+        Ok(Tensor { id })
     }
 
     /// Matmul and dot
@@ -1658,9 +1656,8 @@ impl Tensor {
     #[must_use]
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, exponent)?;
-        Ok(Tensor {
-            id: RT.lock().pow(x.id, y.id),
-        })
+        let id = RT.lock().pow(x.id, y.id);
+        Ok(Tensor { id })
     }
 
     /// Returns ones where self is true and zeros where it is false.

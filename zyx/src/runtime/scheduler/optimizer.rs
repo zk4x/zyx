@@ -213,75 +213,77 @@ impl Kernel {
 
         // Reorder so that register work threads are last
         // Register threads are op_id 1, 4 and 7
-        let mut threaded = true;
-        let rlz = kernel.ops.remove(8);
-        let rly = kernel.ops.remove(5);
-        let rlx = kernel.ops.remove(2);
-        kernel.ops.insert(6, rlz.clone());
-        kernel.ops.insert(6, rly.clone());
-        kernel.ops.insert(6, rlx.clone());
-        if kernel
-            .ops
-            .iter()
-            .any(|op| matches!(op, VOp::Accumulator { .. }))
-        {
-            let mut id = 9;
-            while id < kernel.ops.len() {
-                if threaded && matches!(kernel.ops[id], VOp::Loop { .. }) {
-                    kernel.ops.insert(id, VOp::EndLoop);
-                    kernel.ops.insert(id, VOp::EndLoop);
-                    kernel.ops.insert(id, VOp::EndLoop);
-                    id += 4;
-                    threaded = false;
-                    continue;
-                }
-                if threaded && matches!(kernel.ops[id], VOp::EndLoop) {
-                    kernel.ops.insert(id, VOp::EndLoop);
-                    kernel.ops.insert(id, VOp::EndLoop);
-                    kernel.ops.insert(id, VOp::EndLoop);
-                    id += 4;
-                    threaded = false;
-                    continue;
-                }
-                if !threaded && !matches!(kernel.ops[id], VOp::Loop { .. } | VOp::EndLoop) {
-                    kernel.ops.insert(id, rlz.clone());
-                    kernel.ops.insert(id, rly.clone());
-                    kernel.ops.insert(id, rlx.clone());
-                    id += 4;
-                    threaded = true;
-                    continue;
-                }
-                id += 1;
-            }
-            // Since we have swaped our threads around, we need bigger accumulator,
-            // otherwise the results would be incorrect
-            let acc_view = View::binded(&rws, &[2, 5, 8]);
-            let mut accs = BTreeSet::new();
-            for op in &mut kernel.ops {
-                match op {
-                    VOp::Accumulator { view, z, .. } => {
-                        *view = acc_view.clone();
-                        accs.insert(*z);
+        if true { // disable register work sizes
+            let mut threaded = true;
+            let rlz = kernel.ops.remove(8);
+            let rly = kernel.ops.remove(5);
+            let rlx = kernel.ops.remove(2);
+            kernel.ops.insert(6, rlz.clone());
+            kernel.ops.insert(6, rly.clone());
+            kernel.ops.insert(6, rlx.clone());
+            if kernel
+                .ops
+                .iter()
+                .any(|op| matches!(op, VOp::Accumulator { .. }))
+            {
+                let mut id = 9;
+                while id < kernel.ops.len() {
+                    if threaded && matches!(kernel.ops[id], VOp::Loop { .. }) {
+                        kernel.ops.insert(id, VOp::EndLoop);
+                        kernel.ops.insert(id, VOp::EndLoop);
+                        kernel.ops.insert(id, VOp::EndLoop);
+                        id += 4;
+                        threaded = false;
+                        continue;
                     }
-                    VOp::Store {
-                        z, xscope, xview, ..
-                    } => {
-                        if accs.contains(z) && *xscope == Scope::Register {
-                            *xview = acc_view.clone();
-                        }
+                    if threaded && matches!(kernel.ops[id], VOp::EndLoop) {
+                        kernel.ops.insert(id, VOp::EndLoop);
+                        kernel.ops.insert(id, VOp::EndLoop);
+                        kernel.ops.insert(id, VOp::EndLoop);
+                        id += 4;
+                        threaded = false;
+                        continue;
                     }
-                    VOp::Binary { z, zview, x, xview, y, yview, .. } => {
-                        if accs.contains(z) {
-                            *zview = acc_view.clone();
-                        }
-                        if accs.contains(x) {
-                            *xview = acc_view.clone();
-                        }
-                        if accs.contains(y) {
-                            *yview = acc_view.clone();
-                        }
+                    if !threaded && !matches!(kernel.ops[id], VOp::Loop { .. } | VOp::EndLoop) {
+                        kernel.ops.insert(id, rlz.clone());
+                        kernel.ops.insert(id, rly.clone());
+                        kernel.ops.insert(id, rlx.clone());
+                        id += 4;
+                        threaded = true;
+                        continue;
                     }
-                    _ => {}
+                    id += 1;
+                }
+                // Since we have swaped our threads around, we need bigger accumulator,
+                // otherwise the results would be incorrect
+                let acc_view = View::binded(&rws, &[2, 5, 8]);
+                let mut accs = BTreeSet::new();
+                for op in &mut kernel.ops {
+                    match op {
+                        VOp::Accumulator { view, z, .. } => {
+                            *view = acc_view.clone();
+                            accs.insert(*z);
+                        }
+                        VOp::Store {
+                            z, xscope, xview, ..
+                        } => {
+                            if accs.contains(z) && *xscope == Scope::Register {
+                                *xview = acc_view.clone();
+                            }
+                        }
+                        VOp::Binary { z, zview, x, xview, y, yview, .. } => {
+                            if accs.contains(z) {
+                                *zview = acc_view.clone();
+                            }
+                            if accs.contains(x) {
+                                *xview = acc_view.clone();
+                            }
+                            if accs.contains(y) {
+                                *yview = acc_view.clone();
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }

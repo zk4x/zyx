@@ -153,7 +153,7 @@ fn matmul_1024() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
     //let x = xy.pop().unwrap();
-    let mut xyz: Vec<Tensor> = Tensor::load("xyz.safetensors")?;
+    let mut xyz: Vec<Tensor> = Tensor::load("../xyz.safetensors")?;
     let z = xyz.pop().unwrap();
     let y = xyz.pop().unwrap();
     let x = xyz.pop().unwrap();
@@ -172,18 +172,20 @@ fn matmul_1024() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
-fn softmax() {
+#[test]
+fn softmax() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
     //let y = x.softmax([]);
-    let y = x.max_kd([]);
-    //println!("{y:?}");
+    let y = x.max_kd([])?;
+    println!("{y:?}");
     let e = (x - y).exp();
-    //println!("{e:?}");
+    println!("{e:?}");
     //panic!();
 
-    let y = &e / e.sum_kd([]);
+    let y = &e / e.sum_kd([])?;
 
     //Tensor::plot_graph([], "graph").unwrap();
     println!("{y:?}");
-}*/
+    Ok(())
+}
+

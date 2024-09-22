@@ -100,21 +100,36 @@ impl Kernel {
 
     pub(super) fn vars(&self) -> BTreeSet<TensorId> {
         let mut res = BTreeSet::new();
-        for op in &self.ops {
+        let mut end_loops = 0;
+        for op in self.ops.iter().rev() {
             match op {
                 VOp::Const { z, .. }
                 | VOp::Accumulator { z, .. }
                 | VOp::Move { z, .. }
                 | VOp::Unary { z, .. }
                 | VOp::Binary { z, .. } => {
-                    res.insert(*z);
-                }
-                VOp::Load { z, zscope, .. } => {
-                    if *zscope == Scope::Register {
+                    if end_loops == 0 {
                         res.insert(*z);
                     }
                 }
-                _ => {}
+                VOp::Load { z, zscope, .. } => {
+                    if end_loops == 0 {
+                        if *zscope == Scope::Register {
+                            res.insert(*z);
+                        }
+                    }
+                }
+                VOp::Store { .. } => {}
+                VOp::Loop { .. } => {
+                    if end_loops > 0 {
+                        end_loops -= 1;
+                    }
+                }
+                VOp::Barrier { .. } => {}
+                VOp::EndLoop { .. } => {
+                    // Only variables defined after end of loops can be used
+                    end_loops += 1;
+                }
             }
         }
         res
@@ -143,7 +158,13 @@ impl Kernel {
             xscope: Scope::Register,
             xview: View::None,
         };
-        for (id, op) in self.ops.iter().enumerate().rev() {
+        if let Some(&VOp::Store { z: nz, zview: ref nzview, .. }) = self.ops.last() {
+            if z == nz && &zview == nzview {
+                return
+            }
+        }
+        self.ops.push(store_op);
+        /*for (id, op) in self.ops.iter().enumerate().rev() {
             match op {
                 VOp::Load { x, xview, .. } => {
                     if *x == z && xview == &zview {
@@ -175,7 +196,7 @@ impl Kernel {
                 }
                 _ => {}
             }
-        }
+        }*/
     }
 
     pub(super) fn is_reduce(&self) -> bool {

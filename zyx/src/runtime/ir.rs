@@ -357,7 +357,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
         }
     }
 
-    // TODO Declare local variables
+    // Declare local variables
     for op in kernel_ops {
         match op {
             &VOp::Load {
@@ -395,6 +395,9 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
             addressables_map.insert((z, Scope::Register), id);
         }
     }
+    // TODO addressables can change, because they can used in multiple places, so deal with that
+    // also if they are used in multiples places, then tiling is necessary, but that should
+    // be handled by optimizer.
 
     // Actual transpiling from Kernel to IRKernel
     let mut loops = Vec::new();
