@@ -63,7 +63,7 @@ fn pow() -> Result<(), ZyxError> {
     let datay: [f32; 10] = [2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111];
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
-    let z = x.pow(y);
+    let z = x.pow(y)?;
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         if x.pow(y).is_nan() && z.is_nan() {
@@ -80,7 +80,7 @@ fn max() -> Result<(), ZyxError> {
     let datay: [f32; 10] = [2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111];
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
-    let z = x.maximum(y);
+    let z = x.maximum(y)?;
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         assert_eq!(x.max(y), z);
@@ -94,7 +94,7 @@ fn cmplt() -> Result<(), ZyxError> {
     let datay: [f32; 10] = [2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111];
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
-    let z = x.cmplt(y);
+    let z = x.cmplt(y)?;
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         assert_eq!(x.cmplt(y), z);

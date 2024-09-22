@@ -314,7 +314,7 @@ fn t2() {
 #[test]
 fn t3() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
-    let tensors = x.split([2, 1], 1);
+    let tensors = x.split([2, 1], 1).unwrap();
     for t in tensors {
         println!("{t}");
     }
@@ -328,7 +328,7 @@ fn t4() {
     let x = Tensor::rand([1024, 1024], DType::F32).unwrap();
     let y = Tensor::rand([1024, 1024], DType::F32).unwrap();
     for _ in 0..20 {
-        let z = x.dot(&y);
+        let z = x.dot(&y).unwrap();
         //Tensor::plot_graph([], "graph0");
         Tensor::realize([&z]).unwrap();
         //Tensor::plot_graph([], &format!("graph0"));
@@ -344,7 +344,7 @@ fn t4() {
 #[test]
 fn t5() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
-    println!("{}", x.get((.., 2..3)));
+    println!("{}", x.get((.., 2..3)).unwrap());
 }
 
 /*#[test]

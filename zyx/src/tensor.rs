@@ -126,54 +126,54 @@ impl Tensor {
             #[cfg(feature = "half")]
             DType::F16 => {
                 let data: Vec<f16> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             #[cfg(feature = "half")]
             DType::BF16 => {
                 let data: Vec<bf16> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::F32 => {
                 let data: Vec<f32> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::F64 => {
                 let data: Vec<f64> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             #[cfg(feature = "complex")]
             DType::CF32 => {
                 let data: Vec<Complex<f32>> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             #[cfg(feature = "complex")]
             DType::CF64 => {
                 let data: Vec<Complex<f64>> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::U8 => {
                 let data: Vec<u8> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::I8 => {
                 let data: Vec<i8> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::I16 => {
                 let data: Vec<i16> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::I32 => {
                 let data: Vec<i32> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::I64 => {
                 let data: Vec<i64> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
             DType::Bool => {
                 let data: Vec<bool> = self.try_into()?;
-                Ok(Tensor::from(data).reshape(shape))
+                Tensor::from(data).reshape(shape)
             }
         }
     }
@@ -349,11 +349,11 @@ impl Tensor {
 
         let shape: Vec<usize> = [2].into_iter().chain(shape.into_shape()).collect();
         let src = Tensor::rand(shape, dtype)?;
-        let mut x = src.get(0);
+        let mut x = src.get(0)?;
         x = x.mul(Tensor::constant(2f32 * std::f32::consts::PI));
         //panic!();
         x = x.cos();
-        let mut y = Tensor::constant(1f32) - src.get(1);
+        let mut y = Tensor::constant(1f32) - src.get(1)?;
         //println!("{y} minus");
         y = y.ln().mul(Tensor::constant(-2f32)).sqrt();
         //println!("{y}");
@@ -424,10 +424,12 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
-        return Tensor::ones(vec![n, 1], dtype)
+        Tensor::ones(vec![n, 1], dtype)
             .pad_zeros([(0, n as isize)])
+            .unwrap()
             .reshape([n + 1, n])
-            .get((..-1, ..));
+            .unwrap()
+            .get((..-1, ..)).unwrap()
     }
 
     /// Arange method, create range from start, stop, step
@@ -441,7 +443,7 @@ impl Tensor {
         let m = start.sub(step);
         let x = Tensor::full(n, step)?;
         //println!("{x}");
-        let x = x.cumsum(0);
+        let x = x.cumsum(0)?;
         Ok(x + m)
     }
 
@@ -874,7 +876,7 @@ impl Tensor {
     /// assert_eq!(t.expand((4, 2, 3)).shape(), &[4, 2, 3]);
     /// ```
     #[must_use]
-    pub fn expand(&self, shape: impl IntoShape) -> Tensor {
+    pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         assert!(shape.rank() > 0);
         let mut sh = self.shape();
         let shape: Vec<usize> = shape.into_shape().collect();
@@ -890,22 +892,17 @@ impl Tensor {
                     i -= 1;
                 }
                 if d != sh[i] {
-                    assert_eq!(
-                        sh[i],
-                        1,
-                        "Cannot expand {:?} into {:?}",
-                        self.shape(),
-                        shape
-                    );
+                    if sh[i] != 1 {
+                        return Err(ZyxError::ShapeError(format!("Cannot expand {:?} into {:?}", self.shape(), shape)));
+                    }
                 }
             }
-            let x = self.reshape(sh);
+            let x = self.reshape(sh).unwrap();
             let id = RT.lock().expand(x.id, shape);
-            return Tensor { id };
+            drop(x);
+            return Ok(Tensor { id })
         };
-        return Tensor {
-            id: RT.lock().expand(self.id, shape),
-        };
+        Ok(Tensor { id: RT.lock().expand(self.id, shape) })
     }
 
     /// Permutes the axes of this tensor.
@@ -925,7 +922,7 @@ impl Tensor {
     ///
     /// This function panics if the length of `axes` is not equal to the rank of this tensor.
     #[must_use]
-    pub fn permute(&self, axes: impl IntoAxes) -> Tensor {
+    pub fn permute(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
         assert_eq!(
@@ -935,9 +932,7 @@ impl Tensor {
             axes.len(),
             rank
         );
-        return Tensor {
-            id: RT.lock().permute(self.id, axes),
-        };
+        Ok(Tensor { id: RT.lock().permute(self.id, axes) })
     }
 
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
@@ -959,7 +954,7 @@ impl Tensor {
     ///
     /// This function will panic if the padding configuration is invalid.
     #[must_use]
-    pub fn pad_zeros(&self, padding: impl IntoPadding) -> Tensor {
+    pub fn pad_zeros(&self, padding: impl IntoPadding) -> Result<Tensor, ZyxError> {
         // TODO asserts
         let padding = padding.into_padding();
         for (i, &(l, r)) in padding.iter().enumerate() {
@@ -972,11 +967,11 @@ impl Tensor {
             if r < 0 {
                 total -= r;
             }
-            assert!((total as usize) < shape[rank-i-1]);
+            if (total as usize) >= shape[rank-i-1] {
+                return Err(ZyxError::ShapeError(format!("Invalid padding {padding:?} on shape {shape:?}")));
+            }
         }
-        return Tensor {
-            id: RT.lock().pad_zeros(self.id, padding),
-        };
+        Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
     }
 
     /// Constant padding
@@ -1099,11 +1094,11 @@ impl Tensor {
                 }
             }
         {
-            Ok(t0)
+            t0
         } else {
             let ones = Tensor::ones(sh.clone(), dtype);
             let zeros = Tensor::zeros(sh, self.dtype());
-            Ok(t0 + ones.pad_zeros(padding).where_(zeros, value)?)
+            Ok(t0? + ones.pad_zeros(padding)?.where_(zeros, value)?)
         }
     }
 
@@ -1121,18 +1116,12 @@ impl Tensor {
     ///
     /// Panics if the product of the new shape is not equal to the number of elements in this tensor.
     #[must_use]
-    pub fn reshape(&self, shape: impl IntoShape) -> Tensor {
+    pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let shape: Vec<usize> = shape.into_shape().collect();
-        assert_eq!(
-            shape.iter().product::<usize>(),
-            self.numel(),
-            "Invalid reshape {:?} into {:?}",
-            self.shape(),
-            shape
-        );
-        Tensor {
-            id: RT.lock().reshape(self.id, shape),
-        }
+        if shape.iter().product::<usize>() != self.numel() {
+            return Err(ZyxError::ShapeError(format!("Invalid reshape {:?} into {:?}", self.shape(), shape)));
+        };
+        Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
     }
 
     /// An alias to reshape
@@ -1159,19 +1148,37 @@ impl Tensor {
         let x = if rank == 1 {
             let n = self.numel();
             rank = 2;
-            self.reshape([1, n])
+            self.reshape([1, n]).unwrap()
         } else {
             self.clone()
         };
         let mut axes: Vec<isize> = (0..rank as isize).collect();
         axes.swap(rank - 1, rank - 2);
-        x.permute(axes)
+        x.permute(axes).unwrap()
     }
 
     /// Transpose two arbitrary dimensions
     #[must_use]
-    pub fn transpose(&self, dim0: isize, dim1: isize) -> Tensor {
+    pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
+        if dim0 < 0 {
+            if (-dim0) as usize >= rank {
+                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}")));
+            }
+        } else {
+            if dim0 as usize >= rank {
+                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}")));
+            }
+        }
+        if dim1 < 0 {
+            if (-dim1) as usize >= rank {
+                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}")));
+            }
+        } else {
+            if dim1 as usize >= rank {
+                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}")));
+            }
+        }
         let mut axes: Vec<isize> = (0..rank as isize).collect();
         axes.swap(to_axis(dim0, rank), to_axis(dim1, rank));
         self.permute(axes)
@@ -1205,9 +1212,9 @@ impl Tensor {
     /// # Panics
     ///
     /// This function will panic if any of the specified axes are out-of-bounds for the input tensor.
-    pub fn ln_softmax(&self, axes: impl IntoAxes) -> Tensor {
-        let m = self - self.max_kd(axes.clone());
-        &m - m.exp().sum_kd(axes).ln()
+    pub fn ln_softmax(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        let m = self - self.max_kd(axes.clone())?;
+        Ok(&m - m.exp().sum_kd(axes)?.ln())
     }
 
     /// Returns a new tensor containing the maximum value along the specified axes.
@@ -1229,16 +1236,14 @@ impl Tensor {
     ///
     /// This function panics if the axes contain duplicates.
     #[must_use]
-    pub fn max(&self, axes: impl IntoAxes) -> Tensor {
+    pub fn max(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
         let mut unique = BTreeSet::new();
         for a in &axes {
             assert!(unique.insert(a), "Axes contain duplicates.");
         }
-        Tensor {
-            id: RT.lock().max_reduce(self.id, axes),
-        }
+        Ok(Tensor { id: RT.lock().max_reduce(self.id, axes) })
     }
 
     /// Returns the maximum value along the specified axes.
@@ -1257,8 +1262,8 @@ impl Tensor {
     /// ```
     ///
     #[must_use]
-    pub fn max_kd(&self, axes: impl IntoAxes) -> Tensor {
-        self.max(axes.clone()).reshape(self.reduce_kd_shape(axes))
+    pub fn max_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        self.max(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Calculates the mean of a tensor along specified axes.
@@ -1278,13 +1283,13 @@ impl Tensor {
     ///
     /// This function panics if the tensor is empty.
     #[must_use]
-    pub fn mean(&self, axes: impl IntoAxes) -> Tensor {
+    pub fn mean(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
-        self.sum(axes.clone())
+        Ok(self.sum(axes.clone())?
             / axes
                 .into_axes(shape.rank())
                 .map(|a| shape[a])
-                .product::<usize>() as i64
+                .product::<usize>() as i64)
     }
 
     /// Calculates the mean of this tensor along the specified axes and reshapes it using `reduce_kd_shape`.
@@ -1306,8 +1311,8 @@ impl Tensor {
     ///
     /// This function panics if the input tensor is empty.
     #[must_use]
-    pub fn mean_kd(&self, axes: impl IntoAxes) -> Tensor {
-        self.mean(axes.clone()).reshape(self.reduce_kd_shape(axes))
+    pub fn mean_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        self.mean(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Calculates the product of elements along specified axes.
@@ -1324,8 +1329,8 @@ impl Tensor {
     /// assert_eq!(arr.product(1), [3., 8.]);
     /// ```
     #[must_use]
-    pub fn product(&self, axes: impl IntoAxes) -> Tensor {
-        self.ln().sum(axes).exp()
+    pub fn product(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        Ok(self.ln().sum(axes)?.exp())
     }
 
     /// Calculates the standard deviation of the input tensor along specified axes.
@@ -1373,7 +1378,7 @@ impl Tensor {
     /// This function panics if the input tensor has no elements.
     #[must_use]
     pub fn std_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
-        Ok(self.std(axes.clone())?.reshape(self.reduce_kd_shape(axes)))
+        self.std(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Sum reduce. Removes tensor dimensions.
@@ -1381,7 +1386,7 @@ impl Tensor {
     /// If you want to keep reduce dimensions, see [sum_kd](Tensor::sum_kd)
     /// Passing empty axes executes reduce across all dimensions and result will have shape `[1]`
     #[must_use]
-    pub fn sum(&self, axes: impl IntoAxes) -> Tensor {
+    pub fn sum(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes: Vec<usize> = axes.into_axes(rank).collect();
         {
@@ -1393,36 +1398,34 @@ impl Tensor {
                 //assert!(a < rank, "Axes are too high");
             }
         }
-        return Tensor {
-            id: RT.lock().sum_reduce(self.id, axes),
-        };
+        Ok(Tensor { id: RT.lock().sum_reduce(self.id, axes) })
     }
 
     // Probably just have sum_kd, max_kd that keep tensor dimensions
     /// Like [sum](Tensor::sum) but keeps reduce dimensions, setting them to 1.
     /// Equivalent to pytorch sum(axes, keepdim=True)
     #[must_use]
-    pub fn sum_kd(&self, axes: impl IntoAxes) -> Tensor {
-        self.sum(axes.clone()).reshape(self.reduce_kd_shape(axes))
+    pub fn sum_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        self.sum(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Comulative sum along axis.
     #[must_use]
-    pub fn cumsum(&self, axis: isize) -> Tensor {
+    pub fn cumsum(&self, axis: isize) -> Result<Tensor, ZyxError> {
         let axis = to_axis(axis, self.rank());
         let pl_sz = (self.shape()[axis] - 1) as isize;
         let k = self.shape()[axis];
         let axis = axis as isize;
-        let mut x = self.transpose(axis, -1);
-        x = x.pad_zeros([(pl_sz, 0)]);
+        let mut x = self.transpose(axis, -1)?;
+        x = x.pad_zeros([(pl_sz, 0)])?;
         //println!("{x:?} padded");
-        x = x.pool(k, 1, 1);
+        x = x.pool(k, 1, 1)?;
         //println!("{x:?} pooled");
-        x = x.sum(-1);
+        x = x.sum(-1)?;
         //println!("{x:?} summed");
-        x = x.transpose(axis, -1);
+        x = x.transpose(axis, -1)?;
         //println!("{x:?} transposed");
-        return x;
+        Ok(x)
     }
 
     /// Calculates the softmax of this tensor along the specified axes.
@@ -1449,9 +1452,9 @@ impl Tensor {
     ///
     /// This function will panic if the input tensor is empty.
     #[must_use]
-    pub fn softmax(&self, axes: impl IntoAxes) -> Tensor {
-        let e = (self - self.max_kd(axes.clone())).exp();
-        &e / e.sum_kd(axes)
+    pub fn softmax(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        let e = (self - self.max_kd(axes.clone())?).exp();
+        Ok(&e / e.sum_kd(axes)?)
     }
 
     /// Calculates the variance of this tensor along the specified axes.
@@ -1482,7 +1485,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
-        Ok((self - self.mean(axes.clone())).pow(2)?.sum(axes))
+        Ok((self - self.mean(axes.clone())?).pow(2)?.sum(axes)?)
     }
 
     /// Calculates the variance along the specified axes.
@@ -1509,13 +1512,13 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn var_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
-        Ok(self.var(axes.clone())?.reshape(self.reduce_kd_shape(axes)))
+        self.var(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
 
     // index
     /// Get function
     #[must_use]
-    pub fn get(&self, index: impl IntoIndex) -> Tensor {
+    pub fn get(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let padding: Vec<(isize, isize)> = index
             .into_index()
@@ -1573,13 +1576,15 @@ impl Tensor {
     /// This function panics if the input tensor has fewer than two dimensions.
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
-        let Some(&n) = self.shape().last() else {
-            panic!("Shape in invalid state. Internal bug.")
-        };
+        let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
+            .unwrap()
             .pad_zeros([(0, n as isize)])
+            .unwrap()
             .reshape([n, n + 1])
+            .unwrap()
             .get((.., 0))
+            .unwrap()
     }
 
     // binary
@@ -1647,15 +1652,15 @@ impl Tensor {
             .collect::<Vec<usize>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        Ok((self.reshape(x_shape) * y.reshape(y_shape))
-            .sum(-1)
+        (self.reshape(x_shape)? * y.reshape(y_shape)?)
+            .sum(-1)?
             .reshape(
                 xshape[0..xshape.len() - 1]
                     .iter()
                     .copied()
                     .chain([yshape[yshape.len() - 2]])
                     .collect::<Vec<usize>>(),
-            ))
+            )
     }
 
     /// Matmul is just alias to dot
@@ -1728,8 +1733,8 @@ impl Tensor {
     ///
     /// This function will panic if the input tensor and target tensor have different shapes.
     #[must_use]
-    pub fn cross_entropy_loss(&self, target: impl Into<Tensor>, axes: impl IntoAxes) -> Tensor {
-        self.ln_softmax(axes) * target
+    pub fn cross_entropy_loss(&self, target: impl Into<Tensor>, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        Ok(self.ln_softmax(axes)? * target)
     }
 
     /// Calculates the L1 loss between `self` and the target tensor.
@@ -1822,7 +1827,7 @@ impl Tensor {
     // misc
     /// Flatten. Joins axes into one dimension,
     #[must_use]
-    pub fn flatten(&self, axes: impl RangeBounds<isize>) -> Tensor {
+    pub fn flatten(&self, axes: impl RangeBounds<isize>) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let rank = shape.len();
         let start_dim = to_axis(
@@ -1878,7 +1883,7 @@ impl Tensor {
     /// ```
     ///
     #[must_use]
-    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
+    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Result<Tensor, ZyxError> {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
         assert!(tensors.len() > 1, "Cat requires two or more tensors.");
         let shape = tensors[0].shape();
@@ -1903,7 +1908,7 @@ impl Tensor {
             let padding: Vec<(isize, isize)> = core::iter::repeat((0isize, 0isize))
                     .take(rank - dim - 1)
                     .chain([(offset, offset2)]).collect();
-            let t = tensor.pad_zeros(padding);
+            let t = tensor.pad_zeros(padding)?;
             if let Some(r) = res {
                 res = Some(r + t);
             } else {
@@ -1911,7 +1916,7 @@ impl Tensor {
             }
             offset += d;
         }
-        res.unwrap()
+        Ok(res.unwrap())
     }
 
     /// Expands the dimensionality of a tensor by inserting singleton dimensions.
@@ -1934,30 +1939,30 @@ impl Tensor {
     /// assert_eq!(t.unsqueeze(-1).shape(), &[2, 3, 1]);
     /// ```
     #[must_use]
-    pub fn unsqueeze(&self, dim: isize) -> Tensor {
+    pub fn unsqueeze(&self, dim: isize) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         if dim < 0 {
             let rank = shape.len();
             let dim = (-dim) as usize;
             let dim = rank - dim + 1;
-            return self.reshape(
+            self.reshape(
                 shape[..dim]
                     .iter()
                     .copied()
                     .chain([1])
                     .chain(shape[dim..].iter().copied())
                     .collect::<Vec<usize>>(),
-            );
+            )
         } else {
             let dim = dim as usize;
-            return self.reshape(
+            self.reshape(
                 shape[..dim]
                     .iter()
                     .copied()
                     .chain([1])
                     .chain(shape[dim..].iter().copied())
                     .collect::<Vec<usize>>(),
-            );
+            )
         }
     }
 
@@ -1992,14 +1997,15 @@ impl Tensor {
     ///
     /// [`unsqueeze`](Tensor::unsqueeze), [`cat`](Tensor::cat)
     #[must_use]
-    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Tensor {
-        let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim)).collect();
+    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Result<Tensor, ZyxError> {
+        // TODO handle dim corretly
+        let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim).unwrap()).collect();
         Tensor::cat(&tensors, dim)
     }
 
     /// Split tensor into multiple tensors at given dim/axis
     #[must_use]
-    pub fn split(&self, sizes: impl IntoShape, dim: isize) -> Vec<Tensor> {
+    pub fn split(&self, sizes: impl IntoShape, dim: isize) -> Result<Vec<Tensor>, ZyxError> {
         // assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
         // dim = self._resolve_dim(dim)
         // if isinstance(sizes, int): sizes = [min(sizes, self.shape[dim]-i) for i in range(0, max(1, self.shape[dim]), max(1, sizes))]
@@ -2028,10 +2034,10 @@ impl Tensor {
             }
             index.push(acc_size..acc_size + size);
             //println!("Index {index:?}");
-            res.push(self.get(index));
+            res.push(self.get(index)?);
             acc_size += size;
         }
-        res
+        Ok(res)
     }
 
     /// Masked fill
@@ -2064,7 +2070,7 @@ impl Tensor {
         kernel_size: impl IntoShape,
         stride: impl IntoShape,
         dilation: impl IntoShape,
-    ) -> Tensor {
+    ) -> Result<Tensor, ZyxError> {
         // What a complex function ...
         let k_: Vec<usize> = kernel_size.into_shape().collect();
         let stride: Vec<usize> = stride.into_shape().collect();
@@ -2109,7 +2115,7 @@ impl Tensor {
             .map(|&d| 0..d as isize)
             .collect();
         let sh_b: Vec<usize> = shape[..rank - k_.len()].into();
-        let mut xup = self.repeat(repeats);
+        let mut xup = self.repeat(repeats)?;
 
         // dilation
         //println!("{xup:?} before padding");
@@ -2125,7 +2131,7 @@ impl Tensor {
             )
             .collect();
         //println!("Padding {padding:?}");
-        xup = xup.get(padding);
+        xup = xup.get(padding)?;
         //println!("{xup} padded");
         let sh: Vec<usize> = sh_b
             .iter()
@@ -2140,7 +2146,7 @@ impl Tensor {
             )
             .collect();
         //println!("Reshape {sh:?}");
-        xup = xup.reshape(sh);
+        xup = xup.reshape(sh)?;
 
         // stride
         // padding = noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_))
@@ -2157,7 +2163,7 @@ impl Tensor {
                     .flatten(),
             )
             .collect();
-        xup = xup.get(padding);
+        xup = xup.get(padding)?;
         // sh = noop_ + flatten((k,o,s) for k,o,s in zip(k_, o_, s_))
         // xup = xup.reshape(sh)
         let sh: Vec<usize> = sh_b
@@ -2172,7 +2178,7 @@ impl Tensor {
                     .flatten(),
             )
             .collect();
-        xup = xup.reshape(sh);
+        xup = xup.reshape(sh)?;
         // padding = noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_))
         // xup = xup.shrink(padding)
         let padding: Vec<Range<isize>> = pad_b
@@ -2186,7 +2192,7 @@ impl Tensor {
                     .flatten(),
             )
             .collect();
-        xup = xup.get(padding);
+        xup = xup.get(padding)?;
         // sh = noop_ + flatten((k,o) for k,o in zip(k_, o_))
         // xup = xup.reshape(sh)
         let sh: Vec<usize> = sh_b
@@ -2200,7 +2206,7 @@ impl Tensor {
                     .flatten(),
             )
             .collect();
-        xup = xup.reshape(sh);
+        xup = xup.reshape(sh)?;
 
         // xup.permute(*range(len(noop_)), *[len(noop_)+i*2+1 for i in range(len(i_))], *[len(noop_)+i*2 for i in range(len(i_))])
         let axes: Vec<isize> = (0..rank - k_.len())
@@ -2208,9 +2214,9 @@ impl Tensor {
             .chain((0..i_.len()).map(|i| rank - k_.len() + i * 2))
             .map(|i| i as isize)
             .collect();
-        xup = xup.permute(axes);
+        xup = xup.permute(axes)?;
 
-        xup
+        Ok(xup)
     }
 
     /// Creates a new tensor by repeating the input tensor along its dimensions.
@@ -2233,7 +2239,7 @@ impl Tensor {
     ///
     /// Returns a new tensor with the repeated values.
     #[must_use]
-    pub fn repeat(&self, repeats: impl IntoShape) -> Tensor {
+    pub fn repeat(&self, repeats: impl IntoShape) -> Result<Tensor, ZyxError> {
         let repeats: Vec<usize> = repeats.into_shape().collect();
         let shape = self.shape();
         let rank = shape.len();
@@ -2266,10 +2272,10 @@ impl Tensor {
 
         //println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
 
-        let mut x = self.reshape(new_shape);
-        x = x.expand(expand_shape);
-        x = x.reshape(final_shape);
-        return x;
+        let mut x = self.reshape(new_shape)?;
+        x = x.expand(expand_shape)?;
+        x = x.reshape(final_shape)?;
+        Ok(x)
     }
 
     /*#[must_use]
@@ -2353,7 +2359,7 @@ impl Tensor {
                                     .chunks_exact(dtype.byte_size())
                                     .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
                                     .collect();
-                                Tensor::from(vec).reshape(&shape)
+                                Tensor::from(vec).reshape(&shape)?
                             }
                             DType::F64 => {
                                 let vec: Vec<f64> = buf
@@ -2364,14 +2370,14 @@ impl Tensor {
                                         ])
                                     })
                                     .collect();
-                                Tensor::from(vec).reshape(&shape)
+                                Tensor::from(vec).reshape(&shape)?
                             }
                             DType::I32 => {
                                 let vec: Vec<i32> = buf
                                     .chunks_exact(dtype.byte_size())
                                     .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
                                     .collect();
-                                Tensor::from(vec).reshape(&shape)
+                                Tensor::from(vec).reshape(&shape)?
                             }
                             _ => todo!(),
                         });
@@ -2493,9 +2499,11 @@ impl Tensor {
         let mut x_shape = x.shape();
         let mut y_shape = y.shape();
 
-        for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
+        for (&x, &y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
-                return Err(ZyxError::BroadcastError(format!("Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}")));
+                if x != 1 && y != 1 {
+                    return Err(ZyxError::ShapeError(format!("Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}")));
+                }
                 //assert!( *x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}");
             }
         }
@@ -2521,17 +2529,17 @@ impl Tensor {
         for (x, y) in x_shape.iter().zip(y_shape.iter()) {
             eshape.push(*x.max(y));
         }
-        x = x.reshape(&x_shape);
+        x = x.reshape(&x_shape)?;
         if x_shape != eshape {
-            x = x.expand(&eshape);
+            x = x.expand(&eshape)?;
         }
         //println!("Second broadcast operand {y}");
-        y = y.reshape(&y_shape);
+        y = y.reshape(&y_shape)?;
         //println!("{x_shape:?}, {y_shape:?}, {eshape:?}");
         //println!("After reshape second broadcast operand {y}");
         //Tensor::plot_graph([], "graph");
         if y_shape != eshape {
-            y = y.expand(&eshape);
+            y = y.expand(&eshape)?;
         }
         //println!("Second broadcast operand {y}");
         //println!("Broadcasted to {eshape:?}");

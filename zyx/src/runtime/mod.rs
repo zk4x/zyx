@@ -973,18 +973,20 @@ impl Runtime {
 /// Enumeration representing the various errors that can occur within the Zyx library.
 #[derive(Debug)]
 pub enum ZyxError {
-    // Error indicating an empty tensor where non-empty tensor was expected
-    //EmptyTensor,
-    /// Tensors could not be broadcasted
-    BroadcastError(String),
+    /// Invalid shapes for operation
+    ShapeError(String),
+    /// Wrong dtype for given operation
+    DTypeError(&'static str),
     /// Backend configuration error
     BackendConfig(&'static str),
-    /// Wrong dtype for given operation
-    WrongDType(&'static str),
-    /// There are no available backends
-    NoBackendAvailable,
+    /// Error from file operations
+    IOError(std::io::Error),
+    /// Error parsing some data
+    ParseError(String),
     /// Memory allocation error
     AllocationError,
+    /// There are no available backends
+    NoBackendAvailable,
     /// Error returned by the CUDA driver
     CUDAError(CUDAError),
     /// Error returned by the HIP runtime
@@ -994,10 +996,6 @@ pub enum ZyxError {
     /// This error is only applicable when the `wgsl` feature is enabled.
     #[cfg(feature = "wgsl")]
     WGSLError(WGSLError),
-    /// Error from file operations
-    IOError(std::io::Error),
-    /// Error parsing some data
-    ParseError(String),
 }
 
 impl From<CUDAError> for ZyxError {
@@ -1034,17 +1032,16 @@ impl From<std::io::Error> for ZyxError {
 impl std::fmt::Display for ZyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            //ZyxError::EmptyTensor => f.write_str("Empty tensor"),
-            ZyxError::BroadcastError(e) => f.write_str(&e),
+            ZyxError::ShapeError(e) => f.write_str(&e),
+            ZyxError::DTypeError(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
+            ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
+            ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
             ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
-            ZyxError::WrongDType(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
             ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
             ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
             ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
             ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
-            ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
-            ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
             #[cfg(feature = "wgsl")]
             ZyxError::WGSLError(_) => todo!(),
         }

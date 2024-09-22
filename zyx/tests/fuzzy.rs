@@ -35,7 +35,7 @@ fn fuzzy() -> Result<(), ZyxError> {
         let numel = shape.iter().product();
         let r = Uniform::new(-100., 100.);
         let data: Vec<f32> = (0..numel).map(|_| rng.sample(&r)).collect();
-        tensors.push(Tensor::from(&data).reshape(&shape));
+        tensors.push(Tensor::from(&data).reshape(&shape)?);
         cpu_tensors.push(CPUTensor::new(&data).reshape(&shape));
     }
 
