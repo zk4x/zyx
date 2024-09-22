@@ -973,8 +973,10 @@ impl Runtime {
 /// Enumeration representing the various errors that can occur within the Zyx library.
 #[derive(Debug)]
 pub enum ZyxError {
-    /// Error indicating an empty tensor.
-    EmptyTensor,
+    // Error indicating an empty tensor where non-empty tensor was expected
+    //EmptyTensor,
+    /// Tensors could not be broadcasted
+    BroadcastError(String),
     /// Backend configuration error
     BackendConfig(&'static str),
     /// Wrong dtype for given operation
@@ -1032,7 +1034,8 @@ impl From<std::io::Error> for ZyxError {
 impl std::fmt::Display for ZyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ZyxError::EmptyTensor => f.write_str("Empty tensor"),
+            //ZyxError::EmptyTensor => f.write_str("Empty tensor"),
+            ZyxError::BroadcastError(e) => f.write_str(&e),
             ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
             ZyxError::WrongDType(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),

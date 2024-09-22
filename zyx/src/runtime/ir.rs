@@ -374,10 +374,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 }
             }
             &VOp::Store {
-                z,
                 zscope,
-                ref zview,
-                xscope,
                 ..
             } => {
                 if zscope == Scope::Local {

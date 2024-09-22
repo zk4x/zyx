@@ -505,14 +505,14 @@ impl Tensor {
     /// and set to zero with probability `probability`.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn dropout(&self, probability: impl Scalar) -> Result<Tensor, ZyxError> {
-        let dtype = self.dtype();
+    pub fn dropout<P: Scalar>(&self, probability: P) -> Result<Tensor, ZyxError> {
+        let dtype = P::dtype();
         assert!(
             dtype.is_float(),
-            "Dropout only works on floating dtype tensors."
+            "Dropout only works on floating dtype probability."
         );
         // TODO fix this for training (dropout in training is just scaling)
-        Ok(Tensor::from(probability).cmplt(Tensor::rand(self.shape(), dtype)?) * self)
+        Ok(Tensor::from(probability).cmplt(Tensor::rand(self.shape(), dtype)?)? * self)
     }
 
     /// Applies the Exponential Linear Unit function element-wise.
@@ -558,11 +558,11 @@ impl Tensor {
     /// The Gelu activation function is defined as:
     /// `gelu(x) = x * 0.5 * (1 + tanh(sqrt(2 / π) * (x + x^3 * 0.044715)))`.
     #[must_use]
-    pub fn gelu(&self) -> Tensor {
-        self * 0.5f32
-            * (((self + self.pow(3f32) * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt())
+    pub fn gelu(&self) -> Result<Tensor, ZyxError> {
+        Ok(self * 0.5f32
+            * (((self + self.pow(3f32)? * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt())
                 .tanh()
-                + 1f32)
+                + 1f32))
     }
 
     /// Applies the Leaky ReLU activation function element-wise.
@@ -646,8 +646,8 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Mish(input_element)`.
     #[must_use]
-    pub fn mish(&self) -> Tensor {
-        self * self.softplus(1, 20).tanh()
+    pub fn mish(&self) -> Result<Tensor, ZyxError> {
+        Ok(self * self.softplus(1, 20)?.tanh())
     }
 
     /// Computes the quick GELU activation function for each element in the input tensor.
@@ -792,10 +792,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the softplus function with the given beta and threshold.
     #[must_use]
-    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor {
+    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Result<Tensor, ZyxError> {
         let x = self * beta;
-        x.cmplt(threshold)
-            .where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
+        x.cmplt(threshold)?.where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
     }
 
     /// Applies the square root function to each element in the input tensor.
@@ -1109,7 +1108,7 @@ impl Tensor {
         } else {
             let ones = Tensor::ones(sh.clone(), dtype);
             let zeros = Tensor::zeros(sh, self.dtype());
-            Ok(t0 + ones.pad_zeros(padding).where_(zeros, value))
+            Ok(t0 + ones.pad_zeros(padding).where_(zeros, value)?)
         }
     }
 
@@ -1355,8 +1354,8 @@ impl Tensor {
     /// This function will panic if the input tensor is empty.
     ///
     #[must_use]
-    pub fn std(&self, axes: impl IntoAxes) -> Tensor {
-        self.var(axes).sqrt()
+    pub fn std(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        Ok(self.var(axes)?.sqrt())
     }
 
     /// Creates a new tensor by applying standard deviation along specified axes.
@@ -1378,8 +1377,8 @@ impl Tensor {
     ///
     /// This function panics if the input tensor has no elements.
     #[must_use]
-    pub fn std_kd(&self, axes: impl IntoAxes) -> Tensor {
-        self.std(axes.clone()).reshape(self.reduce_kd_shape(axes))
+    pub fn std_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        Ok(self.std(axes.clone())?.reshape(self.reduce_kd_shape(axes)))
     }
 
     /// Sum reduce. Removes tensor dimensions.
@@ -1487,8 +1486,8 @@ impl Tensor {
     /// assert_eq!(var, [[2.5], [2.5]]); // Expected output: [[2.5], [2.5]]
     /// ```
     #[must_use]
-    pub fn var(&self, axes: impl IntoAxes) -> Tensor {
-        (self - self.mean(axes.clone())).pow(2).sum(axes)
+    pub fn var(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        Ok((self - self.mean(axes.clone())).pow(2)?.sum(axes))
     }
 
     /// Calculates the variance along the specified axes.
@@ -1514,8 +1513,8 @@ impl Tensor {
     /// assert_eq!(a.var_kd(0), 1.5);
     /// ```
     #[must_use]
-    pub fn var_kd(&self, axes: impl IntoAxes) -> Tensor {
-        self.var(axes.clone()).reshape(self.reduce_kd_shape(axes))
+    pub fn var_kd(&self, axes: impl IntoAxes) -> Result<Tensor, ZyxError> {
+        Ok(self.var(axes.clone())?.reshape(self.reduce_kd_shape(axes)))
     }
 
     // index
@@ -1607,25 +1606,25 @@ impl Tensor {
     ///
     /// This function panics if the tensors have different shapes.
     #[must_use]
-    pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Tensor {
-        let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor {
+    pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, rhs)?;
+        Ok(Tensor {
             id: RT.lock().cmplt(x.id, y.id),
-        };
+        })
     }
 
     /// Elementwise maximum between two tensors.
     #[must_use]
-    pub fn maximum(&self, rhs: impl Into<Tensor>) -> Tensor {
-        let (x, y) = Tensor::broadcast(self, rhs);
-        return Tensor {
+    pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, rhs)?;
+        Ok(Tensor {
             id: RT.lock().maximum(x.id, y.id),
-        };
+        })
     }
 
     /// Matmul and dot
     #[must_use]
-    pub fn dot(&self, rhs: impl Into<Tensor>) -> Tensor {
+    pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
         let org_y_shape = rhs.shape();
         let y = rhs.t();
@@ -1653,7 +1652,7 @@ impl Tensor {
             .collect::<Vec<usize>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        (self.reshape(x_shape) * y.reshape(y_shape))
+        Ok((self.reshape(x_shape) * y.reshape(y_shape))
             .sum(-1)
             .reshape(
                 xshape[0..xshape.len() - 1]
@@ -1661,12 +1660,12 @@ impl Tensor {
                     .copied()
                     .chain([yshape[yshape.len() - 2]])
                     .collect::<Vec<usize>>(),
-            )
+            ))
     }
 
     /// Matmul is just alias to dot
     #[must_use]
-    pub fn matmul(&self, rhs: impl Into<Tensor>) -> Tensor {
+    pub fn matmul(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         self.dot(rhs)
     }
 
@@ -1689,30 +1688,30 @@ impl Tensor {
     ///
     /// A new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
     #[must_use]
-    pub fn pow(&self, exponent: impl Into<Tensor>) -> Tensor {
-        let (x, y) = Tensor::broadcast(self, exponent);
-        return Tensor {
+    pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, exponent)?;
+        Ok(Tensor {
             id: RT.lock().pow(x.id, y.id),
-        };
+        })
     }
 
     /// Returns ones where self is true and zeros where it is false.
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
-        return Tensor {
+        Tensor {
             id: RT.lock().nonzero(self.id),
-        };
+        }
     }
 
     // ternary
     /// Where operation. Replaces elementwise true values with if_true and false values with if_false.
     #[must_use]
-    pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Tensor {
-        let (x, y) = Tensor::broadcast(self, if_true);
-        let (x, z) = Tensor::broadcast(x, if_false);
-        let (y, z) = Tensor::broadcast(y, z);
+    pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, if_true)?;
+        let (x, z) = Tensor::broadcast(x, if_false)?;
+        let (y, z) = Tensor::broadcast(y, z)?;
         let x_nonzero = x.nonzero();
-        return &x_nonzero * y + !x_nonzero * z;
+        Ok(&x_nonzero * y + !x_nonzero * z)
     }
 
     // loss functions
@@ -1787,7 +1786,7 @@ impl Tensor {
     /// # Panics
     ///
     /// This function will panic if the input tensor and target tensor have different shapes.
-    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Tensor {
+    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         (self - target).pow(2)
     }
 
@@ -1818,11 +1817,11 @@ impl Tensor {
     ///
     /// This function panics if the input tensors have different shapes.
     #[must_use]
-    pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Tensor {
+    pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
-        let x = self.pow(2).sqrt() * rhs.pow(2).sqrt();
-        self * rhs / x.cmplt(&eps).where_(eps, x)
+        let x = self.pow(2)?.sqrt() * rhs.pow(2)?.sqrt();
+        Ok(self * rhs / x.cmplt(&eps)?.where_(eps, x)?)
     }
 
     // misc
@@ -2042,7 +2041,7 @@ impl Tensor {
 
     /// Masked fill
     #[must_use]
-    pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Tensor {
+    pub fn masked_fill(&self, mask: impl Into<Tensor>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         mask.into().where_(value, self)
     }
 
@@ -2475,7 +2474,7 @@ impl Tensor {
     /// This does both automatic expand AND automatic casting between dtypes.
     // TODO Both of these can be disable by changing a setting in the backend.
     #[must_use]
-    fn broadcast(x: impl Into<Tensor>, y: impl Into<Tensor>) -> (Tensor, Tensor) {
+    fn broadcast(x: impl Into<Tensor>, y: impl Into<Tensor>) -> Result<(Tensor, Tensor), ZyxError> {
         let mut x = x.into();
         let mut y = y.into();
         /*assert_eq!(
@@ -2501,10 +2500,8 @@ impl Tensor {
 
         for (x, y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
-                assert!(
-                    *x == 1 || *y == 1,
-                    "Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}"
-                );
+                return Err(ZyxError::BroadcastError(format!("Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}")));
+                //assert!( *x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}");
             }
         }
 
@@ -2544,7 +2541,7 @@ impl Tensor {
         //println!("Second broadcast operand {y}");
         //println!("Broadcasted to {eshape:?}");
         //println!("y shape {:?}", y.shape());
-        return (x, y);
+        return Ok((x, y));
     }
 
     // Calculate shape for reduce which keeps reduced dims set to 1
@@ -3260,7 +3257,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 impl<IT: Into<Tensor>> Add<IT> for Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3275,7 +3272,7 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
 impl<IT: Into<Tensor>> Add<IT> for &Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3290,7 +3287,7 @@ impl<IT: Into<Tensor>> Add<IT> for &Tensor {
 impl<IT: Into<Tensor>> Sub<IT> for Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3305,7 +3302,7 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
 impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3321,7 +3318,7 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let rhs = rhs.into();
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3338,7 +3335,7 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let rhs = rhs.into();
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3353,7 +3350,7 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
 impl<IT: Into<Tensor>> Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().div(x.id, y.id),
         };
@@ -3364,7 +3361,7 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
 impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().div(x.id, y.id),
         };
@@ -3375,7 +3372,7 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
 impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitor(x.id, y.id),
         };
@@ -3386,7 +3383,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
 impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitor(x.id, y.id),
         };
@@ -3397,7 +3394,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
 impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitxor(x.id, y.id),
         };
@@ -3408,7 +3405,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
 impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitxor(x.id, y.id),
         };
@@ -3419,7 +3416,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
 impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitand(x.id, y.id),
         };
@@ -3430,7 +3427,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
 impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs);
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitand(x.id, y.id),
         };

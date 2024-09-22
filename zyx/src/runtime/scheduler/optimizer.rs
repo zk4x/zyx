@@ -270,15 +270,7 @@ impl Kernel {
                             *xview = acc_view.clone();
                         }
                     }
-                    VOp::Binary {
-                        z,
-                        zview,
-                        x,
-                        xview,
-                        y,
-                        yview,
-                        ..
-                    } => {
+                    VOp::Binary { z, zview, x, xview, y, yview, .. } => {
                         if accs.contains(z) {
                             *zview = acc_view.clone();
                         }
@@ -317,6 +309,7 @@ impl Kernel {
             let mut axes = Vec::new();
             let mut lengths = Vec::new();
             let mut rl_id = 0; // id of the global reduce loop
+            let mut reduce_axis = 0;
             let mut id = 0;
             while id < kernel.ops.len() {
                 match &mut kernel.ops[id] {
@@ -325,6 +318,7 @@ impl Kernel {
                         lengths.push(len);
                         if axis > 8 {
                             rl_id = id-1;
+                            reduce_axis = axis;
                         }
                         if axis == 2 && rl_id != 0 {
                             //kernel.ops.insert(id, kernel.ops[rl_id].clone());
@@ -356,6 +350,23 @@ impl Kernel {
                                 let global_view = xview.clone();
                                 // TODO add rws[0]
                                 let axes = if used_axes.contains(&5) {
+                                    [4, reduce_axis, 5]
+                                } else {
+                                    [4, reduce_axis, 8]
+                                };
+
+                                let dims = if used_axes.contains(&5) {
+                                    [lws[1], reduce_ws, rws[1]]
+                                } else {
+                                    [lws[1], reduce_ws, rws[2]]
+                                };
+                                let local_view = View::binded(&dims, &axes);
+                                *xview = local_view;
+                                *xscope = Scope::Local;
+                                let z = *z;
+                                let x = *x;
+
+                                let axes = if used_axes.contains(&5) {
                                     [4, 7, 5]
                                 } else {
                                     [4, 7, 8]
@@ -366,12 +377,6 @@ impl Kernel {
                                     [lws[1], lws[2], rws[2]]
                                 };
                                 let local_view = View::binded(&dims, &axes);
-
-                                *xview = local_view.clone();
-                                *xscope = Scope::Local;
-                                let z = *z;
-                                let x = *x;
-
                                 kernel.ops.insert(rl_id+1, VOp::EndLoop);
                                 kernel.ops.insert(rl_id+1, VOp::Load {
                                     z,
