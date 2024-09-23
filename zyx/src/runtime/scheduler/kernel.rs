@@ -199,9 +199,9 @@ impl Kernel {
         }*/
     }
 
-    pub(super) fn is_reduce(&self) -> bool {
+    /*pub(super) fn is_reduce(&self) -> bool {
         self.ops.iter().any(|op| matches!(op, VOp::Accumulator { .. }))
-    }
+    }*/
 
     pub(super) fn permute(&mut self, axes: &[usize]) {
         //self.debug();

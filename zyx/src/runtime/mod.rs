@@ -4,7 +4,7 @@ use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
 use backend::{
     BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool,
-    OpenCLConfig, OpenCLError,
+    OpenCLConfig, OpenCLError, VulkanConfig, VulkanError,
 };
 #[cfg(feature = "wgsl")]
 use backend::{WGSLConfig, WGSLError};
@@ -46,6 +46,8 @@ pub struct DeviceConfig {
     pub hip: HIPConfig,
     /// OpenCL configuration
     pub opencl: OpenCLConfig,
+    /// Vulkan configuration
+    pub vulkan: VulkanConfig,
     /// WGSL configuration
     #[cfg(feature = "wgsl")]
     pub wgsl: WGSLConfig,
@@ -993,6 +995,8 @@ pub enum ZyxError {
     HIPError(HIPError),
     /// Error returned by the OpenCL runtime
     OpenCLError(OpenCLError),
+    /// Error returned by the Vulkan runtime
+    VulkanError(VulkanError),
     /// This error is only applicable when the `wgsl` feature is enabled.
     #[cfg(feature = "wgsl")]
     WGSLError(WGSLError),
@@ -1013,6 +1017,12 @@ impl From<HIPError> for ZyxError {
 impl From<OpenCLError> for ZyxError {
     fn from(value: OpenCLError) -> Self {
         ZyxError::OpenCLError(value)
+    }
+}
+
+impl From<VulkanError> for ZyxError {
+    fn from(value: VulkanError) -> Self {
+        ZyxError::VulkanError(value)
     }
 }
 
@@ -1042,6 +1052,7 @@ impl std::fmt::Display for ZyxError {
             ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
             ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
             ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
+            ZyxError::VulkanError(e) => f.write_fmt(format_args!("Vulkan {e:?}")),
             #[cfg(feature = "wgsl")]
             ZyxError::WGSLError(_) => todo!(),
         }
