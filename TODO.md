@@ -67,6 +67,8 @@
 - [ ] nvidia tensor cores
 - [x] better fusion by making expand add new loops to the end of the kernel (expand now requires reshape, so this is no longer needed)
 - [ ] better fusion by making reshape add new loops to the end of the kernel
+- [ ] fix bugs after binary rewrite
+- [ ] get softmax working
 - [ ] faster softmax
 - [ ] fast attention
 - [x] go over all todos in source code and check which are necessary
