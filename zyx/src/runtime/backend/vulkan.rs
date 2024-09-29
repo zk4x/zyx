@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 
 use super::DeviceInfo;

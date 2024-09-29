@@ -135,7 +135,7 @@ impl Kernel {
         res
     }
 
-    pub(super) fn load(graph: &Graph, x: TensorId) -> Kernel {
+    pub(super) fn load(x: TensorId, graph: &Graph) -> Kernel {
         let shape: Vec<usize> = graph.shape(x).into();
         let mut ops: Vec<VOp> = shape_to_loops(&shape);
         ops.push(VOp::Load {
@@ -199,9 +199,9 @@ impl Kernel {
         }*/
     }
 
-    /*pub(super) fn is_reduce(&self) -> bool {
+    pub(super) fn is_reduce(&self) -> bool {
         self.ops.iter().any(|op| matches!(op, VOp::Accumulator { .. }))
-    }*/
+    }
 
     pub(super) fn permute(&mut self, axes: &[usize]) {
         //self.debug();

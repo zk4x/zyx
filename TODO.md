@@ -103,6 +103,8 @@
 - [x] documentation for Scalar
 - [x] documentation for IntoShape
 - [x] std::error::Error for ZyxError
+- [ ] fix softmax
+- [ ] IR needs to handle single tensor id in multiple loop levels
 
 ### Tests
 

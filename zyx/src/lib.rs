@@ -19,7 +19,7 @@ mod dtype;
 mod index_map;
 mod mutex;
 #[cfg(feature = "py")]
-mod python_bindings;
+mod py_bindings;
 mod runtime;
 mod scalar;
 mod shape;
