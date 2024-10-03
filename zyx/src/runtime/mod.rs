@@ -509,6 +509,15 @@ impl Runtime {
     }
 
     #[must_use]
+    pub(super) fn not_eq(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::NotEq,
+        })
+    }
+
+    #[must_use]
     pub(super) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
@@ -799,8 +808,14 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
-                    BOp::Cmplt | BOp::Cmpgt => {
-                        panic!("Comparison is not a differentiable operation.");
+                    BOp::Cmplt => {
+                        panic!("Cmplt is not a differentiable operation.");
+                    }
+                    BOp::Cmpgt => {
+                        panic!("Cmpgt is not a differentiable operation.");
+                    }
+                    BOp::NotEq => {
+                        panic!("NotEq is not a differentiable operation.");
                     }
                     BOp::Max => {
                         todo!("Max backward.");

@@ -574,6 +574,7 @@ impl CUDADevice {
                             BOp::BitOr => format!("{} | {}", x.cu(), y.cu()),
                             BOp::BitAnd => format!("{} & {}", x.cu(), y.cu()),
                             BOp::BitXor => format!("{} ^ {}", x.cu(), y.cu()),
+                            BOp::NotEq => format!("{} != {}", x.cu(), y.cu()),
                         }
                     );
                 }
@@ -900,6 +901,7 @@ impl CUDADevice {
                             BOp::Pow => todo!(),
                             BOp::Cmplt => "set.lt",
                             BOp::Cmpgt => "set.gt",
+                            BOp::NotEq => "set.ne",
                             BOp::Max => todo!(),
                             BOp::Or => todo!(),
                             BOp::And => todo!(),

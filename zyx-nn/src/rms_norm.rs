@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// RMS norm layer
@@ -20,8 +20,8 @@ impl RMSNorm {
     }
 
     ///RMSNorm forward function
-    pub fn forward(&self, x: &Tensor) -> Tensor {
-        let x_normed = x * (x.pow(2).mean_kd(-1) + self.eps).rsqrt();
-        return x_normed * &self.scale;
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor, ZyxError> {
+        let x_normed = x * (x.pow(2)?.mean_kd([-1])? + self.eps).rsqrt();
+        return Ok(x_normed * &self.scale);
     }
 }

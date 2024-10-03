@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// Batch norm
@@ -41,18 +41,18 @@ impl BatchNorm {
     }
 
     /// Forward function for layer_norm.
-    pub fn forward(&mut self, x: &Tensor) -> Tensor {
+    pub fn forward(&mut self, x: &Tensor) -> Result<Tensor, ZyxError> {
         let batch_mean;
         let batch_invstd;
 
         if Tensor::training() {
-            batch_mean = x.mean([0, 2, 3]);
-            let y = x - batch_mean.reshape([1, batch_mean.numel(), 1, 1]);
-            let batch_var = (&y * &y).mean([0, 2, 3]);
+            batch_mean = x.mean([0, 2, 3])?;
+            let y = x - batch_mean.reshape([1, batch_mean.numel(), 1, 1])?;
+            let batch_var = (&y * &y).mean([0, 2, 3])?;
             batch_invstd = (self
                 .running_var
-                .reshape([1, self.running_var.numel(), 1, 1])
-                .expand(x.shape())
+                .reshape([1, self.running_var.numel(), 1, 1])?
+                .expand(x.shape())?
                 + self.eps)
                 .rsqrt();
 
@@ -68,26 +68,26 @@ impl BatchNorm {
             batch_mean = self.running_mean.clone();
             batch_invstd = (self
                 .running_var
-                .reshape([1, self.running_var.numel(), 1, 1])
-                .expand(x.shape())
+                .reshape([1, self.running_var.numel(), 1, 1])?
+                .expand(x.shape())?
                 + self.eps)
                 .rsqrt()
         }
 
         let shape = [1, batch_mean.numel(), 1, 1];
-        let mut x = x - batch_mean.reshape(shape);
+        let mut x = x - batch_mean.reshape(shape)?;
         if let Some(weight) = &self.weight {
-            x = weight.reshape(shape) * x;
+            x = weight.reshape(shape)? * x;
         }
         x = x * if batch_invstd.rank() == 1 {
-            batch_invstd.reshape(shape)
+            batch_invstd.reshape(shape)?
         } else {
             batch_invstd
         };
         if let Some(bias) = &self.bias {
-            x + bias.reshape(shape)
+            Ok(x + bias.reshape(shape)?)
         } else {
-            x
+            Ok(x)
         }
     }
 }

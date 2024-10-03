@@ -24,11 +24,11 @@ impl Linear {
 
     /// Forward function for linear.
     /// Calculates x.dot(&self.weight) + self.bias
-    pub fn forward(&self, x: impl Into<Tensor>) -> Tensor {
-        let x = x.into().dot(&self.weight);
+    pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let x = x.into().dot(&self.weight)?;
         if let Some(bias) = &self.bias {
-            return x + bias;
+            return Ok(x + bias);
         }
-        return x;
+        return Ok(x);
     }
 }

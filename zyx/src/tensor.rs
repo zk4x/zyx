@@ -393,6 +393,17 @@ impl Tensor {
         return Tensor::uniform(shape, bound.neg()..bound);
     }
 
+    /// Create tensor sampled from glorot uniform distribution.
+    #[cfg(feature = "rand")]
+    #[must_use]
+    pub fn glorot_uniform(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
+        let shape: Vec<usize> = shape.into_shape().collect();
+        let c: f32 = 6./(shape[0] + shape.iter().skip(1).product::<usize>()) as f32;
+        let mut x = Tensor::uniform(shape, -1f32..1f32)?;
+        x = x * c.pow(0.5);
+        return Ok(x.cast(dtype));
+    }
+
     /// Create tensor filled with zeros.
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
@@ -551,11 +562,11 @@ impl Tensor {
     /// The Gelu activation function is defined as:
     /// `gelu(x) = x * 0.5 * (1 + tanh(sqrt(2 / π) * (x + x^3 * 0.044715)))`.
     #[must_use]
-    pub fn gelu(&self) -> Result<Tensor, ZyxError> {
-        Ok(self * 0.5f32
-            * (((self + self.pow(3f32)? * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt())
+    pub fn gelu(&self) -> Tensor {
+        self * 0.5f32
+            * (((self + self.pow(3f32).unwrap() * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt())
                 .tanh()
-                + 1f32))
+                + 1f32)
     }
 
     /// Applies the Leaky ReLU activation function element-wise.
@@ -1658,6 +1669,15 @@ impl Tensor {
         let (x, y) = Tensor::broadcast(self, exponent)?;
         let id = RT.lock().pow(x.id, y.id);
         Ok(Tensor { id })
+    }
+
+    /// Returns boolean mask with true where self == rhs
+    #[must_use]
+    pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let id = RT.lock().not_eq(x.id, y.id);
+        let x = Tensor { id };
+        Ok(x.not())
     }
 
     /// Returns ones where self is true and zeros where it is false.

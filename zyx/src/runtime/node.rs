@@ -18,6 +18,7 @@ pub(super) enum BOp {
     BitXor,
     BitOr,
     BitAnd,
+    NotEq,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]

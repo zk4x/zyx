@@ -33,16 +33,16 @@ impl RNNCell {
     /// returns (x, self.weight_ih.dot(x) + self.bias_ih + self.weight_hh.dot(hidden) + self.bias_hh)
     ///
     /// This function does not apply nonlinearity and it does not change x
-    pub fn forward(&self, x: impl Into<Tensor>, hidden: impl Into<Tensor>) -> (Tensor, Tensor) {
+    pub fn forward(&self, x: impl Into<Tensor>, hidden: impl Into<Tensor>) -> Result<(Tensor, Tensor), ZyxError> {
         let x = x.into();
-        let mut hx = self.weight_hh.dot(hidden);
+        let mut hx = self.weight_hh.dot(hidden)?;
         if let Some(b) = &self.bias_hh {
             hx = hx + b
         }
-        hx = hx + self.weight_ih.dot(&x);
+        hx = hx + self.weight_ih.dot(&x)?;
         if let Some(b) = &self.bias_ih {
             hx = hx + b
         }
-        return (x, hx);
+        return Ok((x, hx));
     }
 }

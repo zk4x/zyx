@@ -757,6 +757,7 @@ impl OpenCLDevice {
                             BOp::Pow => format!("pow({}, {})", x.ocl(), y.ocl()),
                             BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
                             BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),
+                            BOp::NotEq => format!("{} != {}", x.ocl(), y.ocl()),
                             BOp::Max => format!("max({}, {})", x.ocl(), y.ocl()),
                             BOp::Or => format!("{} || {}", x.ocl(), y.ocl()),
                             BOp::And => format!("{} && {}", x.ocl(), y.ocl()),

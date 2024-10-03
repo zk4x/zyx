@@ -15,25 +15,25 @@ pub struct LayerNorm {
 
 impl LayerNorm {
     /// Initialize LayerNorm layer
-    pub fn new(normalized_shape: impl zyx::IntoShape, dtype: DType) -> Result<LayerNorm, ZyxError> {
+    pub fn new(normalized_shape: impl zyx::IntoShape, bias: bool, dtype: DType) -> Result<LayerNorm, ZyxError> {
         Ok(LayerNorm {
             d_dims: normalized_shape.rank(),
             weight: Some(Tensor::randn(normalized_shape.clone(), dtype)?),
-            bias: Some(Tensor::randn(normalized_shape, dtype)?),
+            bias: if bias { Some(Tensor::randn(normalized_shape, dtype)?) } else { None },
             eps: 1e-5,
         })
     }
 
     /// Forward function for layer_norm.
-    pub fn forward(&self, x: &Tensor) -> Tensor {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor, ZyxError> {
         let axes = -(self.d_dims as isize)..=-1;
-        let mut x = (x - x.mean(axes.clone())) / (x.var(axes) + self.eps).sqrt();
+        let mut x = (x - x.mean(axes.clone())?) / (x.var(axes)? + self.eps).sqrt();
         if let Some(w) = &self.weight {
             x = x * w;
         }
         if let Some(b) = &self.bias {
             x = x + b;
         }
-        return x;
+        return Ok(x);
     }
 }

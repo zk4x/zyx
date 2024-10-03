@@ -1,7 +1,7 @@
 [package]
 name = "zyx-examples"
 version = "0.2.0"
-edition.workspace = true
+edition = "2021"
 authors = ["zk4x"]
 description = "Zyx examples"
 documentation = "https://docs.rs/zyx-torch"
@@ -15,7 +15,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { workspace = true }
-zyx-nn = { workspace = true }
-zyx-optim = { workspace = true }
-zyx-derive = { workspace = true }
+zyx = { version = "*", path = "../zyx" }
+zyx-nn = { version = "*", path = "../zyx-nn" }
+zyx-optim = { version = "*", path = "../zyx-optim" }
+

@@ -442,6 +442,7 @@ impl HIPDevice {
                             BOp::Pow => format!("pow({}, {})", x.hip(), y.hip()),
                             BOp::Cmplt => format!("{} < {}", x.hip(), y.hip()),
                             BOp::Cmpgt => format!("{} > {}", x.hip(), y.hip()),
+                            BOp::NotEq => format!("{} != {}", x.hip(), y.hip()),
                             BOp::Max => format!("max({}, {})", x.hip(), y.hip()),
                             BOp::Or => format!("{} || {}", x.hip(), y.hip()),
                             BOp::And => format!("{} && {}", x.hip(), y.hip()),

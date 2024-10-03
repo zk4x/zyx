@@ -83,7 +83,7 @@ impl Adam {
                 let vh = &self.v[i] / (1.0 - self.betas.1.pow(self.t as f32));
                 if self.amsgrad {
                     if let Some(vm) = self.vm.get_mut(i) {
-                        *vm = vm.cmplt(&vh).where_(vh, &*vm);
+                        *vm = vm.cmplt(&vh).unwrap().where_(vh, &*vm).unwrap();
                     } else {
                         self.vm.push(vh);
                     }

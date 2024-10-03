@@ -16,6 +16,8 @@
 
 extern crate alloc;
 
+pub use zyx_derive::Module;
+
 mod linear;
 pub use linear::Linear;
 
@@ -33,6 +35,8 @@ pub use rms_norm::RMSNorm;
 mod rnn_cell;
 pub use rnn_cell::RNNCell;
 
-// Attention
 mod causal_self_attention;
 pub use causal_self_attention::CausalSelfAttention;
+
+mod embedding;
+pub use embedding::Embedding;
