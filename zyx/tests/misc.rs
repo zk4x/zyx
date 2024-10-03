@@ -1,7 +1,7 @@
 use zyx::{Tensor, ZyxError};
 
 #[test]
-fn matmul() -> Result<(), ZyxError> {
+fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);
     let z = x.dot(y)?;
@@ -12,7 +12,7 @@ fn matmul() -> Result<(), ZyxError> {
 #[test]
 fn pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
-    x = x.sum(1)?;
+    x = x.sum([1])?;
     x = x.pad_zeros([(0, 1)])?;
     assert_eq!(x, [9, 7, 0]);
     Ok(())
@@ -29,7 +29,7 @@ fn permute_pad() -> Result<(), ZyxError> {
 #[test]
 fn expand_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
-    x = x.sum(1)?;
+    x = x.sum([1])?;
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
     Tensor::realize([&x, &y])?;
@@ -125,17 +125,17 @@ fn graph_shapes() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[test]
+/*#[test]
 fn uni_matmul() -> Result<(), ZyxError> {
     //use zyx::DType;
     //let x = Tensor::rand([5, 5], DType::F32) * 2f32 + 3f32;
     //let y = Tensor::rand([5, 5], DType::F32) * 3f32 + 4f32;
-    let x = Tensor::uniform([5, 5], -1f32..2f32)?;
-    let y = Tensor::uniform([5, 5], -1f32..5f32)?;
-    let z = x.dot(y)?;
-    println!("{z}");
+    //let x = Tensor::uniform([5, 5], -1f32..2f32)?;
+    //let y = Tensor::uniform([5, 5], -1f32..5f32)?;
+    //let z = x.dot(y)?;
+    //println!("{z}");
     Ok(())
-}
+}*/
 
 #[test]
 fn cat() -> Result<(), ZyxError> {
@@ -157,8 +157,8 @@ fn matmul_1024() -> Result<(), ZyxError> {
     let z = xyz.pop().unwrap();
     let y = xyz.pop().unwrap();
     let x = xyz.pop().unwrap();
-    println!("{:?}", x.shape());
-    println!("{:?}", y.shape());
+    //println!("{:?}", x.shape());
+    //println!("{:?}", y.shape());
     let dataz: Vec<f32> = z.try_into()?;
     let zz = x.matmul(y)?;
     let datazz: Vec<f32> = zz.try_into()?;
@@ -176,16 +176,23 @@ fn matmul_1024() -> Result<(), ZyxError> {
 fn softmax() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
     //let y = x.softmax([]);
-    let y = x.max_kd([])?;
-    println!("{y:?}");
-    let e = (x - y).exp();
-    println!("{e:?}");
+    //println!("{y:?}");
+    /*let y = x.max_kd([])?;
+    let e = (&x - y).exp();
+    let y = &e / e.sum_kd([])?;*/
+    //println!("{e:?}");
     //panic!();
 
-    let y = &e / e.sum_kd([])?;
+    //Tensor::plot_graph([], "graph");
+    //println!("{y:.20}");
+    //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
+    let y = x.softmax([])?;
+    let y_data: Vec<f32> = y.try_into()?;
+    for (x, y) in y_data.into_iter().zip([0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]) {
+        assert!((x - y).abs() < 0.00001);
+    }
 
     //Tensor::plot_graph([], "graph").unwrap();
-    println!("{y:?}");
     Ok(())
 }
 

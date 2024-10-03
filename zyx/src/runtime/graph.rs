@@ -117,8 +117,7 @@ impl Graph {
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
-        let mut i = 0;
-        while i < 1000000 {
+        for _ in 0..1000 {
             if let Some(&dtype) = self.dtypes.get(&tensor_id) {
                 return dtype;
             } else if let Node::Const { value } = self.nodes[tensor_id].1 {
@@ -126,15 +125,13 @@ impl Graph {
             } else {
                 tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
-            i += 1;
         }
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[usize] {
         let mut tensor_id = tensor_id;
-        let mut i = 0;
-        while i < 10000 {
+        for _ in 0..1000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {
                 //println!("Found shape {shape:?} for tensor {tensor_id}");
                 return shape;
@@ -144,7 +141,6 @@ impl Graph {
                 //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
                 tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
-            i += 1;
         }
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }

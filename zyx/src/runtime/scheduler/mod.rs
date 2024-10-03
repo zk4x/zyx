@@ -73,17 +73,13 @@ pub(super) struct VProgram {
 }
 
 impl Runtime {
-    pub(super) fn compile_graph(
-        &mut self,
-        #[allow(unused_mut)] mut graph: Graph,
-    ) -> Result<CompiledGraph, ZyxError> {
+    pub(super) fn compile_graph(&mut self, mut graph: Graph) -> Result<CompiledGraph, ZyxError> {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
         let (order, flop, bytes_read, bytes_written) = graph.execution_order();
         // create vop representation
         let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order);
-        for kernel in &kernels {
-            kernel.debug();
-        }
+        //for kernel in &kernels { kernel.debug(); }
+        //panic!("Done");
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
         // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
         let mut device_program_map: BTreeMap<DeviceId, Vec<usize>> = (0..self.devices.len())
@@ -595,11 +591,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        println!(
-            "ID({nid})x{}: {node:?}, sh: {:?}",
-            graph.rc(nid),
-            graph.shape(nid)
-        );
+        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);
@@ -617,12 +609,13 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 let shape = graph.shape(nid);
                 let xshape = graph.shape(x);
                 assert_eq!(shape.len(), xshape.len());
-                let mut kernel = get_kernel(x, &mut kernels);
+                let mut kernel = get_kernel(x, &mut kernels, graph);
                 // For now no expand on reduce kernels or kernels that store something
                 // Later this can be done if the store or reduce is in different loop,
                 // that is if we are expanding loop after reduce and if store is before
                 // that expanded loop.
-                if kernel.ops.iter().any(|op| matches!(op, VOp::Store { .. })) || kernel.is_reduce() {
+                if kernel.ops.iter().any(|op| matches!(op, VOp::Store { .. })) || kernel.is_reduce()
+                {
                     // TODO not sure if this is perfectly correct. Can it contain x in outputs,
                     // but can it be x evaluated to different values, i.e. some intermediate?
                     if !kernel.outputs().contains(&x) {
@@ -685,7 +678,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 // Permute shuffles load and store strides
                 // It also changes the dimension of loops
                 // and shape of kernel
-                let kernel = get_kernel(*x, &mut kernels);
+                let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.permute(&axes);
                 kernel.ops.push(VOp::Move {
                     z: nid,
@@ -702,9 +695,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
 
                 // If reshape comes after reduce, then if it just aplits axes, it can be merged,
                 // otherwise we have to create new kernel.
+                //for kernel in &kernels { kernel.debug(); }
 
                 let shape = graph.shape(nid);
-                let kernel = get_kernel(*x, &mut kernels);
+                let kernel = get_kernel(*x, &mut kernels, graph);
                 // If this is just a reshape of kernel with only unary ops and contiguous loads
                 // and stores, we can remove old loops and replace them with new loops.
                 //println!("Reshape");
@@ -846,8 +840,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             x: *x,
                             mop: MOp::Resh,
                         });
-                        assert_eq!(kernel.shape(), graph.shape(nid));
                         //kernel.debug();
+                        assert_eq!(kernel.shape(), graph.shape(nid));
                     } else {
                         // else create new kernel after storing results of previous kernel
                         kernel.store(*x, View::new(graph.shape(*x)));
@@ -867,7 +861,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
             }
             &Node::Pad { x, ref padding } => {
                 // Pad shrinks or expands dimension of axes, this is ZERO padding
-                let mut kernel = get_kernel(x, &mut kernels);
+                let mut kernel = get_kernel(x, &mut kernels, graph);
                 // Kernel cannot be padded if it containe max reduce.
                 // For now kernel also won't be padded if it contains store,
                 // but that can be changed.
@@ -921,7 +915,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
             Node::Reduce { x, axes, rop } => {
                 // TODO do not apply reduce on a previously fully reduced and expanded kernel, this
                 // happens in softmax
-                let kernel = get_kernel(*x, &mut kernels);
+                let kernel = get_kernel(*x, &mut kernels, graph);
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 //println!("Axes {axes:?}");
                 // Permute the axes such that reduce loops are last
@@ -984,7 +978,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 //kernel.merge_axes(acc_id + 1, axes.len());
             }
             Node::Unary { x, uop } => {
-                let kernel = get_kernel(*x, &mut kernels);
+                let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.ops.push(VOp::Unary {
                     z: nid,
                     x: *x,
@@ -1034,14 +1028,16 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         .enumerate()
                         .filter(|(_, kernel)| kernel.vars().contains(&x))
                         .min_by_key(|(_, kernel)| kernel.ops.len())
-                        .unwrap().0;
+                        .unwrap()
+                        .0;
                     let mut kernel_y_id = kernels
                         .iter()
                         .enumerate()
                         .filter(|(_, kernel)| kernel.vars().contains(&y))
                         .min_by_key(|(_, kernel)| kernel.ops.len())
-                        .unwrap().0;
-                    
+                        .unwrap()
+                        .0;
+
                     // Check which kernel needs to be evaluated first
                     match (
                         depends_on(kernel_x_id, kernel_y_id, &kernels),
@@ -1091,6 +1087,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         yview: View::None,
                         bop,
                     });
+                    // if kernel is not last, then make it last
+                    if kernel_y_id > kernel_x_id {
+                        let kernel = kernels.remove(kernel_x_id);
+                        kernels.push(kernel);
+                    }
                 }
             }
         }
@@ -1105,13 +1106,18 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 panic!()
             }
         }
+        // TODO only if this is not nid in user ids
         if graph.rc(nid) > 1 {
             if let Some(kernel) = kernels
                 .iter_mut()
                 .find(|kernel| kernel.vars().contains(&nid))
             {
                 // if graph.rc(nid) > 1 then just copy that graph if it is not too big graph
-                if kernel.ops.len() > 10 || kernel.is_reduce() {
+                // TODO beware of too many copies. We need to make sure that we are not doing
+                // the same work twice.
+                //if user_leafs.contains(&nid) {
+                //kernel.store(nid, View::new(graph.shape(nid)));
+                if kernel.ops.len() > 10 || kernel.is_reduce() || !kernel.outputs().is_empty() {
                     kernel.store(nid, View::new(graph.shape(nid)));
                     kernels.push(Kernel::load(nid, graph));
                 } else {
@@ -1123,7 +1129,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
             }
         }
     }
-    // Remove unnecessary kernels
+    // Remove unnecessary kernels (these should be only loads for user_rc > 1 kernels)
     kernels.retain(|kernel| !kernel.outputs().is_empty());
     // Remove unnecessary stores not for tensors moved across kernels
     // and not in to_eval that were inserted for rc > 1, but ops got merged,
@@ -1158,20 +1164,23 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
         .collect()
 }
 
-// Checks if kernel_x depends on kernel_y
+// Checks if kernel_y needs to be evaluated before kernel_x
 fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
     let mut kernel_x_inputs = kernels[kernel_x_id].inputs();
     let kernel_y_outputs = &kernels[kernel_y_id].outputs();
+    //println!("y outputs: {kernel_y_outputs:?}");
+    //for kernel in kernels { kernel.debug(); }
     let mut visited = BTreeSet::new();
     while let Some(x) = kernel_x_inputs.pop_last() {
         if visited.insert(x) {
             if kernel_y_outputs.contains(&x) {
                 return true;
             } else {
-                for kernel in kernels.iter().rev() {
+                'a: for kernel in kernels.iter().rev() {
                     if kernel.outputs().contains(&x) {
                         kernel_x_inputs.extend(kernel.inputs());
-                        break;
+                        //println!("x inputs: {kernel_x_inputs:?}");
+                        break 'a;
                     }
                 }
             }
@@ -1180,30 +1189,17 @@ fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> boo
     false
 }
 
-fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>) -> &'a mut Kernel {
+fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &'a mut Kernel {
+    // First if there is kernel which stores x, then just return new load kernel
+    if kernels.iter().any(|kernel| kernel.outputs().contains(&x)) {
+        kernels.push(Kernel::load(x, graph));
+        return kernels.last_mut().unwrap();
+    }
     kernels
         .iter_mut()
         .filter(|kernel| kernel.vars().contains(&x))
         .min_by_key(|kernel| kernel.ops.len())
         .unwrap()
-    /*if let Some(id) = kernels
-        .iter_mut()
-        .position(|kernel| kernel.vars().contains(&x))
-    {
-        //println!("Get kernel shapes: {:?}, {:?}", kernels[id].shape, graph.shape(x));
-        if kernels[id].shape() != graph.shape(x) {
-            // create new kernel using already predefined store
-            kernels.push(Kernel::load(graph, x));
-            kernels.last_mut().unwrap()
-        } else {
-            &mut kernels[id]
-        }
-    } else {
-        for kernel in kernels {
-            kernel.debug();
-        }
-        panic!()
-    }*/
 }
 
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
