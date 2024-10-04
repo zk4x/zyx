@@ -7,14 +7,16 @@ use crate::shape::{Axis, Dimension};
 
 pub(super) type Stride = usize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct StridedDim {
     pub(super) axis: Axis,
     pub(super) dim: Dimension,
     pub(super) stride: Stride,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub(super) enum View {
     None,
     //Contiguous(Vec<StridedDim>), // TODO perhaps later, mainly for cpu and perhaps wide loads on gpu

@@ -522,7 +522,7 @@ impl Tensor {
     /// Applies the Exponential Linear Unit function element-wise.
     ///
     /// The ELU function is defined as:
-    /// ```
+    /// ```text
     /// f(x) = x if x > 0
     ///       α(e^x - 1) otherwise
     /// ```
@@ -879,37 +879,18 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// let t = Tensor::zeros((2, 3));
-    /// assert_eq!(t.expand((4, 2, 3)).shape(), &[4, 2, 3]);
+    /// let t = zyx::Tensor::zeros([2, 3], zyx::DType::U8);
+    /// assert_eq!(t.expand((4, 2, 3))?.shape(), &[4, 2, 3]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
     pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let mut sh = self.shape();
+        let sh = self.shape();
         let shape: Vec<usize> = shape.into_shape().collect();
         //println!("Expand to {shape:?}");
-        if shape.rank() < sh.rank() {
+        if shape.len() < sh.len() {
             return Err(ZyxError::ShapeError(format!("Cannot expand {:?} into {:?}", self.shape(), shape)));
         }
-        if shape.rank() > sh.rank() {
-            let mut i = sh.len();
-            for d in shape.iter().copied().rev() {
-                if i == 0 {
-                    // Adding dimensions to the front of the shape
-                    sh.insert(i, 1);
-                } else {
-                    i -= 1;
-                }
-                if d != sh[i] {
-                    if sh[i] != 1 {
-                        return Err(ZyxError::ShapeError(format!("Cannot expand {:?} into {:?}", self.shape(), shape)));
-                    }
-                }
-            }
-            let x = self.reshape(sh).unwrap();
-            let id = RT.lock().expand(x.id, shape);
-            drop(x);
-            return Ok(Tensor { id })
-        };
         Ok(Tensor { id: RT.lock().expand(self.id, shape) })
     }
 
@@ -1547,8 +1528,9 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let arr = Tensor::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).reshape([3, 3]);
+    /// let arr = Tensor::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).reshape([3, 3])?;
     /// assert_eq!(arr.diagonal(), [[1, 0, 0], [0, 5, 0], [0, 0, 9]]); // diagonal elements are [1, 5, 9]
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1579,7 +1561,8 @@ impl Tensor {
     ///
     /// let a = Tensor::from([1.0, 2.0, 3.0]);
     /// let b = Tensor::from([4.0, 5.0, 6.0]);
-    /// assert_eq!(a.cmplt(b), [1., 1., 1.]);
+    /// assert_eq!(a.cmplt(b)?, [1., 1., 1.]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1671,6 +1654,22 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
+    /// Logical and
+    #[must_use]
+    pub fn logical_and(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let id = RT.lock().and(x.id, y.id);
+        Ok(Tensor { id })
+    }
+
+    /// Logical or
+    #[must_use]
+    pub fn logical_or(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let id = RT.lock().or(x.id, y.id);
+        Ok(Tensor { id })
+    }
+
     /// Returns boolean mask with true where self == rhs
     #[must_use]
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
@@ -1737,10 +1736,11 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let self_tensor = Tensor::from(&[1.0, 2.0, 3.0]);
-    /// let target_tensor = Tensor::from(&[2.0, 3.0, 4.0]);
+    /// let self_tensor = Tensor::from([1.0, 2.0, 3.0]);
+    /// let target_tensor = Tensor::from([2.0, 3.0, 4.0]);
     ///
-    /// assert_eq!(self_tensor.l1_loss(target_tensor), Tensor::from(&[1.0, 1.0, 1.0]));
+    /// assert_eq!(self_tensor.l1_loss(target_tensor), [1.0, 1.0, 1.0]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
     pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
@@ -1863,8 +1863,9 @@ impl Tensor {
     ///
     /// let a = Tensor::from([[1, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
-    /// let c = Tensor::cat([&a, &b], 0);
+    /// let c = Tensor::cat([&a, &b], 0)?;
     /// assert_eq!(c, [[1, 2], [3, 4], [5, 6], [7, 8]]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     #[must_use]
@@ -2512,12 +2513,10 @@ impl Tensor {
         for (x, y) in x_shape.iter().zip(y_shape.iter()) {
             eshape.push(*x.max(y));
         }
-        x = x.reshape(&x_shape)?;
         if x_shape != eshape {
             x = x.expand(&eshape)?;
         }
         //println!("Second broadcast operand {y}");
-        y = y.reshape(&y_shape)?;
         //println!("{x_shape:?}, {y_shape:?}, {eshape:?}");
         //println!("After reshape second broadcast operand {y}");
         //Tensor::plot_graph([], "graph");

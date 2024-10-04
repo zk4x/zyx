@@ -30,9 +30,8 @@ pub use vulkan::{VulkanConfig, VulkanError};
 pub use wgsl::{WGSLConfig, WGSLError};
 
 /// Hardware information needed for applying optimizations
-#[derive(
-    Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode,
-)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
@@ -195,6 +194,23 @@ impl Runtime {
                 }
                 DeviceConfig::default()
             });
+
+        // Load optimizer cache from disk if it exists
+        #[cfg(feature = "disk_cache")]
+        {
+            if let Some(config_dir) = self.config_dir.clone() {
+                let mut path = config_dir.clone();
+                path.push("cached_kernels");
+                if let Ok(mut file) = std::fs::File::open(path) {
+                    use std::io::Read;
+                    let mut buf = Vec::new();
+                    file.read_to_end(&mut buf).unwrap();
+                    if let Ok(optimizer_cache) = bitcode::decode(&buf) {
+                        self.optimizer_cache = optimizer_cache;
+                    }
+                }
+            }
+        }
 
         if let Ok((memory_pools, devices)) =
             cuda::initialize_devices(&device_config.cuda, self.debug_dev())

@@ -1,5 +1,5 @@
 use super::{
-    backend::{DeviceInfo, MemoryPoolId},
+    backend::MemoryPoolId,
     node::{BOp, ROp},
     BufferId, DeviceId,
 };
@@ -13,10 +13,9 @@ use crate::{
     },
     tensor::TensorId,
 };
-use optimizer::KernelOptimizer;
+pub(super) use optimizer::KernelOptimizer;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
     u128,
 };
 use vop::MOp;
@@ -401,29 +400,12 @@ impl Runtime {
         graph: &Graph,
     ) -> Result<KernelOptimization, ZyxError> {
         let dev_info = self.devices[device_id].info();
-        let mut cached_kernels: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer> =
-            if let Some(config_dir) = self.config_dir.clone() {
-                let mut path = config_dir.clone();
-                path.push("cached_kernels");
-                if let Ok(mut file) = std::fs::File::open(path) {
-                    use std::io::Read;
-                    let mut buf = Vec::new();
-                    file.read_to_end(&mut buf).unwrap();
-                    if let Ok(cached_kernels) = bitcode::decode(&buf) {
-                        cached_kernels
-                    } else {
-                        BTreeMap::new()
-                    }
-                } else {
-                    BTreeMap::new()
-                }
-            } else {
-                BTreeMap::new()
-            };
         let cache_key = (kernel.clone(), dev_info.clone());
-        if let Some(KernelOptimizer::Optimized(optimizations, _)) = cached_kernels.get(&cache_key) {
+        if let Some(KernelOptimizer::Optimized(optimizations, _)) = self.optimizer_cache.get(&cache_key) {
             Ok(optimizations.clone())
         } else {
+            let debug_perf = self.debug_perf();
+            let debug_sched = self.debug_sched();
             // allocate space for inputs and outputs that are not allocated for this kernel
             let mut allocated_temps = Vec::new();
             let mpid = self.devices[device_id].memory_pool_id();
@@ -437,17 +419,17 @@ impl Runtime {
             }
 
             // Get search space of possible optimizations
-            let optimizer = cached_kernels
+            let optimizer = self.optimizer_cache
                 .entry(cache_key.clone())
                 .or_insert_with(|| kernel.new_optimizer(dev_info));
 
-            let flop_mem_rw = if self.debug_perf() {
+            let flop_mem_rw = if debug_perf {
                 Some(kernel.flop_mem_rw())
             } else {
                 None
             };
             let rem_opts = optimizer.remaining();
-            if self.debug_sched() {
+            if debug_sched {
                 println!(
                     "Searching over {} out of {} remaining optimizations.",
                     self.search_iterations, rem_opts
@@ -455,14 +437,16 @@ impl Runtime {
             }
             for i in 0..self.search_iterations {
                 let Some(optimization_id) = optimizer.next() else {
-                    if self.debug_sched() {
+                    if debug_sched {
                         println!(
                             "All optimizations were tried and fastest kernel has been selected."
                         );
                     }
+                    #[cfg(feature = "disk_cache")]
+                    self.store_optimizer_cache();
                     break;
                 };
-                if self.debug_sched() {
+                if debug_sched {
                     println!(
                         "{:>6}/{} {}",
                         i + 1,
@@ -496,7 +480,7 @@ impl Runtime {
                     Ok(queue_id) => queue_id,
                     Err(e) => {
                         optimizer.set_exec_time(optimization_id, u128::MAX);
-                        if self.debug_sched() {
+                        if debug_sched {
                             println!("Could not launch, {e}, skipping");
                         }
                         continue;
@@ -504,7 +488,7 @@ impl Runtime {
                 };
                 if let Err(e) = self.devices[device_id].sync(queue_id) {
                     optimizer.set_exec_time(optimization_id, u128::MAX);
-                    if self.debug_sched() {
+                    if debug_sched {
                         println!("Could not sync, {e}, skipping");
                     }
                     continue;
@@ -514,26 +498,31 @@ impl Runtime {
                 if let Some((f, mr, mw)) = flop_mem_rw {
                     print_perf(f, mr, mw, exec_time);
                 }
-                // We have to put clone here because borrowck is stupid
-                // and it would take some effort to write a workaround
                 optimizer.set_exec_time(optimization_id, exec_time);
+                // TODO Store cached kernels to disk every minute
             }
-            if self.debug_sched() {
+            if debug_sched {
                 println!("Optimization has been finished.\n");
             }
             // Deallocate inputs and outputs that are used only for beam search
             for buffer_id in allocated_temps {
                 self.memory_pools[mpid].deallocate(buffer_id)?;
             }
-            // Store cached kernels back to disk
-            if let Some(mut path) = self.config_dir.clone() {
-                path.push("cached_kernels");
-                let mut file = std::fs::File::create(path).unwrap();
-                file.write_all(&bitcode::encode(&cached_kernels)).unwrap();
-            } else {
-                panic!();
+            Ok(self.optimizer_cache.get(&cache_key).unwrap().best().clone())
+        }
+    }
+
+    #[cfg(feature = "disk_cache")]
+    fn store_optimizer_cache(&self) {
+        use std::io::Write;
+        if let Some(mut path) = self.config_dir.clone() {
+            path.push("cached_kernels");
+            let mut file = std::fs::File::create(path).unwrap();
+            file.write_all(&bitcode::encode(&self.optimizer_cache)).unwrap();
+        } else {
+            if self.debug_sched() {
+                println!("Zyx config path was not found. Searched kernels won't be cached to disk.");
             }
-            Ok(cached_kernels.get(&cache_key).unwrap().best().clone())
         }
     }
 

@@ -6,7 +6,8 @@ use half::{bf16, f16};
 
 use crate::{Scalar, ZyxError};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Constant {
     #[cfg(feature = "half")]
     BF16(u16),
@@ -137,7 +138,8 @@ impl Display for Constant {
 
 /// Represents the data type used for operations.
 #[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
     /// 16 bit bfloat data type.
     #[cfg(feature = "half")]

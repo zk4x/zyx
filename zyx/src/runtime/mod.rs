@@ -4,14 +4,14 @@ use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
 use backend::{
     BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool,
-    OpenCLConfig, OpenCLError, VulkanConfig, VulkanError,
+    OpenCLConfig, OpenCLError, VulkanConfig, VulkanError, DeviceInfo
 };
 #[cfg(feature = "wgsl")]
 use backend::{WGSLConfig, WGSLError};
 use graph::Graph;
 use ir::IRKernel;
 use node::{BOp, Node, ROp, UOp};
-use scheduler::CompiledGraph;
+use scheduler::{CompiledGraph, Kernel, KernelOptimizer};
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -68,7 +68,8 @@ pub(super) struct Runtime {
     devices: Vec<Device>,
     // Cache which maps IRKernel to device and program id on the device
     ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
-    config_dir: Option<PathBuf>, // Why the is hell PathBuf::new not const???????
+    optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
+    config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Are we in training mode?
     pub(super) training: bool,
     pub(super) search_iterations: usize,
@@ -88,6 +89,7 @@ impl Runtime {
             #[cfg(feature = "rand")]
             rng: core::cell::OnceCell::new(),
             config_dir: None,
+            optimizer_cache: BTreeMap::new(),
             training: false,
             search_iterations: 5,
             debug: 0,
@@ -363,11 +365,19 @@ impl Runtime {
     #[must_use]
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         let sh = self.shape(x);
-        assert_eq!(shape.len(), sh.len());
         if &shape == sh {
             self.retain(x);
             return x;
         }
+        if shape.len() > sh.len() {
+            let sh: Vec<usize> = std::iter::repeat(1).take(shape.len() - sh.len()).chain(sh.iter().copied()).collect();
+            assert_eq!(shape.len(), sh.len());
+            let y = self.reshape(x, sh);
+            let x = self.graph.push_wshape(Node::Expand { x: y }, shape);
+            self.release(y).unwrap();
+            return x;
+        }
+        assert_eq!(shape.len(), sh.len());
         self.graph.push_wshape(Node::Expand { x }, shape)
     }
 
@@ -460,6 +470,24 @@ impl Runtime {
             x,
             y,
             bop: BOp::Div,
+        })
+    }
+
+    #[must_use]
+    pub(super) fn and(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::And,
+        })
+    }
+
+    #[must_use]
+    pub(super) fn or(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Or,
         })
     }
 

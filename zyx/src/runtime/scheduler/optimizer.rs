@@ -6,8 +6,10 @@ use crate::{
     shape::Dimension,
 };
 
-#[derive(Debug, bitcode::Encode, bitcode::Decode)]
-pub(super) enum KernelOptimizer {
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug)]
+pub(crate) enum KernelOptimizer {
+    #[allow(dead_code)]
     Optimized(KernelOptimization, u128),
     // All optimizations, best optimization id
     Optimizing(Vec<(KernelOptimization, u128)>, usize),
@@ -15,7 +17,8 @@ pub(super) enum KernelOptimizer {
 
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
-#[derive(Debug, Clone, bitcode::Encode, bitcode::Decode, PartialEq, Eq)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KernelOptimization {
     // Axis splits to give us global, local and register work sizes
     // as well as work per thread in reduce loops

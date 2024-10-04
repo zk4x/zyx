@@ -29,11 +29,6 @@ serde_json = { version = "1.0.128", default-features = false, features = [
 ] } # MIT or Apache 2.0
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
-# for caching of beam searched kernels
-bitcode = { version = "0.6.3", default-features = false, features = [
-    "std",
-    "derive",
-] } # MIT or Apache 2.0
 # For nice colorful debug logging
 inline_colorization = { version = "0.1.6", default-features = false } # MIT
 
@@ -41,6 +36,11 @@ inline_colorization = { version = "0.1.6", default-features = false } # MIT
 # Support for random number generation
 rand = { version = "0.8.5", default-features = false, features = [
     "small_rng",
+], optional = true } # MIT or Apache 2.0
+# for caching of searched kernels
+bitcode = { version = "0.6.3", default-features = false, features = [
+    "std",
+    "derive",
 ], optional = true } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1", default-features = false, optional = true } # MIT or Apache 2.0
@@ -65,6 +65,7 @@ crate-type = ["lib", "cdylib"]
 [features]
 default = [
     "rand",
+    #"disk_cache",
     #"wgsl",
     #"half",
     #"complex",
@@ -73,6 +74,8 @@ default = [
 
 # Enables random number generation for randn, uniform ...
 rand = ["dep:rand"]
+
+disk_cache = ["dep:bitcode"]
 
 # Enables f16 and bf16 dtypes
 half = ["dep:half"]

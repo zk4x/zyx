@@ -12,7 +12,8 @@ use crate::{
 
 use super::{shape_to_loops, vop::VOp};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Kernel {
     pub(crate) ops: Vec<VOp>,
 }

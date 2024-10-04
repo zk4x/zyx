@@ -3,7 +3,8 @@
 
 use crate::{dtype::Constant, shape::Axis, tensor::TensorId, DType, Scalar};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(super) enum BOp {
     Add,
     Sub,
@@ -21,7 +22,8 @@ pub(super) enum BOp {
     NotEq,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(super) enum UOp {
     Cast(DType),
     ReLU,
@@ -36,7 +38,8 @@ pub(super) enum UOp {
     Nonzero,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, bitcode::Encode, bitcode::Decode)]
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(super) enum ROp {
     Sum,
     Max,
