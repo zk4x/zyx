@@ -1535,7 +1535,7 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let arr = Tensor::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]).reshape([3, 3])?;
-    /// assert_eq!(arr.diagonal(), [[1, 0, 0], [0, 5, 0], [0, 0, 9]]); // diagonal elements are [1, 5, 9]
+    /// assert_eq!(arr.diagonal(), [1, 5, 9]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -1552,6 +1552,8 @@ impl Tensor {
             .reshape([n, n + 1])
             .unwrap()
             .get((.., 0))
+            .unwrap()
+            .flatten(..)
             .unwrap()
     }
 
@@ -1833,10 +1835,10 @@ impl Tensor {
             match axes.end_bound() {
                 Bound::Included(dim) => *dim,
                 Bound::Excluded(dim) => *dim - 1,
-                Bound::Unbounded => 0,
+                Bound::Unbounded => -1,
             },
             rank,
-        )?;
+        )?+1;
         let dim = shape[start_dim..end_dim].iter().product();
         let new_shape: Vec<usize> = shape[..start_dim]
             .iter()
