@@ -819,6 +819,7 @@ impl OpenCLDevice {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}__kernel void {name}{source}");
+        println!("{source}");
         if debug_asm {
             println!("{source}");
         }
@@ -1213,7 +1214,7 @@ impl Constant {
             #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{:.16}f", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("{:.16}f", unsafe { t::<_, f64>(*x) }),
+            Constant::F64(x) => format!("{:.16}", unsafe { t::<_, f64>(*x) }),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]
