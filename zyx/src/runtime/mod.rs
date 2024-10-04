@@ -383,6 +383,10 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+        if axes.len() < 2 || axes == (0..axes.len()).collect::<Vec<usize>>() {
+            self.retain(x);
+            return x;
+        }
         let shape = permute(self.shape(x), &axes);
         self.graph.push_wshape(Node::Permute { x, axes }, shape)
     }

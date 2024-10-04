@@ -1116,6 +1116,12 @@ impl Tensor {
     }
 
     /// Transpose two arbitrary dimensions
+    /// ```rust
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([[[1, 2]], [[3, 4]]]);
+    /// assert_eq!(t.transpose(0, -1)?, [[[1, 3]], [[2, 4]]]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
     #[must_use]
     pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
