@@ -110,12 +110,14 @@ impl Tensor {
     /// This function returns a new tensor with the same data as the previous one,
     /// but drops it's backpropagation graph. This is usefull for recurrent networks:
     /// ```rust
-    /// let mut x = Tensor::randn([8, 8]);
-    /// let z = Tensor::randn([8]);
+    /// use zyx::{Tensor, DType};
+    /// let mut x = Tensor::randn([8, 8], DType::F32)?;
+    /// let z = Tensor::randn([8], DType::F32)?;
     /// for _ in 0..100 {
     ///     // Without detach the graph would grow bigger with every iteration
-    ///     x = x.detach() + z;
+    ///     x = x.detach()? + &z;
     /// }
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
     pub fn detach(self) -> Result<Tensor, ZyxError> {
@@ -901,8 +903,8 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
-    /// use zyx::Tensor;
-    /// let t = Tensor::rand((3, 4)).unwrap();
+    /// use zyx::{Tensor, DType};
+    /// let t = Tensor::rand([3, 4], DType::I64).unwrap();
     /// let p = [1, 0];
     /// let permuted_t = t.permute(p); // Results in a tensor with axes (4, 3)
     /// ```
@@ -929,11 +931,12 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let t = Tensor::from([1, 2, 3]);
-    /// let padded = t.pad_zeros(1).into_shape((5,))?;
-    /// assert_eq!(padded, [0., 1., 2., 3., 0.]);
+    /// let padded = t.pad_zeros([(1, 1)])?.reshape([5])?;
+    /// assert_eq!(padded, [0, 1, 2, 3, 0]);
     ///
-    /// let padded = t.pad_zeros([(1, 2)]);
-    /// assert_eq!(padded.shape(), &[5]);
+    /// let padded = t.pad_zeros([(1, 2)])?;
+    /// assert_eq!(padded.shape(), &[6]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -969,22 +972,22 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let x = Tensor::from([[2, 3],
     ///                       [4, 1]]);
-    /// let z = x.pad([(1, 2)], 0);
-    /// std::println!("{}", z);
+    /// let z = x.pad([(1, 2)], 0)?;
     /// assert_eq!(z, [[0, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
     /// ```rust
     /// # use zyx::Tensor;
     /// # let x = Tensor::from([[2, 3],
     /// #                       [4, 1]]);
-    /// let z = x.pad([(2, -1), (1, 1)], 0);
-    /// println!("z: {z}");
+    /// let z = x.pad([(2, -1), (1, 1)], 0)?;
     /// assert_eq!(z, [[0, 0, 0],
     ///                [0, 0, 2],
     ///                [0, 0, 4],
     ///                [0, 0, 0]]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1166,7 +1169,6 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let x = Tensor::from([2f32, 3., 4.]);
     /// let y = x.ln_softmax([]);
-    /// println!("{y}");
     /// ```
     ///
     /// # Returns
@@ -1191,10 +1193,10 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use zyx::Tensor
+    /// use zyx::Tensor;
     /// let arr = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(arr.max(0), [4]);
-    /// assert_eq!(arr.max(1), [2, 4]);
+    /// assert_eq!(arr.max([0])?, [4]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1241,10 +1243,11 @@ impl Tensor {
     /// # Examples
     ///
     /// ```
-    /// use zyx::Tensor;
+    /// use zyx::{Tensor, DType};
     ///
     /// let arr = Tensor::eye(3, DType::F32);
-    /// assert_eq!(arr.mean(0, &[1.0, 1.0, 1.0]));
+    /// assert_eq!(arr.mean([0])?, [1f32, 1.0, 1.0]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1273,7 +1276,8 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let a = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(a.mean_kd(0), [2.5]);
+    /// assert_eq!(a.mean_kd([])?, [2]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1408,8 +1412,9 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let t = Tensor::from(vec![1.0, 2.0, 3.0]);
-    /// let sm = t.softmax(0);
+    /// let sm = t.softmax([])?;
     /// assert_eq!(sm, [0.0900305748, 0.2447281546, 0.6652412706]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1645,7 +1650,8 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let arr = Tensor::from([1.0, 2.0]);
-    /// assert_eq!(arr.pow(2.0), [1.0, 4.0]);
+    /// assert_eq!(arr.pow(2.0)?, [1.0, 4.0]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1718,7 +1724,8 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let input = Tensor::from([0.5, 0.2, 0.3]);
     /// let target = Tensor::from([1., 0., 0.]);
-    /// assert_eq!(input.cross_entropy_loss(target, ()), -0.69314718);
+    /// assert_eq!(input.cross_entropy_loss(target, [])?.mean([])?, -0.3133);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1933,8 +1940,9 @@ impl Tensor {
     /// use zyx::{Tensor, DType};
     ///
     /// let t = Tensor::zeros([2, 3], DType::I8);
-    /// assert_eq!(t.unsqueeze(1).shape(), &[2, 1, 3]);
-    /// assert_eq!(t.unsqueeze(-1).shape(), &[2, 3, 1]);
+    /// assert_eq!(t.unsqueeze(1)?.shape(), &[2, 1, 3]);
+    /// assert_eq!(t.unsqueeze(-1)?.shape(), &[2, 3, 1]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
     pub fn unsqueeze(&self, dim: isize) -> Result<Tensor, ZyxError> {

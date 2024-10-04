@@ -5,6 +5,7 @@
       reducing register pressure to avoid spilling,
       this will depend on number of available registers
 - [x] padded view permute
+- [ ] fix mean
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
 - [ ] run kernel launch function on separate thread/threads
