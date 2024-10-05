@@ -25,9 +25,10 @@ impl LayerNorm {
     }
 
     /// Forward function for layer_norm.
-    pub fn forward(&self, x: &Tensor) -> Result<Tensor, ZyxError> {
+    pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let x = x.into();
         let axes = -(self.d_dims as isize)..=-1;
-        let mut x = (x - x.mean(axes.clone())?) / (x.var(axes)? + self.eps).sqrt();
+        let mut x = (&x - x.mean(axes.clone())?) / (x.var(axes, 1)? + self.eps).sqrt();
         if let Some(w) = &self.weight {
             x = x * w;
         }

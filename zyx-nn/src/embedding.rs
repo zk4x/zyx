@@ -4,9 +4,12 @@ use zyx_derive::Module;
 /// Embedding layer
 #[derive(Module)]
 pub struct Embedding {
-    vocab_size: usize,
-    embed_size: usize,
-    weight: Tensor,
+    /// Vocabulary size
+    pub vocab_size: usize,
+    /// Embedding size
+    pub embed_size: usize,
+    /// Weight
+    pub weight: Tensor,
     arange: Tensor,
 }
 

@@ -1,6 +1,5 @@
-use zyx::DType;
-use zyx_derive::Module;
-use zyx_nn::Linear;
+use zyx::{DType, ZyxError};
+use zyx_nn::{Module, Linear};
 
 #[derive(Module)]
 struct TinyNet {
@@ -9,10 +8,10 @@ struct TinyNet {
     lr: f32,
 }
 
-fn main() {
+fn main() -> Result<(), ZyxError> {
     let tiny_net = TinyNet {
-        l0: Linear::new(1, 128, DType::F32),
-        l1: Linear::new(1, 128, DType::F32),
+        l0: Linear::new(1, 128, true, DType::F32)?,
+        l1: Linear::new(1, 128, true, DType::F32)?,
         lr: 0.0,
     };
 
@@ -28,4 +27,6 @@ fn main() {
     //let y = tiny_net.forward();
     //let loss = x.mse_loss(target);
     //let _grads = loss.backward(&tiny_net);
+
+    Ok(())
 }
