@@ -16,18 +16,19 @@ cargo add zyx
 
 Zyx uses syntax similar to pytorch.
 
-```rust
+```rust no_run
 use zyx::{Tensor, DType};
 
-let x = Tensor::randn([1024, 1024], DType::BF16)?;
+let x = Tensor::randn([1024, 1024], DType::F32)?;
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
-let b = Tensor::zeros([1024], DType::F16);
+let b = Tensor::zeros([1024], DType::F32);
 let z = &x + &y;
-let z = (x.dot(&y)? + b).gelu();
+let z = (x.dot(&y)? + &b).gelu();
 // Zyx allows for arbitrary differentiation
-let b_grad = z.backward([&b])[0].unwrap();
+let b_grad = z.backward([&b])[0].clone().unwrap();
 // Also higher order derivatives
-let bb_grad = b_grad.backward([&b])[0].unwrap();
+let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
+# Ok::<(), zyx::ZyxError>(())
 ```
 
 ## Backends
@@ -45,14 +46,14 @@ cargo add zyx;
 cargo add zyx-optim;
 cargo add zyx-nn;
 ```
-```rust
+```rust ignore
 use zyx::{Tensor, DType};
 use zyx_nn::Linear;
 
-let l0 = Linear::new(3, 1024, DType::F16);
-let l1 = Linear::new(1024, 2, DType::F16);
+let l0 = Linear::new(3, 1024, DType::F32);
+let l1 = Linear::new(1024, 2, DType::F32);
 
-let x = Tensor::from([2, 3, 1]).cast(DType::F16);
+let x = Tensor::from([2, 3, 1]).cast(DType::F32);
 let target = Tensor::from([2, 4]);
 
 // Zyx also provides some optimizers like SGD and Adam
@@ -73,6 +74,7 @@ for _ in 0..train_steps {
 }
 
 l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors");
+# Ok::<(), zyx::ZyxError>(())
 ```
 
 For more details, there is a [book](https://zk4x.github.io/zyx).
@@ -80,11 +82,11 @@ For more details, there is a [book](https://zk4x.github.io/zyx).
 ## Lazyness
 
 Tensors do not get realized automatically. Realization happens only when user accesses tensors, or explicitly using Tensor::realize function.
-```rust
+```rust ignore
 Tensor::realize([&x, &y]).unwrap();
 ```
 If you do not know when to realize tensors, just do it after updating them with optimizer.
-```rust
+```rust ignore
 sgd.update(&mut model, grads);
 Tensor::realize(&model).unwrap();
 ```

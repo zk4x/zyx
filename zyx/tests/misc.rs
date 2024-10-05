@@ -196,3 +196,13 @@ fn softmax() -> Result<(), ZyxError> {
     Ok(())
 }
 
+#[test]
+fn var() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
+    let y = x.var([0], 0)?;
+    assert_eq!(y, [2.25f32, 2.25, 2.25]);
+    let y = x.var([1], 0)?;
+    assert_eq!(y, [0.666666f32, 0.666666]);
+    Ok(())
+}
+

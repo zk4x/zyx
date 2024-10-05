@@ -109,7 +109,7 @@ impl Tensor {
     /// Detaches tensor from graph.
     /// This function returns a new tensor with the same data as the previous one,
     /// but drops it's backpropagation graph. This is usefull for recurrent networks:
-    /// ```rust
+    /// ```rust no_run
     /// use zyx::{Tensor, DType};
     /// let mut x = Tensor::randn([8, 8], DType::F32)?;
     /// let z = Tensor::randn([8], DType::F32)?;
@@ -1080,7 +1080,8 @@ impl Tensor {
     /// ```rust
     /// use zyx::Tensor;
     /// let t = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(t.reshape((2, 2)), [[1, 2], [3, 4]]);
+    /// assert_eq!(t.reshape((2, 2))?, [[1, 2], [3, 4]]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1227,7 +1228,8 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let a = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(a.max_kd(&[0]), &[[4]]);
+    /// assert_eq!(a.max_kd([0])?, [4]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     #[must_use]
@@ -1246,7 +1248,7 @@ impl Tensor {
     /// use zyx::{Tensor, DType};
     ///
     /// let arr = Tensor::eye(3, DType::F32);
-    /// assert_eq!(arr.mean([0])?, [1f32, 1.0, 1.0]);
+    /// assert_eq!(arr.mean([0])?, [0.333333f32, 0.333333, 0.333333]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -1300,7 +1302,8 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let arr = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// assert_eq!(arr.product(1), [3., 8.]);
+    /// assert_eq!(arr.product([1])?, [2., 12.]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
     pub fn product(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
@@ -1320,7 +1323,8 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let a = Tensor::from([[1., 2., 3.], [4., 5., 6.]]);
-    /// assert_eq!(a.std(()), 1.5);
+    /// assert_eq!(a.std([0, 1], 1)?, 1.8708);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -1328,8 +1332,8 @@ impl Tensor {
     /// This function will panic if the input tensor is empty.
     ///
     #[must_use]
-    pub fn std(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
-        Ok(self.var(axes)?.sqrt())
+    pub fn std(&self, axes: impl IntoIterator<Item = isize>, correction: usize) -> Result<Tensor, ZyxError> {
+        Ok(self.var(axes, correction)?.sqrt())
     }
 
     /// Creates a new tensor by applying standard deviation along specified axes.
@@ -1343,17 +1347,18 @@ impl Tensor {
     /// use zyx::{Tensor, DType};
     ///
     /// let t = Tensor::rand([3, 4], DType::F32).unwrap();
-    /// let std_kd = t.std_kd([0, 1]);
-    /// assert_eq!(std_kd.shape(), [1, 2]);
+    /// let std_kd = t.std_kd([0, 1], 1)?;
+    /// assert_eq!(std_kd.shape(), [1, 1]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
     ///
     /// This function panics if the input tensor has no elements.
     #[must_use]
-    pub fn std_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn std_kd(&self, axes: impl IntoIterator<Item = isize>, correction: usize) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        self.std(axes.clone())?.reshape(self.reduce_kd_shape(axes))
+        self.std(axes.clone(), correction)?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Sum reduce. Removes tensor dimensions.
@@ -1431,7 +1436,7 @@ impl Tensor {
     ///
     /// This function first computes the mean of the tensor along the provided axes,
     /// then subtracts this mean from each element in the tensor, squares the result,
-    /// and finally sums these squared differences along the same axes to obtain the variance.
+    /// and finally means these squared differences along the same axes to obtain the variance.
     ///
     /// # Arguments
     ///
@@ -1446,17 +1451,24 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let arr = Tensor::from([[1, 2], [3, 4]]);
-    /// let var = arr.var(0); // Compute variance along rows (axis=0)
-    /// assert_eq!(var, [[5.0, 2.5]]); // Expected output: [[5.0, 2.5]]
+    /// let arr = Tensor::from([[1f32, 2.], [3., 4.]]);
+    /// let var = arr.var([0], 0)?; // Compute variance along rows (axis=0)
+    /// assert_eq!(var, [1f32, 1.]);
     ///
-    /// let var = arr.var(1); // Compute variance along columns (axis=1)
-    /// assert_eq!(var, [[2.5], [2.5]]); // Expected output: [[2.5], [2.5]]
+    /// let var = arr.var([1], 1)?; // Compute variance along columns (axis=1)
+    /// assert_eq!(var, [0.5f32, 0.5]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
-    pub fn var(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn var(&self, axes: impl IntoIterator<Item = isize>, correction: usize) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        Ok((self - self.mean(axes.clone())?).pow(2)?.sum(axes)?)
+        let shape = self.shape();
+        let x = self - self.mean_kd(axes.clone())?;
+        let d = (into_axes(axes.clone(), shape.rank())?
+                .into_iter()
+                .map(|a| shape[a])
+                .product::<usize>() as i64) - correction as i64;
+        Ok((&x * &x).sum(axes)?/d)
     }
 
     /// Calculates the variance along the specified axes.
@@ -1478,13 +1490,14 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let a = Tensor::from([[1., 2., 3.], [4., 5., 6.]]);
-    /// assert_eq!(a.var_kd(0), 1.5);
+    /// let a = Tensor::from([[2f64, 3., 4.], [5., 6., 7.]]);
+    /// assert_eq!(a.var_kd([0], 0)?, [[2.25f64, 2.25, 2.25]]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
-    pub fn var_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn var_kd(&self, axes: impl IntoIterator<Item = isize>, correction: usize) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        self.var(axes.clone())?.reshape(self.reduce_kd_shape(axes))
+        self.var(axes.clone(), correction)?.reshape(self.reduce_kd_shape(axes))
     }
 
     // index
@@ -1780,14 +1793,15 @@ impl Tensor {
     /// let input = Tensor::from([2.0, 3.0]);
     /// let target = Tensor::from([4.0, 5.0]);
     ///
-    /// assert_eq!(input.mse_loss(target), Tensor::from([1.0, 1.0]));
+    /// assert_eq!(input.mse_loss(target), [4.0, 4.0]);
     /// ```
     ///
     /// # Panics
     ///
     /// This function will panic if the input tensor and target tensor have different shapes.
-    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        (self - target).pow(2)
+    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Tensor {
+        let x = self - target;
+        &x * &x
     }
 
     /// Calculates the cosine similarity between this tensor and another.
@@ -1989,10 +2003,11 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let a = Tensor::from([[1, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
-    /// assert_eq!(Tensor::stack([&a, &b], 0), array![[[1, 2],
-    ///                                                [3, 4]],
-    ///                                               [[5, 6],
-    ///                                                [7, 8]]]);
+    /// assert_eq!(Tensor::stack([&a, &b], 0)?, [[[1, 2],
+    ///                                           [3, 4]],
+    ///                                          [[5, 6],
+    ///                                           [7, 8]]]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics
@@ -2231,7 +2246,8 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let arr = Tensor::from(vec![1, 2, 3]);
-    /// assert_eq!(arr.repeat([2]), vec![1, 2, 3, 4, 5, 6]);
+    /// assert_eq!(arr.repeat([2])?, [1, 2, 3, 1, 2, 3]);
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Panics

@@ -819,7 +819,7 @@ impl OpenCLDevice {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}__kernel void {name}{source}");
-        println!("{source}");
+        //println!("{source}");
         if debug_asm {
             println!("{source}");
         }
@@ -854,7 +854,9 @@ impl OpenCLDevice {
         {
             let build_log = self.get_program_build_data(program, CL_PROGRAM_BUILD_LOG);
             match build_log {
-                Ok(build_log) => panic!("{e:?} {}", String::from_utf8_lossy(&build_log)),
+                Ok(build_log) => {
+                    panic!("{e:?} {}", String::from_utf8_lossy(&build_log));
+                }
                 Err(status) => status.check(&format!(
                     "Failed to get info about failed compilation. {e:?}"
                 ))?,
