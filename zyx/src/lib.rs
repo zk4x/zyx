@@ -36,6 +36,14 @@ pub use tensor::Tensor;
 static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
 //static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
+/// Module
+pub trait Module {
+    /// Get parameters of this module
+    fn parameters(&self) -> std::collections::HashMap<String, &Tensor>;
+    /// Get parameters of this module mutably
+    fn parameters_mut(&self) -> std::collections::HashMap<String, &mut Tensor>;
+}
+
 /// Save tensors or modules
 pub trait TensorSave {
     /// Save tensors or modules
