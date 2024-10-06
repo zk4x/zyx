@@ -1,0 +1,16 @@
+[package]
+name = "zyx-onnx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zyx = { version = "*", path = "../zyx" }
+zyx-nn = { version = "*", path = "../zyx-nn" }
+prost = "0.12.1"
+
+[build-dependencies]
+prost-build = "0.12.1"
+
+[dev-dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+clap = { version = "4.2.4", features = ["derive"] }

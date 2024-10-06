@@ -13,9 +13,8 @@ pub struct Linear {
 impl Linear {
     /// Initilize linear layer in device self
     pub fn new(in_features: usize, out_features: usize, bias: bool, dtype: DType) -> Result<Linear, ZyxError> {
-        use zyx::Scalar;
-        let l = -Scalar::sqrt(1.0 / (in_features as f32));
-        let u = Scalar::sqrt(1.0 / (in_features as f32));
+        let l = -(1.0 / (in_features as f32)).sqrt();
+        let u = (1.0 / (in_features as f32)).sqrt();
         Ok(Linear {
             weight: Tensor::uniform([in_features, out_features], l..u)?.cast(dtype),
             bias: if bias { Some(Tensor::uniform([out_features], l..u)?.cast(dtype)) } else { None },

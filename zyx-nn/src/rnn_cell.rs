@@ -17,9 +17,8 @@ pub struct RNNCell {
 impl RNNCell {
     /// Initialize linear layer in device self
     pub fn new(self, input_size: usize, hidden_size: usize, dtype: DType) -> Result<RNNCell, ZyxError> {
-        use zyx::Scalar;
-        let l = Scalar::sqrt(-(1. / (hidden_size as f32)));
-        let u = Scalar::sqrt(1. / (hidden_size as f32));
+        let l = (-(1. / (hidden_size as f32))).sqrt();
+        let u = (1. / (hidden_size as f32)).sqrt();
         Ok(RNNCell {
             weight_ih: Tensor::uniform([hidden_size, input_size], l..u)?.cast(dtype),
             weight_hh: Tensor::uniform([hidden_size, hidden_size], l..u)?.cast(dtype),
