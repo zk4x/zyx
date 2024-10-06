@@ -157,6 +157,10 @@ impl Tensor {
                 let data: Vec<u8> = self.try_into()?;
                 Tensor::from(data).reshape(shape)
             }
+            DType::U32 => {
+                let data: Vec<u32> = self.try_into()?;
+                Tensor::from(data).reshape(shape)
+            }
             DType::I8 => {
                 let data: Vec<i8> = self.try_into()?;
                 Tensor::from(data).reshape(shape)
@@ -1041,6 +1045,10 @@ impl Tensor {
                 }
                 DType::U8 => {
                     let x: u8 = value.clone().try_into()?;
+                    x == 0
+                }
+                DType::U32 => {
+                    let x: u32 = value.clone().try_into()?;
                     x == 0
                 }
                 DType::I8 => {
@@ -2427,6 +2435,10 @@ impl Tensor {
                 let data: Vec<u8> = self.clone().try_into()?;
                 data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
             }
+            DType::U32 => {
+                let data: Vec<u32> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
             DType::I8 => {
                 let data: Vec<i8> = self.clone().try_into()?;
                 data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
@@ -2650,6 +2662,15 @@ impl TryFrom<Tensor> for u8 {
     }
 }
 
+impl TryFrom<Tensor> for u32 {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [0];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
+    }
+}
+
 impl TryFrom<Tensor> for i8 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
@@ -2819,7 +2840,14 @@ impl Display for Tensor {
                 let data: Result<Vec<u8>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("i32 tensor failed to realize {e:?}"),
+                    Err(e) => format!("u8 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::U32 => {
+                let data: Result<Vec<u32>, _> = x.try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("u32 tensor failed to realize {e:?}"),
                 }
             }
             DType::I8 => {

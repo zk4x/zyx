@@ -230,16 +230,17 @@ impl Runtime {
     pub(super) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         let x = match dtype {
             #[cfg(feature = "half")]
-            DType::BF16 => self.full(shape, bf16::ONE),
+            DType::BF16 => self.constant(bf16::ONE),
             #[cfg(feature = "half")]
-            DType::F16 => self.full(shape, f16::ONE),
+            DType::F16 => self.constant(f16::ONE),
             DType::F32 => self.constant(1f32),
             DType::F64 => self.constant(1f64),
             #[cfg(feature = "complex")]
-            DType::CF32 => self.full(shape, Complex::new(1f32, 0.)),
+            DType::CF32 => self.constant(Complex::new(1f32, 0.)),
             #[cfg(feature = "complex")]
-            DType::CF64 => self.full(shape, Complex::new(1f64, 0.)),
+            DType::CF64 => self.constant(Complex::new(1f64, 0.)),
             DType::U8 => self.constant(1u8),
+            DType::U32 => self.constant(1u32),
             DType::I8 => self.constant(1i8),
             DType::I16 => self.constant(1i16),
             DType::I32 => self.constant(1i32),
@@ -255,16 +256,17 @@ impl Runtime {
     pub(super) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         let x = match dtype {
             #[cfg(feature = "half")]
-            DType::BF16 => self.full(shape, bf16::ZERO),
+            DType::BF16 => self.constant(bf16::ZERO),
             #[cfg(feature = "half")]
-            DType::F16 => self.full(shape, f16::ZERO),
+            DType::F16 => self.constant(f16::ZERO),
             DType::F32 => self.constant(0f32),
             DType::F64 => self.constant(0f64),
             #[cfg(feature = "complex")]
-            DType::CF32 => self.full(shape, Complex::new(0f32, 0.)),
+            DType::CF32 => self.constant(Complex::new(0f32, 0.)),
             #[cfg(feature = "complex")]
-            DType::CF64 => self.full(shape, Complex::new(0f64, 0.)),
+            DType::CF64 => self.constant(Complex::new(0f64, 0.)),
             DType::U8 => self.constant(0u8),
+            DType::U32 => self.constant(0u32),
             DType::I8 => self.constant(0i8),
             DType::I16 => self.constant(0i16),
             DType::I32 => self.constant(0i32),

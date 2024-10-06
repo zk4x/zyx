@@ -102,13 +102,12 @@ pub(super) enum IRDType {
     #[cfg(feature = "complex")]
     CF64(IRVec),
     U8(IRVec),
+    U32(IRVec),
     I8(IRVec),
     I16(IRVec),
     I32(IRVec),
     I64(IRVec),
     Bool,
-    // For indexing
-    U32,
 }
 
 // TODO add vectorization
@@ -170,7 +169,7 @@ impl IRDType {
             IRDType::I32(v) => 4 * v.len(),
             IRDType::I64(v) => 8 * v.len(),
             IRDType::Bool => 1,
-            IRDType::U32 => 4,
+            IRDType::U32(v) => 4 * v.len(),
         }
     }
 
@@ -187,12 +186,12 @@ impl IRDType {
             #[cfg(feature = "complex")]
             IRDType::CF64(_) => DType::CF64,
             IRDType::U8(_) => DType::U8,
+            IRDType::U32(_) => DType::U32,
             IRDType::I8(_) => DType::I8,
             IRDType::I16(_) => DType::I16,
             IRDType::I32(_) => DType::I32,
             IRDType::I64(_) => DType::I64,
             IRDType::Bool => DType::Bool,
-            IRDType::U32 => panic!(),
         }
     }
 }
@@ -211,6 +210,7 @@ impl From<DType> for IRDType {
             #[cfg(feature = "complex")]
             DType::CF64 => IRDType::CF64(IRVec::Scalar),
             DType::U8 => IRDType::U8(IRVec::Scalar),
+            DType::U32 => IRDType::U32(IRVec::Scalar),
             DType::I8 => IRDType::I8(IRVec::Scalar),
             DType::I16 => IRDType::I16(IRVec::Scalar),
             DType::I32 => IRDType::I32(IRVec::Scalar),
@@ -306,7 +306,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
     // Allocate register space for axes.
     // This way axes also have the same id in registers.
     for (_, &rc) in &axes_rcs {
-        registers.push((IRDType::U32, rc));
+        registers.push((IRDType::U32(IRVec::Scalar), rc));
     }
 
     // Maps from tensors to registers
@@ -451,7 +451,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                                     pc += &format!("{idx} > {} || ", dim as isize - rp - 1);
                                 }
 
-                                let idx_id = get_empty_register(&mut registers, IRDType::U32, 1);
+                                let idx_id = get_empty_register(&mut registers, IRDType::U32(IRVec::Scalar), 1);
                                 ops.push(IROp::Set {
                                     z: idx_id,
                                     value: Constant::U32(0),
@@ -716,7 +716,7 @@ fn store_indexed(
             });
         }
         View::Strided(dims) => {
-            let offset = get_empty_register(registers, IRDType::U32, 0);
+            let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
             ops.push(IROp::Set {
                 z: offset,
                 value: Constant::U32(0),
@@ -758,7 +758,7 @@ fn load_indexed(
             });
         }
         View::Strided(dims) => {
-            let offset = get_empty_register(registers, IRDType::U32, 0);
+            let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
             ops.push(IROp::Set {
                 z: offset,
                 value: Constant::U32(0),
@@ -781,7 +781,7 @@ fn load_indexed(
         }
         View::Padded(dims, padding) => {
             //println!("Loading indexed into {z:?} from p{address} with {view}");
-            let offset = get_empty_register(registers, IRDType::U32, 1);
+            let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 1);
             ops.push(IROp::Set {
                 z: offset,
                 value: Constant::U32(0),
@@ -793,7 +793,7 @@ fn load_indexed(
                     .find(|(axes, _)| axes.iter().max().unwrap() == axis)
                 {
                     let t = if *lp > 0 {
-                        let t = Var::Id(get_empty_register(registers, IRDType::U32, 0));
+                        let t = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
                         ops.push(IROp::Binary {
                             z: t,
                             x: Var::Id(*axis as u16),
@@ -803,7 +803,7 @@ fn load_indexed(
                         t
                     } else if *lp < 0 {
                         let lp = -lp;
-                        let t = Var::Id(get_empty_register(registers, IRDType::U32, 0));
+                        let t = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
                         ops.push(IROp::Binary {
                             z: t,
                             x: Var::Id(*axis as u16),
@@ -846,7 +846,7 @@ fn load_indexed(
                     .iter()
                     .find(|(axes, _)| axes.iter().max().unwrap() == axis)
                 {
-                    let idx_id = get_empty_register(registers, IRDType::U32, 1);
+                    let idx_id = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 1);
                     ops.push(IROp::Set {
                         z: idx_id,
                         value: Constant::U32(0),
@@ -963,6 +963,7 @@ impl DType {
             DType::F32 => IRDType::F32(IRVec::Scalar),
             DType::F64 => IRDType::F64(IRVec::Scalar),
             DType::U8 => IRDType::U8(IRVec::Scalar),
+            DType::U32 => IRDType::U32(IRVec::Scalar),
             DType::I8 => IRDType::I8(IRVec::Scalar),
             DType::I16 => IRDType::I16(IRVec::Scalar),
             DType::I32 => IRDType::I32(IRVec::Scalar),

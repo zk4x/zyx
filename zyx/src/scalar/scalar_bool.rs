@@ -39,6 +39,10 @@ impl Scalar for bool {
         t != 0
     }
 
+    fn from_u32(t: u32) -> Self {
+        t != 0
+    }
+
     fn from_i8(t: i8) -> Self {
         t != 0
     }

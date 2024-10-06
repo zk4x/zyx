@@ -40,6 +40,10 @@ impl Scalar for i32 {
         t.into()
     }
 
+    fn from_u32(t: u32) -> Self {
+        t as Self
+    }
+
     fn from_i8(t: i8) -> Self {
         t.into()
     }

@@ -1221,7 +1221,7 @@ impl IRDType {
             IRDType::I32(v) => "s32",
             IRDType::I64(v) => "s64",
             IRDType::Bool => "b8",
-            IRDType::U32 => "u32",
+            IRDType::U32(v) => "u32",
         };
     }
 }
@@ -1289,7 +1289,7 @@ impl IRDType {
             IRDType::I32(v) => "int",
             IRDType::I64(v) => "long",
             IRDType::Bool => "bool",
-            IRDType::U32 => "unsigned int",
+            IRDType::U32(v) => "unsigned int",
         };
     }
 }

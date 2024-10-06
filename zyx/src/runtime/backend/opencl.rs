@@ -962,7 +962,7 @@ impl IRDType {
             IRDType::I32(v) => format!("int{v}"),
             IRDType::I64(v) => format!("long{v}"),
             IRDType::Bool => format!("bool"),
-            IRDType::U32 => format!("unsigned int"),
+            IRDType::U32(v) => format!("unsigned int{v}"),
         };
     }
 }

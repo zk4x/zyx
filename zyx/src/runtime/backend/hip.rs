@@ -700,7 +700,7 @@ impl IRDType {
             IRDType::I32(v) => "int",
             IRDType::I64(v) => "long",
             IRDType::Bool => "bool",
-            IRDType::U32 => "unsigned int",
+            IRDType::U32(v) => "unsigned int",
         };
     }
 }

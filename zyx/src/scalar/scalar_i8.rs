@@ -42,6 +42,10 @@ impl Scalar for i8 {
         t as Self
     }
 
+    fn from_u32(t: u32) -> Self {
+        t as Self
+    }
+
     fn from_i8(t: i8) -> Self {
         t as Self
     }

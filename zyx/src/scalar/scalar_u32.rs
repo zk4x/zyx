@@ -1,99 +1,103 @@
 use crate::dtype::DType;
-use crate::scalar::{Scalar, Float};
+use crate::scalar::Scalar;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
-impl Scalar for f64 {
+impl Scalar for u32 {
     #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
-        t.into()
+        let _ = t;
+        todo!()
     }
 
     #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self {
-        t.into()
+        let _ = t;
+        todo!()
     }
 
     fn from_f32(t: f32) -> Self {
-        t as f64
+        let _ = t;
+        todo!()
     }
 
     fn from_f64(t: f64) -> Self {
-        t
+        let _ = t;
+        todo!()
     }
 
     #[cfg(feature = "complex")]
     fn from_cf32(t: Complex<f32>) -> Self {
-        t.re as f64
+        let _ = t;
+        todo!()
     }
 
     #[cfg(feature = "complex")]
     fn from_cf64(t: Complex<f64>) -> Self {
-        t.re
+        let _ = t;
+        todo!()
     }
 
     fn from_u8(t: u8) -> Self {
-        t as f64
+        t as Self
     }
 
     fn from_u32(t: u32) -> Self {
-        t as f64
+        t
     }
 
     fn from_i8(t: i8) -> Self {
-        t as f64
+        t as Self
     }
 
     fn from_i16(t: i16) -> Self {
-        t as f64
+        t as Self
     }
 
     fn from_i32(t: i32) -> Self {
-        t as f64
+        t as Self
     }
 
     fn from_i64(t: i64) -> Self {
-        t as f64
+        t as Self
     }
 
     fn from_bool(t: bool) -> Self {
-        t as i64 as f64
+        t as Self
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        f64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
+        Self::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
     }
 
     fn dtype() -> DType {
-        DType::F64
+        DType::U8
     }
 
     fn zero() -> Self {
-        0.
+        0
     }
 
     fn one() -> Self {
-        1.
+        1
     }
 
     fn byte_size() -> usize {
-        8
+        1
     }
 
     fn abs(self) -> Self {
-        self.abs()
+        todo!()
     }
 
     fn neg(self) -> Self {
-        -self
+        todo!()
     }
 
     fn relu(self) -> Self {
-        self.max(0.)
+        todo!()
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -113,80 +117,47 @@ impl Scalar for f64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        self.powf(rhs)
+        let _ = rhs;
+        todo!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        (self < rhs) as i32 as f64
+        (self < rhs).into()
     }
 
     fn max(self, rhs: Self) -> Self {
-        f64::max(self, rhs)
+        Ord::max(self, rhs)
     }
 
     fn max_value() -> Self {
-        f64::MAX
+        Self::MAX
     }
 
     fn min_value() -> Self {
-        f64::MIN
+        Self::MIN
     }
 
     fn epsilon() -> Self {
-        0.00001
+        0
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        // Less than 1% error is OK
-        (self == -f64::INFINITY && rhs == -f64::INFINITY)
-            || (self - rhs).abs() < Self::epsilon()
-            || (self - rhs).abs() < self.abs() * 0.01
+        self == rhs
     }
     
     fn not(self) -> Self {
-        if self != 0. { 0. } else { 1. }
+        todo!()
     }
     
     fn nonzero(self) -> Self {
-        (self != 0.) as i32 as f64
+        todo!()
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as i32 as f64
+        (self > rhs) as Self
     }
     
     fn or(self, rhs: Self) -> Self {
-        (self != 0. || rhs != 0.) as i32 as f64
+        (self != 0 || rhs != 0) as Self
     }
 }
-
-impl Float for f64 {
-    fn exp2(self) -> Self {
-        self.exp2()
-    }
-    
-    fn log2(self) -> Self {
-        self.log2()
-    }
-
-    fn reciprocal(self) -> Self {
-        1.0 / self
-    }
-
-    fn floor(self) -> Self {
-        self.floor()
-    }
-
-    fn sin(self) -> Self {
-        self.sin()
-    }
-
-    fn cos(self) -> Self {
-        self.cos()
-    }
-
-    fn sqrt(self) -> Self {
-        return self.sqrt();
-    }
-}
-

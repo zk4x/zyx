@@ -165,6 +165,7 @@ trait CastDType: Scalar {
             #[cfg(feature = "complex")]
             DType::CF64 => todo!("Complex numbers"),
             DType::U8 => Constant::U8(self.cast()),
+            DType::U32 => Constant::U32(self.cast()),
             DType::I8 => Constant::I8(self.cast()),
             DType::I16 => Constant::I16(self.cast()),
             DType::I32 => Constant::I32(self.cast()),

@@ -16,6 +16,7 @@ mod scalar_i32;
 mod scalar_i64;
 mod scalar_i8;
 mod scalar_u8;
+mod scalar_u32;
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
@@ -45,6 +46,8 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     fn from_cf64(t: Complex<f64>) -> Self;
     /// From u8
     fn from_u8(t: u8) -> Self;
+    /// From u32
+    fn from_u32(t: u32) -> Self;
     /// From i8
     fn from_i8(t: i8) -> Self;
     /// From i16
@@ -116,6 +119,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
                 #[cfg(feature = "complex")]
                 DType::CF64 => T::from_cf64(t(&self)),
                 DType::U8 => T::from_u8(t(&self)),
+                DType::U32 => T::from_u32(t(&self)),
                 DType::I8 => T::from_i8(t(&self)),
                 DType::I16 => T::from_i16(t(&self)),
                 DType::I32 => T::from_i32(t(&self)),
