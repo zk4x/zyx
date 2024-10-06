@@ -309,13 +309,7 @@ impl Constant {
                 Constant::CF32(..) => todo!("Complex numbers"),
                 #[cfg(feature = "complex")]
                 Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(x.sqrt()),
-                Constant::I8(x) => Constant::I8(x.sqrt()),
-                Constant::I16(x) => Constant::I16(x.sqrt()),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(x.sqrt()),
-                Constant::I64(x) => Constant::I64(x.sqrt()),
-                Constant::Bool(_) => todo!(),
+                c => panic!("Unsupported dtype {}", c.dtype()),
             },
             UOp::Sin => match self {
                 #[cfg(feature = "half")]
@@ -328,13 +322,7 @@ impl Constant {
                 Constant::CF32(..) => todo!("Complex numbers"),
                 #[cfg(feature = "complex")]
                 Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(x.sin()),
-                Constant::I8(x) => Constant::I8(x.sin()),
-                Constant::I16(x) => Constant::I16(x.sin()),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(x.sin()),
-                Constant::I64(x) => Constant::I64(x.sin()),
-                Constant::Bool(_) => todo!(),
+                c => panic!("Unsupported dtype {}", c.dtype()),
             },
             UOp::Cos => match self {
                 #[cfg(feature = "half")]
@@ -347,13 +335,7 @@ impl Constant {
                 Constant::CF32(..) => todo!("Complex numbers"),
                 #[cfg(feature = "complex")]
                 Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(x.cos()),
-                Constant::I8(x) => Constant::I8(x.cos()),
-                Constant::I16(x) => Constant::I16(x.cos()),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(x.cos()),
-                Constant::I64(x) => Constant::I64(x.cos()),
-                Constant::Bool(_) => todo!(),
+                c => panic!("Unsupported dtype {}", c.dtype()),
             },
             UOp::Not => match self {
                 #[cfg(feature = "half")]

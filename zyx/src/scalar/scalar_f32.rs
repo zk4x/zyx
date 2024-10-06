@@ -83,47 +83,12 @@ impl Scalar for f32 {
         self.abs()
     }
 
-    fn reciprocal(self) -> Self {
-        1.0 / self
-    }
-
     fn neg(self) -> Self {
         -self
     }
 
     fn relu(self) -> Self {
         self.max(0.)
-    }
-
-    fn sin(self) -> Self {
-        //libm::sinf(self)
-        let b = 4f32 / PI;
-        let c = -4f32 / (PI * PI);
-        return -(b * self + c * self * if self < 0. { -self } else { self });
-    }
-
-    fn floor(self) -> Self {
-        let i = self as i32 as f32;
-        return i - (i > self) as i32 as f32;
-    }
-
-    fn cos(self) -> Self {
-        //libm::cosf(self)
-        let mut x = self;
-        x *= 1. / (2. * PI);
-        x -= 0.25 + (x + 0.25).floor();
-        x *= 16.0 * (x.abs() - 0.5);
-        //x += 0.225 * x * (x.abs() - 1.0);
-        return x;
-    }
-
-    fn sqrt(self) -> Self {
-        // good enough (error of ~ 5%)
-        if self >= 0. {
-            Self::from_bits((self.to_bits() + 0x3f80_0000) >> 1)
-        } else {
-            Self::NAN
-        }
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -173,18 +138,6 @@ impl Scalar for f32 {
             || (self - rhs).abs() < self.abs() * 0.01
     }
     
-    fn exp2(self) -> Self {
-        self.exp2()
-    }
-    
-    fn log2(self) -> Self {
-        self.log2()
-    }
-    
-    fn inv(self) -> Self {
-        1./self
-    }
-    
     fn not(self) -> Self {
         if self != 0. { 0. } else { 1. }
     }
@@ -202,5 +155,48 @@ impl Scalar for f32 {
     }
 }
 
-impl Float for f32 {}
+impl Float for f32 {
+    fn exp2(self) -> Self {
+        self.exp2()
+    }
+    
+    fn log2(self) -> Self {
+        self.log2()
+    }
+
+    fn sin(self) -> Self {
+        //libm::sinf(self)
+        let b = 4f32 / PI;
+        let c = -4f32 / (PI * PI);
+        return -(b * self + c * self * if self < 0. { -self } else { self });
+    }
+
+    fn floor(self) -> Self {
+        let i = self as i32 as f32;
+        return i - (i > self) as i32 as f32;
+    }
+
+    fn cos(self) -> Self {
+        //libm::cosf(self)
+        let mut x = self;
+        x *= 1. / (2. * PI);
+        x -= 0.25 + (x + 0.25).floor();
+        x *= 16.0 * (x.abs() - 0.5);
+        //x += 0.225 * x * (x.abs() - 1.0);
+        return x;
+    }
+
+    fn sqrt(self) -> Self {
+        // good enough (error of ~ 5%)
+        if self >= 0. {
+            Self::from_bits((self.to_bits() + 0x3f80_0000) >> 1)
+        } else {
+            Self::NAN
+        }
+    }
+
+    fn reciprocal(self) -> Self {
+        1.0 / self
+    }
+}
 

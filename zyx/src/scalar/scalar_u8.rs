@@ -88,31 +88,11 @@ impl Scalar for u8 {
         todo!()
     }
 
-    fn reciprocal(self) -> Self {
-        todo!()
-    }
-
-    fn floor(self) -> Self {
-        self
-    }
-
     fn neg(self) -> Self {
         todo!()
     }
 
     fn relu(self) -> Self {
-        todo!()
-    }
-
-    fn sin(self) -> Self {
-        todo!()
-    }
-
-    fn cos(self) -> Self {
-        todo!()
-    }
-
-    fn sqrt(self) -> Self {
         todo!()
     }
 
@@ -159,18 +139,6 @@ impl Scalar for u8 {
 
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
-    }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
     }
     
     fn not(self) -> Self {

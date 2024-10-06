@@ -84,32 +84,12 @@ impl Scalar for f64 {
         self.abs()
     }
 
-    fn reciprocal(self) -> Self {
-        1.0 / self
-    }
-
-    fn floor(self) -> Self {
-        self.floor()
-    }
-
     fn neg(self) -> Self {
         -self
     }
 
     fn relu(self) -> Self {
         self.max(0.)
-    }
-
-    fn sin(self) -> Self {
-        self.sin()
-    }
-
-    fn cos(self) -> Self {
-        self.cos()
-    }
-
-    fn sqrt(self) -> Self {
-        return self.sqrt();
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -159,18 +139,6 @@ impl Scalar for f64 {
             || (self - rhs).abs() < self.abs() * 0.01
     }
     
-    fn exp2(self) -> Self {
-        self.exp2()
-    }
-    
-    fn log2(self) -> Self {
-        self.log2()
-    }
-    
-    fn inv(self) -> Self {
-        1./self
-    }
-    
     fn not(self) -> Self {
         if self != 0. { 0. } else { 1. }
     }
@@ -188,5 +156,33 @@ impl Scalar for f64 {
     }
 }
 
-impl Float for f64 {}
+impl Float for f64 {
+    fn exp2(self) -> Self {
+        self.exp2()
+    }
+    
+    fn log2(self) -> Self {
+        self.log2()
+    }
+
+    fn reciprocal(self) -> Self {
+        1.0 / self
+    }
+
+    fn floor(self) -> Self {
+        self.floor()
+    }
+
+    fn sin(self) -> Self {
+        self.sin()
+    }
+
+    fn cos(self) -> Self {
+        self.cos()
+    }
+
+    fn sqrt(self) -> Self {
+        return self.sqrt();
+    }
+}
 

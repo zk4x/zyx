@@ -384,7 +384,7 @@ impl Tensor {
     /// Create tensor sampled from kaiming uniform distribution.
     #[cfg(feature = "rand")]
     #[must_use]
-    pub fn kaiming_uniform<T: Scalar>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
+    pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
         let n = T::from_i64(shape.clone().into_shape().skip(1).product::<usize>() as i64);
         let one = T::one();
         let x = Scalar::add(one, Scalar::mul(a, a));
@@ -653,7 +653,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Mish(input_element)`.
     #[must_use]
     pub fn mish(&self) -> Tensor {
-        self * self.softplus(1, 20).tanh()
+        self * self.softplus(1., 20.).tanh()
     }
 
     /// Computes the quick GELU activation function for each element in the input tensor.
@@ -798,7 +798,7 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the softplus function with the given beta and threshold.
     #[must_use]
-    pub fn softplus(&self, beta: impl Scalar, threshold: impl Scalar) -> Tensor {
+    pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
         let x = self * beta;
         x.cmplt(threshold).unwrap().where_(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }

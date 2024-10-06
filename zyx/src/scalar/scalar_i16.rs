@@ -82,33 +82,12 @@ impl Scalar for i16 {
         todo!()
     }
 
-    fn reciprocal(self) -> Self {
-        1 / self
-    }
-
-    fn floor(self) -> Self {
-        self
-    }
-
     fn neg(self) -> Self {
         -self
     }
 
     fn relu(self) -> Self {
         Ord::max(self, 0)
-    }
-
-    fn sin(self) -> Self {
-        todo!()
-        //libm::sin(self as f64) as i16
-    }
-
-    fn cos(self) -> Self {
-        todo!()
-    }
-
-    fn sqrt(self) -> Self {
-        todo!()
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -154,18 +133,6 @@ impl Scalar for i16 {
 
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
-    }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
     }
     
     fn not(self) -> Self {

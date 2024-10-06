@@ -67,31 +67,14 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     fn byte_size() -> usize;
     /// Absolute value of self
     fn abs(self) -> Self;
-    /// 1/self
-    fn reciprocal(self) -> Self;
-    /// Round down
-    fn floor(self) -> Self;
     /// Neg
     fn neg(self) -> Self;
     /// ReLU
     fn relu(self) -> Self;
-    /// Sin
-    fn sin(self) -> Self;
-    /// Cos
-    fn cos(self) -> Self;
-    /// Exp 2
-    fn exp2(self) -> Self;
-    /// Log 2
-    fn log2(self) -> Self;
-    /// Inv
-    fn inv(self) -> Self;
     /// Not
     fn not(self) -> Self;
     /// Nonzero
     fn nonzero(self) -> Self;
-    /// Square root of this scalar.
-    /// That this function may be imprecise.
-    fn sqrt(self) -> Self;
     /// Add
     fn add(self, rhs: Self) -> Self;
     /// Sub
@@ -114,8 +97,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     fn max_value() -> Self;
     /// Min value of this dtype
     fn min_value() -> Self;
-    /// Very small value of scalar, very close to zero
-    fn epsilon() -> Self;
     /// Comparison for scalars,
     /// if they are floats, this checks for diffs > Self::epsilon()
     fn is_equal(self, rhs: Self) -> bool;
@@ -143,6 +124,25 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
             }
         };
     }
+    /// Very small value of scalar, very close to zero, zero in case of integers
+    fn epsilon() -> Self {
+        Self::zero()
+    }
 }
 
-pub trait Float: Scalar {}
+pub trait Float: Scalar {
+    /// Round down
+    fn floor(self) -> Self;
+    /// 1/self
+    fn reciprocal(self) -> Self;
+    /// Sin
+    fn sin(self) -> Self;
+    /// Cos
+    fn cos(self) -> Self;
+    /// Exp 2
+    fn exp2(self) -> Self;
+    /// Log 2
+    fn log2(self) -> Self;
+    /// Square root of this scalar.
+    fn sqrt(self) -> Self;
+}

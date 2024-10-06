@@ -83,31 +83,11 @@ impl Scalar for bool {
         self
     }
 
-    fn reciprocal(self) -> Self {
-        panic!()
-    }
-
-    fn floor(self) -> Self {
-        self
-    }
-
     fn neg(self) -> Self {
         panic!()
     }
 
     fn relu(self) -> Self {
-        panic!()
-    }
-
-    fn sin(self) -> Self {
-        panic!()
-    }
-
-    fn cos(self) -> Self {
-        panic!()
-    }
-
-    fn sqrt(self) -> Self {
         panic!()
     }
 
@@ -156,18 +136,6 @@ impl Scalar for bool {
 
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
-    }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
     }
     
     fn not(self) -> Self {

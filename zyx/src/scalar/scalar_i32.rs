@@ -84,32 +84,12 @@ impl Scalar for i32 {
         todo!()
     }
 
-    fn reciprocal(self) -> Self {
-        1 / self
-    }
-
-    fn floor(self) -> Self {
-        self
-    }
-
     fn neg(self) -> Self {
         -self
     }
 
     fn relu(self) -> Self {
         <i32 as Ord>::max(self, 0)
-    }
-
-    fn sin(self) -> Self {
-        f32::sin(self as f32) as i32
-    }
-
-    fn cos(self) -> Self {
-        f32::cos(self as f32) as i32
-    }
-
-    fn sqrt(self) -> Self {
-        (self as f32).sqrt() as i32
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -154,18 +134,6 @@ impl Scalar for i32 {
 
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
-    }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
     }
     
     fn not(self) -> Self {

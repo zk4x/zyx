@@ -86,32 +86,12 @@ impl Scalar for i64 {
         todo!()
     }
 
-    fn reciprocal(self) -> Self {
-        1 / self
-    }
-
-    fn floor(self) -> Self {
-        self
-    }
-
     fn neg(self) -> Self {
         -self
     }
 
     fn relu(self) -> Self {
         <i64 as Ord>::max(self, 0)
-    }
-
-    fn sin(self) -> Self {
-        f64::sin(self as f64) as i64
-    }
-
-    fn cos(self) -> Self {
-        f64::cos(self as f64) as i64
-    }
-
-    fn sqrt(self) -> Self {
-        (self as f64).sqrt() as i64
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -156,18 +136,6 @@ impl Scalar for i64 {
 
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
-    }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
     }
     
     fn not(self) -> Self {
