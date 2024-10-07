@@ -294,6 +294,35 @@ impl Runtime {
         );
     }
 
+    /// Bitcast self to other type, currently immediatelly realizes the tensor
+    #[must_use]
+    pub(super) unsafe fn bitcast(&mut self, x: TensorId, dtype: DType) -> Result<TensorId, ZyxError> {
+        if dtype == self.dtype(x) {
+            self.retain(x);
+            return Ok(x);
+        }
+        self.realize(BTreeSet::from([x]))?;
+        let mut shape = self.shape(x).to_vec();
+        let old_k = (x, View::new(&shape));
+        // We create a new pointer in tensor_buffer_map to the same buffer
+        // and create a new Leaf in graph
+        //self.tensor_buffer_map.find();
+        let cd = dtype.byte_size()/self.dtype(x).byte_size();
+        if let Some(d) = shape.last_mut() {
+            if *d % cd != 0 {
+                return Err(ZyxError::DTypeError("Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into()));
+            }
+            *d = *d/cd;
+        }
+        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
+        if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &old_k) {
+            self.tensor_buffer_map.insert((id, View::new(&shape)), *bid);
+        } else {
+            panic!("Tensor sharded across multiple devices can't be currently bitcasted. Internal bug.");
+        }
+        Ok(id)
+    }
+
     #[must_use]
     pub(super) fn reciprocal(&mut self, x: TensorId) -> TensorId {
         self.graph.push(Node::Unary { x, uop: UOp::Inv })

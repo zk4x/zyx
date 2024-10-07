@@ -487,6 +487,17 @@ impl Tensor {
         };
     }
 
+    /// Changes dtype of the tensor without mutating it.
+    /// Not all bits of one type can be safely reinterpreted as bits of other type,
+    /// therefore this function is marked as unsafe.
+    /// Currently this function will also realize the tensor (if it is not already realized)
+    #[must_use]
+    pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
+        return Ok(Tensor {
+            id: RT.lock().bitcast(self.id, dtype)?,
+        });
+    }
+
     /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).
     #[must_use]
     pub fn celu(&self, alpha: impl Scalar) -> Tensor {
