@@ -315,7 +315,7 @@ fn simple_eval_(
     // The nodes are topologically sorted so we can just process them in order.
     for node in graph.node.iter() {
         let get = |input_name: &str| match values.get(input_name) {
-            Some(value) => Ok(value),
+            Some(value) => value,
             None => panic!("cannot find {input_name} for op '{}'", node.name),
         };
         let get_opt = |i: usize| {
@@ -328,60 +328,60 @@ fn simple_eval_(
         // TODO: Validate node.input for each operator.
         match node.op_type.as_str() {
             "Add" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0 + input1;
                 values.insert(node.output[0].clone(), output);
             }
             "Sub" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0 - input1;
                 values.insert(node.output[0].clone(), output);
             }
             "Mul" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0 * input1;
                 values.insert(node.output[0].clone(), output);
             }
             "Div" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0 / input1;
                 values.insert(node.output[0].clone(), output);
             }
             "Pow" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0.pow(input1)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Exp" => {
-                let xs = get(&node.input[0])?;
+                let xs = get(&node.input[0]);
                 let output = xs.exp();
                 values.insert(node.output[0].clone(), output);
             }
             "Equal" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0.equal(input1)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Not" => {
-                let xs = get(&node.input[0])?;
+                let xs = get(&node.input[0]);
                 let xs = !xs;
                 values.insert(node.output[0].clone(), xs);
             }
             "MatMul" => {
-                let input0 = get(&node.input[0])?;
-                let input1 = get(&node.input[1])?;
+                let input0 = get(&node.input[0]);
+                let input1 = get(&node.input[1]);
                 let output = input0.matmul(input1)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Reshape" => {
-                let input0 = get(&node.input[0])?;
-                let input1: Tensor = get(&node.input[1])?.clone();
+                let input0 = get(&node.input[0]);
+                let input1: Tensor = get(&node.input[1]).clone();
                 let shape: Vec<i64> = input1.try_into()?;
                 // TODO: Check that there is at most a single -1 or 0, handle other neg values.
                 let mut other_than_minus1 = 1usize;
@@ -403,7 +403,7 @@ fn simple_eval_(
                 values.insert(node.output[0].clone(), output);
             }
             "LogSoftmax" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = match get_attr_opt::<i64>(node, "axis")? {
                     None => input.softmax([-1])?,
                     Some(&axis) => {
@@ -413,7 +413,7 @@ fn simple_eval_(
                 values.insert(node.output[0].clone(), output);
             }
             "Softmax" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = match get_attr_opt::<i64>(node, "axis")? {
                     None => input.softmax([-1])?,
                     Some(&axis) => input.softmax([axis as isize])?,
@@ -421,7 +421,7 @@ fn simple_eval_(
                 values.insert(node.output[0].clone(), output);
             }
             "Transpose" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = match get_attr_opt::<[i64]>(node, "perm")? {
                     None => input.t(),
                     Some(perm) => {
@@ -432,7 +432,7 @@ fn simple_eval_(
                 values.insert(node.output[0].clone(), output);
             }
             "Dropout" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 // Do not apply dropout at the moment, consider that we're only doing inference.
                 values.insert(node.output[0].clone(), input.clone());
             }
@@ -676,7 +676,7 @@ fn simple_eval_(
             }*/
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Sqrt
             "Sqrt" => {
-                let xs = get(&node.input[0])?;
+                let xs = get(&node.input[0]);
                 let output = xs.sqrt();
                 values.insert(node.output[0].clone(), output);
             }
@@ -711,51 +711,44 @@ fn simple_eval_(
             }*/
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Greater
             "Greater" => {
-                let a = get(&node.input[0])?;
-                let b = get(&node.input[1])?;
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
 
                 let output = a.cmpgt(b)?;
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Less
             "Less" => {
-                let a = get(&node.input[0])?;
-                let b = get(&node.input[1])?;
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
 
-                let output = a.broadcast_lt(b)?;
+                let output = a.cmplt(b)?;
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Log
             "Log" => {
-                let a = get(&node.input[0])?;
+                let a = get(&node.input[0]);
                 let output = a.ln();
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Min
             "Min" => {
-                let mut output = get(&node.input[0])?.clone();
+                let mut output = get(&node.input[0]).clone();
                 for input in node.input.iter() {
-                    let input = get(input)?;
+                    let input = get(input);
                     output = output.minimum(input)?;
                 }
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Where
             "Where" => {
-                let cond = get(&node.input[0])?;
-                let a = get(&node.input[1])?;
-                let b = get(&node.input[2])?;
-
-                // where_cond requires that all inputs are the same shape.
-                // In contrast, the Where op in ONNX only requires that they are broadcastable.
-                let shape = broadcast_shape_from_many(&[cond.dims(), a.dims(), b.dims()])?;
-                let cond = cond.broadcast_as(shape.clone())?;
-                let a = a.broadcast_as(shape.clone())?;
-                let b = b.broadcast_as(shape)?;
-                let output = cond.where_cond(&a, &b)?;
+                let cond = get(&node.input[0]);
+                let a = get(&node.input[1]);
+                let b = get(&node.input[2]);
+                let output = cond.where_(a, b)?;
                 values.insert(node.output[0].clone(), output);
             }
-            "Conv" => {
+            /*"Conv" => {
                 // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Conv
                 let dilations = get_attr_opt::<[i64]>(node, "dilations")?;
                 let groups = get_attr_opt::<i64>(node, "group")?.copied().unwrap_or(1);
@@ -776,7 +769,7 @@ fn simple_eval_(
                             Some([p]) => (*p as usize, xs.clone()),
                             Some([p1, p2]) => {
                                 if p1 != p2 {
-                                    (0usize, xs.pad_with_zeros(2, *p1 as usize, *p2 as usize)?)
+                                    (0usize, xs.pad_zeros(2, *p1 as usize, *p2 as usize)?)
                                 } else {
                                     (*p1 as usize, xs.clone())
                                 }
@@ -868,68 +861,67 @@ fn simple_eval_(
                     ys
                 };
                 values.insert(node.output[0].clone(), ys);
-            }
+            }*/
             "Concat" => {
                 // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Concat
-                let inputs = node
+                let inputs: Vec<Value> = node
                     .input
                     .iter()
-                    .map(|n| Ok(get(n.as_str())?.clone()))
-                    .collect::<Result<Vec<Value>>>()?;
+                    .map(|n| get(n.as_str()).clone())
+                    .collect();
                 let axis: i64 = *get_attr(node, "axis")?;
                 if inputs.is_empty() {
                     panic!("empty concat")
                 };
-                let axis = inputs[0].normalize_axis(axis)?;
-                let output = Tensor::cat(&inputs, axis)?;
+                let output = Tensor::cat(&inputs, axis as isize)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Abs" => {
-                let input = get(&node.input[0])?;
-                let output = input.abs()?;
+                let input = get(&node.input[0]);
+                let output = input.abs();
                 values.insert(node.output[0].clone(), output);
             }
             "Cos" => {
-                let input = get(&node.input[0])?;
-                let output = input.cos()?;
+                let input = get(&node.input[0]);
+                let output = input.cos();
                 values.insert(node.output[0].clone(), output);
             }
             "Sin" => {
-                let input = get(&node.input[0])?;
-                let output = input.sin()?;
+                let input = get(&node.input[0]);
+                let output = input.sin();
                 values.insert(node.output[0].clone(), output);
             }
             "Neg" => {
-                let input = get(&node.input[0])?;
-                let output = input.neg()?;
+                let input = get(&node.input[0]);
+                let output = -input;
                 values.insert(node.output[0].clone(), output);
             }
-            "Erf" => {
+            /*"Erf" => {
                 let input = get(&node.input[0])?;
-                let output = input.erf()?;
+                let output = input.erf();
                 values.insert(node.output[0].clone(), output);
-            }
+            }*/
             "Tanh" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = input.tanh();
                 values.insert(node.output[0].clone(), output);
             }
             "Sigmoid" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = input.sigmoid();
                 values.insert(node.output[0].clone(), output);
             }
             "Gelu" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = input.gelu();
                 values.insert(node.output[0].clone(), output);
             }
             "Relu" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let output = input.relu();
                 values.insert(node.output[0].clone(), output);
             }
-            "Ceil" => {
+            /*"Ceil" => {
                 let input = get(&node.input[0])?;
                 let output = input.ceil();
                 values.insert(node.output[0].clone(), output);
@@ -938,7 +930,7 @@ fn simple_eval_(
                 let input = get(&node.input[0])?;
                 let output = input.floor();
                 values.insert(node.output[0].clone(), output);
-            }
+            }*/
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Constant
             "Constant" => {
                 let value = match node.attribute.iter().find(|attr| attr.name == "value") {
@@ -959,7 +951,7 @@ fn simple_eval_(
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Cast
             "Cast" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let dt: i64 = *get_attr(node, "to")?;
                 let dtype = match DataType::try_from(dt as i32) {
                     Ok(DataType::Int32) => DType::I64,
@@ -988,15 +980,15 @@ fn simple_eval_(
                 if reverse != 0 {
                     panic!("only reverse == 0 is supported in CumSum")
                 }
-                let input = get(&node.input[0])?;
-                let axis: u32 = get(&node.input[1])?.cast(DType::U32).try_into()?;
+                let input = get(&node.input[0]);
+                let axis: u32 = get(&node.input[1]).cast(DType::U32).try_into()?;
                 let output = input.cumsum(axis as isize)?;
                 values.insert(node.output[0].clone(), output);
             }
             //  https://github.com/onnx/onnx/blob/main/docs/Operators.md#flatten
             "Flatten" => {
                 let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(1) as usize;
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let first_part: usize = input.shape().iter().take(axis).product();
                 let end_index = input.shape().iter().product::<usize>();
                 let new_shape = (first_part, end_index / first_part);
@@ -1005,7 +997,7 @@ fn simple_eval_(
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#identity
             "Identity" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 values.insert(node.output[0].clone(), input.clone());
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#if
@@ -1170,16 +1162,14 @@ fn simple_eval_(
             // https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-13
             // TODO: This version is only compatible with ReduceMean V13 and below.
             "ReduceMean" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let axes = get_attr_opt::<[i64]>(node, "axes")?;
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
 
-                let n_dims = input.dims().len();
+                let n_dims = input.shape().len() as isize;
 
-                let axes: Vec<usize> = if let Some(axes) = axes {
-                    axes.iter()
-                        .map(|e| (if e < &0 { (n_dims as i64) + *e } else { *e }) as usize)
-                        .collect()
+                let axes: Vec<isize> = if let Some(axes) = axes {
+                    axes.iter().map(|a| *a as isize).collect()
                 } else {
                     (0..n_dims).collect()
                 };
@@ -1192,7 +1182,7 @@ fn simple_eval_(
             }
             //https://github.com/onnx/onnx/blob/main/docs/Operators.md#Split
             // Version 18 impl
-            "Split" => {
+            /*"Split" => {
                 let input_tensor = get(&node.input[0])?;
                 let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0);
                 let axis = input_tensor.normalize_axis(axis)?;
@@ -1238,10 +1228,10 @@ fn simple_eval_(
                 for (output, slice) in node.output.iter().zip(outputs.into_iter()) {
                     values.insert(output.clone(), slice);
                 }
-            }
+            }*/
             //https://github.com/onnx/onnx/blob/main/docs/Operators.md#Expand
             // Version 13 impl
-            "Expand" => {
+            /*"Expand" => {
                 // unlike broadcast_to, expand allows for the output shape to
                 // be different from the specified shape.
                 let input_tensor = get(&node.input[0])?;
@@ -1254,7 +1244,7 @@ fn simple_eval_(
                         input_shape
                     );
                 }
-                let input_tensor_dims = input_tensor.dims();
+                let input_tensor_dims = input_tensor.shape();
                 let input_shape_dims = input_shape
                     .to_vec1::<i64>()?
                     .into_iter()
@@ -1266,11 +1256,11 @@ fn simple_eval_(
                 let expanded_tensor = input_tensor.broadcast_as(target_shape)?;
 
                 values.insert(node.output[0].clone(), expanded_tensor);
-            }
+            }*/
             //https://github.com/onnx/onnx/blob/main/docs/Operators.md#ReduceSum
             // Version 13 impl
             "ReduceSum" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let axes = get_opt(1);
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
                 let noop_with_empty_axes = get_attr_opt::<i64>(node, "noop_with_empty_axes")?
@@ -1278,24 +1268,24 @@ fn simple_eval_(
                     .unwrap_or(0);
 
                 let axes = match axes {
-                    Some(Ok(axes)) => {
+                    Some(axes) => {
                         let axes: Vec<i64> = axes.clone().try_into()?;
                         axes
                         .into_iter()
-                        .map(|x| x as usize)
+                        .map(|x| x as isize)
                         .collect::<Vec<_>>()
                     }
-                    Some(Err(_)) | None => {
+                    None => {
                         if noop_with_empty_axes == 1 {
                             vec![]
                         } else {
-                            (0..input.rank()).collect()
+                            (0..input.rank() as isize).collect()
                         }
                     }
                 };
 
                 let output = if keepdims == 1 {
-                    input.sum_keepdim(axes)?
+                    input.sum_kd(axes)?
                 } else {
                     input.sum(axes)?
                 };
@@ -1440,7 +1430,7 @@ fn simple_eval_(
                 values.insert(node.output[0].clone(), output);
             }*/
             "LeakyRelu" => {
-                let input = get(&node.input[0])?;
+                let input = get(&node.input[0]);
                 let dt = input.dtype();
                 let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(0.01);
                 let output = input.leaky_relu(alpha);
@@ -1448,26 +1438,23 @@ fn simple_eval_(
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Gemm
             "Gemm" => {
-                let a = get(&node.input[0])?;
-                let b = get(&node.input[1])?;
-                let c = get(&node.input[2])?;
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
+                let c = get(&node.input[2]);
 
                 let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(1.0);
                 let beta = get_attr_opt::<f32>(node, "beta")?.copied().unwrap_or(1.0);
 
-                let alpha = Tensor::full(alpha, a.shape())?;
-                let beta = Tensor::full(beta, c.shape())?;
+                let alpha = Tensor::full(a.shape(), alpha)?;
+                let beta = Tensor::full(c.shape(), beta)?;
 
                 let trans_a = get_attr_opt::<i64>(node, "transA")?.copied().unwrap_or(0);
                 let trans_b = get_attr_opt::<i64>(node, "transB")?.copied().unwrap_or(0);
 
-                let a = if trans_a == 0 { a.clone() } else { a.t()? };
-                let b = if trans_b == 0 { b.clone() } else { b.t()? };
+                let a = if trans_a == 0 { a.clone() } else { a.t() };
+                let b = if trans_b == 0 { b.clone() } else { b.t() };
 
-                let output = a
-                    .broadcast_mul(&alpha)?
-                    .broadcast_matmul(&b)?
-                    .broadcast_add(&c.broadcast_mul(&beta)?)?;
+                let output = (a * alpha).matmul(&b)? + c * beta;
                 values.insert(node.output[0].clone(), output);
             }
             op_type => panic!("unsupported op_type {op_type} for op {node:?}"),
