@@ -213,7 +213,7 @@ pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor, ZyxError>
                 } else {
                     println!("Working with raw data");
                     let x = Tensor::from(t.raw_data.as_slice());
-                    unsafe { x.bitcast(dt) }.reshape(dims.as_slice())
+                    unsafe { x.bitcast(dt) }?.reshape(dims.as_slice())
                 }
             }
             None => {

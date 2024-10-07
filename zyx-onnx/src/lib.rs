@@ -19,9 +19,9 @@ fn t0() -> Result<(), ZyxError> {
 
     let mp = read_file("model.onnx")?;
 
-    //let x = Tensor::rand([8, 128], DType::F32)?;
+    let x = Tensor::rand([8, 128], DType::F32)?;
     let mut m = std::collections::HashMap::new();
-    //m.insert("x".into(), x);
+    m.insert("x".into(), x);
 
     let y = simple_eval(&mp, m);
 
