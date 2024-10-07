@@ -1609,6 +1609,14 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
+    /// Compare greater than
+    #[must_use]
+    pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let id = RT.lock().cmpgt(x.id, y.id);
+        Ok(Tensor { id })
+    }
+
     /// Elementwise maximum between two tensors.
     #[must_use]
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {

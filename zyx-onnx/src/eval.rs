@@ -506,7 +506,7 @@ fn simple_eval_(
                 };
                 values.insert(node.output[0].clone(), ys);
             }*/
-            "BatchNormalization" => {
+            /*"BatchNormalization" => {
                 let training_mode = get_attr_opt::<i64>(node, "training_mode")?;
                 if training_mode.copied().unwrap_or(0) != 0 {
                     panic!("training mode is not supported for BatchNorm")
@@ -520,7 +520,7 @@ fn simple_eval_(
                 let running_mean = get(&node.input[3])?;
                 let running_var = get(&node.input[4])?;
                 let target_shape: Vec<usize> = xs
-                    .dims()
+                    .shape()
                     .iter()
                     .enumerate()
                     .map(|(idx, v)| if idx == 1 { *v } else { 1 })
@@ -533,22 +533,20 @@ fn simple_eval_(
                 let bias = bias.reshape(target_shape)?;
                 let xs = xs.broadcast_mul(&weight)?.broadcast_add(&bias)?;
                 values.insert(node.output[0].clone(), xs);
-            }
-            "Squeeze" => {
+            }*/
+            /*"Squeeze" => {
                 let xs = get(&node.input[0])?;
                 let mut axes = if node.input.len() <= 1 {
                     // contract all the dimensions with size 1 except the batch dim.
-                    xs.dims()
+                    xs.shape()
                         .iter()
                         .enumerate()
                         .flat_map(|(idx, &s)| if s == 1 && idx > 0 { Some(idx) } else { None })
                         .collect()
                 } else {
-                    get(&node.input[1])?
-                        .to_vec1::<i64>()?
-                        .iter()
-                        .map(|&i| xs.normalize_axis(i))
-                        .collect::<Result<Vec<_>>>()?
+                    let axes = get(&node.input[1])?.clone();
+                    let axes: Vec<i64> = x.try_into()?;
+                    axes
                 };
                 axes.sort();
                 let mut xs = xs.clone();
@@ -556,21 +554,21 @@ fn simple_eval_(
                     xs = xs.squeeze(axis)?
                 }
                 values.insert(node.output[0].clone(), xs);
-            }
+            }*/
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#ConstantOfShape
-            "ConstantOfShape" => {
+            /*"ConstantOfShape" => {
                 let input = get(&node.input[0])?;
-                let value = get_attr_opt_owned::<Tensor>(node, "value")?.unwrap_or(Tensor::zeros(
+                /*let value = get_attr_opt_owned::<Tensor>(node, "value")?.unwrap_or(Tensor::zeros(
                     (),
                     DType::F32,
                     &Device::Cpu,
                 )?);
 
                 let xs = Tensor::ones(input.shape(), value.dtype(), input.device())?
-                    .broadcast_mul(&value)?;
+                    .broadcast_mul(&value)?;*/
                 values.insert(node.output[0].clone(), xs);
-            }
-            "Unsqueeze" => {
+            }*/
+            /*"Unsqueeze" => {
                 let xs = get(&node.input[0])?;
                 let axes = match get_attr_opt::<[i64]>(node, "axes")? {
                     Some(axis) => axis.to_vec(),
@@ -597,8 +595,8 @@ fn simple_eval_(
                     xs = xs.unsqueeze(axis)?
                 }
                 values.insert(node.output[0].clone(), xs);
-            }
-            "Clip" => {
+            }*/
+            /*"Clip" => {
                 let xs = get(&node.input[0])?;
                 let xs = if let Some(mins) = get_opt(1) {
                     xs.broadcast_maximum(mins?)?
@@ -654,8 +652,8 @@ fn simple_eval_(
                     }
                 };
                 values.insert(node.output[0].clone(), xs);
-            }
-            "Shape" => {
+            }*/
+            /*"Shape" => {
                 // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Shape
                 let xs = get(&node.input[0])?;
                 let start = get_attr_opt::<i64>(node, "start")?.copied().unwrap_or(0);
@@ -675,15 +673,15 @@ fn simple_eval_(
                 let size: usize = data.dims().iter().product();
                 let output = Tensor::from_slice(&[size as i64], (), data.device())?;
                 values.insert(node.output[0].clone(), output);
-            }
+            }*/
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Sqrt
             "Sqrt" => {
                 let xs = get(&node.input[0])?;
-                let output = xs.sqrt()?;
+                let output = xs.sqrt();
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Range
-            "Range" => {
+            /*"Range" => {
                 let start = get(&node.input[0])?;
                 let limit = get(&node.input[1])?;
                 let delta = get(&node.input[2])?;
@@ -710,13 +708,13 @@ fn simple_eval_(
                 };
 
                 values.insert(node.output[0].clone(), output);
-            }
+            }*/
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Greater
             "Greater" => {
                 let a = get(&node.input[0])?;
                 let b = get(&node.input[1])?;
 
-                let output = a.broadcast_gt(b)?;
+                let output = a.cmpgt(b)?;
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Less
@@ -1287,7 +1285,7 @@ fn simple_eval_(
                         axes
                         .into_iter()
                         .map(|x| x as usize)
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<_>>()
                     }
                     Some(Err(_)) | None => {
                         if noop_with_empty_axes == 1 {

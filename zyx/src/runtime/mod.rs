@@ -543,6 +543,15 @@ impl Runtime {
     }
 
     #[must_use]
+    pub(super) fn cmpgt(&mut self, x: TensorId, y: TensorId) -> TensorId {
+        self.graph.push(Node::Binary {
+            x,
+            y,
+            bop: BOp::Cmpgt,
+        })
+    }
+
+    #[must_use]
     pub(super) fn not_eq(&mut self, x: TensorId, y: TensorId) -> TensorId {
         self.graph.push(Node::Binary {
             x,
