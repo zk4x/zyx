@@ -1625,6 +1625,12 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
+    /// Elementwise minimum between two tensors
+    #[must_use]
+    pub fn minimum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        Ok(-(-self).maximum(-rhs.into())?)
+    }
+
     /// Matmul and dot
     #[must_use]
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {

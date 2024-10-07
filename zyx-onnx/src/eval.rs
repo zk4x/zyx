@@ -728,8 +728,7 @@ fn simple_eval_(
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Log
             "Log" => {
                 let a = get(&node.input[0])?;
-
-                let output = a.log()?;
+                let output = a.ln();
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Min
@@ -737,9 +736,8 @@ fn simple_eval_(
                 let mut output = get(&node.input[0])?.clone();
                 for input in node.input.iter() {
                     let input = get(input)?;
-                    output = output.broadcast_minimum(input)?
+                    output = output.minimum(input)?;
                 }
-
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Where
