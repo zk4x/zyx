@@ -316,10 +316,12 @@ impl Runtime {
         }
         let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
         if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &old_k) {
+            //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
             self.tensor_buffer_map.insert((id, View::new(&shape)), *bid);
         } else {
             panic!("Tensor sharded across multiple devices can't be currently bitcasted. Internal bug.");
         }
+        //println!("TBM:\n{:?}", self.tensor_buffer_map);
         Ok(id)
     }
 
@@ -726,19 +728,22 @@ impl Runtime {
     }
 
     fn deallocate_tensors(&mut self, to_remove: BTreeSet<TensorId>) -> Result<(), ZyxError> {
-        let mut buffers: Vec<BufferId> = Vec::new();
-        for tensor in to_remove {
-            for (_, buffer_id) in self
-                .tensor_buffer_map
-                .iter()
-                .filter(|((t, _), _)| *t == tensor)
-            {
-                buffers.push(*buffer_id);
+        // remove all buffers that are not used by any tensors
+        // Check which buffers will possibly need to be dropped
+        let mut buffers = BTreeSet::new();
+        for ((t, _), b) in self.tensor_buffer_map.iter() {
+            if to_remove.contains(t) {
+                buffers.insert(*b);
             }
         }
-        self.tensor_buffer_map.retain(|_, b| !buffers.contains(b));
+        // Remove unnedded tensors from the map
+        self.tensor_buffer_map.retain(|(t, _), _| !to_remove.contains(t));
+        // Check if buffers are needed elsewhere in the map,
+        // otherwise deallocate them
         for buffer in buffers {
-            self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;
+            if self.tensor_buffer_map.values().all(|b| *b != buffer) {
+                self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;
+            }
         }
         return Ok(());
     }

@@ -77,6 +77,7 @@ impl Runtime {
         let (order, flop, bytes_read, bytes_written) = graph.execution_order();
         // create vop representation
         let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order);
+        //println!("{:?}", self.tensor_buffer_map);
         //for kernel in &kernels { kernel.debug(); }
         //panic!("Done");
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();

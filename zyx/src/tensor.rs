@@ -493,9 +493,9 @@ impl Tensor {
     /// Currently this function will also realize the tensor (if it is not already realized)
     #[must_use]
     pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
-        return Ok(Tensor {
-            id: RT.lock().bitcast(self.id, dtype)?,
-        });
+        let id = RT.lock().bitcast(self.id, dtype)?;
+        let x = Tensor { id };
+        return Ok(x);
     }
 
     /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).

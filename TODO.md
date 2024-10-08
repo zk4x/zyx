@@ -1,4 +1,5 @@
 - [x] deallocation of memory
+- [x] fix bitcasting
 - [ ] implement sharding
 - [ ] write optimizer that will reduce number of elementwise ops in IR
       or increase their number, but reduce number of used registers,

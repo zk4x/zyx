@@ -23,9 +23,9 @@ fn t0() -> Result<(), ZyxError> {
     let mut m = std::collections::HashMap::new();
     m.insert("x".into(), x);
 
-    let y = simple_eval(&mp, m);
+    let outputs = simple_eval(&mp, m)?;
 
-    println!("{y:?}");
+    println!("{:?}", outputs["4"]);
 
     Ok(())
 }
