@@ -1,8 +1,7 @@
 # Zyx
 
 Zyx is machine learning library written in Rust.
-It's main feature is compiled backend. It automatically generates
-optimized kernels for CUDA and OpenCL.
+Zyx feels dynamic, but it automatically generates and compiles optimized kernels at runtime for CUDA, OpenCL and WGSL (runs on Vulkan).
 Zyx is lazy, waits with execution until it is explicitly asked for results.
 All tensors are differentiable.
 
