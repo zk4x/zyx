@@ -28,7 +28,7 @@ mod tensor;
 pub use dtype::DType;
 pub use runtime::DeviceConfig;
 pub use runtime::ZyxError;
-pub use scalar::Scalar;
+pub use scalar::{Scalar, Float};
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 

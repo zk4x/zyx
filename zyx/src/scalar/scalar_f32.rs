@@ -1,4 +1,3 @@
-use core::f32::consts::PI;
 use crate::dtype::DType;
 use crate::scalar::{Scalar, Float};
 #[cfg(feature = "half")]
@@ -138,6 +137,7 @@ impl Scalar for f32 {
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 1% error is OK
         (self == -f32::INFINITY && rhs == -f32::INFINITY)
+            || (self.is_nan() && rhs.is_nan())
             || (self - rhs).abs() < Self::epsilon()
             || (self - rhs).abs() < self.abs() * 0.01
     }
@@ -170,9 +170,10 @@ impl Float for f32 {
 
     fn sin(self) -> Self {
         //libm::sinf(self)
-        let b = 4f32 / PI;
-        let c = -4f32 / (PI * PI);
-        return -(b * self + c * self * if self < 0. { -self } else { self });
+        //let b = 4f32 / PI;
+        //let c = -4f32 / (PI * PI);
+        //return -(b * self + c * self * if self < 0. { -self } else { self });
+        f32::sin(self)
     }
 
     fn floor(self) -> Self {
@@ -182,21 +183,23 @@ impl Float for f32 {
 
     fn cos(self) -> Self {
         //libm::cosf(self)
-        let mut x = self;
-        x *= 1. / (2. * PI);
-        x -= 0.25 + (x + 0.25).floor();
-        x *= 16.0 * (x.abs() - 0.5);
+        //let mut x = self;
+        //x *= 1. / (2. * PI);
+        //x -= 0.25 + (x + 0.25).floor();
+        //x *= 16.0 * (x.abs() - 0.5);
         //x += 0.225 * x * (x.abs() - 1.0);
-        return x;
+        //return x;
+        f32::cos(self)
     }
 
     fn sqrt(self) -> Self {
         // good enough (error of ~ 5%)
-        if self >= 0. {
+        /*if self >= 0. {
             Self::from_bits((self.to_bits() + 0x3f80_0000) >> 1)
         } else {
             Self::NAN
-        }
+        }*/
+        f32::sqrt(self)
     }
 
     fn reciprocal(self) -> Self {

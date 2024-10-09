@@ -1,15 +1,15 @@
 use std::rc::Rc;
 use rand::{distributions::Uniform, Rng, SeedableRng};
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError, Float};
 
-//#[test]
-#[allow(unused)]
+//#[allow(unused)]
+#[test]
 fn fuzzy() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;
     let max_numel = 256*256;
     let max_dims = 3;
-    let num_nodes = 14;
+    let num_nodes = 30;
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(rand_seed);
     let num_t = rng.gen_range(0..max_tensors);
@@ -102,13 +102,16 @@ fn fuzzy() -> Result<(), ZyxError> {
             _ => panic!(),
         }
     }
-    Tensor::plot_graph([], "fuzzy_graph");
+    //Tensor::plot_graph([], "fuzzy_graph");
     Tensor::realize(&tensors)?;
+    let mut i = 0;
     for (tensor, cpu_tensor) in tensors.iter().zip(cpu_tensors) {
+        i += 1;
+        println!("Checking tensor {i}/{num_t}");
         let data: Vec<f32> = tensor.clone().try_into()?;
         let cpu_data: Vec<f32> = cpu_tensor.to_vec();
         for (id, (x, y)) in data.iter().zip(cpu_data.iter()).enumerate() {
-            assert_eq!(x, y, "Comparing tensor id {id}, x != y at {x} != {y}");
+            assert!(x.is_equal(*y), "Comparing tensor id {id}, x != y at {x} != {y}");
         }
     }
 
@@ -131,6 +134,19 @@ macro_rules! unary_op {
                 Data::F32(data) => Data::F32(unary(data, $op)),
                 Data::F64(data) => Data::F64(unary(data, $op)),
                 Data::I32(data) => Data::I32(unary(data, $op)),
+            }
+        }
+    }};
+}
+
+macro_rules! unary_op_float {
+    ($this: expr, $op: expr) => {{
+        CPUTensor {
+            view: $this.view.clone(),
+            data: match &$this.data {
+                Data::F32(data) => Data::F32(unary(data, $op)),
+                Data::F64(data) => Data::F64(unary(data, $op)),
+                _ => todo!(),
             }
         }
     }};
@@ -175,6 +191,7 @@ impl CPUTensor {
             #[cfg(feature = "complex")]
             DType::CF64 => todo!(),
             DType::U8 => todo!(),
+            DType::U32 => todo!(),
             DType::I8 => todo!(),
             DType::I16 => todo!(),
             DType::I32 => todo!(),
@@ -248,27 +265,27 @@ impl CPUTensor {
     }
 
     pub fn exp2(&self) -> CPUTensor {
-        unary_op!(self, Scalar::exp2)
+        unary_op_float!(self, Float::exp2)
     }
 
     pub fn log2(&self) -> CPUTensor {
-        unary_op!(self, Scalar::log2)
+        unary_op_float!(self, Float::log2)
     }
 
     pub fn inv(&self) -> CPUTensor {
-        unary_op!(self, Scalar::inv)
+        unary_op_float!(self, Float::reciprocal)
     }
 
     pub fn sqrt(&self) -> CPUTensor {
-        unary_op!(self, Scalar::sqrt)
+        unary_op_float!(self, Float::sqrt)
     }
 
     pub fn sin(&self) -> CPUTensor {
-        unary_op!(self, Scalar::sin)
+        unary_op_float!(self, Float::sin)
     }
 
     pub fn cos(&self) -> CPUTensor {
-        unary_op!(self, Scalar::cos)
+        unary_op_float!(self, Float::cos)
     }
 
     pub fn not(&self) -> CPUTensor {

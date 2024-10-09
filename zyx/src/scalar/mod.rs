@@ -134,6 +134,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     }
 }
 
+/// Float dtype
 pub trait Float: Scalar {
     /// Round down
     fn floor(self) -> Self;

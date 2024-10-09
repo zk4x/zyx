@@ -178,15 +178,15 @@ impl Float for f64 {
     }
 
     fn sin(self) -> Self {
-        self.sin()
+        f64::sin(self)
     }
 
     fn cos(self) -> Self {
-        self.cos()
+        f64::cos(self)
     }
 
     fn sqrt(self) -> Self {
-        return self.sqrt();
+        f64::sqrt(self)
     }
 }
 
