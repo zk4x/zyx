@@ -5,7 +5,7 @@ use zyx_derive::Module;
 ///
 /// By default this module has learnable affine parameters,
 /// set weight and bias to None to remove them.
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct BatchNorm {
     /// a value added to the denominator for numerical stability. Default: 1e-5
     pub eps: f32,
@@ -27,7 +27,7 @@ pub struct BatchNorm {
 
 impl BatchNorm {
     /// Initilize layer_norm layer in device self
-    pub fn new(self, num_features: usize, dtype: DType) -> BatchNorm {
+    pub fn init(self, num_features: usize, dtype: DType) -> BatchNorm {
         BatchNorm {
             eps: 1e-5,
             momentum: 0.1,
@@ -41,13 +41,15 @@ impl BatchNorm {
     }
 
     /// Forward function for layer_norm.
-    pub fn forward(&mut self, x: &Tensor) -> Result<Tensor, ZyxError> {
+    pub fn forward(&mut self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let batch_mean;
         let batch_invstd;
 
+        let x = x.into();
+
         if Tensor::training() {
             batch_mean = x.mean([0, 2, 3])?;
-            let y = x - batch_mean.reshape([1, batch_mean.numel(), 1, 1])?;
+            let y = &x - batch_mean.reshape([1, batch_mean.numel(), 1, 1])?;
             let batch_var = (&y * &y).mean([0, 2, 3])?;
             batch_invstd = (self
                 .running_var

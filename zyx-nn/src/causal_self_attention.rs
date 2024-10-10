@@ -1,7 +1,9 @@
 use zyx::{DType, Tensor, ZyxError};
 use crate::Linear;
+use zyx_derive::Module;
 
 /// Causal self attention
+#[derive(Debug, Module)]
 pub struct CausalSelfAttention {
     c_attn: Linear,
     c_proj: Linear,
@@ -12,10 +14,10 @@ pub struct CausalSelfAttention {
 
 impl CausalSelfAttention {
     /// New causal self attention
-    pub fn new(n_embd: usize, n_head: usize, bias: bool, dropout_p: f32, dtype: DType) -> Result<CausalSelfAttention, ZyxError> {
+    pub fn init(n_embd: usize, n_head: usize, bias: bool, dropout_p: f32, dtype: DType) -> Result<CausalSelfAttention, ZyxError> {
         Ok(CausalSelfAttention {
-            c_attn: Linear::new(n_embd, 3*n_embd, bias, dtype)?,
-            c_proj: Linear::new(n_embd, n_embd, bias, dtype)?,
+            c_attn: Linear::init(n_embd, 3*n_embd, bias, dtype)?,
+            c_proj: Linear::init(n_embd, n_embd, bias, dtype)?,
             n_head,
             n_embd,
             dropout_p,

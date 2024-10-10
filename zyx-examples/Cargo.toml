@@ -18,4 +18,5 @@ maintenance = { status = "experimental" }
 zyx = { version = "*", path = "../zyx" }
 zyx-nn = { version = "*", path = "../zyx-nn" }
 zyx-optim = { version = "*", path = "../zyx-optim" }
+serde = { version = "*" }
 

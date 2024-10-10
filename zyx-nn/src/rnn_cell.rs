@@ -2,7 +2,7 @@ use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// An Elman RNN cell without nonlinearity
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct RNNCell {
     /// the learnable input-hidden weights, of shape (hidden_size, input_size)
     pub weight_ih: Tensor,
@@ -16,7 +16,7 @@ pub struct RNNCell {
 
 impl RNNCell {
     /// Initialize linear layer in device self
-    pub fn new(self, input_size: usize, hidden_size: usize, dtype: DType) -> Result<RNNCell, ZyxError> {
+    pub fn init(self, input_size: usize, hidden_size: usize, dtype: DType) -> Result<RNNCell, ZyxError> {
         let l = (-(1. / (hidden_size as f32))).sqrt();
         let u = (1. / (hidden_size as f32)).sqrt();
         Ok(RNNCell {

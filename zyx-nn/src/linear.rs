@@ -2,7 +2,7 @@ use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// Linear layer
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct Linear {
     /// weight
     pub weight: Tensor,
@@ -12,7 +12,7 @@ pub struct Linear {
 
 impl Linear {
     /// Initilize linear layer in device self
-    pub fn new(in_features: usize, out_features: usize, bias: bool, dtype: DType) -> Result<Linear, ZyxError> {
+    pub fn init(in_features: usize, out_features: usize, bias: bool, dtype: DType) -> Result<Linear, ZyxError> {
         let l = -(1.0 / (in_features as f32)).sqrt();
         let u = (1.0 / (in_features as f32)).sqrt();
         Ok(Linear {

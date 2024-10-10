@@ -39,10 +39,10 @@ struct MLP {
 }
 
 impl MLP {
-    fn new(config: &GPTConfig) -> Result<MLP, ZyxError> {
+    fn init(config: &GPTConfig) -> Result<MLP, ZyxError> {
         Ok(MLP {
-            c_fc: Linear::new(config.n_embd, 4*config.n_embd, config.bias, config.dtype)?,
-            c_proj: Linear::new(4*config.n_embd, config.n_embd, config.bias, config.dtype)?,
+            c_fc: Linear::init(config.n_embd, 4*config.n_embd, config.bias, config.dtype)?,
+            c_proj: Linear::init(4*config.n_embd, config.n_embd, config.bias, config.dtype)?,
             dropout: config.dropout,
         })
     }
@@ -65,12 +65,12 @@ struct Block {
 }
 
 impl Block {
-    fn new(config: &GPTConfig) -> Result<Block, ZyxError> {
+    fn init(config: &GPTConfig) -> Result<Block, ZyxError> {
         Ok(Block {
-            ln_1: LayerNorm::new(config.n_embd, config.bias, config.dtype)?,
-            attn: CausalSelfAttention::new(config.n_embd, config.n_head, config.bias, config.dropout, config.dtype)?,
-            ln_2: LayerNorm::new(config.n_embd, config.bias, config.dtype)?,
-            mlp: MLP::new(config)?,
+            ln_1: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
+            attn: CausalSelfAttention::init(config.n_embd, config.n_head, config.bias, config.dropout, config.dtype)?,
+            ln_2: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
+            mlp: MLP::init(config)?,
         })
     }
 
@@ -93,16 +93,16 @@ struct GPT {
 }
 
 impl GPT {
-    fn new(config: GPTConfig) -> Result<GPT, ZyxError> {
+    fn init(config: GPTConfig) -> Result<GPT, ZyxError> {
         assert!(config.vocab_size > 0);
         assert!(config.block_size > 0);
 
         let mut gpt = GPT {
-            h: (0..config.n_layer).map(|_| Block::new(&config).unwrap()).collect(),
-            wte: Embedding::new(config.vocab_size, config.n_embd, config.dtype)?,
-            wpe: Embedding::new(config.block_size, config.n_embd, config.dtype)?,
-            ln_f: LayerNorm::new(config.n_embd, config.bias, config.dtype)?,
-            lm_head: Linear::new(config.n_embd, config.vocab_size, config.bias, config.dtype)?,
+            h: (0..config.n_layer).map(|_| Block::init(&config).unwrap()).collect(),
+            wte: Embedding::init(config.vocab_size, config.n_embd, config.dtype)?,
+            wpe: Embedding::init(config.block_size, config.n_embd, config.dtype)?,
+            ln_f: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
+            lm_head: Linear::init(config.n_embd, config.vocab_size, config.bias, config.dtype)?,
             config,
         };
 
@@ -153,23 +153,23 @@ impl GPT {
     }
 
     fn generate(&self, idx: impl Into<Tensor>, max_new_tokens: usize, temperature: f32, top_k: Option<usize>) -> Result<Tensor, ZyxError> {
-        let idx = idx.into();
+        let mut idx = idx.into();
         for _ in 0..max_new_tokens {
             let idx_cond = if idx.shape()[1] <= self.config.block_size {
-                idx
+                idx.clone()
             } else {
                 idx.get((.., -(self.config.block_size as isize)..))?
             };
-            let logits = self.forward(idx_cond)?;
+            let mut logits = self.forward(idx_cond)?;
             logits = logits.get((.., -1, ..))? / temperature;
             /*if let Some(top_k) = top_k {
                 v = logits.topk(top_k.min(logits.shape().last().unwrap()));
                 // TODO, probably use where_:
                 // logits[logits < v[:, [-1]]] = -float('Inf')
             }*/
-            let probs = logits.softmax([-1]);
-            let idx_next = Tensor::multinomial(probs, 1)?;
-            idx = Tensor::cat([idx, idx_next], 1)?;
+            let probs = logits.softmax([-1])?;
+            let idx_next = probs.multinomial(1, false)?;
+            idx = Tensor::cat([&idx, &idx_next], 1)?;
         }
         Ok(idx)
     }

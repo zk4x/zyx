@@ -2,7 +2,7 @@ use zyx::{Tensor, ZyxError, DType};
 use zyx_derive::Module;
 
 /// Embedding layer
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct Embedding {
     /// Vocabulary size
     pub vocab_size: usize,
@@ -10,12 +10,13 @@ pub struct Embedding {
     pub embed_size: usize,
     /// Weight
     pub weight: Tensor,
-    arange: Tensor,
+    /// Arange
+    pub arange: Tensor,
 }
 
 impl Embedding {
     /// new embedding layer
-    pub fn new(vocab_size: usize, embed_size: usize, dtype: DType) -> Result<Embedding, ZyxError> {
+    pub fn init(vocab_size: usize, embed_size: usize, dtype: DType) -> Result<Embedding, ZyxError> {
         Ok(Embedding {
             vocab_size,
             embed_size,

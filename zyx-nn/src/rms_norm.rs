@@ -2,17 +2,17 @@ use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// RMS norm layer
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct RMSNorm {
     /// weight, scale
     pub scale: Tensor,
     /// small value to avoid division by zero
-    pub eps: f32,
+    pub eps: f64,
 }
 
 impl RMSNorm {
     /// Initialize RMSNorm layer
-    pub fn new(dim: usize, dtype: DType) -> RMSNorm {
+    pub fn init(dim: usize, dtype: DType) -> RMSNorm {
         RMSNorm {
             scale: Tensor::ones(dim, dtype),
             eps: 1e-6,
@@ -20,8 +20,10 @@ impl RMSNorm {
     }
 
     ///RMSNorm forward function
-    pub fn forward(&self, x: &Tensor) -> Result<Tensor, ZyxError> {
-        let x_normed = x * (x.pow(2)?.mean_kd([-1])? + self.eps).rsqrt();
+    pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let x = x.into();
+        let dtype = x.dtype();
+        let x_normed = &x * (x.pow(2)?.mean_kd([-1])? + Tensor::constant(self.eps).cast(dtype)).rsqrt();
         return Ok(x_normed * &self.scale);
     }
 }

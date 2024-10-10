@@ -363,6 +363,23 @@ impl Tensor {
         Ok(x.mul(y).cast(dtype))
     }
 
+    /// Multinomial function
+    #[cfg(feature = "rand")]
+    #[must_use]
+    pub fn multinomial(&self, num_samples: usize, replacement: bool) -> Result<Tensor, ZyxError> {
+        let sh = self.shape();
+        let rank = sh.len();
+        assert!(1 <= rank && rank <= 2 && num_samples > 0, "rank={rank} must be 1 or 2");
+        assert!(replacement || num_samples == 1, "no replacement only supports num_samples = 1");
+        let weight = if rank == 1 { self.unsqueeze(0)? } else { self.clone() };
+        let cw = weight.cumsum(1)?.float_cast();
+        let cdf = &cw / cw.get((.., -1))?.unsqueeze(1)?;
+        let cdf_sh = cdf.shape();
+        let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
+        let indices = unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum([2])?.permute([1, 0])?;
+        Ok((if rank == 1 { indices.squeeze(0)? } else { indices }).cast(DType::I32))
+    }
+
     /// Create tensor sampled from uniform distribution
     /// Start of the range must be less than the end of the range.
     #[cfg(feature = "rand")]
@@ -1969,6 +1986,33 @@ impl Tensor {
             offset += d;
         }
         Ok(res.unwrap())
+    }
+
+    /// Squeeze
+    #[must_use]
+    pub fn squeeze(&self, dim: isize) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        if dim < 0 {
+            let rank = shape.len();
+            let dim = (-dim) as usize;
+            let dim = rank - dim + 1;
+            self.reshape(
+                shape[..dim]
+                    .iter()
+                    .copied()
+                    .chain(shape[dim+1..].iter().copied())
+                    .collect::<Vec<usize>>(),
+            )
+        } else {
+            let dim = dim as usize;
+            self.reshape(
+                shape[..dim]
+                    .iter()
+                    .copied()
+                    .chain(shape[dim+1..].iter().copied())
+                    .collect::<Vec<usize>>(),
+            )
+        }
     }
 
     /// Expands the dimensionality of a tensor by inserting singleton dimensions.

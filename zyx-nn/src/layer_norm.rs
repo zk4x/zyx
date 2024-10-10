@@ -2,7 +2,7 @@ use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// Layer norm layer
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct LayerNorm {
     /// weight
     pub weight: Option<Tensor>,
@@ -10,12 +10,13 @@ pub struct LayerNorm {
     pub bias: Option<Tensor>,
     /// a value added to the denominator for numerical stability
     pub eps: f32,
-    d_dims: usize,
+    /// Number of dims across which normalization happens
+    pub d_dims: usize,
 }
 
 impl LayerNorm {
     /// Initialize LayerNorm layer
-    pub fn new(normalized_shape: impl zyx::IntoShape, bias: bool, dtype: DType) -> Result<LayerNorm, ZyxError> {
+    pub fn init(normalized_shape: impl zyx::IntoShape, bias: bool, dtype: DType) -> Result<LayerNorm, ZyxError> {
         Ok(LayerNorm {
             d_dims: normalized_shape.rank(),
             weight: Some(Tensor::randn(normalized_shape.clone(), dtype)?),

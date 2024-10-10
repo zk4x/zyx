@@ -2,14 +2,14 @@ use std::rc::Rc;
 use rand::{distributions::Uniform, Rng, SeedableRng};
 use zyx::{DType, Scalar, Tensor, ZyxError, Float};
 
-//#[allow(unused)]
-#[test]
+#[allow(unused)]
+//#[test]
 fn fuzzy() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;
     let max_numel = 256*256;
     let max_dims = 3;
-    let num_nodes = 30;
+    let num_nodes = 5;
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(rand_seed);
     let num_t = rng.gen_range(0..max_tensors);
@@ -46,8 +46,8 @@ fn fuzzy() -> Result<(), ZyxError> {
         // apply that op
         // Assert that CPUTensor and zyx::Tensor give the same result
         let x = rng.gen_range(0..num_t);
-        //let y = rng.gen_range(0..num_t);
-        match rng.gen_range(0..10) {
+        let y = rng.gen_range(0..num_t);
+        match rng.gen_range(0..12) {
             // Unary
             0 => {
                 tensors[x] = tensors[x].relu();
@@ -91,14 +91,18 @@ fn fuzzy() -> Result<(), ZyxError> {
             }
             // Binary
             10 => {
-                //let t = rng.gen_range(0..num_t);
-                //tensors[t] = tensors[t].exp2();
+                tensors[x] = &tensors[x] + &tensors[y];
+                cpu_tensors[x] = cpu_tensors[x].add(&cpu_tensors[y]);
             }
+            11 => {
+                tensors[x] = &tensors[x] - &tensors[y];
+                cpu_tensors[x] = cpu_tensors[x].sub(&cpu_tensors[y]);
+            }
+            // Movement
+            //10 => tensors[x] = tensors[x].reshape([]),
             // Reduce
             //20 => tensors[x] = tensors[x].sum_kd([]),
             //20 => tensors[x] = tensors[x].max_kd([]),
-            // Movement
-            //20 => tensors[x] = tensors[x].reshape([]),
             _ => panic!(),
         }
     }

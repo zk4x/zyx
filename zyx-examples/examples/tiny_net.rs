@@ -10,8 +10,8 @@ struct TinyNet {
 
 fn main() -> Result<(), ZyxError> {
     let tiny_net = TinyNet {
-        l0: Linear::new(1, 128, true, DType::F32)?,
-        l1: Linear::new(1, 128, true, DType::F32)?,
+        l0: Linear::init(1, 128, true, DType::F32)?,
+        l1: Linear::init(1, 128, true, DType::F32)?,
         lr: 0.0,
     };
 

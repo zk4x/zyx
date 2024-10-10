@@ -49,8 +49,8 @@ cargo add zyx-nn;
 use zyx::{Tensor, DType};
 use zyx_nn::Linear;
 
-let l0 = Linear::new(3, 1024, DType::F32);
-let l1 = Linear::new(1024, 2, DType::F32);
+let l0 = Linear::init(3, 1024, DType::F32);
+let l1 = Linear::init(1024, 2, DType::F32);
 
 let x = Tensor::from([2, 3, 1]).cast(DType::F32);
 let target = Tensor::from([2, 4]);
