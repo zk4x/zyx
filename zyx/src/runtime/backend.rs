@@ -150,7 +150,7 @@ impl Runtime {
         let device_config = xdg::BaseDirectories::new()
             .map_err(|e| {
                 if self.debug_dev() {
-                    println!("Failed to find config directories for backend_config.json, {e}");
+                    println!("Failed to find config directories for device_config.json, {e}");
                 }
             })
             .ok()
@@ -161,7 +161,7 @@ impl Runtime {
             })
             .map(|paths| {
                 paths.into_iter().find_map(|mut path| {
-                    path.push("zyx/backend_config.json");
+                    path.push("zyx/device_config.json");
                     if let Ok(file) = std::fs::read_to_string(&path) {
                         path.pop();
                         self.config_dir = Some(path);
@@ -176,7 +176,7 @@ impl Runtime {
                 serde_json::from_str(&file)
                     .map_err(|e| {
                         if self.debug_dev() {
-                            println!("Failed to parse backend_config.json, {e}");
+                            println!("Failed to parse device_config.json, {e}");
                         }
                     })
                     .ok()
