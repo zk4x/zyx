@@ -153,11 +153,12 @@ trait CastDType: Scalar {
     fn cast_dtype(self, dtype: DType) -> Constant {
         match dtype {
             #[cfg(feature = "half")]
-            DType::F16 => Constant::F16(unsafe { std::mem::transmute(self.cast::<half::f16>()) }),
-            #[cfg(feature = "half")]
             DType::BF16 => {
                 Constant::BF16(unsafe { std::mem::transmute(self.cast::<half::bf16>()) })
             }
+            DType::F8 => Constant::F8(todo!()),
+            #[cfg(feature = "half")]
+            DType::F16 => Constant::F16(unsafe { std::mem::transmute(self.cast::<half::f16>()) }),
             DType::F32 => Constant::F32(unsafe { std::mem::transmute(self.cast::<f32>()) }),
             DType::F64 => Constant::F64(unsafe { std::mem::transmute(self.cast::<f64>()) }),
             #[cfg(feature = "complex")]
@@ -183,9 +184,10 @@ impl Constant {
         match uop {
             UOp::Cast(dtype) => match self {
                 #[cfg(feature = "half")]
-                Constant::F16(x) => unsafe { t::<_, half::f16>(x) }.cast_dtype(dtype),
-                #[cfg(feature = "half")]
                 Constant::BF16(x) => unsafe { t::<_, half::bf16>(x) }.cast_dtype(dtype),
+                Constant::F8(_) => panic!(),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => unsafe { t::<_, half::f16>(x) }.cast_dtype(dtype),
                 Constant::F32(x) => unsafe { t::<_, f32>(x) }.cast_dtype(dtype),
                 Constant::F64(x) => unsafe { t::<_, f64>(x) }.cast_dtype(dtype),
                 #[cfg(feature = "complex")]
@@ -202,9 +204,10 @@ impl Constant {
             },
             UOp::ReLU => match self {
                 #[cfg(feature = "half")]
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                #[cfg(feature = "half")]
                 Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
+                Constant::F8(_) => panic!(),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).relu()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).relu()) }),
                 #[cfg(feature = "complex")]
@@ -221,9 +224,10 @@ impl Constant {
             },
             UOp::Neg => match self {
                 #[cfg(feature = "half")]
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).neg()) }),
-                #[cfg(feature = "half")]
                 Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).neg()) }),
+                Constant::F8(_) => panic!(),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).neg()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).neg()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).neg()) }),
                 #[cfg(feature = "complex")]
@@ -240,9 +244,10 @@ impl Constant {
             },
             UOp::Exp2 => match self {
                 #[cfg(feature = "half")]
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).exp2()) }),
-                #[cfg(feature = "half")]
                 Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).exp2()) }),
+                Constant::F8(_) => panic!(),
+                #[cfg(feature = "half")]
+                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).exp2()) }),
                 Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).exp2()) }),
                 Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).exp2()) }),
                 #[cfg(feature = "complex")]
@@ -258,6 +263,7 @@ impl Constant {
                 Constant::Bool(_) => todo!(),
             },
             UOp::Log2 => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).log2()) }),
                 #[cfg(feature = "half")]
@@ -277,6 +283,7 @@ impl Constant {
                 Constant::Bool(_) => todo!(),
             },
             UOp::Inv => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => {
                     Constant::F16(unsafe { t(half::f16::ONE / t::<_, half::f16>(x)) })
@@ -300,6 +307,7 @@ impl Constant {
                 Constant::Bool(_) => todo!(),
             },
             UOp::Sqrt => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
                 #[cfg(feature = "half")]
@@ -313,6 +321,7 @@ impl Constant {
                 c => panic!("Unsupported dtype {}", c.dtype()),
             },
             UOp::Sin => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
                 #[cfg(feature = "half")]
@@ -326,6 +335,7 @@ impl Constant {
                 c => panic!("Unsupported dtype {}", c.dtype()),
             },
             UOp::Cos => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
                 #[cfg(feature = "half")]
@@ -339,6 +349,7 @@ impl Constant {
                 c => panic!("Unsupported dtype {}", c.dtype()),
             },
             UOp::Not => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
                 #[cfg(feature = "half")]
@@ -362,6 +373,7 @@ impl Constant {
                 Constant::Bool(_) => todo!(),
             },
             UOp::Nonzero => match self {
+                Constant::F8(_) => panic!(),
                 #[cfg(feature = "half")]
                 Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
                 #[cfg(feature = "half")]

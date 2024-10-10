@@ -231,6 +231,7 @@ impl Runtime {
         let x = match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.constant(bf16::ONE),
+            DType::F8 => todo!(),
             #[cfg(feature = "half")]
             DType::F16 => self.constant(f16::ONE),
             DType::F32 => self.constant(1f32),
@@ -257,6 +258,7 @@ impl Runtime {
         let x = match dtype {
             #[cfg(feature = "half")]
             DType::BF16 => self.constant(bf16::ZERO),
+            DType::F8 => todo!(),
             #[cfg(feature = "half")]
             DType::F16 => self.constant(f16::ZERO),
             DType::F32 => self.constant(0f32),

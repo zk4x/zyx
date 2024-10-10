@@ -685,15 +685,16 @@ impl IRDType {
     pub(super) fn hip(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
-            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::BF16(v) => panic!("BF16 is not native to HIP, workaround is WIP."),
+            IRDType::F8(v) => "f8",
             #[cfg(feature = "half")]
             IRDType::F16(v) => "half",
             IRDType::F32(v) => "float",
             IRDType::F64(v) => "double",
             #[cfg(feature = "complex")]
-            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::CF32(v) => panic!("Not native to HIP, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            IRDType::CF64(v) => panic!("Not native to HIP, workaround is WIP"),
             IRDType::U8(v) => "unsigned char",
             IRDType::I8(v) => "char",
             IRDType::I16(v) => "short",
@@ -719,9 +720,10 @@ impl Constant {
         use core::mem::transmute as t;
         match self {
             #[cfg(feature = "half")]
-            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F8(x) => todo!(),
+            #[cfg(feature = "half")]
+            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::F32(x) => format!("{}f", unsafe { t::<_, f32>(*x) }),
             Constant::F64(x) => format!("{}f", unsafe { t::<_, f64>(*x) }),
             #[cfg(feature = "complex")]

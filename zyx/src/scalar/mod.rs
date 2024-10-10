@@ -1,13 +1,12 @@
 //! Trait describing required operations on scalar values
 
-#[cfg(feature = "half")]
+mod scalar_f8;
 mod scalar_bf16;
 mod scalar_bool;
 #[cfg(feature = "complex")]
 mod scalar_cf32;
 #[cfg(feature = "complex")]
 mod scalar_cf64;
-#[cfg(feature = "half")]
 mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
@@ -18,21 +17,21 @@ mod scalar_i8;
 mod scalar_u8;
 mod scalar_u32;
 
+use float8::F8E4M3;
+use half::{bf16, f16};
+
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-
-#[cfg(feature = "half")]
-use half::{bf16, f16};
 
 use crate::dtype::DType;
 
 /// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq {
     /// From bf16
-    #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self;
+    /// From f8
+    fn from_f8(t: F8E4M3) -> Self;
     /// From f16
-    #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self;
     /// From f32
     fn from_f32(t: f32) -> Self;
@@ -110,6 +109,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
             match Self::dtype() {
                 #[cfg(feature = "half")]
                 DType::BF16 => T::from_bf16(t(&self)),
+                DType::F8 => T::from_f8(t(&self)),
                 #[cfg(feature = "half")]
                 DType::F16 => T::from_f16(t(&self)),
                 DType::F32 => T::from_f32(t(&self)),

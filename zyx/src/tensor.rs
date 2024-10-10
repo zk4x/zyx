@@ -2378,7 +2378,7 @@ impl Tensor {
 
     // io
     /// Load module from path
-    pub fn load<Module: FromIterator<Tensor>>(path: impl AsRef<Path>) -> Result<Module, ZyxError> {
+    pub fn load_safetensors<Module: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<Module, ZyxError> {
         let debug_print: bool = RT.lock().debug_dev();
         use std::io::Read;
         let mut f = std::fs::File::open(path)?;
@@ -2396,15 +2396,16 @@ impl Tensor {
         let mut text = String::with_capacity(10);
         let mut begin_str = false;
         let mut i = 0;
-        let mut tensors = Vec::new();
+        let mut tensors = std::collections::HashMap::new();
         let mut dtype = DType::F32;
         let mut shape = vec![1];
+        let mut label = String::new();
         for x in header.chars() {
             if ['"', '[', ']'].contains(&x) {
                 if begin_str {
                     //std::println!("{text}");
                     if i % 7 == 0 {
-                        //params[i / 7].set_label(&text);
+                        label = text.clone();
                     } else if i % 7 == 2 {
                         dtype = DType::from_safetensors(&text)?;
                     } else if i % 7 == 4 {
@@ -2446,7 +2447,7 @@ impl Tensor {
                         if debug_print {
                             println!(" DONE");
                         }
-                        tensors.push(match dtype {
+                        tensors.insert(label.clone(), match dtype {
                             DType::F32 => {
                                 let vec: Vec<f32> = buf
                                     .chunks_exact(dtype.byte_size())
@@ -2487,6 +2488,11 @@ impl Tensor {
             }
         }
         Ok(Module::from_iter(tensors))
+    }
+
+    /// Load gguf model
+    pub fn load_gguf<M: FromIterator<(String, Tensor)>>(_path: impl AsRef<Path>) -> Result<M, ZyxError> {
+        todo!()
     }
 
     /// All tensor elements as contiguous le_bytes vector in row major order

@@ -1,18 +1,20 @@
 use crate::DType;
 
 use super::Scalar;
-#[cfg(feature = "half")]
 use half::{bf16, f16};
+use float8::F8E4M3;
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
 impl Scalar for bool {
-    #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
         t != bf16::ZERO
     }
 
-    #[cfg(feature = "half")]
+    fn from_f8(t: F8E4M3) -> Self {
+        t != F8E4M3::ZERO
+    }
+
     fn from_f16(t: f16) -> Self {
         t != f16::ZERO
     }

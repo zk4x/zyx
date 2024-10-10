@@ -93,6 +93,7 @@ pub(super) enum IROp {
 pub(super) enum IRDType {
     #[cfg(feature = "half")]
     BF16(IRVec),
+    F8(IRVec),
     #[cfg(feature = "half")]
     F16(IRVec),
     F32(IRVec),
@@ -154,9 +155,10 @@ impl IRDType {
     pub(super) fn byte_size(&self) -> usize {
         match self {
             #[cfg(feature = "half")]
-            IRDType::F16(v) => 2 * v.len(),
-            #[cfg(feature = "half")]
             IRDType::BF16(v) => 2 * v.len(),
+            IRDType::F8(v) => v.len(),
+            #[cfg(feature = "half")]
+            IRDType::F16(v) => 2 * v.len(),
             IRDType::F32(v) => 4 * v.len(),
             IRDType::F64(v) => 8 * v.len(),
             #[cfg(feature = "complex")]
@@ -177,6 +179,7 @@ impl IRDType {
         match self {
             #[cfg(feature = "half")]
             IRDType::BF16(_) => DType::BF16,
+            IRDType::F8(_) => DType::F8,
             #[cfg(feature = "half")]
             IRDType::F16(_) => DType::F16,
             IRDType::F32(_) => DType::F32,
@@ -201,6 +204,7 @@ impl From<DType> for IRDType {
         match value {
             #[cfg(feature = "half")]
             DType::BF16 => IRDType::BF16(IRVec::Scalar),
+            DType::F8 => IRDType::F8(IRVec::Scalar),
             #[cfg(feature = "half")]
             DType::F16 => IRDType::F16(IRVec::Scalar),
             DType::F32 => IRDType::F32(IRVec::Scalar),
@@ -960,6 +964,7 @@ impl Display for IRVec {
 impl DType {
     pub(super) fn ir_dtype(&self) -> IRDType {
         match self {
+            DType::F8 => IRDType::F8(IRVec::Scalar),
             DType::F32 => IRDType::F32(IRVec::Scalar),
             DType::F64 => IRDType::F64(IRVec::Scalar),
             DType::U8 => IRDType::U8(IRVec::Scalar),

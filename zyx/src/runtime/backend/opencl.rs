@@ -948,6 +948,7 @@ impl IRDType {
         return match self {
             #[cfg(feature = "half")]
             IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::F8(v) => format!("f8{v}"),
             #[cfg(feature = "half")]
             IRDType::F16(v) => "half",
             IRDType::F32(v) => format!("float{v}"),
@@ -1212,9 +1213,10 @@ impl Constant {
         use core::mem::transmute as t;
         match self {
             #[cfg(feature = "half")]
-            Constant::F16(x) => format!("{:.16}f", unsafe { t::<_, half::f16>(*x) }),
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{:.16}f", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F8(x) => todo!(),
+            #[cfg(feature = "half")]
+            Constant::F16(x) => format!("{:.16}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
             Constant::F64(x) => format!("{:.16}", unsafe { t::<_, f64>(*x) }),
             #[cfg(feature = "complex")]

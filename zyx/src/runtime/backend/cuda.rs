@@ -1207,6 +1207,7 @@ impl IRDType {
         return match self {
             #[cfg(feature = "half")]
             IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::F8(v) => "f8",
             #[cfg(feature = "half")]
             IRDType::F16(v) => "f16",
             IRDType::F32(v) => "f32",
@@ -1234,6 +1235,12 @@ impl Constant {
             Constant::F16(x) => format!("{:.12}", unsafe { t::<_, half::f16>(*x) }),
             #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{:.12}", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F8(x) => {
+                /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
+                let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
+                format!("0f{}", hex)*/
+                format!("{:.12}", todo!())
+            }
             Constant::F32(x) => {
                 /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
@@ -1274,7 +1281,8 @@ impl IRDType {
     pub(super) fn cu(&self) -> &str {
         return match self {
             #[cfg(feature = "half")]
-            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
             #[cfg(feature = "half")]
             IRDType::F16(v) => "half",
             IRDType::F32(v) => "float",
@@ -1308,12 +1316,17 @@ impl Constant {
         use core::mem::transmute as t;
         match self {
             #[cfg(feature = "half")]
-            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F8(x) => {
+                //let x: f8 = unsafe { t::<_, f8>(*x) };
+                //format!("{x:.16}f")
+                todo!()
+            }
+            #[cfg(feature = "half")]
+            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::F32(x) => {
                 let x: f32 = unsafe { t::<_, f32>(*x) };
-                format!("{x:.16}f",)
+                format!("{x:.16}f")
             }
             Constant::F64(x) => format!("{x}"),
             #[cfg(feature = "complex")]
