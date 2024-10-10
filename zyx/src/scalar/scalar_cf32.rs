@@ -1,17 +1,14 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-#[cfg(feature = "half")]
 use half::{bf16, f16};
 use num_complex::Complex;
 
 impl Scalar for Complex<f32> {
-    #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
         let _ = t;
         todo!()
     }
 
-    #[cfg(feature = "half")]
     fn from_f16(t: f16) -> Self {
         let _ = t;
         todo!()
@@ -172,31 +169,31 @@ impl Scalar for Complex<f32> {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
+
     fn exp2(self) -> Self {
         todo!()
     }
-    
+
     fn log2(self) -> Self {
         todo!()
     }
-    
+
     fn inv(self) -> Self {
         todo!()
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
         todo!()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
         todo!()
     }

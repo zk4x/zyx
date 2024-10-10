@@ -107,10 +107,8 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
         use core::mem::transmute_copy as t;
         return unsafe {
             match Self::dtype() {
-                #[cfg(feature = "half")]
                 DType::BF16 => T::from_bf16(t(&self)),
                 DType::F8 => T::from_f8(t(&self)),
-                #[cfg(feature = "half")]
                 DType::F16 => T::from_f16(t(&self)),
                 DType::F32 => T::from_f32(t(&self)),
                 DType::F64 => T::from_f64(t(&self)),

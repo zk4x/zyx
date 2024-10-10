@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use zyx::{Tensor, ZyxError};
 
 #[test]
@@ -153,10 +155,10 @@ fn matmul_1024() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
     //let x = xy.pop().unwrap();
-    let mut xyz: Vec<Tensor> = Tensor::load("../xyz.safetensors")?;
-    let z = xyz.pop().unwrap();
-    let y = xyz.pop().unwrap();
-    let x = xyz.pop().unwrap();
+    let mut xyz: HashMap<String, Tensor> = Tensor::load_safetensors("../xyz.safetensors")?;
+    let z = xyz.remove("z").unwrap();
+    let y = xyz.remove("y").unwrap();
+    let x = xyz.remove("x").unwrap();
     //println!("{:?}", x.shape());
     //println!("{:?}", y.shape());
     let dataz: Vec<f32> = z.try_into()?;
@@ -205,4 +207,3 @@ fn var() -> Result<(), ZyxError> {
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
 }
-

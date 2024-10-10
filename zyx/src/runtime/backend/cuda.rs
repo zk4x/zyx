@@ -1205,10 +1205,8 @@ enum CUdevice_attribute {
 impl IRDType {
     pub(super) fn ptx(&self) -> &str {
         return match self {
-            #[cfg(feature = "half")]
             IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
             IRDType::F8(v) => "f8",
-            #[cfg(feature = "half")]
             IRDType::F16(v) => "f16",
             IRDType::F32(v) => "f32",
             IRDType::F64(v) => "f64",
@@ -1231,9 +1229,7 @@ impl Constant {
     fn ptx(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            #[cfg(feature = "half")]
             Constant::F16(x) => format!("{:.12}", unsafe { t::<_, half::f16>(*x) }),
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{:.12}", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F8(x) => {
                 /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
@@ -1280,10 +1276,8 @@ impl Var {
 impl IRDType {
     pub(super) fn cu(&self) -> &str {
         return match self {
-            #[cfg(feature = "half")]
             IRDType::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
             IRDType::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
-            #[cfg(feature = "half")]
             IRDType::F16(v) => "half",
             IRDType::F32(v) => "float",
             IRDType::F64(v) => "double",
@@ -1315,14 +1309,12 @@ impl Constant {
     fn cu(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F8(x) => {
                 //let x: f8 = unsafe { t::<_, f8>(*x) };
                 //format!("{x:.16}f")
                 todo!()
             }
-            #[cfg(feature = "half")]
             Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::F32(x) => {
                 let x: f32 = unsafe { t::<_, f32>(*x) };

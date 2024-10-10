@@ -7,7 +7,7 @@ use float8::F8E4M3;
 
 impl Scalar for F8E4M3 {
     fn from_bf16(t: bf16) -> Self {
-        f16::from_f32(t.to_f32())
+        Self::from_f32(t.to_f32())
     }
 
     fn from_f8(t: F8E4M3) -> Self {
@@ -15,15 +15,15 @@ impl Scalar for F8E4M3 {
     }
 
     fn from_f16(t: f16) -> Self {
-        f16::from_f32(t.to_f32())
+        Self::from_f32(t.to_f32())
     }
 
     fn from_f32(t: f32) -> Self {
-        f16::from_f32(t)
+        Self::from_f32(t)
     }
 
     fn from_f64(t: f64) -> Self {
-        f16::from_f64(t)
+        Self::from_f64(t)
     }
 
     #[cfg(feature = "complex")]
@@ -57,19 +57,21 @@ impl Scalar for F8E4M3 {
     }
 
     fn from_i32(t: i32) -> Self {
-        f16::from_f32(t as f32)
+        Self::from_f32(t as f32)
     }
 
     fn from_i64(t: i64) -> Self {
-        f16::from_f64(t as f64)
+        Self::from_f64(t as f64)
     }
 
     fn from_bool(t: bool) -> Self {
-        f16::from_f64(t as i32 as f64)
+        Self::from_f64(t as i32 as f64)
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        f16::from_le_bytes([bytes[0], bytes[1]])
+        let _ = bytes;
+        //Self::from_le_bytes(&[bytes[0]])
+        todo!()
     }
 
     fn dtype() -> DType {
@@ -77,11 +79,11 @@ impl Scalar for F8E4M3 {
     }
 
     fn zero() -> Self {
-        f16::ZERO
+        Self::ZERO
     }
 
     fn one() -> Self {
-        f16::ONE
+        Self::ONE
     }
 
     fn byte_size() -> usize {
@@ -97,7 +99,7 @@ impl Scalar for F8E4M3 {
     }
 
     fn relu(self) -> Self {
-        self.max(f16::ZERO)
+        self.max(Self::ZERO)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -117,27 +119,27 @@ impl Scalar for F8E4M3 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        f16::from_f32(self.to_f32().pow(rhs.to_f32()))
+        Self::from_f32(self.to_f32().pow(rhs.to_f32()))
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        f16::from_f32((self < rhs) as i32 as f32)
+        Self::from_f32((self < rhs) as i32 as f32)
     }
 
     fn max(self, rhs: Self) -> Self {
-        f16::max(self, rhs)
+        Self::max(self, rhs)
     }
 
     fn max_value() -> Self {
-        f16::MAX
+        Self::MAX
     }
 
     fn min_value() -> Self {
-        f16::MIN
+        Self::MIN
     }
 
     fn epsilon() -> Self {
-        f16::from_f32(0.00001)
+        Self::from_f32(0.00001)
     }
 
     fn is_equal(self, rhs: Self) -> bool {
@@ -153,17 +155,19 @@ impl Scalar for F8E4M3 {
     }
     
     fn cmpgt(self, rhs: Self) -> Self {
+        let _ = rhs;
         todo!()
     }
     
     fn or(self, rhs: Self) -> Self {
+        let _ = rhs;
         todo!()
     }
 }
 
 impl Float for F8E4M3 {
     fn reciprocal(self) -> Self {
-        f16::ONE / self
+        Self::ONE / self
     }
 
     fn floor(self) -> Self {
@@ -171,15 +175,15 @@ impl Float for F8E4M3 {
     }
 
     fn sin(self) -> Self {
-        f16::from_f32(self.to_f32().sin())
+        Self::from_f32(self.to_f32().sin())
     }
 
     fn cos(self) -> Self {
-        f16::from_f32(self.to_f32().cos())
+        Self::from_f32(self.to_f32().cos())
     }
 
     fn sqrt(self) -> Self {
-        f16::from_f32(self.to_f32().sqrt())
+        Self::from_f32(self.to_f32().sqrt())
     }
     
     fn exp2(self) -> Self {

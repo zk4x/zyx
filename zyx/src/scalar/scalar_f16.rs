@@ -3,9 +3,14 @@ use crate::scalar::{Scalar, Float};
 use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
+use float8::F8E4M3;
 
 impl Scalar for f16 {
     fn from_bf16(t: bf16) -> Self {
+        f16::from_f32(t.to_f32())
+    }
+
+    fn from_f8(t: F8E4M3) -> Self {
         f16::from_f32(t.to_f32())
     }
 
@@ -32,6 +37,11 @@ impl Scalar for f16 {
     }
 
     fn from_u8(t: u8) -> Self {
+        let _ = t;
+        todo!()
+    }
+
+    fn from_u32(t: u32) -> Self {
         let _ = t;
         todo!()
     }
@@ -82,32 +92,12 @@ impl Scalar for f16 {
         todo!()
     }
 
-    fn reciprocal(self) -> Self {
-        f16::ONE / self
-    }
-
-    fn floor(self) -> Self {
-        todo!()
-    }
-
     fn neg(self) -> Self {
         -self
     }
 
     fn relu(self) -> Self {
         self.max(f16::ZERO)
-    }
-
-    fn sin(self) -> Self {
-        f16::from_f32(self.to_f32().sin())
-    }
-
-    fn cos(self) -> Self {
-        f16::from_f32(self.to_f32().cos())
-    }
-
-    fn sqrt(self) -> Self {
-        f16::from_f32(self.to_f32().sqrt())
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -153,35 +143,51 @@ impl Scalar for f16 {
     fn is_equal(self, rhs: Self) -> bool {
         self.to_f32() == rhs.to_f32()
     }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
-    }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        ((self > rhs) as i8).into()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
+        let _ = rhs;
         todo!()
     }
 }
 
-impl Float for f16 {}
+impl Float for f16 {
+    fn reciprocal(self) -> Self {
+        f16::ONE / self
+    }
 
+    fn sin(self) -> Self {
+        f16::from_f32(self.to_f32().sin())
+    }
+
+    fn cos(self) -> Self {
+        f16::from_f32(self.to_f32().cos())
+    }
+
+    fn sqrt(self) -> Self {
+        f16::from_f32(self.to_f32().sqrt())
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
+    }
+
+    fn floor(self) -> Self {
+        todo!()
+    }
+}

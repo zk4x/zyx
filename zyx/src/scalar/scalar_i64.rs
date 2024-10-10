@@ -1,18 +1,21 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-#[cfg(feature = "half")]
 use half::{bf16, f16};
+use float8::F8E4M3;
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
 impl Scalar for i64 {
-    #[cfg(feature = "half")]
     fn from_bf16(t: bf16) -> Self {
         let _ = t;
         todo!()
     }
 
-    #[cfg(feature = "half")]
+    fn from_f8(t: F8E4M3) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_f16(t: f16) -> Self {
         let _ = t;
         todo!()

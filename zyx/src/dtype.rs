@@ -1,7 +1,6 @@
 //! DType and constant
 
 use core::fmt::Display;
-#[cfg(feature = "half")]
 use half::{bf16, f16};
 
 use crate::{Scalar, ZyxError};
@@ -12,12 +11,10 @@ use crate::{Scalar, ZyxError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DType {
     /// 16 bit bfloat data type.
-    #[cfg(feature = "half")]
     BF16,
     /// 8 bit float data type, 4 bit exponent, 3 bit mantissa.
     F8,
     /// 16 bit float data type.
-    #[cfg(feature = "half")]
     F16,
     /// 32 bit float data type.
     F32,
@@ -48,10 +45,8 @@ pub enum DType {
 impl Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         return f.write_str(match self {
-            #[cfg(feature = "half")]
             DType::BF16 => "BF16",
             DType::F8 => "F8",
-            #[cfg(feature = "half")]
             DType::F16 => "F16",
             DType::F32 => "F32",
             DType::F64 => "F64",
@@ -74,7 +69,7 @@ impl DType {
     /// Is this dtype floating point?
     pub fn is_float(&self) -> bool {
         match self {
-            DType::F8 | DType::F32 | DType::F64 => true,
+            DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => true,
             DType::U8 | DType::U32 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => false,
         }
     }
@@ -82,10 +77,8 @@ impl DType {
     /// Get the size of this dtype in bytes
     pub fn byte_size(&self) -> usize {
         return match self {
-            #[cfg(feature = "half")]
             DType::BF16 => 2,
             DType::F8 => 1,
-            #[cfg(feature = "half")]
             DType::F16 => 2,
             DType::F32 => 4,
             DType::F64 => 8,
@@ -105,10 +98,8 @@ impl DType {
 
     pub(super) fn zero_constant(&self) -> Constant {
         return match self {
-            #[cfg(feature = "half")]
             DType::BF16 => Constant::BF16(unsafe { core::mem::transmute(bf16::ZERO) }),
             DType::F8 => todo!(), //Constant::F8(unsafe { core::mem::transmute(0f32) }),
-            #[cfg(feature = "half")]
             DType::F16 => Constant::F16(unsafe { core::mem::transmute(f16::ZERO) }),
             DType::F32 => Constant::F32(unsafe { core::mem::transmute(0f32) }),
             DType::F64 => Constant::F64(unsafe { core::mem::transmute(0f64) }),
@@ -128,10 +119,8 @@ impl DType {
 
     pub(super) fn min_constant(&self) -> Constant {
         return match self {
-            #[cfg(feature = "half")]
             DType::BF16 => Constant::BF16(unsafe { core::mem::transmute(bf16::MIN) }),
             DType::F8 => Constant::F8(255),
-            #[cfg(feature = "half")]
             DType::F16 => Constant::F16(unsafe { core::mem::transmute(f16::MIN) }),
             DType::F32 => Constant::F32(unsafe { core::mem::transmute(f32::MIN) }),
             DType::F64 => Constant::F64(unsafe { core::mem::transmute(f64::MIN) }),
@@ -151,7 +140,9 @@ impl DType {
 
     pub(super) fn safetensors(&self) -> &str {
         match self {
+            DType::BF16 => "BF16",
             DType::F8 => "F8",
+            DType::F16 => "F16",
             DType::F32 => "F32",
             DType::F64 => "F64",
             DType::U8 => "U8",
@@ -188,10 +179,8 @@ impl DType {
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Constant {
-    #[cfg(feature = "half")]
     BF16(u16),
     F8(u8),
-    #[cfg(feature = "half")]
     F16(u16),
     F32(u32),
     F64(u64),
@@ -212,10 +201,8 @@ impl Constant {
     pub(crate) fn new<T: Scalar>(x: T) -> Constant {
         use core::mem::transmute_copy as t;
         match T::dtype() {
-            #[cfg(feature = "half")]
             DType::BF16 => Constant::BF16(unsafe { t(&x) }),
             DType::F8 => Constant::F8(unsafe { t(&x) }),
-            #[cfg(feature = "half")]
             DType::F16 => Constant::F16(unsafe { t(&x) }),
             DType::F32 => Constant::F32(unsafe { t(&x) }),
             DType::F64 => Constant::F64(unsafe { t(&x) }),
@@ -242,10 +229,8 @@ impl Constant {
 
     pub(crate) fn dtype(&self) -> DType {
         match self {
-            #[cfg(feature = "half")]
             Constant::BF16(_) => DType::BF16,
             Constant::F8(_) => DType::F8,
-            #[cfg(feature = "half")]
             Constant::F16(_) => DType::F16,
             Constant::F32(_) => DType::F32,
             Constant::F64(_) => DType::F64,
@@ -268,14 +253,13 @@ impl Display for Constant {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         use core::mem::transmute as t;
         match self {
-            #[cfg(feature = "half")]
             Constant::BF16(value) => {
                 return f.write_fmt(format_args!("{}", unsafe { t::<_, bf16>(*value) }));
             }
-            Constant::F8(value) => {
-                return f.write_fmt(format_args!("{}", todo!()));
+            Constant::F8(_) => {
+                //return f.write_fmt(format_args!("{}", todo!()));
+                todo!()
             }
-            #[cfg(feature = "half")]
             Constant::F16(value) => {
                 return f.write_fmt(format_args!("{}", unsafe { t::<_, f16>(*value) }));
             }

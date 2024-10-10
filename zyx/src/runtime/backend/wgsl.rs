@@ -558,9 +558,7 @@ impl WGSLQueue {
 impl IRDType {
     fn wgsl(&self) -> &str {
         return match self {
-            #[cfg(feature = "half")]
             IRDType::BF16 => todo!("WIP"),
-            #[cfg(feature = "half")]
             IRDType::F16 => "f16",
             IRDType::F32(v) => "f32",
             IRDType::F64(v) => "f64",
@@ -583,9 +581,7 @@ impl Constant {
     fn wgsl(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            #[cfg(feature = "half")]
             Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
             Constant::F64(x) => format!("{:.16}f", unsafe { t::<_, f64>(*x) }),

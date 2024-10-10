@@ -184,9 +184,8 @@ impl CPUTensor {
     pub fn new<T: Scalar>(data: &[T]) -> CPUTensor {
         use std::mem::transmute as t;
         CPUTensor { view: View::new(&[data.len()]), data: match T::dtype() {
-            #[cfg(feature = "half")]
             DType::BF16 => todo!(),
-            #[cfg(feature = "half")]
+            DType::F8 => todo!(),
             DType::F16 => todo!(),
             DType::F32 => Data::F32(unsafe { t::<_, &[f32]>(data) }.into()),
             DType::F64 => todo!(),

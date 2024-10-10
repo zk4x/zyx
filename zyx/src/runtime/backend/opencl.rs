@@ -946,11 +946,9 @@ impl OpenCLQueue {
 impl IRDType {
     fn ocl(&self) -> String {
         return match self {
-            #[cfg(feature = "half")]
-            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            IRDType::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
             IRDType::F8(v) => format!("f8{v}"),
-            #[cfg(feature = "half")]
-            IRDType::F16(v) => "half",
+            IRDType::F16(v) => format!("half{v}"),
             IRDType::F32(v) => format!("float{v}"),
             IRDType::F64(v) => format!("double{v}"),
             #[cfg(feature = "complex")]
@@ -1212,10 +1210,8 @@ impl Constant {
     fn ocl(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            #[cfg(feature = "half")]
             Constant::BF16(x) => format!("{:.16}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F8(x) => todo!(),
-            #[cfg(feature = "half")]
+            Constant::F8(_) => todo!(),
             Constant::F16(x) => format!("{:.16}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
             Constant::F64(x) => format!("{:.16}", unsafe { t::<_, f64>(*x) }),

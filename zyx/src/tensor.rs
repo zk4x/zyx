@@ -14,12 +14,11 @@ use std::ops::{
     RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub,
 };
 use std::path::Path;
+use half::{bf16, f16};
+use float8::F8E4M3 as f8;
 
 use crate::runtime::ZyxError;
 use crate::RT;
-
-#[cfg(feature = "half")]
-use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
@@ -125,14 +124,16 @@ impl Tensor {
         let shape = self.shape();
         let dtype = self.dtype();
         match dtype {
-            #[cfg(feature = "half")]
-            DType::F16 => {
-                let data: Vec<f16> = self.try_into()?;
-                Tensor::from(data).reshape(shape)
-            }
-            #[cfg(feature = "half")]
             DType::BF16 => {
                 let data: Vec<bf16> = self.try_into()?;
+                Tensor::from(data).reshape(shape)
+            }
+            DType::F8 => {
+                let data: Vec<f8> = self.try_into()?;
+                Tensor::from(data).reshape(shape)
+            }
+            DType::F16 => {
+                let data: Vec<f16> = self.try_into()?;
                 Tensor::from(data).reshape(shape)
             }
             DType::F32 => {
@@ -1043,12 +1044,14 @@ impl Tensor {
         let t0 = self.pad_zeros(padding.clone());
         if value.numel() == 1
             && match dtype {
-                #[cfg(feature = "half")]
                 DType::BF16 => {
                     let x: bf16 = value.clone().try_into()?;
                     x == bf16::ZERO
                 }
-                #[cfg(feature = "half")]
+                DType::F8 => {
+                    let x: f8 = value.clone().try_into()?;
+                    x == f8::ZERO
+                }
                 DType::F16 => {
                     let x: f16 = value.clone().try_into()?;
                     x == f16::ZERO
@@ -2498,6 +2501,19 @@ impl Tensor {
     /// All tensor elements as contiguous le_bytes vector in row major order
     pub fn to_le_bytes(&self) -> Result<Vec<u8>, ZyxError> {
         Ok(match self.dtype() {
+            DType::BF16 => {
+                let data: Vec<bf16> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            DType::F8 => {
+                //let data: Vec<f8> = self.clone().try_into()?;
+                //data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                todo!()
+            }
+            DType::F16 => {
+                let data: Vec<f16> = self.clone().try_into()?;
+                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
             DType::F32 => {
                 let data: Vec<f32> = self.clone().try_into()?;
                 data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
@@ -2561,12 +2577,9 @@ impl Tensor {
         let dtype = self.dtype();
         if !dtype.is_float() {
             return match dtype.byte_size() {
-                #[cfg(feature = "half")]
-                1 | 2 => self.cast(DType::F16),
-                #[cfg(feature = "half")]
+                1 => self.cast(DType::F8),
+                2 => self.cast(DType::F16),
                 4 => self.cast(DType::F32),
-                #[cfg(not(feature = "half"))]
-                1 | 2 | 4 => self.cast(DType::F32),
                 8 => self.cast(DType::F64),
                 _ => panic!(),
             };
@@ -2662,27 +2675,30 @@ impl Tensor {
     }
 }
 
-#[cfg(feature = "half")]
 impl TryFrom<Tensor> for bf16 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [bf16::ZERO];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
-#[cfg(feature = "half")]
+impl TryFrom<Tensor> for f8 {
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [f8::ZERO];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
+    }
+}
+
 impl TryFrom<Tensor> for f16 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
+        let mut data = [f16::ZERO];
+        RT.lock().load(value.id, &mut data)?;
+        Ok(data[0])
     }
 }
 
@@ -2865,7 +2881,6 @@ impl Display for Tensor {
         };
         let x = self.clone();
         let res = match self.dtype() {
-            #[cfg(feature = "half")]
             DType::BF16 => {
                 let data: Result<Vec<bf16>, _> = x.try_into();
                 match data {
@@ -2873,7 +2888,13 @@ impl Display for Tensor {
                     Err(e) => format!("f16 tensor failed to realize {e:?}"),
                 }
             }
-            #[cfg(feature = "half")]
+            DType::F8 => {
+                let data: Result<Vec<f8>, _> = x.try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("f16 tensor failed to realize {e:?}"),
+                }
+            }
             DType::F16 => {
                 let data: Result<Vec<f16>, _> = x.try_into();
                 match data {
@@ -3625,9 +3646,7 @@ macro_rules! impl_trait {
     };
 }
 
-#[cfg(feature = "half")]
 impl_trait!(Add for bf16, add);
-#[cfg(feature = "half")]
 impl_trait!(Add for f16, add);
 impl_trait!(Add for f32, add);
 impl_trait!(Add for f64, add);
@@ -3642,9 +3661,7 @@ impl_trait!(Add for i32, add);
 impl_trait!(Add for i64, add);
 impl_trait!(Add for bool, add);
 
-#[cfg(feature = "half")]
 impl_trait!(Sub for bf16, sub);
-#[cfg(feature = "half")]
 impl_trait!(Sub for f16, sub);
 impl_trait!(Sub for f32, sub);
 impl_trait!(Sub for f64, sub);
@@ -3659,9 +3676,7 @@ impl_trait!(Sub for i32, sub);
 impl_trait!(Sub for i64, sub);
 impl_trait!(Sub for bool, sub);
 
-#[cfg(feature = "half")]
 impl_trait!(Mul for bf16, mul);
-#[cfg(feature = "half")]
 impl_trait!(Mul for f16, mul);
 impl_trait!(Mul for f32, mul);
 impl_trait!(Mul for f64, mul);
@@ -3676,9 +3691,7 @@ impl_trait!(Mul for i32, mul);
 impl_trait!(Mul for i64, mul);
 impl_trait!(Mul for bool, mul);
 
-#[cfg(feature = "half")]
 impl_trait!(Div for bf16, div);
-#[cfg(feature = "half")]
 impl_trait!(Div for f16, div);
 impl_trait!(Div for f32, div);
 impl_trait!(Div for f64, div);
@@ -3693,9 +3706,7 @@ impl_trait!(Div for i32, div);
 impl_trait!(Div for i64, div);
 impl_trait!(Div for bool, div);
 
-#[cfg(feature = "half")]
 impl_trait!(BitXor for bf16, bitxor);
-#[cfg(feature = "half")]
 impl_trait!(BitXor for f16, bitxor);
 impl_trait!(BitXor for f32, bitxor);
 impl_trait!(BitXor for f64, bitxor);
@@ -3710,9 +3721,7 @@ impl_trait!(BitXor for i32, bitxor);
 impl_trait!(BitXor for i64, bitxor);
 impl_trait!(BitXor for bool, bitxor);
 
-#[cfg(feature = "half")]
 impl_trait!(BitOr for bf16, bitor);
-#[cfg(feature = "half")]
 impl_trait!(BitOr for f16, bitor);
 impl_trait!(BitOr for f32, bitor);
 impl_trait!(BitOr for f64, bitor);
@@ -3727,9 +3736,7 @@ impl_trait!(BitOr for i32, bitor);
 impl_trait!(BitOr for i64, bitor);
 impl_trait!(BitOr for bool, bitor);
 
-#[cfg(feature = "half")]
 impl_trait!(BitAnd for bf16, bitand);
-#[cfg(feature = "half")]
 impl_trait!(BitAnd for f16, bitand);
 impl_trait!(BitAnd for f32, bitand);
 impl_trait!(BitAnd for f64, bitand);

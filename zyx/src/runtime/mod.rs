@@ -23,7 +23,6 @@ use view::View;
 #[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
 
-#[cfg(feature = "half")]
 use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
@@ -229,10 +228,8 @@ impl Runtime {
     #[must_use]
     pub(super) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         let x = match dtype {
-            #[cfg(feature = "half")]
             DType::BF16 => self.constant(bf16::ONE),
             DType::F8 => todo!(),
-            #[cfg(feature = "half")]
             DType::F16 => self.constant(f16::ONE),
             DType::F32 => self.constant(1f32),
             DType::F64 => self.constant(1f64),
@@ -256,10 +253,8 @@ impl Runtime {
     #[must_use]
     pub(super) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
         let x = match dtype {
-            #[cfg(feature = "half")]
             DType::BF16 => self.constant(bf16::ZERO),
             DType::F8 => todo!(),
-            #[cfg(feature = "half")]
             DType::F16 => self.constant(f16::ZERO),
             DType::F32 => self.constant(0f32),
             DType::F64 => self.constant(0f64),

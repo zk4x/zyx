@@ -1,6 +1,7 @@
 use crate::dtype::DType;
-use crate::scalar::Scalar;
+use crate::scalar::{Scalar, Float};
 use half::{bf16, f16};
+use float8::F8E4M3;
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
@@ -8,6 +9,10 @@ use num_complex::Complex;
 impl Scalar for bf16 {
     fn from_bf16(t: bf16) -> Self {
         t
+    }
+
+    fn from_f8(t: F8E4M3) -> Self {
+        bf16::from_f32(t.into())
     }
 
     fn from_f16(t: f16) -> Self {
@@ -84,32 +89,8 @@ impl Scalar for bf16 {
         self.max(-self)
     }
 
-    fn reciprocal(self) -> Self {
-        bf16::ONE / self
-    }
-
     fn neg(self) -> Self {
         -self
-    }
-
-    fn floor(self) -> Self {
-        todo!()
-    }
-
-    fn relu(self) -> Self {
-        self.max(bf16::ZERO)
-    }
-
-    fn sin(self) -> Self {
-        todo!()
-    }
-
-    fn cos(self) -> Self {
-        todo!()
-    }
-
-    fn sqrt(self) -> Self {
-        todo!()
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -140,6 +121,10 @@ impl Scalar for bf16 {
         }
     }
 
+    fn relu(self) -> Self {
+        self.max(bf16::ZERO)
+    }
+
     fn max(self, rhs: Self) -> Self {
         self.max(rhs)
     }
@@ -159,35 +144,52 @@ impl Scalar for bf16 {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
-    fn exp2(self) -> Self {
-        todo!()
-    }
-    
-    fn log2(self) -> Self {
-        todo!()
-    }
-    
-    fn inv(self) -> Self {
-        todo!()
-    }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
-        todo!()
+        ((self > rhs) as i8).into()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //((self || rhs) as i8).into()
         todo!()
     }
 }
 
-impl Float for bf16 {}
+impl Float for bf16 {
+    fn reciprocal(self) -> Self {
+        bf16::ONE / self
+    }
 
+    fn floor(self) -> Self {
+        todo!()
+    }
+
+    fn sin(self) -> Self {
+        todo!()
+    }
+
+    fn cos(self) -> Self {
+        todo!()
+    }
+
+    fn sqrt(self) -> Self {
+        todo!()
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
+    }
+}

@@ -358,9 +358,9 @@ fn t6() {
     handle.join().unwrap();
 }*/
 
-#[test]
+/*#[test]
 fn t7() -> Result<(), ZyxError> {
     use std::collections::HashMap;
     let m: HashMap<String, Tensor> = Tensor::load_gguf("mistral_7b_Q4.gguf")?;
     Ok(())
-}
+}*/
