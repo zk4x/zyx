@@ -157,7 +157,9 @@ impl DType {
 
     pub(super) fn from_safetensors(text: &str) -> Result<Self, ZyxError> {
         Ok(match text {
+            "BF16" => DType::BF16,
             "F8" => DType::F8,
+            "F16" => DType::F16,
             "F32" => DType::F32,
             "F64" => DType::F64,
             "U8" => DType::U8,

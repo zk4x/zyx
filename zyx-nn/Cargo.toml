@@ -16,5 +16,5 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { version = "0.14.0", features = ["rand"], path = "../zyx" }
+zyx = { version = "0.15.0", features = ["rand"], path = "../zyx" }
 zyx-derive = { path = "../zyx-derive" }

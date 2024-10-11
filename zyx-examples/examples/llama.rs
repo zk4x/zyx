@@ -1,3 +1,5 @@
+// Implementation based on candle rust
+
 //use super::with_tracing::{linear_no_bias as linear, Linear, RmsNorm};
 //use candle::{DType, Device, IndexOp, Result, Tensor, D};
 //use candle_nn::{embedding, Embedding, Module, VarBuilder};
@@ -489,3 +491,5 @@ impl Llama {
         })
     }
 }
+
+fn main() {}

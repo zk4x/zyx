@@ -2343,7 +2343,6 @@ impl Tensor {
         if repeats.len() < rank {
             return Err(ZyxError::ShapeError("Repeats must be greater or equal to rank of the tensor.".into()));
         }
-
         let base_shape: Vec<usize> = repeat(1)
             .take(repeats.len() - rank)
             .chain(shape.iter().copied())
@@ -2365,13 +2364,26 @@ impl Tensor {
             .zip(base_shape.iter().copied())
             .map(|(r, d)| r * d)
             .collect();
-
         //println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
-
         let mut x = self.reshape(new_shape)?;
         x = x.expand(expand_shape)?;
         x = x.reshape(final_shape)?;
         Ok(x)
+    }
+
+    /// Rotary embeddings
+    pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        //let sh = self.shape();
+        //let sin_freqs = sin_freqs.into();
+        //let cos_freqs = cos_freqs.into();
+        //let sin_freqs = sin_freqs.squeeze(1)?.squeeze(0)?; // [seq_len, dim]
+        //let cos_freqs = cos_freqs.squeeze(1)?.squeeze(0)?; // [seq_len, dim]
+        //let d = *sh.last().unwrap() as i64;
+        //let x1 = self.get((.., .., .., ..d/2))?;
+        //let x2 = self.get((.., .., .., d/2..))?;
+        //let xrh = Tensor::cat([&-x2, &x1], -1)?;
+        //Ok(self * cos_freqs + xrh * sin_freqs)
+        todo!()
     }
 
     /*#[must_use]
@@ -2380,8 +2392,23 @@ impl Tensor {
     }*/
 
     // io
-    /// Load module from path
-    pub fn load_safetensors<Module: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<Module, ZyxError> {
+    /// Load module from path. This function will determine the filetype based on file extension.
+    pub fn load<Module: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<Module, ZyxError> {
+        match path.as_ref().extension().and_then(std::ffi::OsStr::to_str) {
+            Some(e) => {
+                match e {
+                    "safetensors" => Self::load_safetensors(path),
+                    "gguf" => Self::load_gguf(path),
+                    _ => panic!("Unknown file extension. Zyx currently supports only safetensors format."),
+                }
+            }
+            None => panic!(),
+        }
+    }
+
+    /// Load safetensors module from path
+    fn load_safetensors<Module: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<Module, ZyxError> {
+        RT.lock().initialize_devices()?;
         let debug_print: bool = RT.lock().debug_dev();
         use std::io::Read;
         let mut f = std::fs::File::open(path)?;
@@ -2403,7 +2430,25 @@ impl Tensor {
         let mut dtype = DType::F32;
         let mut shape = vec![1];
         let mut label = String::new();
+        let mut metadata = true;
+        let progress_bar = if debug_print {
+            println!("Loading tensors from safetensors file");
+            let bar = indicatif::ProgressBar::new(header.chars().filter(|&c| c == '[').count() as u64/2);
+            bar.set_style(indicatif::ProgressStyle::with_template("[{elapsed_precise}/{duration_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}").unwrap());
+            Some(bar)
+        } else {
+            None
+        };
         for x in header.chars() {
+            // We skip metadata for now
+            if metadata && text.starts_with("__metadata__") {
+                if x == '}' {
+                    text.clear();
+                    begin_str = false;
+                    metadata = false;
+                }
+                continue;
+            }
             if ['"', '[', ']'].contains(&x) {
                 if begin_str {
                     //std::println!("{text}");
@@ -2443,14 +2488,24 @@ impl Tensor {
                             ));
                         }
                         let mut buf = vec![0u8; bytes];
-                        if debug_print {
-                            print!("Loading tensor with shape {shape:?}, {dtype:?} ...");
+                        /*if debug_print {
+                            print!("Loading tensor {label:?} with shape {shape:?}, {dtype:?} ...");
+                            use std::io::Write;
+                            std::io::stdout().flush()?;
+                        }*/
+                        if let Some(bar) = &progress_bar {
+                            bar.inc(1);
+                            bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
                         }
                         f.read_exact(&mut buf)?;
-                        if debug_print {
-                            println!(" DONE");
-                        }
                         tensors.insert(label.clone(), match dtype {
+                            DType::F16 => {
+                                let vec: Vec<f16> = buf
+                                    .chunks_exact(dtype.byte_size())
+                                    .map(Scalar::from_le_bytes)
+                                    .collect();
+                                Tensor::from(vec).reshape(&shape)?
+                            }
                             DType::F32 => {
                                 let vec: Vec<f32> = buf
                                     .chunks_exact(dtype.byte_size())
@@ -2478,6 +2533,7 @@ impl Tensor {
                             }
                             _ => todo!(),
                         });
+                        //if debug_print { println!(" DONE"); }
                     }
                     i += 1;
                     text.clear();
@@ -2494,7 +2550,12 @@ impl Tensor {
     }
 
     /// Load gguf model
-    pub fn load_gguf<M: FromIterator<(String, Tensor)>>(_path: impl AsRef<Path>) -> Result<M, ZyxError> {
+    fn load_gguf<M: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<M, ZyxError> {
+        let f = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(f);
+        let f = gguf::GGUFFile::read(reader.buffer()).unwrap().unwrap();
+        println!("{:?}, {:?}", f.header.version, f.header.tensor_count);
+        //println!("{}", f.tensors);
         todo!()
     }
 
