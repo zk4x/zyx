@@ -378,10 +378,6 @@ impl WGSLDevice {
                             let Var::Id(zi) = z else { panic!() };
                             format!("{indent}{} = {}({} == 0);\n", z.wgsl(), kernel.registers[zi as usize].wgsl(), x.wgsl())
                         }
-                        UOp::Nonzero => {
-                            let Var::Id(zi) = z else { panic!() };
-                            format!("{indent}{} = {}({} != 0);\n", z.wgsl(), kernel.registers[zi as usize].wgsl(), x.wgsl())
-                        }
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {

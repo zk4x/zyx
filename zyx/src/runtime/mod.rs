@@ -982,9 +982,6 @@ impl Runtime {
                         //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None,
                         //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
                     }
-                    UOp::Nonzero => {
-                        todo!("Nonzero backward")
-                    }
                 },
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());

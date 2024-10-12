@@ -742,7 +742,6 @@ impl OpenCLDevice {
                         UOp::Sin => format!("{indent}{} = sin({});\n", z.ocl(), x.ocl()),
                         UOp::Cos => format!("{indent}{} = cos({});\n", z.ocl(), x.ocl()),
                         UOp::Not => format!("{indent}{} = !{};\n", z.ocl(), x.ocl()),
-                        UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.ocl(), x.ocl()),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {

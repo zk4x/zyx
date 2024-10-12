@@ -35,7 +35,6 @@ pub(super) enum UOp {
     Sin,
     Cos,
     Not,
-    Nonzero,
 }
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -176,6 +175,7 @@ trait CastDType: Scalar {
 
 impl<T: Scalar> CastDType for T {}
 
+// TODO clean this up
 impl Constant {
     pub(super) fn unary(self, uop: UOp) -> Constant {
         use crate::Float;
@@ -349,28 +349,6 @@ impl Constant {
                 Constant::U32(_) => panic!(),
                 Constant::I32(x) => Constant::I32(!x),
                 Constant::I64(x) => Constant::I64(!x),
-                Constant::Bool(_) => todo!(),
-            },
-            UOp::Nonzero => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
-                Constant::F32(x) => {
-                    Constant::F32(unsafe { t((t::<_, f32>(x) != 0.) as i32 as f32) })
-                }
-                Constant::F64(x) => {
-                    Constant::F64(unsafe { t((t::<_, f64>(x) != 0.) as i64 as f64) })
-                }
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8((x != 0) as u8),
-                Constant::I8(x) => Constant::I8((x != 0) as i8),
-                Constant::I16(x) => Constant::I16((x != 0) as i16),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32((x != 0) as i32),
-                Constant::I64(x) => Constant::I64((x != 0) as i64),
                 Constant::Bool(_) => todo!(),
             },
         }

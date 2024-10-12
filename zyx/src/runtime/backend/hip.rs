@@ -427,7 +427,6 @@ impl HIPDevice {
                         UOp::Sin => format!("{indent}{} = sin({});\n", z.hip(), x.hip()),
                         UOp::Cos => format!("{indent}{} = cos({});\n", z.hip(), x.hip()),
                         UOp::Not => format!("{indent}{} = !{};\n", z.hip(), x.hip()),
-                        UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.hip(), x.hip()),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {

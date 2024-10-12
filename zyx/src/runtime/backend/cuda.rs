@@ -553,7 +553,6 @@ impl CUDADevice {
                         UOp::Sin => format!("{indent}{} = sin({});\n", z.cu(), x.cu()),
                         UOp::Cos => format!("{indent}{} = cos({});\n", z.cu(), x.cu()),
                         UOp::Not => format!("{indent}{} = !{};\n", z.cu(), x.cu()),
-                        UOp::Nonzero => format!("{indent}{} = {} != {};\n", z.cu(), x.cu(), zero),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
@@ -884,7 +883,6 @@ impl CUDADevice {
                         UOp::Not => {
                             format!("{indent}not.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx())
                         }
-                        UOp::Nonzero => todo!(),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
