@@ -544,7 +544,7 @@ impl CUDADevice {
                         UOp::Cast(_) => {
                             format!("{indent}{} = ({}){};\n", z.cu(), dtype.cu(), x.cu())
                         }
-                        UOp::ReLU => format!("{indent}{} = max({}, {});\n", z.cu(), x.cu(), zero),
+                        UOp::ReLU => format!("{indent}{0} = {1} * ({1} > {2});\n", z.cu(), x.cu(), zero),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.cu(), x.cu()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.cu(), x.cu()),
                         UOp::Log2 => format!("{indent}{} = log2({});\n", z.cu(), x.cu()),
@@ -621,9 +621,7 @@ impl CUDADevice {
             local_work_size[2],
         );
         let mut pragma = format!("");
-        if source.contains("double") {
-            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
-        }
+        //if source.contains("double") { pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n"; }
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         name += "\0";
         if debug_asm {

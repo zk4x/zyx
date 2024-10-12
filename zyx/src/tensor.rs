@@ -1112,6 +1112,29 @@ impl Tensor {
         }
     }
 
+    /// Narrow tensor along an axis, is essentially just padding
+    /// ```
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+    /// assert_eq!(x.narrow(0, 0, 2)?, [[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(x.narrow(1, 1, 2)?, [[2, 3], [5, 6], [8, 9]]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    pub fn narrow(&self, axis: isize, start: usize, length: usize) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        let rank = shape.len();
+        let axis = into_axis(axis, rank)?;
+        let dim = shape[axis] as isize;
+        let padding: Vec<(isize, isize)> = [(-(start as isize), -dim + length as isize + start as isize)]
+            .into_iter()
+            .chain(core::iter::repeat((0, 0)).take(rank - axis - 1))
+            .collect::<Vec<(isize, isize)>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Ok(self.pad_zeros(padding).unwrap())
+    }
+
     /// Applies a new shape to this tensor while preserving its total number of elements.
     ///
     /// # Examples
@@ -2369,8 +2392,10 @@ impl Tensor {
         Ok(x)
     }
 
-    // Rotary embeddings
-    /*pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    /// Rotary embeddings
+    pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let _ = sin_freqs;
+        let _ = cos_freqs;
         //let sh = self.shape();
         //let sin_freqs = sin_freqs.into();
         //let cos_freqs = cos_freqs.into();
@@ -2382,7 +2407,7 @@ impl Tensor {
         //let xrh = Tensor::cat([&-x2, &x1], -1)?;
         //Ok(self * cos_freqs + xrh * sin_freqs)
         todo!()
-    }*/
+    }
 
     /*#[must_use]
     pub fn conv(&self) -> Tensor {
