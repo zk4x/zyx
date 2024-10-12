@@ -368,14 +368,6 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn nonzero(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary {
-            x,
-            uop: UOp::Nonzero,
-        })
-    }
-
-    #[must_use]
     pub(super) fn not(&mut self, x: TensorId) -> TensorId {
         self.graph.push(Node::Unary { x, uop: UOp::Not })
     }

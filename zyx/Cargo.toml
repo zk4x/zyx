@@ -73,7 +73,7 @@ crate-type = ["lib", "cdylib"]
 default = [
     "rand",
     #"disk_cache",
-    #"wgsl",
+    "wgsl",
     #"complex",
     "gguf",
     #"py",

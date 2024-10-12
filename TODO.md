@@ -8,8 +8,8 @@
 - [x] padded view permute
 - [x] fix mean
 - [x] fix var
-- [ ] look at generated kernels, find small kernels, figure why are they small
-      and how to make them bigger
+- [ ] deduplication of nodes in graph before graph compilation
+- [ ] look at generated kernels, find small kernels, figure why are they small and how to make them bigger
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
 - [ ] run kernel launch function on separate thread/threads

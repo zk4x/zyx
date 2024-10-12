@@ -682,6 +682,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
     }
 
     // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
+    // This will require automatic dependency resolution
 
     //for op in &ops { println!("{op:?}"); }
 
@@ -737,6 +738,8 @@ fn store_indexed(
     }
 }
 
+/// This function is probably the most complex piece of code in all of zyx.
+/// Can we make it simpler?
 fn load_indexed(
     z: Var,
     address: u16,
@@ -893,9 +896,16 @@ fn load_indexed(
                     registers[idx_id as usize].1 = 0;
                 }
             }
+            // Convert padding condition to u32
+            let pcu32 = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
+            ops.push(IROp::Unary {
+                z: pcu32,
+                x: padding_condition,
+                uop: UOp::Cast(DType::U32),
+            });
             ops.push(IROp::Binary {
                 z: offset,
-                x: padding_condition,
+                x: pcu32,
                 y: offset,
                 bop: BOp::Mul,
             });
@@ -903,16 +913,25 @@ fn load_indexed(
             if let Var::Id(offset) = offset {
                 registers[offset as usize].1 = 0;
             }
+            let Var::Id(z_id) = z else { panic!() };
+            let dt = registers[z_id as usize].0;
+            let pcd = Var::Id(get_empty_register(registers, dt, 0));
+            ops.push(IROp::Unary {
+                z: pcd,
+                x: padding_condition,
+                uop: UOp::Cast(dt.dtype()),
+            });
             // Nullify z if padding condition is false (if there is padding at that index)
             ops.push(IROp::Binary {
                 z,
-                x: padding_condition,
+                x: pcd,
                 y: z,
                 bop: BOp::Mul,
             });
             if let Var::Id(pc) = padding_condition {
                 registers[pc as usize].1 = 0;
             }
+            //if let Var::Id(pc) = pcu32 { registers[pc as usize].1 = 0; }
         }
     }
 }

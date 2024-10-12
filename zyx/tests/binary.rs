@@ -66,10 +66,10 @@ fn pow() -> Result<(), ZyxError> {
     let z = x.pow(y)?;
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
-        if x.pow(y).is_nan() && z.is_nan() {
-            continue
-        }
-        assert!((x.pow(y) - z).abs() < 0.00001);
+        //assert!((x.pow(y) - z).abs() < 0.00001);
+        let x = x.pow(y);
+        //println!("{x}, {z}");
+        assert!(x.is_equal(z));
     }
     Ok(())
 }

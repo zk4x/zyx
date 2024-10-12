@@ -1759,12 +1759,10 @@ impl Tensor {
         Ok(x.not())
     }
 
-    /// Returns ones where self is true and zeros where it is false.
+    /// Returns ones where self is different from zero and zeros otherwise.
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
-        Tensor {
-            id: RT.lock().nonzero(self.id),
-        }
+        !self.equal(Tensor::constant(0).cast(self.dtype())).unwrap()
     }
 
     // ternary
@@ -2371,8 +2369,8 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Rotary embeddings
-    pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    // Rotary embeddings
+    /*pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         //let sh = self.shape();
         //let sin_freqs = sin_freqs.into();
         //let cos_freqs = cos_freqs.into();
@@ -2384,7 +2382,7 @@ impl Tensor {
         //let xrh = Tensor::cat([&-x2, &x1], -1)?;
         //Ok(self * cos_freqs + xrh * sin_freqs)
         todo!()
-    }
+    }*/
 
     /*#[must_use]
     pub fn conv(&self) -> Tensor {

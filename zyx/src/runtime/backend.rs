@@ -184,13 +184,13 @@ impl Runtime {
             .flatten()
             .map(|x| {
                 if self.debug_dev() {
-                    println!("Backend config successfully read and parsed.");
+                    println!("Device config successfully read and parsed.");
                 }
                 x
             })
             .unwrap_or_else(|| {
                 if self.debug_dev() {
-                    println!("Failed to get backend config, using defaults.");
+                    println!("Failed to get device config, using defaults.");
                 }
                 DeviceConfig::default()
             });

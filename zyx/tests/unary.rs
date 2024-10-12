@@ -1,11 +1,11 @@
-use zyx::{Tensor, ZyxError};
+use zyx::{Tensor, ZyxError, Scalar};
 
 #[test]
 fn relu() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).relu().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        assert_eq!(x.max(0.), y);
+        assert!(x.max(0.).is_equal(y));
     }
     Ok(())
 }
@@ -15,7 +15,7 @@ fn neg() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = (-Tensor::from(data)).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        assert_eq!(-x, y);
+        assert!((-x).is_equal(y));
     }
     Ok(())
 }
@@ -26,7 +26,7 @@ fn exp2() -> Result<(), ZyxError> {
     let zdata: Vec<f32> = Tensor::from(data).exp2().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         //assert_eq!(x.exp2(), y);
-        assert!((x.exp2() - y).abs() < 0.00001);
+        assert!(x.exp2().is_equal(y));
     }
     Ok(())
 }
@@ -36,10 +36,7 @@ fn log2() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).log2().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        if x.sqrt().is_nan() && y.is_nan() {
-            continue
-        }
-        assert_eq!(x.log2(), y);
+        assert!(x.log2().is_equal(y));
     }
     Ok(())
 }
@@ -49,7 +46,7 @@ fn inv() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).inv().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        assert_eq!(1./x, y);
+        assert!((1./x).is_equal(y));
     }
     Ok(())
 }
@@ -59,10 +56,7 @@ fn sqrt() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).sqrt().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        if x.sqrt().is_nan() && y.is_nan() {
-            continue
-        }
-        assert_eq!(x.sqrt(), y);
+        assert!(x.sqrt().is_equal(y));
     }
     Ok(())
 }
@@ -72,7 +66,7 @@ fn sin() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).sin().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        assert_eq!(x.sin(), y);
+        assert!(x.sin().is_equal(y));
     }
     Ok(())
 }
@@ -83,7 +77,7 @@ fn cos() -> Result<(), ZyxError> {
     let zdata: Vec<f32> = Tensor::from(data).cos().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         //assert_eq!(x.cos(), y);
-        assert!((x.cos() - y).abs() < 0.00001);
+        assert!(x.cos().is_equal(y));
     }
     Ok(())
 }
@@ -113,7 +107,7 @@ fn tanh() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        assert!((x.tanh() - y).abs() < 0.00001);
+        assert!(x.tanh().is_equal(y));
     }
     Ok(())
 }

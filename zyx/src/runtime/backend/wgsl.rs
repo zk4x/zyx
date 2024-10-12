@@ -360,10 +360,10 @@ impl WGSLDevice {
                     source += &match uop {
                         UOp::Cast(dtype) => {
                             format!(
-                                "{indent}{} = ({}){};\n",
+                                "{indent}{} = {}({});\n",
                                 z.wgsl(),
                                 dtype.ir_dtype().wgsl(),
-                                x.wgsl()
+                                x.wgsl(),
                             )
                         }
                         UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.wgsl(), x.wgsl()),
@@ -374,8 +374,14 @@ impl WGSLDevice {
                         UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.wgsl(), x.wgsl()),
                         UOp::Sin => format!("{indent}{} = sin({});\n", z.wgsl(), x.wgsl()),
                         UOp::Cos => format!("{indent}{} = cos({});\n", z.wgsl(), x.wgsl()),
-                        UOp::Not => format!("{indent}{} = !{};\n", z.wgsl(), x.wgsl()),
-                        UOp::Nonzero => format!("{indent}{} = {} != 0;\n", z.wgsl(), x.wgsl()),
+                        UOp::Not => {
+                            let Var::Id(zi) = z else { panic!() };
+                            format!("{indent}{} = {}({} == 0);\n", z.wgsl(), kernel.registers[zi as usize].wgsl(), x.wgsl())
+                        }
+                        UOp::Nonzero => {
+                            let Var::Id(zi) = z else { panic!() };
+                            format!("{indent}{} = {}({} != 0);\n", z.wgsl(), kernel.registers[zi as usize].wgsl(), x.wgsl())
+                        }
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
@@ -393,6 +399,7 @@ impl WGSLDevice {
                             BOp::Cmplt => format!("{}({} < {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::Cmpgt => format!("{}({} > {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::Max => format!("max({}, {})", x.wgsl(), y.wgsl()),
+                            BOp::NotEq => format!("{}({} != {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::Or => format!("{}({} || {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::And => format!("{}({} && {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::BitOr => format!("{} | {}", x.wgsl(), y.wgsl()),
@@ -558,8 +565,9 @@ impl WGSLQueue {
 impl IRDType {
     fn wgsl(&self) -> &str {
         return match self {
-            IRDType::BF16 => todo!("WIP"),
-            IRDType::F16 => "f16",
+            IRDType::BF16(v) => todo!("WIP"),
+            IRDType::F8(v) => "f8",
+            IRDType::F16(v) => "f16",
             IRDType::F32(v) => "f32",
             IRDType::F64(v) => "f64",
             #[cfg(feature = "complex")]
@@ -572,7 +580,7 @@ impl IRDType {
             IRDType::I32(v) => "i32",
             IRDType::I64(v) => "i64",
             IRDType::Bool => "bool",
-            IRDType::U32 => "u32",
+            IRDType::U32(v) => "u32",
         };
     }
 }
@@ -581,6 +589,7 @@ impl Constant {
     fn wgsl(&self) -> String {
         use core::mem::transmute as t;
         match self {
+            Constant::F8(x) => format!("{}f", unsafe { t::<_, float8::F8E4M3>(*x) }),
             Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),

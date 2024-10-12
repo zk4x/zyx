@@ -344,7 +344,7 @@ fn t4() {
 #[test]
 fn t5() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
-    println!("{}", x.get((.., 2..3)).unwrap());
+    assert_eq!(x.get((.., 2..3)).unwrap(), [[1], [4]]);
 }
 
 /*#[test]
@@ -357,12 +357,3 @@ fn t6() {
     println!("{x}");
     handle.join().unwrap();
 }*/
-
-#[test]
-fn t7() -> Result<(), ZyxError> {
-    use std::collections::HashMap;
-    //let m: HashMap<String, Tensor> = Tensor::load_gguf("phi1.gguf")?;
-    let m: HashMap<String, Tensor> = Tensor::load("../phi1.safetensors")?;
-    println!("{:?}", m.keys());
-    Ok(())
-}
