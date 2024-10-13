@@ -78,6 +78,24 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
+pub(crate) struct Timer {
+    begin: std::time::Instant,
+}
+
+impl Timer {
+    pub(crate) fn new() -> Timer {
+        Timer {
+            begin: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        println!("Timer took {}us", self.begin.elapsed().as_micros());
+    }
+}
+
 /*
 #[test]
 fn t0() {

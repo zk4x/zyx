@@ -2462,6 +2462,8 @@ impl Tensor {
         } else {
             None
         };
+        let mmap = unsafe { memmap2::Mmap::map(&f)?  };
+        let t = crate::Timer::new();
         for x in header.chars() {
             // We skip metadata for now
             if metadata && text.starts_with("__metadata__") {
@@ -2510,7 +2512,6 @@ impl Tensor {
                                 "Safetensors shapes and offsets are incorrect.".into(),
                             ));
                         }
-                        let mut buf = vec![0u8; bytes];
                         /*if debug_print {
                             print!("Loading tensor {label:?} with shape {shape:?}, {dtype:?} ...");
                             use std::io::Write;
@@ -2520,16 +2521,22 @@ impl Tensor {
                             bar.inc(1);
                             bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
                         }
-                        f.read_exact(&mut buf)?;
+                        //let mut buf = vec![0u8; bytes];
+                        //f.read_exact(&mut buf)?;
                         tensors.insert(label.clone(), match dtype {
                             DType::F16 => {
-                                let vec: Vec<f16> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(Scalar::from_le_bytes)
-                                    .collect();
-                                Tensor::from(vec).reshape(&shape)?
+                                let buf: &[f16] = unsafe { std::slice::from_ptr(mmap.as_ptr(), shape.iter().product()) };
+                                if cfg!(target_endian = "big") {
+                                    let vec: Vec<f16> = buf
+                                        .chunks_exact(dtype.byte_size())
+                                        .map(Scalar::from_le_bytes)
+                                        .collect();
+                                    Tensor::from(vec).reshape(&shape)?
+                                } else {
+                                    Tensor::from(buf).reshape(&shape)?
+                                }
                             }
-                            DType::F32 => {
+                            /*DType::F32 => {
                                 let vec: Vec<f32> = buf
                                     .chunks_exact(dtype.byte_size())
                                     .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
@@ -2553,7 +2560,7 @@ impl Tensor {
                                     .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
                                     .collect();
                                 Tensor::from(vec).reshape(&shape)?
-                            }
+                            }*/
                             _ => todo!(),
                         });
                         //if debug_print { println!(" DONE"); }
@@ -2569,6 +2576,7 @@ impl Tensor {
                 text.push(x);
             }
         }
+        drop(t);
         Ok(Module::from_iter(tensors))
     }
 

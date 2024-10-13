@@ -535,7 +535,6 @@ impl Runtime {
         device_id: DeviceId,
         graph: &Graph,
     ) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
-        //let timer = Timer::new();
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
         //optimized_kernel.debug();

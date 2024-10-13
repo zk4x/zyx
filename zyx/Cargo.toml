@@ -37,6 +37,7 @@ float8 = { version = "0.1.1" } # MIT or Apache 2.0
 half = { version = "2.4.1" } # MIT or Apache 2.0
 # Progress bar for loading tensors and such
 indicatif = { version = "0.17.8" }
+memmap2 = { version = "*" }
 
 # Optional dependencies
 # Support for random number generation
@@ -67,7 +68,7 @@ gguf = { version = "0.1.2", default-features = false, optional = true }
 pyo3 = { version = "0.22.2", optional = true } # MIT or Apache 2.0
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
