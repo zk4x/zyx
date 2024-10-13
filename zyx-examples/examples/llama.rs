@@ -281,16 +281,16 @@ impl CausalSelfAttention {
                 if k_seq_len > self.max_position_embeddings {
                     k = k
                         .narrow(
-                            D::Minus1,
+                            -1,
                             k_seq_len - self.max_position_embeddings,
                             self.max_position_embeddings,
                         )?
                 }
-                let v_seq_len = v.dims()[1];
+                let v_seq_len = v.shape()[1];
                 if v_seq_len > 2 * self.max_position_embeddings {
                     v = v
                         .narrow(
-                            D::Minus1,
+                            -1,
                             v_seq_len - self.max_position_embeddings,
                             self.max_position_embeddings,
                         )?
@@ -451,9 +451,10 @@ impl Llama {
             x = block.forward(&x, index_pos, block_idx, cache)?;
         }
         let x = self.ln_f.forward(&x)?;
-        let x = x.get((.., seq_len - 1, ..))?;
+        //let x = x.get((.., seq_len - 1, ..))?;
         let logits = self.lm_head.forward(&x)?;
-        Ok(logits.cast(DType::F32))
+        //Ok(logits.cast(DType::F32))
+        todo!();
     }
 
     pub fn forward(&self, x: &Tensor, index_pos: usize, cache: &mut Cache) -> Result<Tensor, ZyxError> {
@@ -463,12 +464,13 @@ impl Llama {
             x = block.forward(&x, index_pos, block_idx, cache)?;
         }
         let x = self.ln_f.forward(&x)?;
-        let x = x.get((.., seq_len - 1, ..))?;
+        //let x = x.get((.., seq_len - 1, ..))?;
         let logits = self.lm_head.forward(&x)?;
-        Ok(logits.cast(DType::F32))
+        //Ok(logits.cast(DType::F32))
+        todo!();
     }
 
-    pub fn load(vb: HashMap<String, Tensor>, cfg: &Config) -> Result<Self, ZyxError> {
+    pub fn load(vb: &mut HashMap<String, Tensor>, cfg: &Config) -> Result<Self, ZyxError> {
         let wte = Embedding { vocab_size: cfg.vocab_size, embed_size: cfg.hidden_size, weight: vb.remove("model.embed_tokens").unwrap(), arange: Tensor::arange(0, cfg.vocab_size as i64, 1)?.reshape([1, 1, cfg.vocab_size, 1])?.cast(DT) };
         let lm_head = if cfg.tie_word_embeddings {
             Linear { weight: wte.weight.clone(), bias: None }
@@ -479,13 +481,11 @@ impl Llama {
             scale: vb.remove("model.norm").unwrap(),
             eps: cfg.rms_norm_eps,
         };
-        let blocks: Vec<_> = (0..cfg.num_hidden_layers)
-            .map(|i| Block::load(vb.remove(&format!("model.layers.{i}")).unwrap(), cfg).unwrap())
-            .collect();
+        //let blocks: Vec<_> = (0..cfg.num_hidden_layers).map(|i| Block::load(vb.remove(&format!("model.layers.{i}")).unwrap(), cfg).unwrap()).collect();
 
         Ok(Self {
             wte,
-            blocks,
+            blocks: todo!(),
             ln_f,
             lm_head,
         })

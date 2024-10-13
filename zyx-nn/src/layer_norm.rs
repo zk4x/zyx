@@ -9,7 +9,7 @@ pub struct LayerNorm {
     /// bias
     pub bias: Option<Tensor>,
     /// a value added to the denominator for numerical stability
-    pub eps: f32,
+    pub eps: f64,
     /// Number of dims across which normalization happens
     pub d_dims: usize,
 }
@@ -29,7 +29,8 @@ impl LayerNorm {
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
         let axes = -(self.d_dims as isize)..=-1;
-        let mut x = (&x - x.mean(axes.clone())?) / (x.var(axes, 1)? + self.eps).sqrt();
+        let eps = Tensor::constant(self.eps).cast(x.dtype());
+        let mut x = (&x - x.mean(axes.clone())?) / (x.var(axes, 1)? + eps).sqrt();
         if let Some(w) = &self.weight {
             x = x * w;
         }

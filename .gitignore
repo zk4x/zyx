@@ -3,4 +3,5 @@ zyx/target
 .gitignore
 zyx/Cargo.lock
 Cargo.lock
-phi1.safetensors
+model.safetensors
+tokenizer.json
