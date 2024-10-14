@@ -2463,7 +2463,7 @@ impl Tensor {
             None
         };
         let mmap = unsafe { memmap2::Mmap::map(&f)?  };
-        let t = crate::Timer::new();
+        //let t = crate::Timer::new();
         for x in header.chars() {
             // We skip metadata for now
             if metadata && text.starts_with("__metadata__") {
@@ -2525,14 +2525,17 @@ impl Tensor {
                         //f.read_exact(&mut buf)?;
                         tensors.insert(label.clone(), match dtype {
                             DType::F16 => {
-                                let buf: &[f16] = unsafe { std::slice::from_ptr(mmap.as_ptr(), shape.iter().product()) };
                                 if cfg!(target_endian = "big") {
+                                    let buf: &[u8] = unsafe { std::slice::from_raw_parts(mmap.as_ptr(),
+                                        shape.iter().product()) };
                                     let vec: Vec<f16> = buf
                                         .chunks_exact(dtype.byte_size())
                                         .map(Scalar::from_le_bytes)
                                         .collect();
                                     Tensor::from(vec).reshape(&shape)?
                                 } else {
+                                    let buf: &[f16] = unsafe { std::slice::from_raw_parts(mmap.as_ptr()
+                                        .cast(), shape.iter().product()) };
                                     Tensor::from(buf).reshape(&shape)?
                                 }
                             }
@@ -2576,7 +2579,7 @@ impl Tensor {
                 text.push(x);
             }
         }
-        drop(t);
+        //drop(t);
         Ok(Module::from_iter(tensors))
     }
 
