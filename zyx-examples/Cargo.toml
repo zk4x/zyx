@@ -29,11 +29,11 @@ opt-level = "z"
 
 [profile.release]
 opt-level = "z"
-strip = true
+#strip = true
 debug-assertions = false
 overflow-checks = true
 lto = false
-panic = "abort"
+panic = "unwind"
 incremental = true
 #codegen-units = 1
-debug = 0
+debug = 1

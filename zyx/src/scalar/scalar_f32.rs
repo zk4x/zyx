@@ -133,7 +133,7 @@ impl Scalar for f32 {
     }
 
     fn epsilon() -> Self {
-        0.00001
+        0.0001
     }
 
     fn is_equal(self, rhs: Self) -> bool {
@@ -143,19 +143,19 @@ impl Scalar for f32 {
             || (self - rhs).abs() < Self::epsilon()
             || (self - rhs).abs() < self.abs() * 0.01
     }
-    
+
     fn not(self) -> Self {
         if self != 0. { 0. } else { 1. }
     }
-    
+
     fn nonzero(self) -> Self {
         (self != 0.) as i32 as f32
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
         (self > rhs) as i32 as f32
     }
-    
+
     fn or(self, rhs: Self) -> Self {
         (self != 0. || rhs != 0.) as i32 as f32
     }
@@ -165,7 +165,7 @@ impl Float for f32 {
     fn exp2(self) -> Self {
         self.exp2()
     }
-    
+
     fn log2(self) -> Self {
         self.log2()
     }
@@ -208,4 +208,3 @@ impl Float for f32 {
         1.0 / self
     }
 }
-

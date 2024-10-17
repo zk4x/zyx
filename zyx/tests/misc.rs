@@ -163,9 +163,9 @@ fn matmul_1024() -> Result<(), ZyxError> {
     let dataz: Vec<f32> = z.try_into()?;
     let zz = x.matmul(y)?;
     let datazz: Vec<f32> = zz.try_into()?;
-    for (x, y) in dataz.iter().zip(datazz) {
+    for (i, (x, y)) in dataz.iter().zip(datazz).enumerate() {
         //println!("{x}, {y}");
-        assert!(x.is_equal(y));
+        assert!(x.is_equal(y), "{x} != {y} at index {i}");
     }
     //println!("{z}");
     Ok(())
@@ -176,9 +176,9 @@ fn save() -> Result<(), ZyxError> {
     //use zyx::TensorSave;
     //let x = Tensor::from([2f32, 4., 3.]);
     //[&x].save("../x.safetensors")?;
-    //let x: HashMap<String, Tensor> = Tensor::load("../x.safetensors")?;
-    //let x: Vec<i64> = x["x"].clone().try_into()?;
-    //println!("{:?}", x);
+    let x: HashMap<String, Tensor> = Tensor::load("../x.safetensors")?;
+    let x: Vec<i64> = x["x"].clone().try_into()?;
+    println!("{:?}", x);
     Ok(())
 }
 

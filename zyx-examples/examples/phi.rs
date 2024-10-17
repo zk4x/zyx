@@ -42,8 +42,14 @@ impl VarMap for HashMap<String, Tensor> {
     }
 
     fn t(&mut self, t: &str) -> Tensor {
-        println!("Accessing {t}");
-        self.remove(t).unwrap()
+        if let Some(x) = self.remove(t) {
+            return x
+        } else {
+            let mut keys: Vec<String> = self.keys().cloned().collect();
+            keys.sort();
+            println!("{:?}", keys);
+            panic!("The above keys did not contain {t}");
+        }
     }
 }
 
@@ -393,7 +399,6 @@ pub struct Model {
 impl Model {
     pub fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
         let mut vb_m = vb.g("model");
-        println!("{:?}", vb_m.keys());
         //let embed_tokens = Embedding::new(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let embed_tokens = Embedding::from_weight(vb_m.t("embed_tokens.weight"))?;
         /*let final_layernorm = layer_norm(
@@ -402,8 +407,8 @@ impl Model {
             vb_m.pp("final_layernorm"),
         )?;*/
         let final_layernorm = LayerNorm {
-            weight: Some(vb.t("final_layernorm.weight")),
-            bias: Some(vb.t("final_layernorm.bias")),
+            weight: Some(vb_m.t("final_layernorm.weight")),
+            bias: Some(vb_m.t("final_layernorm.bias")),
             eps: cfg.layer_norm_eps,
             d_dims: cfg.hidden_size,
         };
@@ -895,7 +900,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
         let mut vb: HashMap<String, Tensor> = Tensor::load("../model.safetensors")?;
-        println!("{:?}", vb.keys());
+        let mut keys: Vec<String> = vb.keys().cloned().collect();
+        keys.sort();
+        println!("{:?}", keys);
         //let config_filename = repo.get("config.json")?;
         //let config = std::fs::read_to_string(config_filename)?;
         let config = Config {

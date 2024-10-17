@@ -16,12 +16,11 @@ use std::ops::{
 use std::path::Path;
 use half::{bf16, f16};
 use float8::F8E4M3 as f8;
-
 use crate::runtime::ZyxError;
-use crate::RT;
-
 #[cfg(feature = "complex")]
 use num_complex::Complex;
+
+use crate::RT;
 
 pub(crate) type TensorId = usize;
 
@@ -468,14 +467,14 @@ impl Tensor {
     pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Result<Tensor, ZyxError> {
         // if (stop-start)/step <= 0: return Tensor([], dtype=dtype, **kwargs)
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
+        println!("Arange {start:?}, {stop:?}, {step:?}");
         let n: i64 = stop.sub(start).div(step).cast();
         let n = n as usize;
         //println!("Shape {n}");
-        let m = start.sub(step);
         let x = Tensor::full(n, step)?;
         //println!("{x}");
         let x = x.cumsum(0)?;
-        Ok(x + m)
+        Ok(x + start - step)
     }
 
     /// Create constant that will be baked into compiled kernels.
@@ -1448,6 +1447,7 @@ impl Tensor {
     #[must_use]
     pub fn cumsum(&self, axis: isize) -> Result<Tensor, ZyxError> {
         let axis = into_axis(axis, self.rank())?;
+        println!("Cumsum, shape: {:?}", self.shape());
         let pl_sz = (self.shape()[axis] - 1) as isize;
         let k = self.shape()[axis];
         let axis = axis as isize;
@@ -2435,6 +2435,7 @@ impl Tensor {
         let debug_print: bool = RT.lock().debug_dev();
         use std::io::Read;
         let mut f = std::fs::File::open(path)?;
+        //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
         f.read_exact(&mut header_len)?;
         let n = usize::try_from(u64::from_le_bytes(header_len)).map_err(|e| {
@@ -2464,6 +2465,7 @@ impl Tensor {
         };
         let mmap = unsafe { memmap2::Mmap::map(&f)? };
         let mut mptr = mmap.as_ptr();
+        //println!("Adding {} bytes", 8 + header.len());
         mptr = mptr.wrapping_add(8 + header.len());
         //let t = crate::Timer::new();
         for x in header.chars() {
@@ -2549,7 +2551,11 @@ impl Tensor {
                                         .collect();
                                     Tensor::from(vec).reshape(&shape)?
                                 } else {
+                                    //println!("Shape: {shape:?}, ptr: {:?}", unsafe { *mptr });
+                                    //let buf: &[u8] = unsafe { std::slice::from_raw_parts(mptr, n*dtype.byte_size()) };
+                                    //println!("Buffer: {buf:?}, shape: {shape:?}");
                                     let buf: &[f32] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
+                                    //unsafe { Tensor::from(buf).bitcast(dtype)? }.reshape(&shape)?
                                     Tensor::from(buf).reshape(&shape)?
                                 }
                             }
@@ -2563,12 +2569,12 @@ impl Tensor {
                                     Tensor::from(vec).reshape(&shape)?
                                 } else {
                                     let buf: &[i64] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
-                                    //println!("Buffer: {buf:?}, shape: {shape:?}");
                                     Tensor::from(buf).reshape(&shape)?
                                 }
                             }
                             _ => todo!(),
                         });
+                        //println!("Adding {} bytes", n*dtype.byte_size());
                         mptr = mptr.wrapping_add(n*dtype.byte_size());
                         //if debug_print { println!(" DONE"); }
                     }
