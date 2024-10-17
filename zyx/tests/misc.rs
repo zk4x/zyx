@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-
-use zyx::{Tensor, ZyxError};
+use zyx::{Tensor, ZyxError, Scalar};
 
 #[test]
 fn matmul_2() -> Result<(), ZyxError> {
@@ -164,13 +163,22 @@ fn matmul_1024() -> Result<(), ZyxError> {
     let dataz: Vec<f32> = z.try_into()?;
     let zz = x.matmul(y)?;
     let datazz: Vec<f32> = zz.try_into()?;
-
     for (x, y) in dataz.iter().zip(datazz) {
         //println!("{x}, {y}");
-        assert!((x - y).abs() < 0.01);
+        assert!(x.is_equal(y));
     }
-
     //println!("{z}");
+    Ok(())
+}
+
+#[test]
+fn save() -> Result<(), ZyxError> {
+    //use zyx::TensorSave;
+    //let x = Tensor::from([2f32, 4., 3.]);
+    //[&x].save("../x.safetensors")?;
+    //let x: HashMap<String, Tensor> = Tensor::load("../x.safetensors")?;
+    //let x: Vec<i64> = x["x"].clone().try_into()?;
+    //println!("{:?}", x);
     Ok(())
 }
 
@@ -184,16 +192,15 @@ fn softmax() -> Result<(), ZyxError> {
     let y = &e / e.sum_kd([])?;*/
     //println!("{e:?}");
     //panic!();
-
     //Tensor::plot_graph([], "graph");
     //println!("{y:.20}");
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
     let y_data: Vec<f32> = y.try_into()?;
     for (x, y) in y_data.into_iter().zip([0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]) {
-        assert!((x - y).abs() < 0.00001);
+        //assert!((x - y).abs() < 0.00001);
+        assert!(x.is_equal(y));
     }
-
     //Tensor::plot_graph([], "graph").unwrap();
     Ok(())
 }

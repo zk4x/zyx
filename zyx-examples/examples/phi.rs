@@ -4,15 +4,19 @@
 
 use std::collections::HashMap;
 use tokenizers::Tokenizer;
-use zyx::{Tensor, DType, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_nn::{Embedding, LayerNorm, Linear};
 
 fn repeat_kv(x: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
-    let [bs, seqlen, n_kv_heads, head_dim] = x.shape()[..] else { panic!() };
+    let [bs, seqlen, n_kv_heads, head_dim] = x.shape()[..] else {
+        panic!()
+    };
     if n_rep == 1 {
-        return Ok(x)
+        return Ok(x);
     }
-    return x.repeat([1, 1, 1, n_rep])?.reshape([bs, seqlen, n_kv_heads * n_rep, head_dim])
+    return x
+        .repeat([1, 1, 1, n_rep])?
+        .reshape([bs, seqlen, n_kv_heads * n_rep, head_dim]);
 }
 
 trait VarMap {
@@ -25,18 +29,20 @@ impl VarMap for HashMap<String, Tensor> {
         // TODO fix this to work with dots
         let mut res = HashMap::new();
         let paths: Vec<String> = self.keys().filter(|k| k.starts_with(p)).cloned().collect();
-        for mut p in paths {
-            let t = self.remove(&p).unwrap();
+        //println!("Filtered paths: {:?}", paths);
+        for mut path in paths {
+            let t = self.remove(&path).unwrap();
             for _ in 0..p.len() + 1 {
-                p.pop();
+                path.remove(0);
             }
-            res.insert(p, t);
+            //println!("Inserting at {path:?}");
+            res.insert(path, t);
         }
         res
     }
 
     fn t(&mut self, t: &str) -> Tensor {
-        println!("Accessing {t} from {:?}", self.keys());
+        println!("Accessing {t}");
         self.remove(t).unwrap()
     }
 }
@@ -118,7 +124,9 @@ impl RotaryEmbedding {
     }
 
     fn apply_rotary_emb(&self, xs: &Tensor, seqlen_offset: usize) -> Result<Tensor, ZyxError> {
-        let [_b_size, _num_heads, seq_len, _headdim] = xs.shape()[..] else { panic!() };
+        let [_b_size, _num_heads, seq_len, _headdim] = xs.shape()[..] else {
+            panic!()
+        };
         let xs_rot = xs.get((.., .., .., ..self.dim as isize))?;
         let xs_pass = xs.get((.., .., .., self.dim as isize..))?;
         let c = self.cos.narrow(0, seqlen_offset, seq_len)?;
@@ -257,7 +265,9 @@ impl Attention {
     }
 
     fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Result<Tensor, ZyxError> {
-        let [b_size, seq_len, _n_embd] = xs.shape()[..] else { panic!() };
+        let [b_size, seq_len, _n_embd] = xs.shape()[..] else {
+            panic!()
+        };
         let query_states = self.q_proj.forward(xs)?;
         let key_states = self.k_proj.forward(xs)?;
         let value_states = self.v_proj.forward(xs)?;
@@ -317,19 +327,13 @@ impl Attention {
             Some(mask) => {
                 let mut sh = vec![b_size, self.num_heads];
                 sh.append(&mut mask.shape());
-                masked_fill(
-                    &attn_weights,
-                    &mask.expand(sh)?,
-                    f32::NEG_INFINITY,
-                )?
+                masked_fill(&attn_weights, &mask.expand(sh)?, f32::NEG_INFINITY)?
             }
         };
         let attn_weights = attn_weights.softmax([-1])?.cast(value_states.dtype());
         let attn_output = attn_weights.matmul(&value_states)?;
         let d = attn_output.shape()[1];
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape([b_size, seq_len, d])?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape([b_size, seq_len, d])?;
         self.dense.forward(attn_output)
     }
 
@@ -389,13 +393,9 @@ pub struct Model {
 impl Model {
     pub fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
         let mut vb_m = vb.g("model");
+        println!("{:?}", vb_m.keys());
         //let embed_tokens = Embedding::new(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let embed_tokens = Embedding {
-            vocab_size: cfg.vocab_size,
-            embed_size: cfg.hidden_size,
-            weight: vb_m.t("embed_tokens.weight"),
-            arange: vb_m.t("embed_tokens.arange"),
-        };
+        let embed_tokens = Embedding::from_weight(vb_m.t("embed_tokens.weight"))?;
         /*let final_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.layer_norm_eps,
@@ -427,7 +427,9 @@ impl Model {
     }
 
     pub fn forward(&mut self, xs: &Tensor) -> Result<Tensor, ZyxError> {
-        let [_b_size, seq_len] = xs.shape()[..] else { panic!() };
+        let [_b_size, seq_len] = xs.shape()[..] else {
+            panic!()
+        };
         let mut xs = self.embed_tokens.forward(xs)?;
         let mask = if seq_len <= 1 {
             None
@@ -437,7 +439,10 @@ impl Model {
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref())?;
         }
-        let xs = self.final_layernorm.forward(xs)?.narrow(1, seq_len - 1, 1)?;
+        let xs = self
+            .final_layernorm
+            .forward(xs)?
+            .narrow(1, seq_len - 1, 1)?;
         self.lm_head.forward(xs)?.squeeze(0)
     }
 
@@ -445,7 +450,6 @@ impl Model {
         self.layers.iter_mut().for_each(|b| b.clear_kv_cache())
     }
 }
-
 
 use clap::Parser;
 
@@ -550,7 +554,12 @@ impl LogitsProcessor {
 
     // top-k sampling samples from the k tokens with the largest probabilities.
     // then top-p sampling.
-    fn sample_topk_topp(&mut self, prs: &mut Vec<f32>, top_k: usize, top_p: f32) -> Result<u32, ZyxError> {
+    fn sample_topk_topp(
+        &mut self,
+        prs: &mut Vec<f32>,
+        top_k: usize,
+        top_p: f32,
+    ) -> Result<u32, ZyxError> {
         if top_k >= prs.len() {
             self.sample_topp(prs, top_p)
         } else {
@@ -572,7 +581,11 @@ impl LogitsProcessor {
         self.sample_f(logits, |_| {})
     }
 
-    pub fn sample_f(&mut self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<u32, ZyxError> {
+    pub fn sample_f(
+        &mut self,
+        logits: &Tensor,
+        f: impl FnOnce(&mut [f32]),
+    ) -> Result<u32, ZyxError> {
         let logits = logits.cast(DType::F32);
         let prs = |temperature: f64| -> Result<Vec<f32>, ZyxError> {
             let logits = &logits / temperature;
@@ -696,7 +709,11 @@ impl TokenOutputStream {
     }
 }
 
-pub fn apply_repeat_penalty(logits: &Tensor, penalty: f32, context: &[u32]) -> Result<Tensor, ZyxError> {
+pub fn apply_repeat_penalty(
+    logits: &Tensor,
+    penalty: f32,
+    context: &[u32],
+) -> Result<Tensor, ZyxError> {
     let mut logits: Vec<f32> = logits.cast(DType::F32).try_into()?;
     let mut already_seen = std::collections::HashSet::new();
     for token_id in context {
@@ -750,11 +767,7 @@ impl TextGeneration {
     fn run(&mut self, prompt: &str, sample_len: usize) -> Result<(), ZyxError> {
         use std::io::Write;
         println!("starting the inference loop");
-        let tokens = self
-            .tokenizer
-            .tokenizer()
-            .encode(prompt, true)
-            .unwrap();
+        let tokens = self.tokenizer.tokenizer().encode(prompt, true).unwrap();
         if tokens.is_empty() {
             panic!("Empty prompts are not supported in the phi model.")
         }
@@ -784,11 +797,7 @@ impl TextGeneration {
                 logits
             } else {
                 let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
+                apply_repeat_penalty(&logits, self.repeat_penalty, &tokens[start_at..])?
             };
 
             let next_token = self.logits_processor.sample(&logits)?;
@@ -885,7 +894,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
-        let mut vb = Tensor::load("../model.safetensors")?;
+        let mut vb: HashMap<String, Tensor> = Tensor::load("../model.safetensors")?;
+        println!("{:?}", vb.keys());
         //let config_filename = repo.get("config.json")?;
         //let config = std::fs::read_to_string(config_filename)?;
         let config = Config {

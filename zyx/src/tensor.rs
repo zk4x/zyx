@@ -2462,7 +2462,9 @@ impl Tensor {
         } else {
             None
         };
-        let mmap = unsafe { memmap2::Mmap::map(&f)?  };
+        let mmap = unsafe { memmap2::Mmap::map(&f)? };
+        let mut mptr = mmap.as_ptr();
+        mptr = mptr.wrapping_add(8 + header.len());
         //let t = crate::Timer::new();
         for x in header.chars() {
             // We skip metadata for now
@@ -2523,49 +2525,51 @@ impl Tensor {
                         }
                         //let mut buf = vec![0u8; bytes];
                         //f.read_exact(&mut buf)?;
+                        let n = shape.iter().product();
                         tensors.insert(label.clone(), match dtype {
                             DType::F16 => {
                                 if cfg!(target_endian = "big") {
-                                    let buf: &[u8] = unsafe { std::slice::from_raw_parts(mmap.as_ptr(),
-                                        shape.iter().product()) };
+                                    let buf: &[u8] = unsafe { std::slice::from_raw_parts(mptr, n*dtype.byte_size()) };
                                     let vec: Vec<f16> = buf
                                         .chunks_exact(dtype.byte_size())
                                         .map(Scalar::from_le_bytes)
                                         .collect();
                                     Tensor::from(vec).reshape(&shape)?
                                 } else {
-                                    let buf: &[f16] = unsafe { std::slice::from_raw_parts(mmap.as_ptr()
-                                        .cast(), shape.iter().product()) };
+                                    let buf: &[f16] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
                                     Tensor::from(buf).reshape(&shape)?
                                 }
                             }
-                            /*DType::F32 => {
-                                let vec: Vec<f32> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]))
-                                    .collect();
-                                Tensor::from(vec).reshape(&shape)?
+                            DType::F32 => {
+                                if cfg!(target_endian = "big") {
+                                    let buf: &[u8] = unsafe { std::slice::from_raw_parts(mptr, n*dtype.byte_size()) };
+                                    let vec: Vec<f32> = buf
+                                        .chunks_exact(dtype.byte_size())
+                                        .map(Scalar::from_le_bytes)
+                                        .collect();
+                                    Tensor::from(vec).reshape(&shape)?
+                                } else {
+                                    let buf: &[f32] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
+                                    Tensor::from(buf).reshape(&shape)?
+                                }
                             }
-                            DType::F64 => {
-                                let vec: Vec<f64> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(|x| {
-                                        f64::from_le_bytes([
-                                            x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7],
-                                        ])
-                                    })
-                                    .collect();
-                                Tensor::from(vec).reshape(&shape)?
+                            DType::I64 => {
+                                if cfg!(target_endian = "big") {
+                                    let buf: &[u8] = unsafe { std::slice::from_raw_parts(mptr, n*dtype.byte_size()) };
+                                    let vec: Vec<i64> = buf
+                                        .chunks_exact(dtype.byte_size())
+                                        .map(Scalar::from_le_bytes)
+                                        .collect();
+                                    Tensor::from(vec).reshape(&shape)?
+                                } else {
+                                    let buf: &[i64] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
+                                    //println!("Buffer: {buf:?}, shape: {shape:?}");
+                                    Tensor::from(buf).reshape(&shape)?
+                                }
                             }
-                            DType::I32 => {
-                                let vec: Vec<i32> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(|x| i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
-                                    .collect();
-                                Tensor::from(vec).reshape(&shape)?
-                            }*/
                             _ => todo!(),
                         });
+                        mptr = mptr.wrapping_add(n*dtype.byte_size());
                         //if debug_print { println!(" DONE"); }
                     }
                     i += 1;
@@ -2579,6 +2583,7 @@ impl Tensor {
                 text.push(x);
             }
         }
+        drop(mmap);
         //drop(t);
         Ok(Module::from_iter(tensors))
     }

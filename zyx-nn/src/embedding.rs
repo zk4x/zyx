@@ -25,6 +25,18 @@ impl Embedding {
         })
     }
 
+    /// Initialize embedding using only weight
+    pub fn from_weight(weight: Tensor) -> Result<Embedding, ZyxError> {
+        let sh = weight.shape();
+        assert_eq!(sh.len(), 2);
+        Ok(Embedding {
+            vocab_size: sh[0],
+            embed_size: sh[1],
+            arange: Tensor::arange(0, sh[0] as i64, 1)?.reshape([1, 1, sh[0], 1])?.cast(weight.dtype()),
+            weight,
+        })
+    }
+
     /// Forward embedding layer
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();

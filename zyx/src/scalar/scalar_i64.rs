@@ -74,7 +74,7 @@ impl Scalar for i64 {
     }
 
     fn dtype() -> DType {
-        DType::I32
+        DType::I64
     }
 
     fn zero() -> Self {
@@ -86,7 +86,7 @@ impl Scalar for i64 {
     }
 
     fn byte_size() -> usize {
-        4
+        8
     }
 
     fn abs(self) -> Self {
