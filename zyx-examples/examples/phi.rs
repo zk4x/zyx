@@ -275,28 +275,34 @@ impl Attention {
         let [b_size, seq_len, _n_embd] = xs.shape()[..] else {
             panic!()
         };
-        let query_states = self.q_proj.forward(xs)?;
-        let key_states = self.k_proj.forward(xs)?;
-        let value_states = self.v_proj.forward(xs)?;
+        let query_states = self.q_proj.forward(xs).unwrap();
+        let key_states = self.k_proj.forward(xs).unwrap();
+        let value_states = self.v_proj.forward(xs).unwrap();
 
         let query_states = match &self.q_layernorm {
             None => query_states,
-            Some(ln) => ln.forward(query_states)?,
+            Some(ln) => ln.forward(query_states).unwrap(),
         };
         let key_states = match &self.k_layernorm {
             None => key_states,
-            Some(ln) => ln.forward(key_states)?,
+            Some(ln) => ln.forward(key_states).unwrap(),
         };
 
         let query_states = query_states
-            .reshape([b_size, seq_len, self.num_heads, self.head_dim])?
-            .transpose(1, 2)?;
+            .reshape([b_size, seq_len, self.num_heads, self.head_dim])
+            .unwrap()
+            .transpose(1, 2)
+            .unwrap();
         let key_states = key_states
-            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])?
-            .transpose(1, 2)?;
+            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])
+            .unwrap()
+            .transpose(1, 2)
+            .unwrap();
         let value_states = value_states
-            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])?
-            .transpose(1, 2)?;
+            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])
+            .unwrap()
+            .transpose(1, 2)
+            .unwrap();
 
         // Rotary embeddings.
         let seqlen_offset = match &self.kv_cache {
@@ -305,25 +311,27 @@ impl Attention {
         };
         let query_states = self
             .rotary_emb
-            .apply_rotary_emb(&query_states, seqlen_offset)?;
+            .apply_rotary_emb(&query_states, seqlen_offset)
+            .unwrap();
         let key_states = self
             .rotary_emb
-            .apply_rotary_emb(&key_states, seqlen_offset)?;
+            .apply_rotary_emb(&key_states, seqlen_offset)
+            .unwrap();
 
         // KV cache.
         let (key_states, value_states) = match &self.kv_cache {
             None => (key_states, value_states),
             Some((prev_k, prev_v)) => {
-                let k = Tensor::cat([prev_k, &key_states], 2)?;
-                let v = Tensor::cat([prev_v, &value_states], 2)?;
+                let k = Tensor::cat([prev_k, &key_states], 2).unwrap();
+                let v = Tensor::cat([prev_v, &value_states], 2).unwrap();
                 (k, v)
             }
         };
         self.kv_cache = Some((key_states.clone(), value_states.clone()));
 
         // Repeat kv.
-        let key_states = self.repeat_kv(key_states)?;
-        let value_states = self.repeat_kv(value_states)?;
+        let key_states = self.repeat_kv(key_states).unwrap();
+        let value_states = self.repeat_kv(value_states).unwrap();
 
         let attn_weights = query_states
             .cast(DType::F32)
@@ -334,13 +342,20 @@ impl Attention {
             Some(mask) => {
                 let mut sh = vec![b_size, self.num_heads];
                 sh.append(&mut mask.shape());
-                masked_fill(&attn_weights, &mask.expand(sh)?, f32::NEG_INFINITY)?
+                masked_fill(&attn_weights, &mask.expand(sh).unwrap(), f32::NEG_INFINITY).unwrap()
             }
         };
-        let attn_weights = attn_weights.softmax([-1])?.cast(value_states.dtype());
-        let attn_output = attn_weights.matmul(&value_states)?;
+        let attn_weights = attn_weights
+            .softmax([-1])
+            .unwrap()
+            .cast(value_states.dtype());
+        let attn_output = attn_weights.matmul(&value_states).unwrap();
         let d = attn_output.shape()[1];
-        let attn_output = attn_output.transpose(1, 2)?.reshape([b_size, seq_len, d])?;
+        let attn_output = attn_output
+            .transpose(1, 2)
+            .unwrap()
+            .reshape([b_size, seq_len, d])
+            .unwrap();
         self.dense.forward(attn_output)
     }
 

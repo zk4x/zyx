@@ -37,7 +37,7 @@ float8 = { version = "0.1.1" } # MIT or Apache 2.0
 half = { version = "2.4.1" } # MIT or Apache 2.0
 # Progress bar for loading tensors and such
 indicatif = { version = "0.17.8" }
-#memmap2 = { version = "*" }
+memmap2 = { version = "*" }
 
 # Optional dependencies
 # Support for random number generation
