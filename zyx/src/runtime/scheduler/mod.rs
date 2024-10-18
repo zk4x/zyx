@@ -402,7 +402,9 @@ impl Runtime {
     ) -> Result<KernelOptimization, ZyxError> {
         let dev_info = self.devices[device_id].info();
         let cache_key = (kernel.clone(), dev_info.clone());
-        if let Some(KernelOptimizer::Optimized(optimizations, _)) = self.optimizer_cache.get(&cache_key) {
+        if let Some(KernelOptimizer::Optimized(optimizations, _)) =
+            self.optimizer_cache.get(&cache_key)
+        {
             Ok(optimizations.clone())
         } else {
             let debug_perf = self.debug_perf();
@@ -420,7 +422,8 @@ impl Runtime {
             }
 
             // Get search space of possible optimizations
-            let optimizer = self.optimizer_cache
+            let optimizer = self
+                .optimizer_cache
                 .entry(cache_key.clone())
                 .or_insert_with(|| kernel.new_optimizer(dev_info));
 
@@ -482,7 +485,7 @@ impl Runtime {
                     Err(e) => {
                         optimizer.set_exec_time(optimization_id, u128::MAX);
                         if debug_sched {
-                            println!("Could not launch, {e}, skipping");
+                            println!("Could not launch, {e:?}, skipping");
                         }
                         continue;
                     }
@@ -490,7 +493,7 @@ impl Runtime {
                 if let Err(e) = self.devices[device_id].sync(queue_id) {
                     optimizer.set_exec_time(optimization_id, u128::MAX);
                     if debug_sched {
-                        println!("Could not sync, {e}, skipping");
+                        println!("Could not sync, {e:?}, skipping");
                     }
                     continue;
                 };
@@ -519,10 +522,13 @@ impl Runtime {
         if let Some(mut path) = self.config_dir.clone() {
             path.push("cached_kernels");
             let mut file = std::fs::File::create(path).unwrap();
-            file.write_all(&bitcode::encode(&self.optimizer_cache)).unwrap();
+            file.write_all(&bitcode::encode(&self.optimizer_cache))
+                .unwrap();
         } else {
             if self.debug_sched() {
-                println!("Zyx config path was not found. Searched kernels won't be cached to disk.");
+                println!(
+                    "Zyx config path was not found. Searched kernels won't be cached to disk."
+                );
             }
         }
     }

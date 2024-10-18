@@ -66,7 +66,14 @@ impl Graph {
             let mut shape = None;
             for nid in node.parameters() {
                 if let Some(sh) = shape {
-                    assert_eq!(sh, self.shape(nid));
+                    let shape = self.shape(nid);
+                    if sh != shape {
+                        println!("{:?}", self.shapes);
+                        for (i, (rc, node)) in self.nodes.iter() {
+                            println!("ID {i} x {rc} -> {node:?}");
+                        }
+                        panic!("{sh:?} != {shape:?} Pushing new node {node:?}");
+                    }
                 } else {
                     shape = Some(self.shape(nid));
                 }

@@ -1,6 +1,5 @@
 //! Trait describing required operations on scalar values
 
-mod scalar_f8;
 mod scalar_bf16;
 mod scalar_bool;
 #[cfg(feature = "complex")]
@@ -10,12 +9,13 @@ mod scalar_cf64;
 mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
+mod scalar_f8;
 mod scalar_i16;
 mod scalar_i32;
 mod scalar_i64;
 mod scalar_i8;
-mod scalar_u8;
 mod scalar_u32;
+mod scalar_u8;
 
 use float8::F8E4M3;
 use half::{bf16, f16};

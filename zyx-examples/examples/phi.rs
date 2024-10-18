@@ -27,12 +27,13 @@ trait VarMap {
 impl VarMap for HashMap<String, Tensor> {
     fn g(&mut self, p: &str) -> Self {
         // TODO fix this to work with dots
+        let p = format!("{p}.");
         let mut res = HashMap::new();
-        let paths: Vec<String> = self.keys().filter(|k| k.starts_with(p)).cloned().collect();
+        let paths: Vec<String> = self.keys().filter(|k| k.starts_with(&p)).cloned().collect();
         //println!("Filtered paths: {:?}", paths);
         for mut path in paths {
             let t = self.remove(&path).unwrap();
-            for _ in 0..p.len() + 1 {
+            for _ in 0..p.len() {
                 path.remove(0);
             }
             //println!("Inserting at {path:?}");
@@ -43,7 +44,7 @@ impl VarMap for HashMap<String, Tensor> {
 
     fn t(&mut self, t: &str) -> Tensor {
         if let Some(x) = self.remove(t) {
-            return x
+            return x;
         } else {
             let mut keys: Vec<String> = self.keys().cloned().collect();
             keys.sort();
@@ -363,11 +364,12 @@ impl DecoderLayer {
             cfg.layer_norm_eps,
             vb.pp("input_layernorm"),
         )?;*/
+        let weight = vb.t("input_layernorm.weight");
         let input_layernorm = LayerNorm {
-            weight: Some(vb.t("input_layernorm.weight")),
+            d_dims: weight.rank(),
+            weight: Some(weight),
             bias: Some(vb.t("input_layernorm.bias")),
             eps: cfg.layer_norm_eps,
-            d_dims: cfg.hidden_size,
         };
         Ok(Self {
             self_attn,
@@ -376,12 +378,12 @@ impl DecoderLayer {
         })
     }
 
-    fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Result<Tensor, ZyxError> {
+    fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Tensor {
         let residual = xs;
-        let xs = self.input_layernorm.forward(xs)?;
-        let attn_outputs = self.self_attn.forward(&xs, mask)?;
-        let feed_forward_hidden_states = self.mlp.forward(&xs)?;
-        Ok(attn_outputs + feed_forward_hidden_states + residual)
+        let xs = self.input_layernorm.forward(xs).unwrap();
+        let attn_outputs = self.self_attn.forward(&xs, mask).unwrap();
+        let feed_forward_hidden_states = self.mlp.forward(&xs).unwrap();
+        attn_outputs + feed_forward_hidden_states + residual
     }
 
     fn clear_kv_cache(&mut self) {
@@ -416,7 +418,7 @@ impl Model {
         let mut vb_m = vb_m.g("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer = DecoderLayer::new(cfg, &mut vb_m.g(&format!("{layer_idx}")))?;
-            layers.push(layer)
+            layers.push(layer);
         }
         //let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         let lm_head = Linear {
@@ -431,24 +433,26 @@ impl Model {
         })
     }
 
-    pub fn forward(&mut self, xs: &Tensor) -> Result<Tensor, ZyxError> {
+    pub fn forward(&mut self, xs: &Tensor) -> Tensor {
         let [_b_size, seq_len] = xs.shape()[..] else {
             panic!()
         };
-        let mut xs = self.embed_tokens.forward(xs)?;
+        let mut xs = self.embed_tokens.forward(xs).unwrap();
         let mask = if seq_len <= 1 {
             None
         } else {
-            Some(get_mask(seq_len)?)
+            Some(get_mask(seq_len).unwrap())
         };
         for layer in self.layers.iter_mut() {
-            xs = layer.forward(&xs, mask.as_ref())?;
+            xs = layer.forward(&xs, mask.as_ref());
         }
         let xs = self
             .final_layernorm
-            .forward(xs)?
-            .narrow(1, seq_len - 1, 1)?;
-        self.lm_head.forward(xs)?.squeeze(0)
+            .forward(xs)
+            .unwrap()
+            .narrow(1, seq_len - 1, 1)
+            .unwrap();
+        self.lm_head.forward(xs).unwrap().squeeze(0).unwrap()
     }
 
     pub fn clear_kv_cache(&mut self) {
@@ -795,27 +799,27 @@ impl TextGeneration {
         for index in 0..sample_len {
             let context_size = if index > 0 { 1 } else { tokens.len() };
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            let input = Tensor::from(ctxt).unsqueeze(0)?;
-            let logits = self.model.forward(&input)?;
-            let logits = logits.squeeze(0)?.cast(DType::F32);
+            let input = Tensor::from(ctxt).unsqueeze(0).unwrap();
+            let logits = self.model.forward(&input);
+            let logits = logits.squeeze(0).unwrap().cast(DType::F32);
             let logits = if self.repeat_penalty == 1. {
                 logits
             } else {
                 let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                apply_repeat_penalty(&logits, self.repeat_penalty, &tokens[start_at..])?
+                apply_repeat_penalty(&logits, self.repeat_penalty, &tokens[start_at..]).unwrap()
             };
 
-            let next_token = self.logits_processor.sample(&logits)?;
+            let next_token = self.logits_processor.sample(&logits).unwrap();
             tokens.push(next_token);
             generated_tokens += 1;
             if next_token == eos_token {
-                if let Some(t) = self.tokenizer.decode_rest()? {
+                if let Some(t) = self.tokenizer.decode_rest().unwrap() {
                     print!("{t}");
                     std::io::stdout().flush()?;
                 }
                 break;
             }
-            if let Some(t) = self.tokenizer.next_token(next_token)? {
+            if let Some(t) = self.tokenizer.next_token(next_token).unwrap() {
                 print!("{t}");
                 std::io::stdout().flush()?;
             }
@@ -887,7 +891,7 @@ struct Args {
     dtype: Option<String>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), ZyxError> {
     let args = Args::parse();
     println!(
         "temp: {:.2} repeat-penalty: {:.2} repeat-last-n: {}",
@@ -899,7 +903,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
-        let mut vb: HashMap<String, Tensor> = Tensor::load("../model.safetensors")?;
+        let mut vb: HashMap<String, Tensor> = Tensor::load("../model.safetensors").unwrap();
         let mut keys: Vec<String> = vb.keys().cloned().collect();
         keys.sort();
         println!("{:?}", keys);
@@ -920,7 +924,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             partial_rotary_factor: 0.5,
             qk_layernorm: false,
         };
-        Model::new(&config, &mut vb)?
+        Model::new(&config, &mut vb).unwrap()
     };
 
     match (args.prompt, args.mmlu_dir) {
@@ -938,9 +942,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args.repeat_last_n,
                 args.verbose_prompt,
             );
-            pipeline.run(&prompt, args.sample_len)?;
+            pipeline.run(&prompt, args.sample_len).unwrap();
         }
-        (None, Some(mmlu_dir)) => mmlu(model, tokenizer, mmlu_dir)?,
+        (None, Some(mmlu_dir)) => mmlu(model, tokenizer, mmlu_dir).unwrap(),
     }
     Ok(())
 }
@@ -949,7 +953,7 @@ fn mmlu<P: AsRef<std::path::Path>>(
     mut model: Model,
     tokenizer: Tokenizer,
     mmlu_dir: P,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), ZyxError> {
     for dir_entry in mmlu_dir.as_ref().read_dir()?.flatten() {
         let dir_entry = dir_entry.path();
         let theme = match dir_entry.file_stem().and_then(|v| v.to_str()) {
@@ -991,11 +995,11 @@ fn mmlu<P: AsRef<std::path::Path>>(
                 );
             let tokens = tokenizer.encode(prompt.as_str(), true).unwrap();
             let tokens = tokens.get_ids().to_vec();
-            let input = Tensor::from(tokens).unsqueeze(0)?;
+            let input = Tensor::from(tokens).unsqueeze(0).unwrap();
             model.clear_kv_cache();
-            let logits = model.forward(&input)?;
+            let logits = model.forward(&input);
             let logits = logits.squeeze(0)?.cast(DType::F32);
-            let logits_v: Vec<f32> = logits.try_into()?;
+            let logits_v: Vec<f32> = logits.try_into().unwrap();
             let pr_a = logits_v[token_a as usize];
             let pr_b = logits_v[token_b as usize];
             let pr_c = logits_v[token_c as usize];

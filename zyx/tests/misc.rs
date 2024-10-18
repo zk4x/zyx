@@ -40,6 +40,20 @@ fn expand_reduce() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn rope() -> Result<(), ZyxError> {
+    let xs =
+        Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
+    let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+    let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+    let z = xs.rope(&cos, &sin).unwrap();
+    assert_eq!(
+        z,
+        [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
+    );
+    Ok(())
+}
+
+#[test]
 fn pad_reshape_expand() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3, 3, 4], [1, 2, 1, 5, 1]]);
     x = x.pad_zeros([(1, 0), (2, 1)])?;

@@ -450,6 +450,7 @@ impl OpenCLMemoryPool {
                 status: OpenCLStatus::CL_MEM_OBJECT_ALLOCATION_FAILURE,
             });
         }
+        //println!("Allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
         let ptr = unsafe {
             (self.clCreateBuffer)(
@@ -655,10 +656,7 @@ impl OpenCLDevice {
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
-                source += &format!(
-                    "{indent}__local {} p{id}[{len}];\n",
-                    dtype.ocl(),
-                );
+                source += &format!("{indent}__local {} p{id}[{len}];\n", dtype.ocl(),);
             }
         }
 
@@ -787,15 +785,15 @@ impl OpenCLDevice {
                     source += &format!("{indent}}}\n");
                 }
                 IROp::Barrier { scope } => {
-                      source += &format!(
-                          "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                          match scope {
-                              Scope::Global => "GLOB",
-                              Scope::Local => "LOC",
-                              Scope::Register => panic!(),
-                          }
-                      );
-                  }
+                    source += &format!(
+                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                        match scope {
+                            Scope::Global => "GLOB",
+                            Scope::Local => "LOC",
+                            Scope::Register => panic!(),
+                        }
+                    );
+                }
             }
         }
         source += "}\n";

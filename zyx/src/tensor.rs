@@ -488,11 +488,9 @@ impl Tensor {
     pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Result<Tensor, ZyxError> {
         // if (stop-start)/step <= 0: return Tensor([], dtype=dtype, **kwargs)
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
-        println!("Arange {start:?}, {stop:?}, {step:?}");
-        let c = stop.sub(start);
-        println!("c = {c:?}");
-        let n: i64 = c.div(step).cast();
-        println!("Shape {n}");
+        //println!("Arange {start:?}, {stop:?}, {step:?}");
+        let n: i64 = stop.sub(start).div(step).cast();
+        //println!("Shape {n}");
         let x = Tensor::full(n as usize, step)?;
         //println!("{x}");
         let x = x.cumsum(0)?;
@@ -1516,7 +1514,7 @@ impl Tensor {
     #[must_use]
     pub fn cumsum(&self, axis: isize) -> Result<Tensor, ZyxError> {
         let axis = into_axis(axis, self.rank())?;
-        println!("Cumsum, shape: {:?}", self.shape());
+        //println!("Cumsum, shape: {:?}", self.shape());
         let pl_sz = (self.shape()[axis] - 1) as isize;
         let k = self.shape()[axis];
         let axis = axis as isize;
@@ -2126,6 +2124,9 @@ impl Tensor {
             let rank = shape.len();
             let dim = (-dim) as usize;
             let dim = rank - dim + 1;
+            if shape[dim] != 1 {
+                return Ok(self.clone());
+            }
             self.reshape(
                 shape[..dim]
                     .iter()
@@ -2135,6 +2136,9 @@ impl Tensor {
             )
         } else {
             let dim = dim as usize;
+            if shape[dim] != 1 {
+                return Ok(self.clone());
+            }
             self.reshape(
                 shape[..dim]
                     .iter()
@@ -2509,9 +2513,9 @@ impl Tensor {
             .map(|(r, d)| r * d)
             .collect();
         //println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
-        let mut x = self.reshape(new_shape)?;
-        x = x.expand(expand_shape)?;
-        x = x.reshape(final_shape)?;
+        let mut x = self.reshape(new_shape).unwrap();
+        x = x.expand(expand_shape).unwrap();
+        x = x.reshape(final_shape).unwrap();
         Ok(x)
     }
 
@@ -2521,19 +2525,17 @@ impl Tensor {
         sin_freqs: impl Into<Tensor>,
         cos_freqs: impl Into<Tensor>,
     ) -> Result<Tensor, ZyxError> {
-        let _ = sin_freqs;
-        let _ = cos_freqs;
-        //let sh = self.shape();
-        //let sin_freqs = sin_freqs.into();
-        //let cos_freqs = cos_freqs.into();
-        //let sin_freqs = sin_freqs.squeeze(1)?.squeeze(0)?; // [seq_len, dim]
-        //let cos_freqs = cos_freqs.squeeze(1)?.squeeze(0)?; // [seq_len, dim]
-        //let d = *sh.last().unwrap() as i64;
-        //let x1 = self.get((.., .., .., ..d/2))?;
-        //let x2 = self.get((.., .., .., d/2..))?;
-        //let xrh = Tensor::cat([&-x2, &x1], -1)?;
-        //Ok(self * cos_freqs + xrh * sin_freqs)
-        todo!()
+        let sh = self.shape();
+        let sin_freqs = sin_freqs.into();
+        let cos_freqs = cos_freqs.into();
+        let sin_freqs = sin_freqs.squeeze(1).unwrap().squeeze(0).unwrap(); // [seq_len, dim]
+        let cos_freqs = cos_freqs.squeeze(1).unwrap().squeeze(0).unwrap(); // [seq_len, dim]
+        let d = *sh.last().unwrap() as isize;
+        let a = self.get((.., .., .., ..d / 2)).unwrap();
+        let b = -self.get((.., .., .., d / 2..)).unwrap();
+        let ro = &a * &cos_freqs - &b * &sin_freqs;
+        let co = &a * &sin_freqs + &b * &cos_freqs;
+        Ok(Tensor::cat([&co, &ro], -1).unwrap())
     }
 
     /*#[must_use]
@@ -2598,9 +2600,7 @@ impl Tensor {
         };
         //let mmap = unsafe { memmap2::Mmap::map(&f)? };
         //let mut mptr = mmap.as_ptr();
-        //println!("Adding {} bytes", 8 + header.len());
         //mptr = mptr.wrapping_add(8 + header.len());
-        //let t = crate::Timer::new();
         for x in header.chars() {
             // We skip metadata for now
             if metadata && text.starts_with("__metadata__") {
@@ -2649,49 +2649,62 @@ impl Tensor {
                                 "Safetensors shapes and offsets are incorrect.".into(),
                             ));
                         }
-                        /*if debug_print {
-                            print!("Loading tensor {label:?} with shape {shape:?}, {dtype:?} ...");
-                            use std::io::Write;
-                            std::io::stdout().flush()?;
-                        }*/
                         if let Some(bar) = &progress_bar {
                             bar.inc(1);
                             bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
                         }
-                        //let mut buf = vec![0u8; bytes];
-                        //f.read_exact(&mut buf)?;
-                        let n = shape.iter().product();
+
+                        fn read_into_tensor<T: Scalar>(
+                            f: &mut std::fs::File,
+                            shape: &[usize],
+                        ) -> Result<Tensor, ZyxError> {
+                            // TODO later switch to mmapped memory
+                            let dtype = T::dtype();
+                            let n: usize = shape.iter().product();
+                            let n_bytes = n * dtype.byte_size();
+                            let buf: Vec<T> = if cfg!(target_endian = "big") {
+                                //let buf: &[u8] = unsafe { std::slice::from_raw_parts(mptr, n * dtype.byte_size()) };
+                                let mut buf = Vec::with_capacity(n_bytes);
+                                unsafe { buf.set_len(n_bytes) }
+                                //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
+                                f.read_exact(&mut buf)?;
+                                let vec = buf
+                                    .chunks_exact(dtype.byte_size())
+                                    .map(Scalar::from_le_bytes)
+                                    .collect();
+                                vec
+                            } else {
+                                let mut buf: Vec<T> = Vec::with_capacity(n);
+                                unsafe { buf.set_len(n) }
+                                //let mut buf: Vec<T> = vec![T::zero(); n];
+                                f.read_exact(unsafe {
+                                    std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), n_bytes)
+                                })?;
+                                //let buf: &[f16] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
+                                buf
+                            };
+                            //println!("Adding {} bytes", n*dtype.byte_size());
+                            //mptr = mptr.wrapping_add(n * dtype.byte_size());
+                            Tensor::from(buf).reshape(shape)
+                        }
+
                         tensors.insert(
                             label.clone(),
                             match dtype {
-                                DType::F16 => {
-                                    if cfg!(target_endian = "big") {
-                                        //let buf: &[u8] = unsafe { std::slice::from_raw_parts(mptr, n * dtype.byte_size()) };
-                                        let mut buf = Vec::with_capacity(n * dtype.byte_size());
-                                        f.read_exact(&mut buf)?;
-                                        let vec: Vec<f16> = buf
-                                            .chunks_exact(dtype.byte_size())
-                                            .map(Scalar::from_le_bytes)
-                                            .collect();
-                                        Tensor::from(vec).reshape(&shape)?
-                                    } else {
-                                        let mut buf: Vec<f16> = Vec::with_capacity(n);
-                                        f.read_exact(unsafe {
-                                            std::slice::from_raw_parts_mut(
-                                                buf.as_mut_ptr().cast(),
-                                                n,
-                                            )
-                                        })?;
-                                        //let buf: &[f16] = unsafe { std::slice::from_raw_parts(mptr.cast(), n) };
-                                        Tensor::from(buf).reshape(&shape)?
-                                    }
-                                }
-                                _ => todo!(),
+                                DType::F8 => read_into_tensor::<f8>(&mut f, &shape)?,
+                                DType::BF16 => read_into_tensor::<bf16>(&mut f, &shape)?,
+                                DType::F16 => read_into_tensor::<f16>(&mut f, &shape)?,
+                                DType::F32 => read_into_tensor::<f32>(&mut f, &shape)?,
+                                DType::F64 => read_into_tensor::<f64>(&mut f, &shape)?,
+                                DType::U8 => read_into_tensor::<u8>(&mut f, &shape)?,
+                                DType::I8 => read_into_tensor::<i8>(&mut f, &shape)?,
+                                DType::I16 => read_into_tensor::<i16>(&mut f, &shape)?,
+                                DType::I32 => read_into_tensor::<i32>(&mut f, &shape)?,
+                                DType::U32 => read_into_tensor::<u32>(&mut f, &shape)?,
+                                DType::I64 => read_into_tensor::<i64>(&mut f, &shape)?,
+                                DType::Bool => read_into_tensor::<bool>(&mut f, &shape)?,
                             },
                         );
-                        //println!("Adding {} bytes", n*dtype.byte_size());
-                        //mptr = mptr.wrapping_add(n * dtype.byte_size());
-                        //if debug_print { println!(" DONE"); }
                     }
                     i += 1;
                     text.clear();
@@ -2704,8 +2717,6 @@ impl Tensor {
                 text.push(x);
             }
         }
-        //drop(mmap);
-        //drop(t);
         Ok(Module::from_iter(tensors))
     }
 
@@ -2833,37 +2844,40 @@ impl Tensor {
             (DType::F64, DType::I32) => y = y.cast(DType::F64),
             _ => {}
         }
-        let mut x_shape = x.shape();
-        let mut y_shape = y.shape();
+        let x_shape = x.shape();
+        let y_shape = y.shape();
 
         for (&x, &y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y {
                 if x != 1 && y != 1 {
-                    return Err(ZyxError::ShapeError(format!("Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}")));
+                    return Err(ZyxError::ShapeError(format!(
+                        "Tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}"
+                    )));
                 }
-                //assert!( *x == 1 || *y == 1, "Left and right tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}");
             }
         }
 
         let rx = x_shape.rank();
         let ry = y_shape.rank();
+        let mut nx_shape = x_shape.clone();
+        let mut ny_shape = y_shape.clone();
         match rx.cmp(&ry) {
             Ordering::Less => {
-                x_shape = core::iter::repeat(1)
+                nx_shape = core::iter::repeat(1)
                     .take(ry - rx)
-                    .chain(x_shape.into_iter())
+                    .chain(nx_shape.into_iter())
                     .collect();
             }
             Ordering::Greater => {
-                y_shape = core::iter::repeat(1)
+                ny_shape = core::iter::repeat(1)
                     .take(rx - ry)
-                    .chain(y_shape.into_iter())
+                    .chain(ny_shape.into_iter())
                     .collect();
             }
             Ordering::Equal => {}
         }
         let mut eshape = Vec::new();
-        for (x, y) in x_shape.iter().zip(y_shape.iter()) {
+        for (x, y) in nx_shape.iter().zip(ny_shape.iter()) {
             eshape.push(*x.max(y));
         }
         if x_shape != eshape {

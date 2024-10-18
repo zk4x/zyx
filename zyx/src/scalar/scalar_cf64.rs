@@ -77,7 +77,7 @@ impl Scalar for Complex<f64> {
     }
 
     fn dtype() -> DType {
-        todo!()
+        DType::CF64
     }
 
     fn zero() -> Self {

@@ -3,8 +3,8 @@ use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
 use backend::{
-    BufferId, CUDAConfig, CUDAError, Device, DeviceId, HIPConfig, HIPError, MemoryPool,
-    OpenCLConfig, OpenCLError, VulkanConfig, VulkanError, DeviceInfo
+    BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool,
+    OpenCLConfig, OpenCLError, VulkanConfig, VulkanError,
 };
 #[cfg(feature = "wgsl")]
 use backend::{WGSLConfig, WGSLError};
@@ -293,7 +293,11 @@ impl Runtime {
 
     /// Bitcast self to other type, currently immediatelly realizes the tensor
     #[must_use]
-    pub(super) unsafe fn bitcast(&mut self, x: TensorId, dtype: DType) -> Result<TensorId, ZyxError> {
+    pub(super) unsafe fn bitcast(
+        &mut self,
+        x: TensorId,
+        dtype: DType,
+    ) -> Result<TensorId, ZyxError> {
         if dtype == self.dtype(x) {
             self.retain(x);
             return Ok(x);
@@ -304,14 +308,16 @@ impl Runtime {
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
         //self.tensor_buffer_map.find();
-        let cd = dtype.byte_size()/self.dtype(x).byte_size();
+        let cd = dtype.byte_size() / self.dtype(x).byte_size();
         if let Some(d) = shape.last_mut() {
             if *d % cd != 0 {
                 return Err(ZyxError::DTypeError("Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into()));
             }
-            *d = *d/cd;
+            *d = *d / cd;
         }
-        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
+        let id = self
+            .graph
+            .push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
         if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &old_k) {
             //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
             self.tensor_buffer_map.insert((id, View::new(&shape)), *bid);
@@ -376,7 +382,10 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         //println!("reshaping to {shape:?}, {:?}", self.shape(x));
         let sh = self.shape(x);
-        assert_eq!(shape.iter().product::<usize>(), sh.iter().product::<usize>());
+        assert_eq!(
+            shape.iter().product::<usize>(),
+            sh.iter().product::<usize>()
+        );
         if &shape == sh {
             self.retain(x);
             return x;
@@ -392,7 +401,10 @@ impl Runtime {
             return x;
         }
         if shape.len() > sh.len() {
-            let sh: Vec<usize> = std::iter::repeat(1).take(shape.len() - sh.len()).chain(sh.iter().copied()).collect();
+            let sh: Vec<usize> = std::iter::repeat(1)
+                .take(shape.len() - sh.len())
+                .chain(sh.iter().copied())
+                .collect();
             assert_eq!(shape.len(), sh.len());
             let y = self.reshape(x, sh);
             let x = self.graph.push_wshape(Node::Expand { x: y }, shape);
@@ -510,11 +522,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn or(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Or,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Or })
     }
 
     #[must_use]
@@ -726,7 +734,8 @@ impl Runtime {
             }
         }
         // Remove unnedded tensors from the map
-        self.tensor_buffer_map.retain(|(t, _), _| !to_remove.contains(t));
+        self.tensor_buffer_map
+            .retain(|(t, _), _| !to_remove.contains(t));
         // Check if buffers are needed elsewhere in the map,
         // otherwise deallocate them
         for buffer in buffers {
@@ -1080,6 +1089,35 @@ pub enum ZyxError {
     WGSLError(WGSLError),
 }
 
+/*impl<Err: std::fmt::Display> From<Err> for ZyxError {
+    #[track_caller]
+    fn from(err: Err) -> Self {
+        panic!("error: {}: {}", std::any::type_name::<Err>(), err);
+    }
+}*/
+
+impl std::fmt::Display for ZyxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ZyxError::ShapeError(e) => f.write_str(&e),
+            ZyxError::DTypeError(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
+            ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
+            ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
+            ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
+            ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
+            ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
+            ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
+            ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
+            ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
+            ZyxError::VulkanError(e) => f.write_fmt(format_args!("Vulkan {e:?}")),
+            #[cfg(feature = "wgsl")]
+            ZyxError::WGSLError(_) => todo!(),
+        }
+    }
+}
+
+impl std::error::Error for ZyxError {}
+
 impl From<CUDAError> for ZyxError {
     fn from(value: CUDAError) -> Self {
         ZyxError::CUDAError(value)
@@ -1116,25 +1154,3 @@ impl From<std::io::Error> for ZyxError {
         Self::IOError(value)
     }
 }
-
-impl std::fmt::Display for ZyxError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ZyxError::ShapeError(e) => f.write_str(&e),
-            ZyxError::DTypeError(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
-            ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
-            ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
-            ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
-            ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
-            ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
-            ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
-            ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
-            ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
-            ZyxError::VulkanError(e) => f.write_fmt(format_args!("Vulkan {e:?}")),
-            #[cfg(feature = "wgsl")]
-            ZyxError::WGSLError(_) => todo!(),
-        }
-    }
-}
-
-impl std::error::Error for ZyxError {}

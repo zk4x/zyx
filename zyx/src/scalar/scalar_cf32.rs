@@ -72,7 +72,7 @@ impl Scalar for Complex<f32> {
     }
 
     fn dtype() -> DType {
-        todo!()
+        DType::CF32
     }
 
     fn zero() -> Self {

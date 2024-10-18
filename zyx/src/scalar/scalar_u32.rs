@@ -1,7 +1,7 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use half::{bf16, f16};
 use float8::F8E4M3;
+use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
@@ -76,7 +76,7 @@ impl Scalar for u32 {
     }
 
     fn dtype() -> DType {
-        DType::U8
+        DType::U32
     }
 
     fn zero() -> Self {
@@ -147,19 +147,19 @@ impl Scalar for u32 {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
         (self > rhs) as Self
     }
-    
+
     fn or(self, rhs: Self) -> Self {
         (self != 0 || rhs != 0) as Self
     }
