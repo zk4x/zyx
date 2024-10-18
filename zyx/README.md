@@ -1,9 +1,12 @@
 # Zyx
 
 Zyx is machine learning library written in Rust.
-Zyx feels dynamic, but it automatically generates and compiles optimized kernels at runtime for CUDA, OpenCL and WGSL (runs on Vulkan).
-Zyx is lazy, waits with execution until it is explicitly asked for results.
-All tensors are differentiable.
+Zyx feels dynamic (pytorch like), but is lazy,
+waits with execution until it is explicitly asked for results.
+Zyx automatically generates and compiles
+optimized kernels at runtime for CUDA, HIP, OpenCL and WGSL (i.e. Vulkan).
+All tensors are differentiable (that is tensors use requires_grad=True,
+but thanks to lazyness all unnecessary memory allocations are optimized away).
 
 ## Install
 
@@ -35,8 +38,12 @@ let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
 Zyx runs on different devices, current backends are CUDA, OpenCL and wgsl through wgpu.
 HIP would be supported too, but HIPRTC is currently broken.
 Using COMGR directly as a workaround is in the works..
-Zyx automatically tries to utilize all available devices, but you can also manually change it by creating file backend_config.json in folder zyx in home config directory (usually ~/.config/zyx/backend_config.json).
+Zyx automatically tries to utilize all available devices, but you can also manually change it
+by creating file backend_config.json in folder zyx in home config directory (usually ~/.config/zyx/backend_config.json).
 There write [DeviceConfig] struct.
+Please look at file DEVICE_CONFIG.md for detailed info how to write configuration for your PC.
+Zyx currently does not know how to differentiate between devices, so it will by default run
+all backends, even if they run on the same device. To avoid this, you need to write device_config.json.
 
 ## Simple neural network
 
@@ -103,18 +110,26 @@ Zyx currently only supports latest rust stable version. Zyx also requires std,
 as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging)
 and also some other stuff that requires filesystem and threads.
 
+## Operating systems
+
+Zyx is currently tested only on linux, but should work with all *nix operating systems.
+If it does not work on your system, or if you are interested in Windows support, please
+create a github issue.
+
 ## Features
 
 - **rand** - enables support for functions that enable random number generation
-- **half** - enables support for f16 and bf16 dtypes
 - **complex** - enables support for cf32 and cf64 dtypes
+- **disk_cache** - enables saving of searched kernels to disk
+- **wgsl** - enables wgsl backend
 
 ## Warning
 
 Zyx breaks many principles of clean code. Clean code was tried in older versions of zyx.
 Abstractions, wrappers, dyn (virtual tables), generics and lifetimes made the code hard
-to reason about. Zyx now uses enums for everything and almost zero generics (only in functions, such as impl IntoShape to make API more flexible).
-If you dislike ugly code, please do not use zyx.
+to reason about. Zyx now uses enums for everything and almost zero generics (only in functions,
+such as impl IntoShape to make API more flexible). If you dislike ugly code,
+please do not use zyx.
 
 Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive,
 please do not use zyx.
