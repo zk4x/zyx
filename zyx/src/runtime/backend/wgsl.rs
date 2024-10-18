@@ -357,6 +357,8 @@ impl WGSLDevice {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.wgsl(), x.wgsl());
                 }
                 IROp::Unary { z, x, uop } => {
+                    let Var::Id(id) = z else { panic!() };
+                    let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(dtype) => {
                             format!(
@@ -366,7 +368,7 @@ impl WGSLDevice {
                                 x.wgsl(),
                             )
                         }
-                        UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.wgsl(), x.wgsl()),
+                        UOp::ReLU => format!("{indent}{} = max({}, {});\n", z.wgsl(), x.wgsl(), dtype.dtype().zero_constant().wgsl()),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.wgsl(), x.wgsl()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.wgsl(), x.wgsl()),
                         UOp::Log2 => format!("{indent}{} = log2({});\n", z.wgsl(), x.wgsl()),
@@ -435,6 +437,7 @@ impl WGSLDevice {
         }
         source += "}\n";
         let source = format!("{source}");
+        //println!("{source}");
         if debug_asm {
             println!("{source}");
         }
@@ -585,11 +588,11 @@ impl Constant {
     fn wgsl(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            Constant::F8(x) => format!("{}f", unsafe { t::<_, float8::F8E4M3>(*x) }),
-            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
-            Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("{:.16}f", unsafe { t::<_, f64>(*x) }),
+            Constant::F8(x) => format!("f8({})", unsafe { t::<_, float8::F8E4M3>(*x) }),
+            Constant::F16(x) => format!("f16({})", unsafe { t::<_, half::f16>(*x) }),
+            Constant::BF16(x) => format!("bf16({})", unsafe { t::<_, half::bf16>(*x) }),
+            Constant::F32(x) => format!("f32({:.16})", unsafe { t::<_, f32>(*x) }),
+            Constant::F64(x) => format!("f64({:.16})", unsafe { t::<_, f64>(*x) }),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]

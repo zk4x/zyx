@@ -6,6 +6,7 @@ use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::rc::Rc;
 
+use float8::F8E4M3;
 use libloading::Library;
 
 use super::DeviceInfo;
@@ -1307,16 +1308,18 @@ impl Constant {
         match self {
             Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
             Constant::F8(x) => {
-                //let x: f8 = unsafe { t::<_, f8>(*x) };
-                //format!("{x:.16}f")
-                todo!()
+                let x: F8E4M3 = unsafe { t::<_, F8E4M3>(*x) };
+                format!("{x:.16}f")
             }
             Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
             Constant::F32(x) => {
                 let x: f32 = unsafe { t::<_, f32>(*x) };
                 format!("{x:.16}f")
             }
-            Constant::F64(x) => format!("{x}"),
+            Constant::F64(x) => {
+                let x: f64 = unsafe { t::<_, f64>(*x) };
+                format!("{x:.16}")
+            }
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
             #[cfg(feature = "complex")]

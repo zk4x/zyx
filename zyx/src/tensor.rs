@@ -1377,10 +1377,10 @@ impl Tensor {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
         Ok(self.sum(axes.clone())?
-            / into_axes(axes, shape.rank())?
+            / Tensor::constant(into_axes(axes, shape.rank())?
                 .into_iter()
                 .map(|a| shape[a])
-                .product::<usize>() as i64)
+                .product::<usize>() as i64).cast(self.dtype()))
     }
 
     /// Calculates the mean of this tensor along the specified axes and reshapes it using `reduce_kd_shape`.
@@ -1602,7 +1602,7 @@ impl Tensor {
             .map(|a| shape[a])
             .product::<usize>() as i64)
             - correction as i64;
-        Ok((&x * &x).sum(axes)? / d)
+        Ok((&x * &x).sum(axes)? / Tensor::constant(d).cast(x.dtype()))
     }
 
     /// Calculates the variance along the specified axes.

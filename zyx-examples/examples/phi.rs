@@ -15,7 +15,7 @@ fn repeat_kv(x: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
         return Ok(x);
     }
     return x
-        .repeat([1, 1, 1, n_rep])?
+        .repeat([1, 1, 1, n_rep]).unwrap()
         .reshape([bs, seqlen, n_kv_heads * n_rep, head_dim]);
 }
 
@@ -118,11 +118,11 @@ impl RotaryEmbedding {
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f32 / dim as f32))
             .collect();
         let inv_freq_len = inv_freq.len();
-        let inv_freq = Tensor::from(inv_freq).reshape([1, inv_freq_len])?;
-        let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, 1)?
+        let inv_freq = Tensor::from(inv_freq).reshape([1, inv_freq_len]).unwrap();
+        let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, 1).unwrap()
             .cast(DType::F32)
-            .reshape((cfg.max_position_embeddings, 1))?;
-        let freqs = t.matmul(&inv_freq)?;
+            .reshape((cfg.max_position_embeddings, 1)).unwrap();
+        let freqs = t.matmul(&inv_freq).unwrap();
         Ok(Self {
             dim,
             sin: freqs.sin(),
@@ -134,12 +134,12 @@ impl RotaryEmbedding {
         let [_b_size, _num_heads, seq_len, _headdim] = xs.shape()[..] else {
             panic!()
         };
-        let xs_rot = xs.get((.., .., .., ..self.dim as isize))?;
-        let xs_pass = xs.get((.., .., .., self.dim as isize..))?;
-        let c = self.cos.narrow(0, seqlen_offset, seq_len)?;
-        let s = self.sin.narrow(0, seqlen_offset, seq_len)?;
-        //let xs_rot = candle_nn::rotary_emb::rope(&xs_rot, &c, &s)?;
-        let xs_rot = xs_rot.rope(c, s)?;
+        let xs_rot = xs.get((.., .., .., ..self.dim as isize)).unwrap();
+        let xs_pass = xs.get((.., .., .., self.dim as isize..)).unwrap();
+        let c = self.cos.narrow(0, seqlen_offset, seq_len).unwrap();
+        let s = self.sin.narrow(0, seqlen_offset, seq_len).unwrap();
+        //let xs_rot = candle_nn::rotary_emb::rope(&xs_rot, &c, &s).unwrap();
+        let xs_rot = xs_rot.rope(c, s).unwrap();
         Tensor::cat([&xs_rot, &xs_pass], -1)
     }
 }
@@ -154,12 +154,12 @@ struct MLP {
 
 impl MLP {
     fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
-        //let fc1 = linear(cfg.hidden_size, cfg.intermediate_size, vb.pp("fc1"))?;
+        //let fc1 = linear(cfg.hidden_size, cfg.intermediate_size, vb.pp("fc1")).unwrap();
         let fc1 = Linear {
             weight: vb.t("fc1.weight"),
             bias: Some(vb.t("fc1.bias")),
         };
-        //let fc2 = linear(cfg.intermediate_size, cfg.hidden_size, vb.pp("fc2"))?;
+        //let fc2 = linear(cfg.intermediate_size, cfg.hidden_size, vb.pp("fc2")).unwrap();
         let fc2 = Linear {
             weight: vb.t("fc2.weight"),
             bias: Some(vb.t("fc2.bias")),
@@ -174,7 +174,10 @@ impl MLP {
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor, ZyxError> {
-        self.fc2.forward(self.act.forward(self.fc1.forward(xs)?))
+        let x = self.fc1.forward(xs).unwrap();
+        let x = self.act.forward(x);
+        let x = self.fc2.forward(x).unwrap();
+        Ok(x)
     }
 }
 
@@ -209,37 +212,37 @@ impl Attention {
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads();
         let head_dim = cfg.head_dim();
-        //let q_proj = linear(cfg.hidden_size, num_heads * head_dim, vb.pp("q_proj"))?;
+        //let q_proj = linear(cfg.hidden_size, num_heads * head_dim, vb.pp("q_proj")).unwrap();
         let q_proj = Linear {
             weight: vb.t("q_proj.weight"),
             bias: Some(vb.t("q_proj.bias")),
         };
-        //let k_proj = linear(cfg.hidden_size, num_kv_heads * head_dim, vb.pp("k_proj"))?;
+        //let k_proj = linear(cfg.hidden_size, num_kv_heads * head_dim, vb.pp("k_proj")).unwrap();
         let k_proj = Linear {
             weight: vb.t("k_proj.weight"),
             bias: Some(vb.t("k_proj.bias")),
         };
-        //let v_proj = linear(cfg.hidden_size, num_kv_heads * head_dim, vb.pp("v_proj"))?;
+        //let v_proj = linear(cfg.hidden_size, num_kv_heads * head_dim, vb.pp("v_proj")).unwrap();
         let v_proj = Linear {
             weight: vb.t("v_proj.weight"),
             bias: Some(vb.t("v_proj.bias")),
         };
-        //let dense = linear(num_heads * head_dim, cfg.hidden_size, vb.pp("dense"))?;
+        //let dense = linear(num_heads * head_dim, cfg.hidden_size, vb.pp("dense")).unwrap();
         let dense = Linear {
             weight: vb.t("dense.weight"),
             bias: Some(vb.t("dense.bias")),
         };
         // Alternative rope scalings are not supported.
-        let rotary_emb = RotaryEmbedding::new(cfg)?;
+        let rotary_emb = RotaryEmbedding::new(cfg).unwrap();
         let (q_layernorm, k_layernorm) = if cfg.qk_layernorm {
-            //let q_layernorm = layer_norm(head_dim, cfg.layer_norm_eps, vb.pp("q_layernorm"))?;
+            //let q_layernorm = layer_norm(head_dim, cfg.layer_norm_eps, vb.pp("q_layernorm")).unwrap();
             let q_layernorm = LayerNorm {
                 weight: Some(vb.t("q_layernorm.weight")),
                 bias: Some(vb.t("q_layernorm.bias")),
                 eps: cfg.layer_norm_eps,
                 d_dims: head_dim,
             };
-            //let k_layernorm = layer_norm(head_dim, cfg.layer_norm_eps, vb.pp("k_layernorm"))?;
+            //let k_layernorm = layer_norm(head_dim, cfg.layer_norm_eps, vb.pp("k_layernorm")).unwrap();
             let k_layernorm = LayerNorm {
                 weight: Some(vb.t("k_layernorm.weight")),
                 bias: Some(vb.t("k_layernorm.bias")),
@@ -271,7 +274,7 @@ impl Attention {
         repeat_kv(xs, self.num_heads / self.num_kv_heads)
     }
 
-    fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Result<Tensor, ZyxError> {
+    fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Tensor {
         let [b_size, seq_len, _n_embd] = xs.shape()[..] else {
             panic!()
         };
@@ -335,7 +338,7 @@ impl Attention {
 
         let attn_weights = query_states
             .cast(DType::F32)
-            .matmul(&key_states.cast(DType::F32).t())?
+            .matmul(&key_states.cast(DType::F32).t()).unwrap()
             * self.softmax_scale;
         let attn_weights = match mask {
             None => attn_weights,
@@ -350,13 +353,10 @@ impl Attention {
             .unwrap()
             .cast(value_states.dtype());
         let attn_output = attn_weights.matmul(&value_states).unwrap();
-        let d = attn_output.shape()[1];
-        let attn_output = attn_output
-            .transpose(1, 2)
-            .unwrap()
-            .reshape([b_size, seq_len, d])
-            .unwrap();
-        self.dense.forward(attn_output)
+        let attn_output = attn_output.transpose(1, 2).unwrap();
+        let d: usize = attn_output.shape()[2..].iter().product();
+        let attn_output = attn_output.reshape([b_size, seq_len, d]).unwrap();
+        self.dense.forward(attn_output).unwrap()
     }
 
     fn clear_kv_cache(&mut self) {
@@ -372,8 +372,8 @@ struct DecoderLayer {
 
 impl DecoderLayer {
     fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
-        let self_attn = Attention::new(cfg, &mut vb.g("self_attn"))?;
-        let mlp = MLP::new(cfg, &mut vb.g("mlp"))?;
+        let self_attn = Attention::new(cfg, &mut vb.g("self_attn")).unwrap();
+        let mlp = MLP::new(cfg, &mut vb.g("mlp")).unwrap();
         /*let input_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.layer_norm_eps,
@@ -396,7 +396,7 @@ impl DecoderLayer {
     fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Tensor {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs).unwrap();
-        let attn_outputs = self.self_attn.forward(&xs, mask).unwrap();
+        let attn_outputs = self.self_attn.forward(&xs, mask);
         let feed_forward_hidden_states = self.mlp.forward(&xs).unwrap();
         attn_outputs + feed_forward_hidden_states + residual
     }
@@ -417,25 +417,26 @@ impl Model {
     pub fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
         let mut vb_m = vb.g("model");
         //let embed_tokens = Embedding::new(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let embed_tokens = Embedding::from_weight(vb_m.t("embed_tokens.weight"))?;
+        let embed_tokens = Embedding::from_weight(vb_m.t("embed_tokens.weight")).unwrap();
         /*let final_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.layer_norm_eps,
             vb_m.pp("final_layernorm"),
         )?;*/
+        let weight = vb_m.t("final_layernorm.weight");
         let final_layernorm = LayerNorm {
-            weight: Some(vb_m.t("final_layernorm.weight")),
+            d_dims: weight.rank(),
+            weight: Some(weight),
             bias: Some(vb_m.t("final_layernorm.bias")),
             eps: cfg.layer_norm_eps,
-            d_dims: cfg.hidden_size,
         };
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let mut vb_m = vb_m.g("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(cfg, &mut vb_m.g(&format!("{layer_idx}")))?;
+            let layer = DecoderLayer::new(cfg, &mut vb_m.g(&format!("{layer_idx}"))).unwrap();
             layers.push(layer);
         }
-        //let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        //let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head")).unwrap();
         let lm_head = Linear {
             weight: vb.t("lm_head.weight"),
             bias: Some(vb.t("lm_head.bias")),
@@ -524,7 +525,7 @@ impl LogitsProcessor {
     }
 
     fn sample_argmax(&mut self, logits: Tensor) -> Result<u32, ZyxError> {
-        let logits_v: Vec<f32> = logits.try_into()?;
+        let logits_v: Vec<f32> = logits.try_into().unwrap();
         let next_token = logits_v
             .iter()
             .enumerate()
@@ -571,7 +572,7 @@ impl LogitsProcessor {
             let (indices, _, _) =
                 argsort_indices.select_nth_unstable_by(top_k, |&i, &j| prs[j].total_cmp(&prs[i]));
             let prs = indices.iter().map(|&i| prs[i]).collect::<Vec<_>>();
-            let index = self.sample_multinomial(&prs)?;
+            let index = self.sample_multinomial(&prs).unwrap();
             Ok(indices[index as usize] as u32)
         }
     }
@@ -593,9 +594,9 @@ impl LogitsProcessor {
             let mut prs = indices.iter().map(|&i| prs[i]).collect::<Vec<_>>();
             let sum_p = prs.iter().sum::<f32>();
             let index = if top_p <= 0.0 || top_p >= sum_p {
-                self.sample_multinomial(&prs)?
+                self.sample_multinomial(&prs).unwrap()
             } else {
-                self.sample_topp(&mut prs, top_p)?
+                self.sample_topp(&mut prs, top_p).unwrap()
             };
             Ok(indices[index as usize] as u32)
         }
@@ -613,35 +614,35 @@ impl LogitsProcessor {
         let logits = logits.cast(DType::F32);
         let prs = |temperature: f64| -> Result<Vec<f32>, ZyxError> {
             let logits = &logits / temperature;
-            let prs = logits.softmax([-1])?;
-            let mut prs: Vec<f32> = prs.try_into()?;
+            let prs = logits.softmax([-1]).unwrap();
+            let mut prs: Vec<f32> = prs.try_into().unwrap();
             f(&mut prs);
             Ok(prs)
         };
 
         let next_token = match &self.sampling {
-            Sampling::ArgMax => self.sample_argmax(logits)?,
+            Sampling::ArgMax => self.sample_argmax(logits).unwrap(),
             Sampling::All { temperature } => {
-                let prs = prs(*temperature)?;
-                self.sample_multinomial(&prs)?
+                let prs = prs(*temperature).unwrap();
+                self.sample_multinomial(&prs).unwrap()
             }
             Sampling::TopP { p, temperature } => {
-                let mut prs = prs(*temperature)?;
+                let mut prs = prs(*temperature).unwrap();
                 if *p <= 0.0 || *p >= 1.0 {
                     // simply sample from the predicted probability distribution
-                    self.sample_multinomial(&prs)?
+                    self.sample_multinomial(&prs).unwrap()
                 } else {
                     // top-p (nucleus) sampling, clamping the least likely tokens to zero
-                    self.sample_topp(&mut prs, *p as f32)?
+                    self.sample_topp(&mut prs, *p as f32).unwrap()
                 }
             }
             Sampling::TopK { k, temperature } => {
-                let mut prs = prs(*temperature)?;
-                self.sample_topk(&mut prs, *k)?
+                let mut prs = prs(*temperature).unwrap();
+                self.sample_topk(&mut prs, *k).unwrap()
             }
             Sampling::TopKThenTopP { k, p, temperature } => {
-                let mut prs = prs(*temperature)?;
-                self.sample_topk_topp(&mut prs, *k, *p as f32)?
+                let mut prs = prs(*temperature).unwrap();
+                self.sample_topk_topp(&mut prs, *k, *p as f32).unwrap()
             }
         };
         Ok(next_token)
@@ -684,10 +685,10 @@ impl TokenOutputStream {
             String::new()
         } else {
             let tokens = &self.tokens[self.prev_index..self.current_index];
-            self.decode(tokens)?
+            self.decode(tokens).unwrap()
         };
         self.tokens.push(token);
-        let text = self.decode(&self.tokens[self.prev_index..])?;
+        let text = self.decode(&self.tokens[self.prev_index..]).unwrap();
         if text.len() > prev_text.len() && text.chars().last().unwrap().is_alphanumeric() {
             let text = text.split_at(prev_text.len());
             self.prev_index = self.current_index;
@@ -703,9 +704,9 @@ impl TokenOutputStream {
             String::new()
         } else {
             let tokens = &self.tokens[self.prev_index..self.current_index];
-            self.decode(tokens)?
+            self.decode(tokens).unwrap()
         };
-        let text = self.decode(&self.tokens[self.prev_index..])?;
+        let text = self.decode(&self.tokens[self.prev_index..]).unwrap();
         if text.len() > prev_text.len() {
             let text = text.split_at(prev_text.len());
             Ok(Some(text.1.to_string()))
@@ -738,7 +739,7 @@ pub fn apply_repeat_penalty(
     penalty: f32,
     context: &[u32],
 ) -> Result<Tensor, ZyxError> {
-    let mut logits: Vec<f32> = logits.cast(DType::F32).try_into()?;
+    let mut logits: Vec<f32> = logits.cast(DType::F32).try_into().unwrap();
     let mut already_seen = std::collections::HashSet::new();
     for token_id in context {
         if already_seen.contains(token_id) {
@@ -808,7 +809,7 @@ impl TextGeneration {
             None => panic!("cannot find the endoftext token"),
         };
         print!("{prompt}");
-        std::io::stdout().flush()?;
+        std::io::stdout().flush().unwrap();
         let start_gen = std::time::Instant::now();
         //let mut pos = 0;
         for index in 0..sample_len {
@@ -830,7 +831,7 @@ impl TextGeneration {
             if next_token == eos_token {
                 if let Some(t) = self.tokenizer.decode_rest().unwrap() {
                     print!("{t}");
-                    std::io::stdout().flush()?;
+                    std::io::stdout().flush().unwrap();
                 }
                 break;
             }
@@ -919,9 +920,9 @@ fn main() -> Result<(), ZyxError> {
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
         let mut vb: HashMap<String, Tensor> = Tensor::load("../model.safetensors").unwrap();
-        let mut keys: Vec<String> = vb.keys().cloned().collect();
-        keys.sort();
-        println!("{:?}", keys);
+        //let mut keys: Vec<String> = vb.keys().cloned().collect();
+        //keys.sort();
+        //println!("{:?}", keys);
         //let config_filename = repo.get("config.json")?;
         //let config = std::fs::read_to_string(config_filename)?;
         let config = Config {

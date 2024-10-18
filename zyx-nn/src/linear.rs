@@ -16,7 +16,7 @@ impl Linear {
         let l = -(1.0 / (in_features as f32)).sqrt();
         let u = (1.0 / (in_features as f32)).sqrt();
         Ok(Linear {
-            weight: Tensor::uniform([in_features, out_features], l..u)?.cast(dtype),
+            weight: Tensor::uniform([out_features, in_features], l..u)?.cast(dtype),
             bias: if bias { Some(Tensor::uniform([out_features], l..u)?.cast(dtype)) } else { None },
         })
     }
@@ -24,7 +24,7 @@ impl Linear {
     /// Forward function for linear.
     /// Calculates x.dot(&self.weight) + self.bias
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let x = x.into().dot(&self.weight)?;
+        let x = x.into().dot(self.weight.t())?;
         if let Some(bias) = &self.bias {
             return Ok(x + bias);
         }

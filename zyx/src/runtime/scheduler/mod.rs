@@ -78,7 +78,9 @@ impl Runtime {
         // create vop representation
         let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order);
         //println!("{:?}", self.tensor_buffer_map);
-        //for kernel in &kernels { kernel.debug(); }
+        if self.debug_sched() {
+            for kernel in &kernels { kernel.debug(); }
+        }
         //panic!("Done");
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
         // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
@@ -200,9 +202,7 @@ impl Runtime {
                     sched_graph.push(SchedulerOp::Finish(vprogram));
                 }
                 // Prints unoptimized kernel
-                if self.debug_sched() {
-                    kernel.debug();
-                }
+                //if self.debug_sched() { kernel.debug(); }
                 // Disk cached search, works across devices and platforms
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
                 /*let optimization = KernelOptimization {
