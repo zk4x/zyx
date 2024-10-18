@@ -58,6 +58,11 @@ pub(super) struct HIPDevice {
     memory_pool_id: usize,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
+    hipModuleLoadData: unsafe extern "C" fn(*mut HIPmodule, *const u8) -> HIPStatus,
+    hipModuleGetFunction:
+        unsafe extern "C" fn(*mut HIPfunction, HIPmodule, *const c_char) -> HIPStatus,
+    hipModuleUnload: unsafe extern "C" fn(HIPmodule) -> HIPStatus,
+    hipStreamDestroy: unsafe extern "C" fn(HIPstream) -> HIPStatus,
 }
 
 #[derive(Debug)]
@@ -71,6 +76,7 @@ pub(super) struct HIPProgram {
 
 #[derive(Debug)]
 pub(super) struct HIPQueue {
+    stream: HIPstream,
     load: usize,
     hipLaunchKernel: unsafe extern "C" fn(
         HIPfunction,
@@ -85,11 +91,13 @@ pub(super) struct HIPQueue {
         *mut *mut c_void,
         *mut *mut c_void,
     ) -> HIPStatus,
+    hipStreamSynchronize: unsafe extern "C" fn(HIPstream) -> HIPStatus,
 }
 
 unsafe impl Send for HIPMemoryPool {}
 unsafe impl Send for HIPBuffer {}
 unsafe impl Send for HIPProgram {}
+unsafe impl Send for HIPQueue {}
 
 pub(super) fn initialize_device(
     config: &HIPConfig,
@@ -146,9 +154,14 @@ pub(super) fn initialize_device(
     let hipMemcpyDtoH = *unsafe { hip.get(b"hipMemcpyDtoH\0") }.unwrap();
     let hipMemcpyPeer = *unsafe { hip.get(b"hipMemcpyPeer\0") }.unwrap();
     let hipCtxDestroy = *unsafe { hip.get(b"hipCtxDestroy\0") }.unwrap();
-    //let hipModuleLoadDataEx = *unsafe { hip.get(b"hipModuleLoadDataEx\0") }.unwrap();
-    //let hipModuleGetFunction = *unsafe { hip.get(b"hipModuleGetFunction\0") }.unwrap();
-    //let hipLaunchKernel = *unsafe { hip.get(b"hipLaunchKernel\0") }.unwrap();
+    let hipModuleLoadData = *unsafe { hip.get(b"hipModuleLoadData\0") }.unwrap();
+    let hipModuleGetFunction = *unsafe { hip.get(b"hipModuleGetFunction\0") }.unwrap();
+    let hipLaunchKernel = *unsafe { hip.get(b"hipLaunchKernel\0") }.unwrap();
+    let hipStreamCreate: unsafe extern "C" fn(*mut HIPstream, c_uint) -> HIPStatus =
+        *unsafe { hip.get(b"hipStreamCreate\0") }.unwrap();
+    let hipStreamSynchronize = *unsafe { hip.get(b"hipStreamSynchronize\0") }.unwrap();
+    let hipStreamDestroy = *unsafe { hip.get(b"hipStreamDestroy\0") }.unwrap();
+    let hipModuleUnload = *unsafe { hip.get(b"hipModuleUnload\0") }.unwrap();
 
     unsafe { hipInit(0) }.check("Failed to init HIP")?;
     let mut driver_version = 0;
@@ -232,6 +245,20 @@ pub(super) fn initialize_device(
             hipCtxDestroy,
         });
         let mut queues = Vec::new();
+        for _ in 0..8 {
+            let mut stream = ptr::null_mut();
+            let Ok(_) =
+                unsafe { hipStreamCreate(&mut stream, 0) }.check("Failed to create hip stream")
+            else {
+                continue;
+            };
+            queues.push(HIPQueue {
+                stream,
+                load: 0,
+                hipLaunchKernel,
+                hipStreamSynchronize,
+            });
+        }
         devices.push((
             HIPDevice {
                 device,
@@ -247,6 +274,10 @@ pub(super) fn initialize_device(
                 },
                 memory_pool_id: 0,
                 compute_capability: [major, minor],
+                hipModuleLoadData,
+                hipModuleGetFunction,
+                hipModuleUnload,
+                hipStreamDestroy,
             },
             queues,
         ))
@@ -257,7 +288,8 @@ pub(super) fn initialize_device(
 
 impl HIPMemoryPool {
     pub(super) fn deinitialize(self) -> Result<(), HIPError> {
-        todo!()
+        // TODO
+        Ok(())
     }
 
     pub(super) fn free_bytes(&self) -> usize {
@@ -316,7 +348,8 @@ impl Drop for HIPMemoryPool {
 
 impl HIPDevice {
     pub(super) fn deinitialize(self) -> Result<(), HIPError> {
-        todo!()
+        // TODO
+        Ok(())
     }
 
     pub(super) fn info(&self) -> &DeviceInfo {
@@ -329,11 +362,11 @@ impl HIPDevice {
     }
 
     pub(super) fn release_program(&self, program: HIPProgram) -> Result<(), HIPError> {
-        todo!()
+        unsafe { (self.hipModuleUnload)(program.module) }.check("Failed to release HIP program.")
     }
 
     pub(super) fn release_queue(&self, queue: HIPQueue) -> Result<(), HIPError> {
-        todo!()
+        unsafe { (self.hipStreamDestroy)(queue.stream) }.check("Failed to release HIP stream.")
     }
 
     pub(super) fn compile(
@@ -597,27 +630,17 @@ impl HIPDevice {
             .check("hiprtcGetCode")?;
         unsafe { hiprtcDestroyProgram(&mut program) }.check("hiprtcDestroyProgram")?;
 
-        /*let mut module = ptr::null_mut();
-        unsafe {
-            (self.hipModuleLoadDataEx)(
-                &mut module,
-                code_vec.as_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check("Module load failed.")?;
+        let mut module = ptr::null_mut();
+        unsafe { (self.hipModuleLoadData)(&mut module, code_vec.as_ptr()) }
+            .check("Module load failed.")?;
         let mut function: HIPfunction = ptr::null_mut();
-        // Don't forget that the name is null terminated string
-        // Name may be mangled, IDK cause hiprtc just does not work
         unsafe { (self.hipModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
-            .check("Failed to load function.")?;*/
+            .check("Failed to load function.")?;
 
         Ok(HIPProgram {
             name,
-            module: todo!(),
-            function: todo!(),
+            module,
+            function,
             global_work_size,
             local_work_size,
         })
