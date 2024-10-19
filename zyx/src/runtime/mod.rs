@@ -196,7 +196,7 @@ impl Runtime {
         let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
         self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
         self.tensor_buffer_map.insert(
-            (id, View::new(self.shape(id))),
+            (id, View::contiguous(self.shape(id))),
             BufferId {
                 memory_pool_id,
                 buffer_id,
@@ -304,7 +304,7 @@ impl Runtime {
         }
         self.realize(BTreeSet::from([x]))?;
         let mut shape = self.shape(x).to_vec();
-        let old_k = (x, View::new(&shape));
+        let old_k = (x, View::contiguous(&shape));
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
         //self.tensor_buffer_map.find();
@@ -320,7 +320,8 @@ impl Runtime {
             .push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
         if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &old_k) {
             //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
-            self.tensor_buffer_map.insert((id, View::new(&shape)), *bid);
+            self.tensor_buffer_map
+                .insert((id, View::contiguous(&shape)), *bid);
         } else {
             panic!("Tensor sharded across multiple devices can't be currently bitcasted. Internal bug.");
         }

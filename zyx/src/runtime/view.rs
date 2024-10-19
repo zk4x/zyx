@@ -23,7 +23,7 @@ impl View {
         View(Vec::new())
     }
 
-    pub(crate) fn new(shape: &[usize]) -> View {
+    pub(crate) fn contiguous(shape: &[usize]) -> View {
         let mut stride = 1;
         View(vec![shape
             .iter()
@@ -46,7 +46,25 @@ impl View {
     }
 
     pub(crate) fn binded(shape: &[usize], axes: &[usize]) -> View {
-        todo!()
+        let mut stride = 1;
+        View(vec![shape
+            .iter()
+            .zip(axes)
+            .rev()
+            .map(|(&axis, dim)| {
+                let temp = stride;
+                stride *= dim;
+                (
+                    axis,
+                    RDim {
+                        st: temp,
+                        d: *dim,
+                        lp: 0,
+                        rp: 0,
+                    },
+                )
+            })
+            .collect()])
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -91,7 +109,14 @@ impl View {
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
-        todo!()
+        if let Some(inner) = self.0.last() {
+            let stride = 1;
+            inner
+                .values()
+                .all(|dim| dim.lp == 0 && dim.rp == 0 && dim.st == stride)
+        } else {
+            true
+        }
     }
 
     pub(crate) fn used_axes(&self) -> Vec<usize> {

@@ -167,10 +167,10 @@ impl Runtime {
                 let memory_pool_id = self.devices[device_id].memory_pool_id();
                 // Allocate memory for outputs
                 for output in kernel.outputs() {
-                    let key = (output, View::new(graph.shape(output)));
+                    let key = (output, View::contiguous(graph.shape(output)));
                     if !tensor_buffer_map.contains_key(&key) {
                         let shape = graph.shape(output);
-                        let view = View::new(shape);
+                        let view = View::contiguous(shape);
                         sched_graph.push(SchedulerOp::Allocate {
                             tensor_id: output,
                             memory_pool_id,
@@ -187,7 +187,7 @@ impl Runtime {
                 //println!("{tensor_buffer_map:?}");
 
                 for input in &kernel.inputs() {
-                    let view = View::new(graph.shape(*input));
+                    let view = View::contiguous(graph.shape(*input));
                     //println!("Tensor map tensor {input}");
                     let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
@@ -205,7 +205,9 @@ impl Runtime {
                     sched_graph.push(SchedulerOp::Finish(vprogram));
                 }
                 // Prints unoptimized kernel
-                if self.debug_sched() { kernel.debug(); }
+                if self.debug_sched() {
+                    kernel.debug();
+                }
                 // Disk cached search, works across devices and platforms
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
                 /*let optimization = KernelOptimization {
@@ -244,7 +246,7 @@ impl Runtime {
                 }
                 //println!("Unneeded tensors: {unneeded_tensors:?}, kernel inputs {:?} tensor_buffer_map {tensor_buffer_map:?}", &kernels[kid].inputs);
                 for tensor_id in unneeded_tensors {
-                    let view = View::new(graph.shape(tensor_id));
+                    let view = View::contiguous(graph.shape(tensor_id));
                     sched_graph.push(SchedulerOp::Deallocate { tensor_id, view });
                 }
             }
@@ -570,7 +572,7 @@ impl Runtime {
                 .map(|arg| {
                     (
                         arg,
-                        View::new(graph.shape(arg)),
+                        View::contiguous(graph.shape(arg)),
                         !kernel.outputs().contains(&arg),
                     )
                 })
@@ -590,14 +592,20 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        if debug { println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid)); }
+        if debug {
+            println!(
+                "ID({nid})x{}: {node:?}, sh: {:?}",
+                graph.rc(nid),
+                graph.shape(nid)
+            );
+        }
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);
                 ops.push(VOp::Const {
                     z: nid,
                     value: *value,
-                    view: View::new(&[1]),
+                    view: View::contiguous(&[1]),
                 });
                 kernels.push(Kernel { ops })
             }
@@ -618,7 +626,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     // TODO not sure if this is perfectly correct. Can it contain x in outputs,
                     // but can it be x evaluated to different values, i.e. some intermediate?
                     if !kernel.outputs().contains(&x) {
-                        kernel.store(x, View::new(xshape));
+                        kernel.store(x, View::contiguous(xshape));
                     }
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
@@ -728,7 +736,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             VOp::Load { xview: view, .. }
                             | VOp::Const { view, .. }
                             | VOp::Store { zview: view, .. } => {
-                                *view = View::new(shape);
+                                *view = View::contiguous(shape);
                             }
                             _ => {}
                         }
@@ -846,10 +854,14 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             mop: MOp::Resh,
                         });
                         //kernel.debug();
-                        assert_eq!(kernel.shape(), graph.shape(nid), "Shape after reshape split is incorrect.");
+                        assert_eq!(
+                            kernel.shape(),
+                            graph.shape(nid),
+                            "Shape after reshape split is incorrect."
+                        );
                     } else {
                         // else create new kernel after storing results of previous kernel
-                        kernel.store(*x, View::new(graph.shape(*x)));
+                        kernel.store(*x, View::contiguous(graph.shape(*x)));
                         let mut ops = shape_to_loops(shape);
                         ops.push(VOp::Load {
                             z: nid,
@@ -857,7 +869,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             zview: View::none(),
                             x: *x,
                             xscope: Scope::Global,
-                            xview: View::new(shape),
+                            xview: View::contiguous(shape),
                         });
                         kernels.push(Kernel { ops });
                     }
@@ -871,7 +883,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 // For now kernel also won't be padded if it contains store,
                 // but that can be changed.
                 if !kernel.can_be_zero_padded() {
-                    kernel.store(x, View::new(graph.shape(x)));
+                    kernel.store(x, View::contiguous(graph.shape(x)));
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
                 }
@@ -1007,7 +1019,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             zview: View::none(),
                             x: y,
                             xscope: Scope::Global,
-                            xview: View::new(graph.shape(y)),
+                            xview: View::contiguous(graph.shape(y)),
                         });
                         kernels.push(kernel);
                         kernels.last_mut().unwrap()
@@ -1108,7 +1120,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 .iter_mut()
                 .find(|kernel| kernel.vars().contains(&nid))
             {
-                kernel.store(nid, View::new(graph.shape(nid)));
+                kernel.store(nid, View::contiguous(graph.shape(nid)));
             } else {
                 panic!()
             }
@@ -1125,8 +1137,12 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 // the same work twice.
                 //if user_leafs.contains(&nid) {
                 //kernel.store(nid, View::new(graph.shape(nid)));
-                if (kernel.ops.len() > 10 && kernel.shape().into_iter().product::<usize>() < 1024*1024*1024) || kernel.is_reduce() || !kernel.outputs().is_empty() {
-                    kernel.store(nid, View::new(graph.shape(nid)));
+                if (kernel.ops.len() > 10
+                    && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
+                    || kernel.is_reduce()
+                    || !kernel.outputs().is_empty()
+                {
+                    kernel.store(nid, View::contiguous(graph.shape(nid)));
                     kernels.push(Kernel::load(nid, graph));
                 } else {
                     let kernel2 = kernel.clone();
@@ -1203,7 +1219,11 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
 fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &'a mut Kernel {
     let _t = crate::Timer::new("get_kernel");
     // First if there is kernel which stores x, then just return new load kernel
-    if kernels.iter().rev().any(|kernel| kernel.outputs().contains(&x)) {
+    if kernels
+        .iter()
+        .rev()
+        .any(|kernel| kernel.outputs().contains(&x))
+    {
         kernels.push(Kernel::load(x, graph));
         return kernels.last_mut().unwrap();
     }

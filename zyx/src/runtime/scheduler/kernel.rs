@@ -1,11 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    runtime::{
-        graph::Graph,
-        ir::Scope,
-        view::View,
-    },
+    runtime::{graph::Graph, ir::Scope, view::View},
     shape::{Axis, Dimension},
     tensor::TensorId,
 };
@@ -145,19 +141,24 @@ impl Kernel {
             zview: View::none(),
             x,
             xscope: Scope::Global,
-            xview: View::new(&shape),
+            xview: View::contiguous(&shape),
         });
         Kernel { ops }
     }
 
     /// Store z just after the last operation was executed with it
     pub(super) fn store(&mut self, z: TensorId, zview: View) {
-        if let Some(&VOp::Store { z: nz, zview: ref nzview, .. }) = self.ops.last() {
+        if let Some(&VOp::Store {
+            z: nz,
+            zview: ref nzview,
+            ..
+        }) = self.ops.last()
+        {
             if z == nz && &zview == nzview {
-                return
+                return;
             }
         }
-        assert!(zview.numel() < 1024 * 1024 * 1024,  "Too big store.");
+        assert!(zview.numel() < 1024 * 1024 * 1024, "Too big store.");
         let store_op = VOp::Store {
             z,
             zview,
@@ -202,7 +203,9 @@ impl Kernel {
     }
 
     pub(super) fn is_reduce(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, VOp::Accumulator { .. }))
+        self.ops
+            .iter()
+            .any(|op| matches!(op, VOp::Accumulator { .. }))
     }
 
     pub(super) fn permute(&mut self, axes: &[usize]) {
