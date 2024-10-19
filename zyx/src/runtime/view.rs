@@ -25,7 +25,25 @@ impl View {
     }
 
     pub(crate) fn new(shape: &[usize]) -> View {
-        todo!()
+        let mut stride = 1;
+        let mut res: Vec<RDim> = shape
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(axis, dim)| {
+                let temp = stride;
+                stride *= dim;
+                RDim {
+                    a: axis,
+                    st: temp,
+                    d: *dim,
+                    lp: 0,
+                    rp: 0,
+                }
+            })
+            .collect();
+        res.reverse();
+        View(vec![res])
     }
 
     pub(crate) fn binded(shape: &[usize], axes: &[usize]) -> View {
@@ -41,11 +59,19 @@ impl View {
     }
 
     pub(crate) fn original_numel(&self) -> usize {
-        todo!()
+        if let Some(inner) = self.0.first() {
+            inner.iter().map(|dim| if dim.st != 0 { (dim.d as isize + dim.lp + dim.rp) as usize } else { 1 }).product()
+        } else {
+            1
+        }
     }
 
     pub(crate) fn numel(&self) -> usize {
-        todo!()
+        if let Some(inner) = self.0.last() {
+            inner.iter().map(|inner| inner.d).product()
+        } else {
+            1
+        }
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
@@ -53,7 +79,11 @@ impl View {
     }
 
     pub(crate) fn used_axes(&self) -> Vec<usize> {
-        todo!()
+        if let Some(inner) = self.0.last() {
+            inner.iter().map(|dim| dim.a).collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Inserts new loop, shifts all axes greater than axis up
@@ -61,9 +91,10 @@ impl View {
         todo!()
     }
 
-    pub(crate) fn reshape(&mut self, shape: &[usize]) {
+    // TODO this will be used if split is not possible
+    /*pub(crate) fn reshape(&mut self, shape: &[usize]) {
         todo!()
-    }
+    }*/
 
     pub(crate) fn split(&mut self, axis: usize, dimensions: &[usize]) {
         todo!()
