@@ -126,6 +126,8 @@ impl View {
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(&axis) {
                 assert_eq!(dim.d, 1);
+                assert_eq!(dim.lp, 0);
+                assert_eq!(dim.rp, 0);
                 dim.d = ndim;
                 dim.st = 0;
             }
@@ -133,7 +135,13 @@ impl View {
     }
 
     pub(crate) fn pad(&mut self, axis: usize, left_pad: isize, right_pad: isize) {
-        todo!()
+        if let Some(inner) = self.0.last_mut() {
+            if let Some(dim) = inner.get_mut(&axis) {
+                dim.d = (dim.d as isize + left_pad + right_pad) as usize;
+                dim.lp = left_pad;
+                dim.rp = right_pad;
+            }
+        }
     }
 
     /// Load constant into variable or directly return it if view isn't padded
