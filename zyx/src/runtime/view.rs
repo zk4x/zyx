@@ -172,7 +172,9 @@ impl View {
                             },
                         );
                         stride *= d;
-                        axis -= 1;
+                        if axis > 0 {
+                            axis -= 1;
+                        }
                     }
                 }
             }
