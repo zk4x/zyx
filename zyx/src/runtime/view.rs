@@ -112,9 +112,40 @@ impl View {
         todo!()
     }*/
 
-    pub(crate) fn split(&mut self, axis: usize, dimensions: &[usize]) {
+    pub(crate) fn split(&mut self, mut axis: usize, dimensions: &[usize]) {
         // if axis contains padding, we have to reshape, otherwise just split
-        todo!()
+        if let Some(inner) = self.0.last_mut() {
+            if let Some(dim) = inner.get_mut(&axis) {
+                if dim.lp != 0 || dim.rp != 0 {
+                    todo!("Reshape padded view.");
+                } else {
+                    // First shift axes > axis by dimensions.len()
+                    let keys: Vec<Axis> = inner.keys().copied().collect();
+                    for a in keys {
+                        if a > axis {
+                            let dim = inner.remove(&a).unwrap();
+                            inner.insert(a + dimensions.len(), dim);
+                        }
+                    }
+                    // Then remove axis and get it's stride
+                    let mut stride = inner.remove(&axis).unwrap().st;
+                    // At last insert all new dimensions
+                    for &d in dimensions.iter().rev() {
+                        inner.insert(
+                            axis,
+                            RDim {
+                                d,
+                                st: stride,
+                                lp: 0,
+                                rp: 0,
+                            },
+                        );
+                        stride *= d;
+                        axis -= 1;
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
