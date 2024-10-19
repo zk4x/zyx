@@ -854,7 +854,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         ops.push(VOp::Load {
                             z: nid,
                             zscope: Scope::Register,
-                            zview: View::None,
+                            zview: View::none(),
                             x: *x,
                             xscope: Scope::Global,
                             xview: View::new(shape),
@@ -904,7 +904,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         | VOp::Store { zview: view, .. }
                         | VOp::Accumulator { view, .. } => {
                             for (&axis, &(lp, rp)) in &padded_axes {
-                                view.pad_axis(axis, lp, rp);
+                                view.pad(axis, lp, rp);
                             }
                         }
                         _ => {}
@@ -958,16 +958,16 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     VOp::Accumulator {
                         z: nid,
                         rop: *rop,
-                        view: View::None,
+                        view: View::none(),
                     },
                 );
                 kernel.ops.push(VOp::Binary {
                     z: nid,
-                    zview: View::None,
+                    zview: View::none(),
                     x: *x,
-                    xview: View::None,
+                    xview: View::none(),
                     y: nid,
-                    yview: View::None,
+                    yview: View::none(),
                     bop: match rop {
                         ROp::Sum => BOp::Add,
                         ROp::Max => BOp::Max,
@@ -988,7 +988,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     z: nid,
                     x: *x,
                     uop: *uop,
-                    view: View::None,
+                    view: View::none(),
                 });
             }
             &Node::Binary { x, y, bop } => {
@@ -1004,7 +1004,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         kernel.ops.push(VOp::Load {
                             z: y,
                             zscope: Scope::Register,
-                            zview: View::None,
+                            zview: View::none(),
                             x: y,
                             xscope: Scope::Global,
                             xview: View::new(graph.shape(y)),
@@ -1016,11 +1016,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     };
                     kernel.ops.push(VOp::Binary {
                         z: nid,
-                        zview: View::None,
+                        zview: View::none(),
                         x,
-                        xview: View::None,
+                        xview: View::none(),
                         y,
-                        yview: View::None,
+                        yview: View::none(),
                         bop,
                     });
                 } else {
@@ -1087,11 +1087,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     kernel_x.ops.extend(kernel_y_ops);
                     kernel_x.ops.push(VOp::Binary {
                         z: nid,
-                        zview: View::None,
+                        zview: View::none(),
                         x,
-                        xview: View::None,
+                        xview: View::none(),
                         y,
-                        yview: View::None,
+                        yview: View::none(),
                         bop,
                     });
                     // if kernel is not last, then make it last

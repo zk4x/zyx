@@ -2,13 +2,10 @@
 //! It is passed into different backends. Each backend
 //! compiles IR into their own bytecode.
 
-use super::{graph::Graph, node::ROp, scheduler::VOp, view::View};
+use super::{graph::Graph, node::ROp, scheduler::VOp};
 use crate::{
     dtype::Constant,
-    runtime::{
-        node::{BOp, UOp},
-        view::StridedDim,
-    },
+    runtime::node::{BOp, UOp},
     shape::Axis,
     tensor::TensorId,
     DType,
@@ -413,120 +410,8 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 }
             }
             &VOp::Const { z, value, ref view } => {
-                let var = if view.requires_conditional_padding() {
-                    //println!("View: {view}");
-                    let View::Padded(dims, padding) = view else {
-                        panic!()
-                    };
-                    let padding_condition = get_empty_register(&mut registers, IRDType::Bool, 1);
-                    ops.push(IROp::Set {
-                        z: padding_condition,
-                        value: Constant::Bool(true),
-                    });
-                    let padding_condition = Var::Id(padding_condition);
-                    let mut pc = String::new();
-                    for StridedDim { axis, .. } in dims {
-                        if let Some((axes, (lp, rp))) = padding
-                            .iter()
-                            .find(|(axes, _)| axes.iter().max().unwrap() == axis)
-                        {
-                            if *lp > 0 || *rp > 0 {
-                                let mut idx = String::new();
-                                let mut st = 1;
-                                let mut dim = 1;
-                                for axis in axes.iter().rev() {
-                                    idx = format!("i{axis}*{st}+{idx}");
-                                    st *= dims[*axis].dim;
-                                    dim *= dims[*axis].dim;
-                                }
-                                idx.pop();
-                                if *lp > 0 {
-                                    pc += &format!("{idx} < {lp} || ");
-                                }
-                                if *rp > 0 {
-                                    pc += &format!("{idx} > {} || ", dim as isize - rp - 1);
-                                }
-
-                                let idx_id = get_empty_register(&mut registers, IRDType::U32(IRVec::Scalar), 1);
-                                ops.push(IROp::Set {
-                                    z: idx_id,
-                                    value: Constant::U32(0),
-                                });
-                                let idx = Var::Id(idx_id);
-                                let mut st = 1;
-                                let mut dim = 1;
-                                for axis in axes.iter().rev() {
-                                    ops.push(IROp::MAdd {
-                                        z: idx,
-                                        a: Var::Id(*axis as u16),
-                                        b: Var::Const(Constant::U32(st as u32)),
-                                        c: idx,
-                                    });
-                                    st *= dims[*axis].dim;
-                                    dim *= dims[*axis].dim;
-                                }
-                                if *lp > 0 {
-                                    let temp = Var::Id(get_empty_register(
-                                        &mut registers,
-                                        IRDType::Bool,
-                                        0,
-                                    ));
-                                    ops.push(IROp::Binary {
-                                        z: temp,
-                                        x: idx,
-                                        y: Var::Const(Constant::U32(*lp as u32 - 1)),
-                                        bop: BOp::Cmpgt,
-                                    });
-                                    ops.push(IROp::Binary {
-                                        z: padding_condition,
-                                        x: temp,
-                                        y: padding_condition,
-                                        bop: BOp::And,
-                                    });
-                                }
-                                if *rp > 0 {
-                                    let temp = Var::Id(get_empty_register(
-                                        &mut registers,
-                                        IRDType::Bool,
-                                        0,
-                                    ));
-                                    ops.push(IROp::Binary {
-                                        z: temp,
-                                        x: idx,
-                                        y: Var::Const(Constant::U32((dim as isize - *rp) as u32)),
-                                        bop: BOp::Cmplt,
-                                    });
-                                    ops.push(IROp::Binary {
-                                        z: padding_condition,
-                                        x: temp,
-                                        y: padding_condition,
-                                        bop: BOp::And,
-                                    });
-                                }
-                                registers[idx_id as usize].1 = 0;
-                            }
-                        }
-                    }
-                    //println!("Padding condition: {pc}");
-                    // Nullify z if padding condition is false (if there is padding at that index)
-                    let var = Var::Id(get_empty_register(
-                        &mut registers,
-                        value.dtype().ir_dtype(),
-                        tensor_rcs[&z],
-                    ));
-                    ops.push(IROp::Binary {
-                        z: var,
-                        x: padding_condition,
-                        y: Var::Const(value),
-                        bop: BOp::Mul,
-                    });
-                    if let Var::Id(pc) = padding_condition {
-                        registers[pc as usize].1 = 0;
-                    }
-                    var
-                } else {
-                    Var::Const(value)
-                };
+                let (nops, var) = view.ir_for_constant_load(value, &mut registers);
+                ops.extend(nops);
                 register_map.insert(z, var);
             }
             &VOp::Load {
@@ -539,26 +424,23 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
             } => match (zscope, xscope) {
                 (Scope::Local, Scope::Global) => {
                     let dtype = graph.dtype(z).ir_dtype();
-                    let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
                     let address = addressables_map[&(x, xscope)];
-                    load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
-                    register_map.insert(z, Var::Id(id));
+                    let id = xview.ir_for_indexed_load(address, &mut registers, &mut ops);
+                    register_map.insert(z, id);
                     let address = addressables_map[&(z, zscope)];
-                    store_indexed(address, Var::Id(id), zview, &mut registers, &mut ops);
+                    zview.ir_for_indexed_store(address, id, &mut registers, &mut ops);
                 }
                 (Scope::Register, Scope::Local) => {
                     let dtype = graph.dtype(z).ir_dtype();
-                    let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
                     let address = addressables_map[&(x, xscope)];
-                    load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
-                    register_map.insert(z, Var::Id(id));
+                    let var = xview.ir_for_indexed_load(address, &mut registers, &mut ops);
+                    register_map.insert(z, var);
                 }
                 (Scope::Register, Scope::Global) => {
                     let dtype = graph.dtype(z).ir_dtype();
-                    let id = get_empty_register(&mut registers, dtype, tensor_rcs[&z]);
                     let address = addressables_map[&(x, xscope)];
-                    load_indexed(Var::Id(id), address, xview, &mut registers, &mut ops);
-                    register_map.insert(z, Var::Id(id));
+                    let var = xview.ir_for_indexed_load(address, &mut registers, &mut ops);
+                    register_map.insert(z, var);
                 }
                 _ => panic!("Invalid load scopes"),
             },
@@ -576,28 +458,22 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                     let address = addressables_map[&(z, zscope)];
                     let dtype = graph.dtype(z).ir_dtype();
                     let x = if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
-                        let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
-                        load_indexed(var, address, xview, &mut registers, &mut ops);
-                        var
+                        xview.ir_for_indexed_load(address, &mut registers, &mut ops)
                     } else {
                         register_map[&z]
                     };
-                    store_indexed(address, x, zview, &mut registers, &mut ops);
+                    zview.ir_for_indexed_store(address, x, &mut registers, &mut ops)
                 }
                 _ => panic!("Invalid store scopes"),
             },
             &VOp::Accumulator { z, rop, ref view } => {
                 let dtype = graph.dtype(z).ir_dtype();
-                store_indexed(
-                    addressables_map[&(z, Scope::Register)],
-                    Var::Const(match rop {
-                        ROp::Sum => dtype.dtype().zero_constant(),
-                        ROp::Max => dtype.dtype().min_constant(),
-                    }),
-                    view,
-                    &mut registers,
-                    &mut ops,
-                );
+                let address = addressables_map[&(z, Scope::Register)];
+                let var = Var::Const(match rop {
+                    ROp::Sum => dtype.dtype().zero_constant(),
+                    ROp::Max => dtype.dtype().min_constant(),
+                });
+                view.ir_for_indexed_store(address, var, &mut registers, &mut ops);
             }
             &VOp::Move { z, x, .. } => {
                 register_map.insert(z, register_map[&x]);
@@ -643,16 +519,12 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 let bin_op = IROp::Binary {
                     z: zvar,
                     x: if let Some(&address) = addressables_map.get(&(x, Scope::Register)) {
-                        let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
-                        load_indexed(var, address, xview, &mut registers, &mut ops);
-                        var
+                        xview.ir_for_indexed_load(address, &mut registers, &mut ops)
                     } else {
                         register_map[&x]
                     },
                     y: if let Some(&address) = addressables_map.get(&(y, Scope::Register)) {
-                        let var = Var::Id(get_empty_register(&mut registers, dtype, 0));
-                        load_indexed(var, address, yview, &mut registers, &mut ops);
-                        var
+                        yview.ir_for_indexed_load(address, &mut registers, &mut ops)
                     } else {
                         register_map[&y]
                     },
@@ -668,7 +540,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 }
 
                 if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
-                    store_indexed(address, zvar, zview, &mut registers, &mut ops);
+                    zview.ir_for_indexed_store(address, zvar, &mut registers, &mut ops);
                 }
             }
             &VOp::Barrier { scope } => {
@@ -696,7 +568,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
     )
 }
 
-fn store_indexed(
+/*fn store_indexed(
     address: u16,
     x: Var,
     view: &View,
@@ -736,11 +608,11 @@ fn store_indexed(
         }
         View::Padded(_, _) => todo!(),
     }
-}
+}*/
 
-/// This function is probably the most complex piece of code in all of zyx.
-/// Can we make it simpler?
-fn load_indexed(
+// This function is probably the most complex piece of code in all of zyx.
+// Can we make it simpler?
+/*fn load_indexed(
     z: Var,
     address: u16,
     view: &View,
@@ -934,7 +806,7 @@ fn load_indexed(
             //if let Var::Id(pc) = pcu32 { registers[pc as usize].1 = 0; }
         }
     }
-}
+}*/
 
 fn get_empty_register(registers: &mut Vec<(IRDType, u32)>, ir_dtype: IRDType, rc: u32) -> u16 {
     if let Some(id) = registers.iter().enumerate().find_map(|(id, &(d, c))| {

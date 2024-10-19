@@ -4,7 +4,7 @@ use crate::{
     runtime::{
         graph::Graph,
         ir::Scope,
-        view::{StridedDim, View},
+        view::View,
     },
     shape::{Axis, Dimension},
     tensor::TensorId,
@@ -142,7 +142,7 @@ impl Kernel {
         ops.push(VOp::Load {
             z: x,
             zscope: Scope::Register,
-            zview: View::None,
+            zview: View::none(),
             x,
             xscope: Scope::Global,
             xview: View::new(&shape),
@@ -163,7 +163,7 @@ impl Kernel {
             zview,
             zscope: Scope::Global,
             xscope: Scope::Register,
-            xview: View::None,
+            xview: View::none(),
         };
         self.ops.push(store_op);
         /*for (id, op) in self.ops.iter().enumerate().rev() {
@@ -335,7 +335,7 @@ impl Kernel {
                 | VOp::Store { zview: view, .. }
                 | VOp::Const { view, .. }
                 | VOp::Accumulator { view, .. } => {
-                    view.split_axis(axis, dimensions);
+                    view.split(axis, dimensions);
                 }
                 _ => {}
             }
@@ -396,30 +396,7 @@ impl Kernel {
                 VOp::Const { view, .. }
                 | VOp::Store { zview: view, .. }
                 | VOp::Load { xview: view, .. }
-                | VOp::Accumulator { view, .. } => match view {
-                    View::None => {}
-                    View::Strided(dims) => {
-                        dims.iter_mut().for_each(|StridedDim { axis, .. }| {
-                            if *axis >= naxis {
-                                *axis += 1
-                            }
-                        });
-                    }
-                    View::Padded(dims, axes) => {
-                        dims.iter_mut().for_each(|StridedDim { axis, .. }| {
-                            if *axis >= naxis {
-                                *axis += 1
-                            }
-                        });
-                        axes.iter_mut().for_each(|(axes, _)| {
-                            axes.iter_mut().for_each(|a| {
-                                if *a >= naxis {
-                                    *a += 1
-                                }
-                            })
-                        });
-                    }
-                },
+                | VOp::Accumulator { view, .. } => view.insert_loop(naxis),
                 VOp::Loop { axis, .. } => {
                     if *axis >= naxis {
                         *axis += 1

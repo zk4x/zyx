@@ -348,7 +348,7 @@ impl Kernel {
                         lengths.pop().unwrap();
                     }
                     VOp::Load { z, zscope, zview, x, xscope, xview } => {
-                        if *zscope == Scope::Register && *xscope == Scope::Global && zview == &View::None {
+                        if *zscope == Scope::Register && *xscope == Scope::Global && zview == &View::none() {
                             let mut sorted_axes = axes.clone();
                             sorted_axes.sort();
                             let used_axes = xview.used_axes();
