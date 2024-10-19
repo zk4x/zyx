@@ -181,7 +181,15 @@ impl View {
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
-        todo!()
+        let inner = self.0.last_mut().unwrap();
+        let keys: Vec<Axis> = inner.keys().copied().collect();
+        assert_eq!(keys.len(), axes.len());
+        let mut new = BTreeMap::new();
+        for (a, k) in axes.iter().zip(keys) {
+            let dim = inner.remove(a).unwrap();
+            new.insert(k, dim);
+        }
+        *inner = new;
     }
 
     pub(crate) fn expand(&mut self, axis: usize, ndim: usize) {
@@ -239,6 +247,19 @@ impl View {
 
 impl Display for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        if let Some(inner) = self.0.last() {
+            f.write_fmt(format_args!(
+                "V:S ax{:?} sh{:?} st{:?} pd{:?}",
+                inner.keys().map(|&a| a).collect::<Vec<usize>>(),
+                inner.values().map(|d| d.d).collect::<Vec<usize>>(),
+                inner.values().map(|d| d.st).collect::<Vec<usize>>(),
+                inner
+                    .values()
+                    .map(|d| (d.lp, d.rp))
+                    .collect::<Vec<(isize, isize)>>()
+            ))
+        } else {
+            f.write_str("none")
+        }
     }
 }
