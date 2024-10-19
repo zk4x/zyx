@@ -127,9 +127,15 @@ impl View {
         }
     }
 
-    /// Inserts new loop, shifts all axes greater than axis up
+    /// Inserts new loop, shifts all axes greater than axis up by one
     pub(crate) fn insert_loop(&mut self, axis: usize) {
-        todo!()
+        if let Some(inner) = self.0.last_mut() {
+            let keys: Vec<Axis> = inner.keys().filter(|&&a| a > axis).copied().collect();
+            for a in keys {
+                let dim = inner.remove(&a).unwrap();
+                inner.insert(a + 1, dim);
+            }
+        }
     }
 
     // TODO this will be used if split is not possible
