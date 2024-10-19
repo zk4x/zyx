@@ -16,6 +16,16 @@ pub(super) struct StridedDim {
 }
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct ReshapedDim {
+    pub(super) axis: Axis,
+    pub(super) dim: Dimension,
+    pub(super) stride: Stride,
+    pub(super) lp: isize,
+    pub(super) rp: isize,
+}
+
+#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub(super) enum View {
     None,
@@ -104,10 +114,12 @@ impl View {
 
     pub(super) fn requires_conditional_padding(&self) -> bool {
         // View requires conditional padding if any padding is more than zero
-        if let View::Padded(_, padding) = self {
-            return padding.iter().any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
+        match self {
+            View::None | View::Strided(_) => false,
+            View::Padded(_, padding) => {
+                return padding.iter().any(|(_, (lp, rp))| *lp > 0 || *rp > 0);
+            }
         }
-        false
     }
 
     pub(super) fn original_numel(&self) -> usize {
