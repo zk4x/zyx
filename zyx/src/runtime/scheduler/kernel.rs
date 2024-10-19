@@ -152,18 +152,19 @@ impl Kernel {
 
     /// Store z just after the last operation was executed with it
     pub(super) fn store(&mut self, z: TensorId, zview: View) {
-        let store_op = VOp::Store {
-            z,
-            zview: zview.clone(),
-            zscope: Scope::Global,
-            xscope: Scope::Register,
-            xview: View::None,
-        };
         if let Some(&VOp::Store { z: nz, zview: ref nzview, .. }) = self.ops.last() {
             if z == nz && &zview == nzview {
                 return
             }
         }
+        assert!(zview.numel() < 1024 * 1024 * 1024,  "Too big store.");
+        let store_op = VOp::Store {
+            z,
+            zview,
+            zscope: Scope::Global,
+            xscope: Scope::Register,
+            xview: View::None,
+        };
         self.ops.push(store_op);
         /*for (id, op) in self.ops.iter().enumerate().rev() {
             match op {

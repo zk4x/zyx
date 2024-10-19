@@ -462,6 +462,7 @@ impl Model {
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref());
         }
+        //Tensor::plot_graph([], "graph").unwrap();
         let xs = self
             .final_layernorm
             .forward(xs)
@@ -919,7 +920,7 @@ fn main() -> Result<(), ZyxError> {
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
-        let mut vb: HashMap<String, Tensor> = Tensor::load("../model.safetensors").unwrap();
+        let mut vb: HashMap<String, Tensor> = Tensor::load("/home/x/Dev/rust/zyx/model.safetensors").unwrap();
         //let mut keys: Vec<String> = vb.keys().cloned().collect();
         //keys.sort();
         //println!("{:?}", keys);

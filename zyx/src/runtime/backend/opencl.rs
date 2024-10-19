@@ -812,6 +812,9 @@ impl OpenCLDevice {
             global_work_size[i] *= lwd;
         }
         let mut pragma = format!("");
+        if source.contains("half") {
+            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
+        }
         if source.contains("double") {
             pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }

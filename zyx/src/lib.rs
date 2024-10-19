@@ -11,6 +11,7 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
+use std::collections::BTreeMap;
 use std::{fs::File, path::Path};
 
 use crate::runtime::Runtime;
@@ -78,13 +79,20 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
-/*pub(crate) struct Timer {
+/// Execution timer
+static ET: mutex::Mutex<BTreeMap<String, u128>, 1000000000> = mutex::Mutex::new(BTreeMap::new());
+
+pub(crate) struct Timer {
+    name: String,
     begin: std::time::Instant,
 }
 
 impl Timer {
-    pub(crate) fn new() -> Timer {
+    pub(crate) fn new(name: &str) -> Timer {
+        let name: String = name.into();
+        ET.lock().entry(name.clone()).or_insert(0);
         Timer {
+            name,
             begin: std::time::Instant::now(),
         }
     }
@@ -92,9 +100,10 @@ impl Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        println!("Timer took {}us", self.begin.elapsed().as_micros());
+        *ET.lock().get_mut(&self.name).unwrap() += self.begin.elapsed().as_micros();
+        //println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
-}*/
+}
 
 /*
 #[test]

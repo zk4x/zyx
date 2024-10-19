@@ -76,10 +76,13 @@ impl Runtime {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
         let (order, flop, bytes_read, bytes_written) = graph.execution_order();
         // create vop representation
-        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order);
+        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order, self.debug_sched());
+        //println!("{:?}", &*crate::ET.lock());
+        //panic!();
         //println!("{:?}", self.tensor_buffer_map);
         if self.debug_sched() {
-            for kernel in &kernels { kernel.debug(); }
+            //for kernel in &kernels { kernel.debug(); }
+            println!("Scheduler generated {} kernels", kernels.len());
         }
         //panic!("Done");
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
@@ -136,10 +139,10 @@ impl Runtime {
                     .unwrap()
                     .1
                     .len();
-                if min_programs > 5 {
-                    // Finish some program before proceding
-                    todo!()
-                }
+                /*if min_programs > 32 {
+                    // Finish some program before proceeding
+                    sched_graph.push(SchedulerOp::Finish(()));
+                }*/
                 let min_devs: Vec<usize> = device_program_map
                     .iter()
                     .filter_map(|(dev_id, p)| {
@@ -202,7 +205,7 @@ impl Runtime {
                     sched_graph.push(SchedulerOp::Finish(vprogram));
                 }
                 // Prints unoptimized kernel
-                //if self.debug_sched() { kernel.debug(); }
+                if self.debug_sched() { kernel.debug(); }
                 // Disk cached search, works across devices and platforms
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
                 /*let optimization = KernelOptimization {
@@ -576,7 +579,8 @@ impl Runtime {
     }
 }
 
-fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
+fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kernel> {
+    let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
     // This function defines loops, loads, stores and elementwise ops.
     // The aim is to sort nodes in such a way, that maximum performance is attained.
@@ -586,7 +590,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid));
+        if debug { println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid)); }
         match node {
             Node::Const { value } => {
                 let mut ops = shape_to_loops(&[1]);
@@ -744,21 +748,23 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     if shape.len() < prev_shape.len() {
                         splits = None;
                     } else {
-                        // Example split
+                        // Example splits
                         //    2, 4,    4,    3
                         // 1, 2, 4, 2, 2, 1, 3
 
+                        //    3, 1, 5
+                        // 1, 3, 1, 5
+
                         //       5, 6
                         // 2, 1, 3, 5
-                        // dims 5
+
+                        //    1, 2, 3, 1
+                        // 1, 2, 1, 3, 1
+
                         let mut dimensions = Vec::new();
                         let mut i = prev_shape.len() - 1;
                         let mut dim = 1;
                         for d in shape.iter().copied().rev() {
-                            if i == 0 {
-                                dimensions.insert(0, d);
-                                continue;
-                            }
                             if dim * d > prev_shape[i] {
                                 if dim == prev_shape[i] {
                                     if dimensions.len() > 1 {
@@ -766,7 +772,9 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                                     }
                                     dimensions = vec![d];
                                     dim = d;
-                                    i -= 1;
+                                    if i > 0 {
+                                        i -= 1;
+                                    }
                                 } else {
                                     splits = None;
                                     break;
@@ -776,8 +784,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                                 dim *= d;
                             }
                         }
-                        if dimensions.len() > 1 {
-                            splits.as_mut().unwrap().insert(i, dimensions);
+                        if dim == prev_shape[0] {
+                            if dimensions.len() > 1 {
+                                splits.as_mut().unwrap().insert(i, dimensions);
+                            }
                         }
                         if splits.as_ref().is_some_and(|x| x.is_empty()) {
                             splits = None;
@@ -836,7 +846,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             mop: MOp::Resh,
                         });
                         //kernel.debug();
-                        assert_eq!(kernel.shape(), graph.shape(nid));
+                        assert_eq!(kernel.shape(), graph.shape(nid), "Shape after reshape split is incorrect.");
                     } else {
                         // else create new kernel after storing results of previous kernel
                         kernel.store(*x, View::new(graph.shape(*x)));
@@ -1018,14 +1028,14 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                     // TODO rewrite this, this is incorrect
                     //todo!();
 
-                    let mut kernel_x_id = kernels
+                    let kernel_x_id = kernels
                         .iter()
                         .enumerate()
                         .filter(|(_, kernel)| kernel.vars().contains(&x))
                         .min_by_key(|(_, kernel)| kernel.ops.len())
                         .unwrap()
                         .0;
-                    let mut kernel_y_id = kernels
+                    let kernel_y_id = kernels
                         .iter()
                         .enumerate()
                         .filter(|(_, kernel)| kernel.vars().contains(&y))
@@ -1034,7 +1044,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         .0;
 
                     // Check which kernel needs to be evaluated first
-                    match (
+                    // TODO make sure that depends on is never needed
+                    /*match (
                         depends_on(kernel_x_id, kernel_y_id, &kernels),
                         depends_on(kernel_y_id, kernel_x_id, &kernels),
                     ) {
@@ -1047,6 +1058,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                             // This is ok, nothing needs to be done
                         }
                         (false, true) => {
+                            println!("Depends on caused changes");
                             // Here we need to do some reordering,
                             // or just swap ids.
                             (kernel_x_id, kernel_y_id) = (kernel_y_id, kernel_x_id);
@@ -1054,7 +1066,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                         (false, false) => {
                             // Nothing needs to be done
                         }
-                    }
+                    }*/
 
                     // Now we know that kernel x depends on kernel y or there is no dependence at all
                     // So kernel y must go first
@@ -1108,11 +1120,12 @@ fn generate_kernels(graph: &Graph, order: &[TensorId]) -> Vec<Kernel> {
                 .find(|kernel| kernel.vars().contains(&nid))
             {
                 // if graph.rc(nid) > 1 then just copy that graph if it is not too big graph
+                // and if the kernel does not have too big shape.
                 // TODO beware of too many copies. We need to make sure that we are not doing
                 // the same work twice.
                 //if user_leafs.contains(&nid) {
                 //kernel.store(nid, View::new(graph.shape(nid)));
-                if kernel.ops.len() > 10 || kernel.is_reduce() || !kernel.outputs().is_empty() {
+                if (kernel.ops.len() > 10 && kernel.shape().into_iter().product::<usize>() < 1024*1024*1024) || kernel.is_reduce() || !kernel.outputs().is_empty() {
                     kernel.store(nid, View::new(graph.shape(nid)));
                     kernels.push(Kernel::load(nid, graph));
                 } else {
@@ -1160,7 +1173,10 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
 }
 
 // Checks if kernel_y needs to be evaluated before kernel_x
-fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
+// This takes 96% of the execution time of the whole generate_kernels function.
+// We need to either improve the speed of this function or do it in some other way.
+/*fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> bool {
+    let _t = crate::Timer::new("depends_on");
     let mut kernel_x_inputs = kernels[kernel_x_id].inputs();
     let kernel_y_outputs = &kernels[kernel_y_id].outputs();
     //println!("y outputs: {kernel_y_outputs:?}");
@@ -1182,11 +1198,12 @@ fn depends_on(kernel_x_id: usize, kernel_y_id: usize, kernels: &[Kernel]) -> boo
         }
     }
     false
-}
+}*/
 
 fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &'a mut Kernel {
+    let _t = crate::Timer::new("get_kernel");
     // First if there is kernel which stores x, then just return new load kernel
-    if kernels.iter().any(|kernel| kernel.outputs().contains(&x)) {
+    if kernels.iter().rev().any(|kernel| kernel.outputs().contains(&x)) {
         kernels.push(Kernel::load(x, graph));
         return kernels.last_mut().unwrap();
     }

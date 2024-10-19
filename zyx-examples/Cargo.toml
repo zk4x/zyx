@@ -28,7 +28,7 @@ csv = { version = "1.3.0" }
 opt-level = "z"
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 #strip = true
 debug-assertions = false
 overflow-checks = true

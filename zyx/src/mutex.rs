@@ -20,11 +20,13 @@ use std::{
 };
 
 // Standard spinlock, but will panic if it fails to lock after more than N tries
+#[derive(Debug)]
 pub(super) struct Mutex<T, const N: usize> {
     data: UnsafeCell<T>,
     lock: AtomicBool,
 }
 
+#[derive(Debug)]
 pub(super) struct MutexGuard<'a, T: 'a> {
     lock: &'a AtomicBool,
     data: &'a UnsafeCell<T>,

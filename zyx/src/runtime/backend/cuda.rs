@@ -622,7 +622,7 @@ impl CUDADevice {
             local_work_size[2],
         );
         let mut pragma = format!("");
-        //if source.contains("double") { pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n"; }
+        if source.contains("__half") { pragma += &"#include <cuda_fp16.h>\n"; }
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         name += "\0";
         if debug_asm {
@@ -1275,7 +1275,7 @@ impl IRDType {
         return match self {
             IRDType::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
             IRDType::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
-            IRDType::F16(v) => "half",
+            IRDType::F16(v) => "__half",
             IRDType::F32(v) => "float",
             IRDType::F64(v) => "double",
             #[cfg(feature = "complex")]

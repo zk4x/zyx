@@ -76,6 +76,18 @@ fn pad_reshape_expand() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn reshape1() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[[[2], [4]], [[3], [1]], [[5], [1]]]]);
+    x = x.permute([0, 2, 1, 3])?;
+    assert_eq!(x.shape(), [1, 2, 3, 1]);
+    x = x.reshape([1, 2, 1, 3, 1]).unwrap();
+    Tensor::realize([&x])?;
+    println!("{x}");
+    assert_eq!(x.shape(), [1, 2, 1, 3, 1]);
+    Ok(())
+}
+
+#[test]
 fn pool() -> Result<(), ZyxError> {
     let mut x = Tensor::from((0..9).collect::<Vec<i32>>()).reshape((3, 3))?;
     //x = x.repeat([2, 2]);
