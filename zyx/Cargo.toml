@@ -56,6 +56,7 @@ num-complex = { version = "0.4.6", default-features = false, optional = true } #
 wgpu = { version = "22.1.0", default-features = false, features = [
     "wgsl",
 ], optional = true }
+# TODO probably use pollaster instead of futures
 # Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
 futures = { version = "0.3", default-features = false, features = [
     "executor",
