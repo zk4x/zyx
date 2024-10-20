@@ -405,13 +405,14 @@ impl Runtime {
         device_id: DeviceId,
         graph: &Graph,
     ) -> Result<KernelOptimization, ZyxError> {
-        let dev_info = self.devices[device_id].info();
+        let dev_info = self.devices[device_id].info().clone();
         let cache_key = (kernel.clone(), dev_info.clone());
         if let Some(KernelOptimizer::Optimized(optimizations, _)) =
             self.optimizer_cache.get(&cache_key)
         {
             Ok(optimizations.clone())
         } else {
+            let search_iters = self.search_iterations;
             let debug_perf = self.debug_perf();
             let debug_sched = self.debug_sched();
             // allocate space for inputs and outputs that are not allocated for this kernel
@@ -426,25 +427,30 @@ impl Runtime {
                 allocated_temps.push(buffer_id);
             }
 
-            // Get search space of possible optimizations
-            let optimizer = self
-                .optimizer_cache
-                .entry(cache_key.clone())
-                .or_insert_with(|| kernel.new_optimizer(dev_info));
-
             let flop_mem_rw = if debug_perf {
                 Some(kernel.flop_mem_rw())
             } else {
                 None
             };
+            // Get search space of possible optimizations
+            let optimizer = self
+                .optimizer_cache
+                .entry(cache_key.clone())
+                .or_insert_with(|| kernel.new_optimizer(&dev_info));
             let rem_opts = optimizer.remaining();
             if debug_sched {
                 println!(
                     "Searching over {} out of {} remaining optimizations.",
-                    self.search_iterations, rem_opts
+                    search_iters, rem_opts
                 );
             }
-            for i in 0..self.search_iterations {
+            #[cfg(feature = "disk_cache")]
+            let mut timer = std::time::Instant::now();
+            for i in 0..search_iters {
+                let optimizer = self
+                    .optimizer_cache
+                    .entry(cache_key.clone())
+                    .or_insert_with(|| kernel.new_optimizer(&dev_info));
                 let Some(optimization_id) = optimizer.next() else {
                     if debug_sched {
                         println!(
@@ -452,14 +458,14 @@ impl Runtime {
                         );
                     }
                     #[cfg(feature = "disk_cache")]
-                    self.store_optimizer_cache();
+                    store_optimizer_cache(&self.optimizer_cache, self.config_dir.clone(), self.debug_sched());
                     break;
                 };
                 if debug_sched {
                     println!(
                         "{:>6}/{} {}",
                         i + 1,
-                        self.search_iterations.min(rem_opts),
+                        search_iters.min(rem_opts),
                         optimizer[optimization_id]
                     );
                 }
@@ -508,8 +514,14 @@ impl Runtime {
                     print_perf(f, mr, mw, exec_time);
                 }
                 optimizer.set_exec_time(optimization_id, exec_time);
-                // TODO Store cached kernels to disk every minute
+                #[cfg(feature = "disk_cache")]
+                if timer.elapsed().as_secs() > 60 {
+                    store_optimizer_cache(&self.optimizer_cache, self.config_dir.clone(), debug_sched);
+                    timer = std::time::Instant::now();
+                }
             }
+            #[cfg(feature = "disk_cache")]
+            store_optimizer_cache(&self.optimizer_cache, self.config_dir.clone(), self.debug_sched());
             if debug_sched {
                 println!("Optimization has been finished.\n");
             }
@@ -518,23 +530,6 @@ impl Runtime {
                 self.memory_pools[mpid].deallocate(buffer_id)?;
             }
             Ok(self.optimizer_cache.get(&cache_key).unwrap().best().clone())
-        }
-    }
-
-    #[cfg(feature = "disk_cache")]
-    fn store_optimizer_cache(&self) {
-        use std::io::Write;
-        if let Some(mut path) = self.config_dir.clone() {
-            path.push("cached_kernels");
-            let mut file = std::fs::File::create(path).unwrap();
-            file.write_all(&bitcode::encode(&self.optimizer_cache))
-                .unwrap();
-        } else {
-            if self.debug_sched() {
-                println!(
-                    "Zyx config path was not found. Searched kernels won't be cached to disk."
-                );
-            }
         }
     }
 
@@ -1274,4 +1269,21 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
         bws/100,
         bws%100,
     );
+}
+
+#[cfg(feature = "disk_cache")]
+fn store_optimizer_cache(optimizer_cache: &BTreeMap<(Kernel, super::backend::DeviceInfo), KernelOptimizer>, config_dir: Option<std::path::PathBuf>, debug_sched: bool) {
+    use std::io::Write;
+    if let Some(mut path) = config_dir.clone() {
+        path.push("cached_kernels");
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&bitcode::encode(optimizer_cache))
+            .unwrap();
+    } else {
+        if debug_sched {
+            println!(
+                "Zyx config path was not found. Searched kernels won't be cached to disk."
+            );
+        }
+    }
 }
