@@ -290,21 +290,22 @@ impl Kernel {
         }
 
         // TODO local tiling in elementwise kernels
-        let mut reduce_ws = 0;
-        for op in &kernel.ops {
-            if let &VOp::Loop { axis, len } = op {
-                if axis > 9 {
-                    reduce_ws = len;
-                }
-            }
-        }
 
         // Local tiling, for now possible only if both local dims equal reduce work size
         // TODO For now local work sizes must be equal to reduce_ws, later we can add one
         // more loop and then they will just need to be dividable without remainder.
         // TODO also take lws[0] into consideration
         if false {
-        //if optimization.local_tiles && lws[1] == reduce_ws && lws[2] == reduce_ws {
+            // Get reduce work size, TODO should be multiple values for multi reduce kernels
+            let mut reduce_ws = 0;
+            for op in &kernel.ops {
+                if let &VOp::Loop { axis, len } = op {
+                    if axis > 9 {
+                        reduce_ws = len;
+                    }
+                }
+            }
+            //if optimization.local_tiles && lws[1] == reduce_ws && lws[2] == reduce_ws {
             println!("Using local tiling");
             // Local tile all loads that do not use all loop axes
             // Local tiles use local dimensions and register dimensions
@@ -441,7 +442,7 @@ impl KernelOptimizer {
                     *self = KernelOptimizer::Optimized(opts[*best].0.clone(), opts[*best].1);
                 }
                 let mut rng = rand::rngs::SmallRng::seed_from_u64(190940981234098124);
-                Some(values.choose(&mut rng).copied().unwrap())
+                values.choose(&mut rng).copied()
             }
         }
     }

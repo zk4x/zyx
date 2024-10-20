@@ -1,0 +1,3 @@
+- [ ] view axis merge
+- [ ] tests for fusion in generate kernels, test will create it's own graph and check how the fused kernel looks
+    - [ ] softmax fusion test

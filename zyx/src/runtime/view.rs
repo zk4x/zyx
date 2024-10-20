@@ -49,14 +49,14 @@ impl View {
             .iter()
             .zip(axes)
             .rev()
-            .map(|(&axis, dim)| {
+            .map(|(&d, &axis)| {
                 let temp = stride;
-                stride *= dim;
+                stride *= d;
                 (
                     axis,
                     RDim {
                         st: temp,
-                        d: *dim,
+                        d,
                         lp: 0,
                         rp: 0,
                     },
@@ -142,25 +142,30 @@ impl View {
     }*/
 
     pub(crate) fn split(&mut self, mut axis: usize, dimensions: &[usize]) {
+        //println!("Splitting {} axis {axis} into {dimensions:?}", self);
         // if axis contains padding, we have to reshape, otherwise just split
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(&axis) {
                 if dim.lp != 0 || dim.rp != 0 {
                     todo!("Reshape padded view.");
                 } else {
+                    //println!("inner {inner:?}");
                     // First shift axes > axis by dimensions.len()
                     let keys: Vec<Axis> = inner.keys().copied().collect();
-                    for a in keys {
+                    for a in keys.into_iter().rev() {
                         if a > axis {
                             let dim = inner.remove(&a).unwrap();
-                            inner.insert(a + dimensions.len(), dim);
+                            inner.insert(a + dimensions.len() - 1, dim);
                         }
                     }
+                    //println!("inner {inner:?}");
                     // Then remove axis and get it's stride
                     let mut stride = inner.remove(&axis).unwrap().st;
+                    //println!("inner {inner:?}");
                     // At last insert all new dimensions
+                    axis += dimensions.len() - 1;
                     for &d in dimensions.iter().rev() {
-                        inner.insert(
+                        assert!(inner.insert(
                             axis,
                             RDim {
                                 d,
@@ -168,15 +173,17 @@ impl View {
                                 lp: 0,
                                 rp: 0,
                             },
-                        );
+                        ).is_none());
                         stride *= d;
                         if axis > 0 {
                             axis -= 1;
                         }
                     }
+                    //println!("done {inner:?}");
                 }
             }
         }
+        //println!("Result {}", self);
     }
 
     // TODO function for merging multiple axes together, must be used in case of very
@@ -318,4 +325,22 @@ impl Display for View {
             f.write_str("none")
         }
     }
+}
+
+#[test]
+fn view_split() {
+    let mut view = View::contiguous(&[3, 1, 4, 2]);
+    view.split(2, &[2, 2, 1]);
+    assert_eq!(view.shape(), [3, 1, 2, 2, 1, 2]);
+    view.split(0, &[1, 3, 1]);
+    assert_eq!(view.shape(), [1, 3, 1, 1, 2, 2, 1, 2]);
+}
+
+#[test]
+fn view_binded() {
+    let view = View::binded(&[4, 2, 3], &[5, 1, 2]);
+    println!("{view:?}");
+    assert_eq!(view.rank(), 3);
+    assert_eq!(view.used_axes(), [1, 2, 5]);
+    assert_eq!(view.shape(), [2, 3, 4]);
 }

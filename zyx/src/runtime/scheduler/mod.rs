@@ -475,6 +475,7 @@ impl Runtime {
                     kernel.optimize(&optimizer[optimization_id])
                 };*/
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
+                //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
                 let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
@@ -547,7 +548,7 @@ impl Runtime {
     ) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        optimized_kernel.debug();
+        //optimized_kernel.debug();
         let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops, graph);
         let mut program_id = None;
         if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
@@ -580,6 +581,8 @@ impl Runtime {
     }
 }
 
+/// Generate kernels from graph. This function determines which ops will get fused together
+/// and how many kernels will be created.
 fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kernel> {
     let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
