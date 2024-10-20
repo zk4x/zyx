@@ -347,7 +347,6 @@ fn t3() {
     }
 }
 
-#[cfg(feature = "rand")]
 #[test]
 fn t4() {
     //let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();

@@ -27,6 +27,8 @@ serde = { version = "1.0.209", default-features = false, features = [
 serde_json = { version = "1.0.128", default-features = false, features = [
     "std",
 ] } # MIT or Apache 2.0
+# Support for random number generation
+rand = { version = "0.8.5", default-features = false, features = ["small_rng"] } # MIT or Apache 2.0
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # For nice colorful debug logging
@@ -37,13 +39,10 @@ float8 = { version = "0.1.1" } # MIT or Apache 2.0
 half = { version = "2.4.1" } # MIT or Apache 2.0
 # Progress bar for loading tensors and such
 indicatif = { version = "0.17.8" }
+# Memory mapped loading of tensors from disk
 memmap2 = { version = "*" }
 
 # Optional dependencies
-# Support for random number generation
-rand = { version = "0.8.5", default-features = false, features = [
-    "small_rng",
-], optional = true } # MIT or Apache 2.0
 # for caching of searched kernels
 bitcode = { version = "0.6.3", default-features = false, features = [
     "std",
@@ -73,7 +72,6 @@ crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
-    "rand",
     "disk_cache",
     #"wgsl",
     #"complex",
@@ -81,16 +79,14 @@ default = [
     #"py",
 ]
 
-# Enables random number generation for randn, uniform ...
-rand = ["dep:rand"]
-
+# Enables caching of optimized kernels to disk
 disk_cache = ["dep:bitcode"]
 
 # Enables complex f32 and complex f64 dtypes
 complex = ["dep:num-complex"]
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
-py = ["dep:pyo3", "rand", "complex"]
+py = ["dep:pyo3", "complex"]
 
 # Enables wgsl backend
 wgsl = ["dep:wgpu", "dep:futures"]

@@ -475,7 +475,6 @@ impl Runtime {
                     kernel.optimize(&optimizer[optimization_id])
                 };*/
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
-                //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
                 let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
@@ -548,7 +547,7 @@ impl Runtime {
     ) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        //optimized_kernel.debug();
+        optimized_kernel.debug();
         let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops, graph);
         let mut program_id = None;
         if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
@@ -617,7 +616,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 let xshape = graph.shape(x);
                 assert_eq!(shape.len(), xshape.len());
                 let mut kernel = get_kernel(x, &mut kernels, graph);
-                // For now no expand on reduce kernels or kernels that store something
+                // For now no expand on reduce kernels or kernels that store something.
                 // Later this can be done if the store or reduce is in different loop,
                 // that is if we are expanding loop after reduce and if store is before
                 // that expanded loop.

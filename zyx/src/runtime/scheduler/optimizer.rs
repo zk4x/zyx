@@ -207,9 +207,7 @@ impl Kernel {
             panic!()
         };
         rws[1] = len;
-        let VOp::Loop { len, .. } = kernel.ops[8] else {
-            panic!()
-        };
+        let VOp::Loop { len, .. } = kernel.ops[8] else { panic!() };
         rws[2] = len;
         // Apply permutation
         kernel.permute(&optimization.permutation);
@@ -443,7 +441,7 @@ impl KernelOptimizer {
                     *self = KernelOptimizer::Optimized(opts[*best].0.clone(), opts[*best].1);
                 }
                 let mut rng = rand::rngs::SmallRng::seed_from_u64(190940981234098124);
-                values.choose(&mut rng).copied()
+                Some(values.choose(&mut rng).copied().unwrap())
             }
         }
     }

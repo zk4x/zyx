@@ -198,3 +198,10 @@ Every project should be understandable by a newbie in a few hours of reading it'
 then it is not possible. Also adding internal project documentation, for example docs in the beginning of each file
 explaining what that file does is very usefull.
 
+## What is a good code?
+
+Good code is code that is not too rigid. That is if I introduce a change, it's not going to require changes in many different
+parts of the code base. Good code enables localized changes and localized bug fixes. One of the ways to go in direction
+of good code is to make communication boundaries between module as succint as possible. Simply do not pass much stuff
+between modules. Modules should be about 1000 loc. More than that is hard to track, but also less than that
+is hard to track, because code will be split between too many files.

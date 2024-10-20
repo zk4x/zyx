@@ -425,7 +425,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 (Scope::Local, Scope::Global) => {
                     let dtype = graph.dtype(z).ir_dtype();
                     let address = addressables_map[&(x, xscope)];
-                    let id = xview.ir_for_indexed_load(address, &mut registers, &mut ops);
+                    let id = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
                     register_map.insert(z, id);
                     let address = addressables_map[&(z, zscope)];
                     zview.ir_for_indexed_store(address, id, &mut registers, &mut ops);
@@ -433,13 +433,13 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 (Scope::Register, Scope::Local) => {
                     let dtype = graph.dtype(z).ir_dtype();
                     let address = addressables_map[&(x, xscope)];
-                    let var = xview.ir_for_indexed_load(address, &mut registers, &mut ops);
+                    let var = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
                     register_map.insert(z, var);
                 }
                 (Scope::Register, Scope::Global) => {
                     let dtype = graph.dtype(z).ir_dtype();
                     let address = addressables_map[&(x, xscope)];
-                    let var = xview.ir_for_indexed_load(address, &mut registers, &mut ops);
+                    let var = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
                     register_map.insert(z, var);
                 }
                 _ => panic!("Invalid load scopes"),
@@ -458,7 +458,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                     let address = addressables_map[&(z, zscope)];
                     let dtype = graph.dtype(z).ir_dtype();
                     let x = if let Some(&address) = addressables_map.get(&(z, Scope::Register)) {
-                        xview.ir_for_indexed_load(address, &mut registers, &mut ops)
+                        xview.ir_for_indexed_load(address, dtype, 0, &mut registers, &mut ops)
                     } else {
                         register_map[&z]
                     };
@@ -519,12 +519,12 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 let bin_op = IROp::Binary {
                     z: zvar,
                     x: if let Some(&address) = addressables_map.get(&(x, Scope::Register)) {
-                        xview.ir_for_indexed_load(address, &mut registers, &mut ops)
+                        xview.ir_for_indexed_load(address, dtype, 0, &mut registers, &mut ops)
                     } else {
                         register_map[&x]
                     },
                     y: if let Some(&address) = addressables_map.get(&(y, Scope::Register)) {
-                        yview.ir_for_indexed_load(address, &mut registers, &mut ops)
+                        yview.ir_for_indexed_load(address, dtype, 0, &mut registers, &mut ops)
                     } else {
                         register_map[&y]
                     },
@@ -568,247 +568,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
     )
 }
 
-/*fn store_indexed(
-    address: u16,
-    x: Var,
-    view: &View,
-    registers: &mut Vec<(IRDType, u32)>,
-    ops: &mut Vec<IROp>,
-) {
-    let numel = view.original_numel();
-    match view {
-        View::None => {
-            ops.push(IROp::Store {
-                address,
-                x,
-                offset: Var::Const(Constant::U32(0)),
-            });
-        }
-        View::Strided(dims) => {
-            let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
-            ops.push(IROp::Set {
-                z: offset,
-                value: Constant::U32(0),
-            });
-            for StridedDim { axis, stride, .. } in dims {
-                if *stride != 0 && *stride != numel {
-                    ops.push(IROp::MAdd {
-                        z: Var::Id(offset),
-                        a: Var::Id(*axis as u16),
-                        b: Var::Const(Constant::U32(*stride as u32)),
-                        c: Var::Id(offset),
-                    });
-                }
-            }
-            ops.push(IROp::Store {
-                address,
-                x,
-                offset: Var::Id(offset),
-            });
-        }
-        View::Padded(_, _) => todo!(),
-    }
-}*/
-
-// This function is probably the most complex piece of code in all of zyx.
-// Can we make it simpler?
-/*fn load_indexed(
-    z: Var,
-    address: u16,
-    view: &View,
-    registers: &mut Vec<(IRDType, u32)>,
-    ops: &mut Vec<IROp>,
-) {
-    let numel = view.original_numel();
-    match view {
-        View::None => {
-            ops.push(IROp::Load {
-                z,
-                address,
-                offset: Var::Const(Constant::U32(0)),
-            });
-        }
-        View::Strided(dims) => {
-            let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
-            ops.push(IROp::Set {
-                z: offset,
-                value: Constant::U32(0),
-            });
-            for StridedDim { axis, stride, .. } in dims {
-                if *stride != 0 && *stride != numel {
-                    ops.push(IROp::MAdd {
-                        z: Var::Id(offset),
-                        a: Var::Id(*axis as u16),
-                        b: Var::Const(Constant::U32(*stride as u32)),
-                        c: Var::Id(offset),
-                    });
-                }
-            }
-            ops.push(IROp::Load {
-                z,
-                address,
-                offset: Var::Id(offset),
-            });
-        }
-        View::Padded(dims, padding) => {
-            //println!("Loading indexed into {z:?} from p{address} with {view}");
-            let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 1);
-            ops.push(IROp::Set {
-                z: offset,
-                value: Constant::U32(0),
-            });
-            let offset = Var::Id(offset);
-            for StridedDim { axis, stride, .. } in dims {
-                if let Some((_, (lp, _))) = padding
-                    .iter()
-                    .find(|(axes, _)| axes.iter().max().unwrap() == axis)
-                {
-                    let t = if *lp > 0 {
-                        let t = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
-                        ops.push(IROp::Binary {
-                            z: t,
-                            x: Var::Id(*axis as u16),
-                            y: Var::Const(Constant::U32(*lp as u32)),
-                            bop: BOp::Sub,
-                        });
-                        t
-                    } else if *lp < 0 {
-                        let lp = -lp;
-                        let t = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
-                        ops.push(IROp::Binary {
-                            z: t,
-                            x: Var::Id(*axis as u16),
-                            y: Var::Const(Constant::U32(lp as u32)),
-                            bop: BOp::Add,
-                        });
-                        t
-                    } else {
-                        Var::Id(*axis as u16)
-                    };
-                    if *stride != 0 {
-                        //&& *stride != numel {
-                        ops.push(IROp::MAdd {
-                            z: offset,
-                            a: t,
-                            b: Var::Const(Constant::U32(*stride as u32)),
-                            c: offset,
-                        });
-                    }
-                } else {
-                    if *stride != 0 {
-                        //&& *stride != numel {
-                        ops.push(IROp::MAdd {
-                            z: offset,
-                            a: Var::Id(*axis as u16),
-                            b: Var::Const(Constant::U32(*stride as u32)),
-                            c: offset,
-                        });
-                    }
-                }
-            }
-            let padding_condition = get_empty_register(registers, IRDType::Bool, 1);
-            ops.push(IROp::Set {
-                z: padding_condition,
-                value: Constant::Bool(true),
-            });
-            let padding_condition = Var::Id(padding_condition);
-            for StridedDim { axis, .. } in dims {
-                if let Some((axes, (lp, rp))) = padding
-                    .iter()
-                    .find(|(axes, _)| axes.iter().max().unwrap() == axis)
-                {
-                    let idx_id = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 1);
-                    ops.push(IROp::Set {
-                        z: idx_id,
-                        value: Constant::U32(0),
-                    });
-                    let idx = Var::Id(idx_id);
-                    let mut st = 1;
-                    let mut dim = 1;
-                    for axis in axes.iter().rev() {
-                        ops.push(IROp::MAdd {
-                            z: idx,
-                            a: Var::Id(*axis as u16),
-                            b: Var::Const(Constant::U32(st as u32)),
-                            c: idx,
-                        });
-                        st *= dims[*axis].dim;
-                        dim *= dims[*axis].dim;
-                    }
-                    if *lp > 0 {
-                        let temp = Var::Id(get_empty_register(registers, IRDType::Bool, 0));
-                        ops.push(IROp::Binary {
-                            z: temp,
-                            x: idx,
-                            y: Var::Const(Constant::U32(*lp as u32 - 1)),
-                            bop: BOp::Cmpgt,
-                        });
-                        ops.push(IROp::Binary {
-                            z: padding_condition,
-                            x: temp,
-                            y: padding_condition,
-                            bop: BOp::And,
-                        });
-                    }
-                    if *rp > 0 {
-                        let temp = Var::Id(get_empty_register(registers, IRDType::Bool, 0));
-                        ops.push(IROp::Binary {
-                            z: temp,
-                            x: idx,
-                            y: Var::Const(Constant::U32((dim as isize - *rp) as u32)),
-                            bop: BOp::Cmplt,
-                        });
-                        ops.push(IROp::Binary {
-                            z: padding_condition,
-                            x: temp,
-                            y: padding_condition,
-                            bop: BOp::And,
-                        });
-                    }
-                    registers[idx_id as usize].1 = 0;
-                }
-            }
-            // Convert padding condition to u32
-            let pcu32 = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
-            ops.push(IROp::Unary {
-                z: pcu32,
-                x: padding_condition,
-                uop: UOp::Cast(DType::U32),
-            });
-            ops.push(IROp::Binary {
-                z: offset,
-                x: pcu32,
-                y: offset,
-                bop: BOp::Mul,
-            });
-            ops.push(IROp::Load { z, address, offset });
-            if let Var::Id(offset) = offset {
-                registers[offset as usize].1 = 0;
-            }
-            let Var::Id(z_id) = z else { panic!() };
-            let dt = registers[z_id as usize].0;
-            let pcd = Var::Id(get_empty_register(registers, dt, 0));
-            ops.push(IROp::Unary {
-                z: pcd,
-                x: padding_condition,
-                uop: UOp::Cast(dt.dtype()),
-            });
-            // Nullify z if padding condition is false (if there is padding at that index)
-            ops.push(IROp::Binary {
-                z,
-                x: pcd,
-                y: z,
-                bop: BOp::Mul,
-            });
-            if let Var::Id(pc) = padding_condition {
-                registers[pc as usize].1 = 0;
-            }
-            //if let Var::Id(pc) = pcu32 { registers[pc as usize].1 = 0; }
-        }
-    }
-}*/
-
-fn get_empty_register(registers: &mut Vec<(IRDType, u32)>, ir_dtype: IRDType, rc: u32) -> u16 {
+pub(crate) fn get_empty_register(registers: &mut Vec<(IRDType, u32)>, ir_dtype: IRDType, rc: u32) -> u16 {
     if let Some(id) = registers.iter().enumerate().find_map(|(id, &(d, c))| {
         if c == 0 && ir_dtype == d {
             Some(id as u16)

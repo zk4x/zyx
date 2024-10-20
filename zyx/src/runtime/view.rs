@@ -1,8 +1,6 @@
 use std::{collections::BTreeMap, fmt::Display};
-
 use crate::{dtype::Constant, shape::Axis};
-
-use super::ir::{IRDType, IROp, Var};
+use super::ir::{get_empty_register, IRDType, IROp, IRVec, Var};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -138,7 +136,7 @@ impl View {
         }
     }
 
-    // TODO this will be used if split is not possible
+    // TODO this will be used if split or merge are not possible
     /*pub(crate) fn reshape(&mut self, shape: &[usize]) {
         todo!()
     }*/
@@ -181,6 +179,11 @@ impl View {
         }
     }
 
+    // TODO function for merging multiple axes together, must be used in case of very
+    // high dimensionality of tensors. It can also be used to make reduce over multiple axes
+    // reduce over single axis and such.
+    //pub(crate) fn merge(&mut self, axes: &[usize]) {}
+
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();
@@ -222,6 +225,8 @@ impl View {
         constant: Constant,
         registers: &mut Vec<(IRDType, u32)>,
     ) -> (Vec<IROp>, Var) {
+        let _ = constant;
+        let _ = registers;
         todo!()
     }
 
@@ -229,10 +234,37 @@ impl View {
     pub(crate) fn ir_for_indexed_load(
         &self,
         address: u16,
+        ir_dtype: IRDType,
+        rc: u32,
         registers: &mut Vec<(IRDType, u32)>,
         ops: &mut Vec<IROp>,
     ) -> Var {
-        todo!()
+        let id = get_empty_register(registers, ir_dtype, rc);
+        let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
+        ops.push(IROp::Set {
+            z: offset,
+            value: Constant::U32(0),
+        });
+        let offset = Var::Id(offset);
+        if let Some(inner) = self.0.last() {
+            for (a, dim) in inner {
+                if dim.st != 0 {
+                    ops.push(IROp::MAdd {
+                        z: offset,
+                        a: Var::Id(*a as u16),
+                        b: Var::Const(Constant::U32(dim.st as u32)),
+                        c: offset,
+                    });
+                }
+            }
+        }
+        let z = Var::Id(id);
+        ops.push(IROp::Load {
+            z,
+            address,
+            offset,
+        });
+        z
     }
 
     /// Store from variable into address
@@ -243,7 +275,29 @@ impl View {
         registers: &mut Vec<(IRDType, u32)>,
         ops: &mut Vec<IROp>,
     ) {
-        todo!()
+        let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
+        ops.push(IROp::Set {
+            z: offset,
+            value: Constant::U32(0),
+        });
+        let offset = Var::Id(offset);
+        if let Some(inner) = self.0.last() {
+            for (a, dim) in inner {
+                if dim.st != 0 {
+                    ops.push(IROp::MAdd {
+                        z: offset,
+                        a: Var::Id(*a as u16),
+                        b: Var::Const(Constant::U32(dim.st as u32)),
+                        c: offset,
+                    });
+                }
+            }
+        }
+        ops.push(IROp::Store {
+            address,
+            x: var,
+            offset,
+        });
     }
 }
 

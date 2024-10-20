@@ -20,7 +20,6 @@ use std::{
 };
 use view::View;
 
-#[cfg(feature = "rand")]
 use rand::rngs::SmallRng;
 
 use half::{bf16, f16};
@@ -57,7 +56,6 @@ pub(super) struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
     // Random number generator
-    #[cfg(feature = "rand")]
     pub(super) rng: std::cell::OnceCell<SmallRng>,
     // Cache for compiled graphs
     compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
@@ -71,7 +69,9 @@ pub(super) struct Runtime {
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Are we in training mode?
     pub(super) training: bool,
+    /// How many variations of one kernel to try during optimization
     pub(super) search_iterations: usize,
+    /// Debug mask
     pub(super) debug: u32,
 }
 
@@ -85,8 +85,7 @@ impl Runtime {
             ir_kernel_cache: BTreeMap::new(),
             devices: Vec::new(),
             memory_pools: Vec::new(),
-            #[cfg(feature = "rand")]
-            rng: core::cell::OnceCell::new(),
+            rng: std::cell::OnceCell::new(),
             config_dir: None,
             optimizer_cache: BTreeMap::new(),
             training: false,
@@ -133,7 +132,6 @@ impl Runtime {
         Ok(())
     }
 
-    #[cfg(feature = "rand")]
     pub(super) fn manual_seed(&mut self, seed: u64) {
         use rand::SeedableRng;
         self.rng = std::cell::OnceCell::from(SmallRng::seed_from_u64(seed));

@@ -1,6 +1,6 @@
 //! DType and constant
 
-use core::fmt::Display;
+use std::fmt::Display;
 use half::{bf16, f16};
 
 use crate::{Scalar, ZyxError};

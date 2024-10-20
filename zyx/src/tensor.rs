@@ -230,14 +230,12 @@ impl Tensor {
 
     /// Manually sets the seed for the random number generator.
     /// This function is only available if the `rand` feature is enabled.
-    #[cfg(feature = "rand")]
     pub fn manual_seed(seed: u64) {
         RT.lock().manual_seed(seed);
     }
 
     /// Create random value in range 0f..1f with float dtype
     /// or 0..int::MAX if it is integer
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         const SEED: u64 = 69420;
@@ -346,7 +344,6 @@ impl Tensor {
 
     // Initializers
     /// Create tensor sampled from standard distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
@@ -364,7 +361,6 @@ impl Tensor {
     }
 
     /// Multinomial function
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn multinomial(&self, num_samples: usize, replacement: bool) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
@@ -402,7 +398,6 @@ impl Tensor {
 
     /// Create tensor sampled from uniform distribution
     /// Start of the range must be less than the end of the range.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn uniform<T: Scalar>(
         shape: impl IntoShape,
@@ -423,7 +418,6 @@ impl Tensor {
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
         let n = T::from_i64(shape.clone().into_shape().skip(1).product::<usize>() as i64);
@@ -437,7 +431,6 @@ impl Tensor {
     }
 
     /// Create tensor sampled from glorot uniform distribution.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn glorot_uniform(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         let shape: Vec<usize> = shape.into_shape().collect();
@@ -566,7 +559,6 @@ impl Tensor {
     /// This function randomly sets elements of the input tensor to zero based on the provided probability.
     /// The output tensor has the same shape as the input tensor. Elements are preserved with probability `1 - probability`
     /// and set to zero with probability `probability`.
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Result<Tensor, ZyxError> {
         // TODO fix this for training (dropout in training is just scaling)
