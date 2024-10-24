@@ -65,6 +65,7 @@ pub(super) struct Runtime {
     devices: Vec<Device>,
     // Cache which maps IRKernel to device and program id on the device
     ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
+    // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Are we in training mode?
@@ -154,6 +155,7 @@ impl Runtime {
         return self.graph.dtype(x);
     }
 
+    #[must_use]
     pub(super) fn variable<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,

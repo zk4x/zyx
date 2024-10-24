@@ -25,6 +25,8 @@ mod runtime;
 mod scalar;
 mod shape;
 mod tensor;
+// Constant hasher because apparently noone invented that yet...
+//mod chasher;
 
 pub use dtype::DType;
 pub use runtime::DeviceConfig;

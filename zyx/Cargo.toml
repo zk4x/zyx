@@ -28,7 +28,9 @@ serde_json = { version = "1.0.128", default-features = false, features = [
     "std",
 ] } # MIT or Apache 2.0
 # Support for random number generation
-rand = { version = "0.8.5", default-features = false, features = ["small_rng"] } # MIT or Apache 2.0
+rand = { version = "0.8.5", default-features = false, features = [
+    "small_rng",
+] } # MIT or Apache 2.0
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # For nice colorful debug logging
@@ -42,7 +44,7 @@ indicatif = { version = "0.17.8" }
 # Memory mapped loading of tensors from disk
 memmap2 = { version = "*" }
 
-# Optional dependencies
+# Optional dependencies# To speed things up a bit
 # for caching of searched kernels
 bitcode = { version = "0.6.3", default-features = false, features = [
     "std",

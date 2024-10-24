@@ -15,8 +15,7 @@ use crate::{
 };
 pub(super) use optimizer::KernelOptimizer;
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    u128,
+    collections::{BTreeMap, BTreeSet}, u128
 };
 use vop::MOp;
 
@@ -856,6 +855,17 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             graph.shape(nid),
                             "Shape after reshape split is incorrect."
                         );
+                    } else if true {
+                        kernel.ops.push(VOp::Move {
+                            z: nid,
+                            x: *x,
+                            mop: MOp::Resh,
+                        });
+                        assert_eq!(
+                            kernel.shape(),
+                            graph.shape(nid),
+                            "Shape after reshape is incorrect."
+                        );
                     } else {
                         // else create new kernel after storing results of previous kernel
                         kernel.store(*x, View::contiguous(graph.shape(*x)));
@@ -1174,15 +1184,14 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
 }
 
 fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
-    shape
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(axis, dimension)| VOp::Loop {
-            axis,
-            len: dimension,
-        })
-        .collect()
+    let mut res = Vec::with_capacity(20);
+    for (axis, dimension) in shape.iter().copied().enumerate() {
+        res.push(VOp::Loop {
+                    axis,
+                    len: dimension,
+                });
+    }
+    res
 }
 
 // Checks if kernel_y needs to be evaluated before kernel_x
