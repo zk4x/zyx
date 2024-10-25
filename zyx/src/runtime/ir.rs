@@ -229,7 +229,7 @@ impl std::fmt::Display for Scope {
 // Indexing also needs to be rewritten so that as much of it happens outside of the loops
 // and so that it does work properly
 
-// Returns IRKernel and order in which tensors are passed to it
+// Returns IRKernel and order in which tensors are passed to it as arguments
 pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorId>) {
     // What we need to calculate (outputs of this function)
     let mut addressables = Vec::new();
@@ -239,6 +239,7 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
 
     // Get reference counts for all tensors and axes
     let mut tensor_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+    //let mut tensor_dtypes: BTreeMap<TensorId, DType> = BTreeMap::new();
     let mut axes_rcs: BTreeMap<Axis, u32> = BTreeMap::new();
     for op in kernel_ops {
         match op {
@@ -314,11 +315,12 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 x,
                 xscope,
                 ref xview,
+                xdtype,
                 ..
             } => {
                 if xscope == Scope::Global && !addressables_map.contains_key(&(x, xscope)) {
                     args.push(x);
-                    let dtype = graph.dtype(x).ir_dtype();
+                    let dtype = xdtype.ir_dtype();
                     addressables.push((xscope, dtype, xview.original_numel(), true));
                     let id = (addressables.len() - 1) as u16;
                     addressables_map.insert((x, xscope), id);
@@ -421,29 +423,21 @@ pub(super) fn to_ir(kernel_ops: &[VOp], graph: &Graph) -> (IRKernel, Vec<TensorI
                 x,
                 xscope,
                 ref xview,
-            } => match (zscope, xscope) {
+                xdtype,
+            } => {
+                let dtype = xdtype.ir_dtype();
+                let address = addressables_map[&(x, xscope)];
+                let var = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
+                register_map.insert(z, var);
+                match (zscope, xscope) {
                 (Scope::Local, Scope::Global) => {
-                    let dtype = graph.dtype(z).ir_dtype();
-                    let address = addressables_map[&(x, xscope)];
-                    let id = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
-                    register_map.insert(z, id);
                     let address = addressables_map[&(z, zscope)];
-                    zview.ir_for_indexed_store(address, id, &mut registers, &mut ops);
+                    zview.ir_for_indexed_store(address, var, &mut registers, &mut ops);
                 }
-                (Scope::Register, Scope::Local) => {
-                    let dtype = graph.dtype(z).ir_dtype();
-                    let address = addressables_map[&(x, xscope)];
-                    let var = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
-                    register_map.insert(z, var);
-                }
-                (Scope::Register, Scope::Global) => {
-                    let dtype = graph.dtype(z).ir_dtype();
-                    let address = addressables_map[&(x, xscope)];
-                    let var = xview.ir_for_indexed_load(address, dtype, tensor_rcs[&z], &mut registers, &mut ops);
-                    register_map.insert(z, var);
-                }
+                (Scope::Register, Scope::Local) => {}
+                (Scope::Register, Scope::Global) => {}
                 _ => panic!("Invalid load scopes"),
-            },
+            }},
             &VOp::Store {
                 z,
                 zscope,

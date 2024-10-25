@@ -446,10 +446,7 @@ impl Runtime {
             #[cfg(feature = "disk_cache")]
             let mut timer = std::time::Instant::now();
             for i in 0..search_iters {
-                let optimizer = self
-                    .optimizer_cache
-                    .entry(cache_key.clone())
-                    .or_insert_with(|| kernel.new_optimizer(&dev_info));
+                let optimizer = self.optimizer_cache.get_mut(&cache_key).unwrap();
                 let Some(optimization_id) = optimizer.next() else {
                     if debug_sched {
                         println!(
@@ -690,7 +687,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 });
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
-            Node::Reshape { x } => {
+            &Node::Reshape { x } => {
                 // Reshape needs to add new loops to the end of the kernel if it is unsqueeze
                 // If we really want, we can get reshape working with loads and stores
                 // simply by using view for loads to have multiple reshapes in single view.
@@ -701,7 +698,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //for kernel in &kernels { kernel.debug(); }
 
                 let shape = graph.shape(nid);
-                let kernel = get_kernel(*x, &mut kernels, graph);
+                let kernel = get_kernel(x, &mut kernels, graph);
                 // If this is just a reshape of kernel with only unary ops and contiguous loads
                 // and stores, we can remove old loops and replace them with new loops.
                 //println!("Reshape");
@@ -739,16 +736,16 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     }
                     kernel.ops.push(VOp::Move {
                         z: nid,
-                        x: *x,
+                        x,
                         mop: MOp::Resh,
                     });
                     //println!("Reshaping continuous.");
                     //kernel.debug();
                 } else {
                     //println!("Reshaping non continuous.");
-                    // TODO we could also merge axes if possible
+                    // TODO we also have to merge axes if possible
                     let mut splits = Some(BTreeMap::new());
-                    let prev_shape = graph.shape(*x);
+                    let prev_shape = graph.shape(x);
                     if shape.len() < prev_shape.len() {
                         splits = None;
                     } else {
@@ -846,7 +843,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
 
                         kernel.ops.push(VOp::Move {
                             z: nid,
-                            x: *x,
+                            x,
                             mop: MOp::Resh,
                         });
                         //kernel.debug();
@@ -855,28 +852,18 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             graph.shape(nid),
                             "Shape after reshape split is incorrect."
                         );
-                    } else if true {
-                        kernel.ops.push(VOp::Move {
-                            z: nid,
-                            x: *x,
-                            mop: MOp::Resh,
-                        });
-                        assert_eq!(
-                            kernel.shape(),
-                            graph.shape(nid),
-                            "Shape after reshape is incorrect."
-                        );
                     } else {
                         // else create new kernel after storing results of previous kernel
-                        kernel.store(*x, View::contiguous(graph.shape(*x)));
+                        kernel.store(x, View::contiguous(graph.shape(x)));
                         let mut ops = shape_to_loops(shape);
                         ops.push(VOp::Load {
                             z: nid,
                             zscope: Scope::Register,
                             zview: View::none(),
-                            x: *x,
+                            x,
                             xscope: Scope::Global,
                             xview: View::contiguous(shape),
+                            xdtype: graph.dtype(x),
                         });
                         kernels.push(Kernel { ops });
                     }
@@ -1027,6 +1014,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                             x: y,
                             xscope: Scope::Global,
                             xview: View::contiguous(graph.shape(y)),
+                            xdtype: graph.dtype(x),
                         });
                         kernels.push(kernel);
                         kernels.last_mut().unwrap()

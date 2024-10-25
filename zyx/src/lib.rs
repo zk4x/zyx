@@ -192,21 +192,6 @@ fn t6() {
 }
 
 #[test]
-fn t7() {
-    let x = Tensor::from([[2, 3], [4, 5]]);
-    //let x = x.pad_zeros([(0, 1)]);
-    let x = x.pad_zeros([(4, 3), (1, 2)]);
-    //Tensor::plot_dot_graph([], "graph0");
-    println!("{x}")
-}
-
-#[test]
-fn t8() {
-    let x = Tensor::ones([2, 3], DType::F32);
-    println!("{x}");
-}
-
-#[test]
 fn t9() {
     let mut x = Tensor::ones([1024, 1024], DType::F32);
     let y = Tensor::ones([1024, 1024], DType::F32);
@@ -373,6 +358,22 @@ fn t4() {
 fn t5() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     assert_eq!(x.get((.., 2..3)).unwrap(), [[1], [4]]);
+}
+
+#[test]
+fn t7() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 3], [4, 5]]);
+    //let x = x.pad_zeros([(0, 1)]);
+    let x = x.pad_zeros([(4, 3), (1, 2)])?;
+    //Tensor::plot_dot_graph([], "graph0");
+    println!("{x}");
+    Ok(())
+}
+
+#[test]
+fn t8() {
+    let x = Tensor::ones([2, 3], DType::F32);
+    println!("{x}");
 }
 
 /*#[test]

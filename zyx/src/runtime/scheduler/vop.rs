@@ -1,5 +1,5 @@
 use crate::{
-    dtype::Constant,
+    dtype::{Constant, DType},
     runtime::{
         ir::Scope,
         node::{BOp, ROp, UOp},
@@ -31,6 +31,7 @@ pub(crate) enum VOp {
         x: TensorId,
         xscope: Scope,
         xview: View,
+        xdtype: DType,
     },
     Store {
         z: TensorId,
@@ -95,8 +96,9 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 x,
                 xscope,
                 xview,
+                xdtype,
             } => f.write_fmt(format_args!(
-                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}], {xview}"
+                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
             )),
             VOp::Store {
                 z,

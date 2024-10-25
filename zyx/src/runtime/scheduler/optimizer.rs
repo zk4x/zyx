@@ -346,7 +346,7 @@ impl Kernel {
                         }
                         lengths.pop().unwrap();
                     }
-                    VOp::Load { z, zscope, zview, x, xscope, xview } => {
+                    VOp::Load { z, zscope, zview, x, xscope, xview, xdtype } => {
                         if *zscope == Scope::Register && *xscope == Scope::Global && zview == &View::none() {
                             let mut sorted_axes = axes.clone();
                             sorted_axes.sort();
@@ -370,6 +370,7 @@ impl Kernel {
                                 *xscope = Scope::Local;
                                 let z = *z;
                                 let x = *x;
+                                let xdtype = *xdtype;
 
                                 let axes = if used_axes.contains(&5) {
                                     [4, 7, 5]
@@ -390,6 +391,7 @@ impl Kernel {
                                     x,
                                     xscope: Scope::Global,
                                     xview: global_view,
+                                    xdtype,
                                 });
                                 if used_axes.contains(&8) {
                                     kernel.ops.insert(rl_id+1, VOp::Loop {

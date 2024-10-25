@@ -1,6 +1,9 @@
+use super::{
+    ir::{get_empty_register, IRDType, IROp, IRVec, Var},
+    node::{BOp, UOp},
+};
+use crate::{dtype::Constant, shape::Axis, DType};
 use std::{collections::BTreeMap, fmt::Display};
-use crate::{dtype::Constant, shape::Axis};
-use super::ir::{get_empty_register, IRDType, IROp, IRVec, Var};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,44 +144,65 @@ impl View {
         todo!()
     }*/
 
-    pub(crate) fn split(&mut self, mut axis: usize, dimensions: &[usize]) {
+    pub(crate) fn split(&mut self, axis: usize, dimensions: &[usize]) {
+        fn split_inner(inner: &mut BTreeMap<usize, RDim>, mut axis: usize, dimensions: &[usize]) {
+            let keys: Vec<Axis> = inner.keys().copied().collect();
+            for a in keys.into_iter().rev() {
+                if a > axis {
+                    let dim = inner.remove(&a).unwrap();
+                    inner.insert(a + dimensions.len() - 1, dim);
+                }
+            }
+            //println!("inner {inner:?}");
+            // Then remove axis and get it's stride
+            let mut stride = inner.remove(&axis).unwrap().st;
+            //println!("inner {inner:?}");
+            // At last insert all new dimensions
+            axis += dimensions.len() - 1;
+            for &d in dimensions.iter().rev() {
+                assert!(inner
+                    .insert(
+                        axis,
+                        RDim {
+                            d,
+                            st: stride,
+                            lp: 0,
+                            rp: 0,
+                        },
+                    )
+                    .is_none());
+                stride *= d;
+                if axis > 0 {
+                    axis -= 1;
+                }
+            }
+        }
         //println!("Splitting {} axis {axis} into {dimensions:?}", self);
         // if axis contains padding, we have to reshape, otherwise just split
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(&axis) {
                 if dim.lp != 0 || dim.rp != 0 {
-                    todo!("Reshape padded view.");
+                    //todo!("Reshape padded view.");
+                    let mut inner = inner
+                        .iter()
+                        .map(|(&a, dim)| {
+                            (
+                                a,
+                                RDim {
+                                    d: dim.d,
+                                    st: dim.st,
+                                    lp: 0,
+                                    rp: 0,
+                                },
+                            )
+                        })
+                        .collect();
+                    split_inner(&mut inner, axis, dimensions);
+                    self.0.push(inner);
                 } else {
                     //println!("inner {inner:?}");
                     // First shift axes > axis by dimensions.len()
-                    let keys: Vec<Axis> = inner.keys().copied().collect();
-                    for a in keys.into_iter().rev() {
-                        if a > axis {
-                            let dim = inner.remove(&a).unwrap();
-                            inner.insert(a + dimensions.len() - 1, dim);
-                        }
-                    }
-                    //println!("inner {inner:?}");
-                    // Then remove axis and get it's stride
-                    let mut stride = inner.remove(&axis).unwrap().st;
-                    //println!("inner {inner:?}");
-                    // At last insert all new dimensions
-                    axis += dimensions.len() - 1;
-                    for &d in dimensions.iter().rev() {
-                        assert!(inner.insert(
-                            axis,
-                            RDim {
-                                d,
-                                st: stride,
-                                lp: 0,
-                                rp: 0,
-                            },
-                        ).is_none());
-                        stride *= d;
-                        if axis > 0 {
-                            axis -= 1;
-                        }
-                    }
+                    split_inner(inner, axis, dimensions);
                     //println!("done {inner:?}");
                 }
             }
@@ -246,31 +270,127 @@ impl View {
         registers: &mut Vec<(IRDType, u32)>,
         ops: &mut Vec<IROp>,
     ) -> Var {
-        let id = get_empty_register(registers, ir_dtype, rc);
+        // With padding, right padding does not affect offset
+        // offset = (a0-lp0)*st0 + a1*st1
+        // Padding condition, negative right padding does not affect it
+        // pc = a0 > lp0-1 && a0 < d0-rp0
+        // pc = pc.cast(dtype)
+        // x = pc * value[offset]
         let offset = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
         ops.push(IROp::Set {
             z: offset,
             value: Constant::U32(0),
         });
         let offset = Var::Id(offset);
+        let pc = get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0);
+        ops.push(IROp::Set {
+            z: pc,
+            value: Constant::U32(0),
+        });
+        let pc = Var::Id(pc);
         if let Some(inner) = self.0.last() {
-            for (a, dim) in inner {
+            for (&a, dim) in inner {
+                // Offset
                 if dim.st != 0 {
+                    let t = if dim.lp != 0 {
+                        let t = Var::Id(get_empty_register(
+                            registers,
+                            IRDType::U32(IRVec::Scalar),
+                            0,
+                        ));
+                        ops.push(IROp::Binary {
+                            z: t,
+                            x: Var::Id(a as u16),
+                            y: Var::Const(Constant::U32(if dim.lp > 0 { dim.lp } else { -dim.lp } as u32)),
+                            bop: BOp::Sub,
+                        });
+                        t
+                    } else {
+                        Var::Id(a as u16)
+                    };
                     ops.push(IROp::MAdd {
                         z: offset,
-                        a: Var::Id(*a as u16),
+                        a: t,
                         b: Var::Const(Constant::U32(dim.st as u32)),
                         c: offset,
                     });
                 }
+                // Padding condition
+                if dim.lp > 0 {
+                    let t = Var::Id(get_empty_register(
+                        registers,
+                        IRDType::U32(IRVec::Scalar),
+                        0,
+                    ));
+                    ops.push(IROp::Binary {
+                        z: t,
+                        x: Var::Id(a as u16),
+                        y: Var::Const(Constant::U32((dim.lp - 1) as u32)),
+                        bop: BOp::Cmplt,
+                    });
+                    ops.push(IROp::Binary {
+                        z: pc,
+                        x: t,
+                        y: pc,
+                        bop: BOp::And,
+                    });
+                }
+                if dim.rp > 0 {
+                    let t = Var::Id(get_empty_register(
+                        registers,
+                        IRDType::U32(IRVec::Scalar),
+                        0,
+                    ));
+                    ops.push(IROp::Binary {
+                        z: t,
+                        x: Var::Id(a as u16),
+                        y: Var::Const(Constant::U32((dim.d as isize - dim.lp) as u32)),
+                        bop: BOp::Cmpgt,
+                    });
+                    ops.push(IROp::Binary {
+                        z: pc,
+                        x: t,
+                        y: pc,
+                        bop: BOp::And,
+                    });
+                }
             }
         }
-        let z = Var::Id(id);
-        ops.push(IROp::Load {
-            z,
-            address,
-            offset,
+        let z = Var::Id(get_empty_register(registers, ir_dtype, rc));
+        let pcu32 = Var::Id(get_empty_register(registers, IRDType::U32(IRVec::Scalar), 0));
+        ops.push(IROp::Unary {
+            z: pcu32,
+            x: pc,
+            uop: UOp::Cast(DType::U32),
         });
+        ops.push(IROp::Binary {
+            z: offset,
+            x: pcu32,
+            y: offset,
+            bop: BOp::Mul,
+        });
+        ops.push(IROp::Load { z, address, offset });
+        if let Var::Id(offset) = offset {
+            registers[offset as usize].1 = 0;
+        }
+        let Var::Id(z_id) = z else { panic!() };
+        let dt = registers[z_id as usize].0;
+        let pcd = Var::Id(get_empty_register(registers, dt, 0));
+        ops.push(IROp::Unary {
+            z: pcd,
+            x: pc,
+            uop: UOp::Cast(dt.dtype()),
+        });
+        // Nullify z if padding condition is false (if there is padding at that index)
+        ops.push(IROp::Binary {
+            z,
+            x: pcd,
+            y: z,
+            bop: BOp::Mul,
+        });
+        if let Var::Id(pc) = pc {
+            registers[pc as usize].1 = 0;
+        }
         z
     }
 
@@ -312,7 +432,7 @@ impl Display for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(inner) = self.0.last() {
             f.write_fmt(format_args!(
-                "V:S ax{:?} sh{:?} st{:?} pd{:?}",
+                "V(ax{:?} sh{:?} st{:?} pd{:?})",
                 inner.keys().map(|&a| a).collect::<Vec<usize>>(),
                 inner.values().map(|d| d.d).collect::<Vec<usize>>(),
                 inner.values().map(|d| d.st).collect::<Vec<usize>>(),

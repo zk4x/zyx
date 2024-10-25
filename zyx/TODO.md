@@ -1,3 +1,25 @@
-- [ ] view axis merge
 - [ ] tests for fusion in generate kernels, test will create it's own graph and check how the fused kernel looks
     - [ ] softmax fusion test
+- [ ] finish view
+  - [x] split on padded view
+  - [x] view padding to ir
+    - [x] offset
+    - [x] padding condition
+  - [ ] view reshaped to ir
+  - [ ] view axis merge
+- [ ] ir rewrite
+  - [x] add dtype to load vop, so that we don't need to pass graph to ir
+  - [ ] do not pass graph to ir
+  - [x] change ir register id to u16
+  - [ ] remove ref counting from ir
+  - [ ] add ops reordering, all ops that can be moved before loops should be moved
+  - [ ] deduplicate all calculations
+  - [ ] add function optimizations
+  - [ ] add new reference counting that accounts for all variables, including indexing variables
+- [x] manual for adding new backends
+- [ ] register tiling of all variables
+- [ ] local tiling of all variables
+- [ ] vector dtypes in kernels
+- [ ] tensor cores support
+- [ ] matmul
+- [ ] fastattention

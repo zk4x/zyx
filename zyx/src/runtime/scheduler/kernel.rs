@@ -142,6 +142,7 @@ impl Kernel {
             x,
             xscope: Scope::Global,
             xview: View::contiguous(&shape),
+            xdtype: graph.dtype(x),
         });
         Kernel { ops }
     }
