@@ -4,7 +4,7 @@
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
-use crate::runtime::ir::{IRDType, IROp, Scope, Var};
+use crate::runtime::ir::{IRDType, IROp, Reg, Scope};
 use crate::runtime::node::{BOp, UOp};
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 use libloading::Library;
@@ -445,7 +445,7 @@ impl HIPDevice {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.hip(), x.hip());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(_) => {
@@ -726,11 +726,11 @@ impl IRDType {
     }
 }
 
-impl Var {
+impl Reg {
     fn hip(&self) -> String {
         match self {
-            Var::Id(id) => format!("r{id}"),
-            Var::Const(value) => format!("{}", value.hip()),
+            Reg::Var(id) => format!("r{id}"),
+            Reg::Const(value) => format!("{}", value.hip()),
         }
     }
 }

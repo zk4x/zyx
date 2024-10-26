@@ -1,21 +1,17 @@
 use super::{
     backend::MemoryPoolId,
+    ir::IRKernel,
     node::{BOp, ROp},
     BufferId, DeviceId,
 };
 use crate::{
-    runtime::{
-        graph::Graph,
-        ir::{self, Scope},
-        node::Node,
-        view::View,
-        Runtime, ZyxError,
-    },
+    runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
 pub(super) use optimizer::KernelOptimizer;
 use std::{
-    collections::{BTreeMap, BTreeSet}, u128
+    collections::{BTreeMap, BTreeSet},
+    u128,
 };
 use vop::MOp;
 
@@ -454,7 +450,11 @@ impl Runtime {
                         );
                     }
                     #[cfg(feature = "disk_cache")]
-                    store_optimizer_cache(&self.optimizer_cache, self.config_dir.clone(), self.debug_sched());
+                    store_optimizer_cache(
+                        &self.optimizer_cache,
+                        self.config_dir.clone(),
+                        self.debug_sched(),
+                    );
                     break;
                 };
                 if debug_sched {
@@ -479,7 +479,7 @@ impl Runtime {
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
                 //optimized_kernel.debug();
                 //panic!();
-                let (ir_kernel, _) = ir::to_ir(&optimized_kernel.ops, graph);
+                let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
                 let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
@@ -512,12 +512,20 @@ impl Runtime {
                 optimizer.set_exec_time(optimization_id, exec_time);
                 #[cfg(feature = "disk_cache")]
                 if timer.elapsed().as_secs() > 60 {
-                    store_optimizer_cache(&self.optimizer_cache, self.config_dir.clone(), debug_sched);
+                    store_optimizer_cache(
+                        &self.optimizer_cache,
+                        self.config_dir.clone(),
+                        debug_sched,
+                    );
                     timer = std::time::Instant::now();
                 }
             }
             #[cfg(feature = "disk_cache")]
-            store_optimizer_cache(&self.optimizer_cache, self.config_dir.clone(), self.debug_sched());
+            store_optimizer_cache(
+                &self.optimizer_cache,
+                self.config_dir.clone(),
+                self.debug_sched(),
+            );
             if debug_sched {
                 println!("Optimization has been finished.\n");
             }
@@ -540,7 +548,7 @@ impl Runtime {
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
         //optimized_kernel.debug();
-        let (ir_kernel, ir_args) = ir::to_ir(&optimized_kernel.ops, graph);
+        let (ir_kernel, ir_args) = IRKernel::new(&optimized_kernel.ops);
         let mut program_id = None;
         if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
             if *dev_id == device_id {
@@ -619,7 +627,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     // TODO not sure if this is perfectly correct. Can it contain x in outputs,
                     // but can it be x evaluated to different values, i.e. some intermediate?
                     if !kernel.outputs().contains(&x) {
-                        kernel.store(x, View::contiguous(xshape));
+                        kernel.store(x, View::contiguous(xshape), graph.dtype(x));
                     }
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
@@ -854,7 +862,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         );
                     } else {
                         // else create new kernel after storing results of previous kernel
-                        kernel.store(x, View::contiguous(graph.shape(x)));
+                        kernel.store(x, View::contiguous(graph.shape(x)), graph.dtype(x));
                         let mut ops = shape_to_loops(shape);
                         ops.push(VOp::Load {
                             z: nid,
@@ -877,7 +885,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 // For now kernel also won't be padded if it contains store,
                 // but that can be changed.
                 if !kernel.can_be_zero_padded() {
-                    kernel.store(x, View::contiguous(graph.shape(x)));
+                    kernel.store(x, View::contiguous(graph.shape(x)), graph.dtype(x));
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
                 }
@@ -965,6 +973,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         z: nid,
                         rop: *rop,
                         view: View::none(),
+                        dtype: graph.dtype(nid),
                     },
                 );
                 kernel.ops.push(VOp::Binary {
@@ -1115,7 +1124,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 .iter_mut()
                 .find(|kernel| kernel.vars().contains(&nid))
             {
-                kernel.store(nid, View::contiguous(graph.shape(nid)));
+                kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
             } else {
                 panic!()
             }
@@ -1137,7 +1146,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     || kernel.is_reduce()
                     || !kernel.outputs().is_empty()
                 {
-                    kernel.store(nid, View::contiguous(graph.shape(nid)));
+                    kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
                     kernels.push(Kernel::load(nid, graph));
                 } else {
                     let kernel2 = kernel.clone();
@@ -1175,9 +1184,9 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
     let mut res = Vec::with_capacity(20);
     for (axis, dimension) in shape.iter().copied().enumerate() {
         res.push(VOp::Loop {
-                    axis,
-                    len: dimension,
-                });
+            axis,
+            len: dimension,
+        });
     }
     res
 }
@@ -1269,18 +1278,19 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
 }
 
 #[cfg(feature = "disk_cache")]
-fn store_optimizer_cache(optimizer_cache: &BTreeMap<(Kernel, super::backend::DeviceInfo), KernelOptimizer>, config_dir: Option<std::path::PathBuf>, debug_sched: bool) {
+fn store_optimizer_cache(
+    optimizer_cache: &BTreeMap<(Kernel, super::backend::DeviceInfo), KernelOptimizer>,
+    config_dir: Option<std::path::PathBuf>,
+    debug_sched: bool,
+) {
     use std::io::Write;
     if let Some(mut path) = config_dir.clone() {
         path.push("cached_kernels");
         let mut file = std::fs::File::create(path).unwrap();
-        file.write_all(&bitcode::encode(optimizer_cache))
-            .unwrap();
+        file.write_all(&bitcode::encode(optimizer_cache)).unwrap();
     } else {
         if debug_sched {
-            println!(
-                "Zyx config path was not found. Searched kernels won't be cached to disk."
-            );
+            println!("Zyx config path was not found. Searched kernels won't be cached to disk.");
         }
     }
 }

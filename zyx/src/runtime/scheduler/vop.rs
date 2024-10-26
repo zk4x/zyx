@@ -37,6 +37,7 @@ pub(crate) enum VOp {
         z: TensorId,
         zscope: Scope,
         zview: View,
+        zdtype: DType,
         xscope: Scope,
         xview: View,
     },
@@ -44,6 +45,7 @@ pub(crate) enum VOp {
         z: TensorId,
         rop: ROp,
         view: View,
+        dtype: DType,
     },
     // Move is noop, just a marker for easy debugging
     // and to keep track of tensor ids
@@ -83,7 +85,7 @@ pub(crate) enum MOp {
 }
 
 impl std::fmt::Display for VOp {
-fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use inline_colorization::*;
         match self {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
@@ -104,10 +106,11 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 z,
                 zview,
                 zscope,
+                zdtype,
                 xscope,
                 xview: _,
             } => f.write_fmt(format_args!(
-                "{color_red}Store{color_reset}        {z}[{zscope:?}] <- [{xscope:?}], {zview}"
+                "{color_red}Store{color_reset}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
             )),
             VOp::Loop {
                 axis,
@@ -115,8 +118,8 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             } => f.write_fmt(format_args!(
                 "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"
             )),
-            VOp::Accumulator { z, rop, view } => f.write_fmt(format_args!(
-                "{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}",
+            VOp::Accumulator { z, rop, view, dtype } => f.write_fmt(format_args!(
+                "{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}, {dtype}",
                 view.shape()
             )),
             VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset} ")),

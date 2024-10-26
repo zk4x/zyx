@@ -13,7 +13,7 @@ use super::DeviceInfo;
 use crate::dtype::Constant;
 use crate::index_map::IndexMap;
 use crate::runtime::ir::IRKernel;
-use crate::runtime::ir::{IRDType, IROp, Scope, Var};
+use crate::runtime::ir::{IRDType, IROp, Reg, Scope};
 use crate::runtime::node::{BOp, UOp};
 use crate::DType;
 
@@ -168,7 +168,8 @@ pub(super) fn initialize_devices(
     let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
     let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
     let cuModuleUnload = *unsafe { cuda.get(b"cuModuleUnload\0") }.unwrap();
-    let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
+    let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
     let mut driver_version = 0;
@@ -230,7 +231,9 @@ pub(super) fn initialize_devices(
             continue;
         };
         let mut context: CUcontext = ptr::null_mut();
-        if let Err(e) = unsafe { cuCtxCreate(&mut context, 0, device) }.check("Failed to create CUDA context.") {
+        if let Err(e) =
+            unsafe { cuCtxCreate(&mut context, 0, device) }.check("Failed to create CUDA context.")
+        {
             println!("{e:?}");
             continue;
         }
@@ -538,14 +541,16 @@ impl CUDADevice {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.cu(), x.cu());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Var::Id(id) = x else { panic!() };
+                    let Reg::Var(id) = x else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     let zero = Constant::new(0).unary(UOp::Cast(dtype.dtype())).cu();
                     source += &match uop {
                         UOp::Cast(_) => {
                             format!("{indent}{} = ({}){};\n", z.cu(), dtype.cu(), x.cu())
                         }
-                        UOp::ReLU => format!("{indent}{0} = {1} * ({1} > {2});\n", z.cu(), x.cu(), zero),
+                        UOp::ReLU => {
+                            format!("{indent}{0} = {1} * ({1} > {2});\n", z.cu(), x.cu(), zero)
+                        }
                         UOp::Neg => format!("{indent}{} = -{};\n", z.cu(), x.cu()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.cu(), x.cu()),
                         UOp::Log2 => format!("{indent}{} = log2({});\n", z.cu(), x.cu()),
@@ -622,7 +627,9 @@ impl CUDADevice {
             local_work_size[2],
         );
         let mut pragma = format!("");
-        if source.contains("__half") { pragma += &"#include <cuda_fp16.h>\n"; }
+        if source.contains("__half") {
+            pragma += &"#include <cuda_fp16.h>\n";
+        }
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         name += "\0";
         if debug_asm {
@@ -811,7 +818,7 @@ impl CUDADevice {
                     source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.ptx());
                 }
                 IROp::Load { z, address, offset } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     // Get address
                     source += &format!(
@@ -824,7 +831,7 @@ impl CUDADevice {
                     source += &format!("{indent}ld.global.{}    {}, [a1];\n", dtype.ptx(), z.ptx());
                 }
                 IROp::Store { address, offset, x } => {
-                    let Var::Id(id) = x else { panic!() };
+                    let Reg::Var(id) = x else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     // Get address
                     source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
@@ -834,7 +841,7 @@ impl CUDADevice {
                     source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.ptx());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(cdt) => format!(
@@ -885,7 +892,7 @@ impl CUDADevice {
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     //println!("Adding binary {bop:?}");
                     source += &format!(
@@ -913,7 +920,7 @@ impl CUDADevice {
                     );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     source += &format!(
                         "{indent}mad.lo.{}    {}, {}, {}, {};\n",
@@ -1261,11 +1268,11 @@ impl Constant {
     }
 }
 
-impl Var {
+impl Reg {
     fn ptx(&self) -> String {
         match self {
-            Var::Id(id) => format!("r{id}"),
-            Var::Const(value) => format!("{}", value.ptx()),
+            Reg::Var(id) => format!("r{id}"),
+            Reg::Const(value) => format!("{}", value.ptx()),
         }
     }
 }
@@ -1293,11 +1300,11 @@ impl IRDType {
     }
 }
 
-impl Var {
+impl Reg {
     fn cu(&self) -> String {
         match self {
-            Var::Id(id) => format!("r{id}"),
-            Var::Const(value) => format!("{}", value.cu()),
+            Reg::Var(id) => format!("r{id}"),
+            Reg::Const(value) => format!("{}", value.cu()),
         }
     }
 }

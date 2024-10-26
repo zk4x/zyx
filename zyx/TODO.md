@@ -9,12 +9,13 @@
   - [ ] view axis merge
 - [ ] ir rewrite
   - [x] add dtype to load vop, so that we don't need to pass graph to ir
-  - [ ] do not pass graph to ir
+  - [x] do not pass graph to ir
   - [x] change ir register id to u16
-  - [ ] remove ref counting from ir
+  - [x] remove ref counting from ir
+  - [ ] merge all mul + add into mad instructions
   - [ ] add ops reordering, all ops that can be moved before loops should be moved
   - [ ] deduplicate all calculations
-  - [ ] add function optimizations
+  - [ ] add optimizations for ops, merges, deletion of redundant ops
   - [ ] add new reference counting that accounts for all variables, including indexing variables
 - [x] manual for adding new backends
 - [ ] register tiling of all variables
@@ -22,4 +23,4 @@
 - [ ] vector dtypes in kernels
 - [ ] tensor cores support
 - [ ] matmul
-- [ ] fastattention
+- [ ] flash attention

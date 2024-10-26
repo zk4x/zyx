@@ -6,7 +6,7 @@ use crate::{
     dtype::Constant,
     index_map::IndexMap,
     runtime::{
-        ir::{IRDType, IRKernel, IROp, Scope, Var},
+        ir::{IRDType, IRKernel, IROp, Reg, Scope},
         node::{BOp, UOp},
     },
 };
@@ -709,7 +709,7 @@ impl OpenCLDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
-                    if let Var::Id(id) = offset {
+                    if let Reg::Var(id) = offset {
                         if id == 11 {
                             //source += &format!("{indent}printf(\"%u, \", r11);\n");
                         }
@@ -720,7 +720,7 @@ impl OpenCLDevice {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(_) => {
@@ -1230,11 +1230,11 @@ impl Constant {
     }
 }
 
-impl Var {
+impl Reg {
     fn ocl(&self) -> String {
         match self {
-            Var::Id(id) => format!("r{id}"),
-            Var::Const(value) => format!("{}", value.ocl()),
+            Reg::Var(id) => format!("r{id}"),
+            Reg::Const(value) => format!("{}", value.ocl()),
         }
     }
 }

@@ -4,6 +4,7 @@ use crate::{
     runtime::{graph::Graph, ir::Scope, view::View},
     shape::{Axis, Dimension},
     tensor::TensorId,
+    DType,
 };
 
 use super::{shape_to_loops, vop::VOp};
@@ -148,7 +149,7 @@ impl Kernel {
     }
 
     /// Store z just after the last operation was executed with it
-    pub(super) fn store(&mut self, z: TensorId, zview: View) {
+    pub(super) fn store(&mut self, z: TensorId, zview: View, zdtype: DType) {
         if let Some(&VOp::Store {
             z: nz,
             zview: ref nzview,
@@ -164,6 +165,7 @@ impl Kernel {
             z,
             zview,
             zscope: Scope::Global,
+            zdtype,
             xscope: Scope::Register,
             xview: View::none(),
         };
