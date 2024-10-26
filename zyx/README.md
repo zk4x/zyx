@@ -5,8 +5,8 @@ Zyx feels dynamic (pytorch like), but is lazy,
 waits with execution until it is explicitly asked for results.
 Zyx automatically generates and compiles
 optimized kernels at runtime for CUDA, HIP, OpenCL and WGSL (i.e. Vulkan).
-All tensors are differentiable (that is tensors use requires_grad=True,
-but thanks to lazyness all unnecessary memory allocations are optimized away).
+All tensors are differentiable (that is tensors use requires_grad=True),
+but thanks to lazyness all unnecessary memory allocations are optimized away.
 
 ## Install
 
