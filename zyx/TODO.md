@@ -17,6 +17,8 @@
   - [ ] deduplicate all calculations
   - [ ] add optimizations for ops, merges, deletion of redundant ops
   - [ ] add new reference counting that accounts for all variables, including indexing variables
+- [x] vops remove unary view
+- [x] vops remove binary views
 - [x] manual for adding new backends
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables

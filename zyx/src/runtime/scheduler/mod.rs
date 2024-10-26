@@ -931,15 +931,15 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 });
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
-            Node::Reduce { x, axes, rop } => {
+            &Node::Reduce { x, ref axes, rop } => {
                 // TODO do not apply reduce on a previously fully reduced and expanded kernel, this
                 // happens in softmax
-                let kernel = get_kernel(*x, &mut kernels, graph);
+                let kernel = get_kernel(x, &mut kernels, graph);
                 // Reduce removes loops and adds accumulator before those loops that it removes
                 //println!("Axes {axes:?}");
                 // Permute the axes such that reduce loops are last
                 // and keep the order of axes that are not reduced.
-                let permute_axes: Vec<usize> = (0..graph.shape(*x).len())
+                let permute_axes: Vec<usize> = (0..graph.shape(x).len())
                     .filter(|a| !axes.contains(a))
                     .chain(axes.iter().copied())
                     .collect();
@@ -950,7 +950,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 // from the resulting shape either way, but only if there are no ops between those loops.
 
                 // Add accumulator
-                let num_axes = graph.shape(*x).len();
+                let num_axes = graph.shape(x).len();
                 let mut looped_axes: BTreeSet<usize> = (num_axes - axes.len()..num_axes).collect();
                 //println!("Looped axes: {looped_axes:?}");
                 let acc_id = kernel.ops.len()
@@ -971,18 +971,15 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     acc_id,
                     VOp::Accumulator {
                         z: nid,
-                        rop: *rop,
+                        rop,
                         view: View::none(),
                         dtype: graph.dtype(nid),
                     },
                 );
                 kernel.ops.push(VOp::Binary {
                     z: nid,
-                    zview: View::none(),
-                    x: *x,
-                    xview: View::none(),
+                    x,
                     y: nid,
-                    yview: View::none(),
                     bop: match rop {
                         ROp::Sum => BOp::Add,
                         ROp::Max => BOp::Max,
@@ -1003,7 +1000,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     z: nid,
                     x: *x,
                     uop: *uop,
-                    view: View::none(),
                 });
             }
             &Node::Binary { x, y, bop } => {
@@ -1032,11 +1028,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     };
                     kernel.ops.push(VOp::Binary {
                         z: nid,
-                        zview: View::none(),
                         x,
-                        xview: View::none(),
                         y,
-                        yview: View::none(),
                         bop,
                     });
                 } else {
@@ -1103,11 +1096,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     kernel_x.ops.extend(kernel_y_ops);
                     kernel_x.ops.push(VOp::Binary {
                         z: nid,
-                        zview: View::none(),
                         x,
-                        xview: View::none(),
                         y,
-                        yview: View::none(),
                         bop,
                     });
                     // if kernel is not last, then make it last

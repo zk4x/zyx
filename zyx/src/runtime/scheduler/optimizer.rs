@@ -272,8 +272,8 @@ impl Kernel {
                                 *xview = acc_view.clone();
                             }
                         }
-                        VOp::Binary { z, zview, x, xview, y, yview, .. } => {
-                            if accs.contains(z) {
+                        VOp::Binary { z, x, y, .. } => {
+                            /*if accs.contains(z) {
                                 *zview = acc_view.clone();
                             }
                             if accs.contains(x) {
@@ -281,7 +281,7 @@ impl Kernel {
                             }
                             if accs.contains(y) {
                                 *yview = acc_view.clone();
-                            }
+                            }*/
                         }
                         _ => {}
                     }

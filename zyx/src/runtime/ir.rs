@@ -515,7 +515,7 @@ impl IRKernel {
                 &VOp::Move { z, x, .. } => {
                     c.register_map.insert(z, c.register_map[&x]);
                 }
-                &VOp::Unary { z, x, uop, view: _ } => {
+                &VOp::Unary { z, x, uop } => {
                     // TODO unary can have view, but this will probably be only used for vectorization
                     let xreg = c.register_map[&x];
                     if let Some(value) = c.constant_map.get(&xreg) {
@@ -529,11 +529,8 @@ impl IRKernel {
                 }
                 &VOp::Binary {
                     z,
-                    ref zview,
                     x,
-                    ref xview,
                     y,
-                    ref yview,
                     bop,
                 } => {
                     todo!();
