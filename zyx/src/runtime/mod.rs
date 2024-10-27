@@ -27,6 +27,7 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
+mod compiler;
 mod backend;
 mod graph;
 mod ir;
