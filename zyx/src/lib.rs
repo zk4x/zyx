@@ -31,7 +31,7 @@ mod tensor;
 pub use dtype::DType;
 pub use runtime::DeviceConfig;
 pub use runtime::ZyxError;
-pub use scalar::{Scalar, Float};
+pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 
@@ -311,6 +311,14 @@ fn t1() {
     let b = x.dot(y);
     println!("{a}, {b}");
 }*/
+
+#[test]
+fn t1() -> Result<(), ZyxError> {
+    let x = Tensor::rand([4, 2, 3], DType::F32)?;
+    let y = x.exp2();
+    println!("{y}");
+    Ok(())
+}
 
 #[test]
 fn t2() {

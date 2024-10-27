@@ -299,7 +299,7 @@ impl View {
         }
         let pcu32 = c.cast(pc, DType::U32);
         let offset = c.mul(pcu32, offset);
-        let z = c.load(address, offset);
+        let z = c.load(address, offset, dtype);
         let pcd = c.cast(pc, dtype);
         // Nullify z if padding condition is false (if there is padding at that index)
         let z = c.mul(pcd, z);

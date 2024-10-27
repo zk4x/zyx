@@ -11,7 +11,7 @@ use crate::{
     dtype::Constant,
     index_map::IndexMap,
     runtime::{
-        ir::{IRDType, IRKernel, IROp, Scope, Var},
+        ir::{IRDType, IRKernel, IROp, Reg, Scope},
         node::{BOp, UOp},
     },
 };
@@ -280,10 +280,7 @@ impl WGSLDevice {
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
-                source += &format!(
-                    "var<workgroup> p{id}: array<{}, {len}>;\n",
-                    dtype.wgsl(),
-                );
+                source += &format!("var<workgroup> p{id}: array<{}, {len}>;\n", dtype.wgsl(),);
             }
         }
 
@@ -357,7 +354,7 @@ impl WGSLDevice {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.wgsl(), x.wgsl());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     source += &match uop {
                         UOp::Cast(dtype) => {
@@ -368,7 +365,12 @@ impl WGSLDevice {
                                 x.wgsl(),
                             )
                         }
-                        UOp::ReLU => format!("{indent}{} = max({}, {});\n", z.wgsl(), x.wgsl(), dtype.dtype().zero_constant().wgsl()),
+                        UOp::ReLU => format!(
+                            "{indent}{} = max({}, {});\n",
+                            z.wgsl(),
+                            x.wgsl(),
+                            dtype.dtype().zero_constant().wgsl()
+                        ),
                         UOp::Neg => format!("{indent}{} = -{};\n", z.wgsl(), x.wgsl()),
                         UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.wgsl(), x.wgsl()),
                         UOp::Log2 => format!("{indent}{} = log2({});\n", z.wgsl(), x.wgsl()),
@@ -377,13 +379,18 @@ impl WGSLDevice {
                         UOp::Sin => format!("{indent}{} = sin({});\n", z.wgsl(), x.wgsl()),
                         UOp::Cos => format!("{indent}{} = cos({});\n", z.wgsl(), x.wgsl()),
                         UOp::Not => {
-                            let Var::Id(zi) = z else { panic!() };
-                            format!("{indent}{} = {}({} == 0);\n", z.wgsl(), kernel.registers[zi as usize].wgsl(), x.wgsl())
+                            let Reg::Var(zi) = z else { panic!() };
+                            format!(
+                                "{indent}{} = {}({} == 0);\n",
+                                z.wgsl(),
+                                kernel.registers[zi as usize].wgsl(),
+                                x.wgsl()
+                            )
                         }
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    let Var::Id(id) = z else { panic!() };
+                    let Reg::Var(id) = z else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     source += &format!(
                         "{indent}{} = {};\n",
@@ -426,13 +433,11 @@ impl WGSLDevice {
                     indent.pop();
                     source += &format!("{indent}}}\n");
                 }
-                IROp::Barrier { scope } => {
-                      match scope {
-                          Scope::Global => source += &format!("{indent}storageBarrier();\n"),
-                          Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
-                          Scope::Register => panic!(),
-                      }
-                  }
+                IROp::Barrier { scope } => match scope {
+                    Scope::Global => source += &format!("{indent}storageBarrier();\n"),
+                    Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
+                    Scope::Register => panic!(),
+                },
             }
         }
         source += "}\n";
@@ -608,11 +613,11 @@ impl Constant {
     }
 }
 
-impl Var {
+impl Reg {
     fn wgsl(&self) -> String {
         match self {
-            Var::Id(id) => format!("r{id}"),
-            Var::Const(value) => format!("{}", value.wgsl()),
+            Reg::Var(id) => format!("r{id}"),
+            Reg::Const(value) => format!("{}", value.wgsl()),
         }
     }
 }

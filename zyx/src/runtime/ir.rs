@@ -230,58 +230,63 @@ pub(super) struct IRCompiler {
     register_map: BTreeMap<TensorId, u16>,
     constant_map: BTreeMap<u16, Constant>,
     pointers_map: BTreeMap<(TensorId, Scope), u16>,
-    max_id: u16,
+    dtypes: Vec<DType>,
 }
 
 impl IRCompiler {
     pub(super) fn variable(&mut self, constant: Constant) -> u16 {
-        self.max_id += 1;
+        self.dtypes.push(constant.dtype());
+        let max_id = (self.dtypes.len() - 1) as u16;
         self.ops.push(IROp::Set {
-            z: self.max_id,
+            z: max_id,
             value: constant,
         });
-        self.max_id
+        max_id
     }
 
     pub(super) fn constant(&mut self, constant: Constant) -> u16 {
-        self.max_id += 1;
-        self.constant_map.insert(self.max_id, constant);
-        self.max_id
+        self.dtypes.push(constant.dtype());
+        let max_id = (self.dtypes.len() - 1) as u16;
+        self.constant_map.insert(max_id, constant);
+        max_id
     }
 
     fn unary_op(&mut self, x: u16, uop: UOp) -> u16 {
-        self.max_id += 1;
+        self.dtypes.push(self.dtypes[x as usize]);
+        let max_id = (self.dtypes.len() - 1) as u16;
         self.ops.push(IROp::Unary {
-            z: Reg::Var(self.max_id),
+            z: Reg::Var(max_id),
             x: Reg::Var(x),
             uop,
         });
-        self.max_id
+        max_id
     }
 
     pub(super) fn cast(&mut self, x: u16, dtype: DType) -> u16 {
         self.unary_op(x, UOp::Cast(dtype))
     }
 
-    pub(super) fn load(&mut self, address: u16, offset: u16) -> u16 {
-        self.max_id += 1;
+    pub(super) fn load(&mut self, address: u16, offset: u16, dtype: DType) -> u16 {
+        self.dtypes.push(dtype);
+        let max_id = (self.dtypes.len() - 1) as u16;
         self.ops.push(IROp::Load {
-            z: Reg::Var(self.max_id),
+            z: Reg::Var(max_id),
             address,
             offset: Reg::Var(offset),
         });
-        self.max_id
+        max_id
     }
 
     fn binary_op(&mut self, x: u16, y: u16, bop: BOp) -> u16 {
-        self.max_id += 1;
+        self.dtypes.push(self.dtypes[x as usize]);
+        let max_id = (self.dtypes.len() - 1) as u16;
         self.ops.push(IROp::Binary {
-            z: Reg::Var(self.max_id),
+            z: Reg::Var(max_id),
             x: Reg::Var(x),
             y: Reg::Var(y),
             bop,
         });
-        self.max_id
+        max_id
     }
 
     pub(super) fn and(&mut self, x: u16, y: u16) -> u16 {
@@ -329,7 +334,7 @@ impl IRKernel {
             register_map: BTreeMap::new(),
             constant_map: BTreeMap::new(),
             pointers_map: BTreeMap::new(),
-            max_id: 0,
+            dtypes: Vec::new(),
         };
 
         // Declare global arguments
@@ -413,6 +418,7 @@ impl IRKernel {
         }
 
         // Declare accumulators and get max axis id
+        let mut max_axis = 0;
         for op in kernel_ops {
             match op {
                 &VOp::Accumulator {
@@ -427,10 +433,11 @@ impl IRKernel {
                     let id = (addressables.len() - 1) as u16;
                     c.pointers_map.insert((z, Scope::Register), id);
                 }
-                &VOp::Loop { axis, .. } => c.max_id = c.max_id.max(axis as u16),
+                &VOp::Loop { axis, .. } => max_axis = max_axis.max(axis as u16),
                 _ => {}
             }
         }
+        c.dtypes = vec![DType::U32; max_axis as usize + 1];
 
         // Transpiling from Kernel to IRKernel, VOp -> IROp
         let mut loops = Vec::new();
@@ -527,12 +534,7 @@ impl IRKernel {
                         c.register_map.insert(z, zreg);
                     }
                 }
-                &VOp::Binary {
-                    z,
-                    x,
-                    y,
-                    bop,
-                } => {
+                &VOp::Binary { z, x, y, bop } => {
                     todo!();
 
                     /*let dtype = graph.dtype(z).ir_dtype();
@@ -581,20 +583,21 @@ impl IRKernel {
             c.ops.push(IROp::EndLoop { id, len });
         }
 
+        //for op in &c.ops { println!("{op:?}"); }
+
         // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
         // This will require automatic dependency resolution
 
         //for op in &ops { println!("{op:?}"); }
-        todo!();
 
-        /*(
+        (
             IRKernel {
                 addressables,
-                registers,
+                registers: c.dtypes.iter().map(DType::ir_dtype).collect(),
                 ops: c.ops,
             },
             args,
-        )*/
+        )
     }
 
     pub(super) fn debug(&self) {

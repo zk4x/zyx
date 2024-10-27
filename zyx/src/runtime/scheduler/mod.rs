@@ -410,6 +410,7 @@ impl Runtime {
             let search_iters = self.search_iterations;
             let debug_perf = self.debug_perf();
             let debug_sched = self.debug_sched();
+            let debug_asm = self.debug_asm();
             // allocate space for inputs and outputs that are not allocated for this kernel
             let mut allocated_temps = Vec::new();
             let mpid = self.devices[device_id].memory_pool_id();
@@ -480,7 +481,7 @@ impl Runtime {
                 //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
-                let program_id = self.devices[device_id].compile(&ir_kernel, false)?;
+                let program_id = self.devices[device_id].compile(&ir_kernel, debug_asm)?;
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
                 let queue_id = match self.devices[device_id].launch(
@@ -1026,12 +1027,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     } else {
                         &mut kernels[id]
                     };
-                    kernel.ops.push(VOp::Binary {
-                        z: nid,
-                        x,
-                        y,
-                        bop,
-                    });
+                    kernel.ops.push(VOp::Binary { z: nid, x, y, bop });
                 } else {
                     // If inputs are in different kernels
                     // TODO rewrite this, this is incorrect
@@ -1094,12 +1090,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         .map(|(_, op)| op)
                         .collect();
                     kernel_x.ops.extend(kernel_y_ops);
-                    kernel_x.ops.push(VOp::Binary {
-                        z: nid,
-                        x,
-                        y,
-                        bop,
-                    });
+                    kernel_x.ops.push(VOp::Binary { z: nid, x, y, bop });
                     // if kernel is not last, then make it last
                     if kernel_y_id > kernel_x_id {
                         let kernel = kernels.remove(kernel_x_id);
