@@ -248,7 +248,7 @@ impl View {
     }
 
     /// Load constant into variable or directly return it if view isn't padded
-    pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: u16) -> u16 {
+    pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: Reg) -> Reg {
         let _ = constant;
         let _ = c;
         todo!()
@@ -260,7 +260,7 @@ impl View {
         c: &mut IRCompiler,
         address: u16,
         dtype: DType,
-    ) -> u16 {
+    ) -> Reg {
         // With padding, right padding does not affect offset
         // offset = (a0-lp0)*st0 + a1*st1
         // Padding condition, negative right padding does not affect it
@@ -277,9 +277,9 @@ impl View {
                         let lp = c.constant(Constant::U32(
                             if dim.lp > 0 { dim.lp } else { -dim.lp } as u32,
                         ));
-                        c.sub(a as u16, lp)
+                        c.sub(Reg::Var(a as u16), lp)
                     } else {
-                        a as u16
+                        Reg::Var(a as u16)
                     };
                     let stride = c.constant(Constant::U32(dim.st as u32));
                     offset = c.mad(t, stride, offset);
@@ -287,12 +287,12 @@ impl View {
                 // Padding condition
                 if dim.lp > 0 {
                     let lp = c.constant(Constant::U32((dim.lp - 1) as u32));
-                    let t = c.cmplt(a as u16, lp);
+                    let t = c.cmplt(Reg::Var(a as u16), lp);
                     pc = c.and(t, pc);
                 }
                 if dim.rp > 0 {
                     let rp = c.constant(Constant::U32((dim.d as isize - dim.rp) as u32));
-                    let t = c.cmpgt(a as u16, rp);
+                    let t = c.cmpgt(Reg::Var(a as u16), rp);
                     pc = c.and(t, pc);
                 }
             }
@@ -307,20 +307,20 @@ impl View {
     }
 
     /// Store from variable into address
-    pub(crate) fn ir_for_indexed_store(&self, c: &mut IRCompiler, address: u16, var: u16) {
+    pub(crate) fn ir_for_indexed_store(&self, c: &mut IRCompiler, address: u16, var: Reg) {
         let mut offset = c.variable(Constant::U32(0));
         if let Some(inner) = self.0.last() {
             for (&a, dim) in inner {
                 if dim.st != 0 {
                     let stride = c.constant(Constant::U32(dim.st as u32));
-                    offset = c.mad(a as u16, stride, offset);
+                    offset = c.mad(Reg::Var(a as u16), stride, offset);
                 }
             }
         }
         c.ops.push(IROp::Store {
             address,
-            x: Reg::Var(var),
-            offset: Reg::Var(offset),
+            x: var,
+            offset: offset,
         });
     }
 }
