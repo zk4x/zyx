@@ -227,7 +227,7 @@ impl std::fmt::Display for Scope {
 
 pub(super) struct IRCompiler {
     pub(super) ops: Vec<IROp>,
-    register_map: BTreeMap<TensorId, u16>,
+    tensor_map: BTreeMap<TensorId, u16>,
     constant_map: BTreeMap<u16, Constant>,
     pointers_map: BTreeMap<(TensorId, Scope), u16>,
     dtypes: Vec<DType>,
@@ -251,21 +251,6 @@ impl IRCompiler {
         max_id
     }
 
-    fn unary_op(&mut self, x: u16, uop: UOp) -> u16 {
-        self.dtypes.push(self.dtypes[x as usize]);
-        let max_id = (self.dtypes.len() - 1) as u16;
-        self.ops.push(IROp::Unary {
-            z: Reg::Var(max_id),
-            x: Reg::Var(x),
-            uop,
-        });
-        max_id
-    }
-
-    pub(super) fn cast(&mut self, x: u16, dtype: DType) -> u16 {
-        self.unary_op(x, UOp::Cast(dtype))
-    }
-
     pub(super) fn load(&mut self, address: u16, offset: u16, dtype: DType) -> u16 {
         self.dtypes.push(dtype);
         let max_id = (self.dtypes.len() - 1) as u16;
@@ -277,7 +262,24 @@ impl IRCompiler {
         max_id
     }
 
+    fn unary_op(&mut self, x: u16, uop: UOp) -> u16 {
+        // TODO Constant evaluation
+        if let UOp::Cast(dt) = uop {
+            self.dtypes.push(dt);
+        } else {
+            self.dtypes.push(self.dtypes[x as usize]);
+        }
+        let max_id = (self.dtypes.len() - 1) as u16;
+        self.ops.push(IROp::Unary {
+            z: Reg::Var(max_id),
+            x: Reg::Var(x),
+            uop,
+        });
+        max_id
+    }
+
     fn binary_op(&mut self, x: u16, y: u16, bop: BOp) -> u16 {
+        // TODO Constant evaluation
         self.dtypes.push(self.dtypes[x as usize]);
         let max_id = (self.dtypes.len() - 1) as u16;
         self.ops.push(IROp::Binary {
@@ -287,6 +289,10 @@ impl IRCompiler {
             bop,
         });
         max_id
+    }
+
+    pub(super) fn cast(&mut self, x: u16, dtype: DType) -> u16 {
+        self.unary_op(x, UOp::Cast(dtype))
     }
 
     pub(super) fn and(&mut self, x: u16, y: u16) -> u16 {
@@ -331,7 +337,7 @@ impl IRKernel {
 
         let mut c = IRCompiler {
             ops: Vec::new(),
-            register_map: BTreeMap::new(),
+            tensor_map: BTreeMap::new(),
             constant_map: BTreeMap::new(),
             pointers_map: BTreeMap::new(),
             dtypes: Vec::new(),
@@ -458,7 +464,7 @@ impl IRKernel {
                 &VOp::Const { z, value, ref view } => {
                     let constant = c.constant(value);
                     let zreg = view.ir_for_constant_load(&mut c, constant);
-                    c.register_map.insert(z, zreg);
+                    c.tensor_map.insert(z, zreg);
                 }
                 &VOp::Load {
                     z,
@@ -471,7 +477,7 @@ impl IRKernel {
                 } => {
                     let xaddress = c.pointers_map[&(x, xscope)];
                     let zreg = xview.ir_for_indexed_load(&mut c, xaddress, xdtype);
-                    c.register_map.insert(z, zreg);
+                    c.tensor_map.insert(z, zreg);
                     match (zscope, xscope) {
                         (Scope::Local, Scope::Global) => {
                             let zaddress = c.pointers_map[&(z, zscope)];
@@ -499,7 +505,7 @@ impl IRKernel {
                             if let Some(&zaddress) = c.pointers_map.get(&(z, Scope::Register)) {
                                 xview.ir_for_indexed_load(&mut c, zaddress, zdtype)
                             } else {
-                                c.register_map[&z]
+                                c.tensor_map[&z]
                             };
                         zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                     }
@@ -520,58 +526,18 @@ impl IRKernel {
                     view.ir_for_indexed_store(&mut c, address, acc_init_reg);
                 }
                 &VOp::Move { z, x, .. } => {
-                    c.register_map.insert(z, c.register_map[&x]);
+                    c.tensor_map.insert(z, c.tensor_map[&x]);
                 }
                 &VOp::Unary { z, x, uop } => {
-                    // TODO unary can have view, but this will probably be only used for vectorization
-                    let xreg = c.register_map[&x];
-                    if let Some(value) = c.constant_map.get(&xreg) {
-                        let zreg = c.constant(value.unary(uop));
-                        c.register_map.insert(z, zreg);
-                    } else {
-                        let xreg = c.register_map[&x];
-                        let zreg = c.unary_op(xreg, uop);
-                        c.register_map.insert(z, zreg);
-                    }
+                    let xreg = c.tensor_map[&x];
+                    let zreg = c.unary_op(xreg, uop);
+                    c.tensor_map.insert(z, zreg);
                 }
                 &VOp::Binary { z, x, y, bop } => {
-                    todo!();
-
-                    /*let dtype = graph.dtype(z).ir_dtype();
-                    let id = if let Some(&Reg::Var(id)) = register_map.get(&z) {
-                        id
-                    } else {
-                        get_empty_register(&mut registers, dtype, tensor_rcs[&z])
-                    };
-                    let zvar = Reg::Var(id);
-                    register_map.insert(z, zvar);
-
-                    let bin_op = IROp::Binary {
-                        z: zvar,
-                        x: if let Some(&address) = pointers_map.get(&(x, Scope::Register)) {
-                            xview.ir_for_indexed_load(address, dtype, 0, &mut registers, &mut ops)
-                        } else {
-                            register_map[&x]
-                        },
-                        y: if let Some(&address) = pointers_map.get(&(y, Scope::Register)) {
-                            yview.ir_for_indexed_load(address, dtype, 0, &mut registers, &mut ops)
-                        } else {
-                            register_map[&y]
-                        },
-                        bop,
-                    };
-                    ops.push(bin_op);
-
-                    if let Reg::Var(id) = register_map[&x] {
-                        registers[id as usize].1 -= 1u32;
-                    }
-                    if let Reg::Var(id) = register_map[&y] {
-                        registers[id as usize].1 -= 1u32;
-                    }
-
-                    if let Some(&address) = pointers_map.get(&(z, Scope::Register)) {
-                        zview.ir_for_indexed_store(c, address, zvar);
-                    }*/
+                    let xreg = c.tensor_map[&x];
+                    let yreg = c.tensor_map[&y];
+                    let zreg = c.binary_op(xreg, yreg, bop);
+                    c.tensor_map.insert(z, zreg);
                 }
                 &VOp::Barrier { scope } => {
                     c.ops.push(IROp::Barrier { scope });
@@ -583,12 +549,42 @@ impl IRKernel {
             c.ops.push(IROp::EndLoop { id, len });
         }
 
-        //for op in &c.ops { println!("{op:?}"); }
-
         // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
         // This will require automatic dependency resolution
 
         //for op in &ops { println!("{op:?}"); }
+        let mut ref_counts: BTreeMap<u16, u32> = BTreeMap::new();
+        // Get reference counts
+        for op in &c.ops {
+            match op {
+                IROp::Store { x, .. } => {
+                    let &Reg::Var(x) = x else { panic!() };
+                    ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                IROp::Unary { x, .. } => {
+                    let &Reg::Var(x) = x else { panic!() };
+                    ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                IROp::Binary { x, y, .. } => {
+                    let &Reg::Var(x) = x else { panic!() };
+                    ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    let &Reg::Var(y) = y else { panic!() };
+                    ref_counts.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                IROp::MAdd { a, b, c, .. } => {
+                    let &Reg::Var(a) = a else { panic!() };
+                    ref_counts.entry(a).and_modify(|rc| *rc += 1).or_insert(1);
+                    let &Reg::Var(b) = b else { panic!() };
+                    ref_counts.entry(b).and_modify(|rc| *rc += 1).or_insert(1);
+                    let &Reg::Var(c) = c else { panic!() };
+                    ref_counts.entry(c).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &IROp::EndLoop { id, .. } => {
+                    ref_counts.entry(id).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                _ => {}
+            }
+        }
 
         (
             IRKernel {
