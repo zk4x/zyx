@@ -547,24 +547,24 @@ impl Runtime {
         device_id: DeviceId,
         graph: &Graph,
     ) -> Result<(Id, Vec<(Id, View, bool)>), ZyxError> {
-        let optimized_kernel = kernel.optimize(optimizations);
-        //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        //optimized_kernel.debug();
-        let (ir_kernel, ir_args) = IRKernel::new(&optimized_kernel.ops);
         let mut program_id = None;
-        if let Some((dev_id, prog_id)) = self.ir_kernel_cache.get(&ir_kernel) {
+        let kernel_cache_key = (kernel.clone(), optimizations.clone());
+        if let Some((dev_id, prog_id)) = self.kernel_cache.get(&kernel_cache_key) {
             if *dev_id == device_id {
                 program_id = Some(*prog_id);
             }
         }
+        let optimized_kernel = kernel.optimize(optimizations);
+        //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
+        //optimized_kernel.debug();
+        let (ir_kernel, ir_args) = IRKernel::new(&optimized_kernel.ops);
         if program_id.is_none() {
             if self.debug_ir() {
                 ir_kernel.debug();
             }
             let debug_asm = self.debug_asm();
             program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
-            self.ir_kernel_cache
-                .insert(ir_kernel, (device_id, program_id.unwrap()));
+            self.kernel_cache.insert(kernel_cache_key, (device_id, program_id.unwrap()));
         }
         Ok((
             program_id.unwrap(),

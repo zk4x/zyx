@@ -18,7 +18,7 @@ pub(crate) enum KernelOptimizer {
 // Optimizations get applied to existing kernels after
 // they are assigned to devices.
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct KernelOptimization {
     // Axis splits to give us global, local and register work sizes
     // as well as work per thread in reduce loops

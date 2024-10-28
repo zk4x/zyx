@@ -10,9 +10,8 @@ use backend::{
 #[cfg(feature = "wgsl")]
 use backend::{WGSLConfig, WGSLError};
 use graph::Graph;
-use ir::IRKernel;
 use node::{BOp, Node, ROp, UOp};
-use scheduler::{CompiledGraph, Kernel, KernelOptimizer};
+use scheduler::{CompiledGraph, Kernel, KernelOptimization, KernelOptimizer};
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -65,7 +64,7 @@ pub(super) struct Runtime {
     // Where are tensors stored
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
     // Cache which maps IRKernel to device and program id on the device
-    ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, Id)>,
+    kernel_cache: BTreeMap<(Kernel, KernelOptimization), (DeviceId, Id)>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
     // Zyx configuration directory path
@@ -87,7 +86,7 @@ impl Runtime {
             compiled_graph_cache: BTreeMap::new(),
             tensor_buffer_map: BTreeMap::new(),
             graph: Graph::new(),
-            ir_kernel_cache: BTreeMap::new(),
+            kernel_cache: BTreeMap::new(),
             devices: Vec::new(),
             memory_pools: Vec::new(),
             rng: std::cell::OnceCell::new(),
@@ -125,7 +124,7 @@ impl Runtime {
         // drop graph
         self.graph = Graph::new();
         // drop ir kernel cache
-        self.ir_kernel_cache = BTreeMap::new();
+        self.kernel_cache = BTreeMap::new();
         // drop devices
         while let Some(dev) = self.devices.pop() {
             dev.deinitialize()?;
