@@ -4,7 +4,7 @@ use super::{
     node::{BOp, Node},
     TensorId,
 };
-use crate::{index_map::IndexMap, shape::Dimension, DType};
+use crate::{index_map::IndexMap, shape::{Axis, Dimension}, DType};
 use std::collections::{BTreeMap, BTreeSet};
 
 // TODO implement PartialOrd such that tensor id does not matter
@@ -16,10 +16,11 @@ pub(super) struct Graph {
     pub(super) to_eval: BTreeSet<TensorId>,
     // First value is reference count, second is node
     nodes: IndexMap<(u32, Node)>,
+    dtypes: BTreeMap<TensorId, DType>,
+    // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
     paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
-    //axes: BTreeMap<TensorId, Vec<Axis>>,
-    dtypes: BTreeMap<TensorId, DType>,
+    axes: BTreeMap<TensorId, Vec<Axis>>,
 }
 
 impl Graph {
@@ -29,6 +30,7 @@ impl Graph {
             nodes: IndexMap::new(),
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
+            axes: BTreeMap::new(),
             dtypes: BTreeMap::new(),
         }
     }
@@ -56,6 +58,8 @@ impl Graph {
                 self.nodes.remove(x);
                 self.shapes.remove(&x);
                 self.dtypes.remove(&x);
+                self.axes.remove(&x);
+                self.paddings.remove(&x);
             }
         }
         to_remove
@@ -122,6 +126,10 @@ impl Graph {
         self.paddings.insert(id, padding);
     }
 
+    pub(super) fn push_axes(&mut self, id: TensorId, axes: Vec<Axis>) {
+        self.axes.insert(id, axes);
+    }
+
     pub(super) fn add_shape_dtype(&mut self, id: TensorId) {
         let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
@@ -145,6 +153,10 @@ impl Graph {
 
     pub(super) fn padding(&self, tensor_id: TensorId) -> &[(isize, isize)] {
         &self.paddings[&tensor_id]
+    }
+
+    pub(super) fn axes(&self, tensor_id: TensorId) -> &[Axis] {
+        &self.axes[&tensor_id]
     }
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[usize] {
@@ -276,6 +288,17 @@ impl Graph {
                 }
             })
             .collect();
+        let axes: BTreeMap<TensorId, Vec<Axis>> = self
+            .axes
+            .iter()
+            .filter_map(|(id, a)| {
+                if visited.contains(id) {
+                    Some((*id, a.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
         for &leaf in &leafs {
             shapes
                 .entry(leaf)
@@ -290,6 +313,7 @@ impl Graph {
                 to_eval: tensors,
                 dtypes,
                 paddings,
+                axes,
                 nodes: visited
                     .into_iter()
                     .map(|id| {
@@ -386,7 +410,8 @@ impl Graph {
                 &Node::Binary { x, .. } => {
                     flop += self.shape(x).iter().product::<usize>();
                 }
-                &Node::Reduce { x, ref axes, .. } => {
+                &Node::Reduce { x, .. } => {
+                    let axes = &self.axes[&x];
                     flop += self
                         .shape(x)
                         .iter()
@@ -605,14 +630,14 @@ impl Graph {
                 ),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
-                Node::Reshape { x, .. } => add_node(id, &f!("Reshape({x})"), "oval"),
-                Node::Permute { x, axes, .. } => {
-                    add_node(id, &f!("Permute({x}, {axes:?})"), "oval")
+                Node::Reshape { x } => add_node(id, &f!("Reshape({x})"), "oval"),
+                Node::Permute { x } => {
+                    add_node(id, &f!("Permute({x})"), "oval")
                 }
-                Node::Expand { x, .. } => add_node(id, &f!("Expand({x})"), "oval"),
-                Node::Pad { x, .. } => add_node(id, &f!("Pad({x})"), "oval"),
-                Node::Reduce { x, axes, rop, .. } => {
-                    add_node(id, &f!("{rop:?}({x}, {axes:?})"), "oval")
+                Node::Expand { x } => add_node(id, &f!("Expand({x})"), "oval"),
+                Node::Pad { x } => add_node(id, &f!("Pad({x})"), "oval"),
+                Node::Reduce { x, rop } => {
+                    add_node(id, &f!("{rop:?}({x})"), "oval")
                 }
             }
             for param in node.parameters() {

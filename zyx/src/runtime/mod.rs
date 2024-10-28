@@ -427,7 +427,7 @@ impl Runtime {
             return x;
         }
         let shape = permute(self.shape(x), &axes);
-        self.graph.push_wshape(Node::Permute { x, axes }, shape)
+        self.graph.push_wshape(Node::Permute { x }, shape)
     }
 
     #[must_use]
@@ -454,10 +454,10 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
+        self.graph.push_axes(x, axes);
         self.graph.push_wshape(
             Node::Reduce {
                 x,
-                axes,
                 rop: ROp::Sum,
             },
             shape,
@@ -471,10 +471,10 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
+        self.graph.push_axes(x, axes);
         self.graph.push_wshape(
             Node::Reduce {
                 x,
-                axes,
                 rop: ROp::Max,
             },
             shape,
@@ -1019,7 +1019,8 @@ impl Runtime {
                     self.release(temp).unwrap();
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Permute { x, ref axes, .. } => {
+                Node::Permute { x } => {
+                    let axes = self.graph.axes(x);
                     let mut axes: Vec<(usize, usize)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
                     let argsort_axes = axes.iter().map(|(k, _)| *k).collect();

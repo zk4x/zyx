@@ -684,15 +684,16 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //println!("Into");
                 //kernel.debug();
             }
-            Node::Permute { x, axes, .. } => {
+            &Node::Permute { x } => {
+                let axes = graph.axes(x);
                 // Permute shuffles load and store strides
                 // It also changes the dimension of loops
                 // and shape of kernel
-                let kernel = get_kernel(*x, &mut kernels, graph);
+                let kernel = get_kernel(x, &mut kernels, graph);
                 kernel.permute(&axes);
                 kernel.ops.push(VOp::Move {
                     z: nid,
-                    x: *x,
+                    x,
                     mop: MOp::Perm,
                 });
                 assert_eq!(kernel.shape(), graph.shape(nid));
@@ -934,7 +935,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 });
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
-            &Node::Reduce { x, ref axes, rop } => {
+            &Node::Reduce { x, rop } => {
+                let axes = graph.axes(x);
                 // TODO do not apply reduce on a previously fully reduced and expanded kernel, this
                 // happens in softmax
                 let kernel = get_kernel(x, &mut kernels, graph);

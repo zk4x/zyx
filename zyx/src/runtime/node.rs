@@ -1,7 +1,7 @@
 //! Graph node, each node is one operation. Nodes
 //! represent the opset that is available on tensors.
 
-use crate::{dtype::Constant, shape::Axis, tensor::TensorId, DType, Scalar};
+use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -57,7 +57,6 @@ pub(super) enum Node {
     },
     Permute {
         x: TensorId,
-        axes: Vec<Axis>,
     },
     // Reshape can be sometimes axis split or axis join
     Reshape {
@@ -69,7 +68,6 @@ pub(super) enum Node {
     },
     Reduce {
         x: TensorId,
-        axes: Vec<Axis>,
         rop: ROp,
     },
     Unary {
