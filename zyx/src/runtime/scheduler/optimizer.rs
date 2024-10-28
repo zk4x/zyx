@@ -207,14 +207,17 @@ impl Kernel {
             panic!()
         };
         rws[1] = len;
-        let VOp::Loop { len, .. } = kernel.ops[8] else { panic!() };
+        let VOp::Loop { len, .. } = kernel.ops[8] else {
+            panic!()
+        };
         rws[2] = len;
         // Apply permutation
         kernel.permute(&optimization.permutation);
 
         // Reorder so that register work threads are last
         // Register threads are op_id 1, 4 and 7
-        if true { // disable register work sizes
+        if true {
+            // disable register work sizes
             let mut threaded = true;
             let rlz = kernel.ops.remove(8);
             let rly = kernel.ops.remove(5);
@@ -272,7 +275,7 @@ impl Kernel {
                                 *xview = acc_view.clone();
                             }
                         }
-                        VOp::Binary { z, x, y, .. } => {
+                        /*VOp::Binary { z, x, y, .. } => {
                             /*if accs.contains(z) {
                                 *zview = acc_view.clone();
                             }
@@ -282,7 +285,7 @@ impl Kernel {
                             if accs.contains(y) {
                                 *yview = acc_view.clone();
                             }*/
-                        }
+                        }*/
                         _ => {}
                     }
                 }
@@ -322,12 +325,17 @@ impl Kernel {
                         axes.push(axis);
                         lengths.push(len);
                         if axis > 8 {
-                            rl_id = id-1;
+                            rl_id = id - 1;
                             reduce_axis = axis;
                         }
                         if axis == 2 && rl_id != 0 {
                             //kernel.ops.insert(id, kernel.ops[rl_id].clone());
-                            kernel.ops.insert(id-1, VOp::Barrier { scope: Scope::Local });
+                            kernel.ops.insert(
+                                id - 1,
+                                VOp::Barrier {
+                                    scope: Scope::Local,
+                                },
+                            );
                             //kernel.ops.insert(id, VOp::EndLoop);
                             id += 1;
                         }
@@ -336,7 +344,12 @@ impl Kernel {
                         if let Some(axis) = axes.pop() {
                             if let Some(&VOp::Loop { axis: raxis, .. }) = kernel.ops.get(rl_id) {
                                 if axis == raxis {
-                                    kernel.ops.insert(id, VOp::Barrier { scope: Scope::Local });
+                                    kernel.ops.insert(
+                                        id,
+                                        VOp::Barrier {
+                                            scope: Scope::Local,
+                                        },
+                                    );
                                     id += 1;
                                 }
                             }
@@ -346,8 +359,19 @@ impl Kernel {
                         }
                         lengths.pop().unwrap();
                     }
-                    VOp::Load { z, zscope, zview, x, xscope, xview, xdtype } => {
-                        if *zscope == Scope::Register && *xscope == Scope::Global && zview == &View::none() {
+                    VOp::Load {
+                        z,
+                        zscope,
+                        zview,
+                        x,
+                        xscope,
+                        xview,
+                        xdtype,
+                    } => {
+                        if *zscope == Scope::Register
+                            && *xscope == Scope::Global
+                            && zview == &View::none()
+                        {
                             let mut sorted_axes = axes.clone();
                             sorted_axes.sort();
                             let used_axes = xview.used_axes();
@@ -383,27 +407,36 @@ impl Kernel {
                                     [lws[1], lws[2], rws[2]]
                                 };
                                 let local_view = View::binded(&dims, &axes);
-                                kernel.ops.insert(rl_id+1, VOp::EndLoop);
-                                kernel.ops.insert(rl_id+1, VOp::Load {
-                                    z,
-                                    zscope: Scope::Local,
-                                    zview: local_view,
-                                    x,
-                                    xscope: Scope::Global,
-                                    xview: global_view,
-                                    xdtype,
-                                });
+                                kernel.ops.insert(rl_id + 1, VOp::EndLoop);
+                                kernel.ops.insert(
+                                    rl_id + 1,
+                                    VOp::Load {
+                                        z,
+                                        zscope: Scope::Local,
+                                        zview: local_view,
+                                        x,
+                                        xscope: Scope::Global,
+                                        xview: global_view,
+                                        xdtype,
+                                    },
+                                );
                                 if used_axes.contains(&8) {
-                                    kernel.ops.insert(rl_id+1, VOp::Loop {
-                                        axis: 8,
-                                        len: rws[2],
-                                    });
+                                    kernel.ops.insert(
+                                        rl_id + 1,
+                                        VOp::Loop {
+                                            axis: 8,
+                                            len: rws[2],
+                                        },
+                                    );
                                 }
                                 if used_axes.contains(&5) {
-                                    kernel.ops.insert(rl_id+1, VOp::Loop {
-                                        axis: 5,
-                                        len: rws[1],
-                                    });
+                                    kernel.ops.insert(
+                                        rl_id + 1,
+                                        VOp::Loop {
+                                            axis: 5,
+                                            len: rws[1],
+                                        },
+                                    );
                                 }
                                 id += 3;
                             }

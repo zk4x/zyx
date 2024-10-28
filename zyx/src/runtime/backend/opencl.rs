@@ -4,7 +4,7 @@
 use super::DeviceInfo;
 use crate::{
     dtype::Constant,
-    index_map::IndexMap,
+    index_map::{Id, IndexMap},
     runtime::{
         ir::{IRDType, IRKernel, IROp, Reg, Scope},
         node::{BOp, UOp},
@@ -714,38 +714,34 @@ impl OpenCLDevice {
                             //source += &format!("{indent}printf(\"%u, \", r11);\n");
                         }
                     }
-                    source += &format!("{indent}{} = p{address}[{}];\n", z.ocl(), offset.ocl());
+                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
                 }
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     source += &match uop {
                         UOp::Cast(_) => {
-                            format!("{indent}{} = ({}){};\n", z.ocl(), dtype.ocl(), x.ocl())
+                            format!("{indent}r{z} = ({})r{x};\n", dtype.ocl())
                         }
                         UOp::ReLU => format!(
-                            "{indent}{} = max({}, {});\n",
-                            z.ocl(),
-                            x.ocl(),
+                            "{indent}r{z} = max(r{x}, {});\n",
                             dtype.dtype().zero_constant().ocl()
                         ),
-                        UOp::Neg => format!("{indent}{} = -{};\n", z.ocl(), x.ocl()),
-                        UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.ocl(), x.ocl()),
-                        UOp::Log2 => format!("{indent}{} = log2({});\n", z.ocl(), x.ocl()),
-                        UOp::Inv => format!("{indent}{} = 1/{};\n", z.ocl(), x.ocl()),
-                        UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.ocl(), x.ocl()),
-                        UOp::Sin => format!("{indent}{} = sin({});\n", z.ocl(), x.ocl()),
-                        UOp::Cos => format!("{indent}{} = cos({});\n", z.ocl(), x.ocl()),
-                        UOp::Not => format!("{indent}{} = !{};\n", z.ocl(), x.ocl()),
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
+                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
                     source += &format!(
-                        "{indent}{} = {};\n",
-                        z.ocl(),
+                        "{indent}r{z} = {};\n",
                         match bop {
                             BOp::Add => format!("{} + {}", x.ocl(), y.ocl()),
                             BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
@@ -765,13 +761,7 @@ impl OpenCLDevice {
                     );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source += &format!(
-                        "{indent}{} = {} * {} + {};\n",
-                        z.ocl(),
-                        a.ocl(),
-                        b.ocl(),
-                        c.ocl()
-                    );
+                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
@@ -881,7 +871,7 @@ impl OpenCLQueue {
         &mut self,
         program: &mut OpenCLProgram,
         buffers: &mut IndexMap<OpenCLBuffer>,
-        args: &[usize],
+        args: &[Id],
     ) -> Result<(), OpenCLError> {
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",

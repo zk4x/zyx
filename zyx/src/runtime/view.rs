@@ -260,7 +260,7 @@ impl View {
         c: &mut IRCompiler,
         address: u16,
         dtype: DType,
-    ) -> Reg {
+    ) -> u16 {
         // With padding, right padding does not affect offset
         // offset = (a0-lp0)*st0 + a1*st1
         // Padding condition, negative right padding does not affect it
@@ -274,35 +274,35 @@ impl View {
                 // Offset
                 if dim.st != 0 {
                     let t = if dim.lp != 0 {
-                        let lp = c.constant(Constant::U32(
+                        let lp = Reg::Const(Constant::U32(
                             if dim.lp > 0 { dim.lp } else { -dim.lp } as u32,
                         ));
                         c.sub(Reg::Var(a as u16), lp)
                     } else {
-                        Reg::Var(a as u16)
+                        a as u16
                     };
-                    let stride = c.constant(Constant::U32(dim.st as u32));
-                    offset = c.mad(t, stride, offset);
+                    let stride = Reg::Const(Constant::U32(dim.st as u32));
+                    offset = c.mad(Reg::Var(t), stride, Reg::Var(offset));
                 }
                 // Padding condition
                 if dim.lp > 0 {
-                    let lp = c.constant(Constant::U32((dim.lp - 1) as u32));
+                    let lp = Reg::Const(Constant::U32((dim.lp - 1) as u32));
                     let t = c.cmplt(Reg::Var(a as u16), lp);
-                    pc = c.and(t, pc);
+                    pc = c.and(Reg::Var(t), Reg::Var(pc));
                 }
                 if dim.rp > 0 {
-                    let rp = c.constant(Constant::U32((dim.d as isize - dim.rp) as u32));
+                    let rp = Reg::Const(Constant::U32((dim.d as isize - dim.rp) as u32));
                     let t = c.cmpgt(Reg::Var(a as u16), rp);
-                    pc = c.and(t, pc);
+                    pc = c.and(Reg::Var(t), Reg::Var(pc));
                 }
             }
         }
-        let pcu32 = c.cast(pc, DType::U32);
-        let offset = c.mul(pcu32, offset);
-        let z = c.load(address, offset, dtype);
-        let pcd = c.cast(pc, dtype);
+        let pcu32 = c.cast(Reg::Var(pc), DType::U32);
+        let offset = c.mul(pcu32, Reg::Var(offset));
+        let z = c.load(address, Reg::Var(offset), dtype);
+        let pcd = c.cast(Reg::Var(pc), dtype);
         // Nullify z if padding condition is false (if there is padding at that index)
-        let z = c.mul(pcd, z);
+        let z = c.mul(pcd, Reg::Var(z));
         z
     }
 
@@ -312,15 +312,15 @@ impl View {
         if let Some(inner) = self.0.last() {
             for (&a, dim) in inner {
                 if dim.st != 0 {
-                    let stride = c.constant(Constant::U32(dim.st as u32));
-                    offset = c.mad(Reg::Var(a as u16), stride, offset);
+                    let stride = Reg::Const(Constant::U32(dim.st as u32));
+                    offset = c.mad(Reg::Var(a as u16), stride, Reg::Var(offset));
                 }
             }
         }
         c.ops.push(IROp::Store {
             address,
             x: var,
-            offset: offset,
+            offset: Reg::Var(offset),
         });
     }
 }

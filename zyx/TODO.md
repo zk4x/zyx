@@ -16,13 +16,15 @@
   - [ ] add ops reordering, all ops that can be moved before loops should be moved
   - [ ] deduplicate all calculations
   - [ ] add optimizations for ops, merges, deletion of redundant ops
-  - [ ] add new reference counting that accounts for all variables, including indexing variables
+  - [x] add new reference counting that accounts for all variables, including indexing variables
 - [x] vops remove unary view
 - [x] vops remove binary views
 - [x] manual for adding new backends
+- [ ] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables
 - [ ] vector dtypes in kernels
 - [ ] tensor cores support
 - [ ] matmul
 - [ ] flash attention
+- [ ] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes

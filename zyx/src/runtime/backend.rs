@@ -5,7 +5,10 @@
 #![allow(private_interfaces)]
 
 use super::{ir::IRKernel, DeviceConfig, Runtime, ZyxError};
-use crate::{index_map::IndexMap, Scalar};
+use crate::{
+    index_map::{Id, IndexMap},
+    Scalar,
+};
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{OpenCLBuffer, OpenCLDevice, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue};
@@ -80,7 +83,7 @@ pub(super) enum MemoryPool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct BufferId {
     pub(super) memory_pool_id: usize,
-    pub(super) buffer_id: usize,
+    pub(super) buffer_id: Id,
 }
 
 #[derive(Debug)]
@@ -313,7 +316,7 @@ impl MemoryPool {
                 mut memory_pool,
                 mut buffers,
             } => {
-                let ids: Vec<usize> = buffers.ids().collect();
+                let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
                     memory_pool.deallocate(buffer)?;
@@ -324,7 +327,7 @@ impl MemoryPool {
                 mut memory_pool,
                 mut buffers,
             } => {
-                let ids: Vec<usize> = buffers.ids().collect();
+                let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
                     memory_pool.deallocate(buffer)?;
@@ -335,7 +338,7 @@ impl MemoryPool {
                 mut memory_pool,
                 mut buffers,
             } => {
-                let ids: Vec<usize> = buffers.ids().collect();
+                let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
                     memory_pool.deallocate(buffer)?;
@@ -346,7 +349,7 @@ impl MemoryPool {
                 mut memory_pool,
                 mut buffers,
             } => {
-                let ids: Vec<usize> = buffers.ids().collect();
+                let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
                     memory_pool.deallocate(buffer)?;
@@ -358,7 +361,7 @@ impl MemoryPool {
                 mut memory_pool,
                 mut buffers,
             } => {
-                let ids: Vec<usize> = buffers.ids().collect();
+                let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
                     memory_pool.deallocate(buffer)?;
@@ -381,7 +384,7 @@ impl MemoryPool {
     }
 
     // Allocates bytes on memory pool and returns buffer id
-    pub(super) fn allocate(&mut self, bytes: usize) -> Result<usize, ZyxError> {
+    pub(super) fn allocate(&mut self, bytes: usize) -> Result<Id, ZyxError> {
         let id = match self {
             MemoryPool::CUDA {
                 memory_pool,
@@ -409,22 +412,34 @@ impl MemoryPool {
         Ok(id)
     }
 
-    pub(super) fn deallocate(&mut self, buffer_id: usize) -> Result<(), ZyxError> {
+    pub(super) fn deallocate(&mut self, buffer_id: Id) -> Result<(), ZyxError> {
         //println!("Deallocate buffer id {buffer_id}");
         match self {
-            MemoryPool::CUDA { memory_pool, buffers } => {
+            MemoryPool::CUDA {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::HIP { memory_pool, buffers } => {
+            MemoryPool::HIP {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::OpenCL { memory_pool, buffers } => {
+            MemoryPool::OpenCL {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::Vulkan { memory_pool, buffers } => {
+            MemoryPool::Vulkan {
+                memory_pool,
+                buffers,
+            } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
@@ -443,7 +458,7 @@ impl MemoryPool {
     pub(super) fn host_to_pool<T: Scalar>(
         &mut self,
         data: &[T],
-        buffer_id: usize,
+        buffer_id: Id,
     ) -> Result<(), ZyxError> {
         let bytes = data.len() * T::byte_size();
         match self {
@@ -504,7 +519,7 @@ impl MemoryPool {
 
     pub(super) fn pool_to_host<T: Scalar>(
         &mut self,
-        buffer_id: usize,
+        buffer_id: Id,
         data: &mut [T],
     ) -> Result<(), ZyxError> {
         let slice = unsafe {
@@ -547,7 +562,7 @@ impl MemoryPool {
     }
 
     #[rustfmt::skip]
-    pub(super) fn pool_to_pool(&mut self, sbid: usize, dst_mp: &mut MemoryPool, dbid: usize, bytes: usize) -> Result<(), ZyxError> {
+    pub(super) fn pool_to_pool(&mut self, sbid: Id, dst_mp: &mut MemoryPool, dbid: Id, bytes: usize) -> Result<(), ZyxError> {
         macro_rules! cross_backend {
             ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
                 let mut data: Vec<u8> = Vec::with_capacity(bytes);
@@ -629,7 +644,7 @@ impl Device {
                 mut programs,
                 ..
             } => {
-                let ids: Vec<usize> = programs.ids().collect();
+                let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
                     device.release_program(program)?;
@@ -645,7 +660,7 @@ impl Device {
                 mut queues,
                 ..
             } => {
-                let ids: Vec<usize> = programs.ids().collect();
+                let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
                     device.release_program(program)?;
@@ -661,7 +676,7 @@ impl Device {
                 mut queues,
                 ..
             } => {
-                let ids: Vec<usize> = programs.ids().collect();
+                let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
                     device.release_program(program)?;
@@ -677,7 +692,7 @@ impl Device {
                 mut queues,
                 ..
             } => {
-                let ids: Vec<usize> = programs.ids().collect();
+                let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
                     device.release_program(program)?;
@@ -694,7 +709,7 @@ impl Device {
                 mut queues,
                 ..
             } => {
-                let ids: Vec<usize> = programs.ids().collect();
+                let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
                     device.release_program(program)?;
@@ -747,7 +762,7 @@ impl Device {
         Ok(())
     }
 
-    pub(super) fn release_program(&mut self, program_id: usize) -> Result<(), ZyxError> {
+    pub(super) fn release_program(&mut self, program_id: Id) -> Result<(), ZyxError> {
         //println!("Release program {program_id}");
         match self {
             Device::CUDA {
@@ -774,7 +789,7 @@ impl Device {
         &mut self,
         ir_kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<usize, ZyxError> {
+    ) -> Result<Id, ZyxError> {
         let id = match self {
             Device::CUDA {
                 device, programs, ..
@@ -799,9 +814,9 @@ impl Device {
 
     pub(super) fn launch(
         &mut self,
-        program_id: usize,
+        program_id: Id,
         memory_pool: &mut MemoryPool,
-        buffer_ids: &[usize],
+        buffer_ids: &[Id],
     ) -> Result<usize, ZyxError> {
         Ok(match self {
             Device::CUDA {

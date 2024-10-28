@@ -9,7 +9,7 @@ use wgpu::{
 use super::DeviceInfo;
 use crate::{
     dtype::Constant,
-    index_map::IndexMap,
+    index_map::{Id, IndexMap},
     runtime::{
         ir::{IRDType, IRKernel, IROp, Reg, Scope},
         node::{BOp, UOp},
@@ -348,53 +348,40 @@ impl WGSLDevice {
                     source += &format!("{indent}r{z} = {};\n", value.wgsl());
                 }
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}{} = p{address}[{}];\n", z.wgsl(), offset.wgsl());
+                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.wgsl());
                 }
                 IROp::Store { address, x, offset } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.wgsl(), x.wgsl());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     source += &match uop {
                         UOp::Cast(dtype) => {
-                            format!(
-                                "{indent}{} = {}({});\n",
-                                z.wgsl(),
-                                dtype.ir_dtype().wgsl(),
-                                x.wgsl(),
-                            )
+                            format!("{indent}r{z} = {}(r{x});\n", dtype.ir_dtype().wgsl(),)
                         }
                         UOp::ReLU => format!(
-                            "{indent}{} = max({}, {});\n",
-                            z.wgsl(),
-                            x.wgsl(),
+                            "{indent}r{z} = max(r{x}, {});\n",
                             dtype.dtype().zero_constant().wgsl()
                         ),
-                        UOp::Neg => format!("{indent}{} = -{};\n", z.wgsl(), x.wgsl()),
-                        UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.wgsl(), x.wgsl()),
-                        UOp::Log2 => format!("{indent}{} = log2({});\n", z.wgsl(), x.wgsl()),
-                        UOp::Inv => format!("{indent}{} = 1/{};\n", z.wgsl(), x.wgsl()),
-                        UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.wgsl(), x.wgsl()),
-                        UOp::Sin => format!("{indent}{} = sin({});\n", z.wgsl(), x.wgsl()),
-                        UOp::Cos => format!("{indent}{} = cos({});\n", z.wgsl(), x.wgsl()),
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
                         UOp::Not => {
-                            let Reg::Var(zi) = z else { panic!() };
                             format!(
-                                "{indent}{} = {}({} == 0);\n",
-                                z.wgsl(),
-                                kernel.registers[zi as usize].wgsl(),
-                                x.wgsl()
+                                "{indent}r{z} = {}(r{x} == 0);\n",
+                                kernel.registers[z as usize].wgsl(),
                             )
                         }
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     source += &format!(
-                        "{indent}{} = {};\n",
-                        z.wgsl(),
+                        "{indent}r{z} = {};\n",
                         match bop {
                             BOp::Add => format!("{} + {}", x.wgsl(), y.wgsl()),
                             BOp::Sub => format!("{} - {}", x.wgsl(), y.wgsl()),
@@ -415,8 +402,7 @@ impl WGSLDevice {
                 }
                 IROp::MAdd { z, a, b, c } => {
                     source += &format!(
-                        "{indent}{} = {} * {} + {};\n",
-                        z.wgsl(),
+                        "{indent}r{z} = {} * {} + {};\n",
                         a.wgsl(),
                         b.wgsl(),
                         c.wgsl()
@@ -467,7 +453,7 @@ impl WGSLQueue {
         &mut self,
         program: &mut WGSLProgram,
         buffers: &mut IndexMap<WGSLBuffer>,
-        args: &[usize],
+        args: &[Id],
     ) -> Result<(), WGSLError> {
         let mut set_layout: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
         let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();

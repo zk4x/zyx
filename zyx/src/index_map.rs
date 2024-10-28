@@ -92,7 +92,7 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-type Id = usize;
+pub(crate) type Id = u32;
 
 #[derive(Debug)]
 pub(crate) struct IndexMap<T> {
@@ -102,10 +102,12 @@ pub(crate) struct IndexMap<T> {
 
 impl<T> Drop for IndexMap<T> {
     fn drop(&mut self) {
-        for (id, x) in self.values.iter_mut().enumerate() {
+        let mut id = 0;
+        for x in self.values.iter_mut() {
             if !self.empty.contains(&id) {
                 unsafe { x.assume_init_drop() };
             }
+            id += 1;
         }
     }
 }
@@ -120,39 +122,39 @@ impl<T> IndexMap<T> {
 
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop_first() {
-            self.values[id] = MaybeUninit::new(value);
+            self.values[id as usize] = MaybeUninit::new(value);
             //println!("Pushing to empty {id}");
             id
         } else {
             self.values.push(MaybeUninit::new(value));
             //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
-            self.values.len() - 1
+            (self.values.len() - 1) as Id
         }
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
-        if self.values.len() > id && !self.empty.contains(&id) {
+        if self.values.len() as Id > id && !self.empty.contains(&id) {
             self.empty.insert(id);
             self.values.push(MaybeUninit::uninit());
-            Some(unsafe { self.values.swap_remove(id).assume_init() })
+            Some(unsafe { self.values.swap_remove(id as usize).assume_init() })
         } else {
             None
         }
     }
 
     pub(crate) fn swap(&mut self, x: Id, y: Id) {
-        self.values.swap(x, y);
+        self.values.swap(x as usize, y as usize);
     }
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-        (0..self.values.len()).filter(|x| !self.empty.contains(x))
+        (0..self.values.len() as Id).filter(|x| !self.empty.contains(x))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
         self.values
             .iter()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(id))
+            .filter(|(id, _)| !self.empty.contains(&(*id as Id)))
             .map(|(_, x)| unsafe { x.assume_init_ref() })
     }
 
@@ -160,16 +162,16 @@ impl<T> IndexMap<T> {
         self.values
             .iter()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(id))
-            .map(|(id, x)| (id, unsafe { x.assume_init_ref() }))
+            .filter(|(id, _)| !self.empty.contains(&(*id as Id)))
+            .map(|(id, x)| (id as Id, unsafe { x.assume_init_ref() }))
     }
 
     pub(crate) fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Id, &'a mut T)> {
         self.values
             .iter_mut()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(id))
-            .map(|(id, x)| (id, unsafe { x.assume_init_mut() }))
+            .filter(|(id, _)| !self.empty.contains(&(*id as Id)))
+            .map(|(id, x)| (id as Id, unsafe { x.assume_init_mut() }))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -181,14 +183,14 @@ impl<T> Index<Id> for IndexMap<T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
         assert!(!self.empty.contains(&index));
-        unsafe { self.values[index].assume_init_ref() }
+        unsafe { self.values[index as usize].assume_init_ref() }
     }
 }
 
 impl<T> IndexMut<Id> for IndexMap<T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
         assert!(!self.empty.contains(&index));
-        unsafe { self.values[index].assume_init_mut() }
+        unsafe { self.values[index as usize].assume_init_mut() }
     }
 }
 
@@ -255,7 +257,7 @@ impl<T: Clone> Clone for IndexMap<T> {
                 .iter()
                 .enumerate()
                 .map(|(id, x)| {
-                    if self.empty.contains(&id) {
+                    if self.empty.contains(&(id as Id)) {
                         MaybeUninit::uninit()
                     } else {
                         MaybeUninit::new(unsafe { x.assume_init_ref() }.clone())

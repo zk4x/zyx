@@ -22,7 +22,7 @@ use std::path::Path;
 
 use crate::RT;
 
-pub(crate) type TensorId = usize;
+pub(crate) type TensorId = u32;
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 /// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
@@ -1369,10 +1369,13 @@ impl Tensor {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
         Ok(self.sum(axes.clone())?
-            / Tensor::constant(into_axes(axes, shape.rank())?
-                .into_iter()
-                .map(|a| shape[a])
-                .product::<usize>() as i64).cast(self.dtype()))
+            / Tensor::constant(
+                into_axes(axes, shape.rank())?
+                    .into_iter()
+                    .map(|a| shape[a])
+                    .product::<usize>() as i64,
+            )
+            .cast(self.dtype()))
     }
 
     /// Calculates the mean of this tensor along the specified axes and reshapes it using `reduce_kd_shape`.

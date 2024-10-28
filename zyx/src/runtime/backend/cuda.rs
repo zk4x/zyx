@@ -11,7 +11,7 @@ use libloading::Library;
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
-use crate::index_map::IndexMap;
+use crate::index_map::{Id, IndexMap};
 use crate::runtime::ir::IRKernel;
 use crate::runtime::ir::{IRDType, IROp, Reg, Scope};
 use crate::runtime::node::{BOp, UOp};
@@ -535,36 +535,34 @@ impl CUDADevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}{} = p{address}[{}];\n", z.cu(), offset.cu());
+                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.cu());
                 }
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.cu(), x.cu());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Reg::Var(id) = x else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     let zero = Constant::new(0).unary(UOp::Cast(dtype.dtype())).cu();
                     source += &match uop {
                         UOp::Cast(_) => {
-                            format!("{indent}{} = ({}){};\n", z.cu(), dtype.cu(), x.cu())
+                            format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
                         }
                         UOp::ReLU => {
-                            format!("{indent}{0} = {1} * ({1} > {2});\n", z.cu(), x.cu(), zero)
+                            format!("{indent}r{0} = r{1} * (r{1} > {2});\n", z, x, zero)
                         }
-                        UOp::Neg => format!("{indent}{} = -{};\n", z.cu(), x.cu()),
-                        UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.cu(), x.cu()),
-                        UOp::Log2 => format!("{indent}{} = log2({});\n", z.cu(), x.cu()),
-                        UOp::Inv => format!("{indent}{} = 1/{};\n", z.cu(), x.cu()),
-                        UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.cu(), x.cu()),
-                        UOp::Sin => format!("{indent}{} = sin({});\n", z.cu(), x.cu()),
-                        UOp::Cos => format!("{indent}{} = cos({});\n", z.cu(), x.cu()),
-                        UOp::Not => format!("{indent}{} = !{};\n", z.cu(), x.cu()),
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
+                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
                     source += &format!(
-                        "{indent}{} = {};\n",
-                        z.cu(),
+                        "{indent}r{z} = {};\n",
                         match bop {
                             BOp::Add => format!("{} + {}", x.cu(), y.cu()),
                             BOp::Sub => format!("{} - {}", x.cu(), y.cu()),
@@ -584,13 +582,7 @@ impl CUDADevice {
                     );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source += &format!(
-                        "{indent}{} = {} * {} + {};\n",
-                        z.cu(),
-                        a.cu(),
-                        b.cu(),
-                        c.cu()
-                    );
+                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.cu(), b.cu(), c.cu());
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
@@ -818,8 +810,7 @@ impl CUDADevice {
                     source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.ptx());
                 }
                 IROp::Load { z, address, offset } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     // Get address
                     source += &format!(
                         "{indent}ld.param.u64    a0, [a{address}+{}];\n",
@@ -828,7 +819,7 @@ impl CUDADevice {
                     // Convert address to global
                     source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
                     // Load from global to register
-                    source += &format!("{indent}ld.global.{}    {}, [a1];\n", dtype.ptx(), z.ptx());
+                    source += &format!("{indent}ld.global.{}    r{}, [a1];\n", dtype.ptx(), z);
                 }
                 IROp::Store { address, offset, x } => {
                     let Reg::Var(id) = x else { panic!() };
@@ -841,62 +832,35 @@ impl CUDADevice {
                     source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.ptx());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     source += &match uop {
                         UOp::Cast(cdt) => format!(
-                            "{indent}cvt.{}.{}    {}, {};\n",
+                            "{indent}cvt.{}.{}    r{z}, r{x};\n",
                             <DType as Into<IRDType>>::into(cdt).ptx(),
                             dtype.ptx(),
-                            z.ptx(),
-                            x.ptx()
                         ),
                         UOp::ReLU => todo!(),
                         UOp::Neg => {
-                            format!("{indent}neg.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx())
+                            format!("{indent}neg.{}   r{z}, r{x};\n", dtype.ptx())
                         }
-                        UOp::Exp2 => format!(
-                            "{indent}ex2.approx.{}   {}, {};\n",
-                            dtype.ptx(),
-                            z.ptx(),
-                            x.ptx()
-                        ),
-                        UOp::Log2 => format!(
-                            "{indent}lg2.approx.{}   {}, {};\n",
-                            dtype.ptx(),
-                            z.ptx(),
-                            x.ptx()
-                        ),
+                        UOp::Exp2 => format!("{indent}ex2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Log2 => format!("{indent}lg2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
                         UOp::Inv => todo!(),
-                        UOp::Sqrt => format!(
-                            "{indent}sqrt.approx.{}   {}, {};\n",
-                            dtype.ptx(),
-                            z.ptx(),
-                            x.ptx()
-                        ),
-                        UOp::Sin => format!(
-                            "{indent}sin.approx.{}   {}, {};\n",
-                            dtype.ptx(),
-                            z.ptx(),
-                            x.ptx()
-                        ),
-                        UOp::Cos => format!(
-                            "{indent}cos.approx.{}   {}, {};\n",
-                            dtype.ptx(),
-                            z.ptx(),
-                            x.ptx()
-                        ),
+                        UOp::Sqrt => {
+                            format!("{indent}sqrt.approx.{}   r{z}, r{x};\n", dtype.ptx(),)
+                        }
+                        UOp::Sin => format!("{indent}sin.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Cos => format!("{indent}cos.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
                         UOp::Not => {
-                            format!("{indent}not.{}   {}, {};\n", dtype.ptx(), z.ptx(), x.ptx())
+                            format!("{indent}not.{}   r{z}, r{x};\n", dtype.ptx())
                         }
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     //println!("Adding binary {bop:?}");
                     source += &format!(
-                        "{indent}{}.{}   {}, {}, {};\n",
+                        "{indent}{}.{}   r{z}, {}, {};\n",
                         match bop {
                             BOp::Add => "add",
                             BOp::Sub => "sub",
@@ -914,18 +878,15 @@ impl CUDADevice {
                             BOp::BitXor => todo!(),
                         },
                         dtype.ptx(),
-                        z.ptx(),
                         x.ptx(),
                         y.ptx()
                     );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     source += &format!(
-                        "{indent}mad.lo.{}    {}, {}, {}, {};\n",
+                        "{indent}mad.lo.{}    r{z}, {}, {}, {};\n",
                         dtype.ptx(),
-                        z.ptx(),
                         a.ptx(),
                         b.ptx(),
                         c.ptx()
@@ -968,7 +929,7 @@ impl CUDAQueue {
         &mut self,
         program: &mut CUDAProgram,
         buffers: &mut IndexMap<CUDABuffer>,
-        args: &[usize],
+        args: &[Id],
     ) -> Result<(), CUDAError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {

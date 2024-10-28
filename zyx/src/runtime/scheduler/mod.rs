@@ -5,6 +5,7 @@ use super::{
     BufferId, DeviceId,
 };
 use crate::{
+    index_map::Id,
     runtime::{graph::Graph, ir::Scope, node::Node, view::View, Runtime, ZyxError},
     tensor::TensorId,
 };
@@ -62,7 +63,7 @@ enum SchedulerOp {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct VProgram {
     pub(super) device_id: DeviceId,
-    pub(super) program_id: usize,
+    pub(super) program_id: Id,
     pub(super) args: Vec<(TensorId, View, bool)>,
 }
 
@@ -82,7 +83,7 @@ impl Runtime {
         //panic!("Done");
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
         // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
-        let mut device_program_map: BTreeMap<DeviceId, Vec<usize>> = (0..self.devices.len())
+        let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..self.devices.len())
             .map(|device_id| (device_id, Vec::new()))
             .collect();
         // Simulated tensor buffer map
@@ -311,7 +312,7 @@ impl Runtime {
         for sched_op in &compiled_graph.sched_graph {
             match sched_op {
                 SchedulerOp::Launch(vprogram) => {
-                    let buffer_ids: Vec<usize> = vprogram
+                    let buffer_ids: Vec<Id> = vprogram
                         .args
                         .iter()
                         .map(|arg| {
@@ -545,7 +546,7 @@ impl Runtime {
         optimizations: &KernelOptimization,
         device_id: DeviceId,
         graph: &Graph,
-    ) -> Result<(usize, Vec<(usize, View, bool)>), ZyxError> {
+    ) -> Result<(Id, Vec<(Id, View, bool)>), ZyxError> {
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
         //optimized_kernel.debug();

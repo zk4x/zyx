@@ -1,4 +1,5 @@
 use crate::dtype::{Constant, DType};
+use crate::index_map::Id;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
@@ -27,7 +28,6 @@ use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
-mod compiler;
 mod backend;
 mod graph;
 mod ir;
@@ -56,19 +56,22 @@ pub struct DeviceConfig {
 pub(super) struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
-    // Random number generator
-    pub(super) rng: std::cell::OnceCell<SmallRng>,
     // Cache for compiled graphs
     compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
+    // Physical memory pools
     memory_pools: Vec<MemoryPool>,
+    // Physical compute devices
+    devices: Vec<Device>,
     // Where are tensors stored
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
-    devices: Vec<Device>,
     // Cache which maps IRKernel to device and program id on the device
-    ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, usize)>,
+    ir_kernel_cache: BTreeMap<IRKernel, (DeviceId, Id)>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
+    // Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
+    // Random number generator
+    pub(super) rng: std::cell::OnceCell<SmallRng>,
     // Are we in training mode?
     pub(super) training: bool,
     /// How many variations of one kernel to try during optimization

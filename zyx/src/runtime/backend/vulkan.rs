@@ -1,6 +1,9 @@
 #![allow(unused)]
 
-use crate::{index_map::IndexMap, runtime::ir::IRKernel};
+use crate::{
+    index_map::{Id, IndexMap},
+    runtime::ir::IRKernel,
+};
 
 use super::DeviceInfo;
 
@@ -42,7 +45,6 @@ pub(super) fn initialize_devices(
     config: &VulkanConfig,
     debug_dev: bool,
 ) -> Result<(Vec<VulkanMemoryPool>, Vec<(VulkanDevice, Vec<VulkanQueue>)>), VulkanError> {
-
     let memory_pools = Vec::new();
     let devices = Vec::new();
 
@@ -66,7 +68,11 @@ impl VulkanMemoryPool {
         todo!()
     }
 
-    pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &VulkanBuffer) -> Result<(), VulkanError> {
+    pub(super) fn host_to_pool(
+        &mut self,
+        src: &[u8],
+        dst: &VulkanBuffer,
+    ) -> Result<(), VulkanError> {
         todo!()
     }
 
@@ -123,7 +129,7 @@ impl VulkanQueue {
         &mut self,
         program: &mut VulkanProgram,
         buffers: &mut IndexMap<VulkanBuffer>,
-        args: &[usize],
+        args: &[Id],
     ) -> Result<(), VulkanError> {
         todo!()
     }

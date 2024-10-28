@@ -4,6 +4,7 @@
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
+use crate::index_map::Id;
 use crate::runtime::ir::{IRDType, IROp, Reg, Scope};
 use crate::runtime::node::{BOp, UOp};
 use crate::{index_map::IndexMap, runtime::ir::IRKernel};
@@ -439,33 +440,31 @@ impl HIPDevice {
                     source += &format!("{indent}r{z} = {value};\n");
                 }
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}{} = p{address}[{}];\n", z.hip(), offset.hip());
+                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.hip());
                 }
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.hip(), x.hip());
                 }
                 IROp::Unary { z, x, uop } => {
-                    let Reg::Var(id) = z else { panic!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = kernel.registers[z as usize];
                     source += &match uop {
                         UOp::Cast(_) => {
-                            format!("{indent}{} = ({}){};\n", z.hip(), dtype.hip(), x.hip())
+                            format!("{indent}r{z} = ({})r{x};\n", dtype.hip())
                         }
-                        UOp::ReLU => format!("{indent}{} = max({}, 0);\n", z.hip(), x.hip()),
-                        UOp::Neg => format!("{indent}{} = -{};\n", z.hip(), x.hip()),
-                        UOp::Exp2 => format!("{indent}{} = exp2({});\n", z.hip(), x.hip()),
-                        UOp::Log2 => format!("{indent}{} = log2({});\n", z.hip(), x.hip()),
-                        UOp::Inv => format!("{indent}{} = 1/{};\n", z.hip(), x.hip()),
-                        UOp::Sqrt => format!("{indent}{} = sqrt({});\n", z.hip(), x.hip()),
-                        UOp::Sin => format!("{indent}{} = sin({});\n", z.hip(), x.hip()),
-                        UOp::Cos => format!("{indent}{} = cos({});\n", z.hip(), x.hip()),
-                        UOp::Not => format!("{indent}{} = !{};\n", z.hip(), x.hip()),
+                        UOp::ReLU => format!("{indent}r{z} = max(r{x}, 0);\n"),
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
+                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
                     source += &format!(
-                        "{indent}{} = {};\n",
-                        z.hip(),
+                        "{indent}r{z} = {};\n",
                         match bop {
                             BOp::Add => format!("{} + {}", x.hip(), y.hip()),
                             BOp::Sub => format!("{} - {}", x.hip(), y.hip()),
@@ -485,13 +484,7 @@ impl HIPDevice {
                     );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source += &format!(
-                        "{indent}{} = {} * {} + {};\n",
-                        z.hip(),
-                        a.hip(),
-                        b.hip(),
-                        c.hip()
-                    );
+                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.hip(), b.hip(), c.hip());
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
@@ -652,7 +645,7 @@ impl HIPQueue {
         &mut self,
         program: &mut HIPProgram,
         buffers: &mut IndexMap<HIPBuffer>,
-        args: &[usize],
+        args: &[Id],
     ) -> Result<(), HIPError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for arg in args {
