@@ -17,6 +17,8 @@ pub(super) struct Graph {
     // First value is reference count, second is node
     nodes: IndexMap<(u32, Node)>,
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
+    paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
+    //axes: BTreeMap<TensorId, Vec<Axis>>,
     dtypes: BTreeMap<TensorId, DType>,
 }
 
@@ -26,6 +28,7 @@ impl Graph {
             to_eval: BTreeSet::new(),
             nodes: IndexMap::new(),
             shapes: BTreeMap::new(),
+            paddings: BTreeMap::new(),
             dtypes: BTreeMap::new(),
         }
     }
@@ -115,6 +118,10 @@ impl Graph {
         id
     }
 
+    pub(super) fn push_padding(&mut self, id: TensorId, padding: Vec<(isize, isize)>) {
+        self.paddings.insert(id, padding);
+    }
+
     pub(super) fn add_shape_dtype(&mut self, id: TensorId) {
         let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
@@ -134,6 +141,10 @@ impl Graph {
             }
         }
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
+    }
+
+    pub(super) fn padding(&self, tensor_id: TensorId) -> &[(isize, isize)] {
+        &self.paddings[&tensor_id]
     }
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[usize] {
@@ -254,6 +265,17 @@ impl Graph {
                 }
             })
             .collect();
+        let paddings: BTreeMap<TensorId, Vec<(isize, isize)>> = self
+            .paddings
+            .iter()
+            .filter_map(|(id, p)| {
+                if visited.contains(id) {
+                    Some((*id, p.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
         for &leaf in &leafs {
             shapes
                 .entry(leaf)
@@ -267,6 +289,7 @@ impl Graph {
                 shapes,
                 to_eval: tensors,
                 dtypes,
+                paddings,
                 nodes: visited
                     .into_iter()
                     .map(|id| {
@@ -587,7 +610,7 @@ impl Graph {
                     add_node(id, &f!("Permute({x}, {axes:?})"), "oval")
                 }
                 Node::Expand { x, .. } => add_node(id, &f!("Expand({x})"), "oval"),
-                Node::Pad { x, padding, .. } => add_node(id, &f!("Pad({x}, {padding:?})"), "oval"),
+                Node::Pad { x, .. } => add_node(id, &f!("Pad({x})"), "oval"),
                 Node::Reduce { x, axes, rop, .. } => {
                     add_node(id, &f!("{rop:?}({x}, {axes:?})"), "oval")
                 }

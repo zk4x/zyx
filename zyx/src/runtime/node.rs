@@ -65,7 +65,7 @@ pub(super) enum Node {
     },
     Pad {
         x: TensorId,
-        padding: Vec<(isize, isize)>,
+        //padding: Vec<(isize, isize)>,
     },
     Reduce {
         x: TensorId,

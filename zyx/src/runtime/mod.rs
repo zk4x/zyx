@@ -442,8 +442,9 @@ impl Runtime {
                 break;
             }
         }
+        self.graph.push_padding(x, padding);
         //println!("Result {shape:?}");
-        self.graph.push_wshape(Node::Pad { x, padding }, shape)
+        self.graph.push_wshape(Node::Pad { x }, shape)
     }
 
     #[must_use]
@@ -1025,7 +1026,8 @@ impl Runtime {
                     let grad = self.permute(grad, argsort_axes);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Pad { x, ref padding, .. } => {
+                Node::Pad { x } => {
+                    let padding = self.graph.padding(x);
                     let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
                     let grad = self.pad_zeros(grad, inv_padding);
                     insert_or_add_grad(self, &mut grads, x, grad);

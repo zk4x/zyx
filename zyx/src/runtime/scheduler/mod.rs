@@ -880,7 +880,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 }
                 //println!("\nKernels {kernels:?}\n");
             }
-            &Node::Pad { x, ref padding } => {
+            &Node::Pad { x } => {
+                let padding = graph.padding(x);
                 // Pad shrinks or expands dimension of axes, this is ZERO padding
                 let mut kernel = get_kernel(x, &mut kernels, graph);
                 // Kernel cannot be padded if it containe max reduce.
