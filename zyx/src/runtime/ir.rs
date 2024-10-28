@@ -543,8 +543,11 @@ impl IRKernel {
         // Get reference counts
         for op in &c.ops {
             match op {
-                IROp::Store { x, .. } => {
+                IROp::Store { x, offset, .. } => {
                     if let &Reg::Var(x) = x {
+                        ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    }
+                    if let &Reg::Var(x) = offset {
                         ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                     }
                 }
@@ -595,9 +598,13 @@ impl IRKernel {
                         c.dtypes[z as usize].ir_dtype(),
                         ref_counts[&z],
                     );
-                    if let Reg::Var(offset) = offset {
+                    let offset = if let Reg::Var(offset) = offset {
+                        let offset = cmp[&offset];
                         reg_rcs[offset as usize] -= 1;
-                    }
+                        Reg::Var(offset)
+                    } else {
+                        offset
+                    };
                     ops.push(IROp::Load {
                         z: zr,
                         address,
@@ -609,6 +616,13 @@ impl IRKernel {
                     let Reg::Var(x) = x else { panic!() };
                     let xr = cmp[&x];
                     reg_rcs[xr as usize] -= 1;
+                    let offset = if let Reg::Var(offset) = offset {
+                        let offset = cmp[&offset];
+                        reg_rcs[offset as usize] -= 1;
+                        Reg::Var(offset)
+                    } else {
+                        offset
+                    };
                     ops.push(IROp::Store {
                         address,
                         offset,
@@ -711,9 +725,7 @@ impl IRKernel {
             }
         }
 
-        for op in &ops {
-            println!("{op:?}");
-        }
+        //for op in &ops { println!("{op:?}"); }
 
         (
             IRKernel {
