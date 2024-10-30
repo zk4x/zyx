@@ -11,6 +11,7 @@ pub(super) enum BOp {
     Mul,
     Div,
     Pow,
+    Mod,
     Cmplt,
     Cmpgt,
     Max,

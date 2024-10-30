@@ -233,13 +233,6 @@ pub(super) struct IRCompiler {
 }
 
 impl IRCompiler {
-    pub(super) fn variable(&mut self, constant: Constant) -> u16 {
-        self.dtypes.push(constant.dtype());
-        let z = (self.dtypes.len() - 1) as u16;
-        self.ops.push(IROp::Set { z, value: constant });
-        z
-    }
-
     pub(super) fn load(&mut self, address: u16, offset: Reg, dtype: DType) -> u16 {
         self.dtypes.push(dtype);
         let z = (self.dtypes.len() - 1) as u16;
@@ -306,6 +299,14 @@ impl IRCompiler {
 
     pub(super) fn mul(&mut self, x: Reg, y: Reg) -> u16 {
         self.binary_op(x, y, BOp::Mul)
+    }
+
+    pub(super) fn div(&mut self, x: Reg, y: Reg) -> u16 {
+        self.binary_op(x, y, BOp::Div)
+    }
+
+    pub(super) fn mod(&mut self, x: Reg, y: Reg) -> u16 {
+        self.binary_op(x, y, BOp::Mod)
     }
 
     pub(super) fn mad(&mut self, x: Reg, y: Reg, z: Reg) -> u16 {

@@ -267,8 +267,9 @@ impl View {
         // pc = a0 > lp0-1 && a0 < d0-rp0
         // pc = pc.cast(dtype)
         // x = pc * value[offset]
-        let mut offset = c.variable(Constant::U32(0));
-        let mut pc = c.variable(Constant::U32(0));
+        // Last view
+        let mut offset = 0;
+        let mut pc = 0;
         if let Some(inner) = self.0.last() {
             for (&a, dim) in inner {
                 // Offset
@@ -282,13 +283,13 @@ impl View {
                         a as u16
                     };
                     let stride = Reg::Const(Constant::U32(dim.st as u32));
-                    offset = c.mad(Reg::Var(t), stride, Reg::Var(offset));
+                    offset = c.mad(Reg::Var(t), stride, if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) });
                 }
                 // Padding condition
                 if dim.lp > 0 {
                     let lp = Reg::Const(Constant::U32((dim.lp - 1) as u32));
                     let t = c.cmplt(Reg::Var(a as u16), lp);
-                    pc = c.and(Reg::Var(t), Reg::Var(pc));
+                    pc = c.and(Reg::Var(t), if pc != 0 { Reg::Var(pc) } else { Reg::Const(Constant::Bool(true)) });
                 }
                 if dim.rp > 0 {
                     let rp = Reg::Const(Constant::U32((dim.d as isize - dim.rp) as u32));
@@ -297,30 +298,47 @@ impl View {
                 }
             }
         }
-        let pcu32 = c.cast(Reg::Var(pc), DType::U32);
-        let offset = c.mul(pcu32, Reg::Var(offset));
-        let z = c.load(address, Reg::Var(offset), dtype);
-        let pcd = c.cast(Reg::Var(pc), dtype);
-        // Nullify z if padding condition is false (if there is padding at that index)
-        let z = c.mul(pcd, Reg::Var(z));
+        // All previous views
+        if self.0.len() > 1 {
+            for inner in &self.0[..self.0.len()-2] {
+                // a = offset / ost % dim
+                let mut ost = 1;
+                for (_, &RDim { d, st, lp, rp }) in inner.iter().rev() {
+                    let a = c.div(offset, Reg::Const(Constant::U32(0)));
+                    let a = c.mod(a, d);
+                    ost *= d;
+                }
+                todo!()
+            }
+        }
+        if pc != 0 {
+            let pcu32 = c.cast(Reg::Var(pc), DType::U32);
+            offset = c.mul(pcu32, Reg::Var(offset));
+        }
+        let mut z = c.load(address, Reg::Var(offset), dtype);
+        if pc != 0 {
+            let pcd = c.cast(Reg::Var(pc), dtype);
+            // Nullify z if padding condition is false (if there is padding at that index)
+            z = c.mul(pcd, Reg::Var(z));
+        }
         z
     }
 
     /// Store from variable into address
     pub(crate) fn ir_for_indexed_store(&self, c: &mut IRCompiler, address: u16, var: Reg) {
-        let mut offset = c.variable(Constant::U32(0));
+        let mut offset = 0;
         if let Some(inner) = self.0.last() {
             for (&a, dim) in inner {
                 if dim.st != 0 {
                     let stride = Reg::Const(Constant::U32(dim.st as u32));
-                    offset = c.mad(Reg::Var(a as u16), stride, Reg::Var(offset));
+                    offset = c.mad(Reg::Var(a as u16), stride, if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) });
                 }
             }
         }
         c.ops.push(IROp::Store {
             address,
             x: var,
-            offset: Reg::Var(offset),
+            offset: if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) },
         });
     }
 }
