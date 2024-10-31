@@ -59,7 +59,6 @@ pub(super) enum IROp {
         bop: BOp,
     },
     // z = a * b + c
-    #[allow(unused)]
     MAdd {
         z: u16,
         a: Reg,
@@ -135,6 +134,37 @@ impl IRVec {
             IRVec::V4 => 4,
             IRVec::V8 => 8,
             IRVec::V16 => 16,
+        }
+    }
+}
+
+impl Display for IRVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IRVec::Scalar => f.write_str(""),
+            IRVec::V2 => f.write_char('2'),
+            IRVec::V4 => f.write_char('4'),
+            IRVec::V8 => f.write_char('8'),
+            IRVec::V16 => f.write_str("16"),
+        }
+    }
+}
+
+impl DType {
+    pub(super) fn ir_dtype(&self) -> IRDType {
+        match self {
+            DType::BF16 => IRDType::BF16(IRVec::Scalar),
+            DType::F8 => IRDType::F8(IRVec::Scalar),
+            DType::F16 => IRDType::F16(IRVec::Scalar),
+            DType::F32 => IRDType::F32(IRVec::Scalar),
+            DType::F64 => IRDType::F64(IRVec::Scalar),
+            DType::U8 => IRDType::U8(IRVec::Scalar),
+            DType::U32 => IRDType::U32(IRVec::Scalar),
+            DType::I8 => IRDType::I8(IRVec::Scalar),
+            DType::I16 => IRDType::I16(IRVec::Scalar),
+            DType::I32 => IRDType::I32(IRVec::Scalar),
+            DType::I64 => IRDType::I64(IRVec::Scalar),
+            DType::Bool => IRDType::Bool,
         }
     }
 }
@@ -309,18 +339,8 @@ impl IRCompiler {
         let t = self.mul(x, y);
         self.add(Reg::Var(t), z)
     }
-}
 
-// Returns IRKernel and order in which tensors are passed to it as arguments
-// Axes have the same id in registers.
-impl IRKernel {
-    pub(super) fn new(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
-        // What we need to calculate (outputs of this function)
-        // IRKernel
-        let mut addressables: Vec<(Scope, IRDType, usize, bool)> = Vec::new();
-        // Returned tensors
-        let mut args = Vec::new();
-
+    fn vops_to_ir(kernel_ops: &[VOp], args: &mut Vec<u32>, addressables: &mut Vec<(Scope, IRDType, usize, bool)>) -> IRCompiler {
         let mut c = IRCompiler {
             ops: Vec::new(),
             register_map: BTreeMap::new(),
@@ -527,18 +547,16 @@ impl IRKernel {
                 }
             }
         }
-
         while let Some((id, len)) = loops.pop() {
             c.ops.push(IROp::EndLoop { id, len });
         }
+        c
+    }
 
-        // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
-        // This will require automatic dependency resolution
-
-        //for op in &ops { println!("{op:?}"); }
+    fn into_deduplicated_ir(self) -> (Vec<IRDType>, Vec<IROp>) {
         let mut ref_counts: BTreeMap<u16, u32> = BTreeMap::new();
         // Get reference counts
-        for op in &c.ops {
+        for op in &self.ops {
             match op {
                 IROp::Store { x, offset, .. } => {
                     if let &Reg::Var(x) = x {
@@ -586,13 +604,13 @@ impl IRKernel {
         let mut reg_rcs = Vec::new();
         let mut ops = Vec::new();
         let mut cmp = BTreeMap::new();
-        for op in c.ops {
+        for op in self.ops {
             match op {
                 IROp::Load { z, address, offset } => {
                     let zr = new_var(
                         &mut registers,
                         &mut reg_rcs,
-                        c.dtypes[z as usize].ir_dtype(),
+                        self.dtypes[z as usize].ir_dtype(),
                         ref_counts[&z],
                     );
                     let offset = if let Reg::Var(offset) = offset {
@@ -631,7 +649,7 @@ impl IRKernel {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            c.dtypes[z as usize].ir_dtype(),
+                            self.dtypes[z as usize].ir_dtype(),
                             zrc,
                         );
                         let xr = cmp[&x];
@@ -659,43 +677,52 @@ impl IRKernel {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            c.dtypes[z as usize].ir_dtype(),
+                            self.dtypes[z as usize].ir_dtype(),
                             zrc,
                         );
                         ops.push(IROp::Binary { z: zr, x, y, bop });
                         cmp.insert(z, zr);
                     }
                 }
-                IROp::MAdd { z, a, b, c: co } => {
-                    let Reg::Var(a) = a else { panic!() };
-                    let Reg::Var(b) = b else { panic!() };
-                    let Reg::Var(co) = co else { panic!() };
-                    let zr = new_var(
-                        &mut registers,
-                        &mut reg_rcs,
-                        c.dtypes[z as usize].ir_dtype(),
-                        ref_counts[&z],
-                    );
-                    let ar = cmp[&a];
-                    let br = cmp[&b];
-                    let cr = cmp[&co];
-                    reg_rcs[ar as usize] -= 1;
-                    reg_rcs[br as usize] -= 1;
-                    reg_rcs[cr as usize] -= 1;
-                    ops.push(IROp::MAdd {
-                        z: zr,
-                        a: Reg::Var(ar),
-                        b: Reg::Var(br),
-                        c: Reg::Var(cr),
-                    });
-                    cmp.insert(z, zr);
+                IROp::MAdd { z, a, b, c } => {
+                    if let Some(&zrc) = ref_counts.get(&z) {
+                        let a = if let Reg::Var(x) = a {
+                            let xr = cmp[&x];
+                            reg_rcs[xr as usize] -= 1;
+                            Reg::Var(xr)
+                        } else {
+                            a
+                        };
+                        let b = if let Reg::Var(x) = b {
+                            let xr = cmp[&x];
+                            reg_rcs[xr as usize] -= 1;
+                            Reg::Var(xr)
+                        } else {
+                            b
+                        };
+                        let c = if let Reg::Var(x) = c {
+                            let xr = cmp[&x];
+                            reg_rcs[xr as usize] -= 1;
+                            Reg::Var(xr)
+                        } else {
+                            c
+                        };
+                        let zr = new_var(
+                            &mut registers,
+                            &mut reg_rcs,
+                            self.dtypes[z as usize].ir_dtype(),
+                            zrc,
+                        );
+                        ops.push(IROp::MAdd { z: zr, a, b, c });
+                        cmp.insert(z, zr);
+                    }
                 }
                 IROp::Loop { id, len } => {
                     if let Some(&zrc) = ref_counts.get(&id) {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            c.dtypes[id as usize].ir_dtype(),
+                            self.dtypes[id as usize].ir_dtype(),
                             zrc,
                         );
                         ops.push(IROp::Loop { id: zr, len });
@@ -709,22 +736,25 @@ impl IRKernel {
                 IROp::Barrier { scope } => ops.push(IROp::Barrier { scope }),
             }
         }
-
-        //for op in &ops { println!("{op:?}"); }
-
-        (
-            IRKernel {
-                addressables,
-                registers,
-                ops,
-            },
-            args,
-        )
+        (registers, ops)
     }
 
-    pub(super) fn debug(&self) {
-        for op in &self.ops {
-            println!("{op:?}");
+    fn fuse_multiply_add(&mut self) {
+        for i in 0..self.ops.len()-1 {
+            if let IROp::Binary { bop, z: z0, x: a, y: b, .. } = self.ops[i] {
+                if bop == BOp::Mul {
+                    if let IROp::Binary { bop, z, x, y, .. } = self.ops[i+1] {
+                        if bop == BOp::Add {
+                            if Reg::Var(z0) == x {
+                                self.ops[i+1] = IROp::MAdd { z, a, b, c: y };
+                            }
+                            if Reg::Var(z0) == y {
+                                self.ops[i+1] = IROp::MAdd { z, a, b, c: x };
+                            }
+                        };
+                    }
+                }
+            }
         }
     }
 }
@@ -747,33 +777,48 @@ fn new_var(
     (registers.len() - 1) as u16
 }
 
-impl Display for IRVec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IRVec::Scalar => f.write_str(""),
-            IRVec::V2 => f.write_char('2'),
-            IRVec::V4 => f.write_char('4'),
-            IRVec::V8 => f.write_char('8'),
-            IRVec::V16 => f.write_str("16"),
+// Returns IRKernel and order in which tensors are passed to it as arguments
+// Axes have the same id in registers.
+impl IRKernel {
+    pub(super) fn debug(&self) {
+        for op in &self.ops {
+            println!("{op:?}");
         }
     }
-}
 
-impl DType {
-    pub(super) fn ir_dtype(&self) -> IRDType {
-        match self {
-            DType::BF16 => IRDType::BF16(IRVec::Scalar),
-            DType::F8 => IRDType::F8(IRVec::Scalar),
-            DType::F16 => IRDType::F16(IRVec::Scalar),
-            DType::F32 => IRDType::F32(IRVec::Scalar),
-            DType::F64 => IRDType::F64(IRVec::Scalar),
-            DType::U8 => IRDType::U8(IRVec::Scalar),
-            DType::U32 => IRDType::U32(IRVec::Scalar),
-            DType::I8 => IRDType::I8(IRVec::Scalar),
-            DType::I16 => IRDType::I16(IRVec::Scalar),
-            DType::I32 => IRDType::I32(IRVec::Scalar),
-            DType::I64 => IRDType::I64(IRVec::Scalar),
-            DType::Bool => IRDType::Bool,
-        }
+    pub(super) fn new(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
+        // What we need to calculate (outputs of this function)
+        // IRKernel
+        let mut addressables: Vec<(Scope, IRDType, usize, bool)> = Vec::new();
+        // Returned tensors
+        let mut args = Vec::new();
+
+        let mut compiler = IRCompiler::vops_to_ir(kernel_ops, &mut args, &mut addressables);
+
+        // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
+        // This will require automatic dependency resolution
+
+        // apply optimizations such as
+        // y = x + 0 -> none
+        // y = 0/x -> none
+        // y = x/1
+        // ...
+
+        compiler.fuse_multiply_add();
+        //for op in &compiler.ops { println!("{op:?}"); }
+        let (registers, ops) = compiler.into_deduplicated_ir();
+        //println!();
+        //println!();
+        //for op in &ops { println!("{op:?}"); }
+        //panic!();
+
+        (
+            IRKernel {
+                addressables,
+                registers,
+                ops,
+            },
+            args,
+        )
     }
 }

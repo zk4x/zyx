@@ -12,10 +12,11 @@
   - [x] do not pass graph to ir
   - [x] change ir register id to u16
   - [x] remove ref counting from ir
-  - [ ] merge all mul + add into mad instructions
+  - [x] merge all mul + add into mad instructions
   - [ ] add ops reordering, all ops that can be moved before loops should be moved
   - [ ] deduplicate all calculations
-  - [ ] add optimizations for ops, merges, deletion of redundant ops
+  - [ ] add optimizations for ops, merges
+  - [ ] deletion of redundant ops
   - [x] add new reference counting that accounts for all variables, including indexing variables
 - [x] vops remove unary view
 - [x] vops remove binary views

@@ -2546,6 +2546,7 @@ impl Tensor {
         match path.as_ref().extension().and_then(std::ffi::OsStr::to_str) {
             Some(e) => match e {
                 "safetensors" => Self::load_safetensors(path),
+                #[cfg(feature = "gguf")]
                 "gguf" => Self::load_gguf(path),
                 _ => panic!(
                     "Unknown file extension. Zyx currently supports only safetensors format."
@@ -2718,6 +2719,7 @@ impl Tensor {
     }
 
     /// Load gguf model
+    #[cfg(feature = "gguf")]
     fn load_gguf<M: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<M, ZyxError> {
         let f = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(f);
