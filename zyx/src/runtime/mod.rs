@@ -441,9 +441,9 @@ impl Runtime {
                 break;
             }
         }
-        self.graph.push_padding(x, padding);
-        //println!("Result {shape:?}");
-        self.graph.push_wshape(Node::Pad { x }, shape)
+        let id = self.graph.push_wshape(Node::Pad { x }, shape);
+        self.graph.push_padding(id, padding);
+        id
     }
 
     #[must_use]
@@ -453,14 +453,15 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        self.graph.push_axes(x, axes);
-        self.graph.push_wshape(
+        let id = self.graph.push_wshape(
             Node::Reduce {
                 x,
                 rop: ROp::Sum,
             },
             shape,
-        )
+        );
+        self.graph.push_axes(id, axes);
+        id
     }
 
     #[must_use]
@@ -470,14 +471,15 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        self.graph.push_axes(x, axes);
-        self.graph.push_wshape(
+        let id = self.graph.push_wshape(
             Node::Reduce {
                 x,
                 rop: ROp::Max,
             },
             shape,
-        )
+        );
+        self.graph.push_axes(id, axes);
+        id
     }
 
     #[must_use]
@@ -838,6 +840,9 @@ impl Runtime {
                             let grad = self.mul(x, grad);
                             insert_or_add_grad(self, &mut grads, y, grad);
                         }
+                    }
+                    BOp::Mod => {
+                        todo!("Mod backward")
                     }
                     BOp::Div => {
                         if req_grad.contains(&x) {

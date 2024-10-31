@@ -5,7 +5,7 @@
   - [x] view padding to ir
     - [x] offset
     - [x] padding condition
-  - [ ] view reshaped to ir
+  - [x] reshaped view to ir
   - [ ] view axis merge
 - [ ] ir rewrite
   - [x] add dtype to load vop, so that we don't need to pass graph to ir

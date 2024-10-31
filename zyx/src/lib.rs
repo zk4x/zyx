@@ -337,6 +337,7 @@ fn t2() {
 fn t3() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     let tensors = x.split([2, 1], 1).unwrap();
+    //Tensor::realize(&tensors).unwrap();
     for t in tensors {
         println!("{t}");
     }

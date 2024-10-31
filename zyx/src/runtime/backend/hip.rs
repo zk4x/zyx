@@ -436,9 +436,6 @@ impl HIPDevice {
         );
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, value } => {
-                    source += &format!("{indent}r{z} = {value};\n");
-                }
                 IROp::Load { z, address, offset } => {
                     source += &format!("{indent}r{z} = p{address}[{}];\n", offset.hip());
                 }
@@ -470,6 +467,7 @@ impl HIPDevice {
                             BOp::Sub => format!("{} - {}", x.hip(), y.hip()),
                             BOp::Mul => format!("{} * {}", x.hip(), y.hip()),
                             BOp::Div => format!("{} / {}", x.hip(), y.hip()),
+                            BOp::Mod => format!("{} % {}", x.hip(), y.hip()),
                             BOp::Pow => format!("pow({}, {})", x.hip(), y.hip()),
                             BOp::Cmplt => format!("{} < {}", x.hip(), y.hip()),
                             BOp::Cmpgt => format!("{} > {}", x.hip(), y.hip()),

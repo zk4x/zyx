@@ -87,7 +87,7 @@ impl View {
                 .values()
                 .map(|dim| {
                     if dim.st != 0 {
-                        (dim.d as isize + dim.lp + dim.rp) as usize
+                        (dim.d as isize - dim.lp - dim.rp) as usize
                     } else {
                         1
                     }
@@ -270,7 +270,7 @@ impl View {
         // Last view
         let mut offset = 0;
         let mut pc = 0;
-        if let Some(inner) = self.0.last() {
+        /*if let Some(inner) = self.0.last() {
             for (&a, dim) in inner {
                 // Offset
                 if dim.st != 0 {
@@ -297,20 +297,51 @@ impl View {
                     pc = c.and(Reg::Var(t), Reg::Var(pc));
                 }
             }
-        }
+        }*/
         // All previous views
-        if self.0.len() > 1 {
-            for inner in &self.0[..self.0.len()-2] {
-                // a = offset / ost % dim
-                let mut ost = 1;
-                for (_, &RDim { d, st, lp, rp }) in inner.iter().rev() {
-                    let a = c.div(offset, Reg::Const(Constant::U32(0)));
-                    let a = c.mod(a, d);
-                    ost *= d;
+        //println!("Self {self:?}");
+        //if self.0.len() > 1 {
+        let mut first = true;
+        for inner in self.0.iter().rev() {
+            // a = offset / ost % dim
+            let mut ost = 1;
+            for (&a, dim) in inner.iter().rev() {
+                let a = if first {
+                    first = false;
+                    a as u16
+                } else {
+                    let a = c.div(Reg::Var(offset), Reg::Const(Constant::U32(ost)));
+                    c.mod_(Reg::Var(a), Reg::Const(Constant::U32(dim.d as u32)))
+                };
+                ost *= dim.d as u32;
+                println!("ost: {ost}, {dim:?}");
+                // Offset
+                if dim.st != 0 {
+                    let t = if dim.lp != 0 {
+                        let lp = Reg::Const(Constant::U32(
+                            if dim.lp > 0 { dim.lp } else { -dim.lp } as u32,
+                        ));
+                        c.sub(Reg::Var(a as u16), lp)
+                    } else {
+                        a as u16
+                    };
+                    let stride = Reg::Const(Constant::U32(dim.st as u32));
+                    offset = c.mad(Reg::Var(t), stride, if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) });
                 }
-                todo!()
+                // Padding condition
+                if dim.lp > 0 {
+                    let lp = Reg::Const(Constant::U32((dim.lp - 1) as u32));
+                    let t = c.cmplt(Reg::Var(a as u16), lp);
+                    pc = c.and(Reg::Var(t), if pc != 0 { Reg::Var(pc) } else { Reg::Const(Constant::Bool(true)) });
+                }
+                if dim.rp > 0 {
+                    let rp = Reg::Const(Constant::U32((dim.d as isize - dim.rp) as u32));
+                    let t = c.cmpgt(Reg::Var(a as u16), rp);
+                    pc = c.and(Reg::Var(t), Reg::Var(pc));
+                }
             }
         }
+            //}
         if pc != 0 {
             let pcu32 = c.cast(Reg::Var(pc), DType::U32);
             offset = c.mul(pcu32, Reg::Var(offset));

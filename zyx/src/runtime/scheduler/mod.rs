@@ -882,7 +882,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //println!("\nKernels {kernels:?}\n");
             }
             &Node::Pad { x } => {
-                let padding = graph.padding(x);
+                let padding = graph.padding(nid);
                 // Pad shrinks or expands dimension of axes, this is ZERO padding
                 let mut kernel = get_kernel(x, &mut kernels, graph);
                 // Kernel cannot be padded if it containe max reduce.
@@ -904,6 +904,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 }
                 // Apply padding
                 let mut num_paddings = padding.len();
+                //println!("Padded axes: {padded_axes:?}");
                 for op in &mut kernel.ops {
                     match op {
                         VOp::Loop { axis, len } => {
@@ -933,10 +934,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     x,
                     mop: MOp::Padd,
                 });
+                //kernel.debug();
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
             &Node::Reduce { x, rop } => {
-                let axes = graph.axes(x);
+                let axes = graph.axes(nid);
                 // TODO do not apply reduce on a previously fully reduced and expanded kernel, this
                 // happens in softmax
                 let kernel = get_kernel(x, &mut kernels, graph);

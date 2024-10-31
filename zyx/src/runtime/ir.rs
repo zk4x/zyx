@@ -47,11 +47,6 @@ pub(super) enum IROp {
         offset: Reg,
         x: Reg,
     },
-    // Assign value to register z
-    Set {
-        z: u16,
-        value: Constant,
-    },
     Unary {
         z: u16,
         x: u16,
@@ -64,6 +59,7 @@ pub(super) enum IROp {
         bop: BOp,
     },
     // z = a * b + c
+    #[allow(unused)]
     MAdd {
         z: u16,
         a: Reg,
@@ -305,7 +301,7 @@ impl IRCompiler {
         self.binary_op(x, y, BOp::Div)
     }
 
-    pub(super) fn mod(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn mod_(&mut self, x: Reg, y: Reg) -> u16 {
         self.binary_op(x, y, BOp::Mod)
     }
 
@@ -629,18 +625,6 @@ impl IRKernel {
                         offset,
                         x: Reg::Var(xr),
                     });
-                }
-                IROp::Set { z, value } => {
-                    if let Some(&zrc) = ref_counts.get(&z) {
-                        let zr = new_var(
-                            &mut registers,
-                            &mut reg_rcs,
-                            c.dtypes[z as usize].ir_dtype(),
-                            zrc,
-                        );
-                        ops.push(IROp::Set { z: zr, value });
-                        cmp.insert(z, zr);
-                    }
                 }
                 IROp::Unary { z, x, uop } => {
                     if let Some(&zrc) = ref_counts.get(&z) {

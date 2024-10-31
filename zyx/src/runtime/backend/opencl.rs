@@ -705,9 +705,6 @@ impl OpenCLDevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, value } => {
-                    source += &format!("{indent}r{z} = {value};\n");
-                }
                 IROp::Load { z, address, offset } => {
                     if let Reg::Var(id) = offset {
                         if id == 11 {
@@ -747,6 +744,7 @@ impl OpenCLDevice {
                             BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
                             BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
                             BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
+                            BOp::Mod => format!("{} % {}", x.ocl(), y.ocl()),
                             BOp::Pow => format!("pow({}, {})", x.ocl(), y.ocl()),
                             BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
                             BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),

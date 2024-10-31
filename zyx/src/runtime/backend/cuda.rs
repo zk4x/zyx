@@ -531,9 +531,6 @@ impl CUDADevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, value } => {
-                    source += &format!("{indent}r{z} = {value};\n");
-                }
                 IROp::Load { z, address, offset } => {
                     source += &format!("{indent}r{z} = p{address}[{}];\n", offset.cu());
                 }
@@ -568,6 +565,7 @@ impl CUDADevice {
                             BOp::Sub => format!("{} - {}", x.cu(), y.cu()),
                             BOp::Mul => format!("{} * {}", x.cu(), y.cu()),
                             BOp::Div => format!("{} / {}", x.cu(), y.cu()),
+                            BOp::Mod => format!("{} % {}", x.cu(), y.cu()),
                             BOp::Pow => format!("pow({}, {})", x.cu(), y.cu()),
                             BOp::Cmplt => format!("{} < {}", x.cu(), y.cu()),
                             BOp::Cmpgt => format!("{} > {}", x.cu(), y.cu()),
@@ -805,10 +803,6 @@ impl CUDADevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, value } => {
-                    let dtype: IRDType = value.dtype().into();
-                    source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.ptx());
-                }
                 IROp::Load { z, address, offset } => {
                     let dtype = kernel.registers[z as usize];
                     // Get address
@@ -866,6 +860,7 @@ impl CUDADevice {
                             BOp::Sub => "sub",
                             BOp::Mul => "mul",
                             BOp::Div => "div",
+                            BOp::Mod => "mod",
                             BOp::Pow => todo!(),
                             BOp::Cmplt => "set.lt",
                             BOp::Cmpgt => "set.gt",
