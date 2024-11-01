@@ -1236,23 +1236,23 @@ impl Tensor {
     #[must_use]
     pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
-        if dim0 < 0 {
-            if (-dim0) as usize > rank {
-                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}")));
-            }
-        } else {
-            if dim0 as usize >= rank {
-                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}")));
-            }
+        if dim0 < 0 && (-dim0) as usize > rank {
+            return Err(ZyxError::ShapeError(format!(
+                "Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}"
+            )));
+        } else if dim0 as usize >= rank {
+            return Err(ZyxError::ShapeError(format!(
+                "Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}"
+            )));
         }
-        if dim1 < 0 {
-            if (-dim1) as usize > rank {
-                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}")));
-            }
-        } else {
-            if dim1 as usize >= rank {
-                return Err(ZyxError::ShapeError(format!("Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}")));
-            }
+        if dim1 < 0 && (-dim1) as usize > rank {
+            return Err(ZyxError::ShapeError(format!(
+                "Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}"
+            )));
+        } else if dim1 as usize >= rank {
+            return Err(ZyxError::ShapeError(format!(
+                "Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}"
+            )));
         }
         let mut axes: Vec<isize> = (0..rank as isize).collect();
         axes.swap(into_axis(dim0, rank)?, into_axis(dim1, rank)?);
@@ -2077,12 +2077,10 @@ impl Tensor {
         // Dimension check
         for tensor in &tensors {
             for (i, (d1, d2)) in shape.iter().zip(tensor.shape().iter()).enumerate() {
-                if i != dim {
-                    if *d1 != *d2 {
-                        return Err(ZyxError::ShapeError(
-                            "Cannot concatenate these tensors.".into(),
-                        ));
-                    }
+                if i != dim && *d1 != *d2 {
+                    return Err(ZyxError::ShapeError(
+                        "Cannot concatenate these tensors.".into(),
+                    ));
                 }
             }
         }
@@ -2847,12 +2845,10 @@ impl Tensor {
         let y_shape = y.shape();
 
         for (&x, &y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
-            if x != y {
-                if x != 1 && y != 1 {
-                    return Err(ZyxError::ShapeError(format!(
-                        "Tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}"
-                    )));
-                }
+            if x != y && x != 1 && y != 1 {
+                return Err(ZyxError::ShapeError(format!(
+                    "Tensor shapes can not be broadcasted: {x_shape:?} and {y_shape:?}"
+                )));
             }
         }
 
@@ -3044,10 +3040,14 @@ impl TryFrom<Tensor> for bool {
 impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        use std::mem::MaybeUninit;
         let numel = value.numel();
-        let mut data = Vec::with_capacity(numel);
+        let mut data: Vec<MaybeUninit<T>> = Vec::with_capacity(numel);
         unsafe { data.set_len(numel) };
-        RT.lock().load(value.id, &mut data)?;
+        let dref: &mut [MaybeUninit<T>] = data.as_mut();
+        let dref: &mut [T] = unsafe { std::mem::transmute(dref) };
+        RT.lock().load(value.id, dref)?;
+        let data: Vec<T> = unsafe { std::mem::transmute(data) };
         Ok(data)
     }
 }

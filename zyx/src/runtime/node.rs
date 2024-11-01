@@ -104,14 +104,14 @@ impl Iterator for NodeParametersIterator {
         }
         let idx = self.idx;
         self.idx += 1;
-        return Some(self.parameters[idx as usize]);
+        Some(self.parameters[idx as usize])
     }
 }
 
 impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
-        return match self {
+        match self {
             Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
                 parameters: [0, 0],
                 idx: 0,
@@ -132,7 +132,7 @@ impl Node {
                 idx: 0,
                 len: 2,
             },
-        };
+        }
     }
 
     pub(super) fn is_movement(&self) -> bool {
@@ -150,13 +150,11 @@ impl Node {
 trait CastDType: Scalar {
     fn cast_dtype(self, dtype: DType) -> Constant {
         match dtype {
-            DType::BF16 => {
-                Constant::BF16(unsafe { std::mem::transmute(self.cast::<half::bf16>()) })
-            }
+            DType::BF16 => Constant::BF16(self.cast::<half::bf16>().to_bits()),
             DType::F8 => todo!(),
-            DType::F16 => Constant::F16(unsafe { std::mem::transmute(self.cast::<half::f16>()) }),
-            DType::F32 => Constant::F32(unsafe { std::mem::transmute(self.cast::<f32>()) }),
-            DType::F64 => Constant::F64(unsafe { std::mem::transmute(self.cast::<f64>()) }),
+            DType::F16 => Constant::F16(self.cast::<half::f16>().to_bits()),
+            DType::F32 => Constant::F32(self.cast::<f32>().to_bits()),
+            DType::F64 => Constant::F64(self.cast::<f64>().to_bits()),
             #[cfg(feature = "complex")]
             DType::CF32 => todo!("Complex numbers"),
             #[cfg(feature = "complex")]
@@ -178,14 +176,41 @@ impl<T: Scalar> CastDType for T {}
 impl Constant {
     pub(super) fn unary(self, uop: UOp) -> Constant {
         use crate::Float;
-        use std::mem::transmute as t;
-        match uop {
-            UOp::Cast(dtype) => match self {
-                Constant::BF16(x) => unsafe { t::<_, half::bf16>(x) }.cast_dtype(dtype),
+        fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
+            match uop {
+                UOp::Cast(_)
+                | UOp::Exp2
+                | UOp::Log2
+                | UOp::Inv
+                | UOp::Sqrt
+                | UOp::Sin
+                | UOp::Cos => panic!(),
+                UOp::ReLU => x.relu(),
+                UOp::Neg => x.neg(),
+                UOp::Not => x.not(),
+            }
+        }
+        fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
+            match uop {
+                UOp::Cast(_) => panic!(),
+                UOp::ReLU => x.relu(),
+                UOp::Neg => x.neg(),
+                UOp::Exp2 => x.exp2(),
+                UOp::Log2 => x.log2(),
+                UOp::Inv => x.reciprocal(),
+                UOp::Sqrt => x.sqrt(),
+                UOp::Sin => x.sin(),
+                UOp::Cos => x.cos(),
+                UOp::Not => x.not(),
+            }
+        }
+        if let UOp::Cast(dtype) = uop {
+            return match self {
+                Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
                 Constant::F8(_) => panic!(),
-                Constant::F16(x) => unsafe { t::<_, half::f16>(x) }.cast_dtype(dtype),
-                Constant::F32(x) => unsafe { t::<_, f32>(x) }.cast_dtype(dtype),
-                Constant::F64(x) => unsafe { t::<_, f64>(x) }.cast_dtype(dtype),
+                Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
+                Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
+                Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
                 #[cfg(feature = "complex")]
                 Constant::CF32(..) => todo!("Complex numbers"),
                 #[cfg(feature = "complex")]
@@ -197,159 +222,27 @@ impl Constant {
                 Constant::I32(x) => x.cast_dtype(dtype),
                 Constant::I64(x) => x.cast_dtype(dtype),
                 Constant::Bool(x) => x.cast_dtype(dtype),
-            },
-            UOp::ReLU => match self {
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).relu()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).relu()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(x.relu()),
-                Constant::I8(x) => Constant::I8(x.relu()),
-                Constant::I16(x) => Constant::I16(x.relu()),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(x.relu()),
-                Constant::I64(x) => Constant::I64(x.relu()),
-                Constant::Bool(x) => Constant::Bool(x.relu()),
-            },
-            UOp::Neg => match self {
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).neg()) }),
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).neg()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).neg()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).neg()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(x.neg()),
-                Constant::I8(x) => Constant::I8(x.neg()),
-                Constant::I16(x) => Constant::I16(x.neg()),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(x.neg()),
-                Constant::I64(x) => Constant::I64(x.neg()),
-                Constant::Bool(x) => Constant::Bool(x.neg()),
-            },
-            UOp::Exp2 => match self {
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).exp2()) }),
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).exp2()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).exp2()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).exp2()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(2.pow(x)),
-                Constant::I8(x) => Constant::I8(2.pow(x)),
-                Constant::I16(x) => Constant::I16(2.pow(x)),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(2.pow(x)),
-                Constant::I64(x) => Constant::I64(2.pow(x)),
-                Constant::Bool(_) => todo!(),
-            },
-            UOp::Log2 => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).log2()) }),
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).log2()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).log2()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).log2()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(x.ilog2() as u8),
-                Constant::I8(x) => Constant::I8(x.ilog2() as i8),
-                Constant::I16(x) => Constant::I16(x.ilog2() as i16),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(x.ilog2() as i32),
-                Constant::I64(x) => Constant::I64(x.ilog2() as i64),
-                Constant::Bool(_) => todo!(),
-            },
-            UOp::Inv => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => {
-                    Constant::F16(unsafe { t(half::f16::ONE / t::<_, half::f16>(x)) })
-                }
-                Constant::BF16(x) => {
-                    Constant::F16(unsafe { t(half::bf16::ONE / t::<_, half::bf16>(x)) })
-                }
-                Constant::F32(x) => Constant::F32(unsafe { t(1f32 / t::<_, f32>(x)) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(1f64 / t::<_, f64>(x)) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(1 / x),
-                Constant::I8(x) => Constant::I8(1 / x),
-                Constant::I16(x) => Constant::I16(1 / x),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(1 / x),
-                Constant::I64(x) => Constant::I64(1 / x),
-                Constant::Bool(_) => todo!(),
-            },
-            UOp::Sqrt => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).sqrt()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).sqrt()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                c => panic!("Unsupported dtype {}", c.dtype()),
-            },
-            UOp::Sin => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).sin()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).sin()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                c => panic!("Unsupported dtype {}", c.dtype()),
-            },
-            UOp::Cos => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
-                Constant::F32(x) => Constant::F32(unsafe { t(t::<_, f32>(x).cos()) }),
-                Constant::F64(x) => Constant::F64(unsafe { t(t::<_, f64>(x).cos()) }),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                c => panic!("Unsupported dtype {}", c.dtype()),
-            },
-            UOp::Not => match self {
-                Constant::F8(_) => panic!(),
-                Constant::F16(x) => Constant::F16(unsafe { t(t::<_, half::f16>(x).relu()) }),
-                Constant::BF16(x) => Constant::F16(unsafe { t(t::<_, half::bf16>(x).relu()) }),
-                Constant::F32(x) => {
-                    Constant::F32(unsafe { t(if t::<_, f32>(x) == 0f32 { 1f32 } else { 0f32 }) })
-                }
-                Constant::F64(x) => {
-                    Constant::F64(unsafe { t(if t::<_, f64>(x) == 0f64 { 1f64 } else { 0f64 }) })
-                }
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
-                Constant::U8(x) => Constant::U8(!x),
-                Constant::I8(x) => Constant::I8(!x),
-                Constant::I16(x) => Constant::I16(!x),
-                Constant::U32(_) => panic!(),
-                Constant::I32(x) => Constant::I32(!x),
-                Constant::I64(x) => Constant::I64(!x),
-                Constant::Bool(_) => todo!(),
-            },
+            };
+        }
+        match self {
+            Constant::BF16(x) => {
+                Constant::BF16(unary_func_float(half::bf16::from_bits(x), uop).to_bits())
+            }
+            Constant::F8(x) => {
+                Constant::F8(unary_func_float(float8::F8E4M3::from_bits(x), uop).to_bits())
+            }
+            Constant::F16(x) => {
+                Constant::F16(unary_func_float(half::f16::from_bits(x), uop).to_bits())
+            }
+            Constant::F32(x) => Constant::F32(unary_func_float(f32::from_bits(x), uop).to_bits()),
+            Constant::F64(x) => Constant::F64(unary_func_float(f64::from_bits(x), uop).to_bits()),
+            Constant::U8(x) => Constant::U8(unary_func(x, uop)),
+            Constant::U32(x) => Constant::U32(unary_func(x, uop)),
+            Constant::I8(x) => Constant::I8(unary_func(x, uop)),
+            Constant::I16(x) => Constant::I16(unary_func(x, uop)),
+            Constant::I32(x) => Constant::I32(unary_func(x, uop)),
+            Constant::I64(x) => Constant::I64(unary_func(x, uop)),
+            Constant::Bool(x) => Constant::Bool(unary_func(x, uop)),
         }
     }
 

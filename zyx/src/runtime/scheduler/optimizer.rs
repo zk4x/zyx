@@ -77,10 +77,8 @@ impl Kernel {
                 gws_i += 1;
             }
         } else {
-            let mut gws_i = 0;
-            for d in &self.shape()[..3] {
-                gws[gws_i] = *d;
-                gws_i += 1;
+            for (gws_d, d) in gws.iter_mut().zip(self.shape()[..3].iter()) {
+                *gws_d = *d;
             }
         }
         //println!("Using gws {gws:?}");
@@ -473,7 +471,7 @@ impl KernelOptimizer {
                 use rand::seq::SliceRandom;
                 use rand::SeedableRng;
                 let values: Vec<usize> = (0..opts.len()).filter(|&id| opts[id].1 == 0).collect();
-                if values.len() == 0 {
+                if values.is_empty() {
                     *self = KernelOptimizer::Optimized(opts[*best].0.clone(), opts[*best].1);
                 }
                 let mut rng = rand::rngs::SmallRng::seed_from_u64(190940981234098124);

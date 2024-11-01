@@ -169,9 +169,7 @@ impl View {
                     )
                     .is_none());
                 stride *= d;
-                if axis > 0 {
-                    axis -= 1;
-                }
+                axis = axis.saturating_sub(1);
             }
         }
         //println!("Splitting {} axis {axis} into {dimensions:?}", self);
@@ -290,18 +288,33 @@ impl View {
                         let lp = Reg::Const(Constant::U32(
                             if dim.lp > 0 { dim.lp } else { -dim.lp } as u32,
                         ));
-                        c.sub(Reg::Var(a as u16), lp)
+                        c.sub(Reg::Var(a), lp)
                     } else {
-                        a as u16
+                        a
                     };
                     let stride = Reg::Const(Constant::U32(dim.st as u32));
-                    offset = c.mad(Reg::Var(t), stride, if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) });
+                    offset = c.mad(
+                        Reg::Var(t),
+                        stride,
+                        if offset != 0 {
+                            Reg::Var(offset)
+                        } else {
+                            Reg::Const(Constant::U32(0))
+                        },
+                    );
                 }
                 // Padding condition
                 if dim.lp > 0 {
                     let lp = Reg::Const(Constant::U32((dim.lp - 1) as u32));
                     let t = c.cmplt(Reg::Var(a as u16), lp);
-                    pc = c.and(Reg::Var(t), if pc != 0 { Reg::Var(pc) } else { Reg::Const(Constant::Bool(true)) });
+                    pc = c.and(
+                        Reg::Var(t),
+                        if pc != 0 {
+                            Reg::Var(pc)
+                        } else {
+                            Reg::Const(Constant::Bool(true))
+                        },
+                    );
                 }
                 if dim.rp > 0 {
                     let rp = Reg::Const(Constant::U32((dim.d as isize - dim.rp) as u32));
@@ -333,14 +346,26 @@ impl View {
             for (&a, dim) in inner {
                 if dim.st != 0 && dim.d != 1 {
                     let stride = Reg::Const(Constant::U32(dim.st as u32));
-                    offset = c.mad(Reg::Var(a as u16), stride, if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) });
+                    offset = c.mad(
+                        Reg::Var(a as u16),
+                        stride,
+                        if offset != 0 {
+                            Reg::Var(offset)
+                        } else {
+                            Reg::Const(Constant::U32(0))
+                        },
+                    );
                 }
             }
         }
         c.ops.push(IROp::Store {
             address,
             x: var,
-            offset: if offset != 0 { Reg::Var(offset) } else { Reg::Const(Constant::U32(0)) },
+            offset: if offset != 0 {
+                Reg::Var(offset)
+            } else {
+                Reg::Const(Constant::U32(0))
+            },
         });
     }
 }

@@ -103,6 +103,7 @@ pub(crate) struct IndexMap<T> {
 impl<T> Drop for IndexMap<T> {
     fn drop(&mut self) {
         let mut id = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for x in self.values.iter_mut() {
             if !self.empty.contains(&id) {
                 unsafe { x.assume_init_drop() };
@@ -158,7 +159,7 @@ impl<T> IndexMap<T> {
             .map(|(_, x)| unsafe { x.assume_init_ref() })
     }
 
-    pub(crate) fn iter<'a>(&'a self) -> impl Iterator<Item = (Id, &'a T)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
         self.values
             .iter()
             .enumerate()
@@ -166,7 +167,7 @@ impl<T> IndexMap<T> {
             .map(|(id, x)| (id as Id, unsafe { x.assume_init_ref() }))
     }
 
-    pub(crate) fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Id, &'a mut T)> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
         self.values
             .iter_mut()
             .enumerate()
@@ -226,12 +227,12 @@ impl<T: Eq> Eq for IndexMap<T> {}
 impl<T: PartialOrd> PartialOrd for IndexMap<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let mut iter = self.iter().zip(other.iter());
-        loop {
-            if let Some((x, y)) = iter.next() {
-                return x.partial_cmp(&y);
-            } else {
-                return Some(self.values.len().cmp(&other.values.len()));
-            }
+        // TODO perhaps we can do the comparison over more than one element if the first elements
+        // are equal
+        if let Some((x, y)) = iter.next() {
+            x.partial_cmp(&y)
+        } else {
+            Some(self.values.len().cmp(&other.values.len()))
         }
     }
 }
@@ -239,12 +240,10 @@ impl<T: PartialOrd> PartialOrd for IndexMap<T> {
 impl<T: Ord> Ord for IndexMap<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let mut iter = self.iter().zip(other.iter());
-        loop {
-            if let Some((x, y)) = iter.next() {
-                return x.cmp(&y);
-            } else {
-                return self.values.len().cmp(&other.values.len());
-            }
+        if let Some((x, y)) = iter.next() {
+            x.cmp(&y)
+        } else {
+            self.values.len().cmp(&other.values.len())
         }
     }
 }

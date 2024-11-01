@@ -129,7 +129,7 @@ impl std::fmt::Display for VOp {
                 }
                 f.write_fmt(format_args!(
                     "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
-                    core::iter::repeat(" ").take(5 - len).collect::<String>()
+                    " ".repeat(5 - len)
                 ))
             }
             VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!(

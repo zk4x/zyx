@@ -41,10 +41,12 @@ pub(super) struct VulkanQueue {
     load: usize,
 }
 
+type VulkanQueuePool = Vec<(VulkanDevice, Vec<VulkanQueue>)>;
+
 pub(super) fn initialize_devices(
     config: &VulkanConfig,
     debug_dev: bool,
-) -> Result<(Vec<VulkanMemoryPool>, Vec<(VulkanDevice, Vec<VulkanQueue>)>), VulkanError> {
+) -> Result<(Vec<VulkanMemoryPool>, VulkanQueuePool), VulkanError> {
     let memory_pools = Vec::new();
     let devices = Vec::new();
 

@@ -56,6 +56,45 @@ pub(super) struct DeviceInfo {
 pub(super) type MemoryPoolId = usize;
 pub(super) type DeviceId = usize;
 
+/*trait HMemoryPool {
+    type Error;
+    type Buffer;
+    fn deinitialize(self) -> Result<(), Self::Error>;
+    fn free_bytes(&self) -> usize;
+    fn allocate(&mut self, bytes: usize) -> Result<Self::Buffer, Self::Error>;
+    fn host_to_pool(&mut self, src: &[u8], dst: &Self::Buffer) -> Result<(), Self::Error>;
+    fn pool_to_host(&mut self, src: &Self::Buffer, dst: &mut [u8]) -> Result<(), Self::Error>;
+}
+
+trait HDevice {
+    type Error;
+    type Program;
+    type Queue;
+    fn deinitialize(self) -> Result<(), Self::Error>;
+    fn info(&self) -> &DeviceInfo;
+    fn memory_pool_id(&self) -> usize;
+    fn release_program(&self, program: Self::Program) -> Result<(), Self::Error>;
+    fn release_queue(&self, queue: Self::Queue) -> Result<(), Self::Error>;
+    fn compile(&mut self, kernel: &IRKernel, debug_asm: bool)
+        -> Result<Self::Program, Self::Error>;
+}
+
+trait HQueue {
+    type Buffer;
+    type Program;
+    type Error;
+    fn launch(
+        &mut self,
+        program: &mut Self::Program,
+        buffers: &mut IndexMap<Self::Buffer>,
+        args: &[Id],
+    ) -> Result<(), Self::Error>;
+    fn sync(&mut self) -> Result<(), Self::Error>;
+    fn load(&self) -> usize;
+}*/
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug)]
 pub(super) enum MemoryPool {
     CUDA {
         memory_pool: CUDAMemoryPool,
@@ -86,6 +125,7 @@ pub(super) struct BufferId {
     pub(super) buffer_id: Id,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub(super) enum Device {
     CUDA {
@@ -162,7 +202,7 @@ impl Runtime {
                 dirs.push(bd.get_config_home());
                 dirs
             })
-            .map(|paths| {
+            .and_then(|paths| {
                 paths.into_iter().find_map(|mut path| {
                     path.push("zyx/device_config.json");
                     if let Ok(file) = std::fs::read_to_string(&path) {
@@ -174,8 +214,7 @@ impl Runtime {
                     }
                 })
             })
-            .flatten()
-            .map(|file| {
+            .and_then(|file| {
                 serde_json::from_str(&file)
                     .map_err(|e| {
                         if self.debug_dev() {
@@ -184,12 +223,10 @@ impl Runtime {
                     })
                     .ok()
             })
-            .flatten()
-            .map(|x| {
+            .inspect(|_| {
                 if self.debug_dev() {
                     println!("Device config successfully read and parsed.");
                 }
-                x
             })
             .unwrap_or_else(|| {
                 if self.debug_dev() {
@@ -218,19 +255,7 @@ impl Runtime {
         if let Ok((memory_pools, devices)) =
             cuda::initialize_devices(&device_config.cuda, self.debug_dev())
         {
-            let n = self.memory_pools.len();
-            self.memory_pools
-                .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
-                    memory_pool: m,
-                    buffers: IndexMap::new(),
-                }));
-            self.devices
-                .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
-                    memory_pool_id: device.memory_pool_id() + n,
-                    device,
-                    programs: IndexMap::new(),
-                    queues,
-                }));
+            self.fun_name(memory_pools, devices);
         }
         if let Ok((memory_pools, devices)) =
             hip::initialize_device(&device_config.hip, self.debug_dev())
@@ -306,6 +331,26 @@ impl Runtime {
         }
         //println!("Initializing");
         Ok(())
+    }
+
+    fn fun_name(
+        &mut self,
+        memory_pools: Vec<CUDAMemoryPool>,
+        devices: Vec<(CUDADevice, Vec<CUDAQueue>)>,
+    ) {
+        let n = self.memory_pools.len();
+        self.memory_pools
+            .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
+                memory_pool: m,
+                buffers: IndexMap::new(),
+            }));
+        self.devices
+            .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
+                memory_pool_id: device.memory_pool_id() + n,
+                device,
+                programs: IndexMap::new(),
+                queues,
+            }));
     }
 }
 
@@ -469,7 +514,7 @@ impl MemoryPool {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                    &mut buffers[buffer_id],
+                    &buffers[buffer_id],
                 )?;
             }
             MemoryPool::HIP {
@@ -479,7 +524,7 @@ impl MemoryPool {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                    &mut buffers[buffer_id],
+                    &buffers[buffer_id],
                 )?;
             }
             MemoryPool::OpenCL {
@@ -489,7 +534,7 @@ impl MemoryPool {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                    &mut buffers[buffer_id],
+                    &buffers[buffer_id],
                 )?;
             }
             MemoryPool::Vulkan {
@@ -499,7 +544,7 @@ impl MemoryPool {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                    &mut buffers[buffer_id],
+                    &buffers[buffer_id],
                 )?;
             }
             #[cfg(feature = "wgsl")]
@@ -510,7 +555,7 @@ impl MemoryPool {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
-                    &mut buffers[buffer_id],
+                    &buffers[buffer_id],
                 )?;
             }
         }
@@ -565,9 +610,12 @@ impl MemoryPool {
     pub(super) fn pool_to_pool(&mut self, sbid: Id, dst_mp: &mut MemoryPool, dbid: Id, bytes: usize) -> Result<(), ZyxError> {
         macro_rules! cross_backend {
             ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
-                let mut data: Vec<u8> = Vec::with_capacity(bytes);
+                use std::mem::MaybeUninit;
+                let mut data: Vec<MaybeUninit<u8>> = Vec::with_capacity(bytes);
                 unsafe { data.set_len(bytes) };
-                $sm.pool_to_host(&$sb[sbid], &mut data)?;
+                let dref: &mut [MaybeUninit<u8>] = data.as_mut();
+                $sm.pool_to_host(&$sb[sbid], unsafe { std::mem::transmute::<&mut [std::mem::MaybeUninit<u8>], &mut [u8]>(dref) })?;
+                let data: Vec<u8> = unsafe { std::mem::transmute(data) };
                 $dm.host_to_pool(&data, &$db[dbid])?;
             }};
         }
@@ -793,20 +841,20 @@ impl Device {
         let id = match self {
             Device::CUDA {
                 device, programs, ..
-            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
+            } => programs.push(device.compile(ir_kernel, debug_asm)?),
             Device::HIP {
                 device, programs, ..
-            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
+            } => programs.push(device.compile(ir_kernel, debug_asm)?),
             Device::OpenCL {
                 device, programs, ..
-            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
+            } => programs.push(device.compile(ir_kernel, debug_asm)?),
             Device::Vulkan {
                 device, programs, ..
-            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
+            } => programs.push(device.compile(ir_kernel, debug_asm)?),
             #[cfg(feature = "wgsl")]
             Device::WGSL {
                 device, programs, ..
-            } => programs.push(device.compile(&ir_kernel, debug_asm)?),
+            } => programs.push(device.compile(ir_kernel, debug_asm)?),
         };
         //println!("Compile program {id}");
         Ok(id)
@@ -838,7 +886,7 @@ impl Device {
                 let MemoryPool::CUDA { buffers, .. } = memory_pool else {
                     panic!()
                 };
-                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
             }
             Device::HIP {
@@ -860,7 +908,7 @@ impl Device {
                 let MemoryPool::HIP { buffers, .. } = memory_pool else {
                     panic!()
                 };
-                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
             }
             Device::OpenCL {
@@ -882,7 +930,7 @@ impl Device {
                 let MemoryPool::OpenCL { buffers, .. } = memory_pool else {
                     panic!()
                 };
-                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
             }
             Device::Vulkan {
@@ -904,7 +952,7 @@ impl Device {
                 let MemoryPool::Vulkan { buffers, .. } = memory_pool else {
                     panic!()
                 };
-                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
             }
             #[cfg(feature = "wgsl")]
@@ -927,7 +975,7 @@ impl Device {
                 let MemoryPool::WGSL { buffers, .. } = memory_pool else {
                     panic!()
                 };
-                queue.launch(&mut programs[program_id], buffers, &buffer_ids)?;
+                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
             }
         })

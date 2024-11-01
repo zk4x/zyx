@@ -183,8 +183,8 @@ impl IRDType {
             IRDType::CF32(v) => 8 * v.len(),
             #[cfg(feature = "complex")]
             IRDType::CF64(v) => 16 * v.len(),
-            IRDType::U8(v) => 1 * v.len(),
-            IRDType::I8(v) => 1 * v.len(),
+            IRDType::U8(v) => v.len(),
+            IRDType::I8(v) => v.len(),
             IRDType::I16(v) => 2 * v.len(),
             IRDType::I32(v) => 4 * v.len(),
             IRDType::I64(v) => 8 * v.len(),
@@ -340,7 +340,11 @@ impl IRCompiler {
         self.add(Reg::Var(t), z)
     }
 
-    fn vops_to_ir(kernel_ops: &[VOp], args: &mut Vec<u32>, addressables: &mut Vec<(Scope, IRDType, usize, bool)>) -> IRCompiler {
+    fn vops_to_ir(
+        kernel_ops: &[VOp],
+        args: &mut Vec<u32>,
+        addressables: &mut Vec<(Scope, IRDType, usize, bool)>,
+    ) -> IRCompiler {
         let mut c = IRCompiler {
             ops: Vec::new(),
             register_map: BTreeMap::new(),
@@ -350,8 +354,8 @@ impl IRCompiler {
 
         // Declare global arguments
         for op in kernel_ops {
-            match op {
-                &VOp::Load {
+            match *op {
+                VOp::Load {
                     x,
                     xscope,
                     ref xview,
@@ -366,7 +370,7 @@ impl IRCompiler {
                         c.pointers_map.insert((x, xscope), id);
                     }
                 }
-                &VOp::Store {
+                VOp::Store {
                     z,
                     zscope,
                     ref zview,
@@ -400,8 +404,8 @@ impl IRCompiler {
 
         // Declare local variables
         for op in kernel_ops {
-            match op {
-                &VOp::Load {
+            match *op {
+                VOp::Load {
                     x,
                     xscope,
                     ref xview,
@@ -419,7 +423,7 @@ impl IRCompiler {
                         c.pointers_map.insert((x, xscope), id);
                     }
                 }
-                &VOp::Store { zscope, .. } => {
+                VOp::Store { zscope, .. } => {
                     if zscope == Scope::Local {
                         todo!()
                     }
@@ -431,8 +435,8 @@ impl IRCompiler {
         // Declare accumulators and get max axis id
         let mut max_axis = 0;
         for op in kernel_ops {
-            match op {
-                &VOp::Accumulator {
+            match *op {
+                VOp::Accumulator {
                     z, ref view, dtype, ..
                 } => {
                     addressables.push((
@@ -444,7 +448,7 @@ impl IRCompiler {
                     let id = (addressables.len() - 1) as u16;
                     c.pointers_map.insert((z, Scope::Register), id);
                 }
-                &VOp::Loop { axis, .. } => max_axis = max_axis.max(axis as u16),
+                VOp::Loop { axis, .. } => max_axis = max_axis.max(axis as u16),
                 _ => {}
             }
         }
@@ -566,10 +570,11 @@ impl IRCompiler {
                         ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                     }
                 }
-                IROp::Load { offset, .. } => {
-                    if let &Reg::Var(x) = offset {
-                        ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    }
+                &IROp::Load {
+                    offset: Reg::Var(x),
+                    ..
+                } => {
+                    ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 &IROp::Unary { x, .. } => {
                     ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
@@ -740,16 +745,23 @@ impl IRCompiler {
     }
 
     fn fuse_multiply_add(&mut self) {
-        for i in 0..self.ops.len()-1 {
-            if let IROp::Binary { bop, z: z0, x: a, y: b, .. } = self.ops[i] {
+        for i in 0..self.ops.len() - 1 {
+            if let IROp::Binary {
+                bop,
+                z: z0,
+                x: a,
+                y: b,
+                ..
+            } = self.ops[i]
+            {
                 if bop == BOp::Mul {
-                    if let IROp::Binary { bop, z, x, y, .. } = self.ops[i+1] {
+                    if let IROp::Binary { bop, z, x, y, .. } = self.ops[i + 1] {
                         if bop == BOp::Add {
                             if Reg::Var(z0) == x {
-                                self.ops[i+1] = IROp::MAdd { z, a, b, c: y };
+                                self.ops[i + 1] = IROp::MAdd { z, a, b, c: y };
                             }
                             if Reg::Var(z0) == y {
-                                self.ops[i+1] = IROp::MAdd { z, a, b, c: x };
+                                self.ops[i + 1] = IROp::MAdd { z, a, b, c: x };
                             }
                         };
                     }

@@ -453,13 +453,9 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        let id = self.graph.push_wshape(
-            Node::Reduce {
-                x,
-                rop: ROp::Sum,
-            },
-            shape,
-        );
+        let id = self
+            .graph
+            .push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
         self.graph.push_axes(id, axes);
         id
     }
@@ -471,13 +467,9 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        let id = self.graph.push_wshape(
-            Node::Reduce {
-                x,
-                rop: ROp::Max,
-            },
-            shape,
-        );
+        let id = self
+            .graph
+            .push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
         self.graph.push_axes(id, axes);
         id
     }
@@ -688,22 +680,20 @@ impl Runtime {
                     to_delete.insert(*tensor);
                     continue;
                 }
-            } else {
-                if self.graph[*tensor]
-                    .parameters()
-                    .all(|tensor| to_delete.contains(&tensor))
-                {
-                    if !outside_nodes.contains(tensor) {
-                        to_delete.insert(*tensor);
-                    } else {
-                        graph.to_eval.insert(*tensor);
-                        new_leafs.insert(*tensor);
-                    }
+            } else if self.graph[*tensor]
+                .parameters()
+                .all(|tensor| to_delete.contains(&tensor))
+            {
+                if !outside_nodes.contains(tensor) {
+                    to_delete.insert(*tensor);
                 } else {
-                    for param in self.graph[*tensor].parameters() {
-                        if to_delete.contains(&param) {
-                            new_leafs.insert(param);
-                        }
+                    graph.to_eval.insert(*tensor);
+                    new_leafs.insert(*tensor);
+                }
+            } else {
+                for param in self.graph[*tensor].parameters() {
+                    if to_delete.contains(&param) {
+                        new_leafs.insert(param);
                     }
                 }
             }

@@ -40,14 +40,14 @@ unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
 
 impl<T, const N: usize> Mutex<T, N> {
     pub(super) const fn new(data: T) -> Self {
-        return Self {
+        Self {
             data: UnsafeCell::new(data),
             lock: AtomicBool::new(false),
-        };
+        }
     }
 
     #[inline(always)]
-    pub(super) fn lock<'a>(&'a self) -> MutexGuard<'a, T> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, T> {
         let mut i = 0;
         loop {
             if self
