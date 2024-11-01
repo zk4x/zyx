@@ -4,7 +4,11 @@ use super::{
     node::{BOp, Node},
     TensorId,
 };
-use crate::{index_map::IndexMap, shape::{Axis, Dimension}, DType};
+use crate::{
+    index_map::IndexMap,
+    shape::{Axis, Dimension},
+    DType,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 // TODO implement PartialOrd such that tensor id does not matter
@@ -307,7 +311,7 @@ impl Graph {
         }
 
         // replace realized nodes with leafs
-        return (
+        (
             Graph {
                 shapes,
                 to_eval: tensors,
@@ -330,7 +334,7 @@ impl Graph {
             },
             outside_nodes,
             order,
-        );
+        )
     }
 
     // Calculates execution order, recalculates rcs, flop, bytes read and written and optimizes graph:
@@ -440,12 +444,12 @@ impl Graph {
             bytes_written +=
                 self.shape(nid).iter().product::<usize>() * self.dtype(nid).byte_size();
         }
-        return (
+        (
             order,
             flop as u128,
             bytes_read as u128,
             bytes_written as u128,
-        );
+        )
     }
 
     // Swap movement and unary op
@@ -631,14 +635,10 @@ impl Graph {
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
                 Node::Reshape { x } => add_node(id, &f!("Reshape({x})"), "oval"),
-                Node::Permute { x } => {
-                    add_node(id, &f!("Permute({x})"), "oval")
-                }
+                Node::Permute { x } => add_node(id, &f!("Permute({x})"), "oval"),
                 Node::Expand { x } => add_node(id, &f!("Expand({x})"), "oval"),
                 Node::Pad { x } => add_node(id, &f!("Pad({x})"), "oval"),
-                Node::Reduce { x, rop } => {
-                    add_node(id, &f!("{rop:?}({x})"), "oval")
-                }
+                Node::Reduce { x, rop } => add_node(id, &f!("{rop:?}({x})"), "oval"),
             }
             for param in node.parameters() {
                 writeln!(edges, "  {} -> {id}", param).unwrap();

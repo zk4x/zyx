@@ -1,9 +1,9 @@
 use crate::dtype::DType;
-use crate::scalar::{Scalar, Float};
+use crate::scalar::{Float, Scalar};
+use float8::F8E4M3;
 use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use float8::F8E4M3;
 
 impl Scalar for f32 {
     fn from_bf16(t: bf16) -> Self {
@@ -145,7 +145,11 @@ impl Scalar for f32 {
     }
 
     fn not(self) -> Self {
-        if self != 0. { 0. } else { 1. }
+        if self != 0. {
+            0.
+        } else {
+            1.
+        }
     }
 
     fn nonzero(self) -> Self {
@@ -180,7 +184,7 @@ impl Float for f32 {
 
     fn floor(self) -> Self {
         let i = self as i32 as f32;
-        return i - (i > self) as i32 as f32;
+        i - (i > self) as i32 as f32
     }
 
     fn cos(self) -> Self {

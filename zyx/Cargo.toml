@@ -42,7 +42,7 @@ half = { version = "2.4.1" } # MIT or Apache 2.0
 # Progress bar for loading tensors and such
 indicatif = { version = "0.17.8" }
 # Memory mapped loading of tensors from disk
-memmap2 = { version = "*" }
+memmap2 = { version = "0.9.5" }
 
 # Optional dependencies# To speed things up a bit
 # for caching of searched kernels
@@ -75,7 +75,7 @@ crate-type = ["lib"] #, "cdylib"]
 [features]
 default = [
     #"disk_cache",
-    #"wgsl",
+    "wgsl",
     #"complex",
     #"gguf",
     #"py",
@@ -108,7 +108,7 @@ lto = false             # Sets link-time optimization.
 panic = 'unwind'        # The panic strategy.
 incremental = true      # Incremental compilation.
 codegen-units = 16      # Number of code generation units.
-#rpath = false            # Sets the rpath linking option.
+#rpath = false           # Sets the rpath linking option.
 
 # This is just a runtime, no need for o3 vectorization and crazy function inlining
 [profile.release]

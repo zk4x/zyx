@@ -1,8 +1,8 @@
 use crate::DType;
 
 use super::Scalar;
-use half::{bf16, f16};
 use float8::F8E4M3;
+use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
@@ -121,7 +121,7 @@ impl Scalar for bool {
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        self < rhs
+        !self & rhs
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -143,19 +143,19 @@ impl Scalar for bool {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
-        self > rhs
+        self & !rhs
     }
-    
+
     fn or(self, rhs: Self) -> Self {
         self || rhs
     }

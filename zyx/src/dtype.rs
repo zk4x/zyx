@@ -1,7 +1,7 @@
 //! DType and constant
 
-use std::fmt::Display;
 use half::{bf16, f16};
+use std::fmt::Display;
 
 use crate::{Scalar, ZyxError};
 
@@ -44,7 +44,7 @@ pub enum DType {
 
 impl Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        return f.write_str(match self {
+        f.write_str(match self {
             DType::BF16 => "BF16",
             DType::F8 => "F8",
             DType::F16 => "F16",
@@ -61,7 +61,7 @@ impl Display for DType {
             DType::I32 => "I32",
             DType::I64 => "I64",
             DType::Bool => "Bool",
-        });
+        })
     }
 }
 
@@ -70,13 +70,19 @@ impl DType {
     pub fn is_float(&self) -> bool {
         match self {
             DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => true,
-            DType::U8 | DType::U32 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => false,
+            DType::U8
+            | DType::U32
+            | DType::I8
+            | DType::I16
+            | DType::I32
+            | DType::I64
+            | DType::Bool => false,
         }
     }
 
     /// Get the size of this dtype in bytes
     pub fn byte_size(&self) -> usize {
-        return match self {
+        match self {
             DType::BF16 => 2,
             DType::F8 => 1,
             DType::F16 => 2,
@@ -93,16 +99,16 @@ impl DType {
             DType::I32 => 4,
             DType::I64 => 8,
             DType::Bool => 1,
-        };
+        }
     }
 
     pub(super) fn zero_constant(&self) -> Constant {
-        return match self {
-            DType::BF16 => Constant::BF16(unsafe { core::mem::transmute(bf16::ZERO) }),
+        match self {
+            DType::BF16 => Constant::BF16(bf16::ZERO.to_bits()),
             DType::F8 => todo!(), //Constant::F8(unsafe { core::mem::transmute(0f32) }),
-            DType::F16 => Constant::F16(unsafe { core::mem::transmute(f16::ZERO) }),
-            DType::F32 => Constant::F32(unsafe { core::mem::transmute(0f32) }),
-            DType::F64 => Constant::F64(unsafe { core::mem::transmute(0f64) }),
+            DType::F16 => Constant::F16(f16::ZERO.to_bits()),
+            DType::F32 => Constant::F32(0f32.to_bits()),
+            DType::F64 => Constant::F64(0f64.to_bits()),
             #[cfg(feature = "complex")]
             DType::CF32 => todo!(),
             #[cfg(feature = "complex")]
@@ -114,16 +120,16 @@ impl DType {
             DType::I32 => Constant::I32(0),
             DType::I64 => Constant::I64(0),
             DType::Bool => Constant::Bool(false),
-        };
+        }
     }
 
     pub(super) fn min_constant(&self) -> Constant {
-        return match self {
-            DType::BF16 => Constant::BF16(unsafe { core::mem::transmute(bf16::MIN) }),
+        match self {
+            DType::BF16 => Constant::BF16(bf16::MIN.to_bits()),
             DType::F8 => Constant::F8(255),
-            DType::F16 => Constant::F16(unsafe { core::mem::transmute(f16::MIN) }),
-            DType::F32 => Constant::F32(unsafe { core::mem::transmute(f32::MIN) }),
-            DType::F64 => Constant::F64(unsafe { core::mem::transmute(f64::MIN) }),
+            DType::F16 => Constant::F16(f16::MIN.to_bits()),
+            DType::F32 => Constant::F32(f32::MIN.to_bits()),
+            DType::F64 => Constant::F64(f64::MIN.to_bits()),
             #[cfg(feature = "complex")]
             DType::CF32 => todo!(),
             #[cfg(feature = "complex")]
@@ -135,7 +141,7 @@ impl DType {
             DType::I32 => Constant::I32(i32::MIN),
             DType::I64 => Constant::I64(i64::MIN),
             DType::Bool => Constant::Bool(false),
-        };
+        }
     }
 
     pub(super) fn safetensors(&self) -> &str {
@@ -253,23 +259,22 @@ impl Constant {
 
 impl Display for Constant {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        use core::mem::transmute as t;
         match self {
             Constant::BF16(value) => {
-                return f.write_fmt(format_args!("{}", unsafe { t::<_, bf16>(*value) }));
+                return f.write_fmt(format_args!("{}", bf16::from_bits(*value)));
             }
             Constant::F8(_) => {
                 //return f.write_fmt(format_args!("{}", todo!()));
                 todo!()
             }
             Constant::F16(value) => {
-                return f.write_fmt(format_args!("{}", unsafe { t::<_, f16>(*value) }));
+                return f.write_fmt(format_args!("{}", f16::from_bits(*value)));
             }
             Constant::F32(value) => {
-                return f.write_fmt(format_args!("{}", unsafe { t::<_, f32>(*value) }));
+                return f.write_fmt(format_args!("{}", f32::from_bits(*value)));
             }
             Constant::F64(value) => {
-                return f.write_fmt(format_args!("{}", unsafe { t::<_, f64>(*value) }));
+                return f.write_fmt(format_args!("{}", f64::from_bits(*value)));
             }
             #[cfg(feature = "complex")]
             Constant::CF32(re, im) => {

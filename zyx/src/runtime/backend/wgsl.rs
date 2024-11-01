@@ -60,10 +60,12 @@ pub(super) struct WGSLQueue {
     queue: Arc<wgpu::Queue>,
 }
 
+type WGSLQueuePool = Vec<(WGSLDevice, Vec<WGSLQueue>)>;
+
 pub(super) fn initialize_backend(
     config: &WGSLConfig,
     debug_dev: bool,
-) -> Result<(Vec<WGSLMemoryPool>, Vec<(WGSLDevice, Vec<WGSLQueue>)>), WGSLError> {
+) -> Result<(Vec<WGSLMemoryPool>, WGSLQueuePool), WGSLError> {
     if !config.use_wgsl {
         return Err(WGSLError {});
     }
@@ -254,9 +256,9 @@ impl WGSLDevice {
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let &IROp::Loop { id, len } = op {
                 if i % 2 == 0 {
-                    global_work_size[i as usize / 2] = len;
+                    global_work_size[i / 2] = len;
                 } else {
-                    local_work_size[i as usize / 2] = len;
+                    local_work_size[i / 2] = len;
                 }
                 loops[i] = id;
             } else {
@@ -344,9 +346,9 @@ impl WGSLDevice {
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Set { z, value } => {
+                /*IROp::Set { z, value } => {
                     source += &format!("{indent}r{z} = {};\n", value.wgsl());
-                }
+                }*/
                 IROp::Load { z, address, offset } => {
                     source += &format!("{indent}r{z} = p{address}[{}];\n", offset.wgsl());
                 }
@@ -387,6 +389,7 @@ impl WGSLDevice {
                             BOp::Sub => format!("{} - {}", x.wgsl(), y.wgsl()),
                             BOp::Mul => format!("{} * {}", x.wgsl(), y.wgsl()),
                             BOp::Div => format!("{} / {}", x.wgsl(), y.wgsl()),
+                            BOp::Mod => format!("{} % {}", x.wgsl(), y.wgsl()),
                             BOp::Pow => format!("pow({}, {})", x.wgsl(), y.wgsl()),
                             BOp::Cmplt => format!("{}({} < {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::Cmpgt => format!("{}({} > {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
@@ -427,7 +430,6 @@ impl WGSLDevice {
             }
         }
         source += "}\n";
-        let source = format!("{source}");
         //println!("{source}");
         if debug_asm {
             println!("{source}");
@@ -554,7 +556,7 @@ impl WGSLQueue {
 
 impl IRDType {
     fn wgsl(&self) -> &str {
-        return match self {
+        match self {
             IRDType::BF16(v) => todo!("WIP"),
             IRDType::F8(v) => "f8",
             IRDType::F16(v) => "f16",
@@ -571,7 +573,7 @@ impl IRDType {
             IRDType::I64(v) => "i64",
             IRDType::Bool => "bool",
             IRDType::U32(v) => "u32",
-        };
+        }
     }
 }
 
@@ -579,11 +581,11 @@ impl Constant {
     fn wgsl(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            Constant::F8(x) => format!("f8({})", unsafe { t::<_, float8::F8E4M3>(*x) }),
-            Constant::F16(x) => format!("f16({})", unsafe { t::<_, half::f16>(*x) }),
-            Constant::BF16(x) => format!("bf16({})", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F32(x) => format!("f32({:.16})", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("f64({:.16})", unsafe { t::<_, f64>(*x) }),
+            &Constant::F8(x) => format!("f8({})", float8::F8E4M3::from_bits(x)),
+            &Constant::F16(x) => format!("f16({})", half::f16::from_bits(x)),
+            &Constant::BF16(x) => format!("bf16({})", half::bf16::from_bits(x)),
+            &Constant::F32(x) => format!("f32({:.16})", f32::from_bits(x)),
+            &Constant::F64(x) => format!("f64({:.16})", f64::from_bits(x)),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]
@@ -603,7 +605,7 @@ impl Reg {
     fn wgsl(&self) -> String {
         match self {
             Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => format!("{}", value.wgsl()),
+            Reg::Const(value) => value.wgsl(),
         }
     }
 }

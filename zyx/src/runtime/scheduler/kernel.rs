@@ -111,10 +111,8 @@ impl Kernel {
                     }
                 }
                 VOp::Load { z, zscope, .. } => {
-                    if end_loops == 0 {
-                        if *zscope == Scope::Register {
-                            res.insert(*z);
-                        }
+                    if end_loops == 0 && *zscope == Scope::Register {
+                        res.insert(*z);
                     }
                 }
                 VOp::Store { .. } => {}
@@ -228,9 +226,7 @@ impl Kernel {
                         skip_loops -= 1;
                     } else {
                         *dimension = shape[last_axis];
-                        if last_axis > 0 {
-                            last_axis -= 1;
-                        }
+                        last_axis = last_axis.saturating_sub(1);
                     }
                 }
                 VOp::Load { xview: view, .. }

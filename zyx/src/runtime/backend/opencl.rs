@@ -188,10 +188,12 @@ impl OpenCLMemoryPool {
     }
 }
 
+type OpenCLQueuePool = Vec<(OpenCLDevice, Vec<OpenCLQueue>)>;
+
 pub(super) fn initialize_devices(
     config: &OpenCLConfig,
     debug_dev: bool,
-) -> Result<(Vec<OpenCLMemoryPool>, Vec<(OpenCLDevice, Vec<OpenCLQueue>)>), OpenCLError> {
+) -> Result<(Vec<OpenCLMemoryPool>, OpenCLQueuePool), OpenCLError> {
     let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
     let opencl = opencl_paths.iter().find_map(|path| {
         if let Ok(lib) = unsafe { Library::new(path) } {
@@ -435,7 +437,7 @@ pub(super) fn initialize_devices(
         });
         memory_pool_id += 1;
     }
-    return Ok((memory_pools, devices));
+    Ok((memory_pools, devices))
 }
 
 impl OpenCLMemoryPool {
@@ -502,7 +504,7 @@ impl OpenCLMemoryPool {
         }
         .check("Failed to write buffer.")?;
         // Immediattely synchronize because we do not know the lifetime of data
-        unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) }
+        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }
             .check("Failed to finish buffer write event.")
     }
 
@@ -531,7 +533,7 @@ impl OpenCLMemoryPool {
             )
         }
         .check("Failed to read buffer.")?;
-        unsafe { (self.clWaitForEvents)(1, (&[event]).as_ptr().cast()) }
+        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }
             .check("Failed to finish buffer write event.")?;
         Ok(())
     }
@@ -542,11 +544,18 @@ impl OpenCLMemoryPool {
         dst: &OpenCLBuffer,
     ) -> Result<(), OpenCLError> {
         //println!("Moving from {src:?} to {dst:?}");
-        // TODO going through host is slow
+        // TODO going through host is slow, but likely only way
+        // LOL, is maybe unint really better than without it???
+        // the only reason to use it is to stop it from running destructor, but u8 does not run it anyway ...
+        use std::mem::MaybeUninit;
         assert_eq!(src.bytes, dst.bytes);
-        let mut data: Vec<u8> = Vec::with_capacity(dst.bytes);
+        let mut data: Vec<MaybeUninit<u8>> = Vec::with_capacity(dst.bytes);
         unsafe { data.set_len(dst.bytes) };
-        self.pool_to_host(src, data.as_mut())?;
+        let dref: &mut [MaybeUninit<u8>] = data.as_mut();
+        self.pool_to_host(src, unsafe {
+            std::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(dref)
+        })?;
+        let data: Vec<u8> = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(data) };
         //println!("Copied data: {data:?}");
         self.host_to_pool(&data, dst)?;
         Ok(())
@@ -574,7 +583,7 @@ impl OpenCLDevice {
         for i in 0..max_work_item_dims {
             let max_dim_size: usize = unsafe {
                 core::mem::transmute([
-                    mwis[i * 8 + 0],
+                    mwis[i * 8],
                     mwis[i * 8 + 1],
                     mwis[i * 8 + 2],
                     mwis[i * 8 + 3],
@@ -628,9 +637,9 @@ impl OpenCLDevice {
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
                 if i % 2 == 0 {
-                    global_work_size[i as usize / 2] = *len;
+                    global_work_size[i / 2] = *len;
                 } else {
-                    local_work_size[i as usize / 2] = *len;
+                    local_work_size[i / 2] = *len;
                 }
                 loops[i] = *id;
             } else {
@@ -799,12 +808,12 @@ impl OpenCLDevice {
         for (i, lwd) in local_work_size.iter().enumerate() {
             global_work_size[i] *= lwd;
         }
-        let mut pragma = format!("");
+        let mut pragma = String::new();
         if source.contains("half") {
-            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
         }
         if source.contains("double") {
-            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}__kernel void {name}{source}");
         //println!("{source}");
@@ -880,6 +889,7 @@ impl OpenCLQueue {
             program.local_work_size
         );*/
         let mut i = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for arg in args {
             let arg = &mut buffers[*arg];
             //println!("Kernel arg: {arg:?} at index {i}");
@@ -933,7 +943,7 @@ impl OpenCLQueue {
 
 impl IRDType {
     fn ocl(&self) -> String {
-        return match self {
+        match self {
             IRDType::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
             IRDType::F8(v) => format!("f8{v}"),
             IRDType::F16(v) => format!("half{v}"),
@@ -948,21 +958,21 @@ impl IRDType {
             IRDType::I16(v) => format!("short{v}"),
             IRDType::I32(v) => format!("int{v}"),
             IRDType::I64(v) => format!("long{v}"),
-            IRDType::Bool => format!("bool"),
+            IRDType::Bool => "bool".into(),
             IRDType::U32(v) => format!("unsigned int{v}"),
-        };
+        }
     }
 }
 
 impl OpenCLStatus {
     fn check(self, info: &str) -> Result<(), OpenCLError> {
         if self == OpenCLStatus::CL_SUCCESS {
-            return Ok(());
+            Ok(())
         } else {
-            return Err(OpenCLError {
+            Err(OpenCLError {
                 info: info.into(),
                 status: self,
-            });
+            })
         }
     }
 }
@@ -1003,7 +1013,7 @@ impl OpenCLDevice {
                 Ok(size)
             }
         }?;
-        return if 0 < size {
+        if 0 < size {
             let count = size / core::mem::size_of::<u8>();
             let mut data: Vec<u8> = Vec::with_capacity(count);
             let status = unsafe {
@@ -1024,48 +1034,44 @@ impl OpenCLDevice {
             }
         } else {
             Ok(Vec::default())
-        };
+        }
     }
 
     fn get_device_data(&mut self, param_name: cl_uint) -> Result<Vec<u8>, OpenCLError> {
         let size = {
             let object = self.ptr;
-            let param_name = param_name;
             let mut size: usize = 0;
             let status = unsafe {
                 (self.clGetDeviceInfo)(object, param_name, 0, ptr::null_mut(), &mut size)
             };
             if OpenCLStatus::CL_SUCCESS != status {
                 return Err(OpenCLError {
-                    status: status.into(),
+                    status,
                     info: format!("Failed to get device info {param_name}"),
                 });
             } else {
                 Ok(size)
             }
         }?;
-        return {
-            let object = self.ptr;
-            let param_name = param_name;
-            if 0 < size {
-                let count = size / core::mem::size_of::<u8>();
-                let mut data: Vec<u8> = Vec::with_capacity(count);
-                unsafe {
-                    data.set_len(count);
-                    (self.clGetDeviceInfo)(
-                        object,
-                        param_name,
-                        size,
-                        data.as_mut_ptr() as *mut c_void,
-                        ptr::null_mut(),
-                    )
-                }
-                .check(&format!("Failed to get {param_name}"))?;
-                Ok(data)
-            } else {
-                Ok(Vec::default())
+        let object = self.ptr;
+        if 0 < size {
+            let count = size / core::mem::size_of::<u8>();
+            let mut data: Vec<u8> = Vec::with_capacity(count);
+            unsafe {
+                data.set_len(count);
+                (self.clGetDeviceInfo)(
+                    object,
+                    param_name,
+                    size,
+                    data.as_mut_ptr() as *mut c_void,
+                    ptr::null_mut(),
+                )
             }
-        };
+            .check(&format!("Failed to get {param_name}"))?;
+            Ok(data)
+        } else {
+            Ok(Vec::default())
+        }
     }
 }
 
@@ -1095,6 +1101,7 @@ pub struct OpenCLError {
     status: OpenCLStatus,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Copy, Clone, PartialEq, Debug, Eq)]
 #[repr(C)]
 enum OpenCLStatus {
@@ -1196,13 +1203,12 @@ fn get_compute(device_name: &str, debug_dev: bool) -> u128 {
 
 impl Constant {
     fn ocl(&self) -> String {
-        use core::mem::transmute as t;
         match self {
-            Constant::BF16(x) => format!("{:.16}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F8(_) => todo!(),
-            Constant::F16(x) => format!("{:.16}f", unsafe { t::<_, half::f16>(*x) }),
-            Constant::F32(x) => format!("{:.16}f", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("{:.16}", unsafe { t::<_, f64>(*x) }),
+            &Constant::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
+            &Constant::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
+            &Constant::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
+            &Constant::F32(x) => format!("{:.16}f", f32::from_bits(x)),
+            &Constant::F64(x) => format!("{:.16}", f64::from_bits(x)),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]
@@ -1222,7 +1228,7 @@ impl Reg {
     fn ocl(&self) -> String {
         match self {
             Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => format!("{}", value.ocl()),
+            Reg::Const(value) => value.ocl(),
         }
     }
 }

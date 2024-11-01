@@ -1,7 +1,7 @@
 //! Few traits that describe shapes, axes, padding, etc.
 
-use core::fmt::Debug;
 use crate::ZyxError;
+use core::fmt::Debug;
 
 pub(crate) type Dimension = usize;
 pub(crate) type Axis = usize;
@@ -16,91 +16,100 @@ pub trait IntoShape: Clone + Debug {
 
 impl IntoShape for Dimension {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return [self].into_iter();
+        [self].into_iter()
     }
 
     fn rank(&self) -> usize {
-        return 1;
+        1
     }
 }
 
 impl IntoShape for (Dimension, Dimension) {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return [self.0, self.1].into_iter();
+        [self.0, self.1].into_iter()
     }
 
     fn rank(&self) -> usize {
-        return 2;
+        2
     }
 }
 
 impl IntoShape for (Dimension, Dimension, Dimension) {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return [self.0, self.1, self.2].into_iter();
+        [self.0, self.1, self.2].into_iter()
     }
 
     fn rank(&self) -> usize {
-        return 3;
+        3
     }
 }
 
 impl<const N: usize> IntoShape for [Dimension; N] {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return self.into_iter();
+        self.into_iter()
     }
 
     fn rank(&self) -> usize {
-        return N;
+        N
     }
 }
 
 impl IntoShape for &[Dimension] {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return self.into_iter().copied();
+        self.iter().copied()
     }
 
     fn rank(&self) -> usize {
-        return self.len();
+        self.len()
     }
 }
 
 impl IntoShape for Vec<Dimension> {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return self.into_iter();
+        self.into_iter()
     }
 
     fn rank(&self) -> usize {
-        return self.len();
+        self.len()
     }
 }
 
 impl IntoShape for &Vec<Dimension> {
     fn into_shape(self) -> impl Iterator<Item = Dimension> {
-        return self.into_iter().copied();
+        self.iter().copied()
     }
 
     fn rank(&self) -> usize {
-        return self.len();
+        self.len()
     }
 }
 
 pub(crate) fn into_axis(axis: isize, rank: usize) -> Result<usize, ZyxError> {
     if let Ok(rank2) = TryInto::<isize>::try_into(rank) {
         if let Ok(a) = TryInto::<usize>::try_into(axis + rank2) {
-            if a < 2*rank {
+            if a < 2 * rank {
                 Ok(a % rank)
             } else {
-                return Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}")));
+                Err(ZyxError::ShapeError(format!(
+                    "Axis {axis} is out of range of rank {rank}"
+                )))
             }
         } else {
-            return Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}")));
+            Err(ZyxError::ShapeError(format!(
+                "Axis {axis} is out of range of rank {rank}"
+            )))
         }
     } else {
-        return Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}")));
+        Err(ZyxError::ShapeError(format!(
+            "Axis {axis} is out of range of rank {rank}"
+        )))
     }
 }
 
-pub(crate) fn into_axes(axes: impl IntoIterator<Item = isize>, rank: usize) -> Result<Vec<usize>, ZyxError> {
+pub(crate) fn into_axes(
+    axes: impl IntoIterator<Item = isize>,
+    rank: usize,
+) -> Result<Vec<usize>, ZyxError> {
     let mut res = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes.into_iter() {
@@ -110,7 +119,7 @@ pub(crate) fn into_axes(axes: impl IntoIterator<Item = isize>, rank: usize) -> R
         }
     }
     if res.is_empty() {
-        return Ok((0..rank).collect())
+        return Ok((0..rank).collect());
     }
     Ok(res)
 }

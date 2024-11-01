@@ -1,7 +1,7 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use half::{bf16, f16};
 use float8::F8E4M3;
+use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
@@ -12,7 +12,6 @@ impl Scalar for i8 {
     }
 
     fn from_f8(t: F8E4M3) -> Self {
-        let t: F8E4M3 = t.into();
         t.to_f32() as Self
     }
 
@@ -147,19 +146,19 @@ impl Scalar for i8 {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
         (self > rhs) as i8
     }
-    
+
     fn or(self, rhs: Self) -> Self {
         (self != 0 || rhs != 0) as i8
     }

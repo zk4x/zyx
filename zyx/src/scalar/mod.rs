@@ -105,7 +105,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// Cast into different dtype
     fn cast<T: Scalar>(self) -> T {
         use core::mem::transmute_copy as t;
-        return unsafe {
+        unsafe {
             match Self::dtype() {
                 DType::BF16 => T::from_bf16(t(&self)),
                 DType::F8 => T::from_f8(t(&self)),
@@ -124,7 +124,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
                 DType::I64 => T::from_i64(t(&self)),
                 DType::Bool => T::from_bool(t(&self)),
             }
-        };
+        }
     }
     /// Very small value of scalar, very close to zero, zero in case of integers
     fn epsilon() -> Self {

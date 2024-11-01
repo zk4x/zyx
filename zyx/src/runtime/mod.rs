@@ -150,15 +150,14 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn shape(&self, x: TensorId) -> &[usize] {
-        return self.graph.shape(x);
+        self.graph.shape(x)
     }
 
     #[must_use]
     pub(super) fn dtype(&self, x: TensorId) -> DType {
-        return self.graph.dtype(x);
+        self.graph.dtype(x)
     }
 
-    #[must_use]
     pub(super) fn variable<T: Scalar>(
         &mut self,
         shape: Vec<Dimension>,
@@ -197,7 +196,7 @@ impl Runtime {
         }
         // Search for first memory pool where we can put this tensor
         let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
-        self.memory_pools[memory_pool_id].host_to_pool(&data, buffer_id)?;
+        self.memory_pools[memory_pool_id].host_to_pool(data, buffer_id)?;
         self.tensor_buffer_map.insert(
             (id, View::contiguous(self.shape(id))),
             BufferId {
@@ -216,7 +215,6 @@ impl Runtime {
     }
 
     // Initialization
-    #[must_use]
     pub(super) fn full(
         &mut self,
         shape: Vec<usize>,
@@ -225,7 +223,7 @@ impl Runtime {
         let x = self.variable(vec![1], &[value])?;
         let expanded = self.expand(x, shape);
         self.release(x)?;
-        return Ok(expanded);
+        Ok(expanded)
     }
 
     #[must_use]
@@ -250,7 +248,7 @@ impl Runtime {
         };
         let expanded = self.expand(x, shape);
         self.release(x).unwrap();
-        return expanded;
+        expanded
     }
 
     #[must_use]
@@ -275,7 +273,7 @@ impl Runtime {
         };
         let expanded = self.expand(x, shape);
         self.release(x).unwrap();
-        return expanded;
+        expanded
     }
 
     // Unary ops
@@ -285,17 +283,16 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        return self.graph.push_wdtype(
+        self.graph.push_wdtype(
             Node::Unary {
                 x,
                 uop: UOp::Cast(dtype),
             },
             dtype,
-        );
+        )
     }
 
     /// Bitcast self to other type, currently immediatelly realizes the tensor
-    #[must_use]
     pub(super) unsafe fn bitcast(
         &mut self,
         x: TensorId,
@@ -316,7 +313,7 @@ impl Runtime {
             if *d % cd != 0 {
                 return Err(ZyxError::DTypeError("Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into()));
             }
-            *d = *d / cd;
+            *d /= cd;
         }
         let id = self
             .graph
@@ -390,7 +387,7 @@ impl Runtime {
             shape.iter().product::<usize>(),
             sh.iter().product::<usize>()
         );
-        if &shape == sh {
+        if shape == sh {
             self.retain(x);
             return x;
         }
@@ -400,7 +397,7 @@ impl Runtime {
     #[must_use]
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         let sh = self.shape(x);
-        if &shape == sh {
+        if shape == sh {
             self.retain(x);
             return x;
         }
@@ -453,13 +450,9 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        let id = self.graph.push_wshape(
-            Node::Reduce {
-                x,
-                rop: ROp::Sum,
-            },
-            shape,
-        );
+        let id = self
+            .graph
+            .push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
         self.graph.push_axes(id, axes);
         id
     }
@@ -471,13 +464,9 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        let id = self.graph.push_wshape(
-            Node::Reduce {
-                x,
-                rop: ROp::Max,
-            },
-            shape,
-        );
+        let id = self
+            .graph
+            .push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
         self.graph.push_axes(id, axes);
         id
     }
@@ -659,7 +648,7 @@ impl Runtime {
         // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
         // fourth pass for to_delete and new_leafs
         // Could possibly be optimized a bit
-        if tensors.len() == 0 {
+        if tensors.is_empty() {
             return Ok(());
         }
         if tensors
@@ -688,22 +677,20 @@ impl Runtime {
                     to_delete.insert(*tensor);
                     continue;
                 }
-            } else {
-                if self.graph[*tensor]
-                    .parameters()
-                    .all(|tensor| to_delete.contains(&tensor))
-                {
-                    if !outside_nodes.contains(tensor) {
-                        to_delete.insert(*tensor);
-                    } else {
-                        graph.to_eval.insert(*tensor);
-                        new_leafs.insert(*tensor);
-                    }
+            } else if self.graph[*tensor]
+                .parameters()
+                .all(|tensor| to_delete.contains(&tensor))
+            {
+                if !outside_nodes.contains(tensor) {
+                    to_delete.insert(*tensor);
                 } else {
-                    for param in self.graph[*tensor].parameters() {
-                        if to_delete.contains(&param) {
-                            new_leafs.insert(param);
-                        }
+                    graph.to_eval.insert(*tensor);
+                    new_leafs.insert(*tensor);
+                }
+            } else {
+                for param in self.graph[*tensor].parameters() {
+                    if to_delete.contains(&param) {
+                        new_leafs.insert(param);
                     }
                 }
             }
@@ -728,7 +715,7 @@ impl Runtime {
         //println!("To delete: {to_delete:?}");
         // Delete the node, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
-        return Ok(());
+        Ok(())
     }
 
     fn deallocate_tensors(&mut self, to_remove: BTreeSet<TensorId>) -> Result<(), ZyxError> {
@@ -750,7 +737,7 @@ impl Runtime {
                 self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;
             }
         }
-        return Ok(());
+        Ok(())
     }
 
     pub(super) fn backward(
@@ -1067,7 +1054,7 @@ impl Runtime {
                 self.release(v).unwrap();
             }
         }
-        return res;
+        res
     }
 }
 
@@ -1111,7 +1098,7 @@ pub enum ZyxError {
 impl std::fmt::Display for ZyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ZyxError::ShapeError(e) => f.write_str(&e),
+            ZyxError::ShapeError(e) => f.write_str(e),
             ZyxError::DTypeError(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
             ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
             ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),

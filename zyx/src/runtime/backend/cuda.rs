@@ -102,16 +102,18 @@ pub(super) struct CUDAQueue {
     cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
-// This is currently just wrong ...
+// This is currently just wrong, CUDA uses thread locals that can't be send ...
 unsafe impl Send for CUDAMemoryPool {}
 unsafe impl Send for CUDABuffer {}
 unsafe impl Send for CUDAProgram {}
 unsafe impl Send for CUDAQueue {}
 
+type CUDAQueuePool = Vec<(CUDADevice, Vec<CUDAQueue>)>;
+
 pub(super) fn initialize_devices(
     config: &CUDAConfig,
     debug_dev: bool,
-) -> Result<(Vec<CUDAMemoryPool>, Vec<(CUDADevice, Vec<CUDAQueue>)>), CUDAError> {
+) -> Result<(Vec<CUDAMemoryPool>, CUDAQueuePool), CUDAError> {
     let _ = config;
 
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
@@ -192,7 +194,7 @@ pub(super) fn initialize_devices(
             }
         })
         .collect();
-    if debug_dev && device_ids.len() != 0 {
+    if debug_dev && !device_ids.is_empty() {
         println!(
             "Using CUDA driver, driver version: {}.{} on devices:",
             driver_version / 1000,
@@ -360,11 +362,11 @@ impl CUDAMemoryPool {
         let mut ptr = self.device as u64;
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
-        return Ok(CUDABuffer {
+        Ok(CUDABuffer {
             ptr,
             bytes,
             context: self.context,
-        });
+        })
     }
 
     pub(super) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
@@ -451,9 +453,9 @@ impl CUDADevice {
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
                 if i % 2 == 0 {
-                    global_work_size[i as usize / 2] = *len;
+                    global_work_size[i / 2] = *len;
                 } else {
-                    local_work_size[i as usize / 2] = *len;
+                    local_work_size[i / 2] = *len;
                 }
                 loop_ids[i] = *id;
             } else {
@@ -616,9 +618,9 @@ impl CUDADevice {
             local_work_size[1],
             local_work_size[2],
         );
-        let mut pragma = format!("");
+        let mut pragma = String::new();
         if source.contains("__half") {
-            pragma += &"#include <cuda_fp16.h>\n";
+            pragma += "#include <cuda_fp16.h>\n";
         }
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
         name += "\0";
@@ -965,12 +967,12 @@ impl CUDAQueue {
 impl CUDAStatus {
     fn check(self, info: &str) -> Result<(), CUDAError> {
         if self != CUDAStatus::CUDA_SUCCESS {
-            return Err(CUDAError {
+            Err(CUDAError {
                 info: info.into(),
                 status: self,
-            });
+            })
         } else {
-            return Ok(());
+            Ok(())
         }
     }
 }
@@ -1164,7 +1166,7 @@ enum CUdevice_attribute {
 
 impl IRDType {
     pub(super) fn ptx(&self) -> &str {
-        return match self {
+        match self {
             IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
             IRDType::F8(v) => "f8",
             IRDType::F16(v) => "f16",
@@ -1181,7 +1183,7 @@ impl IRDType {
             IRDType::I64(v) => "s64",
             IRDType::Bool => "b8",
             IRDType::U32(v) => "u32",
-        };
+        }
     }
 }
 
@@ -1189,25 +1191,26 @@ impl Constant {
     fn ptx(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            Constant::F16(x) => format!("{:.12}", unsafe { t::<_, half::f16>(*x) }),
-            Constant::BF16(x) => format!("{:.12}", unsafe { t::<_, half::bf16>(*x) }),
+            &Constant::F16(x) => format!("{:.12}", half::f16::from_bits(x)),
+            &Constant::BF16(x) => format!("{:.12}", half::bf16::from_bits(x)),
             Constant::F8(x) => {
                 /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
                 format!("0f{}", hex)*/
-                format!("{:.12}", todo!())
+                use float8::F8E4M3 as f8;
+                format!("{:.12}", f8::from_bits(*x))
             }
-            Constant::F32(x) => {
+            &Constant::F32(x) => {
                 /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
                 format!("0f{}", hex)*/
-                format!("{:.12}", unsafe { t::<_, f32>(*x) })
+                format!("{:.12}", f32::from_bits(x))
             }
-            Constant::F64(x) => {
+            &Constant::F64(x) => {
                 /*let bytes = unsafe { t::<_, f64>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
                 format!("0d{}", hex)*/
-                format!("{:.12}", unsafe { t::<_, f64>(*x) })
+                format!("{:.12}", f64::from_bits(x))
             }
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
@@ -1228,14 +1231,14 @@ impl Reg {
     fn ptx(&self) -> String {
         match self {
             Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => format!("{}", value.ptx()),
+            Reg::Const(value) => value.ptx(),
         }
     }
 }
 
 impl IRDType {
     pub(super) fn cu(&self) -> &str {
-        return match self {
+        match self {
             IRDType::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
             IRDType::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
             IRDType::F16(v) => "__half",
@@ -1252,7 +1255,7 @@ impl IRDType {
             IRDType::I64(v) => "long",
             IRDType::Bool => "bool",
             IRDType::U32(v) => "unsigned int",
-        };
+        }
     }
 }
 
@@ -1260,7 +1263,7 @@ impl Reg {
     fn cu(&self) -> String {
         match self {
             Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => format!("{}", value.cu()),
+            Reg::Const(value) => value.cu(),
         }
     }
 }
@@ -1269,20 +1272,11 @@ impl Constant {
     fn cu(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F8(x) => {
-                let x: F8E4M3 = unsafe { t::<_, F8E4M3>(*x) };
-                format!("{x:.16}f")
-            }
-            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
-            Constant::F32(x) => {
-                let x: f32 = unsafe { t::<_, f32>(*x) };
-                format!("{x:.16}f")
-            }
-            Constant::F64(x) => {
-                let x: f64 = unsafe { t::<_, f64>(*x) };
-                format!("{x:.16}")
-            }
+            &Constant::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
+            &Constant::F8(x) => format!("{:.16}f", F8E4M3::from_bits(x)),
+            &Constant::F16(x) => format!("{}f", half::f16::from_bits(x)),
+            &Constant::F32(x) => format!("{:.16}f", f32::from_bits(x)),
+            &Constant::F64(x) => format!("{:.16}", f64::from_bits(x)),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
             #[cfg(feature = "complex")]

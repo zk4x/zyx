@@ -10,10 +10,7 @@ use crate::{
     tensor::TensorId,
 };
 pub(super) use optimizer::KernelOptimizer;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    u128,
-};
+use std::collections::{BTreeMap, BTreeSet};
 use vop::MOp;
 
 // Export Kernel and VOp for IR
@@ -102,7 +99,7 @@ impl Runtime {
             for i in (0..sched_graph.len()).rev() {
                 if let SchedulerOp::Launch(vprogram) = &sched_graph[i] {
                     for (arg, _, read_only) in &vprogram.args {
-                        if !read_only && kernel.inputs().contains(&arg) {
+                        if !read_only && kernel.inputs().contains(arg) {
                             device_program_map
                                 .get_mut(&vprogram.device_id)
                                 .unwrap()
@@ -296,12 +293,12 @@ impl Runtime {
             }
         }
 
-        return Ok(CompiledGraph {
+        Ok(CompiledGraph {
             sched_graph,
             flop,
             bytes_read,
             bytes_written,
-        });
+        })
     }
 
     pub(super) fn launch_graph(&mut self, graph: &Graph) -> Result<(), ZyxError> {
@@ -540,6 +537,7 @@ impl Runtime {
     }
 
     // Compiles kernel using given optimizations
+    #[allow(clippy::type_complexity)]
     pub(super) fn compile_cached(
         &mut self,
         kernel: &Kernel,
@@ -564,7 +562,8 @@ impl Runtime {
             }
             let debug_asm = self.debug_asm();
             program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
-            self.kernel_cache.insert(kernel_cache_key, (device_id, program_id.unwrap()));
+            self.kernel_cache
+                .insert(kernel_cache_key, (device_id, program_id.unwrap()));
         }
         Ok((
             program_id.unwrap(),
@@ -638,9 +637,9 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //kernel.debug();
                 assert_eq!(shape.len(), kernel.shape().len());
                 let mut expand_axes = BTreeSet::new();
-                for a in 0..kernel.shape().len() {
-                    if kernel.shape()[a] != shape[a] {
-                        assert_eq!(kernel.shape()[a], 1);
+                for (a, d) in kernel.shape().into_iter().enumerate() {
+                    if d != shape[a] {
+                        assert_eq!(d, 1);
                         expand_axes.insert(a);
                     }
                 }
@@ -690,7 +689,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 // It also changes the dimension of loops
                 // and shape of kernel
                 let kernel = get_kernel(x, &mut kernels, graph);
-                kernel.permute(&axes);
+                kernel.permute(axes);
                 kernel.ops.push(VOp::Move {
                     z: nid,
                     x,
@@ -784,9 +783,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                                     }
                                     dimensions = vec![d];
                                     dim = d;
-                                    if i > 0 {
-                                        i -= 1;
-                                    }
+                                    i = i.saturating_sub(1);
                                 } else {
                                     splits = None;
                                     break;
@@ -796,10 +793,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                                 dim *= d;
                             }
                         }
-                        if dim == prev_shape[0] {
-                            if dimensions.len() > 1 {
-                                splits.as_mut().unwrap().insert(i, dimensions);
-                            }
+                        if dim == prev_shape[0] && dimensions.len() > 1 {
+                            splits.as_mut().unwrap().insert(i, dimensions);
                         }
                         if splits.as_ref().is_some_and(|x| x.is_empty()) {
                             splits = None;
@@ -836,9 +831,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                                             );
                                             split_ids.push(id);
                                         }
-                                        if loop_id > 0 {
-                                            loop_id -= 1;
-                                        }
+                                        loop_id = loop_id.saturating_sub(1);
                                     }
                                 }
                                 _ => {}
@@ -1228,12 +1221,12 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
             0..1000 => (x / 100, ""),
-            1000..1000000 => (x / 10, "k"),
-            1000_000..1000000000 => (x / 1000_0, "M"),
-            1000_000_000..1000_000_000_000 => (x / 1000_000_0, "G"),
-            1000_000_000_000..1000_000_000_000_000 => (x / 1000_000_000_0, "T"),
-            1000_000_000_000_000..1000_000_000_000_000_000 => (x / 1000_000_000_000_0, "P"),
-            1000_000_000_000_000_000.. => (x / 1000_000_000_000_000_0, "E"),
+            1_000..1_000_000 => (x / 10, "k"),
+            1_000_000..1_000_000_000 => (x / 10_000, "M"),
+            1_000_000_000..1_000_000_000_000 => (x / 10_000_000, "G"),
+            1_000_000_000_000..1_000_000_000_000_000 => (x / 10_000_000_000, "T"),
+            1_000_000_000_000_000..1_000_000_000_000_000_000 => (x / 10_000_000_000_000, "P"),
+            1_000_000_000_000_000_000.. => (x / 10_000_000_000_000_000, "E"),
         }
     }
 
@@ -1241,16 +1234,16 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (br, br_u) = value_unit(bytes_read);
     let (bw, bw_u) = value_unit(bytes_written);
     let (t_d, t_u) = match nanos {
-        0..1000 => (1 / 10, "ns"),
-        1000..1000_000 => (100, "μs"),
-        1000_000..1000_000_000 => (1000_00, "ms"),
-        1000_000_000..1000_000_000_000 => (1000_000_00, "s"),
-        1000_000_000_000.. => (60_000_000_00, "min"),
+        0..1_000 => (1 / 10, "ns"),
+        1_000..1_000_000 => (100, "μs"),
+        1_000_000..1_000_000_000 => (100_000, "ms"),
+        1_000_000_000..1_000_000_000_000 => (100_000_000, "s"),
+        1_000_000_000_000.. => (6_000_000_000, "min"),
     };
 
-    let (fs, f_us) = value_unit(flop * 1000_000_000 / nanos);
-    let (brs, br_us) = value_unit(bytes_read * 1000_000_000 / nanos);
-    let (bws, bw_us) = value_unit(bytes_written * 1000_000_000 / nanos);
+    let (fs, f_us) = value_unit(flop * 1_000_000_000 / nanos);
+    let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
+    let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
     println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write",
         nanos/(t_d*10),

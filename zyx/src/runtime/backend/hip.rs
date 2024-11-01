@@ -100,10 +100,12 @@ unsafe impl Send for HIPBuffer {}
 unsafe impl Send for HIPProgram {}
 unsafe impl Send for HIPQueue {}
 
+type HIPQueuePool = Vec<(HIPDevice, Vec<HIPQueue>)>;
+
 pub(super) fn initialize_device(
     config: &HIPConfig,
     debug_dev: bool,
-) -> Result<(Vec<HIPMemoryPool>, Vec<(HIPDevice, Vec<HIPQueue>)>), HIPError> {
+) -> Result<(Vec<HIPMemoryPool>, HIPQueuePool), HIPError> {
     let _ = config;
 
     let hip_paths = [
@@ -188,7 +190,7 @@ pub(super) fn initialize_device(
         .collect();
     if device_ids.is_empty() {
         return Err(HIPError {
-            info: format!("No devices available or selected."),
+            info: "No devices available or selected.".into(),
             status: HIPStatus::hipSuccess,
             hiprtc: hiprtcResult::HIPRTC_SUCCESS,
         });
@@ -308,11 +310,11 @@ impl HIPMemoryPool {
         self.free_bytes -= bytes;
         let mut ptr = self.device as u64;
         unsafe { (self.hipMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
-        return Ok(HIPBuffer {
+        Ok(HIPBuffer {
             ptr,
             bytes,
             context: self.context,
-        });
+        })
     }
 
     pub(super) fn deallocate(&mut self, buffer: HIPBuffer) -> Result<(), HIPError> {
@@ -381,13 +383,13 @@ impl HIPDevice {
         let mut local_work_size = [0; 3];
         let mut loops = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let IROp::Loop { id, len } = op {
+            if let &IROp::Loop { id, len } = op {
                 if i % 2 == 0 {
-                    global_work_size[i as usize / 2] = *len;
+                    global_work_size[i / 2] = len;
                 } else {
-                    local_work_size[i as usize / 2] = *len;
+                    local_work_size[i / 2] = len;
                 }
-                loops[i] = *id;
+                loops[i] = id;
             } else {
                 panic!()
             }
@@ -517,9 +519,9 @@ impl HIPDevice {
             global_work_size[2],
             local_work_size[2],
         );
-        let mut pragma = format!("");
+        let mut pragma = String::new();
         if source.contains("double") {
-            pragma += &"#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         // INFO: MUST BE NULL TERMINATED!
         let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
@@ -683,21 +685,21 @@ impl HIPQueue {
 impl HIPStatus {
     fn check(self, info: &str) -> Result<(), HIPError> {
         if self != HIPStatus::hipSuccess {
-            return Err(HIPError {
+            Err(HIPError {
                 info: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {info}"),
                 status: self,
                 hiprtc: hiprtcResult::HIPRTC_SUCCESS,
-            });
+            })
         } else {
-            return Ok(());
+            Ok(())
         }
     }
 }
 
 impl IRDType {
     pub(super) fn hip(&self) -> &str {
-        return match self {
-            IRDType::BF16(v) => panic!("BF16 is not native to HIP, workaround is WIP."),
+        match self {
+            IRDType::BF16(v) => panic!("BF16 is WIP."),
             IRDType::F8(v) => "f8",
             IRDType::F16(v) => "half",
             IRDType::F32(v) => "float",
@@ -713,7 +715,7 @@ impl IRDType {
             IRDType::I64(v) => "long",
             IRDType::Bool => "bool",
             IRDType::U32(v) => "unsigned int",
-        };
+        }
     }
 }
 
@@ -721,7 +723,7 @@ impl Reg {
     fn hip(&self) -> String {
         match self {
             Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => format!("{}", value.hip()),
+            Reg::Const(value) => value.hip(),
         }
     }
 }
@@ -730,11 +732,11 @@ impl Constant {
     fn hip(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            Constant::BF16(x) => format!("{}f", unsafe { t::<_, half::bf16>(*x) }),
-            Constant::F8(x) => todo!(),
-            Constant::F16(x) => format!("{}f", unsafe { t::<_, half::f16>(*x) }),
-            Constant::F32(x) => format!("{}f", unsafe { t::<_, f32>(*x) }),
-            Constant::F64(x) => format!("{}f", unsafe { t::<_, f64>(*x) }),
+            &Constant::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
+            &Constant::F8(x) => format!("{}f", float8::F8E4M3::from_bits(x)),
+            &Constant::F16(x) => format!("{}f", half::f16::from_bits(x)),
+            &Constant::F32(x) => format!("{}f", f32::from_bits(x)),
+            &Constant::F64(x) => format!("{}f", f64::from_bits(x)),
             #[cfg(feature = "complex")]
             Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
             #[cfg(feature = "complex")]
@@ -813,6 +815,7 @@ impl hiprtcResult {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum HIPStatus {
