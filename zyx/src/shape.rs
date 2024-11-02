@@ -6,7 +6,7 @@ use core::fmt::Debug;
 pub type Dimension = usize;
 pub type Axis = usize;
 
-/// IntoShape trait
+/// `IntoShape` trait
 pub trait IntoShape: Clone + Debug {
     /// Convert value into shape (iterator over dimensions)
     fn into_shape(self) -> impl Iterator<Item = Dimension>;
@@ -118,7 +118,7 @@ pub fn into_axes(
 ) -> Result<Vec<usize>, ZyxError> {
     let mut res = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
-    for axis in axes.into_iter() {
+    for axis in axes {
         let a = into_axis(axis, rank)?;
         if visited.insert(a) {
             res.push(a);

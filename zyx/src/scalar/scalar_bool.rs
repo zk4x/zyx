@@ -153,7 +153,7 @@ impl Scalar for bool {
     }
 
     fn cmpgt(self, rhs: Self) -> Self {
-        self & !rhs
+        self && !rhs
     }
 
     fn or(self, rhs: Self) -> Self {

@@ -127,7 +127,7 @@ pub(super) struct IRKernel {
 impl IRVec {
     // TODO vectorization
     #[allow(unused)]
-    pub(super) const fn len(&self) -> usize {
+    pub(super) const fn len(self) -> usize {
         match self {
             IRVec::Scalar => 1,
             IRVec::V2 => 2,
@@ -151,7 +151,7 @@ impl Display for IRVec {
 }
 
 impl DType {
-    pub(super) const fn ir_dtype(&self) -> IRDType {
+    pub(super) const fn ir_dtype(self) -> IRDType {
         match self {
             DType::BF16 => IRDType::BF16(IRVec::Scalar),
             DType::F8 => IRDType::F8(IRVec::Scalar),
@@ -172,7 +172,7 @@ impl DType {
 impl IRDType {
     // TODO vectorization
     #[allow(unused)]
-    pub(super) const fn byte_size(&self) -> usize {
+    pub(super) const fn byte_size(self) -> usize {
         match self {
             IRDType::BF16(v) => 2 * v.len(),
             IRDType::F8(v) => v.len(),
@@ -193,7 +193,7 @@ impl IRDType {
         }
     }
 
-    pub(super) const fn dtype(&self) -> DType {
+    pub(super) const fn dtype(self) -> DType {
         match self {
             IRDType::BF16(_) => DType::BF16,
             IRDType::F8(_) => DType::F8,
@@ -491,8 +491,7 @@ impl IRCompiler {
                             let zaddress = c.pointers_map[&(z, zscope)];
                             zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                         }
-                        (Scope::Register, Scope::Local) => {}
-                        (Scope::Register, Scope::Global) => {}
+                        (Scope::Register, Scope::Local | Scope::Global) => {}
                         _ => panic!("Invalid load scopes. Internal bug."),
                     }
                 }

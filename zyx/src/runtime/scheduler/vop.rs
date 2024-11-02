@@ -82,7 +82,10 @@ pub enum MOp {
 
 impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use inline_colorization::*;
+        use inline_colorization::{
+            color_blue, color_green, color_magenta, color_red, color_reset, color_white,
+            color_yellow,
+        };
         match self {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
                 "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"

@@ -2,6 +2,8 @@
 //!
 //! Tensors are at the core of all machine learning.
 
+#![allow(clippy::fallible_impl_from)]
+
 use crate::dtype::DType;
 use crate::runtime::ZyxError;
 use crate::scalar::{Float, Scalar};
@@ -64,7 +66,7 @@ impl Tensor {
         self.shape().len()
     }
 
-    /// Datatype of self. See [DType](crate::DType) for available datatypes.
+    /// Datatype of self. See [`DType`](crate::DType) for available datatypes.
     #[must_use]
     pub fn dtype(&self) -> DType {
         RT.lock().dtype(self.id)
@@ -82,6 +84,8 @@ impl Tensor {
     }
 
     /// Immediatelly evaluate passed tensors
+    /// # Errors
+    /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         RT.lock()
             .realize(tensors.into_iter().map(|t| t.id).collect())
@@ -96,7 +100,7 @@ impl Tensor {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
         let grads: BTreeMap<TensorId, TensorId> = RT
             .lock()
-            .backward(self.id, sources.iter().copied().collect());
+            .backward(self.id, &sources.iter().copied().collect());
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())
@@ -117,6 +121,9 @@ impl Tensor {
     /// }
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    /// # Errors
+    /// If function needs to realize tensor, it may return device error if the device
+    /// fails to realize self.
     pub fn detach(self) -> Result<Tensor, ZyxError> {
         // TODO remove realization from here
         let shape = self.shape();
@@ -185,14 +192,8 @@ impl Tensor {
 
     /// Create debug guard at the beginning of the block to debug that block.
     /// Once the guard is dropped, debug gets reset to global state,
-    /// the one set by ZYX_DEBUG env variable.
-    /// ZYX_DEBUG is bitmask
-    /// 0000 0001 DEBUG_DEV
-    /// 0000 0010 DEBUG_PERF
-    /// 0000 0100 DEBUG_SCHED
-    /// 0000 1000 DEBUG_IR
-    /// 0001 0000 DEBUG_ASM
-    /// For more look at ENV_VARS.md
+    /// the one set `by ZYX_DEBUG` env variable.
+    /// For more look at `ENV_VARS.md`
     #[must_use]
     pub fn debug_guard(debug: u32) -> DebugGuard {
         let mut rt = RT.lock();
@@ -204,6 +205,8 @@ impl Tensor {
     /// Write graph of operations between tensors as png image with given filename
     /// Expects dot program to be in the path. Otherwise create dot graph file
     /// without converting it to png.
+    /// # Errors
+    /// Returns error if graph image failed to write to disk.
     pub fn plot_graph<'a>(
         tensors: impl IntoIterator<Item = &'a Tensor>,
         name: &str,
@@ -234,7 +237,10 @@ impl Tensor {
     }
 
     /// Create random value in range 0f..1f with float dtype
-    /// or 0..int::MAX if it is integer
+    /// or 0..`{integer}::MAX` if it is integer
+    /// # Errors
+    /// Returns device error if the device fails to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         const SEED: u64 = 69420;
         use rand::distributions::Uniform;
@@ -380,6 +386,8 @@ impl Tensor {
 
     // Initializers
     /// Create tensor sampled from standard distribution.
+    /// # Errors
+    /// Retuns device error if device fails to allocate memory for given tensor.
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
         let shape: Vec<usize> = once(2).chain(shape.into_shape()).collect();
@@ -396,6 +404,9 @@ impl Tensor {
     }
 
     /// Multinomial function
+    /// # Errors
+    /// Returns device error if the device fails to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc, reason = "TODO disallow panicking")]
     pub fn multinomial(&self, num_samples: usize, replacement: bool) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
         let rank = sh.len();
@@ -432,25 +443,28 @@ impl Tensor {
 
     /// Create tensor sampled from uniform distribution
     /// Start of the range must be less than the end of the range.
+    /// # Errors
+    /// Returns device error if the device fails to allocate memory for tensor.
     pub fn uniform<T: Scalar>(
         shape: impl IntoShape,
         range: impl core::ops::RangeBounds<T>,
     ) -> Result<Tensor, ZyxError> {
         use core::ops::Bound;
         let low = match range.start_bound() {
-            Bound::Included(value) => *value,
-            Bound::Excluded(value) => *value,
+            Bound::Included(value) | Bound::Excluded(value) => *value,
             Bound::Unbounded => T::min_value(),
         };
         let high = match range.end_bound() {
-            Bound::Included(value) => *value,
-            Bound::Excluded(value) => *value,
+            Bound::Included(value) | Bound::Excluded(value) => *value,
             Bound::Unbounded => T::max_value(),
         };
         Ok(Tensor::rand(shape, T::dtype())? * high.sub(low) + low)
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
+    /// # Errors
+    /// Returns device error if the device fails to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc)]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
         let n = T::from_i64(
             shape
@@ -471,6 +485,8 @@ impl Tensor {
     }
 
     /// Create tensor sampled from glorot uniform distribution.
+    /// # Errors
+    /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::cast_precision_loss)]
     pub fn glorot_uniform(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         let shape: Vec<usize> = shape.into_shape().collect();
@@ -497,6 +513,9 @@ impl Tensor {
     }
 
     /// Create tensor filled with value.
+    /// # Errors
+    /// Returns device error if the device failed to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Result<Tensor, ZyxError> {
         Ok(Tensor {
             id: RT.lock().full(shape.into_shape().collect(), value)?,
@@ -504,6 +523,7 @@ impl Tensor {
     }
 
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn eye(n: usize, dtype: DType) -> Tensor {
         Tensor::ones(vec![n, 1], dtype)
@@ -516,6 +536,9 @@ impl Tensor {
     }
 
     /// Arange method, create range from start, stop, step
+    /// # Errors
+    /// Returns device error if the device failed to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc)]
     pub fn arange<T: Scalar>(start: T, stop: T, step: T) -> Result<Tensor, ZyxError> {
         // if (stop-start)/step <= 0: return Tensor([], dtype=dtype, **kwargs)
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
@@ -561,6 +584,10 @@ impl Tensor {
     /// # Safety
     /// Not all bits of one type can be safely reinterpreted as bits of other type,
     /// therefore this function is marked as unsafe.
+    ///
+    /// # Errors
+    /// Returns device error if the device failed to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc)]
     pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
         let id = RT.lock().bitcast(self.id, dtype)?;
         let x = Tensor { id };
@@ -598,9 +625,16 @@ impl Tensor {
     /// This function randomly sets elements of the input tensor to zero based on the provided probability.
     /// The output tensor has the same shape as the input tensor. Elements are preserved with probability `1 - probability`
     /// and set to zero with probability `probability`.
+    ///
+    /// # Errors
+    /// Returns device error if the device failed to allocate memory for tensor.
+    #[allow(clippy::missing_panics_doc)]
     pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Result<Tensor, ZyxError> {
         // TODO fix this for training (dropout in training is just scaling)
-        Ok(Tensor::from(probability).cmplt(Tensor::rand(self.shape(), P::dtype())?)? * self)
+        Ok(
+            Tensor::from(probability).cmplt(Tensor::rand(self.shape(), P::dtype())?)?
+                * self.clone(),
+        )
     }
 
     /// Applies the Exponential Linear Unit function element-wise.
@@ -610,7 +644,7 @@ impl Tensor {
     /// f(x) = x if x > 0
     ///       α(e^x - 1) otherwise
     /// ```
-    /// where `α` is a given scaling factor. This function helps mitigate the "dying ReLU" problem.
+    /// where `α` is a given scaling factor. This function helps mitigate the "dying `ReLU`" problem.
     #[must_use]
     pub fn elu(&self, alpha: impl Scalar) -> Tensor {
         self.relu() - (Tensor::ones(1, self.dtype()) - self.exp()).relu() * alpha
@@ -645,6 +679,7 @@ impl Tensor {
     ///
     /// The Gelu activation function is defined as:
     /// `gelu(x) = x * 0.5 * (1 + tanh(sqrt(2 / π) * (x + x^3 * 0.044715)))`.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn gelu(&self) -> Tensor {
         self * 0.5f32
@@ -654,15 +689,15 @@ impl Tensor {
                 + 1f32)
     }
 
-    /// Applies the Leaky ReLU activation function element-wise.
+    /// Applies the Leaky `ReLU` activation function element-wise.
     ///
-    /// This function computes the Leaky ReLU of each element in the input tensor. If the element is greater than
+    /// This function computes the Leaky `ReLU` of each element in the input tensor. If the element is greater than
     /// or equal to zero, it returns the element itself; otherwise, it returns `neg_slope * element`.
     ///
     /// **Parameters:**
     ///
     /// * self: The input tensor.
-    /// * neg_slope: The negative slope coefficient (`α` in the formula) for the Leaky ReLU function.
+    /// * `neg_slope`: The negative slope coefficient (`α` in the formula) for the Leaky `ReLU` function.
     ///
     /// **Returns:**
     ///
@@ -727,7 +762,7 @@ impl Tensor {
 
     /// Computes the Mish activation function for each element in the input tensor.
     ///
-    /// The Mish activation function is a continuous, non-monotonic function that behaves like ReLU for positive inputs and like sigmoid for negative inputs. It is defined as `x * tanh(softplus(x))`.
+    /// The Mish activation function is a continuous, non-monotonic function that behaves like `ReLU` for positive inputs and like sigmoid for negative inputs. It is defined as `x * tanh(softplus(x))`.
     ///
     /// **Parameters:**
     ///
@@ -741,7 +776,7 @@ impl Tensor {
 
     /// Computes the quick GELU activation function for each element in the input tensor.
     ///
-    /// The QuickGELU activation function is an approximation of the Gaussian Error Linear Unit (GELU) function that uses a sigmoid function to compute the approximation. It is defined as `x * sigmoid(1.702 * x)`.
+    /// The `QuickGELU` activation function is an approximation of the Gaussian Error Linear Unit (GELU) function that uses a sigmoid function to compute the approximation. It is defined as `x * sigmoid(1.702 * x)`.
     ///
     /// **Parameters:**
     ///
@@ -769,9 +804,9 @@ impl Tensor {
         };
     }
 
-    /// Applies the Rectified Linear Unit (ReLU) activation function to each element in the input tensor.
+    /// Applies the Rectified Linear Unit (`ReLU`) activation function to each element in the input tensor.
     ///
-    /// The ReLU function returns `max(0, x)`, i.e., it replaces negative values with zero and leaves positive values unchanged. This makes it a popular choice for use in hidden layers of neural networks due to its simplicity and effectiveness.
+    /// The `ReLU` function returns `max(0, x)`, i.e., it replaces negative values with zero and leaves positive values unchanged. This makes it a popular choice for use in hidden layers of neural networks due to its simplicity and effectiveness.
     ///
     /// **Parameters:**
     ///
@@ -801,7 +836,7 @@ impl Tensor {
 
     /// Applies the Self-Normalized Linear Unit (Selu) activation function to each element in the input tensor.
     ///
-    /// The Selu activation function is designed to maintain the mean and variance of the activations approximately constant when training deep neural networks with residual connections. It combines the benefits of both ReLU and sigmoid functions, making it a good choice for certain types of problems.
+    /// The Selu activation function is designed to maintain the mean and variance of the activations approximately constant when training deep neural networks with residual connections. It combines the benefits of both `ReLU` and sigmoid functions, making it a good choice for certain types of problems.
     ///
     /// **Parameters:**
     ///
@@ -830,7 +865,7 @@ impl Tensor {
     pub fn sigmoid(&self) -> Tensor {
         let one = Tensor::ones(1, self.dtype());
         let exp_x = self.exp();
-        &exp_x / (&one + &exp_x)
+        exp_x.clone() / (one + exp_x)
     }
 
     /// Applies the sine function to each element in the input tensor.
@@ -871,7 +906,7 @@ impl Tensor {
 
     /// Applies the softplus function to each element in the input tensor with a given beta and threshold.
     ///
-    /// The softplus function returns `log(exp(x) + 1)` for inputs greater than the threshold, and x otherwise. This function is useful for bounding outputs between zero and infinity when applying the ReLU function.
+    /// The softplus function returns `log(exp(x) + 1)` for inputs greater than the threshold, and x otherwise. This function is useful for bounding outputs between zero and infinity when applying the `ReLU` function.
     ///
     /// **Parameters:**
     ///
@@ -880,6 +915,7 @@ impl Tensor {
     /// * threshold: The threshold value below which the input is returned unchanged, and above which the softplus function is applied.
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the softplus function with the given beta and threshold.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
         let x = self * beta;
@@ -909,7 +945,7 @@ impl Tensor {
 
     /// Applies the Swish activation function to each element in the input tensor.
     ///
-    /// The Swish function returns `x * sigmoid(x)`, where `sigmoid(x) = 1 / (1 + exp(-x))`. This function is useful for various deep learning applications, as it has been shown to improve convergence speed and generalization performance compared to other activation functions like ReLU.
+    /// The Swish function returns `x * sigmoid(x)`, where `sigmoid(x) = 1 / (1 + exp(-x))`. This function is useful for various deep learning applications, as it has been shown to improve convergence speed and generalization performance compared to other activation functions like `ReLU`.
     ///
     /// **Parameters:**
     ///
@@ -953,8 +989,8 @@ impl Tensor {
     /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        let x = (self + self).sigmoid();
-        (&x + &x) - Tensor::constant(1).cast(self.dtype())
+        let x = (self.clone() + self.clone()).sigmoid();
+        (x.clone() + x) - Tensor::constant(1).cast(self.dtype())
     }
 
     // movement
@@ -971,6 +1007,8 @@ impl Tensor {
     /// assert_eq!(t.expand((4, 2, 3))?.shape(), &[4, 2, 3]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    /// # Errors
+    /// Returns error if self cannot be expanded into shape.
     pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
         let shape: Vec<usize> = shape.into_shape().collect();
@@ -1000,9 +1038,8 @@ impl Tensor {
     /// let permuted_t = t.permute(p); // Results in a tensor with axes (4, 3)
     /// ```
     ///
-    /// # Panics
-    ///
-    /// This function panics if the length of `axes` is not equal to the rank of this tensor.
+    /// # Errors
+    /// Returns error if self cannot be permute by axes.
     pub fn permute(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
@@ -1015,7 +1052,7 @@ impl Tensor {
             )));
         }
         Ok(Tensor {
-            id: RT.lock().permute(self.id, axes),
+            id: RT.lock().permute(self.id, &axes),
         })
     }
 
@@ -1035,9 +1072,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
-    ///
-    /// This function will panic if the padding configuration is invalid.
+    /// # Errors
+    /// Returns error if self cannot be padded by padding.
+    #[allow(clippy::missing_panics_doc)]
     pub fn pad_zeros(
         &self,
         padding: impl IntoIterator<Item = (isize, isize)>,
@@ -1092,8 +1129,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
-    /// T must be of the same dtype as Tensor's dtype, otherwise this function panics.
+    /// # Errors
+    /// Returns error if self cannot be padded by padding.
+    #[allow(clippy::missing_panics_doc)]
     pub fn pad(
         &self,
         padding: impl IntoIterator<Item = (isize, isize)>,
@@ -1114,74 +1152,9 @@ impl Tensor {
             return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}")));
         }
         let t0 = self.pad_zeros(padding.clone());
-        if value.numel() == 1
-            && match dtype {
-                DType::BF16 => {
-                    let x: bf16 = value.clone().try_into()?;
-                    x == bf16::ZERO
-                }
-                DType::F8 => {
-                    let x: f8 = value.clone().try_into()?;
-                    x == f8::ZERO
-                }
-                DType::F16 => {
-                    let x: f16 = value.clone().try_into()?;
-                    x == f16::ZERO
-                }
-                DType::F32 => {
-                    let x: f32 = value.clone().try_into()?;
-                    x == 0.
-                }
-                DType::F64 => {
-                    let x: f64 = value.clone().try_into()?;
-                    x == 0.
-                }
-                #[cfg(feature = "complex")]
-                DType::CF32 => {
-                    let x: Complex<f32> = value.clone().try_into()?;
-                    x == Complex::new(0., 0.)
-                }
-                #[cfg(feature = "complex")]
-                DType::CF64 => {
-                    let x: Complex<f64> = value.clone().try_into()?;
-                    x == Complex::new(0., 0.)
-                }
-                DType::U8 => {
-                    let x: u8 = value.clone().try_into()?;
-                    x == 0
-                }
-                DType::U32 => {
-                    let x: u32 = value.clone().try_into()?;
-                    x == 0
-                }
-                DType::I8 => {
-                    let x: i8 = value.clone().try_into()?;
-                    x == 0
-                }
-                DType::I16 => {
-                    let x: i16 = value.clone().try_into()?;
-                    x == 0
-                }
-                DType::I32 => {
-                    let x: i32 = value.clone().try_into()?;
-                    x == 0
-                }
-                DType::I64 => {
-                    let x: i64 = value.clone().try_into()?;
-                    x == 0
-                }
-                DType::Bool => {
-                    let x: bool = value.clone().try_into()?;
-                    !x
-                }
-            }
-        {
-            t0
-        } else {
-            let ones = Tensor::ones(sh.clone(), dtype);
-            let zeros = Tensor::zeros(sh, self.dtype());
-            Ok(t0? + ones.pad_zeros(padding)?.where_(zeros, value)?)
-        }
+        let ones = Tensor::ones(sh.clone(), dtype);
+        let zeros = Tensor::zeros(sh, self.dtype());
+        Ok(t0? + ones.pad_zeros(padding)?.where_(zeros, value)?)
     }
 
     /// Narrow tensor along an axis, is essentially just padding
@@ -1192,6 +1165,9 @@ impl Tensor {
     /// assert_eq!(x.narrow(1, 1, 2)?, [[2, 3], [5, 6], [8, 9]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    /// # Errors
+    /// Returns error if self cannot be narrowed.
+    #[allow(clippy::missing_panics_doc)]
     pub fn narrow(&self, axis: isize, start: usize, length: usize) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let rank = shape.len();
@@ -1220,9 +1196,8 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
-    ///
-    /// Panics if the product of the new shape is not equal to the number of elements in this tensor.
+    /// # Errors
+    /// Returns error if self cannot be reshaped to shape.
     pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let shape: Vec<usize> = shape.into_shape().collect();
         if shape.iter().product::<usize>() != self.numel() {
@@ -1238,12 +1213,15 @@ impl Tensor {
     }
 
     /// An alias to reshape
+    /// # Errors
+    /// Returns error if self cannot be reshaped to shape.
     pub fn view(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         self.reshape(shape)
     }
 
     /// Transpose last two dimensions of this tensor.
-    /// If self.rank() == 1, returns tensor with shape `[self.shape()[0], 1]` (column tensor)
+    /// If `self.rank() == 1`, returns tensor with shape `[self.shape()[0], 1]` (column tensor)
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn t(&self) -> Tensor {
         let mut rank = self.rank();
@@ -1266,6 +1244,10 @@ impl Tensor {
     /// assert_eq!(t.transpose(0, -1)?, [[[1, 3]], [[2, 4]]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
+    /// # Errors
+    /// Returns error if self cannot be transposed by dim0 and dim1.
+    #[allow(clippy::missing_panics_doc)]
     pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         if (dim0 < 0 && usize::try_from(-dim0).unwrap() > rank)
@@ -1311,9 +1293,10 @@ impl Tensor {
     ///
     /// The resulting tensor after computing the natural logarithm of the softmax of `self`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if any of the specified axes are out-of-bounds for the input tensor.
+    /// Returns error if any of the specified axes are out-of-bounds for the input tensor.
+    #[allow(clippy::missing_panics_doc)]
     pub fn ln_softmax(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let m = self - self.max_kd(axes.clone())?;
@@ -1335,9 +1318,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function panics if the axes contain duplicates.
+    /// Returns error if the axes contain duplicates or are out of bounds.
     pub fn max(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
@@ -1368,6 +1351,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be reduced by axes.
     pub fn max_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         self.max(axes.clone())?.reshape(self.reduce_kd_shape(axes))
@@ -1387,9 +1373,10 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function panics if the tensor is empty.
+    /// Returns error if self cannot be reduced by axes.
+    #[allow(clippy::missing_panics_doc)]
     pub fn mean(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
@@ -1422,9 +1409,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function panics if the input tensor is empty.
+    /// Returns error if self cannot be reduced by axes.
     pub fn mean_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         self.mean(axes.clone())?.reshape(self.reduce_kd_shape(axes))
@@ -1444,6 +1431,10 @@ impl Tensor {
     /// assert_eq!(arr.product([1])?, [2., 12.]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be reduced by axes.
     pub fn product(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         Ok(self.ln().sum(axes)?.exp())
     }
@@ -1465,10 +1456,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if the input tensor is empty.
-    ///
+    /// Returns error if self cannot be reduced by axes.
     pub fn std(
         &self,
         axes: impl IntoIterator<Item = isize>,
@@ -1493,9 +1483,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function panics if the input tensor has no elements.
+    /// Returns error if self cannot be reduced by axes.
     pub fn std_kd(
         &self,
         axes: impl IntoIterator<Item = isize>,
@@ -1508,8 +1498,12 @@ impl Tensor {
 
     /// Sum reduce. Removes tensor dimensions.
     /// Equivalent to pytorch sum(axes, keepdim=False)
-    /// If you want to keep reduce dimensions, see [sum_kd](Tensor::sum_kd)
+    /// If you want to keep reduce dimensions, see [`sum_kd`](Tensor::sum_kd)
     /// Passing empty axes executes reduce across all dimensions and result will have shape `[1]`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be reduced by axes.
     pub fn sum(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         // TODO handle axes out of range error
         let rank = self.rank();
@@ -1522,12 +1516,21 @@ impl Tensor {
     // Probably just have sum_kd, max_kd that keep tensor dimensions
     /// Like [sum](Tensor::sum) but keeps reduce dimensions, setting them to 1.
     /// Equivalent to pytorch sum(axes, keepdim=True)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be reduced by axes.
     pub fn sum_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         self.sum(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Comulative sum along axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if axis is out of range.
+    #[allow(clippy::missing_panics_doc)]
     pub fn cumsum(&self, axis: isize) -> Result<Tensor, ZyxError> {
         let axis = into_axis(axis, self.rank())?;
         //println!("Cumsum, shape: {:?}", self.shape());
@@ -1567,9 +1570,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if the input tensor is empty.
+    /// Returns error if self cannot be reduced by axes.
     pub fn softmax(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let e = (self - self.max_kd(axes.clone())?).exp();
@@ -1603,6 +1606,11 @@ impl Tensor {
     /// assert_eq!(var, [0.5f32, 0.5]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be reduced by axes.
+    #[allow(clippy::missing_panics_doc)]
     pub fn var(
         &self,
         axes: impl IntoIterator<Item = isize>,
@@ -1619,7 +1627,7 @@ impl Tensor {
         )
         .unwrap()
             - i64::try_from(correction).unwrap();
-        Ok((&x * &x).sum(axes)? / Tensor::constant(d).cast(x.dtype()))
+        Ok((x.clone() * x.clone()).sum(axes)? / Tensor::constant(d).cast(x.dtype()))
     }
 
     /// Calculates the variance along the specified axes.
@@ -1645,6 +1653,11 @@ impl Tensor {
     /// assert_eq!(a.var_kd([0], 0)?, [[2.25f64, 2.25, 2.25]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be reduced by axes.
+    #[allow(clippy::missing_panics_doc)]
     pub fn var_kd(
         &self,
         axes: impl IntoIterator<Item = isize>,
@@ -1657,6 +1670,11 @@ impl Tensor {
 
     // index
     /// Get function
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be indexed by index.
+    #[allow(clippy::missing_panics_doc)]
     pub fn get(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let padding: Vec<(isize, isize)> = index
@@ -1710,10 +1728,7 @@ impl Tensor {
     /// assert_eq!(arr.diagonal(), [1, 5, 9]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// This function panics if the input tensor has fewer than two dimensions.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
         let n = *self
@@ -1748,35 +1763,51 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function panics if the tensors have different shapes.
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().cmplt(x.id, y.id);
         Ok(Tensor { id })
     }
 
     /// Compare greater than
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().cmpgt(x.id, y.id);
         Ok(Tensor { id })
     }
 
     /// Elementwise maximum between two tensors.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().maximum(x.id, y.id);
         Ok(Tensor { id })
     }
 
     /// Elementwise minimum between two tensors
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn minimum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         Ok(-(-self).maximum(-rhs.into())?)
     }
 
     /// Matmul and dot
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
         let org_y_shape = rhs.shape();
@@ -1818,6 +1849,10 @@ impl Tensor {
     }
 
     /// Matmul is just alias to dot
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn matmul(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         self.dot(rhs)
     }
@@ -1834,55 +1869,73 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
-    ///
-    /// This function will panic if the exponent tensor contains any invalid or non-finite values.
-    ///
     /// # Returns
     ///
     /// A new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, exponent)?;
+        let (x, y) = Tensor::broadcast(self.clone(), exponent)?;
         let id = RT.lock().pow(x.id, y.id);
         Ok(Tensor { id })
     }
 
     /// Logical and
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn logical_and(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().and(x.id, y.id);
         Ok(Tensor { id })
     }
 
     /// Logical or
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn logical_or(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().or(x.id, y.id);
         Ok(Tensor { id })
     }
 
     /// Returns boolean mask with true where self == rhs
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, rhs)?;
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
         let id = RT.lock().not_eq(x.id, y.id);
         let x = Tensor { id };
         Ok(x.not())
     }
 
     /// Returns ones where self is different from zero and zeros otherwise.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
         !self.equal(Tensor::constant(0).cast(self.dtype())).unwrap()
     }
 
     // ternary
-    /// Where operation. Replaces elementwise true values with if_true and false values with if_false.
+    /// Where operation. Replaces elementwise true values with `if_true` and false values with `if_false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
+    #[allow(clippy::missing_panics_doc)]
     pub fn where_(
         &self,
         if_true: impl Into<Tensor>,
         if_false: impl Into<Tensor>,
     ) -> Result<Tensor, ZyxError> {
-        let (x, y) = Tensor::broadcast(self, if_true)?;
+        let (x, y) = Tensor::broadcast(self.clone(), if_true)?;
         let (x, z) = Tensor::broadcast(x, if_false)?;
         let (y, z) = Tensor::broadcast(y, z)?;
         let x_nonzero = x.nonzero();
@@ -1905,9 +1958,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if the input tensor and target tensor have different shapes.
+    /// Returns error if the tensors have non broadcasteable shapes or axes cannot reduce self.
     pub fn cross_entropy_loss(
         &self,
         target: impl Into<Tensor>,
@@ -1963,12 +2016,13 @@ impl Tensor {
     /// assert_eq!(input.mse_loss(target), [4.0, 4.0]);
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if the input tensor and target tensor have different shapes.
+    /// Returns error if the tensors have non broadcasteable shapes.
+    #[must_use]
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Tensor {
         let x = self - target;
-        &x * &x
+        x.clone() * x
     }
 
     /// Calculates the cosine similarity between this tensor and another.
@@ -1994,9 +2048,9 @@ impl Tensor {
     /// let similarity = tensor1.cosine_similarity(tensor2, eps);
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function panics if the input tensors have different shapes.
+    /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cosine_similarity(
         &self,
         rhs: impl Into<Tensor>,
@@ -2005,11 +2059,15 @@ impl Tensor {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
         let x = self.pow(2)?.sqrt() * rhs.pow(2)?.sqrt();
-        Ok(self * rhs / x.cmplt(&eps)?.where_(eps, x)?)
+        Ok(self * rhs / x.cmplt(eps.clone())?.where_(eps, x)?)
     }
 
     // misc
     /// Flatten. Joins axes into one dimension,
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be flattened by axes.
     pub fn flatten(&self, axes: impl RangeBounds<isize>) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let rank = shape.len();
@@ -2066,9 +2124,12 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
+    /// # Errors
+    ///
+    /// Returns error if tensors cannot be concattenated along axis.
     pub fn cat<'a>(
         tensors: impl IntoIterator<Item = &'a Tensor>,
-        dim: isize,
+        axis: isize,
     ) -> Result<Tensor, ZyxError> {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
         if tensors.len() < 2 {
@@ -2078,10 +2139,10 @@ impl Tensor {
         }
         let shape = tensors[0].shape();
         let rank = shape.rank();
-        let dim: usize = (if dim < 0 {
-            dim + isize::try_from(rank).unwrap()
+        let dim: usize = (if axis < 0 {
+            axis + isize::try_from(rank).unwrap()
         } else {
-            dim
+            axis
         })
         .try_into()
         .unwrap();
@@ -2121,11 +2182,16 @@ impl Tensor {
     }
 
     /// Squeeze
-    pub fn squeeze(&self, dim: isize) -> Result<Tensor, ZyxError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be squeezed along axis.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn squeeze(&self, axis: isize) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
-        if dim < 0 {
+        if axis < 0 {
             let rank = shape.len();
-            let dim = usize::try_from(-dim).unwrap();
+            let dim = usize::try_from(-axis).unwrap();
             let dim = rank - dim + 1;
             if shape[dim] != 1 {
                 return Ok(self.clone());
@@ -2138,7 +2204,7 @@ impl Tensor {
                     .collect::<Vec<usize>>(),
             )
         } else {
-            let dim = usize::try_from(dim).unwrap();
+            let dim = usize::try_from(axis).unwrap();
             if shape[dim] != 1 {
                 return Ok(self.clone());
             }
@@ -2172,6 +2238,11 @@ impl Tensor {
     /// assert_eq!(t.unsqueeze(-1)?.shape(), &[2, 3, 1]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be unsqueezed along axis.
+    #[allow(clippy::missing_panics_doc)]
     pub fn unsqueeze(&self, dim: isize) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         if dim < 0 {
@@ -2223,13 +2294,14 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if the tensors have different shapes along the stacking dimension.
+    /// Returns error if the tensors have different shapes along the stacking dimension.
     ///
     /// # See also
     ///
     /// [`unsqueeze`](Tensor::unsqueeze), [`cat`](Tensor::cat)
+    #[allow(clippy::missing_panics_doc)]
     pub fn stack<'a>(
         tensors: impl IntoIterator<Item = &'a Tensor>,
         dim: isize,
@@ -2243,7 +2315,12 @@ impl Tensor {
     }
 
     /// Split tensor into multiple tensors at given dim/axis
-    pub fn split(&self, sizes: impl IntoShape, dim: isize) -> Result<Vec<Tensor>, ZyxError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be split along axis.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn split(&self, sizes: impl IntoShape, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
         // assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
         // dim = self._resolve_dim(dim)
         // if isinstance(sizes, int): sizes = [min(sizes, self.shape[dim]-i) for i in range(0, max(1, self.shape[dim]), max(1, sizes))]
@@ -2252,10 +2329,10 @@ impl Tensor {
         let sizes: Vec<usize> = sizes.into_shape().collect();
         let shape = self.shape();
         let rank = shape.rank();
-        let dim: usize = usize::try_from(if dim < 0 {
-            dim + isize::try_from(rank).unwrap()
+        let dim: usize = usize::try_from(if axis < 0 {
+            axis + isize::try_from(rank).unwrap()
         } else {
-            dim
+            axis
         })
         .unwrap();
         if sizes.iter().sum::<usize>() != shape[dim] {
@@ -2284,12 +2361,16 @@ impl Tensor {
     }
 
     /// Masked fill
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be masked with mask.
     pub fn masked_fill(
         &self,
         mask: impl Into<Tensor>,
         value: impl Into<Tensor>,
     ) -> Result<Tensor, ZyxError> {
-        mask.into().where_(value, self)
+        mask.into().where_(value, self.clone())
     }
 
     /*#[must_use]
@@ -2310,6 +2391,11 @@ impl Tensor {
     }*/
 
     /// Pooling function with kernel size, stride and dilation
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self cannot be pooled with stride and dilation.
+    #[allow(clippy::missing_panics_doc)]
     pub fn pool(
         &self,
         kernel_size: impl IntoShape,
@@ -2337,10 +2423,10 @@ impl Tensor {
         let i_ = &shape[rank - k_.len()..];
         let o_: Vec<usize> = i_
             .iter()
-            .cloned()
-            .zip(d_.iter().cloned())
-            .zip(k_.iter().cloned())
-            .zip(s_.iter().cloned())
+            .copied()
+            .zip(d_.iter().copied())
+            .zip(k_.iter().copied())
+            .zip(s_.iter().copied())
             .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s))
             .collect();
         //println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
@@ -2485,11 +2571,14 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
-    /// # Panics
-    ///
-    /// This function will panic if the input tensor has zero dimensions.
+    /// # Returns
     ///
     /// Returns a new tensor with the repeated values.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the input tensor has zero dimensions.
+    #[allow(clippy::missing_panics_doc)]
     pub fn repeat(&self, repeats: impl IntoShape) -> Result<Tensor, ZyxError> {
         let repeats: Vec<usize> = repeats.into_shape().collect();
         let shape = self.shape();
@@ -2528,6 +2617,11 @@ impl Tensor {
     }
 
     /// Rotary embeddings
+    ///
+    /// # Errors
+    ///
+    /// Returns error if shapes of tensors are not compatible.
+    #[allow(clippy::missing_panics_doc)]
     pub fn rope(
         &self,
         sin_freqs: impl Into<Tensor>,
@@ -2541,8 +2635,8 @@ impl Tensor {
         let d = isize::try_from(*sh.last().unwrap()).unwrap();
         let a = self.get((.., .., .., ..d / 2)).unwrap();
         let b = -self.get((.., .., .., d / 2..)).unwrap();
-        let ro = &a * &cos_freqs - &b * &sin_freqs;
-        let co = &a * &sin_freqs + &b * &cos_freqs;
+        let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
+        let co = a * sin_freqs + b * cos_freqs;
         Ok(Tensor::cat([&co, &ro], -1).unwrap())
     }
 
@@ -2553,6 +2647,11 @@ impl Tensor {
 
     // io
     /// Load module from path. This function will determine the filetype based on file extension.
+    ///
+    /// # Errors
+    ///
+    /// Errors if loading from disk failed or if loaded tensors could not be allocated to device.
+    #[allow(clippy::missing_panics_doc)]
     pub fn load<Module: FromIterator<(String, Tensor)>>(
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
@@ -2573,9 +2672,42 @@ impl Tensor {
     fn load_safetensors<Module: FromIterator<(String, Tensor)>>(
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
+        fn read_into_tensor<T: Scalar>(
+            //f: &mut std::fs::File,
+            mptr: &mut *const u8,
+            shape: &[usize],
+        ) -> Result<Tensor, ZyxError> {
+            // TODO later switch to mmapped memory
+            let dtype = T::dtype();
+            let n: usize = shape.iter().product();
+            let n_bytes = n * dtype.byte_size();
+            let x = if cfg!(target_endian = "big") {
+                let buf: &[u8] =
+                    unsafe { std::slice::from_raw_parts(*mptr, n * dtype.byte_size()) };
+                //let mut buf = Vec::with_capacity(n_bytes);
+                //unsafe { buf.set_len(n_bytes) }
+                //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
+                //f.read_exact(&mut buf)?;
+                let vec: Vec<T> = buf
+                    .chunks_exact(dtype.byte_size())
+                    .map(Scalar::from_le_bytes)
+                    .collect();
+                Tensor::from(vec).reshape(shape)
+            } else {
+                //let mut buf: Vec<T> = Vec::with_capacity(n);
+                //unsafe { buf.set_len(n) }
+                //let mut buf: Vec<T> = vec![T::zero(); n];
+                //f.read_exact(unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), n_bytes) })?;
+                let buf: &[T] = unsafe { std::slice::from_raw_parts((*mptr).cast(), n) };
+                Tensor::from(buf).reshape(shape)
+            };
+            //println!("Adding {} bytes", n*dtype.byte_size());
+            *mptr = (*mptr).wrapping_add(n_bytes);
+            x
+        }
+        use std::io::Read;
         RT.lock().initialize_devices()?;
         let debug_print: bool = RT.lock().debug_dev();
-        use std::io::Read;
         let mut f = std::fs::File::open(path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
@@ -2624,7 +2756,10 @@ impl Tensor {
                 if begin_str {
                     //std::println!("{text}");
                     if i % 7 == 0 {
-                        label = text.clone();
+                        #[allow(clippy::assigning_clones)]
+                        {
+                            label = text.clone();
+                        }
                     } else if i % 7 == 2 {
                         dtype = DType::from_safetensors(&text)?;
                     } else if i % 7 == 4 {
@@ -2662,43 +2797,6 @@ impl Tensor {
                             bar.inc(1);
                             bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
                         }
-
-                        fn read_into_tensor<T: Scalar>(
-                            //f: &mut std::fs::File,
-                            mptr: &mut *const u8,
-                            shape: &[usize],
-                        ) -> Result<Tensor, ZyxError> {
-                            // TODO later switch to mmapped memory
-                            let dtype = T::dtype();
-                            let n: usize = shape.iter().product();
-                            let n_bytes = n * dtype.byte_size();
-                            let x = if cfg!(target_endian = "big") {
-                                let buf: &[u8] = unsafe {
-                                    std::slice::from_raw_parts(*mptr, n * dtype.byte_size())
-                                };
-                                //let mut buf = Vec::with_capacity(n_bytes);
-                                //unsafe { buf.set_len(n_bytes) }
-                                //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
-                                //f.read_exact(&mut buf)?;
-                                let vec: Vec<T> = buf
-                                    .chunks_exact(dtype.byte_size())
-                                    .map(Scalar::from_le_bytes)
-                                    .collect();
-                                Tensor::from(vec).reshape(shape)
-                            } else {
-                                //let mut buf: Vec<T> = Vec::with_capacity(n);
-                                //unsafe { buf.set_len(n) }
-                                //let mut buf: Vec<T> = vec![T::zero(); n];
-                                //f.read_exact(unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), n_bytes) })?;
-                                let buf: &[T] =
-                                    unsafe { std::slice::from_raw_parts((*mptr).cast(), n) };
-                                Tensor::from(buf).reshape(shape)
-                            };
-                            //println!("Adding {} bytes", n*dtype.byte_size());
-                            *mptr = (*mptr).wrapping_add(n_bytes);
-                            x
-                        }
-
                         tensors.insert(
                             label.clone(),
                             match dtype {
@@ -2742,12 +2840,16 @@ impl Tensor {
         todo!()
     }
 
-    /// All tensor elements as contiguous le_bytes vector in row major order
+    /// All tensor elements as contiguous `le_bytes` vector in row major order
+    ///
+    /// # Errors
+    ///
+    /// Returns error if self failed to realize.
     pub fn to_le_bytes(&self) -> Result<Vec<u8>, ZyxError> {
         Ok(match self.dtype() {
             DType::BF16 => {
                 let data: Vec<bf16> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(bf16::to_le_bytes).collect()
             }
             DType::F8 => {
                 //let data: Vec<f8> = self.clone().try_into()?;
@@ -2756,39 +2858,39 @@ impl Tensor {
             }
             DType::F16 => {
                 let data: Vec<f16> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(f16::to_le_bytes).collect()
             }
             DType::F32 => {
                 let data: Vec<f32> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(f32::to_le_bytes).collect()
             }
             DType::F64 => {
                 let data: Vec<f64> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(f64::to_le_bytes).collect()
             }
             DType::U8 => {
                 let data: Vec<u8> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(u8::to_le_bytes).collect()
             }
             DType::U32 => {
                 let data: Vec<u32> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(u32::to_le_bytes).collect()
             }
             DType::I8 => {
                 let data: Vec<i8> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(i8::to_le_bytes).collect()
             }
             DType::I16 => {
                 let data: Vec<i16> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(i16::to_le_bytes).collect()
             }
             DType::I32 => {
                 let data: Vec<i32> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(i32::to_le_bytes).collect()
             }
             DType::I64 => {
                 let data: Vec<i64> = self.clone().try_into()?;
-                data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+                data.into_iter().flat_map(i64::to_le_bytes).collect()
             }
             DType::Bool => {
                 let data: Vec<bool> = self.clone().try_into()?;
@@ -2800,11 +2902,11 @@ impl Tensor {
         })
     }
 
-    /// Load tensor from le_bytes in row major order
-    pub fn from_le_bytes(&self, bytes: &[u8]) -> Result<(), ZyxError> {
+    // Load tensor from `le_bytes` in row major order
+    /*fn from_le_bytes(bytes: &[u8]) -> Result<Tensor, ZyxError> {
         let _ = bytes;
         todo!()
-    }
+    }*/
 }
 
 pub struct DebugGuard {
@@ -2851,12 +2953,12 @@ impl Tensor {
         // We can later add option for backend to disable these implicit conversions.
         match (x.dtype(), y.dtype()) {
             (DType::F32, DType::I32) => y = y.cast(DType::F32),
-            (DType::F32, DType::F64) => x = x.cast(DType::F64),
             (DType::I32, DType::F32) => x = x.cast(DType::F32),
-            (DType::I32, DType::F64) => x = x.cast(DType::F64),
-            (DType::F64, DType::F32) => y = y.cast(DType::F64),
-            (DType::F64, DType::I32) => y = y.cast(DType::F64),
-            _ => {}
+            (DType::F32 | DType::I32, DType::F64) => x = x.cast(DType::F64),
+            (DType::F64, DType::F32 | DType::I32) => y = y.cast(DType::F64),
+            _ => {
+                todo!()
+            }
         }
         let x_shape = x.shape();
         let y_shape = y.shape();
@@ -3057,14 +3159,9 @@ impl TryFrom<Tensor> for bool {
 impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        use std::mem::MaybeUninit;
         let numel = value.numel();
-        let mut data: Vec<MaybeUninit<T>> = Vec::with_capacity(numel);
-        unsafe { data.set_len(numel) };
-        let dref: &mut [MaybeUninit<T>] = data.as_mut();
-        let dref: &mut [T] = unsafe { std::mem::transmute(dref) };
-        RT.lock().load(value.id, dref)?;
-        let data: Vec<T> = unsafe { std::mem::transmute(data) };
+        let mut data = vec![T::zero(); numel];
+        RT.lock().load(value.id, &mut data)?;
         Ok(data)
     }
 }
@@ -3325,13 +3422,19 @@ impl IntoRange for RangeTo<isize> {
 
 impl IntoRange for RangeInclusive<isize> {
     fn into_range(self) -> Range<isize> {
-        *self.start()..*self.end() + 1
+        #[allow(clippy::range_plus_one)]
+        {
+            *self.start()..*self.end() + 1
+        }
     }
 }
 
 impl IntoRange for RangeToInclusive<isize> {
     fn into_range(self) -> Range<isize> {
-        0..self.end + 1
+        #[allow(clippy::range_plus_one)]
+        {
+            0..self.end + 1
+        }
     }
 }
 
@@ -3343,7 +3446,10 @@ impl IntoRange for Range<isize> {
 
 impl IntoRange for isize {
     fn into_range(self) -> Range<isize> {
-        self..self + 1
+        #[allow(clippy::range_plus_one)]
+        {
+            self..self + 1
+        }
     }
 }
 
@@ -3562,34 +3668,25 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 
 impl PartialEq<f32> for Tensor {
     fn eq(&self, other: &f32) -> bool {
-        if let Ok(data) = self.clone().try_into() {
-            let data: f32 = data;
-            Scalar::is_equal(data, *other)
-        } else {
-            false
-        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data| Scalar::is_equal(data, *other))
     }
 }
 
 impl PartialEq<f64> for Tensor {
     fn eq(&self, other: &f64) -> bool {
-        if let Ok(data) = self.clone().try_into() {
-            let data: f64 = data;
-            Scalar::is_equal(data, *other)
-        } else {
-            false
-        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data| Scalar::is_equal(data, *other))
     }
 }
 
 impl PartialEq<i32> for Tensor {
     fn eq(&self, other: &i32) -> bool {
-        if let Ok(data) = self.clone().try_into() {
-            let data: i32 = data;
-            Scalar::is_equal(data, *other)
-        } else {
-            false
-        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data| Scalar::is_equal(data, *other))
     }
 }
 
@@ -3617,12 +3714,9 @@ impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for T
         if self.shape() != [D0, D1] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[T; D1]; D0] = data;
-            &data == other
-        } else {
-            false
-        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data: [[T; D1]; D0]| &data == other)
     }
 }
 
@@ -3633,12 +3727,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
         if self.shape() != [D0, D1, D2] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[[T; D2]; D1]; D0] = data;
-            &data == other
-        } else {
-            false
-        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data: [[[T; D2]; D1]; D0]| &data == other)
     }
 }
 
@@ -3649,12 +3740,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         if self.shape() != [D0, D1, D2, D3] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[[[T; D3]; D2]; D1]; D0] = data;
-            &data == other
-        } else {
-            false
-        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data: [[[[T; D3]; D2]; D1]; D0]| &data == other)
     }
 }
 
@@ -3676,7 +3764,7 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
 impl<IT: Into<Tensor>> Add<IT> for &Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3706,7 +3794,7 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
 impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
     type Output = Tensor;
     fn sub(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3739,7 +3827,7 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
     type Output = Tensor;
     fn mul(self, rhs: IT) -> Self::Output {
         let rhs = rhs.into();
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         // We have to do this using temporary variable,
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
@@ -3765,7 +3853,7 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
 impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().div(x.id, y.id),
         };
@@ -3787,7 +3875,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
 impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitor(x.id, y.id),
         };
@@ -3809,7 +3897,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
 impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitxor(x.id, y.id),
         };
@@ -3831,7 +3919,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
 impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         let tensor = Tensor {
             id: RT.lock().bitand(x.id, y.id),
         };

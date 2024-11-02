@@ -268,7 +268,7 @@ impl Runtime {
             for sched_op in &sched_graph {
                 match sched_op {
                     SchedulerOp::Launch(program) => {
-                        println!("Launch kernel {}", self.devices[program.device_id])
+                        println!("Launch kernel {}", self.devices[program.device_id]);
                     }
                     SchedulerOp::Finish(program) => println!(
                         "Finish kernel {} on device {}",
@@ -285,10 +285,10 @@ impl Runtime {
                         memory_pool_id,
                         view: _,
                     } => {
-                        println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B")
+                        println!("Allocate tensor {tensor_id} on memory pool {memory_pool_id:?} with size {bytes:?} B");
                     }
                     SchedulerOp::Deallocate { tensor_id, .. } => {
-                        println!("Deallocate tensor {tensor_id}")
+                        println!("Deallocate tensor {tensor_id}");
                     }
                 }
             }
@@ -435,8 +435,7 @@ impl Runtime {
             let rem_opts = optimizer.remaining();
             if debug_sched {
                 println!(
-                    "Searching over {} out of {} remaining optimizations.",
-                    search_iters, rem_opts
+                    "Searching over {search_iters} out of {rem_opts} remaining optimizations.",
                 );
             }
             #[cfg(feature = "disk_cache")]
@@ -612,7 +611,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     value: *value,
                     view: View::contiguous(&[1]),
                 });
-                kernels.push(Kernel { ops })
+                kernels.push(Kernel { ops });
             }
             Node::Leaf => {
                 kernels.push(Kernel::load(nid, graph));
@@ -799,7 +798,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         if dim == prev_shape[0] && dimensions.len() > 1 {
                             splits.as_mut().unwrap().insert(i, dimensions);
                         }
-                        if splits.as_ref().is_some_and(|x| x.is_empty()) {
+                        if splits.as_ref().is_some_and(BTreeMap::is_empty) {
                             splits = None;
                         }
                     }
@@ -1013,7 +1012,9 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     .position(|kernel| kernel.vars().is_superset(&[x, y].into()))
                 {
                     // If both inputs are in the same kernel
-                    let kernel = if kernels[id].shape() != graph.shape(x) {
+                    let kernel = if kernels[id].shape() == graph.shape(x) {
+                        &mut kernels[id]
+                    } else {
                         // create new kernel using already predefined stores of both x and y
                         let mut kernel = Kernel::load(x, graph);
                         kernel.ops.push(VOp::Load {
@@ -1027,8 +1028,6 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         });
                         kernels.push(kernel);
                         kernels.last_mut().unwrap()
-                    } else {
-                        &mut kernels[id]
                     };
                     kernel.ops.push(VOp::Binary { z: nid, x, y, bop });
                 } else {

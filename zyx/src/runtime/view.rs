@@ -66,7 +66,7 @@ impl View {
     }
 
     pub(crate) fn rank(&self) -> usize {
-        self.0.last().map_or(1, |inner| inner.len())
+        self.0.last().map_or(1, BTreeMap::len)
     }
 
     pub(crate) fn shape(&self) -> Vec<usize> {
@@ -234,6 +234,7 @@ impl View {
     }
 
     /// Load constant into variable or directly return it if view isn't padded
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: Reg) -> Reg {
         let _ = constant;
         let _ = c;

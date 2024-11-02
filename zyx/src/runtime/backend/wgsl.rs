@@ -159,6 +159,7 @@ impl WGSLMemoryPool {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<WGSLBuffer, WGSLError> {
         if self.free_bytes < bytes {
             return Err(WGSLError {});
@@ -180,12 +181,14 @@ impl WGSLMemoryPool {
     #[allow(clippy::unused_self)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn deallocate(&mut self, buffer: WGSLBuffer) -> Result<(), WGSLError> {
         buffer.buffer.destroy();
         Ok(())
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &WGSLBuffer) -> Result<(), WGSLError> {
         self.queue.write_buffer(&dst.buffer, 0, src);
         let encoder = self
@@ -198,6 +201,7 @@ impl WGSLMemoryPool {
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn pool_to_host(
         &mut self,
         src: &WGSLBuffer,
@@ -222,6 +226,7 @@ impl WGSLMemoryPool {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn pool_to_pool(
         &mut self,
         src: &WGSLBuffer,
@@ -262,6 +267,7 @@ impl WGSLDevice {
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn compile(
         &mut self,
         kernel: &IRKernel,
@@ -473,6 +479,7 @@ impl WGSLDevice {
 
 impl WGSLQueue {
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn launch(
         &mut self,
         program: &mut WGSLProgram,
@@ -565,6 +572,7 @@ impl WGSLQueue {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn sync(&mut self) -> Result<(), WGSLError> {
         self.device.poll(Maintain::Wait);
         self.load = 0;

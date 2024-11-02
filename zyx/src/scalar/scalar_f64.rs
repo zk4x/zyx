@@ -147,10 +147,10 @@ impl Scalar for f64 {
     }
 
     fn not(self) -> Self {
-        if self != 0. {
-            0.
-        } else {
+        if self == 0. {
             1.
+        } else {
+            0.
         }
     }
 

@@ -42,7 +42,7 @@ pub struct DeviceConfig {
     pub cuda: CUDAConfig,
     /// HIP configuration
     pub hip: HIPConfig,
-    /// OpenCL configuration
+    /// `OpenCL` configuration
     pub opencl: OpenCLConfig,
     /// Vulkan configuration
     pub vulkan: VulkanConfig,
@@ -104,7 +104,7 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
-        self.deallocate_tensors(to_remove)?;
+        self.deallocate_tensors(&to_remove)?;
         // TODO Check the number of tensors. If there are no tensors remaining, deinitialize the runtime,
         // since rust does not implement drop for us.
         if self.graph.is_empty() && self.tensor_buffer_map.is_empty() {
@@ -114,7 +114,7 @@ impl Runtime {
     }
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
-    /// It does not reset the rng and it does not change debug, search, training and config_dir fields
+    /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
     fn deinitialize(&mut self) -> Result<(), ZyxError> {
         //println!("Deinitialize");
         // drop compiled graph cache
@@ -417,12 +417,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn permute(&mut self, x: TensorId, axes: Vec<usize>) -> TensorId {
+    pub(super) fn permute(&mut self, x: TensorId, axes: &[usize]) -> TensorId {
         if axes.len() < 2 || axes == (0..axes.len()).collect::<Vec<usize>>() {
             self.retain(x);
             return x;
         }
-        let shape = permute(self.shape(x), &axes);
+        let shape = permute(self.shape(x), axes);
         self.graph.push_wshape(Node::Permute { x }, shape)
     }
 
@@ -617,7 +617,7 @@ impl Runtime {
     }
 
     /// Loads data with beginning elements of the tensor x.
-    /// If data.len() == x.numel(), then it loads the whole tensor.
+    /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         let n: usize = self.shape(x).iter().product();
         assert!(data.len() <= n, "Return buffer is bigger than tensor");
@@ -682,11 +682,11 @@ impl Runtime {
                 .parameters()
                 .all(|tensor| to_delete.contains(&tensor))
             {
-                if !outside_nodes.contains(tensor) {
-                    to_delete.insert(*tensor);
-                } else {
+                if outside_nodes.contains(tensor) {
                     graph.to_eval.insert(*tensor);
                     new_leafs.insert(*tensor);
+                } else {
+                    to_delete.insert(*tensor);
                 }
             } else {
                 for param in self.graph[*tensor].parameters() {
@@ -706,7 +706,7 @@ impl Runtime {
         }
         self.launch_graph(&graph)?;
         // Deallocate them from devices
-        self.deallocate_tensors(to_delete.clone())?;
+        self.deallocate_tensors(&to_delete)?;
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
             self.graph.add_shape_dtype(tensor);
@@ -719,7 +719,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn deallocate_tensors(&mut self, to_remove: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    fn deallocate_tensors(&mut self, to_remove: &BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
         let mut buffers = BTreeSet::new();
@@ -745,26 +745,8 @@ impl Runtime {
     pub(super) fn backward(
         &mut self,
         x: TensorId,
-        sources: BTreeSet<TensorId>,
+        sources: &BTreeSet<TensorId>,
     ) -> BTreeMap<TensorId, TensorId> {
-        // Does not allocate new tensors, only constant and op nodes
-        let topo = self.graph.build_topo(x, &sources);
-        //println!("Topo: {topo:?}");
-
-        let req_grad: BTreeSet<TensorId> = topo
-            .iter()
-            .copied()
-            .chain(sources.iter().copied())
-            .collect();
-        // Node -> Grad
-        let mut grads: BTreeMap<TensorId, TensorId> = BTreeMap::new();
-        // Initial gradient of ones
-        let grad1 = self.ones(vec![1], self.dtype(x));
-        let sh: Vec<Dimension> = self.shape(x).into();
-        grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad1 }, sh));
-        self.release(grad1).unwrap();
-        //println!("{:?}", self.nodes.last().unwrap());
-
         fn insert_or_add_grad(
             r: &mut Runtime,
             grads: &mut BTreeMap<TensorId, TensorId>,
@@ -792,6 +774,24 @@ impl Runtime {
                 }
             }
         }
+
+        // Does not allocate new tensors, only constant and op nodes
+        let topo = self.graph.build_topo(x, sources);
+        //println!("Topo: {topo:?}");
+
+        let req_grad: BTreeSet<TensorId> = topo
+            .iter()
+            .copied()
+            .chain(sources.iter().copied())
+            .collect();
+        // Node -> Grad
+        let mut grads: BTreeMap<TensorId, TensorId> = BTreeMap::new();
+        // Initial gradient of ones
+        let grad1 = self.ones(vec![1], self.dtype(x));
+        let sh: Vec<Dimension> = self.shape(x).into();
+        grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad1 }, sh));
+        self.release(grad1).unwrap();
+        //println!("{:?}", self.nodes.last().unwrap());
 
         // All releases that cannot fail use unwrap to catch incorrect refcounts immediatelly.
         // reverse gradient calculation
@@ -1016,8 +1016,8 @@ impl Runtime {
                     let axes = self.graph.axes(x);
                     let mut axes: Vec<(usize, usize)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
-                    let argsort_axes = axes.iter().map(|(k, _)| *k).collect();
-                    let grad = self.permute(grad, argsort_axes);
+                    let argsort_axes: Vec<usize> = axes.iter().map(|(k, _)| *k).collect();
+                    let grad = self.permute(grad, &argsort_axes);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Pad { x } => {
@@ -1049,7 +1049,7 @@ impl Runtime {
             }
         }
         let mut res = BTreeMap::new();
-        for (k, v) in grads.into_iter() {
+        for (k, v) in grads {
             if sources.contains(&k) {
                 res.insert(k, v);
             } else {
@@ -1081,7 +1081,7 @@ pub enum ZyxError {
     CUDAError(CUDAError),
     /// Error returned by the HIP runtime
     HIPError(HIPError),
-    /// Error returned by the OpenCL runtime
+    /// Error returned by the `OpenCL` runtime
     OpenCLError(OpenCLError),
     /// Error returned by the Vulkan runtime
     VulkanError(VulkanError),

@@ -488,6 +488,7 @@ impl CUDADevice {
     }
 
     #[allow(clippy::type_complexity)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn compile_cuda(
         &mut self,
         kernel: &IRKernel,
@@ -756,6 +757,7 @@ impl CUDADevice {
         Ok((global_work_size, local_work_size, name, ptx_vec))
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn compile_ptx(&mut self, kernel: &IRKernel, debug_asm: bool) -> String {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];

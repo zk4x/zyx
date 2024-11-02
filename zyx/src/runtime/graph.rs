@@ -401,15 +401,11 @@ impl Graph {
         let mut bytes_read = 0;
         for &nid in &order {
             match &self.nodes[nid].1 {
-                Node::Const { .. } => {}
                 Node::Leaf => {
                     bytes_read +=
                         self.shape(nid).iter().product::<usize>() * self.dtype(nid).byte_size();
                 }
-                &Node::Unary { x, .. } => {
-                    flop += self.shape(x).iter().product::<usize>();
-                }
-                &Node::Binary { x, .. } => {
+                &Node::Unary { x, .. } | &Node::Binary { x, .. } => {
                     flop += self.shape(x).iter().product::<usize>();
                 }
                 &Node::Reduce { x, .. } => {
@@ -431,7 +427,8 @@ impl Graph {
                         })
                         .product::<usize>();
                 }
-                Node::Expand { .. }
+                Node::Const { .. }
+                | Node::Expand { .. }
                 | Node::Permute { .. }
                 | Node::Reshape { .. }
                 | Node::Pad { .. } => {}
@@ -547,6 +544,8 @@ impl Graph {
     /// Plot dot graph in dot format between given nodes
     #[must_use]
     pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> String {
+        use core::fmt::Write;
+        use std::format as f;
         let ids: BTreeSet<TensorId> = if ids.is_empty() {
             self.nodes.ids().collect()
         } else {
@@ -588,9 +587,7 @@ impl Graph {
                 }
             }
         }
-        /// Puts graph of nodes into dot language for visualization
-        use core::fmt::Write;
-        use std::format as f;
+        // Puts graph of nodes into dot language for visualization
         let mut user_rc: BTreeMap<TensorId, u32> =
             self.nodes.iter().map(|(k, (rc, _))| (k, *rc)).collect();
         for (_, node) in self.nodes.values() {
@@ -639,7 +636,7 @@ impl Graph {
                 Node::Reduce { x, rop } => add_node(id, &f!("{rop:?}({x})"), "oval"),
             }
             for param in node.parameters() {
-                writeln!(edges, "  {} -> {id}", param).unwrap();
+                writeln!(edges, "  {param} -> {id}").unwrap();
             }
         }
         res_dot_graph = res_dot_graph.replace("NL", "\n");

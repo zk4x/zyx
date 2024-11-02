@@ -64,7 +64,7 @@ impl Kernel {
     pub(super) fn inputs(&self) -> BTreeSet<TensorId> {
         self.ops
             .iter()
-            .flat_map(|op| {
+            .filter_map(|op| {
                 if let VOp::Load { x, xscope, .. } = op {
                     if *xscope == Scope::Global {
                         Some(*x)
@@ -82,7 +82,7 @@ impl Kernel {
     pub(super) fn outputs(&self) -> BTreeSet<TensorId> {
         self.ops
             .iter()
-            .flat_map(|op| {
+            .filter_map(|op| {
                 if let VOp::Store { z, zscope, .. } = op {
                     if *zscope == Scope::Global {
                         Some(*z)
@@ -115,13 +115,12 @@ impl Kernel {
                         res.insert(*z);
                     }
                 }
-                VOp::Store { .. } => {}
                 VOp::Loop { .. } => {
                     if end_loops > 0 {
                         end_loops -= 1;
                     }
                 }
-                VOp::Barrier { .. } => {}
+                VOp::Store { .. } | VOp::Barrier { .. } => {}
                 VOp::EndLoop { .. } => {
                     // Only variables defined after end of loops can be used
                     end_loops += 1;
@@ -387,9 +386,9 @@ impl Kernel {
         }
     }*/
 
-    /// Inserts loop at op_id, giving it axis id and dimension 1.
+    /// Inserts loop at `op_id`, giving it axis id and dimension 1.
     /// All loops and views axis equal or greater then axis are increased by 1
-    /// Does not change reduce op's num_axes
+    /// Does not change reduce op's `num_axes`
     /// This function also does not change kernel's shape!
     pub(super) fn insert_loop(&mut self, op_id: usize, axis: Axis) {
         let naxis = axis;
@@ -401,15 +400,16 @@ impl Kernel {
                 | VOp::Accumulator { view, .. } => view.insert_loop(naxis),
                 VOp::Loop { axis, .. } => {
                     if *axis >= naxis {
-                        *axis += 1
+                        *axis += 1;
                     }
                 }
                 _ => {}
             }
         }
-        self.ops.insert(op_id, VOp::Loop { axis, len: 1 })
+        self.ops.insert(op_id, VOp::Loop { axis, len: 1 });
     }
 
+    #[allow(clippy::unused_self)]
     pub(super) const fn shard_axis(&self) -> Option<(Axis, Dimension)> {
         // Shard axis is axis that is not gonna be locally cached,
         // which is usually the batch axis, but it can also be other axes.
@@ -428,7 +428,6 @@ impl Kernel {
                 &VOp::Loop { len, .. } => {
                     shape.push(len);
                 }
-                VOp::Const { .. } => {}
                 &VOp::Load { xscope, .. } => {
                     // Note that this calculates actual read speed, even if the load accesses the same
                     // value multiple times. This is usefull so that we can see whether the kernel
@@ -442,18 +441,16 @@ impl Kernel {
                         mem_write += shape.iter().product::<usize>() as u128;
                     }
                 }
-                VOp::Accumulator { .. } => {}
                 VOp::EndLoop => {
                     shape.pop();
                 }
-                VOp::Move { .. } => {}
-                VOp::Unary { .. } => {
+                VOp::Unary { .. } | VOp::Binary { .. } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
-                VOp::Binary { .. } => {
-                    flop += shape.iter().product::<usize>() as u128;
-                }
-                VOp::Barrier { .. } => {}
+                VOp::Accumulator { .. }
+                | VOp::Const { .. }
+                | VOp::Move { .. }
+                | VOp::Barrier { .. } => {}
             }
         }
         (flop, mem_read, mem_write)
@@ -462,10 +459,10 @@ impl Kernel {
     pub(super) fn can_be_zero_padded(&self) -> bool {
         self.ops.iter().all(|op| match op {
             // For now just do not pad reduce kernels
-            VOp::Accumulator { .. } => false, //matches!(rop, ROp::Sum),
+            //matches!(rop, ROp::Sum),
             // TODO this can be later removed, but it's a trade-off,
-            // it makes kernels bigger,  but they will have to contain branches.
-            VOp::Store { .. } => false,
+            // it makes kernels bigger, but harder to reason about
+            VOp::Accumulator { .. } | VOp::Store { .. } => false,
             _ => true,
         })
     }

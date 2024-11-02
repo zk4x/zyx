@@ -374,7 +374,7 @@ impl Kernel {
                             && zview == &View::none()
                         {
                             let mut sorted_axes = axes.clone();
-                            sorted_axes.sort();
+                            sorted_axes.sort_unstable();
                             let used_axes = xview.used_axes();
                             if used_axes != sorted_axes {
                                 let global_view = xview.clone();

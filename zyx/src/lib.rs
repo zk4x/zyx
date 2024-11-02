@@ -22,14 +22,16 @@
 #![deny(clippy::cast_ptr_alignment)]
 #![deny(clippy::cast_sign_loss)]
 #![deny(clippy::ptr_cast_constness)]
-//#![deny(clippy::pedantic)]
+#![deny(clippy::pedantic)]
 #![deny(clippy::fn_to_numeric_cast_any)]
 //#![deny(clippy::restriction)]
+#![forbid(clippy::perf)]
+#![deny(clippy::style)]
 #![deny(clippy::as_ptr_cast_mut)]
 #![deny(clippy::missing_const_for_fn)]
 #![deny(clippy::nursery)]
-#![allow(clippy::use_self)]
 //#![deny(clippy::cargo)]
+#![allow(clippy::use_self)]
 #![allow(clippy::single_call_fn)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::explicit_iter_loop)]
@@ -37,9 +39,8 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::multiple_inherent_impl)]
 
-use std::{fs::File, path::Path};
-
 use crate::runtime::Runtime;
+use std::{fs::File, path::Path};
 
 mod dtype;
 mod index_map;
@@ -67,6 +68,10 @@ static RT: mutex::Mutex<Runtime, 1_000_000_000> = mutex::Mutex::new(Runtime::new
 /// Save tensors or modules
 pub trait TensorSave {
     /// Save tensors or modules
+    ///
+    /// # Errors
+    ///
+    /// Errors if tensors failed to realize or failed to save to disk.
     fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError>;
 }
 
@@ -88,7 +93,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
             write!(header, "\"dtype\":\"{}\",", dtype.safetensors()).unwrap();
             let mut st_shape = format!("{:?}", tensor.shape());
             st_shape.retain(|c| !c.is_whitespace());
-            write!(header, "\"shape\":{},", st_shape).unwrap();
+            write!(header, "\"shape\":{st_shape},").unwrap();
             let size = tensor.numel() * dtype.byte_size();
             write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
             begin += size;

@@ -65,15 +65,18 @@ impl VulkanMemoryPool {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<VulkanBuffer, VulkanError> {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     #[allow(clippy::needless_pass_by_value)]
     pub(super) fn deallocate(&mut self, buffer: VulkanBuffer) -> Result<(), VulkanError> {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn host_to_pool(
         &mut self,
         src: &[u8],
@@ -82,6 +85,7 @@ impl VulkanMemoryPool {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn pool_to_host(
         &mut self,
         src: &VulkanBuffer,
@@ -90,6 +94,7 @@ impl VulkanMemoryPool {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn pool_to_pool(
         &mut self,
         src: &VulkanBuffer,
@@ -123,6 +128,7 @@ impl VulkanDevice {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn compile(
         &mut self,
         kernel: &IRKernel,
@@ -133,6 +139,7 @@ impl VulkanDevice {
 }
 
 impl VulkanQueue {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn launch(
         &mut self,
         program: &mut VulkanProgram,
@@ -142,6 +149,7 @@ impl VulkanQueue {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn sync(&mut self) -> Result<(), VulkanError> {
         todo!()
     }
