@@ -13,7 +13,7 @@ use half::{bf16, f16};
 use num_complex::Complex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
-use std::iter::repeat;
+use std::iter::{once, repeat};
 use std::ops::{
     Add, BitAnd, BitOr, BitXor, Bound, Div, Mul, Neg, Not, Range, RangeBounds, RangeFrom,
     RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub,
@@ -22,7 +22,7 @@ use std::path::Path;
 
 use crate::RT;
 
-pub(crate) type TensorId = u32;
+pub type TensorId = u32;
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 /// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
@@ -382,7 +382,7 @@ impl Tensor {
     /// Create tensor sampled from standard distribution.
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        let shape: Vec<usize> = [2].into_iter().chain(shape.into_shape()).collect();
+        let shape: Vec<usize> = once(2).chain(shape.into_shape()).collect();
         let src = Tensor::rand(shape, dtype)?;
         let mut x = src.get(0)?;
         x = x.mul(Tensor::constant(2f32 * std::f32::consts::PI));
@@ -1197,11 +1197,10 @@ impl Tensor {
         let rank = shape.len();
         let axis = into_axis(axis, rank)?;
         let dim = isize::try_from(shape[axis]).unwrap();
-        let padding: Vec<(isize, isize)> = [(
+        let padding: Vec<(isize, isize)> = once((
             -isize::try_from(start).unwrap(),
             -dim + isize::try_from(length).unwrap() + isize::try_from(start).unwrap(),
-        )]
-        .into_iter()
+        ))
         .chain(core::iter::repeat((0, 0)).take(rank - axis - 1))
         .collect::<Vec<(isize, isize)>>()
         .into_iter()
@@ -2455,7 +2454,7 @@ impl Tensor {
                 k_.iter()
                     .copied()
                     .zip(o_.iter().copied())
-                    .flat_map(|(k, o)| [k, o]),
+                    .flat_map(Into::<[usize; 2]>::into),
             )
             .collect();
         xup = xup.reshape(sh)?;
@@ -2513,7 +2512,7 @@ impl Tensor {
             .iter()
             .copied()
             .zip(base_shape.iter().copied())
-            .flat_map(|(r, d)| [r, d])
+            .flat_map(Into::<[usize; 2]>::into)
             .collect();
         let final_shape: Vec<usize> = repeats
             .iter()
@@ -2557,16 +2556,16 @@ impl Tensor {
     pub fn load<Module: FromIterator<(String, Tensor)>>(
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
-        match path.as_ref().extension().and_then(std::ffi::OsStr::to_str) {
-            Some(e) => match e {
-                "safetensors" => Self::load_safetensors(path),
-                #[cfg(feature = "gguf")]
-                "gguf" => Self::load_gguf(path),
-                _ => panic!(
-                    "Unknown file extension. Zyx currently supports only safetensors format."
-                ),
-            },
-            None => panic!(),
+        let e = path
+            .as_ref()
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap();
+        match e {
+            "safetensors" => Self::load_safetensors(path),
+            #[cfg(feature = "gguf")]
+            "gguf" => Self::load_gguf(path),
+            _ => panic!("Unknown file extension. Zyx currently supports only safetensors format."),
         }
     }
 
@@ -2793,7 +2792,10 @@ impl Tensor {
             }
             DType::Bool => {
                 let data: Vec<bool> = self.clone().try_into()?;
-                unsafe { std::mem::transmute::<Vec<bool>, Vec<u8>>(data) }
+                #[allow(clippy::transmute_undefined_repr)]
+                unsafe {
+                    std::mem::transmute::<Vec<bool>, Vec<u8>>(data)
+                }
             }
         })
     }
@@ -3487,51 +3489,51 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![1], &[value]).unwrap(),
-        };
+        }
     }
 }
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![data.len()], &data).unwrap(),
-        };
+        }
     }
 }
 
 impl<T: Scalar> From<&Vec<T>> for Tensor {
     fn from(data: &Vec<T>) -> Self {
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![data.len()], data).unwrap(),
-        };
+        }
     }
 }
 
 impl<T: Scalar> From<&[T]> for Tensor {
     fn from(data: &[T]) -> Self {
         let n = data.len();
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![n], data).unwrap(),
-        };
+        }
     }
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![D0], &data).unwrap(),
-        };
+        }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![D0, D1], data).unwrap(),
-        };
+        }
     }
 }
 
@@ -3540,9 +3542,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![D0, D1, D2], data).unwrap(),
-        };
+        }
     }
 }
 
@@ -3552,9 +3554,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        return Tensor {
+        Tensor {
             id: RT.lock().variable(vec![D0, D1, D2, D3], data).unwrap(),
-        };
+        }
     }
 }
 

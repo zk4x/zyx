@@ -11,7 +11,7 @@ use super::{shape_to_loops, vop::VOp};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Kernel {
+pub struct Kernel {
     pub(crate) ops: Vec<VOp>,
 }
 

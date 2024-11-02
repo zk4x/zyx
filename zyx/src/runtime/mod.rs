@@ -52,7 +52,7 @@ pub struct DeviceConfig {
 }
 
 // This is the whole global state of zyx
-pub(super) struct Runtime {
+pub struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
     // Cache for compiled graphs
@@ -662,7 +662,7 @@ impl Runtime {
             self.initialize_devices()?;
         }
         // Get rcs of nodes outside of realized graph
-        let (mut graph, outside_nodes, order) = self.graph.realize_graph(tensors.clone(), |x| {
+        let (mut graph, outside_nodes, order) = self.graph.realize_graph(tensors, |x| {
             self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
         });
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?

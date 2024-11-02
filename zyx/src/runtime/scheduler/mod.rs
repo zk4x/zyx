@@ -65,6 +65,7 @@ pub(super) struct VProgram {
 }
 
 impl Runtime {
+    #[allow(clippy::cognitive_complexity)]
     pub(super) fn compile_graph(&mut self, mut graph: Graph) -> Result<CompiledGraph, ZyxError> {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
         let (order, flop, bytes_read, bytes_written) = graph.execution_order();
@@ -584,6 +585,7 @@ impl Runtime {
 /// Generate kernels from graph. This function determines which ops will get fused together
 /// and how many kernels will be created.
 #[allow(clippy::similar_names)]
+#[allow(clippy::cognitive_complexity)]
 fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kernel> {
     //let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device

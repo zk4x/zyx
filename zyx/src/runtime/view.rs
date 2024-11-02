@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt::Display};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct View(Vec<BTreeMap<Axis, RDim>>);
+pub struct View(Vec<BTreeMap<Axis, RDim>>);
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,23 +66,18 @@ impl View {
     }
 
     pub(crate) fn rank(&self) -> usize {
-        if let Some(inner) = self.0.last() {
-            inner.len()
-        } else {
-            1
-        }
+        self.0.last().map_or(1, |inner| inner.len())
     }
 
     pub(crate) fn shape(&self) -> Vec<usize> {
-        if let Some(inner) = self.0.last() {
-            inner.values().map(|dim| dim.d).collect()
-        } else {
-            vec![1]
-        }
+        self.0.last().map_or_else(
+            || vec![1],
+            |inner| inner.values().map(|dim| dim.d).collect(),
+        )
     }
 
     pub(crate) fn original_numel(&self) -> usize {
-        if let Some(inner) = self.0.first() {
+        self.0.first().map_or(1, |inner| {
             inner
                 .values()
                 .map(|dim| {
@@ -93,36 +88,28 @@ impl View {
                     }
                 })
                 .product()
-        } else {
-            1
-        }
+        })
     }
 
     pub(crate) fn numel(&self) -> usize {
-        if let Some(inner) = self.0.last() {
-            inner.values().map(|dim| dim.d).product()
-        } else {
-            1
-        }
+        self.0
+            .last()
+            .map_or(1, |inner| inner.values().map(|dim| dim.d).product())
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
-        if let Some(inner) = self.0.last() {
+        self.0.last().map_or(true, |inner| {
             let stride = 1;
             inner
                 .values()
                 .all(|dim| dim.lp == 0 && dim.rp == 0 && dim.st == stride)
-        } else {
-            true
-        }
+        })
     }
 
     pub(crate) fn used_axes(&self) -> Vec<usize> {
-        if let Some(inner) = self.0.last() {
-            inner.keys().copied().collect()
-        } else {
-            Vec::new()
-        }
+        self.0
+            .last()
+            .map_or_else(Vec::new, |inner| inner.keys().copied().collect())
     }
 
     /// Inserts new loop, shifts all axes greater than axis up by one
@@ -289,10 +276,12 @@ impl View {
                 // Offset
                 if dim.st != 0 && dim.d != 1 {
                     let t = if dim.lp != 0 {
-                        let lp = Reg::Const(Constant::U32(
-                            u32::try_from(if dim.lp > 0 { dim.lp } else { -dim.lp }).unwrap(),
-                        ));
-                        c.sub(Reg::Var(a), lp)
+                        let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
+                        if dim.lp > 0 {
+                            c.sub(Reg::Var(a), lp)
+                        } else {
+                            c.add(Reg::Var(a), lp)
+                        }
                     } else {
                         a
                     };

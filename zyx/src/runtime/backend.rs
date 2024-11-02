@@ -610,12 +610,8 @@ impl MemoryPool {
     pub(super) fn pool_to_pool(&mut self, sbid: Id, dst_mp: &mut MemoryPool, dbid: Id, bytes: usize) -> Result<(), ZyxError> {
         macro_rules! cross_backend {
             ($sm: expr, $sb: expr, $dm: expr, $db: expr) => {{
-                use std::mem::MaybeUninit;
-                let mut data: Vec<MaybeUninit<u8>> = Vec::with_capacity(bytes);
-                unsafe { data.set_len(bytes) };
-                let dref: &mut [MaybeUninit<u8>] = data.as_mut();
-                $sm.pool_to_host(&$sb[sbid], unsafe { std::mem::transmute::<&mut [std::mem::MaybeUninit<u8>], &mut [u8]>(dref) })?;
-                let data: Vec<u8> = unsafe { std::mem::transmute(data) };
+                let mut data = vec![0; bytes];
+                $sm.pool_to_host(&$sb[sbid], &mut data)?;
                 $dm.host_to_pool(&data, &$db[dbid])?;
             }};
         }

@@ -3,8 +3,8 @@
 use crate::ZyxError;
 use core::fmt::Debug;
 
-pub(crate) type Dimension = usize;
-pub(crate) type Axis = usize;
+pub type Dimension = usize;
+pub type Axis = usize;
 
 /// IntoShape trait
 pub trait IntoShape: Clone + Debug {
@@ -84,29 +84,35 @@ impl IntoShape for &Vec<Dimension> {
     }
 }
 
-pub(crate) fn into_axis(axis: isize, rank: usize) -> Result<usize, ZyxError> {
-    if let Ok(rank2) = TryInto::<isize>::try_into(rank) {
-        if let Ok(a) = TryInto::<usize>::try_into(axis + rank2) {
-            if a < 2 * rank {
-                Ok(a % rank)
-            } else {
-                Err(ZyxError::ShapeError(format!(
-                    "Axis {axis} is out of range of rank {rank}"
-                )))
-            }
-        } else {
+pub fn into_axis(axis: isize, rank: usize) -> Result<usize, ZyxError> {
+    TryInto::<isize>::try_into(rank).map_or_else(
+        |_| {
             Err(ZyxError::ShapeError(format!(
                 "Axis {axis} is out of range of rank {rank}"
             )))
-        }
-    } else {
-        Err(ZyxError::ShapeError(format!(
-            "Axis {axis} is out of range of rank {rank}"
-        )))
-    }
+        },
+        |rank2| {
+            TryInto::<usize>::try_into(axis + rank2).map_or_else(
+                |_| {
+                    Err(ZyxError::ShapeError(format!(
+                        "Axis {axis} is out of range of rank {rank}"
+                    )))
+                },
+                |a| {
+                    if a < 2 * rank {
+                        Ok(a % rank)
+                    } else {
+                        Err(ZyxError::ShapeError(format!(
+                            "Axis {axis} is out of range of rank {rank}"
+                        )))
+                    }
+                },
+            )
+        },
+    )
 }
 
-pub(crate) fn into_axes(
+pub fn into_axes(
     axes: impl IntoIterator<Item = isize>,
     rank: usize,
 ) -> Result<Vec<usize>, ZyxError> {
@@ -124,12 +130,12 @@ pub(crate) fn into_axes(
     Ok(res)
 }
 
-pub(crate) fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+pub fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
     assert_eq!(shape.len(), axes.len());
     axes.iter().map(|a| shape[*a]).collect()
 }
 
-pub(crate) fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+pub fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
     let res: Vec<usize> = shape
         .iter()
         .copied()

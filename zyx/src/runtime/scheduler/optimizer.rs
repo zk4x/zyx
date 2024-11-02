@@ -8,7 +8,7 @@ use crate::{
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug)]
-pub(crate) enum KernelOptimizer {
+pub enum KernelOptimizer {
     #[allow(dead_code)]
     Optimized(KernelOptimization, u128),
     // All optimizations, best optimization id
@@ -19,7 +19,7 @@ pub(crate) enum KernelOptimizer {
 // they are assigned to devices.
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct KernelOptimization {
+pub struct KernelOptimization {
     // Axis splits to give us global, local and register work sizes
     // as well as work per thread in reduce loops
     pub(crate) splits: Vec<(usize, Vec<Dimension>)>,
@@ -177,6 +177,7 @@ impl Kernel {
     // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
     // tensor cores, just a ton of stuff. Later add search over different optimizations.
     #[allow(clippy::similar_names)]
+    #[allow(clippy::cognitive_complexity)]
     pub(super) fn optimize(&self, optimization: &KernelOptimization) -> Kernel {
         let mut kernel = self.clone();
         // Apply axis splits

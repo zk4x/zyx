@@ -614,6 +614,7 @@ impl OpenCLDevice {
         Ok(())
     }
 
+    #[allow(clippy::cognitive_complexity)]
     pub(super) fn compile(
         &mut self,
         kernel: &IRKernel,

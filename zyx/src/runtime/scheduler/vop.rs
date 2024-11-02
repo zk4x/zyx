@@ -12,7 +12,7 @@ use crate::{
 // Should be just Unary, Binary, Const, Copy, Loop, Reduce
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum VOp {
+pub enum VOp {
     Loop {
         axis: Axis,
         len: Dimension,
@@ -73,7 +73,7 @@ pub(crate) enum VOp {
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum MOp {
+pub enum MOp {
     Expa,
     Perm,
     Resh,
