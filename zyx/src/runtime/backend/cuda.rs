@@ -5,6 +5,7 @@
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use float8::F8E4M3;
 use libloading::Library;
@@ -33,7 +34,7 @@ pub struct CUDAError {
 pub(super) struct CUDAMemoryPool {
     // Just to close the connection
     #[allow(unused)]
-    cuda: Rc<Library>,
+    cuda: Arc<Library>,
     context: CUcontext,
     device: CUdevice,
     free_bytes: usize,
@@ -117,13 +118,9 @@ pub(super) fn initialize_devices(
     let _ = config;
 
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
-    let cuda = cuda_paths.iter().find_map(|path| {
-        if let Ok(lib) = unsafe { Library::new(path) } {
-            Some(lib)
-        } else {
-            None
-        }
-    });
+    let cuda = cuda_paths
+        .iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         return Err(CUDAError {
             info: "CUDA runtime not found.".into(),
@@ -187,11 +184,10 @@ pub(super) fn initialize_devices(
     }
     let device_ids: Vec<i32> = (0..num_devices)
         .filter(|id| {
-            if let Some(ids) = config.device_ids.as_ref() {
-                ids.contains(id)
-            } else {
-                true
-            }
+            config
+                .device_ids
+                .as_ref()
+                .map_or(true, |ids| ids.contains(id))
         })
         .collect();
     if debug_dev && !device_ids.is_empty() {
@@ -202,21 +198,21 @@ pub(super) fn initialize_devices(
         );
     }
 
-    let cuda = Rc::new(cuda);
+    let cuda = Arc::new(cuda);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
     for dev_id in device_ids {
         let mut device = 0;
         unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
         let mut device_name = [0; 100];
-        let Ok(_) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }
+        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }
             .check("Failed to get CUDA device name")
         else {
             continue;
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(_) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }
+        let Ok(()) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }
             .check("Failed to get CUDA device compute capability.")
         else {
             continue;
@@ -227,7 +223,7 @@ pub(super) fn initialize_devices(
             });
         }
         let mut free_bytes = 0;
-        let Ok(_) =
+        let Ok(()) =
             unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.")
         else {
             continue;
@@ -260,7 +256,7 @@ pub(super) fn initialize_devices(
         let mut queues = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
-            let Ok(_) = unsafe { cuStreamCreate(&mut stream, 0) }.check("") else {
+            let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check("") else {
                 continue;
             };
             queues.push(CUDAQueue {
@@ -296,41 +292,49 @@ pub(super) fn initialize_devices(
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: [
-                dev.get(
+                usize::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
                     cuDeviceGetAttribute,
-                )? as usize,
-                dev.get(
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
                     cuDeviceGetAttribute,
-                )? as usize,
-                dev.get(
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
                     cuDeviceGetAttribute,
-                )? as usize,
+                )?)
+                .unwrap(),
             ],
-            max_local_threads: dev.get(
+            max_local_threads: usize::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
                 cuDeviceGetAttribute,
-            )? as usize,
+            )?)
+            .unwrap(),
             max_local_work_dims: [
-                dev.get(
+                usize::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
                     cuDeviceGetAttribute,
-                )? as usize,
-                dev.get(
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
                     cuDeviceGetAttribute,
-                )? as usize,
-                dev.get(
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
                     cuDeviceGetAttribute,
-                )? as usize,
+                )?)
+                .unwrap(),
             ],
-            local_mem_size: dev.get(
+            local_mem_size: usize::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
                 cuDeviceGetAttribute,
-            )? as usize,
+            )?)
+            .unwrap(),
             num_registers: 96,
             preferred_vector_size: 16,
             tensor_cores: major > 7,
@@ -341,12 +345,14 @@ pub(super) fn initialize_devices(
 }
 
 impl CUDAMemoryPool {
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
         //unsafe { (self.cuCtxDestroy)(self.context) }.check("Failed to destroy CUDA context.")?;
         Ok(())
     }
 
-    pub(super) fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
@@ -359,7 +365,7 @@ impl CUDAMemoryPool {
         }
         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
         self.free_bytes -= bytes;
-        let mut ptr = self.device as u64;
+        let mut ptr = u64::try_from(self.device).unwrap();
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
         Ok(CUDABuffer {
@@ -369,6 +375,7 @@ impl CUDAMemoryPool {
         })
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
         unsafe { (self.cuMemFree)(buffer.ptr) }.check("Failed to free memory.")?;
         self.free_bytes += buffer.bytes;
@@ -402,7 +409,9 @@ impl CUDAMemoryPool {
 }
 
 impl CUDADevice {
-    pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
+    pub(super) const fn deinitialize(self) -> Result<(), CUDAError> {
         Ok(())
     }
 
@@ -421,19 +430,21 @@ impl CUDADevice {
         Ok(v)
     }
 
-    pub(super) fn info(&self) -> &DeviceInfo {
+    pub(super) const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_program(&self, program: CUDAProgram) -> Result<(), CUDAError> {
         unsafe { (self.cuModuleUnload)(program.module) }.check("Failed to release CUDA program.")
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_queue(&self, queue: CUDAQueue) -> Result<(), CUDAError> {
         unsafe { (self.cuStreamDestroy)(queue.stream) }.check("Failed to release CUDA stream.")
     }
@@ -443,6 +454,45 @@ impl CUDADevice {
         kernel: &IRKernel,
         debug_asm: bool,
     ) -> Result<CUDAProgram, CUDAError> {
+        let (global_work_size, local_work_size, name, ptx_vec) =
+            self.compile_cuda(kernel, debug_asm)?;
+
+        let mut module = ptr::null_mut();
+        unsafe {
+            (self.cuModuleLoadDataEx)(
+                &mut module,
+                ptx_vec.as_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }
+        .check("Module load failed.")?;
+        let mut function: CUfunction = ptr::null_mut();
+        // Don't forget that the name is null terminated string
+        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+            .check("Failed to load function.")?;
+
+        /*if debug_asm {
+            let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
+            println!("{ptx_source}");
+        }*/
+
+        Ok(CUDAProgram {
+            name,
+            module,
+            function,
+            global_work_size,
+            local_work_size,
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn compile_cuda(
+        &mut self,
+        kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), CUDAError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -547,7 +597,7 @@ impl CUDADevice {
                             format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
                         }
                         UOp::ReLU => {
-                            format!("{indent}r{0} = r{1} * (r{1} > {2});\n", z, x, zero)
+                            format!("{indent}r{z} = r{x} * (r{x} > {zero});\n")
                         }
                         UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
                         UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
@@ -632,13 +682,9 @@ impl CUDADevice {
             "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
         ];
-        let cudartc = cudartc_paths.iter().find_map(|path| {
-            if let Ok(lib) = unsafe { Library::new(path) } {
-                Some(lib)
-            } else {
-                None
-            }
-        });
+        let cudartc = cudartc_paths
+            .iter()
+            .find_map(|path| unsafe { Library::new(path) }.ok());
         let Some(cudartc) = cudartc else {
             return Err(CUDAError {
                 info: "CUDA runtime not found.".into(),
@@ -669,16 +715,10 @@ impl CUDADevice {
         let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
             *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
 
-        #[repr(C)]
-        #[derive(Debug)]
-        struct _nvrtcProgram {
-            _unused: [u8; 0],
-        }
-        type nvrtcProgram = *mut _nvrtcProgram;
         let mut program = ptr::null_mut();
         unsafe {
             nvrtcCreateProgram(
-                &mut program as *mut nvrtcProgram,
+                &mut program,
                 source.as_ptr().cast(),
                 name.as_ptr().cast(),
                 0,
@@ -700,7 +740,7 @@ impl CUDADevice {
             unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }
                 .check("nvrtcGetProgramLogSize")?;
             let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
-            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr() as *mut i8) }
+            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }
                 .check("nvrtcGetProgramLog")?;
             if let Ok(log) = String::from_utf8(program_log_vec) {
                 println!("NVRTC program log:\n{log}",);
@@ -708,41 +748,12 @@ impl CUDADevice {
                 println!("NVRTC program log is not valid utf8");
             }
         }
-
         let mut ptx_size: usize = 0;
         unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check("nvrtcGetPTXSize")?;
         let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
-        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr() as *mut i8) }.check("nvrtcGetPTX")?;
+        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check("nvrtcGetPTX")?;
         unsafe { nvrtcDestroyProgram(&mut program) }.check("nvrtcDestoyProgram")?;
-
-        let mut module = ptr::null_mut();
-        unsafe {
-            (self.cuModuleLoadDataEx)(
-                &mut module,
-                ptx_vec.as_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check("Module load failed.")?;
-        let mut function: CUfunction = ptr::null_mut();
-        // Don't forget that the name is null terminated string
-        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
-            .check("Failed to load function.")?;
-
-        /*if debug_asm {
-            let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
-            println!("{ptx_source}");
-        }*/
-
-        Ok(CUDAProgram {
-            name,
-            module,
-            function,
-            global_work_size,
-            local_work_size,
-        })
+        Ok((global_work_size, local_work_size, name, ptx_vec))
     }
 
     fn compile_ptx(&mut self, kernel: &IRKernel, debug_asm: bool) -> String {
@@ -959,14 +970,14 @@ impl CUDAQueue {
             .check("Failed to synchronize CUDA stream.")
     }
 
-    pub(super) fn load(&self) -> usize {
+    pub(super) const fn load(&self) -> usize {
         self.load
     }
 }
 
 impl CUDAStatus {
     fn check(self, info: &str) -> Result<(), CUDAError> {
-        if self != CUDAStatus::CUDA_SUCCESS {
+        if self != Self::CUDA_SUCCESS {
             Err(CUDAError {
                 info: info.into(),
                 status: self,
@@ -1167,22 +1178,22 @@ enum CUdevice_attribute {
 impl IRDType {
     pub(super) fn ptx(&self) -> &str {
         match self {
-            IRDType::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
-            IRDType::F8(v) => "f8",
-            IRDType::F16(v) => "f16",
-            IRDType::F32(v) => "f32",
-            IRDType::F64(v) => "f64",
+            Self::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            Self::F8(v) => "f8",
+            Self::F16(v) => "f16",
+            Self::F32(v) => "f32",
+            Self::F64(v) => "f64",
             #[cfg(feature = "complex")]
-            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            Self::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8(v) => "u8",
-            IRDType::I8(v) => "s8",
-            IRDType::I16(v) => "s16",
-            IRDType::I32(v) => "s32",
-            IRDType::I64(v) => "s64",
-            IRDType::Bool => "b8",
-            IRDType::U32(v) => "u32",
+            Self::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            Self::U8(v) => "u8",
+            Self::I8(v) => "s8",
+            Self::I16(v) => "s16",
+            Self::I32(v) => "s32",
+            Self::I64(v) => "s64",
+            Self::Bool => "b8",
+            Self::U32(v) => "u32",
         }
     }
 }
@@ -1191,38 +1202,38 @@ impl Constant {
     fn ptx(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            &Constant::F16(x) => format!("{:.12}", half::f16::from_bits(x)),
-            &Constant::BF16(x) => format!("{:.12}", half::bf16::from_bits(x)),
-            Constant::F8(x) => {
+            &Self::F16(x) => format!("{:.12}", half::f16::from_bits(x)),
+            &Self::BF16(x) => format!("{:.12}", half::bf16::from_bits(x)),
+            Self::F8(x) => {
                 /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
                 format!("0f{}", hex)*/
                 use float8::F8E4M3 as f8;
                 format!("{:.12}", f8::from_bits(*x))
             }
-            &Constant::F32(x) => {
+            &Self::F32(x) => {
                 /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
                 format!("0f{}", hex)*/
                 format!("{:.12}", f32::from_bits(x))
             }
-            &Constant::F64(x) => {
+            &Self::F64(x) => {
                 /*let bytes = unsafe { t::<_, f64>(*x).to_ne_bytes() };
                 let hex = format!("{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
                 format!("0d{}", hex)*/
                 format!("{:.12}", f64::from_bits(x))
             }
             #[cfg(feature = "complex")]
-            Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
+            Self::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
             #[cfg(feature = "complex")]
-            Constant::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
-            Constant::U8(_) => todo!(),
-            Constant::I8(_) => todo!(),
-            Constant::I16(_) => todo!(),
-            Constant::U32(x) => format!("{x}"),
-            Constant::I32(x) => format!("{x}"),
-            Constant::I64(x) => format!("{x}"),
-            Constant::Bool(_) => todo!(),
+            Self::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
+            Self::U8(_) => todo!(),
+            Self::I8(_) => todo!(),
+            Self::I16(_) => todo!(),
+            Self::U32(x) => format!("{x}"),
+            Self::I32(x) => format!("{x}"),
+            Self::I64(x) => format!("{x}"),
+            Self::Bool(_) => todo!(),
         }
     }
 }
@@ -1230,8 +1241,8 @@ impl Constant {
 impl Reg {
     fn ptx(&self) -> String {
         match self {
-            Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => value.ptx(),
+            Self::Var(id) => format!("r{id}"),
+            Self::Const(value) => value.ptx(),
         }
     }
 }
@@ -1239,22 +1250,22 @@ impl Reg {
 impl IRDType {
     pub(super) fn cu(&self) -> &str {
         match self {
-            IRDType::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
-            IRDType::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
-            IRDType::F16(v) => "__half",
-            IRDType::F32(v) => "float",
-            IRDType::F64(v) => "double",
+            Self::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
+            Self::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
+            Self::F16(v) => "__half",
+            Self::F32(v) => "float",
+            Self::F64(v) => "double",
             #[cfg(feature = "complex")]
-            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            Self::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8(v) => "unsigned char",
-            IRDType::I8(v) => "char",
-            IRDType::I16(v) => "short",
-            IRDType::I32(v) => "int",
-            IRDType::I64(v) => "long",
-            IRDType::Bool => "bool",
-            IRDType::U32(v) => "unsigned int",
+            Self::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            Self::U8(v) => "unsigned char",
+            Self::I8(v) => "char",
+            Self::I16(v) => "short",
+            Self::I32(v) => "int",
+            Self::I64(v) => "long",
+            Self::Bool => "bool",
+            Self::U32(v) => "unsigned int",
         }
     }
 }
@@ -1262,8 +1273,8 @@ impl IRDType {
 impl Reg {
     fn cu(&self) -> String {
         match self {
-            Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => value.cu(),
+            Self::Var(id) => format!("r{id}"),
+            Self::Const(value) => value.cu(),
         }
     }
 }
@@ -1272,25 +1283,32 @@ impl Constant {
     fn cu(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            &Constant::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
-            &Constant::F8(x) => format!("{:.16}f", F8E4M3::from_bits(x)),
-            &Constant::F16(x) => format!("{}f", half::f16::from_bits(x)),
-            &Constant::F32(x) => format!("{:.16}f", f32::from_bits(x)),
-            &Constant::F64(x) => format!("{:.16}", f64::from_bits(x)),
+            &Self::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
+            &Self::F8(x) => format!("{:.16}f", F8E4M3::from_bits(x)),
+            &Self::F16(x) => format!("{}f", half::f16::from_bits(x)),
+            &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
+            &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
             #[cfg(feature = "complex")]
-            Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
+            Self::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
             #[cfg(feature = "complex")]
-            Constant::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
-            Constant::U8(x) => format!("{x}"),
-            Constant::I8(x) => format!("{x}"),
-            Constant::I16(x) => format!("{x}"),
-            Constant::U32(x) => format!("{x}"),
-            Constant::I32(x) => format!("{x}"),
-            Constant::I64(x) => format!("{x}"),
-            Constant::Bool(x) => format!("{x}"),
+            Self::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
+            Self::U8(x) => format!("{x}"),
+            Self::I8(x) => format!("{x}"),
+            Self::I16(x) => format!("{x}"),
+            Self::U32(x) => format!("{x}"),
+            Self::I32(x) => format!("{x}"),
+            Self::I64(x) => format!("{x}"),
+            Self::Bool(x) => format!("{x}"),
         }
     }
 }
+
+#[repr(C)]
+#[derive(Debug)]
+struct _nvrtcProgram {
+    _unused: [u8; 0],
+}
+type nvrtcProgram = *mut _nvrtcProgram;
 
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]

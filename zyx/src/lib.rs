@@ -10,8 +10,19 @@
 #![forbid(rustdoc::bare_urls)]
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
-
-use std::collections::BTreeMap;
+#![forbid(trivial_casts)]
+#![forbid(trivial_numeric_casts)]
+#![deny(clippy::all)]
+#![deny(clippy::pedantic)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::explicit_iter_loop)]
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::too_many_lines)]
+//clippy::all,
+//clippy::restriction,
+//clippy::pedantic,
+//clippy::nursery,
+//clippy::cargo
 use std::{fs::File, path::Path};
 
 use crate::runtime::Runtime;
@@ -36,7 +47,7 @@ pub use shape::IntoShape;
 pub use tensor::Tensor;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
-static RT: mutex::Mutex<Runtime, 1000000000> = mutex::Mutex::new(Runtime::new());
+static RT: mutex::Mutex<Runtime, 1_000_000_000> = mutex::Mutex::new(Runtime::new());
 //static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Save tensors or modules
@@ -81,8 +92,9 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
+/*
 /// Execution timer
-static ET: mutex::Mutex<BTreeMap<String, u128>, 1000000000> = mutex::Mutex::new(BTreeMap::new());
+static ET: mutex::Mutex<std::collections::BTreeMap<String, u128>, 1_000_000_000> = mutex::Mutex::new(std::collections::BTreeMap::new());
 
 pub(crate) struct Timer {
     name: String,
@@ -105,7 +117,7 @@ impl Drop for Timer {
         *ET.lock().get_mut(&self.name).unwrap() += self.begin.elapsed().as_micros();
         //println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
-}
+}*/
 
 /*
 #[test]

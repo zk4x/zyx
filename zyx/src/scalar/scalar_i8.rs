@@ -49,23 +49,23 @@ impl Scalar for i8 {
     }
 
     fn from_i8(t: i8) -> Self {
-        t as Self
+        t
     }
 
     fn from_i16(t: i16) -> Self {
-        t as Self
+        Self::try_from(t).unwrap()
     }
 
     fn from_i32(t: i32) -> Self {
-        t as Self
+        Self::try_from(t).unwrap()
     }
 
     fn from_i64(t: i64) -> Self {
-        t as Self
+        Self::try_from(t).unwrap()
     }
 
     fn from_bool(t: bool) -> Self {
-        t as Self
+        Self::from(t)
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {

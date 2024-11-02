@@ -14,7 +14,7 @@ use libloading::Library;
 use std::{
     ffi::{c_void, CString},
     ptr,
-    rc::Rc,
+    sync::Arc,
 };
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -31,7 +31,7 @@ pub struct OpenCLConfig {
 pub(super) struct OpenCLMemoryPool {
     // Just to close the connection
     #[allow(unused)]
-    library: Rc<Library>,
+    library: Arc<Library>,
     #[allow(unused)]
     total_bytes: usize,
     free_bytes: usize,
@@ -161,16 +161,16 @@ unsafe impl Send for OpenCLProgram {}
 unsafe impl Send for OpenCLQueue {}
 
 impl OpenCLDevice {
-    pub(super) fn info(&self) -> &DeviceInfo {
+    pub(super) const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
-    pub(super) fn deinitialize(self) -> Result<(), OpenCLError> {
+    pub(super) const fn deinitialize(self) -> Result<(), OpenCLError> {
         // cuReleaseDevice is OpenCL 1.2 only, but we support 1.0, so nothing to do here?
         // TODO better do it conditionally, if the function exists in .so, then load it, do nothing
         // otherwise
@@ -195,13 +195,9 @@ pub(super) fn initialize_devices(
     debug_dev: bool,
 ) -> Result<(Vec<OpenCLMemoryPool>, OpenCLQueuePool), OpenCLError> {
     let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
-    let opencl = opencl_paths.iter().find_map(|path| {
-        if let Ok(lib) = unsafe { Library::new(path) } {
-            Some(lib)
-        } else {
-            None
-        }
-    });
+    let opencl = opencl_paths
+        .iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
         return Err(OpenCLError {
             info: "OpenCL runtime not found.".into(),
@@ -258,7 +254,7 @@ pub(super) fn initialize_devices(
         *mut usize,
     ) -> OpenCLStatus = *unsafe { opencl.get(b"clGetPlatformInfo\0") }.unwrap();
 
-    let library = Rc::new(opencl);
+    let library = Arc::new(opencl);
     let platform_ids = {
         // Get the number of platforms
         let mut count: cl_uint = 0;
@@ -280,11 +276,10 @@ pub(super) fn initialize_devices(
     let mut memory_pools = Vec::new();
     let mut memory_pool_id = 0;
     for (platform_id, platform) in platform_ids.iter().enumerate().filter(|(id, _)| {
-        if let Some(ids) = config.platform_ids.as_ref() {
-            ids.contains(id)
-        } else {
-            true
-        }
+        config
+            .platform_ids
+            .as_ref()
+            .map_or(true, |ids| ids.contains(id))
     }) {
         let platform = *platform;
         let Ok(device_ids) = {
@@ -408,10 +403,8 @@ pub(super) fn initialize_devices(
             };
             if let Ok(bytes) = device.get_device_data(CL_DEVICE_GLOBAL_MEM_SIZE) {
                 total_bytes += u64::from_ne_bytes(bytes.try_into().unwrap()) as usize;
-            } else {
-                continue;
+                devices.push((device, queues));
             }
-            devices.push((device, queues));
         }
         if device_ids.is_empty() {
             continue;
@@ -441,7 +434,7 @@ pub(super) fn initialize_devices(
 }
 
 impl OpenCLMemoryPool {
-    pub(super) fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
@@ -860,7 +853,7 @@ impl OpenCLDevice {
             }
         }
         let mut status = OpenCLStatus::CL_SUCCESS;
-        let program_name = &CString::new(name.clone()).unwrap();
+        let program_name = &CString::new(name).unwrap();
         let kernel =
             unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
         status.check("Failed to create kernel.")?;
@@ -1049,9 +1042,8 @@ impl OpenCLDevice {
                     status,
                     info: format!("Failed to get device info {param_name}"),
                 });
-            } else {
-                Ok(size)
             }
+            Ok(size)
         }?;
         let object = self.ptr;
         if 0 < size {

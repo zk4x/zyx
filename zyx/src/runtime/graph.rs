@@ -148,9 +148,8 @@ impl Graph {
                 return dtype;
             } else if let Node::Const { value } = self.nodes[tensor_id].1 {
                 return value.dtype();
-            } else {
-                tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
+            tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
         }
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
@@ -171,10 +170,9 @@ impl Graph {
                 return shape;
             } else if let Node::Const { .. } = self.nodes[tensor_id].1 {
                 return &[1];
-            } else {
-                //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
-                tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
             }
+            //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
+            tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
         }
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }
@@ -601,7 +599,7 @@ impl Graph {
             }
         }
         //std::println!("User {:?}", user_rc);
-        let mut res =
+        let mut res_dot_graph =
             String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {
             let fillcolor = if user_rc[&i] > 0 { "lightblue" } else { "grey" };
@@ -610,7 +608,7 @@ impl Graph {
                     label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
             } else {*/
             write!(
-                res,
+                res_dot_graph,
                 "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled]",
                 i,
                 self.nodes[i].0,
@@ -620,7 +618,7 @@ impl Graph {
                 fillcolor
             )
             .unwrap();
-            writeln!(res).unwrap();
+            writeln!(res_dot_graph).unwrap();
         };
         let mut edges = String::new();
         for &id in &topo {
@@ -644,9 +642,9 @@ impl Graph {
                 writeln!(edges, "  {} -> {id}", param).unwrap();
             }
         }
-        res = res.replace("NL", "\n");
-        write!(res, "{edges}}}").unwrap();
-        res
+        res_dot_graph = res_dot_graph.replace("NL", "\n");
+        write!(res_dot_graph, "{edges}}}").unwrap();
+        res_dot_graph
     }
 }
 

@@ -4,8 +4,8 @@ Zyx is machine learning library written in Rust.
 Zyx feels dynamic (pytorch like), but is lazy,
 waits with execution until it is explicitly asked for results.
 Zyx automatically generates and compiles
-optimized kernels at runtime for CUDA, HIP, OpenCL and WGSL (i.e. Vulkan).
-All tensors are differentiable (that is tensors use requires_grad=True),
+optimized kernels at runtime for CUDA, HIP, `OpenCL` and WGSL (i.e. Vulkan).
+All tensors are differentiable (that is tensors use `requires_grad=True`),
 but thanks to lazyness all unnecessary memory allocations are optimized away.
 
 ## Install
@@ -35,15 +35,15 @@ let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
 
 ## Backends
 
-Zyx runs on different devices, current backends are CUDA, OpenCL and wgsl through wgpu.
+Zyx runs on different devices, current backends are CUDA, `OpenCL` and wgsl through wgpu.
 HIP would be supported too, but HIPRTC is currently broken.
 Using COMGR directly as a workaround is in the works..
 Zyx automatically tries to utilize all available devices, but you can also manually change it
-by creating file backend_config.json in folder zyx in home config directory (usually ~/.config/zyx/backend_config.json).
-There write [DeviceConfig] struct.
+by creating file `backend_config.json` in folder zyx in home config directory (usually ~/.config/zyx/`backend_config.json`).
+There write [`DeviceConfig`] struct.
 Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md) for detailed info how to write configuration for your PC.
 Zyx currently does not know how to differentiate between devices, so it will by default run
-all backends, even if they run on the same device. To avoid this, you need to write device_config.json.
+all backends, even if they run on the same device. To avoid this, you need to write `device_config.json`.
 
 If you'd like to add new backend to zyx, that would be awesome! Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md) on prerequisities
 (required device capabilities).
@@ -90,7 +90,7 @@ For more details, there is a [book](https://zk4x.github.io/zyx).
 
 ## Lazyness
 
-Tensors do not get realized automatically. Realization happens only when user accesses tensors, or explicitly using Tensor::realize function.
+Tensors do not get realized automatically. Realization happens only when user accesses tensors, or explicitly using `Tensor::realize` function.
 ```rust ignore
 Tensor::realize([&x, &y]).unwrap();
 ```
@@ -122,7 +122,7 @@ create a github issue.
 ## Features
 
 - **complex** - enables support for cf32 and cf64 dtypes
-- **disk_cache** - enables saving of searched kernels to disk
+- **`disk_cache`** - enables saving of searched kernels to disk
 - **wgsl** - enables wgsl backend
 
 ## Warning
@@ -130,7 +130,7 @@ create a github issue.
 Zyx breaks many principles of clean code. Clean code was tried in older versions of zyx.
 Abstractions, wrappers, dyn (virtual tables), generics and lifetimes made the code hard
 to reason about. Zyx now uses enums for everything and almost zero generics (only in functions,
-such as impl IntoShape to make API more flexible). If you dislike ugly code,
+such as impl `IntoShape` to make API more flexible). If you dislike ugly code,
 please do not use zyx.
 
 Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive,

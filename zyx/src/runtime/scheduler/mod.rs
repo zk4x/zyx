@@ -583,8 +583,9 @@ impl Runtime {
 
 /// Generate kernels from graph. This function determines which ops will get fused together
 /// and how many kernels will be created.
+#[allow(clippy::similar_names)]
 fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kernel> {
-    let _t = crate::Timer::new("generate_kernels");
+    //let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
     // This function defines loops, loads, stores and elementwise ops.
     // The aim is to sort nodes in such a way, that maximum performance is attained.
@@ -1200,7 +1201,7 @@ fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
 }*/
 
 fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &'a mut Kernel {
-    let _t = crate::Timer::new("get_kernel");
+    //let _t = crate::Timer::new("get_kernel");
     // First if there is kernel which stores x, then just return new load kernel
     if kernels
         .iter()
@@ -1217,6 +1218,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         .unwrap()
 }
 
+#[allow(clippy::similar_names)]
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     fn value_unit(x: u128) -> (u128, &'static str) {
         match x {

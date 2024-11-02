@@ -44,24 +44,24 @@ indicatif = { version = "0.17.8" }
 # Memory mapped loading of tensors from disk
 memmap2 = { version = "0.9.5" }
 
-# Optional dependencies# To speed things up a bit
-# for caching of searched kernels
+# Optional dependencies
+# Support for cf32 and cf64 dtypes
+num-complex = { version = "0.4.6", default-features = false, optional = true } # MIT or Apache 2.0
+# For caching of searched kernels
 bitcode = { version = "0.6.3", default-features = false, features = [
     "std",
     "derive",
 ], optional = true } # MIT or Apache 2.0
-# Support for cf32 and cf64 dtypes
-num-complex = { version = "0.4.6", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "22.1.0", default-features = false, features = [
     "wgsl",
 ], optional = true }
-# TODO probably use pollaster instead of futures
 # Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
-futures = { version = "0.3", default-features = false, features = [
-    "executor",
+futures = { version = "0.3.31", default-features = false, features = [
+    "alloc",
 ], optional = true }
+pollster = { version = "0.4.0", default-features = false, optional = true }
 
 # gguf models
 gguf = { version = "0.1.2", default-features = false, optional = true }
@@ -91,7 +91,7 @@ complex = ["dep:num-complex"]
 py = ["dep:pyo3", "complex"]
 
 # Enables wgsl backend
-wgsl = ["dep:wgpu", "dep:futures"]
+wgsl = ["dep:wgpu", "dep:pollster", "dep:futures"]
 
 # Enables loading of gguf models
 gguf = ["dep:gguf"]

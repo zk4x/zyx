@@ -11,7 +11,7 @@ use crate::{index_map::IndexMap, runtime::ir::IRKernel};
 use libloading::Library;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct HIPConfig {
@@ -28,7 +28,7 @@ pub struct HIPError {
 #[derive(Debug)]
 pub(super) struct HIPMemoryPool {
     #[allow(unused)]
-    cuda: Rc<Library>,
+    cuda: Arc<Library>,
     context: HIPcontext,
     device: HIPdevice,
     free_bytes: usize,
@@ -112,13 +112,9 @@ pub(super) fn initialize_device(
         "/lib64/libamdhip64.so",
         "/lib/x86_64-linux-gnu/libamdhip64.so",
     ];
-    let hip = hip_paths.iter().find_map(|path| {
-        if let Ok(lib) = unsafe { Library::new(path) } {
-            Some(lib)
-        } else {
-            None
-        }
-    });
+    let hip = hip_paths
+        .iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
         return Err(HIPError {
             info: "HIP runtime not found.".into(),
@@ -181,11 +177,10 @@ pub(super) fn initialize_device(
     }
     let device_ids: Vec<_> = (0..num_devices)
         .filter(|id| {
-            if let Some(ids) = config.device_ids.as_ref() {
-                ids.contains(id)
-            } else {
-                true
-            }
+            config
+                .device_ids
+                .as_ref()
+                .map_or(true, |ids| ids.contains(id))
         })
         .collect();
     if device_ids.is_empty() {
@@ -203,7 +198,7 @@ pub(super) fn initialize_device(
         );
     }
 
-    let hip = Rc::new(hip);
+    let hip = Arc::new(hip);
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
     for dev_id in device_ids {
@@ -295,7 +290,7 @@ impl HIPMemoryPool {
         Ok(())
     }
 
-    pub(super) fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
@@ -350,17 +345,17 @@ impl Drop for HIPMemoryPool {
 }
 
 impl HIPDevice {
-    pub(super) fn deinitialize(self) -> Result<(), HIPError> {
+    pub(super) const fn deinitialize(self) -> Result<(), HIPError> {
         // TODO
         Ok(())
     }
 
-    pub(super) fn info(&self) -> &DeviceInfo {
+    pub(super) const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
@@ -530,13 +525,9 @@ impl HIPDevice {
             println!("{source}");
         }
         let hiprtc_paths = ["/lib64/libhiprtc.so"];
-        let hiprtc = hiprtc_paths.iter().find_map(|path| {
-            if let Ok(lib) = unsafe { Library::new(path) } {
-                Some(lib)
-            } else {
-                None
-            }
-        });
+        let hiprtc = hiprtc_paths
+            .iter()
+            .find_map(|path| unsafe { Library::new(path) }.ok());
         let Some(hiprtc) = hiprtc else {
             return Err(HIPError {
                 info: "HIP runtime compiler (HIPRTC) not found.".into(),
@@ -579,7 +570,7 @@ impl HIPDevice {
         let mut program = ptr::null_mut();
         unsafe {
             hiprtcCreateProgram(
-                &mut program as *mut hiprtcProgram,
+                &mut program,
                 source.as_ptr().cast(),
                 name.as_ptr().cast(),
                 0,
@@ -677,14 +668,14 @@ impl HIPQueue {
         todo!()
     }
 
-    pub(super) fn load(&self) -> usize {
+    pub(super) const fn load(&self) -> usize {
         self.load
     }
 }
 
 impl HIPStatus {
     fn check(self, info: &str) -> Result<(), HIPError> {
-        if self != HIPStatus::hipSuccess {
+        if self != Self::hipSuccess {
             Err(HIPError {
                 info: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {info}"),
                 status: self,
@@ -699,22 +690,22 @@ impl HIPStatus {
 impl IRDType {
     pub(super) fn hip(&self) -> &str {
         match self {
-            IRDType::BF16(v) => panic!("BF16 is WIP."),
-            IRDType::F8(v) => "f8",
-            IRDType::F16(v) => "half",
-            IRDType::F32(v) => "float",
-            IRDType::F64(v) => "double",
+            Self::BF16(v) => panic!("BF16 is WIP."),
+            Self::F8(v) => "f8",
+            Self::F16(v) => "half",
+            Self::F32(v) => "float",
+            Self::F64(v) => "double",
             #[cfg(feature = "complex")]
-            IRDType::CF32(v) => panic!("Not native to HIP, workaround is WIP"),
+            Self::CF32(v) => panic!("Not native to HIP, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64(v) => panic!("Not native to HIP, workaround is WIP"),
-            IRDType::U8(v) => "unsigned char",
-            IRDType::I8(v) => "char",
-            IRDType::I16(v) => "short",
-            IRDType::I32(v) => "int",
-            IRDType::I64(v) => "long",
-            IRDType::Bool => "bool",
-            IRDType::U32(v) => "unsigned int",
+            Self::CF64(v) => panic!("Not native to HIP, workaround is WIP"),
+            Self::U8(v) => "unsigned char",
+            Self::I8(v) => "char",
+            Self::I16(v) => "short",
+            Self::I32(v) => "int",
+            Self::I64(v) => "long",
+            Self::Bool => "bool",
+            Self::U32(v) => "unsigned int",
         }
     }
 }
@@ -722,8 +713,8 @@ impl IRDType {
 impl Reg {
     fn hip(&self) -> String {
         match self {
-            Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => value.hip(),
+            Self::Var(id) => format!("r{id}"),
+            Self::Const(value) => value.hip(),
         }
     }
 }
@@ -732,22 +723,22 @@ impl Constant {
     fn hip(&self) -> String {
         use core::mem::transmute as t;
         match self {
-            &Constant::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
-            &Constant::F8(x) => format!("{}f", float8::F8E4M3::from_bits(x)),
-            &Constant::F16(x) => format!("{}f", half::f16::from_bits(x)),
-            &Constant::F32(x) => format!("{}f", f32::from_bits(x)),
-            &Constant::F64(x) => format!("{}f", f64::from_bits(x)),
+            &Self::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
+            &Self::F8(x) => format!("{}f", float8::F8E4M3::from_bits(x)),
+            &Self::F16(x) => format!("{}f", half::f16::from_bits(x)),
+            &Self::F32(x) => format!("{}f", f32::from_bits(x)),
+            &Self::F64(x) => format!("{}f", f64::from_bits(x)),
             #[cfg(feature = "complex")]
-            Constant::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
+            Self::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
             #[cfg(feature = "complex")]
-            Constant::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
-            Constant::U8(x) => format!("{x}"),
-            Constant::I8(x) => format!("{x}"),
-            Constant::I16(x) => format!("{x}"),
-            Constant::U32(x) => format!("{x}"),
-            Constant::I32(x) => format!("{x}"),
-            Constant::I64(x) => format!("{x}"),
-            Constant::Bool(x) => format!("{x}"),
+            Self::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
+            Self::U8(x) => format!("{x}"),
+            Self::I8(x) => format!("{x}"),
+            Self::I16(x) => format!("{x}"),
+            Self::U32(x) => format!("{x}"),
+            Self::I32(x) => format!("{x}"),
+            Self::I64(x) => format!("{x}"),
+            Self::Bool(x) => format!("{x}"),
         }
     }
 }

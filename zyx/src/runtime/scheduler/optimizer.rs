@@ -47,6 +47,7 @@ pub(crate) struct KernelOptimization {
 // ir will be just a direct translation and can be removed if we replace it with something
 // like renderer to c style, assembly and such.
 impl Kernel {
+    #[allow(clippy::similar_names)]
     pub(super) fn new_optimizer(&self, dev_info: &DeviceInfo) -> KernelOptimizer {
         let mut opts = Vec::new();
 
@@ -175,6 +176,7 @@ impl Kernel {
     // add per device optimizations to each kernel, local memory, accumulators, work per thread, tiling on many levels,
     // split, merge, permute, pad loops and get them to correct dimensionality (3d) for execution on the device.
     // tensor cores, just a ton of stuff. Later add search over different optimizations.
+    #[allow(clippy::similar_names)]
     pub(super) fn optimize(&self, optimization: &KernelOptimization) -> Kernel {
         let mut kernel = self.clone();
         // Apply axis splits
@@ -474,7 +476,7 @@ impl KernelOptimizer {
                 if values.is_empty() {
                     *self = KernelOptimizer::Optimized(opts[*best].0.clone(), opts[*best].1);
                 }
-                let mut rng = rand::rngs::SmallRng::seed_from_u64(190940981234098124);
+                let mut rng = rand::rngs::SmallRng::seed_from_u64(190_940_981_234_098_124);
                 values.choose(&mut rng).copied()
             }
         }

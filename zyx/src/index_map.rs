@@ -92,10 +92,10 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-pub(crate) type Id = u32;
+pub type Id = u32;
 
 #[derive(Debug)]
-pub(crate) struct IndexMap<T> {
+pub struct IndexMap<T> {
     values: Vec<MaybeUninit<T>>,
     empty: BTreeSet<Id>,
 }
@@ -114,8 +114,8 @@ impl<T> Drop for IndexMap<T> {
 }
 
 impl<T> IndexMap<T> {
-    pub(crate) const fn new() -> IndexMap<T> {
-        IndexMap {
+    pub(crate) const fn new() -> Self {
+        Self {
             values: Vec::new(),
             empty: BTreeSet::new(),
         }
@@ -129,12 +129,12 @@ impl<T> IndexMap<T> {
         } else {
             self.values.push(MaybeUninit::new(value));
             //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
-            (self.values.len() - 1) as Id
+            Id::try_from(self.values.len() - 1).unwrap()
         }
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<T> {
-        if self.values.len() as Id > id && !self.empty.contains(&id) {
+        if Id::try_from(self.values.len()).unwrap() > id && !self.empty.contains(&id) {
             self.empty.insert(id);
             self.values.push(MaybeUninit::uninit());
             Some(unsafe { self.values.swap_remove(id as usize).assume_init() })
@@ -148,14 +148,14 @@ impl<T> IndexMap<T> {
     }
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-        (0..self.values.len() as Id).filter(|x| !self.empty.contains(x))
+        (0..Id::try_from(self.values.len()).unwrap()).filter(|x| !self.empty.contains(x))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
         self.values
             .iter()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(*id as Id)))
+            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(_, x)| unsafe { x.assume_init_ref() })
     }
 
@@ -163,16 +163,16 @@ impl<T> IndexMap<T> {
         self.values
             .iter()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(*id as Id)))
-            .map(|(id, x)| (id as Id, unsafe { x.assume_init_ref() }))
+            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
+            .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_ref() }))
     }
 
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
         self.values
             .iter_mut()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(*id as Id)))
-            .map(|(id, x)| (id as Id, unsafe { x.assume_init_mut() }))
+            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
+            .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -196,7 +196,7 @@ impl<T> IndexMut<Id> for IndexMap<T> {
 }
 
 impl<T> FromIterator<(Id, T)> for IndexMap<T> {
-    fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> IndexMap<T> {
+    fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> Self {
         let mut values = Vec::new();
         let mut empty = BTreeSet::new();
         let mut i = 0;
@@ -209,7 +209,7 @@ impl<T> FromIterator<(Id, T)> for IndexMap<T> {
             values.push(MaybeUninit::new(v));
             i += 1;
         }
-        IndexMap { values, empty }
+        Self { values, empty }
     }
 }
 
@@ -256,7 +256,7 @@ impl<T: Clone> Clone for IndexMap<T> {
                 .iter()
                 .enumerate()
                 .map(|(id, x)| {
-                    if self.empty.contains(&(id as Id)) {
+                    if self.empty.contains(&(Id::try_from(id).unwrap())) {
                         MaybeUninit::uninit()
                     } else {
                         MaybeUninit::new(unsafe { x.assume_init_ref() }.clone())

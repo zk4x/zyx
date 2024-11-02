@@ -632,9 +632,9 @@ impl Runtime {
                     self.memory_pools[buffer_id.memory_pool_id]
                         .pool_to_host(buffer_id.buffer_id, data)?;
                     break;
-                } else {
-                    todo!()
                 }
+                // load for partial views from multiple memory pools
+                todo!()
             }
         }
         //println!("{data:?}, {}", data.len());
@@ -740,6 +740,7 @@ impl Runtime {
         Ok(())
     }
 
+    #[allow(clippy::similar_names)]
     pub(super) fn backward(
         &mut self,
         x: TensorId,

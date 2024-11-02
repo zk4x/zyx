@@ -802,9 +802,9 @@ impl Tensor {
     #[must_use]
     pub fn selu(&self) -> Tensor {
         let dtype = self.dtype();
-        (1.0507009873554805f64
+        (1.050_700_987_355_480_5_f64
             * (self.relu()
-                - (1.6732632423543773f64 * (Tensor::ones(1, dtype) - self.exp())).relu()))
+                - (1.673_263_242_354_377_3_f64 * (Tensor::ones(1, dtype) - self.exp())).relu()))
         .cast(dtype)
     }
 

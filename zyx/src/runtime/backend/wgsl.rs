@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use pollster::FutureExt;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::{
     util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule,
@@ -81,7 +82,7 @@ pub(super) fn initialize_backend(
         println!("Requesting device with {:#?}", power_preference);
     }
 
-    let (adapter, device, queue) = futures::executor::block_on(async {
+    let (adapter, device, queue) = async {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference,
@@ -102,7 +103,8 @@ pub(super) fn initialize_backend(
             .await
             .expect("Failed at device creation.");
         (adapter, device, queue)
-    });
+    }
+    .block_on();
 
     let info = adapter.get_info();
     if debug_dev {
@@ -116,7 +118,7 @@ pub(super) fn initialize_backend(
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
     memory_pools.push(WGSLMemoryPool {
-        free_bytes: 1000000000,
+        free_bytes: 1_000_000_000,
         device: device.clone(),
         queue: queue.clone(),
     });
@@ -191,7 +193,7 @@ impl WGSLMemoryPool {
         src: &WGSLBuffer,
         dst: &mut [u8],
     ) -> Result<(), WGSLError> {
-        futures::executor::block_on(async {
+        async {
             let (tx, rx) = futures::channel::oneshot::channel();
             DownloadBuffer::read_buffer(
                 &self.device,
@@ -205,7 +207,8 @@ impl WGSLMemoryPool {
             self.device.poll(Maintain::Wait);
             let download = rx.await.unwrap().unwrap();
             dst.copy_from_slice(&download);
-        });
+        }
+        .block_on();
         Ok(())
     }
 

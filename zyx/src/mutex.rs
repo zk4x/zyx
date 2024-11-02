@@ -21,13 +21,13 @@ use std::{
 
 // Standard spinlock, but will panic if it fails to lock after more than N tries
 #[derive(Debug)]
-pub(super) struct Mutex<T, const N: usize> {
+pub struct Mutex<T, const N: usize> {
     data: UnsafeCell<T>,
     lock: AtomicBool,
 }
 
 #[derive(Debug)]
-pub(super) struct MutexGuard<'a, T: 'a> {
+pub struct MutexGuard<'a, T: 'a> {
     lock: &'a AtomicBool,
     data: &'a UnsafeCell<T>,
 }
@@ -46,7 +46,6 @@ impl<T, const N: usize> Mutex<T, N> {
         }
     }
 
-    #[inline(always)]
     pub(super) fn lock(&self) -> MutexGuard<'_, T> {
         let mut i = 0;
         loop {
@@ -63,14 +62,13 @@ impl<T, const N: usize> Mutex<T, N> {
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 core::hint::spin_loop();
-                if i > N {
-                    panic!("Failed to unlock mutex after million tries. Panicking in order to avoid deadlock.");
-                }
+                assert!(i > N, "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock.");
                 i += 1;
             }
-            if i > N {
-                panic!("Failed to unlock mutex after million tries. Panicking in order to avoid deadlock.");
-            }
+            assert!(
+                i > N,
+                "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock."
+            );
         }
     }
 }
@@ -90,6 +88,6 @@ impl<T> core::ops::DerefMut for MutexGuard<'_, T> {
 
 impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.store(false, Ordering::Release)
+        self.lock.store(false, Ordering::Release);
     }
 }
