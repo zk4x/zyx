@@ -1,9 +1,9 @@
 use crate::dtype::DType;
-use crate::scalar::{Scalar, Float};
+use crate::scalar::{Float, Scalar};
+use float8::F8E4M3;
 use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
-use float8::F8E4M3;
 
 impl Scalar for F8E4M3 {
     fn from_bf16(t: bf16) -> Self {
@@ -56,16 +56,18 @@ impl Scalar for F8E4M3 {
         todo!()
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_i32(t: i32) -> Self {
         Self::from_f32(t as f32)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_i64(t: i64) -> Self {
         Self::from_f64(t as f64)
     }
 
     fn from_bool(t: bool) -> Self {
-        Self::from_f64(t as i32 as f64)
+        Self::from_f64(u8::from(t).into())
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -123,7 +125,7 @@ impl Scalar for F8E4M3 {
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        Self::from_f32((self < rhs) as i32 as f32)
+        Self::from_f32(u8::from(self < rhs).into())
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -145,20 +147,20 @@ impl Scalar for F8E4M3 {
     fn is_equal(self, rhs: Self) -> bool {
         self.to_f32() == rhs.to_f32()
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
@@ -185,13 +187,12 @@ impl Float for F8E4M3 {
     fn sqrt(self) -> Self {
         Self::from_f32(self.to_f32().sqrt())
     }
-    
+
     fn exp2(self) -> Self {
         todo!()
     }
-    
+
     fn log2(self) -> Self {
         todo!()
     }
 }
-

@@ -1,7 +1,7 @@
 use crate::dtype::DType;
-use crate::scalar::{Scalar, Float};
-use half::{bf16, f16};
+use crate::scalar::{Float, Scalar};
 use float8::F8E4M3;
+use half::{bf16, f16};
 
 #[cfg(feature = "complex")]
 use num_complex::Complex;
@@ -38,31 +38,31 @@ impl Scalar for bf16 {
     }
 
     fn from_u8(t: u8) -> Self {
-        bf16::from_f32(t as f32)
+        bf16::from_f32(f32::from(t))
     }
 
     fn from_u32(t: u32) -> Self {
-        bf16::from_f32(t as f32)
+        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
     }
 
     fn from_i8(t: i8) -> Self {
-        bf16::from_f32(t as f32)
+        bf16::from_f32(f32::from(t))
     }
 
     fn from_i16(t: i16) -> Self {
-        bf16::from_f32(t as f32)
+        bf16::from_f32(f32::from(t))
     }
 
     fn from_i32(t: i32) -> Self {
-        bf16::from_f32(t as f32)
+        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
     }
 
     fn from_i64(t: i64) -> Self {
-        bf16::from_f32(t as f32)
+        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
     }
 
     fn from_bool(t: bool) -> Self {
-        bf16::from_f32(t as i32 as f32)
+        bf16::from_f32(f32::from(t))
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -154,7 +154,7 @@ impl Scalar for bf16 {
     }
 
     fn cmpgt(self, rhs: Self) -> Self {
-        ((self > rhs) as i8).into()
+        (i8::from(self > rhs)).into()
     }
 
     fn or(self, rhs: Self) -> Self {

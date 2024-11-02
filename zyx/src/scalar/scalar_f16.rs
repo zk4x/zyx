@@ -56,16 +56,19 @@ impl Scalar for f16 {
         todo!()
     }
 
+    #[allow(clippy::cast_lossless)]
     fn from_i32(t: i32) -> Self {
-        f16::from_f32(t as f32)
+        f16::from_f64(t as f64)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_i64(t: i64) -> Self {
         f16::from_f64(t as f64)
     }
 
+    #[allow(clippy::cast_lossless)]
     fn from_bool(t: bool) -> Self {
-        f16::from_f64(t as i32 as f64)
+        f16::from_f64(t as i8 as f64)
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -121,7 +124,7 @@ impl Scalar for f16 {
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        f16::from_f32((self < rhs) as i32 as f32)
+        f16::from_f32(f32::from(i8::from(self < rhs)))
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -153,7 +156,7 @@ impl Scalar for f16 {
     }
 
     fn cmpgt(self, rhs: Self) -> Self {
-        ((self > rhs) as i8).into()
+        i8::from(self > rhs).into()
     }
 
     fn or(self, rhs: Self) -> Self {

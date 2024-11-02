@@ -44,7 +44,7 @@ impl Scalar for u32 {
     }
 
     fn from_u8(t: u8) -> Self {
-        t as Self
+        t.into()
     }
 
     fn from_u32(t: u32) -> Self {
@@ -52,23 +52,23 @@ impl Scalar for u32 {
     }
 
     fn from_i8(t: i8) -> Self {
-        t as Self
+        t.try_into().unwrap()
     }
 
     fn from_i16(t: i16) -> Self {
-        t as Self
+        t.try_into().unwrap()
     }
 
     fn from_i32(t: i32) -> Self {
-        t as Self
+        t.try_into().unwrap()
     }
 
     fn from_i64(t: i64) -> Self {
-        t as Self
+        t.try_into().unwrap()
     }
 
     fn from_bool(t: bool) -> Self {
-        t as Self
+        t.into()
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -157,10 +157,10 @@ impl Scalar for u32 {
     }
 
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as Self
+        (self > rhs).into()
     }
 
     fn or(self, rhs: Self) -> Self {
-        (self != 0 || rhs != 0) as Self
+        (self != 0 || rhs != 0).into()
     }
 }

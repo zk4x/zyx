@@ -79,7 +79,7 @@ pub(super) fn initialize_backend(
     });
 
     if debug_dev {
-        println!("Requesting device with {:#?}", power_preference);
+        println!("Requesting device with {power_preference:#?}");
     }
 
     let (adapter, device, queue) = async {
@@ -96,7 +96,7 @@ pub(super) fn initialize_backend(
                     label: None,
                     required_features: adapter.features(),
                     required_limits: adapter.limits(),
-                    memory_hints: Default::default(),
+                    memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
             )
@@ -149,15 +149,20 @@ pub(super) fn initialize_backend(
 }
 
 impl WGSLMemoryPool {
-    pub(super) fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn deinitialize(self) -> Result<(), WGSLError> {
         Ok(())
     }
 
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<WGSLBuffer, WGSLError> {
+        if self.free_bytes < bytes {
+            return Err(WGSLError {});
+        }
         Ok(WGSLBuffer {
             buffer: self.device.create_buffer(&BufferDescriptor {
                 label: None,
@@ -172,11 +177,15 @@ impl WGSLMemoryPool {
         })
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn deallocate(&mut self, buffer: WGSLBuffer) -> Result<(), WGSLError> {
         buffer.buffer.destroy();
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &WGSLBuffer) -> Result<(), WGSLError> {
         self.queue.write_buffer(&dst.buffer, 0, src);
         let encoder = self
@@ -188,6 +197,7 @@ impl WGSLMemoryPool {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn pool_to_host(
         &mut self,
         src: &WGSLBuffer,
@@ -222,28 +232,36 @@ impl WGSLMemoryPool {
 }
 
 impl WGSLDevice {
-    pub(super) fn info(&self) -> &DeviceInfo {
+    pub(super) const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn release_program(&self, program: WGSLProgram) -> Result<(), WGSLError> {
         drop(program);
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn release_queue(&self, queue: WGSLQueue) -> Result<(), WGSLError> {
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn deinitialize(self) -> Result<(), WGSLError> {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn compile(
         &mut self,
         kernel: &IRKernel,
@@ -454,6 +472,7 @@ impl WGSLDevice {
 }
 
 impl WGSLQueue {
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn launch(
         &mut self,
         program: &mut WGSLProgram,
@@ -464,7 +483,7 @@ impl WGSLQueue {
         let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
         for (bind_id, &arg) in args.iter().enumerate() {
             let bind_entry = wgpu::BindGroupLayoutEntry {
-                binding: bind_id as u32,
+                binding: u32::try_from(bind_id).unwrap(),
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     has_dynamic_offset: false,
@@ -476,7 +495,7 @@ impl WGSLQueue {
                 count: None,
             };
             let bind = wgpu::BindGroupEntry {
-                binding: bind_id as u32,
+                binding: u32::try_from(bind_id).unwrap(),
                 resource: buffers[arg].buffer.as_entire_binding(),
             };
             set_layout.push(bind_entry);
@@ -519,7 +538,7 @@ impl WGSLQueue {
                 entry_point: &program.name,
                 layout: Some(&pipeline_layout),
                 cache: None,
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             });
         let mut encoder = self
             .device
@@ -533,13 +552,13 @@ impl WGSLQueue {
             });
             cpass.set_pipeline(&pipeline);
             for (id_set, set) in sets.iter().enumerate() {
-                cpass.set_bind_group(id_set as u32, set, &[]);
+                cpass.set_bind_group(u32::try_from(id_set).unwrap(), set, &[]);
             }
             cpass.insert_debug_marker(&program.name);
             cpass.dispatch_workgroups(
-                program.global_work_size[0] as u32,
-                program.global_work_size[1] as u32,
-                program.global_work_size[2] as u32,
+                u32::try_from(program.global_work_size[0]).unwrap(),
+                u32::try_from(program.global_work_size[1]).unwrap(),
+                u32::try_from(program.global_work_size[2]).unwrap(),
             );
         }
         self.queue.submit(Some(encoder.finish()));
@@ -552,7 +571,7 @@ impl WGSLQueue {
         Ok(())
     }
 
-    pub(super) fn load(&self) -> usize {
+    pub(super) const fn load(&self) -> usize {
         self.load
     }
 }

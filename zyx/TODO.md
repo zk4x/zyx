@@ -13,7 +13,7 @@
   - [x] change ir register id to u16
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
-  - [ ] add ops reordering, all ops that can be moved before loops should be moved
+  - [ ] add ops reordering, all ops that can be moved before loops should be moved (loop invariant code motion)
   - [ ] deduplicate all calculations
   - [ ] add optimizations for ops, merges
   - [ ] deletion of redundant ops

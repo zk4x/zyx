@@ -1,7 +1,7 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use half::{bf16, f16};
 use float8::F8E4M3;
+use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
@@ -48,27 +48,27 @@ impl Scalar for u8 {
     }
 
     fn from_u32(t: u32) -> Self {
-        t as Self
+        t.try_into().unwrap()
     }
 
     fn from_i8(t: i8) -> Self {
-        t as u8
+        t.try_into().unwrap()
     }
 
     fn from_i16(t: i16) -> Self {
-        t as u8
+        t.try_into().unwrap()
     }
 
     fn from_i32(t: i32) -> Self {
-        t as u8
+        t.try_into().unwrap()
     }
 
     fn from_i64(t: i64) -> Self {
-        t as u8
+        t.try_into().unwrap()
     }
 
     fn from_bool(t: bool) -> Self {
-        t as u8
+        t.into()
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -147,20 +147,20 @@ impl Scalar for u8 {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as Self
+        (self > rhs).into()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
-        (self != 0 || rhs != 0) as Self
+        (self != 0 || rhs != 0).into()
     }
 }

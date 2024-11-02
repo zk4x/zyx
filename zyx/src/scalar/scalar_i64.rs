@@ -21,10 +21,12 @@ impl Scalar for i64 {
         todo!()
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
         t as Self
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_f64(t: f64) -> Self {
         t as Self
     }
@@ -64,7 +66,7 @@ impl Scalar for i64 {
     }
 
     fn from_bool(t: bool) -> Self {
-        t as i64
+        t.into()
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -118,11 +120,11 @@ impl Scalar for i64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i64::pow(self, rhs as u32)
+        i64::pow(self, u32::try_from(rhs).unwrap())
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        (self < rhs) as Self
+        (self < rhs).into()
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -154,10 +156,10 @@ impl Scalar for i64 {
     }
 
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as Self
+        (self > rhs).into()
     }
 
     fn or(self, rhs: Self) -> Self {
-        (self != 0 || rhs != 0) as Self
+        (self != 0 || rhs != 0).into()
     }
 }

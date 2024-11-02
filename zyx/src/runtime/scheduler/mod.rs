@@ -903,7 +903,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     match op {
                         VOp::Loop { axis, len } => {
                             if let Some((lp, rp)) = padded_axes.get(axis) {
-                                *len = (*len as isize + lp + rp) as usize;
+                                *len = usize::try_from(isize::try_from(*len).unwrap() + lp + rp)
+                                    .unwrap();
                             }
                         }
                         VOp::EndLoop => {
@@ -1220,7 +1221,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
 
 #[allow(clippy::similar_names)]
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
-    fn value_unit(x: u128) -> (u128, &'static str) {
+    const fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
             0..1000 => (x / 100, ""),
             1_000..1_000_000 => (x / 10, "k"),

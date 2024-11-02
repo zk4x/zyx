@@ -43,7 +43,8 @@ pub(super) struct VulkanQueue {
 
 type VulkanQueuePool = Vec<(VulkanDevice, Vec<VulkanQueue>)>;
 
-pub(super) fn initialize_devices(
+#[allow(clippy::unnecessary_wraps)]
+pub(super) const fn initialize_devices(
     config: &VulkanConfig,
     debug_dev: bool,
 ) -> Result<(Vec<VulkanMemoryPool>, VulkanQueuePool), VulkanError> {
@@ -54,11 +55,13 @@ pub(super) fn initialize_devices(
 }
 
 impl VulkanMemoryPool {
-    pub(super) fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    pub(super) fn deinitialize(self) -> Result<(), VulkanError> {
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
+    pub(super) const fn deinitialize(self) -> Result<(), VulkanError> {
         Ok(())
     }
 
@@ -66,6 +69,7 @@ impl VulkanMemoryPool {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn deallocate(&mut self, buffer: VulkanBuffer) -> Result<(), VulkanError> {
         todo!()
     }
@@ -96,19 +100,21 @@ impl VulkanMemoryPool {
 }
 
 impl VulkanDevice {
-    pub(super) fn info(&self) -> &DeviceInfo {
+    pub(super) const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
     // Memory pool id out of VulkanMemoryPools
-    pub(super) fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> usize {
         self.memory_pool_id
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_program(&self, program: VulkanProgram) -> Result<(), VulkanError> {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_queue(&self, queue: VulkanQueue) -> Result<(), VulkanError> {
         todo!()
     }
@@ -140,7 +146,7 @@ impl VulkanQueue {
         todo!()
     }
 
-    pub(super) fn load(&self) -> usize {
+    pub(super) const fn load(&self) -> usize {
         self.load
     }
 }

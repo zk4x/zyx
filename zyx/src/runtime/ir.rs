@@ -127,7 +127,7 @@ pub(super) struct IRKernel {
 impl IRVec {
     // TODO vectorization
     #[allow(unused)]
-    pub(super) fn len(&self) -> usize {
+    pub(super) const fn len(&self) -> usize {
         match self {
             IRVec::Scalar => 1,
             IRVec::V2 => 2,
@@ -151,7 +151,7 @@ impl Display for IRVec {
 }
 
 impl DType {
-    pub(super) fn ir_dtype(&self) -> IRDType {
+    pub(super) const fn ir_dtype(&self) -> IRDType {
         match self {
             DType::BF16 => IRDType::BF16(IRVec::Scalar),
             DType::F8 => IRDType::F8(IRVec::Scalar),
@@ -172,7 +172,7 @@ impl DType {
 impl IRDType {
     // TODO vectorization
     #[allow(unused)]
-    pub(super) fn byte_size(&self) -> usize {
+    pub(super) const fn byte_size(&self) -> usize {
         match self {
             IRDType::BF16(v) => 2 * v.len(),
             IRDType::F8(v) => v.len(),
@@ -193,7 +193,7 @@ impl IRDType {
         }
     }
 
-    pub(super) fn dtype(&self) -> DType {
+    pub(super) const fn dtype(&self) -> DType {
         match self {
             IRDType::BF16(_) => DType::BF16,
             IRDType::F8(_) => DType::F8,
@@ -261,7 +261,7 @@ pub(super) struct IRCompiler {
 impl IRCompiler {
     pub(super) fn load(&mut self, address: u16, offset: Reg, dtype: DType) -> u16 {
         self.dtypes.push(dtype);
-        let z = (self.dtypes.len() - 1) as u16;
+        let z = u16::try_from(self.dtypes.len() - 1).unwrap();
         self.ops.push(IROp::Load { z, address, offset });
         z
     }
@@ -274,7 +274,7 @@ impl IRCompiler {
                 } else {
                     self.dtypes.push(self.dtypes[x as usize]);
                 }
-                let max_id = (self.dtypes.len() - 1) as u16;
+                let max_id = u16::try_from(self.dtypes.len() - 1).unwrap();
                 self.ops.push(IROp::Unary { z: max_id, x, uop });
                 Reg::Var(max_id)
             }
@@ -294,7 +294,7 @@ impl IRCompiler {
                 self.dtypes.push(c.dtype());
             }
         }
-        let z = (self.dtypes.len() - 1) as u16;
+        let z = u16::try_from(self.dtypes.len() - 1).unwrap();
         self.ops.push(IROp::Binary { z, x, y, bop });
         z
     }
@@ -366,7 +366,7 @@ impl IRCompiler {
                         args.push(x);
                         let dtype = xdtype.ir_dtype();
                         addressables.push((xscope, dtype, xview.original_numel(), true));
-                        let id = (addressables.len() - 1) as u16;
+                        let id = u16::try_from(addressables.len() - 1).unwrap();
                         c.pointers_map.insert((x, xscope), id);
                     }
                 }
@@ -394,7 +394,7 @@ impl IRCompiler {
                                     zview.original_numel(),
                                     false,
                                 ));
-                                (addressables.len() - 1) as u16
+                                u16::try_from(addressables.len() - 1).unwrap()
                             });
                     }
                 }
@@ -419,7 +419,7 @@ impl IRCompiler {
                             xview.original_numel(),
                             true,
                         ));
-                        let id = (addressables.len() - 1) as u16;
+                        let id = u16::try_from(addressables.len() - 1).unwrap();
                         c.pointers_map.insert((x, xscope), id);
                     }
                 }
@@ -445,10 +445,10 @@ impl IRCompiler {
                         view.original_numel(),
                         false,
                     ));
-                    let id = (addressables.len() - 1) as u16;
+                    let id = u16::try_from(addressables.len() - 1).unwrap();
                     c.pointers_map.insert((z, Scope::Register), id);
                 }
-                VOp::Loop { axis, .. } => max_axis = max_axis.max(axis as u16),
+                VOp::Loop { axis, .. } => max_axis = max_axis.max(u16::try_from(axis).unwrap()),
                 _ => {}
             }
         }
@@ -461,7 +461,7 @@ impl IRCompiler {
             match op {
                 &VOp::Loop { axis, len } => {
                     // Axis always maps to register ids
-                    let id = axis as u16;
+                    let id = u16::try_from(axis).unwrap();
                     c.ops.push(IROp::Loop { id, len });
                     loops.push((id, len));
                 }
@@ -781,12 +781,12 @@ fn new_var(
         if *rc == 0 && registers[i] == ir_dtype {
             //registers[i] = ir_dtype;
             reg_rcs[i] = ref_count;
-            return i as u16;
+            return u16::try_from(i).unwrap();
         }
     }
     registers.push(ir_dtype);
     reg_rcs.push(ref_count);
-    (registers.len() - 1) as u16
+    u16::try_from(registers.len() - 1).unwrap()
 }
 
 // Returns IRKernel and order in which tensors are passed to it as arguments

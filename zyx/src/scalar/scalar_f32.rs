@@ -22,8 +22,9 @@ impl Scalar for f32 {
         t
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_f64(t: f64) -> Self {
-        t as f32
+        t as Self
     }
 
     #[cfg(feature = "complex")]
@@ -37,31 +38,34 @@ impl Scalar for f32 {
     }
 
     fn from_u8(t: u8) -> Self {
-        t as f32
+        f32::from(t)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_u32(t: u32) -> Self {
         t as f32
     }
 
     fn from_i8(t: i8) -> Self {
-        t as f32
+        f32::from(t)
     }
 
     fn from_i16(t: i16) -> Self {
-        t as f32
+        f32::from(t)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_i32(t: i32) -> Self {
         t as f32
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_i64(t: i64) -> Self {
         t as f32
     }
 
     fn from_bool(t: bool) -> Self {
-        t as i32 as f32
+        f32::from(i8::from(t))
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -117,7 +121,7 @@ impl Scalar for f32 {
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        (self < rhs) as i32 as f32
+        f32::from(i8::from(self < rhs))
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -153,15 +157,15 @@ impl Scalar for f32 {
     }
 
     fn nonzero(self) -> Self {
-        (self != 0.) as i32 as f32
+        f32::from(i8::from(self != 0.))
     }
 
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as i32 as f32
+        f32::from(i8::from(self > rhs))
     }
 
     fn or(self, rhs: Self) -> Self {
-        (self != 0. || rhs != 0.) as i32 as f32
+        f32::from(i8::from(self != 0. || rhs != 0.))
     }
 }
 
@@ -183,8 +187,7 @@ impl Float for f32 {
     }
 
     fn floor(self) -> Self {
-        let i = self as i32 as f32;
-        i - (i > self) as i32 as f32
+        f32::floor(self)
     }
 
     fn cos(self) -> Self {

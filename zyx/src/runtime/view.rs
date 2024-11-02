@@ -17,7 +17,7 @@ struct RDim {
 
 impl View {
     /// Create empty view for scalars
-    pub(crate) fn none() -> View {
+    pub(crate) const fn none() -> View {
         View(Vec::new())
     }
 
@@ -87,7 +87,7 @@ impl View {
                 .values()
                 .map(|dim| {
                     if dim.st != 0 {
-                        (dim.d as isize - dim.lp - dim.rp) as usize
+                        usize::try_from(isize::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap()
                     } else {
                         1
                     }
@@ -238,7 +238,8 @@ impl View {
     pub(crate) fn pad(&mut self, axis: usize, left_pad: isize, right_pad: isize) {
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(&axis) {
-                dim.d = (dim.d as isize + left_pad + right_pad) as usize;
+                dim.d = usize::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad)
+                    .unwrap();
                 dim.lp = left_pad;
                 dim.rp = right_pad;
             }
@@ -275,24 +276,27 @@ impl View {
             let mut ost = 1;
             for (&a, dim) in inner.iter().rev() {
                 let a = if first {
-                    a as u16
+                    u16::try_from(a).unwrap()
                 } else {
                     let a = c.div(Reg::Var(offset), Reg::Const(Constant::U32(ost)));
-                    c.mod_(Reg::Var(a), Reg::Const(Constant::U32(dim.d as u32)))
+                    c.mod_(
+                        Reg::Var(a),
+                        Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())),
+                    )
                 };
-                ost *= dim.d as u32;
+                ost *= u32::try_from(dim.d).unwrap();
                 //println!("ost: {ost}, {dim:?}");
                 // Offset
                 if dim.st != 0 && dim.d != 1 {
                     let t = if dim.lp != 0 {
                         let lp = Reg::Const(Constant::U32(
-                            if dim.lp > 0 { dim.lp } else { -dim.lp } as u32,
+                            u32::try_from(if dim.lp > 0 { dim.lp } else { -dim.lp }).unwrap(),
                         ));
                         c.sub(Reg::Var(a), lp)
                     } else {
                         a
                     };
-                    let stride = Reg::Const(Constant::U32(dim.st as u32));
+                    let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
                     offset = c.mad(
                         Reg::Var(t),
                         stride,
@@ -305,7 +309,7 @@ impl View {
                 }
                 // Padding condition
                 if dim.lp > 0 {
-                    let lp = Reg::Const(Constant::U32((dim.lp - 1) as u32));
+                    let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp - 1).unwrap()));
                     let t = c.cmplt(Reg::Var(a), lp);
                     pc = c.and(
                         Reg::Var(t),
@@ -317,7 +321,9 @@ impl View {
                     );
                 }
                 if dim.rp > 0 {
-                    let rp = Reg::Const(Constant::U32((dim.d as isize - dim.rp) as u32));
+                    let rp = Reg::Const(Constant::U32(
+                        u32::try_from(isize::try_from(dim.d).unwrap() - dim.rp).unwrap(),
+                    ));
                     let t = c.cmpgt(Reg::Var(a), rp);
                     pc = c.and(Reg::Var(t), Reg::Var(pc));
                 }
@@ -345,9 +351,9 @@ impl View {
         if let Some(inner) = self.0.last() {
             for (&a, dim) in inner {
                 if dim.st != 0 && dim.d != 1 {
-                    let stride = Reg::Const(Constant::U32(dim.st as u32));
+                    let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
                     offset = c.mad(
-                        Reg::Var(a as u16),
+                        Reg::Var(u16::try_from(a).unwrap()),
                         stride,
                         if offset != 0 {
                             Reg::Var(offset)

@@ -432,7 +432,8 @@ impl Runtime {
         //println!("Self shape: {shape:?}, padding: {padding:?}");
         let mut i = 0;
         for d in shape.iter_mut().rev() {
-            *d = (*d as isize + padding[i].0 + padding[i].1) as usize;
+            *d = usize::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
+                .unwrap();
             i += 1;
             if i >= padding.len() {
                 break;
@@ -595,23 +596,23 @@ impl Runtime {
 }
 
 impl Runtime {
-    pub(super) fn debug_dev(&self) -> bool {
+    pub(super) const fn debug_dev(&self) -> bool {
         self.debug % 2 == 1
     }
 
-    fn debug_perf(&self) -> bool {
+    const fn debug_perf(&self) -> bool {
         (self.debug >> 1) % 2 == 1
     }
 
-    fn debug_sched(&self) -> bool {
+    const fn debug_sched(&self) -> bool {
         (self.debug >> 2) % 2 == 1
     }
 
-    fn debug_ir(&self) -> bool {
+    const fn debug_ir(&self) -> bool {
         (self.debug >> 3) % 2 == 1
     }
 
-    fn debug_asm(&self) -> bool {
+    const fn debug_asm(&self) -> bool {
         (self.debug >> 4) % 2 == 1
     }
 

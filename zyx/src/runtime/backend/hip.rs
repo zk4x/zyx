@@ -205,14 +205,14 @@ pub(super) fn initialize_device(
         let mut device = 0;
         unsafe { hipDeviceGet(&mut device, dev_id) }.check("Failed to access HIP device")?;
         let mut device_name = [0; 100];
-        let Ok(_) = unsafe { hipDeviceGetName(device_name.as_mut_ptr(), 100, device) }
+        let Ok(()) = unsafe { hipDeviceGetName(device_name.as_mut_ptr(), 100, device) }
             .check("Failed to get HIP device name")
         else {
             continue;
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(_) = unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }
+        let Ok(()) = unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }
             .check("Failed to get HIP device compute capability.")
         else {
             continue;
@@ -223,7 +223,7 @@ pub(super) fn initialize_device(
             });
         }
         let mut free_bytes = 0;
-        let Ok(_) =
+        let Ok(()) =
             unsafe { hipDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.")
         else {
             continue;
@@ -245,7 +245,7 @@ pub(super) fn initialize_device(
         let mut queues = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
-            let Ok(_) =
+            let Ok(()) =
                 unsafe { hipStreamCreate(&mut stream, 0) }.check("Failed to create hip stream")
             else {
                 continue;
@@ -278,13 +278,15 @@ pub(super) fn initialize_device(
                 hipStreamDestroy,
             },
             queues,
-        ))
+        ));
     }
 
     Ok((memory_pools, devices))
 }
 
 impl HIPMemoryPool {
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn deinitialize(self) -> Result<(), HIPError> {
         // TODO
         Ok(())
@@ -303,7 +305,7 @@ impl HIPMemoryPool {
             });
         }
         self.free_bytes -= bytes;
-        let mut ptr = self.device as u64;
+        let mut ptr = u64::try_from(self.device).unwrap();
         unsafe { (self.hipMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
         Ok(HIPBuffer {
             ptr,
@@ -312,6 +314,7 @@ impl HIPMemoryPool {
         })
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn deallocate(&mut self, buffer: HIPBuffer) -> Result<(), HIPError> {
         unsafe { (self.hipMemFree)(buffer.ptr) }.check("Failed to free memory.")?;
         self.free_bytes += buffer.bytes;
@@ -345,6 +348,8 @@ impl Drop for HIPMemoryPool {
 }
 
 impl HIPDevice {
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) const fn deinitialize(self) -> Result<(), HIPError> {
         // TODO
         Ok(())
@@ -359,10 +364,12 @@ impl HIPDevice {
         self.memory_pool_id
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_program(&self, program: HIPProgram) -> Result<(), HIPError> {
         unsafe { (self.hipModuleUnload)(program.module) }.check("Failed to release HIP program.")
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_queue(&self, queue: HIPQueue) -> Result<(), HIPError> {
         unsafe { (self.hipStreamDestroy)(queue.stream) }.check("Failed to release HIP stream.")
     }
@@ -372,6 +379,13 @@ impl HIPDevice {
         kernel: &IRKernel,
         debug_asm: bool,
     ) -> Result<HIPProgram, HIPError> {
+        #[repr(C)]
+        #[derive(Debug)]
+        struct _hiprtcProgram {
+            _unused: [u8; 0],
+        }
+        type hiprtcProgram = *mut _hiprtcProgram;
+
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
         let mut global_work_size = [0; 3];
@@ -561,12 +575,6 @@ impl HIPDevice {
         let hiprtcDestroyProgram: unsafe extern "C" fn(*mut hiprtcProgram) -> hiprtcResult =
             *unsafe { hiprtc.get(b"hiprtcDestroyProgram\0") }.unwrap();
 
-        #[repr(C)]
-        #[derive(Debug)]
-        struct _hiprtcProgram {
-            _unused: [u8; 0],
-        }
-        type hiprtcProgram = *mut _hiprtcProgram;
         let mut program = ptr::null_mut();
         unsafe {
             hiprtcCreateProgram(
@@ -596,7 +604,7 @@ impl HIPDevice {
             //program_log_size = 1000;
             println!("Program log size: {program_log_size}");
             let mut program_log: Vec<u8> = vec![0; program_log_size];
-            unsafe { hiprtcGetProgramLog(program, program_log.as_mut_ptr() as *mut i8) }
+            unsafe { hiprtcGetProgramLog(program, program_log.as_mut_ptr().cast()) }
                 .check("hiprtcGetProgramLog")?;
             if let Ok(log) = String::from_utf8(program_log) {
                 println!("HIPRTC program log:\n{log}",);
@@ -610,8 +618,7 @@ impl HIPDevice {
         unsafe { hiprtcGetCodeSize(program, &mut code_size) }.check("hiprtcGetCodeSize")?;
 
         let mut code_vec: Vec<u8> = vec![0; code_size];
-        unsafe { hiprtcGetCode(program, code_vec.as_mut_ptr() as *mut i8) }
-            .check("hiprtcGetCode")?;
+        unsafe { hiprtcGetCode(program, code_vec.as_mut_ptr().cast()) }.check("hiprtcGetCode")?;
         unsafe { hiprtcDestroyProgram(&mut program) }.check("hiprtcDestroyProgram")?;
 
         let mut module = ptr::null_mut();
@@ -648,12 +655,12 @@ impl HIPQueue {
         unsafe {
             (self.hipLaunchKernel)(
                 program.function,
-                program.global_work_size[0] as u32,
-                program.global_work_size[1] as u32,
-                program.global_work_size[2] as u32,
-                program.local_work_size[0] as u32,
-                program.local_work_size[1] as u32,
-                program.local_work_size[2] as u32,
+                u32::try_from(program.global_work_size[0]).unwrap(),
+                u32::try_from(program.global_work_size[1]).unwrap(),
+                u32::try_from(program.global_work_size[2]).unwrap(),
+                u32::try_from(program.local_work_size[0]).unwrap(),
+                u32::try_from(program.local_work_size[1]).unwrap(),
+                u32::try_from(program.local_work_size[2]).unwrap(),
                 0,
                 ptr::null_mut(),
                 kernel_params.as_mut_ptr(),
@@ -675,14 +682,14 @@ impl HIPQueue {
 
 impl HIPStatus {
     fn check(self, info: &str) -> Result<(), HIPError> {
-        if self != Self::hipSuccess {
+        if self == Self::hipSuccess {
+            Ok(())
+        } else {
             Err(HIPError {
                 info: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {info}"),
                 status: self,
                 hiprtc: hiprtcResult::HIPRTC_SUCCESS,
             })
-        } else {
-            Ok(())
         }
     }
 }
@@ -794,14 +801,14 @@ enum hiprtcResult {
 
 impl hiprtcResult {
     fn check(self, info: &str) -> Result<(), HIPError> {
-        if self != Self::HIPRTC_SUCCESS {
+        if self == Self::HIPRTC_SUCCESS {
+            Ok(())
+        } else {
             Err(HIPError {
                 info: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {info}"),
                 status: HIPStatus::hipSuccess,
                 hiprtc: self,
             })
-        } else {
-            Ok(())
         }
     }
 }
@@ -811,43 +818,43 @@ impl hiprtcResult {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum HIPStatus {
     hipSuccess = 0,
-    ///< Successful completion.
+    /// Successful completion.
     hipErrorInvalidValue = 1,
-    ///< One or more of the parameters passed to the API call is NULL
-    ///< or not in an acceptable range.
+    /// One or more of the parameters passed to the API call is NULL
+    /// or not in an acceptable range.
     hipErrorOutOfMemory = 2,
-    ///< out of memory range.
+    /// out of memory range.
     hipErrorNotInitialized = 3,
-    ///< Invalid not initialized
+    /// Invalid not initialized
     hipErrorDeinitialized = 4,
-    ///< Deinitialized
+    /// Deinitialized
     hipErrorProfilerDisabled = 5,
     hipErrorProfilerNotInitialized = 6,
     hipErrorProfilerAlreadyStarted = 7,
     hipErrorProfilerAlreadyStopped = 8,
     hipErrorInvalidConfiguration = 9,
-    ///< Invalide configuration
+    /// Invalide configuration
     hipErrorInvalidPitchValue = 12,
-    ///< Invalid pitch value
+    /// Invalid pitch value
     hipErrorInvalidSymbol = 13,
-    ///< Invalid symbol
+    /// Invalid symbol
     hipErrorInvalidDevicePointer = 17,
-    ///< Invalid Device Pointer
+    /// Invalid Device Pointer
     hipErrorInvalidMemcpyDirection = 21,
-    ///< Invalid memory copy direction
+    /// Invalid memory copy direction
     hipErrorInsufficientDriver = 35,
     hipErrorMissingConfiguration = 52,
     hipErrorPriorLaunchFailure = 53,
     hipErrorInvalidDeviceFunction = 98,
-    ///< Invalid device function
+    /// Invalid device function
     hipErrorNoDevice = 100,
-    ///< Call to hipGetDeviceCount returned 0 devices
+    /// Call to hipGetDeviceCount returned 0 devices
     hipErrorInvalidDevice = 101,
-    ///< DeviceID must be in range from 0 to compute-devices.
+    /// `DeviceID` must be in range from 0 to compute-devices.
     hipErrorInvalidImage = 200,
-    ///< Invalid image
+    /// Invalid image
     hipErrorInvalidContext = 201,
-    ///< Produced when input context is invalid.
+    /// Produced when input context is invalid.
     hipErrorContextAlreadyCurrent = 202,
     hipErrorMapFailed = 205,
     hipErrorUnmapFailed = 206,
@@ -860,112 +867,112 @@ enum HIPStatus {
     hipErrorNotMappedAsPointer = 213,
     hipErrorECCNotCorrectable = 214,
     hipErrorUnsupportedLimit = 215,
-    ///< Unsupported limit
+    /// Unsupported limit
     hipErrorContextAlreadyInUse = 216,
-    ///< The context is already in use
+    /// The context is already in use
     hipErrorPeerAccessUnsupported = 217,
     hipErrorInvalidKernelFile = 218,
-    ///< In CUDA DRV, it is CUDA_ERROR_INVALID_PTX
+    /// In CUDA DRV, it is `CUDA_ERROR_INVALID_PTX`
     hipErrorInvalidGraphicsContext = 219,
     hipErrorInvalidSource = 300,
-    ///< Invalid source.
+    /// Invalid source.
     hipErrorFileNotFound = 301,
-    ///< the file is not found.
+    /// the file is not found.
     hipErrorSharedObjectSymbolNotFound = 302,
     hipErrorSharedObjectInitFailed = 303,
-    ///< Failed to initialize shared object.
+    /// Failed to initialize shared object.
     hipErrorOperatingSystem = 304,
-    ///< Not the correct operating system
+    /// Not the correct operating system
     hipErrorInvalidHandle = 400,
-    ///< Invalide handle
+    /// Invalide handle
     hipErrorIllegalState = 401,
-    ///< Resource required is not in a valid state to perform operation.
+    /// Resource required is not in a valid state to perform operation.
     hipErrorNotFound = 500,
-    ///< Not found
+    /// Not found
     hipErrorNotReady = 600,
-    ///< Indicates that asynchronous operations enqueued earlier are not
-    ///< ready.  This is not actually an error, but is used to distinguish
-    ///< from hipSuccess (which indicates completion).  APIs that return
-    ///< this error include hipEventQuery and hipStreamQuery.
+    /// Indicates that asynchronous operations enqueued earlier are not
+    /// ready.  This is not actually an error, but is used to distinguish
+    /// from hipSuccess (which indicates completion).  APIs that return
+    /// this error include hipEventQuery and hipStreamQuery.
     hipErrorIllegalAddress = 700,
     hipErrorLaunchOutOfResources = 701,
-    ///< Out of resources error.
+    /// Out of resources error.
     hipErrorLaunchTimeOut = 702,
-    ///< Timeout for the launch.
+    /// Timeout for the launch.
     hipErrorPeerAccessAlreadyEnabled = 704,
-    ///< Peer access was already enabled from the current
-    ///< device.
+    /// Peer access was already enabled from the current
+    /// device.
     hipErrorPeerAccessNotEnabled = 705,
-    ///< Peer access was never enabled from the current device.
+    /// Peer access was never enabled from the current device.
     hipErrorSetOnActiveProcess = 708,
-    ///< The process is active.
+    /// The process is active.
     hipErrorContextIsDestroyed = 709,
-    ///< The context is already destroyed
+    /// The context is already destroyed
     hipErrorAssert = 710,
-    ///< Produced when the kernel calls assert.
+    /// Produced when the kernel calls assert.
     hipErrorHostMemoryAlreadyRegistered = 712,
-    ///< Produced when trying to lock a page-locked
-    ///< memory.
+    /// Produced when trying to lock a page-locked
+    /// memory.
     hipErrorHostMemoryNotRegistered = 713,
-    ///< Produced when trying to unlock a non-page-locked
-    ///< memory.
+    /// Produced when trying to unlock a non-page-locked
+    /// memory.
     hipErrorLaunchFailure = 719,
-    ///< An exception occurred on the device while executing a kernel.
+    /// An exception occurred on the device while executing a kernel.
     hipErrorCooperativeLaunchTooLarge = 720,
-    ///< This error indicates that the number of blocks
-    ///< launched per grid for a kernel that was launched
-    ///< via cooperative launch APIs exceeds the maximum
-    ///< number of allowed blocks for the current device.
+    /// This error indicates that the number of blocks
+    /// launched per grid for a kernel that was launched
+    /// via cooperative launch APIs exceeds the maximum
+    /// number of allowed blocks for the current device.
     hipErrorNotSupported = 801,
-    ///< Produced when the hip API is not supported/implemented
+    /// Produced when the hip API is not supported/implemented
     hipErrorStreamCaptureUnsupported = 900,
-    ///< The operation is not permitted when the stream
-    ///< is capturing.
+    /// The operation is not permitted when the stream
+    /// is capturing.
     hipErrorStreamCaptureInvalidated = 901,
-    ///< The current capture sequence on the stream
-    ///< has been invalidated due to a previous error.
+    /// The current capture sequence on the stream
+    /// has been invalidated due to a previous error.
     hipErrorStreamCaptureMerge = 902,
-    ///< The operation would have resulted in a merge of
-    ///< two independent capture sequences.
+    /// The operation would have resulted in a merge of
+    /// two independent capture sequences.
     hipErrorStreamCaptureUnmatched = 903,
-    ///< The capture was not initiated in this stream.
+    /// The capture was not initiated in this stream.
     hipErrorStreamCaptureUnjoined = 904,
-    ///< The capture sequence contains a fork that was not
-    ///< joined to the primary stream.
+    /// The capture sequence contains a fork that was not
+    /// joined to the primary stream.
     hipErrorStreamCaptureIsolation = 905,
-    ///< A dependency would have been created which crosses
-    ///< the capture sequence boundary. Only implicit
-    ///< in-stream ordering dependencies  are allowed
-    ///< to cross the boundary
+    /// A dependency would have been created which crosses
+    /// the capture sequence boundary. Only implicit
+    /// in-stream ordering dependencies  are allowed
+    /// to cross the boundary
     hipErrorStreamCaptureImplicit = 906,
-    ///< The operation would have resulted in a disallowed
-    ///< implicit dependency on a current capture sequence
-    ///< from hipStreamLegacy.
+    /// The operation would have resulted in a disallowed
+    /// implicit dependency on a current capture sequence
+    /// from hipStreamLegacy.
     hipErrorCapturedEvent = 907,
-    ///< The operation is not permitted on an event which was last
-    ///< recorded in a capturing stream.
+    /// The operation is not permitted on an event which was last
+    /// recorded in a capturing stream.
     hipErrorStreamCaptureWrongThread = 908,
-    ///< A stream capture sequence not initiated with
-    ///< the hipStreamCaptureModeRelaxed argument to
-    ///< hipStreamBeginCapture was passed to
-    ///< hipStreamEndCapture in a different thread.
+    /// A stream capture sequence not initiated with
+    /// the hipStreamCaptureModeRelaxed argument to
+    /// hipStreamBeginCapture was passed to
+    /// hipStreamEndCapture in a different thread.
     hipErrorGraphExecUpdateFailure = 910,
-    ///< This error indicates that the graph update
-    ///< not performed because it included changes which
-    ///< violated constraintsspecific to instantiated graph
-    ///< update.
+    /// This error indicates that the graph update
+    /// not performed because it included changes which
+    /// violated constraintsspecific to instantiated graph
+    /// update.
     hipErrorInvalidChannelDescriptor = 911,
-    ///< Invalid channel descriptor.
+    /// Invalid channel descriptor.
     hipErrorInvalidTexture = 912,
-    ///< Invalid texture.
+    /// Invalid texture.
     hipErrorUnknown = 999,
-    ///< Unknown error.
+    /// Unknown error.
     // HSA Runtime Error Codes start here.
     hipErrorRuntimeMemory = 1052,
-    ///< HSA runtime memory call returned error.  Typically not seen
-    ///< in production systems.
+    /// HSA runtime memory call returned error.  Typically not seen
+    /// in production systems.
     hipErrorRuntimeOther = 1053,
-    ///< HSA runtime call other than memory returned error.  Typically
-    ///< not seen in production systems.
+    /// HSA runtime call other than memory returned error.  Typically
+    /// not seen in production systems.
     hipErrorTbd, // Marker that more error codes are needed.
 }

@@ -417,7 +417,7 @@ impl MemoryPool {
         Ok(())
     }
 
-    pub(super) fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> usize {
         match self {
             MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::HIP { memory_pool, .. } => memory_pool.free_bytes(),
@@ -772,7 +772,7 @@ impl Device {
     }
 
     // NOTE returns memory pool id out of runtime memory pools
-    pub(super) fn memory_pool_id(&self) -> MemoryPoolId {
+    pub(super) const fn memory_pool_id(&self) -> MemoryPoolId {
         match self {
             Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
             Device::HIP { memory_pool_id, .. } => *memory_pool_id,
@@ -783,7 +783,7 @@ impl Device {
         }
     }
 
-    pub(super) fn info(&self) -> &DeviceInfo {
+    pub(super) const fn info(&self) -> &DeviceInfo {
         match self {
             Device::CUDA { device, .. } => device.info(),
             Device::HIP { device, .. } => device.info(),
@@ -794,7 +794,7 @@ impl Device {
         }
     }
 
-    pub(super) fn compute(&self) -> u128 {
+    pub(super) const fn compute(&self) -> u128 {
         self.info().compute
     }
 

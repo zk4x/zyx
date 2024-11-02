@@ -949,12 +949,12 @@ impl CUDAQueue {
         unsafe {
             (self.cuLaunchKernel)(
                 program.function,
-                program.global_work_size[0] as u32,
-                program.global_work_size[1] as u32,
-                program.global_work_size[2] as u32,
-                program.local_work_size[0] as u32,
-                program.local_work_size[1] as u32,
-                program.local_work_size[2] as u32,
+                u32::try_from(program.global_work_size[0]).unwrap(),
+                u32::try_from(program.global_work_size[1]).unwrap(),
+                u32::try_from(program.global_work_size[2]).unwrap(),
+                u32::try_from(program.local_work_size[0]).unwrap(),
+                u32::try_from(program.local_work_size[1]).unwrap(),
+                u32::try_from(program.local_work_size[2]).unwrap(),
                 0,
                 self.stream,
                 kernel_params.as_mut_ptr(),
@@ -977,13 +977,13 @@ impl CUDAQueue {
 
 impl CUDAStatus {
     fn check(self, info: &str) -> Result<(), CUDAError> {
-        if self != Self::CUDA_SUCCESS {
+        if self == Self::CUDA_SUCCESS {
+            Ok(())
+        } else {
             Err(CUDAError {
                 info: info.into(),
                 status: self,
             })
-        } else {
-            Ok(())
         }
     }
 }
@@ -1330,13 +1330,13 @@ enum nvrtcResult {
 
 impl nvrtcResult {
     fn check(self, info: &str) -> Result<(), CUDAError> {
-        if self != Self::NVRTC_SUCCESS {
+        if self == Self::NVRTC_SUCCESS {
+            Ok(())
+        } else {
             Err(CUDAError {
                 info: info.into(),
                 status: CUDAStatus::CUDA_ERROR_INVALID_SOURCE,
             })
-        } else {
-            Ok(())
         }
     }
 }

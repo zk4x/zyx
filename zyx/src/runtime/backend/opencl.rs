@@ -19,7 +19,7 @@ use std::{
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct OpenCLConfig {
-    /// Select which platforms will be used by OpenCL backend
+    /// Select which platforms will be used by `OpenCL` backend
     /// If set to None, uses all available platforms.
     /// default = None
     pub platform_ids: Option<Vec<usize>>,
@@ -170,6 +170,8 @@ impl OpenCLDevice {
         self.memory_pool_id
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::unnecessary_wraps)]
     pub(super) const fn deinitialize(self) -> Result<(), OpenCLError> {
         // cuReleaseDevice is OpenCL 1.2 only, but we support 1.0, so nothing to do here?
         // TODO better do it conditionally, if the function exists in .so, then load it, do nothing
@@ -305,10 +307,10 @@ pub(super) fn initialize_devices(
                     );
                     ids.set_len(len);
                 };
-                if OpenCLStatus::CL_SUCCESS != status {
-                    Err(status)
-                } else {
+                if OpenCLStatus::CL_SUCCESS == status {
                     Ok(ids)
+                } else {
+                    Err(status)
                 }
             } else {
                 Ok(Vec::default())
@@ -321,7 +323,7 @@ pub(super) fn initialize_devices(
         let context = unsafe {
             clCreateContext(
                 ptr::null(),
-                device_ids.len() as cl_uint,
+                cl_uint::try_from(device_ids.len()).unwrap(),
                 device_ids.as_ptr(),
                 None,
                 ptr::null_mut(),
@@ -335,7 +337,7 @@ pub(super) fn initialize_devices(
         if debug_dev {
             let platform_name = {
                 let mut size: usize = 0;
-                let Ok(_) = unsafe {
+                let Ok(()) = unsafe {
                     clGetPlatformInfo(platform, CL_PLATFORM_NAME, 0, ptr::null_mut(), &mut size)
                 }
                 .check("Failed to get platform info.") else {
@@ -344,13 +346,13 @@ pub(super) fn initialize_devices(
                 if size > 0 {
                     let count = size / core::mem::size_of::<u8>();
                     let mut data: Vec<u8> = Vec::with_capacity(count);
-                    let Ok(_) = unsafe {
+                    let Ok(()) = unsafe {
                         data.set_len(count);
                         clGetPlatformInfo(
                             platform,
                             CL_PLATFORM_NAME,
                             size,
-                            data.as_mut_ptr() as *mut c_void,
+                            data.as_mut_ptr().cast(),
                             ptr::null_mut(),
                         )
                     }
@@ -381,7 +383,7 @@ pub(super) fn initialize_devices(
                     clFinish,
                     //clReleaseCommandQueue,
                 });
-                let Ok(_) = status.check("Failed to create device command queue") else {
+                let Ok(()) = status.check("Failed to create device command queue") else {
                     continue;
                 };
             }
@@ -398,11 +400,12 @@ pub(super) fn initialize_devices(
                 clGetDeviceInfo,
                 clCreateProgramWithSource,
             };
-            let Ok(_) = device.set_info(debug_dev) else {
+            let Ok(()) = device.set_info(debug_dev) else {
                 continue;
             };
             if let Ok(bytes) = device.get_device_data(CL_DEVICE_GLOBAL_MEM_SIZE) {
-                total_bytes += u64::from_ne_bytes(bytes.try_into().unwrap()) as usize;
+                total_bytes +=
+                    usize::try_from(u64::from_ne_bytes(bytes.try_into().unwrap())).unwrap();
                 devices.push((device, queues));
             }
         }
@@ -411,7 +414,7 @@ pub(super) fn initialize_devices(
         }
         let queue =
             unsafe { clCreateCommandQueue(context, devices.last().unwrap().0.ptr, 0, &mut status) };
-        let Ok(_) = status.check("Failed to create device command queue") else {
+        let Ok(()) = status.check("Failed to create device command queue") else {
             continue;
         };
         memory_pools.push(OpenCLMemoryPool {
@@ -466,6 +469,7 @@ impl OpenCLMemoryPool {
         })
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn deallocate(&mut self, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
         //println!("Deallocate {:?}", buffer.ptr);
         assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
@@ -540,15 +544,9 @@ impl OpenCLMemoryPool {
         // TODO going through host is slow, but likely only way
         // LOL, is maybe unint really better than without it???
         // the only reason to use it is to stop it from running destructor, but u8 does not run it anyway ...
-        use std::mem::MaybeUninit;
         assert_eq!(src.bytes, dst.bytes);
-        let mut data: Vec<MaybeUninit<u8>> = Vec::with_capacity(dst.bytes);
-        unsafe { data.set_len(dst.bytes) };
-        let dref: &mut [MaybeUninit<u8>] = data.as_mut();
-        self.pool_to_host(src, unsafe {
-            std::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(dref)
-        })?;
-        let data: Vec<u8> = unsafe { std::mem::transmute::<Vec<MaybeUninit<u8>>, Vec<u8>>(data) };
+        let mut data: Vec<u8> = vec![0; dst.bytes];
+        self.pool_to_host(src, &mut data)?;
         //println!("Copied data: {data:?}");
         self.host_to_pool(&data, dst)?;
         Ok(())
@@ -604,11 +602,12 @@ impl OpenCLDevice {
                     .unwrap(),
             ) as usize
                 * 4,
-            local_mem_size: u64::from_ne_bytes(
+            local_mem_size: usize::try_from(u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?
                     .try_into()
                     .unwrap(),
-            ) as usize,
+            ))
+            .unwrap(),
             num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
             tensor_cores: false,
         };
@@ -822,7 +821,7 @@ impl OpenCLDevice {
                 context,
                 1,
                 sources.as_ptr().cast(),
-                &[source.len()] as *const usize,
+                [source.len()].as_ptr(),
                 &mut status,
             )
         };
@@ -832,10 +831,7 @@ impl OpenCLDevice {
                 program,
                 1,
                 [device].as_ptr(),
-                core::ffi::CStr::from_bytes_with_nul(b"-cl-fast-relaxed-math\0")
-                    .unwrap()
-                    .as_ptr()
-                    .cast(),
+                c"-cl-fast-relaxed-math".as_ptr().cast(),
                 None,
                 ptr::null_mut(),
             )
@@ -858,8 +854,8 @@ impl OpenCLDevice {
             unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
         status.check("Failed to create kernel.")?;
         Ok(OpenCLProgram {
-            kernel,
             program,
+            kernel,
             global_work_size,
             local_work_size,
         })
@@ -929,37 +925,37 @@ impl OpenCLQueue {
         Ok(())
     }
 
-    pub(super) fn load(&self) -> usize {
+    pub(super) const fn load(&self) -> usize {
         self.load
     }
 }
 
 impl IRDType {
-    fn ocl(&self) -> String {
+    fn ocl(self) -> String {
         match self {
-            IRDType::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
-            IRDType::F8(v) => format!("f8{v}"),
-            IRDType::F16(v) => format!("half{v}"),
-            IRDType::F32(v) => format!("float{v}"),
-            IRDType::F64(v) => format!("double{v}"),
+            Self::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
+            Self::F8(v) => format!("f8{v}"),
+            Self::F16(v) => format!("half{v}"),
+            Self::F32(v) => format!("float{v}"),
+            Self::F64(v) => format!("double{v}"),
             #[cfg(feature = "complex")]
-            IRDType::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            Self::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
             #[cfg(feature = "complex")]
-            IRDType::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
-            IRDType::U8(v) => format!("unsigned char{v}"),
-            IRDType::I8(v) => format!("char{v}"),
-            IRDType::I16(v) => format!("short{v}"),
-            IRDType::I32(v) => format!("int{v}"),
-            IRDType::I64(v) => format!("long{v}"),
-            IRDType::Bool => "bool".into(),
-            IRDType::U32(v) => format!("unsigned int{v}"),
+            Self::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
+            Self::U8(v) => format!("unsigned char{v}"),
+            Self::I8(v) => format!("char{v}"),
+            Self::I16(v) => format!("short{v}"),
+            Self::I32(v) => format!("int{v}"),
+            Self::I64(v) => format!("long{v}"),
+            Self::Bool => "bool".into(),
+            Self::U32(v) => format!("unsigned int{v}"),
         }
     }
 }
 
 impl OpenCLStatus {
     fn check(self, info: &str) -> Result<(), OpenCLError> {
-        if self == OpenCLStatus::CL_SUCCESS {
+        if self == Self::CL_SUCCESS {
             Ok(())
         } else {
             Err(OpenCLError {
@@ -971,12 +967,14 @@ impl OpenCLStatus {
 }
 
 impl OpenCLDevice {
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_program(&self, program: OpenCLProgram) -> Result<(), OpenCLError> {
         //println!("Releasing {:?}", program);
         unsafe { (self.clReleaseProgram)(program.program) }
             .check("Failed to release OpenCL program")
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_queue(&self, queue: OpenCLQueue) -> Result<(), OpenCLError> {
         unsafe { (self.clReleaseCommandQueue)(queue.queue) }
             .check("Failed to release OpenCL queue.")
@@ -1000,10 +998,10 @@ impl OpenCLDevice {
                     &mut size,
                 )
             };
-            if OpenCLStatus::CL_SUCCESS != status {
-                Err(status)
-            } else {
+            if OpenCLStatus::CL_SUCCESS == status {
                 Ok(size)
+            } else {
+                Err(status)
             }
         }?;
         if 0 < size {
@@ -1016,14 +1014,14 @@ impl OpenCLDevice {
                     self.ptr,
                     param_name,
                     size,
-                    data.as_mut_ptr() as *mut c_void,
+                    data.as_mut_ptr().cast(),
                     ptr::null_mut(),
                 )
             };
-            if OpenCLStatus::CL_SUCCESS != status {
-                Err(status)
-            } else {
+            if OpenCLStatus::CL_SUCCESS == status {
                 Ok(data)
+            } else {
+                Err(status)
             }
         } else {
             Ok(Vec::default())
@@ -1055,7 +1053,7 @@ impl OpenCLDevice {
                     object,
                     param_name,
                     size,
-                    data.as_mut_ptr() as *mut c_void,
+                    data.as_mut_ptr().cast(),
                     ptr::null_mut(),
                 )
             }
@@ -1196,22 +1194,22 @@ fn get_compute(device_name: &str, debug_dev: bool) -> u128 {
 impl Constant {
     fn ocl(&self) -> String {
         match self {
-            &Constant::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
-            &Constant::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
-            &Constant::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
-            &Constant::F32(x) => format!("{:.16}f", f32::from_bits(x)),
-            &Constant::F64(x) => format!("{:.16}", f64::from_bits(x)),
+            &Self::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
+            &Self::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
+            &Self::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
+            &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
+            &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
             #[cfg(feature = "complex")]
-            Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
+            Self::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             #[cfg(feature = "complex")]
-            Constant::CF64(..) => todo!("Complex numbers are currently not supported for OpenCL"),
-            Constant::U8(x) => format!("{x}"),
-            Constant::I8(x) => format!("{x}"),
-            Constant::I16(x) => format!("{x}"),
-            Constant::U32(x) => format!("{x}"),
-            Constant::I32(x) => format!("{x}"),
-            Constant::I64(x) => format!("{x}"),
-            Constant::Bool(x) => format!("{x}"),
+            Self::CF64(..) => todo!("Complex numbers are currently not supported for OpenCL"),
+            Self::U8(x) => format!("{x}"),
+            Self::I8(x) => format!("{x}"),
+            Self::I16(x) => format!("{x}"),
+            Self::U32(x) => format!("{x}"),
+            Self::I32(x) => format!("{x}"),
+            Self::I64(x) => format!("{x}"),
+            Self::Bool(x) => format!("{x}"),
         }
     }
 }
@@ -1219,8 +1217,8 @@ impl Constant {
 impl Reg {
     fn ocl(&self) -> String {
         match self {
-            Reg::Var(id) => format!("r{id}"),
-            Reg::Const(value) => value.ocl(),
+            Self::Var(id) => format!("r{id}"),
+            Self::Const(value) => value.ocl(),
         }
     }
 }

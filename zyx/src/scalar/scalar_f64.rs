@@ -1,7 +1,7 @@
 use crate::dtype::DType;
-use crate::scalar::{Scalar, Float};
-use half::{bf16, f16};
+use crate::scalar::{Float, Scalar};
 use float8::F8E4M3;
+use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
@@ -19,7 +19,7 @@ impl Scalar for f64 {
     }
 
     fn from_f32(t: f32) -> Self {
-        t as f64
+        f64::from(t)
     }
 
     fn from_f64(t: f64) -> Self {
@@ -37,31 +37,32 @@ impl Scalar for f64 {
     }
 
     fn from_u8(t: u8) -> Self {
-        t as f64
+        f64::from(t)
     }
 
     fn from_u32(t: u32) -> Self {
-        t as f64
+        t.into()
     }
 
     fn from_i8(t: i8) -> Self {
-        t as f64
+        t.into()
     }
 
     fn from_i16(t: i16) -> Self {
-        t as f64
+        t.into()
     }
 
     fn from_i32(t: i32) -> Self {
-        t as f64
+        t.into()
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_i64(t: i64) -> Self {
         t as f64
     }
 
     fn from_bool(t: bool) -> Self {
-        t as i64 as f64
+        t.into()
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -119,7 +120,7 @@ impl Scalar for f64 {
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        (self < rhs) as i32 as f64
+        i8::from(self < rhs).into()
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -144,21 +145,25 @@ impl Scalar for f64 {
             || (self - rhs).abs() < Self::epsilon()
             || (self - rhs).abs() < self.abs() * 0.01
     }
-    
+
     fn not(self) -> Self {
-        if self != 0. { 0. } else { 1. }
+        if self != 0. {
+            0.
+        } else {
+            1.
+        }
     }
-    
+
     fn nonzero(self) -> Self {
-        (self != 0.) as i32 as f64
+        u8::from(self != 0.).into()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as i32 as f64
+        u8::from(self > rhs).into()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
-        (self != 0. || rhs != 0.) as i32 as f64
+        u8::from(self != 0. || rhs != 0.).into()
     }
 }
 
@@ -166,7 +171,7 @@ impl Float for f64 {
     fn exp2(self) -> Self {
         self.exp2()
     }
-    
+
     fn log2(self) -> Self {
         self.log2()
     }
@@ -191,4 +196,3 @@ impl Float for f64 {
         f64::sqrt(self)
     }
 }
-

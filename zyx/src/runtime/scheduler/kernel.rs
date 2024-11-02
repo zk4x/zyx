@@ -410,7 +410,7 @@ impl Kernel {
         self.ops.insert(op_id, VOp::Loop { axis, len: 1 })
     }
 
-    pub(super) fn shard_axis(&self) -> Option<(Axis, Dimension)> {
+    pub(super) const fn shard_axis(&self) -> Option<(Axis, Dimension)> {
         // Shard axis is axis that is not gonna be locally cached,
         // which is usually the batch axis, but it can also be other axes.
         // Since we do not locally cache axis 0, we can for now always just return that

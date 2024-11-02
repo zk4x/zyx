@@ -1,7 +1,7 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use half::{bf16, f16};
 use float8::F8E4M3;
+use half::{bf16, f16};
 #[cfg(feature = "complex")]
 use num_complex::Complex;
 
@@ -21,10 +21,12 @@ impl Scalar for i32 {
         todo!()
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
         t as i32
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_f64(t: f64) -> Self {
         t as i32
     }
@@ -44,7 +46,7 @@ impl Scalar for i32 {
     }
 
     fn from_u32(t: u32) -> Self {
-        t as Self
+        i32::try_from(t).unwrap()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -59,12 +61,13 @@ impl Scalar for i32 {
         t
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_i64(t: i64) -> Self {
         t as i32
     }
 
     fn from_bool(t: bool) -> Self {
-        t as i32
+        t.into()
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
@@ -116,11 +119,11 @@ impl Scalar for i32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i32::pow(self, rhs as u32)
+        i32::pow(self, u32::try_from(rhs).unwrap())
     }
 
     fn cmplt(self, rhs: Self) -> Self {
-        (self < rhs) as i32
+        (self < rhs).into()
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -142,20 +145,20 @@ impl Scalar for i32 {
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
-    
+
     fn not(self) -> Self {
         todo!()
     }
-    
+
     fn nonzero(self) -> Self {
         todo!()
     }
-    
+
     fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs) as Self
+        (self > rhs).into()
     }
-    
+
     fn or(self, rhs: Self) -> Self {
-        (self != 0 || rhs != 0) as Self
+        (self != 0 || rhs != 0).into()
     }
 }

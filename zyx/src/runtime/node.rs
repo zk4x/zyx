@@ -135,14 +135,14 @@ impl Node {
         }
     }
 
-    pub(super) fn is_movement(&self) -> bool {
+    pub(super) const fn is_movement(&self) -> bool {
         matches!(
             self,
             Node::Pad { .. } | Node::Reshape { .. } | Node::Expand { .. } | Node::Permute { .. }
         )
     }
 
-    pub(super) fn is_unary(&self) -> bool {
+    pub(super) const fn is_unary(&self) -> bool {
         matches!(self, Node::Unary { .. })
     }
 }

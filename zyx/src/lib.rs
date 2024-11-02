@@ -12,17 +12,31 @@
 #![forbid(rustdoc::redundant_explicit_links)]
 #![forbid(trivial_casts)]
 #![forbid(trivial_numeric_casts)]
+#![forbid(cenum_impl_drop_cast)]
+#![forbid(invalid_reference_casting)]
+#![deny(clippy::cast_possible_truncation)]
+#![deny(clippy::cast_lossless)]
+#![deny(clippy::cast_precision_loss)]
 #![deny(clippy::all)]
-#![deny(clippy::pedantic)]
+#![deny(clippy::cast_possible_wrap)]
+#![deny(clippy::cast_ptr_alignment)]
+#![deny(clippy::cast_sign_loss)]
+#![deny(clippy::ptr_cast_constness)]
+//#![deny(clippy::pedantic)]
+#![deny(clippy::fn_to_numeric_cast_any)]
+//#![deny(clippy::restriction)]
+#![deny(clippy::as_ptr_cast_mut)]
+//#![deny(clippy::use_self)]
+#![deny(clippy::missing_const_for_fn)]
+//#![deny(clippy::nursery)]
+//#![deny(clippy::cargo)]
+#![allow(clippy::single_call_fn)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::explicit_iter_loop)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::too_many_lines)]
-//clippy::all,
-//clippy::restriction,
-//clippy::pedantic,
-//clippy::nursery,
-//clippy::cargo
+#![allow(clippy::multiple_inherent_impl)]
+
 use std::{fs::File, path::Path};
 
 use crate::runtime::Runtime;
