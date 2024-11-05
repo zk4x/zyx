@@ -121,7 +121,6 @@ create a github issue.
 
 ## Features
 
-- **complex** - enables support for cf32 and cf64 dtypes
 - **`disk_cache`** - enables saving of searched kernels to disk
 - **wgsl** - enables wgsl backend
 

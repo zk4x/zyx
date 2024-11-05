@@ -542,7 +542,7 @@ impl WGSLQueue {
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: None,
                 module: &program.shader,
-                entry_point: &program.name,
+                entry_point: Some(&program.name),
                 layout: Some(&pipeline_layout),
                 cache: None,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -592,10 +592,6 @@ impl IRDType {
             IRDType::F16(v) => "f16",
             IRDType::F32(v) => "f32",
             IRDType::F64(v) => "f64",
-            #[cfg(feature = "complex")]
-            IRDType::CF32 => todo!("WIP"),
-            #[cfg(feature = "complex")]
-            IRDType::CF64 => todo!("WIP"),
             IRDType::U8(v) => "u8",
             IRDType::I8(v) => "i8",
             IRDType::I16(v) => "i16",
@@ -616,10 +612,6 @@ impl Constant {
             &Constant::BF16(x) => format!("bf16({})", half::bf16::from_bits(x)),
             &Constant::F32(x) => format!("f32({:.16})", f32::from_bits(x)),
             &Constant::F64(x) => format!("f64({:.16})", f64::from_bits(x)),
-            #[cfg(feature = "complex")]
-            Constant::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
-            #[cfg(feature = "complex")]
-            Constant::CF64(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             Constant::U8(x) => format!("{x}"),
             Constant::I8(x) => format!("{x}"),
             Constant::I16(x) => format!("{x}"),

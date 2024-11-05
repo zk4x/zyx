@@ -20,12 +20,8 @@ use std::{
 };
 use view::View;
 
-use rand::rngs::SmallRng;
-
 use half::{bf16, f16};
-
-#[cfg(feature = "complex")]
-use num_complex::Complex;
+use rand::rngs::SmallRng;
 
 mod backend;
 mod graph;
@@ -234,10 +230,6 @@ impl Runtime {
             DType::F16 => self.constant(f16::ONE),
             DType::F32 => self.constant(1f32),
             DType::F64 => self.constant(1f64),
-            #[cfg(feature = "complex")]
-            DType::CF32 => self.constant(Complex::new(1f32, 0.)),
-            #[cfg(feature = "complex")]
-            DType::CF64 => self.constant(Complex::new(1f64, 0.)),
             DType::U8 => self.constant(1u8),
             DType::U32 => self.constant(1u32),
             DType::I8 => self.constant(1i8),
@@ -259,10 +251,6 @@ impl Runtime {
             DType::F16 => self.constant(f16::ZERO),
             DType::F32 => self.constant(0f32),
             DType::F64 => self.constant(0f64),
-            #[cfg(feature = "complex")]
-            DType::CF32 => self.constant(Complex::new(0f32, 0.)),
-            #[cfg(feature = "complex")]
-            DType::CF64 => self.constant(Complex::new(0f64, 0.)),
             DType::U8 => self.constant(0u8),
             DType::U32 => self.constant(0u32),
             DType::I8 => self.constant(0i8),

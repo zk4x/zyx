@@ -11,8 +11,6 @@ use crate::shape::{into_axes, into_axis, IntoShape};
 use core::cmp::Ordering;
 use float8::F8E4M3 as f8;
 use half::{bf16, f16};
-#[cfg(feature = "complex")]
-use num_complex::Complex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat};
@@ -146,16 +144,6 @@ impl Tensor {
             }
             DType::F64 => {
                 let data: Vec<f64> = self.try_into()?;
-                Tensor::from(data)
-            }
-            #[cfg(feature = "complex")]
-            DType::CF32 => {
-                let data: Vec<Complex<f32>> = self.try_into()?;
-                Tensor::from(data)
-            }
-            #[cfg(feature = "complex")]
-            DType::CF64 => {
-                let data: Vec<Complex<f64>> = self.try_into()?;
                 Tensor::from(data)
             }
             DType::U8 => {
@@ -846,9 +834,9 @@ impl Tensor {
     #[must_use]
     pub fn selu(&self) -> Tensor {
         let dtype = self.dtype();
-        (1.050_700_987_355_480_5_f64
+        (1.050_700_987_355_480_5f64
             * (self.relu()
-                - (1.673_263_242_354_377_3_f64 * (Tensor::ones(1, dtype) - self.exp())).relu()))
+                - (1.673_263_242_354_377_3f64 * (Tensor::ones(1, dtype) - self.exp())).relu()))
         .cast(dtype)
     }
 
@@ -2952,12 +2940,88 @@ impl Tensor {
         // Now we just do implicit conversions. Not exactly rust style, but it's convenient.
         // We can later add option for backend to disable these implicit conversions.
         match (x.dtype(), y.dtype()) {
-            (DType::F32, DType::I32) => y = y.cast(DType::F32),
-            (DType::I32, DType::F32) => x = x.cast(DType::F32),
-            (DType::F32 | DType::I32, DType::F64) => x = x.cast(DType::F64),
-            (DType::F64, DType::F32 | DType::I32) => y = y.cast(DType::F64),
-            _ => {
-                todo!()
+            (DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8, DType::BF16) => {
+                x = x.cast(DType::BF16);
+            }
+            (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8) => {
+                y = y.cast(DType::BF16);
+            }
+            (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::F8) => x = x.cast(DType::F8),
+            (DType::F8, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => y = y.cast(DType::F8),
+            (
+                DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
+                DType::F16,
+            ) => x = x.cast(DType::F16),
+            (
+                DType::F16,
+                DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
+            ) => y = y.cast(DType::F16),
+            (
+                DType::F16
+                | DType::F8
+                | DType::BF16
+                | DType::I32
+                | DType::I16
+                | DType::I8
+                | DType::U32
+                | DType::U8
+                | DType::Bool,
+                DType::F32,
+            ) => x = x.cast(DType::F32),
+            (
+                DType::F32,
+                DType::F16
+                | DType::F8
+                | DType::BF16
+                | DType::I32
+                | DType::I16
+                | DType::I8
+                | DType::U32
+                | DType::U8
+                | DType::Bool,
+            ) => y = y.cast(DType::F32),
+            (
+                DType::F32
+                | DType::F16
+                | DType::F8
+                | DType::BF16
+                | DType::I64
+                | DType::I32
+                | DType::I16
+                | DType::I8
+                | DType::U32
+                | DType::U8
+                | DType::Bool,
+                DType::F64,
+            ) => x = x.cast(DType::F64),
+            (
+                DType::F64,
+                DType::F32
+                | DType::F16
+                | DType::F8
+                | DType::BF16
+                | DType::I64
+                | DType::I32
+                | DType::I16
+                | DType::I8
+                | DType::U32
+                | DType::U8
+                | DType::Bool,
+            ) => y = y.cast(DType::F64),
+            (DType::BF16, DType::BF16)
+            | (DType::F8, DType::F8)
+            | (DType::F16, DType::F16)
+            | (DType::F32, DType::F32)
+            | (DType::F64, DType::F64)
+            | (DType::U8, DType::U8)
+            | (DType::U32, DType::U32)
+            | (DType::I8, DType::I8)
+            | (DType::I16, DType::I16)
+            | (DType::I32, DType::I32)
+            | (DType::I64, DType::I64)
+            | (DType::Bool, DType::Bool) => {}
+            (dt0, dt1) => {
+                return Err(ZyxError::DTypeError(format!("Binary operands have dtypes {dt0} and {dt1}, which could not be implicitly casted. Please explicitly cast them to common dtype.")));
             }
         }
         let x_shape = x.shape();
@@ -3066,30 +3130,6 @@ impl TryFrom<Tensor> for f64 {
         let mut data = [0.];
         RT.lock().load(value.id, &mut data)?;
         Ok(data[0])
-    }
-}
-
-#[cfg(feature = "complex")]
-impl TryFrom<Tensor> for Complex<f32> {
-    type Error = ZyxError;
-    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
-    }
-}
-
-#[cfg(feature = "complex")]
-impl TryFrom<Tensor> for Complex<f64> {
-    type Error = ZyxError;
-    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        RT.lock()
-            .load(value.id)?
-            .first()
-            .copied()
-            .ok_or(ZyxError::EmptyTensor)
     }
 }
 
@@ -3255,22 +3295,6 @@ impl Display for Tensor {
             }
             DType::F64 => {
                 let data: Result<Vec<f64>, _> = x.try_into();
-                match data {
-                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("f64 tensor failed to realize {e:?}"),
-                }
-            }
-            #[cfg(feature = "complex")]
-            DType::CF32 => {
-                let data: Result<Vec<Complex<f32>>, _> = x.try_into();
-                match data {
-                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("f32 tensor failed to realize {e:?}"),
-                }
-            }
-            #[cfg(feature = "complex")]
-            DType::CF64 => {
-                let data: Result<Vec<Complex<f64>>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f64 tensor failed to realize {e:?}"),
@@ -3982,14 +4006,12 @@ macro_rules! impl_trait {
 }
 
 impl_trait!(Add for bf16, add);
+impl_trait!(Add for f8, add);
 impl_trait!(Add for f16, add);
 impl_trait!(Add for f32, add);
 impl_trait!(Add for f64, add);
-#[cfg(feature = "complex")]
-impl_trait!(Add for Complex<f32>, add);
-#[cfg(feature = "complex")]
-impl_trait!(Add for Complex<f64>, add);
 impl_trait!(Add for u8, add);
+impl_trait!(Add for u32, add);
 impl_trait!(Add for i8, add);
 impl_trait!(Add for i16, add);
 impl_trait!(Add for i32, add);
@@ -3997,14 +4019,12 @@ impl_trait!(Add for i64, add);
 impl_trait!(Add for bool, add);
 
 impl_trait!(Sub for bf16, sub);
+impl_trait!(Sub for f8, sub);
 impl_trait!(Sub for f16, sub);
 impl_trait!(Sub for f32, sub);
 impl_trait!(Sub for f64, sub);
-#[cfg(feature = "complex")]
-impl_trait!(Sub for Complex<f32>, sub);
-#[cfg(feature = "complex")]
-impl_trait!(Sub for Complex<f64>, sub);
 impl_trait!(Sub for u8, sub);
+impl_trait!(Sub for u32, sub);
 impl_trait!(Sub for i8, sub);
 impl_trait!(Sub for i16, sub);
 impl_trait!(Sub for i32, sub);
@@ -4012,14 +4032,12 @@ impl_trait!(Sub for i64, sub);
 impl_trait!(Sub for bool, sub);
 
 impl_trait!(Mul for bf16, mul);
+impl_trait!(Mul for f8, mul);
 impl_trait!(Mul for f16, mul);
 impl_trait!(Mul for f32, mul);
 impl_trait!(Mul for f64, mul);
-#[cfg(feature = "complex")]
-impl_trait!(Mul for Complex<f32>, mul);
-#[cfg(feature = "complex")]
-impl_trait!(Mul for Complex<f64>, mul);
 impl_trait!(Mul for u8, mul);
+impl_trait!(Mul for u32, mul);
 impl_trait!(Mul for i8, mul);
 impl_trait!(Mul for i16, mul);
 impl_trait!(Mul for i32, mul);
@@ -4027,14 +4045,12 @@ impl_trait!(Mul for i64, mul);
 impl_trait!(Mul for bool, mul);
 
 impl_trait!(Div for bf16, div);
+impl_trait!(Div for f8, div);
 impl_trait!(Div for f16, div);
 impl_trait!(Div for f32, div);
 impl_trait!(Div for f64, div);
-#[cfg(feature = "complex")]
-impl_trait!(Div for Complex<f32>, div);
-#[cfg(feature = "complex")]
-impl_trait!(Div for Complex<f64>, div);
 impl_trait!(Div for u8, div);
+impl_trait!(Div for u32, div);
 impl_trait!(Div for i8, div);
 impl_trait!(Div for i16, div);
 impl_trait!(Div for i32, div);
@@ -4042,14 +4058,12 @@ impl_trait!(Div for i64, div);
 impl_trait!(Div for bool, div);
 
 impl_trait!(BitXor for bf16, bitxor);
+impl_trait!(BitXor for f8, bitxor);
 impl_trait!(BitXor for f16, bitxor);
 impl_trait!(BitXor for f32, bitxor);
 impl_trait!(BitXor for f64, bitxor);
-#[cfg(feature = "complex")]
-impl_trait!(BitXor for Complex<f32>, bitxor);
-#[cfg(feature = "complex")]
-impl_trait!(BitXor for Complex<f64>, bitxor);
 impl_trait!(BitXor for u8, bitxor);
+impl_trait!(BitXor for u32, bitxor);
 impl_trait!(BitXor for i8, bitxor);
 impl_trait!(BitXor for i16, bitxor);
 impl_trait!(BitXor for i32, bitxor);
@@ -4057,14 +4071,12 @@ impl_trait!(BitXor for i64, bitxor);
 impl_trait!(BitXor for bool, bitxor);
 
 impl_trait!(BitOr for bf16, bitor);
+impl_trait!(BitOr for f8, bitor);
 impl_trait!(BitOr for f16, bitor);
 impl_trait!(BitOr for f32, bitor);
 impl_trait!(BitOr for f64, bitor);
-#[cfg(feature = "complex")]
-impl_trait!(BitOr for Complex<f32>, bitor);
-#[cfg(feature = "complex")]
-impl_trait!(BitOr for Complex<f64>, bitor);
 impl_trait!(BitOr for u8, bitor);
+impl_trait!(BitOr for u32, bitor);
 impl_trait!(BitOr for i8, bitor);
 impl_trait!(BitOr for i16, bitor);
 impl_trait!(BitOr for i32, bitor);
@@ -4072,14 +4084,12 @@ impl_trait!(BitOr for i64, bitor);
 impl_trait!(BitOr for bool, bitor);
 
 impl_trait!(BitAnd for bf16, bitand);
+impl_trait!(BitAnd for f8, bitand);
 impl_trait!(BitAnd for f16, bitand);
 impl_trait!(BitAnd for f32, bitand);
 impl_trait!(BitAnd for f64, bitand);
-#[cfg(feature = "complex")]
-impl_trait!(BitAnd for Complex<f32>, bitand);
-#[cfg(feature = "complex")]
-impl_trait!(BitAnd for Complex<f64>, bitand);
 impl_trait!(BitAnd for u8, bitand);
+impl_trait!(BitAnd for u32, bitand);
 impl_trait!(BitAnd for i8, bitand);
 impl_trait!(BitAnd for i16, bitand);
 impl_trait!(BitAnd for i32, bitand);

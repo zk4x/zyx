@@ -34,7 +34,7 @@ rand = { version = "0.8.5", default-features = false, features = [
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # For nice colorful debug logging
-inline_colorization = { version = "0.1.6", default-features = false } # MIT
+#inline_colorization = { version = "0.1.6", default-features = false } # MIT
 # Support for f16 and bf16 dtypes
 float8 = { version = "0.1.1" } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
@@ -45,8 +45,6 @@ indicatif = { version = "0.17.8" }
 memmap2 = { version = "0.9.5" }
 
 # Optional dependencies
-# Support for cf32 and cf64 dtypes
-num-complex = { version = "0.4.6", default-features = false, optional = true } # MIT or Apache 2.0
 # For caching of searched kernels
 bitcode = { version = "0.6.3", default-features = false, features = [
     "std",
@@ -54,7 +52,7 @@ bitcode = { version = "0.6.3", default-features = false, features = [
 ], optional = true } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "22.1.0", default-features = false, features = [
+wgpu = { version = "23.0.0", default-features = false, features = [
     "wgsl",
 ], optional = true }
 # Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
@@ -84,17 +82,14 @@ default = [
 # Enables caching of optimized kernels to disk
 disk_cache = ["dep:bitcode"]
 
-# Enables complex f32 and complex f64 dtypes
-complex = ["dep:num-complex"]
-
-# Enables us to create python bindings with pyo3, annotates structs with pyclass
-py = ["dep:pyo3", "complex"]
-
 # Enables wgsl backend
 wgsl = ["dep:wgpu", "dep:pollster", "dep:futures"]
 
 # Enables loading of gguf models
 gguf = ["dep:gguf"]
+
+# Enables us to create python bindings with pyo3, annotates structs with pyclass
+py = ["dep:pyo3"]
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.

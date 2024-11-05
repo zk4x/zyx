@@ -82,13 +82,16 @@ pub enum MOp {
 
 impl std::fmt::Display for VOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use inline_colorization::{
-            color_blue, color_green, color_magenta, color_red, color_reset, color_white,
-            color_yellow,
-        };
+        const C_BLUE: &str = "\x1B[34m";
+        const C_GREEN: &str = "\x1B[32m";
+        const C_MAGENTA: &str = "\x1B[35m";
+        const C_RED: &str = "\x1B[31m";
+        const C_WHITE: &str = "\x1B[37m";
+        const C_YELLOW: &str = "\x1B[33m";
+        const C_RESET: &str = "\x1B[39m";
         match self {
             VOp::Const { z, value, view } => f.write_fmt(format_args!(
-                "{color_white}Const{color_reset}       {z} <- value: {value}, {view}"
+                "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
             )),
             VOp::Load {
                 z,
@@ -99,7 +102,7 @@ impl std::fmt::Display for VOp {
                 xview,
                 xdtype,
             } => f.write_fmt(format_args!(
-                "{color_yellow}Load{color_reset}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
+                "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
             )),
             VOp::Store {
                 z,
@@ -109,21 +112,21 @@ impl std::fmt::Display for VOp {
                 xscope,
                 xview: _,
             } => f.write_fmt(format_args!(
-                "{color_red}Store{color_reset}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
+                "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
             )),
             VOp::Loop {
                 axis,
                 len: dimension,
             } => f.write_fmt(format_args!(
-                "{color_green}Loop{color_reset}        axis: {axis}, dimension: {dimension}"
+                "{C_GREEN}Loop{C_RESET}        axis: {axis}, dimension: {dimension}"
             )),
             VOp::Accumulator { z, rop, view, dtype } => f.write_fmt(format_args!(
-                "{color_blue}Accum{color_reset}.{rop:?}   {z}, shape: {:?}, {dtype}",
+                "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, shape: {:?}, {dtype}",
                 view.shape()
             )),
-            VOp::EndLoop => f.write_fmt(format_args!("{color_blue}EndLoop{color_reset} ")),
+            VOp::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
             VOp::Move { z, x, mop } => f.write_fmt(format_args!(
-                "{color_white}Move{color_reset}.{mop:?}   {z} <- {x}"
+                "{C_WHITE}Move{C_RESET}.{mop:?}   {z} <- {x}"
             )),
             VOp::Unary { z, x, uop } => {
                 let mut len = format!("{uop:?}").len();
@@ -131,14 +134,14 @@ impl std::fmt::Display for VOp {
                     len = 5;
                 }
                 f.write_fmt(format_args!(
-                    "{color_white}Unary{color_reset}.{uop:?}{} {z} <- {x}",
+                    "{C_WHITE}Unary{C_RESET}.{uop:?}{} {z} <- {x}",
                     " ".repeat(5 - len)
                 ))
             }
             VOp::Binary { z, x, y, bop } => f.write_fmt(format_args!(
-                "{color_white}Binary{color_reset}.{bop:?}  {z} <- {x}, {y}"
+                "{C_WHITE}Binary{C_RESET}.{bop:?}  {z} <- {x}, {y}"
             )),
-            VOp::Barrier { scope } => f.write_fmt(format_args!("{color_magenta}Barrier{color_reset}({scope})")),
+            VOp::Barrier { scope } => f.write_fmt(format_args!("{C_MAGENTA}Barrier{C_RESET}({scope})")),
         }
     }
 }

@@ -939,10 +939,6 @@ impl IRDType {
             Self::F16(v) => format!("half{v}"),
             Self::F32(v) => format!("float{v}"),
             Self::F64(v) => format!("double{v}"),
-            #[cfg(feature = "complex")]
-            Self::CF32(v) => panic!("Not native to OpenCL, workaround is WIP"),
-            #[cfg(feature = "complex")]
-            Self::CF64(v) => panic!("Not native to OpenCL, workaround is WIP"),
             Self::U8(v) => format!("unsigned char{v}"),
             Self::I8(v) => format!("char{v}"),
             Self::I16(v) => format!("short{v}"),
@@ -1200,10 +1196,6 @@ impl Constant {
             &Self::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
             &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
             &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
-            #[cfg(feature = "complex")]
-            Self::CF32(..) => todo!("Complex numbers are currently not supported for OpenCL"),
-            #[cfg(feature = "complex")]
-            Self::CF64(..) => todo!("Complex numbers are currently not supported for OpenCL"),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),

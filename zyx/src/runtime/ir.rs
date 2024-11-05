@@ -87,10 +87,6 @@ pub(super) enum IRDType {
     F16(IRVec),
     F32(IRVec),
     F64(IRVec),
-    #[cfg(feature = "complex")]
-    CF32(IRVec),
-    #[cfg(feature = "complex")]
-    CF64(IRVec),
     U8(IRVec),
     U32(IRVec),
     I8(IRVec),
@@ -174,22 +170,11 @@ impl IRDType {
     #[allow(unused)]
     pub(super) const fn byte_size(self) -> usize {
         match self {
-            IRDType::BF16(v) => 2 * v.len(),
-            IRDType::F8(v) => v.len(),
-            IRDType::F16(v) => 2 * v.len(),
-            IRDType::F32(v) => 4 * v.len(),
-            IRDType::F64(v) => 8 * v.len(),
-            #[cfg(feature = "complex")]
-            IRDType::CF32(v) => 8 * v.len(),
-            #[cfg(feature = "complex")]
-            IRDType::CF64(v) => 16 * v.len(),
-            IRDType::U8(v) => v.len(),
-            IRDType::I8(v) => v.len(),
-            IRDType::I16(v) => 2 * v.len(),
-            IRDType::I32(v) => 4 * v.len(),
-            IRDType::I64(v) => 8 * v.len(),
             IRDType::Bool => 1,
-            IRDType::U32(v) => 4 * v.len(),
+            IRDType::F8(v) | IRDType::U8(v) | IRDType::I8(v) => v.len(),
+            IRDType::BF16(v) | IRDType::F16(v) | IRDType::I16(v) => 2 * v.len(),
+            IRDType::F32(v) | IRDType::I32(v) | IRDType::U32(v) => 4 * v.len(),
+            IRDType::F64(v) | IRDType::I64(v) => 8 * v.len(),
         }
     }
 
@@ -200,10 +185,6 @@ impl IRDType {
             IRDType::F16(_) => DType::F16,
             IRDType::F32(_) => DType::F32,
             IRDType::F64(_) => DType::F64,
-            #[cfg(feature = "complex")]
-            IRDType::CF32(_) => DType::CF32,
-            #[cfg(feature = "complex")]
-            IRDType::CF64(_) => DType::CF64,
             IRDType::U8(_) => DType::U8,
             IRDType::U32(_) => DType::U32,
             IRDType::I8(_) => DType::I8,
@@ -223,10 +204,6 @@ impl From<DType> for IRDType {
             DType::F16 => IRDType::F16(IRVec::Scalar),
             DType::F32 => IRDType::F32(IRVec::Scalar),
             DType::F64 => IRDType::F64(IRVec::Scalar),
-            #[cfg(feature = "complex")]
-            DType::CF32 => IRDType::CF32(IRVec::Scalar),
-            #[cfg(feature = "complex")]
-            DType::CF64 => IRDType::CF64(IRVec::Scalar),
             DType::U8 => IRDType::U8(IRVec::Scalar),
             DType::U32 => IRDType::U32(IRVec::Scalar),
             DType::I8 => IRDType::I8(IRVec::Scalar),

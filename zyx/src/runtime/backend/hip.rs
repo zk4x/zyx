@@ -702,10 +702,6 @@ impl IRDType {
             Self::F16(v) => "half",
             Self::F32(v) => "float",
             Self::F64(v) => "double",
-            #[cfg(feature = "complex")]
-            Self::CF32(v) => panic!("Not native to HIP, workaround is WIP"),
-            #[cfg(feature = "complex")]
-            Self::CF64(v) => panic!("Not native to HIP, workaround is WIP"),
             Self::U8(v) => "unsigned char",
             Self::I8(v) => "char",
             Self::I16(v) => "short",
@@ -735,10 +731,6 @@ impl Constant {
             &Self::F16(x) => format!("{}f", half::f16::from_bits(x)),
             &Self::F32(x) => format!("{}f", f32::from_bits(x)),
             &Self::F64(x) => format!("{}f", f64::from_bits(x)),
-            #[cfg(feature = "complex")]
-            Self::CF32(..) => todo!("Complex numbers are currently not supported for HIP"),
-            #[cfg(feature = "complex")]
-            Self::CF64(..) => todo!("Complex numbers are currently not supported for HIP"),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),

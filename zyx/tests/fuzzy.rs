@@ -1,13 +1,13 @@
-use std::rc::Rc;
 use rand::{distributions::Uniform, Rng, SeedableRng};
-use zyx::{DType, Scalar, Tensor, ZyxError, Float};
+use std::rc::Rc;
+use zyx::{DType, Float, Scalar, Tensor, ZyxError};
 
 #[allow(unused)]
 //#[test]
 fn fuzzy() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;
-    let max_numel = 256*256;
+    let max_numel = 256 * 256;
     let max_dims = 3;
     let num_nodes = 5;
 
@@ -23,7 +23,7 @@ fn fuzzy() -> Result<(), ZyxError> {
             let n = if i > 1 {
                 max_numel / shape.iter().product::<usize>()
             } else {
-                max_numel/10
+                max_numel / 10
             };
             if n > 1 {
                 shape.insert(0, rng.gen_range(1..n));
@@ -115,7 +115,10 @@ fn fuzzy() -> Result<(), ZyxError> {
         let data: Vec<f32> = tensor.clone().try_into()?;
         let cpu_data: Vec<f32> = cpu_tensor.to_vec();
         for (id, (x, y)) in data.iter().zip(cpu_data.iter()).enumerate() {
-            assert!(x.is_equal(*y), "Comparing tensor id {id}, x != y at {x} != {y}");
+            assert!(
+                x.is_equal(*y),
+                "Comparing tensor id {id}, x != y at {x} != {y}"
+            );
         }
     }
 
@@ -138,7 +141,7 @@ macro_rules! unary_op {
                 Data::F32(data) => Data::F32(unary(data, $op)),
                 Data::F64(data) => Data::F64(unary(data, $op)),
                 Data::I32(data) => Data::I32(unary(data, $op)),
-            }
+            },
         }
     }};
 }
@@ -151,7 +154,7 @@ macro_rules! unary_op_float {
                 Data::F32(data) => Data::F32(unary(data, $op)),
                 Data::F64(data) => Data::F64(unary(data, $op)),
                 _ => todo!(),
-            }
+            },
         }
     }};
 }
@@ -183,24 +186,23 @@ macro_rules! binary_op {
 impl CPUTensor {
     pub fn new<T: Scalar>(data: &[T]) -> CPUTensor {
         use std::mem::transmute as t;
-        CPUTensor { view: View::new(&[data.len()]), data: match T::dtype() {
-            DType::BF16 => todo!(),
-            DType::F8 => todo!(),
-            DType::F16 => todo!(),
-            DType::F32 => Data::F32(unsafe { t::<_, &[f32]>(data) }.into()),
-            DType::F64 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF32 => todo!(),
-            #[cfg(feature = "complex")]
-            DType::CF64 => todo!(),
-            DType::U8 => todo!(),
-            DType::U32 => todo!(),
-            DType::I8 => todo!(),
-            DType::I16 => todo!(),
-            DType::I32 => todo!(),
-            DType::I64 => todo!(),
-            DType::Bool => todo!(),
-        } }
+        CPUTensor {
+            view: View::new(&[data.len()]),
+            data: match T::dtype() {
+                DType::BF16 => todo!(),
+                DType::F8 => todo!(),
+                DType::F16 => todo!(),
+                DType::F32 => Data::F32(unsafe { t::<_, &[f32]>(data) }.into()),
+                DType::F64 => todo!(),
+                DType::U8 => todo!(),
+                DType::U32 => todo!(),
+                DType::I8 => todo!(),
+                DType::I16 => todo!(),
+                DType::I32 => todo!(),
+                DType::I64 => todo!(),
+                DType::Bool => todo!(),
+            },
+        }
     }
 
     pub fn to_vec<T: Scalar>(&self) -> Vec<T> {
@@ -256,7 +258,10 @@ impl CPUTensor {
                 _ => todo!(),
             },
         };
-        CPUTensor { view: self.view.clone(), data }
+        CPUTensor {
+            view: self.view.clone(),
+            data,
+        }
     }
 
     pub fn relu(&self) -> CPUTensor {
@@ -339,9 +344,15 @@ impl CPUTensor {
         CPUTensor {
             view: View::new(&self.shape()),
             data: match &self.data {
-                Data::F32(data) => Data::F32(reduce_op(&self.view, data, axes, &self.shape().reduce(axes), true)),
+                Data::F32(data) => Data::F32(reduce_op(
+                    &self.view,
+                    data,
+                    axes,
+                    &self.shape().reduce(axes),
+                    true,
+                )),
                 _ => todo!(),
-            }
+            },
         }
     }
 
@@ -349,9 +360,15 @@ impl CPUTensor {
         CPUTensor {
             view: View::new(&self.shape()),
             data: match &self.data {
-                Data::F32(data) => Data::F32(reduce_op(&self.view, data, axes, &self.shape().reduce(axes), false)),
+                Data::F32(data) => Data::F32(reduce_op(
+                    &self.view,
+                    data,
+                    axes,
+                    &self.shape().reduce(axes),
+                    false,
+                )),
                 _ => todo!(),
-            }
+            },
         }
     }
 
@@ -543,7 +560,13 @@ impl View {
     pub fn new(shape: &[usize]) -> View {
         let shape: Vec<usize> = shape.into();
         let strides = shape.strides();
-        View { views: vec![InnerView { shape, strides, padding: Vec::new() }] }
+        View {
+            views: vec![InnerView {
+                shape,
+                strides,
+                padding: Vec::new(),
+            }],
+        }
     }
 
     #[must_use]
@@ -726,13 +749,9 @@ trait Shape {
         let mut vec = self.as_slice().to_vec();
         while vec.len() < shape.len() {
             vec.insert(0, 1);
-            old_strides = [0]
-                .into_iter()
-                .chain(old_strides.iter().copied())
-                .collect();
+            old_strides = [0].into_iter().chain(old_strides.iter().copied()).collect();
         }
-        vec
-            .into_iter()
+        vec.into_iter()
             .zip(shape)
             .zip(&old_strides)
             .map(|((od, nd), st)| if od == *nd { *st } else { 0 })
@@ -749,7 +768,7 @@ trait Shape {
     }
 
     fn reduce(&self, axes: &[usize]) -> Vec<usize> {
-         let mut shape: Vec<usize> = self.as_slice().into();
+        let mut shape: Vec<usize> = self.as_slice().into();
         for a in axes.iter() {
             shape[*a] = 1;
         }

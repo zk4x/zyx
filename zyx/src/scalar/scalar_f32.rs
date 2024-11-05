@@ -2,8 +2,6 @@ use crate::dtype::DType;
 use crate::scalar::{Float, Scalar};
 use float8::F8E4M3;
 use half::{bf16, f16};
-#[cfg(feature = "complex")]
-use num_complex::Complex;
 
 impl Scalar for f32 {
     fn from_bf16(t: bf16) -> Self {
@@ -25,16 +23,6 @@ impl Scalar for f32 {
     #[allow(clippy::cast_possible_truncation)]
     fn from_f64(t: f64) -> Self {
         t as Self
-    }
-
-    #[cfg(feature = "complex")]
-    fn from_cf32(t: Complex<f32>) -> Self {
-        t.re
-    }
-
-    #[cfg(feature = "complex")]
-    fn from_cf64(t: Complex<f64>) -> Self {
-        t.re as f32
     }
 
     fn from_u8(t: u8) -> Self {

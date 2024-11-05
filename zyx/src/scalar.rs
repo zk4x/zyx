@@ -2,10 +2,6 @@
 
 mod scalar_bf16;
 mod scalar_bool;
-#[cfg(feature = "complex")]
-mod scalar_cf32;
-#[cfg(feature = "complex")]
-mod scalar_cf64;
 mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
@@ -19,9 +15,6 @@ mod scalar_u8;
 
 use float8::F8E4M3;
 use half::{bf16, f16};
-
-#[cfg(feature = "complex")]
-use num_complex::Complex;
 
 use crate::dtype::DType;
 
@@ -42,14 +35,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// From f64
     #[must_use]
     fn from_f64(t: f64) -> Self;
-    /// From complex f32
-    #[cfg(feature = "complex")]
-    #[must_use]
-    fn from_cf32(t: Complex<f32>) -> Self;
-    /// From complex f64
-    #[cfg(feature = "complex")]
-    #[must_use]
-    fn from_cf64(t: Complex<f64>) -> Self;
     /// From u8
     #[must_use]
     fn from_u8(t: u8) -> Self;
@@ -148,10 +133,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
                 DType::F16 => T::from_f16(t(&self)),
                 DType::F32 => T::from_f32(t(&self)),
                 DType::F64 => T::from_f64(t(&self)),
-                #[cfg(feature = "complex")]
-                DType::CF32 => T::from_cf32(t(&self)),
-                #[cfg(feature = "complex")]
-                DType::CF64 => T::from_cf64(t(&self)),
                 DType::U8 => T::from_u8(t(&self)),
                 DType::U32 => T::from_u32(t(&self)),
                 DType::I8 => T::from_i8(t(&self)),

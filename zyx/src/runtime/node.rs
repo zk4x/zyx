@@ -155,10 +155,6 @@ trait CastDType: Scalar {
             DType::F16 => Constant::F16(self.cast::<half::f16>().to_bits()),
             DType::F32 => Constant::F32(self.cast::<f32>().to_bits()),
             DType::F64 => Constant::F64(self.cast::<f64>().to_bits()),
-            #[cfg(feature = "complex")]
-            DType::CF32 => todo!("Complex numbers"),
-            #[cfg(feature = "complex")]
-            DType::CF64 => todo!("Complex numbers"),
             DType::U8 => Constant::U8(self.cast()),
             DType::U32 => Constant::U32(self.cast()),
             DType::I8 => Constant::I8(self.cast()),
@@ -211,10 +207,6 @@ impl Constant {
                 Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
                 Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
                 Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
-                #[cfg(feature = "complex")]
-                Constant::CF32(..) => todo!("Complex numbers"),
-                #[cfg(feature = "complex")]
-                Constant::CF64(..) => todo!("Complex numbers"),
                 Constant::U8(x) => x.cast_dtype(dtype),
                 Constant::I8(x) => x.cast_dtype(dtype),
                 Constant::I16(x) => x.cast_dtype(dtype),

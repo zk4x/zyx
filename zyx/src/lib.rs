@@ -24,7 +24,6 @@
 #![deny(clippy::ptr_cast_constness)]
 #![deny(clippy::pedantic)]
 #![deny(clippy::fn_to_numeric_cast_any)]
-//#![deny(clippy::restriction)]
 #![forbid(clippy::perf)]
 #![deny(clippy::style)]
 #![deny(clippy::as_ptr_cast_mut)]
@@ -38,6 +37,13 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::multiple_inherent_impl)]
+//#![deny(clippy::restriction)]
+#![deny(clippy::mod_module_files)]
+#![allow(clippy::self_named_module_files)]
+#![allow(clippy::unseparated_literal_suffix)]
+#![deny(clippy::separated_literal_suffix)]
+// Deny later
+#![allow(clippy::single_char_lifetime_names)]
 
 use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
@@ -138,8 +144,7 @@ impl Drop for Timer {
     }
 }*/
 
-/*
-#[test]
+/*#[test]
 fn t0() {
     let x = Tensor::from([[2, 3], [4, 5]]);
     println!("{x}");
@@ -152,30 +157,6 @@ fn t1() {
     let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
     println!("{x}");
     //assert_eq!(x, [[2, 3], [4, 5]]);
-}
-
-#[test]
-fn t2() {
-    //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
-        .expand([2, 3, 2])
-        .exp()
-        .ln()
-        .reshape([2, 3, 2, 1]);
-    //let x = Tensor::from([[[[2f32], [3.]]], [[[4.], [5.]]]]).expand([2, 3, 2, 1]);
-    //println!("{x}");
-    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
-        .reshape([2, 3, 1, 1])
-        .expand([2, 3, 2, 1]);
-    //println!("{y}");
-    let z = (&x + &y).expand([2, 3, 2, 2]).sum([3, 0]);
-    let z = z.exp().ln().permute([1, 0]).sum(0);
-    //Tensor::plot_dot_graph([&x, &y, &z], "graph0");
-    //Tensor::realize([&x, &y, &z]);
-    //println!("{x}\n{y}\n{z}");
-    println!("{z}");
-
-    //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
 }
 
 #[cfg(feature = "rand")]
@@ -352,16 +333,28 @@ fn t1() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn t2() {
-    let x = Tensor::from([4, 2, 3]);
-    let y = Tensor::from([4, 2, 3]);
-    let a = x + y;
-    println!("{a}");
-    drop(a);
-    let x = Tensor::from([4, 2, 3]);
-    let y = Tensor::from([4, 2, 3]);
-    let b = x + y;
-    println!("{b}");
+fn t2() -> Result<(), ZyxError> {
+    //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
+        .expand([2, 3, 2])?
+        .exp()
+        .ln()
+        .reshape([2, 3, 2, 1])?;
+    //let x = Tensor::from([[[[2f32], [3.]]], [[[4.], [5.]]]]).expand([2, 3, 2, 1]);
+    //println!("{x}");
+    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
+        .reshape([2, 3, 1, 1])?
+        .expand([2, 3, 2, 1])?;
+    //println!("{y}");
+    let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
+    let z = z.exp().ln().permute([1, 0])?.sum([0])?;
+    //Tensor::plot_dot_graph([&x, &y, &z], "graph0");
+    //Tensor::realize([&x, &y, &z]);
+    //println!("{x}\n{y}\n{z}");
+    println!("{z}");
+
+    //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
+    Ok(())
 }
 
 #[test]
@@ -398,6 +391,19 @@ fn t4() {
 fn t5() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     assert_eq!(x.get((.., 2..3)).unwrap(), [[1], [4]]);
+}
+
+#[test]
+fn t6() {
+    let x = Tensor::from([4, 2, 3]);
+    let y = Tensor::from([4, 2, 3]);
+    let a = x + y;
+    println!("{a}");
+    drop(a);
+    let x = Tensor::from([4, 2, 3]);
+    let y = Tensor::from([4, 2, 3]);
+    let b = x + y;
+    println!("{b}");
 }
 
 #[test]
