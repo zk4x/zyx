@@ -4,7 +4,6 @@
 
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use float8::F8E4M3;
@@ -30,6 +29,15 @@ pub struct CUDAError {
     status: CUDAStatus,
 }
 
+impl std::fmt::Display for CUDAError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "CUDAError {{ info: {:?}, status: {:?} }}",
+            self.info, self.status
+        ))
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct CUDAMemoryPool {
     // Just to close the connection
@@ -44,8 +52,8 @@ pub(super) struct CUDAMemoryPool {
     cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
     cuMemcpyPeer:
         unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
-    cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
-    cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
+    //cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
+    //cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -76,7 +84,7 @@ pub(super) struct CUDADevice {
 
 #[derive(Debug)]
 pub(super) struct CUDAProgram {
-    name: String,
+    //name: String,
     module: CUmodule,
     function: CUfunction,
     global_work_size: [usize; 3],
@@ -157,8 +165,8 @@ pub(super) fn initialize_devices(
     let cuMemFree = *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
     let cuMemcpyDtoH = *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
     let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
-    let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
-    let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
+    //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
+    //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
     let cuModuleLoadDataEx = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
     let cuModuleGetFunction = *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
     let cuLaunchKernel = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
@@ -167,8 +175,7 @@ pub(super) fn initialize_devices(
     let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
     let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
     let cuModuleUnload = *unsafe { cuda.get(b"cuModuleUnload\0") }.unwrap();
-    let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
+    //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
 
     unsafe { cuInit(0) }.check("Failed to init CUDA")?;
     let mut driver_version = 0;
@@ -248,10 +255,10 @@ pub(super) fn initialize_devices(
             cuMemAlloc,
             cuMemcpyHtoD,
             cuMemFree,
-            cuCtxSetCurrent,
             cuMemcpyDtoH,
             cuMemcpyPeer,
-            cuCtxDestroy,
+            //cuCtxSetCurrent,
+            //cuCtxDestroy,
         });
         let mut queues = Vec::new();
         for _ in 0..8 {
@@ -479,7 +486,7 @@ impl CUDADevice {
         }*/
 
         Ok(CUDAProgram {
-            name,
+            //name,
             module,
             function,
             global_work_size,
@@ -1016,6 +1023,7 @@ struct CUstream_st {
     _unused: [u8; 0],
 }
 type CUstream = *mut CUstream_st;
+#[allow(unused)]
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum CUjit_option {
@@ -1041,6 +1049,7 @@ enum CUjit_option {
     CU_JIT_GLOBAL_SYMBOL_COUNT = 19,
     CU_JIT_NUM_OPTIONS = 20,
 }
+#[allow(unused)]
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum CUdevice_attribute {
@@ -1198,7 +1207,6 @@ impl IRDType {
 
 impl Constant {
     fn ptx(&self) -> String {
-        use core::mem::transmute as t;
         match self {
             &Self::F16(x) => format!("{:.12}", half::f16::from_bits(x)),
             &Self::BF16(x) => format!("{:.12}", half::bf16::from_bits(x)),
@@ -1244,18 +1252,18 @@ impl Reg {
 impl IRDType {
     pub(super) fn cu(&self) -> &str {
         match self {
-            Self::BF16(v) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
-            Self::F8(v) => todo!("F8 is not native to OpenCL, workaround is WIP."),
-            Self::F16(v) => "__half",
-            Self::F32(v) => "float",
-            Self::F64(v) => "double",
-            Self::U8(v) => "unsigned char",
-            Self::I8(v) => "char",
-            Self::I16(v) => "short",
-            Self::I32(v) => "int",
-            Self::I64(v) => "long",
+            Self::BF16(_) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
+            Self::F8(_) => todo!("F8 is not native to OpenCL, workaround is WIP."),
+            Self::F16(_) => "__half",
+            Self::F32(_) => "float",
+            Self::F64(_) => "double",
+            Self::U8(_) => "unsigned char",
+            Self::I8(_) => "char",
+            Self::I16(_) => "short",
+            Self::I32(_) => "int",
+            Self::I64(_) => "long",
             Self::Bool => "bool",
-            Self::U32(v) => "unsigned int",
+            Self::U32(_) => "unsigned int",
         }
     }
 }
@@ -1271,7 +1279,6 @@ impl Reg {
 
 impl Constant {
     fn cu(&self) -> String {
-        use core::mem::transmute as t;
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
             &Self::F8(x) => format!("{:.16}f", F8E4M3::from_bits(x)),
@@ -1296,6 +1303,7 @@ struct _nvrtcProgram {
 }
 type nvrtcProgram = *mut _nvrtcProgram;
 
+#[allow(unused)]
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]
 enum nvrtcResult {
@@ -1327,6 +1335,7 @@ impl nvrtcResult {
     }
 }
 
+#[allow(unused)]
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum CUDAStatus {

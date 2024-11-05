@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use pollster::FutureExt;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::{
@@ -42,6 +40,7 @@ pub(super) struct WGSLDevice {
     dev_info: DeviceInfo,
     memory_pool_id: usize,
     device: Arc<wgpu::Device>,
+    #[allow(unused)]
     adapter: wgpu::Adapter,
 }
 
@@ -49,7 +48,7 @@ pub(super) struct WGSLDevice {
 pub(super) struct WGSLProgram {
     name: String,
     global_work_size: [usize; 3],
-    local_work_size: [usize; 3],
+    //local_work_size: [usize; 3],
     read_only_args: Vec<bool>,
     shader: ShaderModule,
 }
@@ -232,6 +231,8 @@ impl WGSLMemoryPool {
         src: &WGSLBuffer,
         dst: &WGSLBuffer,
     ) -> Result<(), WGSLError> {
+        let _ = src;
+        let _ = dst;
         todo!()
     }
 }
@@ -257,6 +258,7 @@ impl WGSLDevice {
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
     pub(super) fn release_queue(&self, queue: WGSLQueue) -> Result<(), WGSLError> {
+        drop(queue);
         Ok(())
     }
 
@@ -470,7 +472,7 @@ impl WGSLDevice {
         Ok(WGSLProgram {
             name,
             global_work_size,
-            local_work_size,
+            //local_work_size,
             read_only_args,
             shader: shader_module,
         })
@@ -587,25 +589,24 @@ impl WGSLQueue {
 impl IRDType {
     fn wgsl(&self) -> &str {
         match self {
-            IRDType::BF16(v) => todo!("WIP"),
-            IRDType::F8(v) => "f8",
-            IRDType::F16(v) => "f16",
-            IRDType::F32(v) => "f32",
-            IRDType::F64(v) => "f64",
-            IRDType::U8(v) => "u8",
-            IRDType::I8(v) => "i8",
-            IRDType::I16(v) => "i16",
-            IRDType::I32(v) => "i32",
-            IRDType::I64(v) => "i64",
+            IRDType::BF16(_) => todo!("WIP"),
+            IRDType::F8(_) => "f8",
+            IRDType::F16(_) => "f16",
+            IRDType::F32(_) => "f32",
+            IRDType::F64(_) => "f64",
+            IRDType::U8(_) => "u8",
+            IRDType::I8(_) => "i8",
+            IRDType::I16(_) => "i16",
+            IRDType::I32(_) => "i32",
+            IRDType::I64(_) => "i64",
             IRDType::Bool => "bool",
-            IRDType::U32(v) => "u32",
+            IRDType::U32(_) => "u32",
         }
     }
 }
 
 impl Constant {
     fn wgsl(&self) -> String {
-        use core::mem::transmute as t;
         match self {
             &Constant::F8(x) => format!("f8({})", float8::F8E4M3::from_bits(x)),
             &Constant::F16(x) => format!("f16({})", half::f16::from_bits(x)),

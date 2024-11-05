@@ -1081,11 +1081,20 @@ const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_NON_BLOCKING: cl_uint = 0;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
 
-#[allow(dead_code)] // Rust for some reason thinks these fields are unused
+//#[allow(dead_code)] // Rust for some reason thinks these fields are unused
 #[derive(Debug)]
 pub struct OpenCLError {
     info: String,
     status: OpenCLStatus,
+}
+
+impl std::fmt::Display for OpenCLError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "OpenCLError {{ info: {:?}, status: {:?} }}",
+            self.info, self.status
+        ))
+    }
 }
 
 #[allow(clippy::upper_case_acronyms)]
