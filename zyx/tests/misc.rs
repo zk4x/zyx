@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use zyx::{Scalar, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn matmul_2() -> Result<(), ZyxError> {
@@ -243,4 +243,58 @@ fn var() -> Result<(), ZyxError> {
     let y = x.var([1], 0)?;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
+}
+
+#[test]
+fn pad_zeros() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 3], [4, 5]]);
+    //let x = x.pad_zeros([(0, 1)]);
+    let x = x.pad_zeros([(4, 3), (1, 2)])?;
+    //Tensor::plot_dot_graph([], "graph0");
+    assert_eq!(
+        x,
+        [
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 2, 3, 0, 0, 0],
+            [0, 0, 0, 0, 4, 5, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0]
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn ones() {
+    let x = Tensor::ones([2, 3], DType::F32);
+    assert_eq!(x, [[1, 1, 1], [1, 1, 1]]);
+}
+
+#[test]
+fn graph_node_reuse() {
+    let x = Tensor::from([4, 2, 3]);
+    let y = Tensor::from([4, 2, 3]);
+    let a = x + y;
+    assert_eq!(a, [[8, 4, 6], [8, 4, 6]]);
+    drop(a);
+    let x = Tensor::from([4, 2, 3]);
+    let y = Tensor::from([4, 2, 3]);
+    let b = x + y;
+    assert_eq!(b, [[8, 4, 6], [8, 4, 6]]);
+}
+
+#[test]
+fn get() {
+    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
+    assert_eq!(x.get((.., 2..3)).unwrap(), [[1], [4]]);
+}
+
+#[test]
+fn split() {
+    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
+    let tensors = x.split([2, 1], 1).unwrap();
+    //Tensor::realize(&tensors).unwrap();
+    assert_eq!(tensors[0], [[2, 3], [2, 1]]);
+    assert_eq!(tensors[1], [[1], [4]]);
+    //for t in tensors { println!("{t}"); }
 }

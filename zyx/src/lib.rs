@@ -358,16 +358,6 @@ fn t2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn t3() {
-    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
-    let tensors = x.split([2, 1], 1).unwrap();
-    //Tensor::realize(&tensors).unwrap();
-    for t in tensors {
-        println!("{t}");
-    }
-}
-
-#[test]
 fn t4() {
     //let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
     //let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();
@@ -385,41 +375,6 @@ fn t4() {
     }
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
-}
-
-#[test]
-fn t5() {
-    let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
-    assert_eq!(x.get((.., 2..3)).unwrap(), [[1], [4]]);
-}
-
-#[test]
-fn t6() {
-    let x = Tensor::from([4, 2, 3]);
-    let y = Tensor::from([4, 2, 3]);
-    let a = x + y;
-    println!("{a}");
-    drop(a);
-    let x = Tensor::from([4, 2, 3]);
-    let y = Tensor::from([4, 2, 3]);
-    let b = x + y;
-    println!("{b}");
-}
-
-#[test]
-fn t7() -> Result<(), ZyxError> {
-    let x = Tensor::from([[2, 3], [4, 5]]);
-    //let x = x.pad_zeros([(0, 1)]);
-    let x = x.pad_zeros([(4, 3), (1, 2)])?;
-    //Tensor::plot_dot_graph([], "graph0");
-    println!("{x}");
-    Ok(())
-}
-
-#[test]
-fn t8() {
-    let x = Tensor::ones([2, 3], DType::F32);
-    println!("{x}");
 }
 
 /*#[test]

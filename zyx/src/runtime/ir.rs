@@ -271,6 +271,12 @@ impl IRCompiler {
                 self.dtypes.push(c.dtype());
             }
         }
+        match bop {
+            BOp::Cmplt | BOp::Cmpgt | BOp::Or | BOp::And | BOp::NotEq => {
+                *self.dtypes.last_mut().unwrap() = DType::Bool;
+            }
+            _ => {}
+        }
         let z = u16::try_from(self.dtypes.len() - 1).unwrap();
         self.ops.push(IROp::Binary { z, x, y, bop });
         z

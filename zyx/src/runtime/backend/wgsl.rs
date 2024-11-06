@@ -410,7 +410,6 @@ impl WGSLDevice {
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    let dtype = kernel.registers[z as usize];
                     source += &format!(
                         "{indent}r{z} = {};\n",
                         match bop {
@@ -420,15 +419,15 @@ impl WGSLDevice {
                             BOp::Div => format!("{} / {}", x.wgsl(), y.wgsl()),
                             BOp::Mod => format!("{} % {}", x.wgsl(), y.wgsl()),
                             BOp::Pow => format!("pow({}, {})", x.wgsl(), y.wgsl()),
-                            BOp::Cmplt => format!("{}({} < {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
-                            BOp::Cmpgt => format!("{}({} > {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::Max => format!("max({}, {})", x.wgsl(), y.wgsl()),
-                            BOp::NotEq => format!("{}({} != {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
-                            BOp::Or => format!("{}({} || {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
-                            BOp::And => format!("{}({} && {})", dtype.wgsl(), x.wgsl(), y.wgsl()),
                             BOp::BitOr => format!("{} | {}", x.wgsl(), y.wgsl()),
                             BOp::BitXor => format!("{} ^ {}", x.wgsl(), y.wgsl()),
                             BOp::BitAnd => format!("{} & {}", x.wgsl(), y.wgsl()),
+                            BOp::Cmplt => format!("{} < {}", x.wgsl(), y.wgsl()),
+                            BOp::Cmpgt => format!("{} > {}", x.wgsl(), y.wgsl()),
+                            BOp::NotEq => format!("{} != {}", x.wgsl(), y.wgsl()),
+                            BOp::Or => format!("{} || {}", x.wgsl(), y.wgsl()),
+                            BOp::And => format!("{} && {}", x.wgsl(), y.wgsl()),
                         }
                     );
                 }
