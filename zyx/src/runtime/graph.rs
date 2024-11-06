@@ -301,6 +301,7 @@ impl Graph {
                 }
             })
             .collect();
+        println!("Axes: {axes:?}");
         for &leaf in &leafs {
             shapes
                 .entry(leaf)
@@ -409,7 +410,7 @@ impl Graph {
                     flop += self.shape(x).iter().product::<usize>();
                 }
                 &Node::Reduce { x, .. } => {
-                    let axes = &self.axes[&x];
+                    let axes = &self.axes[&nid];
                     flop += self
                         .shape(x)
                         .iter()

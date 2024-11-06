@@ -327,7 +327,7 @@ fn t1() {
 #[test]
 fn t1() -> Result<(), ZyxError> {
     let x = Tensor::rand([4, 2, 3], DType::F32)?;
-    let y = x.exp2();
+    let y = x.sum([-1])?;
     println!("{y}");
     Ok(())
 }

@@ -263,8 +263,9 @@ impl Kernel {
                 // otherwise the results would be incorrect
                 let acc_view = View::binded(&rws, &[2, 5, 8]);
                 let mut accs = BTreeSet::new();
-                for op in &mut kernel.ops {
-                    match op {
+                // TODO add load before and store after all operations with acucmulator
+                for i in 0..kernel.ops.len() {
+                    match &mut kernel.ops[i] {
                         VOp::Accumulator { view, z, .. } => {
                             *view = acc_view.clone();
                             accs.insert(*z);
@@ -276,7 +277,9 @@ impl Kernel {
                                 *xview = acc_view.clone();
                             }
                         }
-                        /*VOp::Binary { z, x, y, .. } => {
+                        // This cannot be triggered currently
+                        //VOp::Unary { z, .. } => { if accs.contains(z) { todo!(); } }
+                        VOp::Binary { z, x, y, .. } => {
                             /*if accs.contains(z) {
                                 *zview = acc_view.clone();
                             }
@@ -286,7 +289,7 @@ impl Kernel {
                             if accs.contains(y) {
                                 *yview = acc_view.clone();
                             }*/
-                        }*/
+                        }
                         _ => {}
                     }
                 }
