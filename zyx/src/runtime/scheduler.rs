@@ -476,7 +476,7 @@ impl Runtime {
                     kernel.optimize(&optimizer[optimization_id])
                 };*/
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
-                //optimized_kernel.debug();
+                optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
                 let program_id = self.devices[device_id].compile(&ir_kernel, debug_asm)?;
@@ -686,7 +686,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //kernel.debug();
             }
             &Node::Permute { x } => {
-                let axes = graph.axes(x);
+                let axes = graph.axes(nid);
                 // Permute shuffles load and store strides
                 // It also changes the dimension of loops
                 // and shape of kernel

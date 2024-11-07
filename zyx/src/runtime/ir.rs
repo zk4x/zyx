@@ -26,6 +26,7 @@ pub(super) enum Reg {
 pub(super) enum Scope {
     Global,
     Local,
+    RegTile,
     Register,
 }
 
@@ -220,6 +221,7 @@ impl std::fmt::Display for Scope {
         f.write_str(match self {
             Self::Global => "g",
             Self::Local => "l",
+            Self::RegTile => "t",
             Self::Register => "r",
         })
     }
@@ -423,13 +425,13 @@ impl IRCompiler {
                     z, ref view, dtype, ..
                 } => {
                     addressables.push((
-                        Scope::Register,
+                        Scope::RegTile,
                         dtype.ir_dtype(),
                         view.original_numel(),
                         false,
                     ));
                     let id = u16::try_from(addressables.len() - 1).unwrap();
-                    c.pointers_map.insert((z, Scope::Register), id);
+                    c.pointers_map.insert((z, Scope::RegTile), id);
                 }
                 VOp::Loop { axis, .. } => max_axis = max_axis.max(u16::try_from(axis).unwrap()),
                 _ => {}
@@ -474,8 +476,8 @@ impl IRCompiler {
                             let zaddress = c.pointers_map[&(z, zscope)];
                             zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                         }
-                        (Scope::Register, Scope::Local | Scope::Global) => {}
-                        _ => panic!("Invalid load scopes. Internal bug."),
+                        (Scope::Register, Scope::RegTile | Scope::Local | Scope::Global) => {}
+                        scopes => panic!("Invalid load scopes {scopes:?}. Internal bug."),
                     }
                 }
                 &VOp::Store {
@@ -489,17 +491,22 @@ impl IRCompiler {
                     (Scope::Local, Scope::Register) => {
                         todo!()
                     }
-                    (Scope::Global, Scope::Register) => {
+                    (Scope::RegTile, Scope::Register) => {
                         let zaddress = c.pointers_map[&(z, zscope)];
-                        let zreg =
-                            if let Some(&zaddress) = c.pointers_map.get(&(z, Scope::Register)) {
-                                Reg::Var(xview.ir_for_indexed_load(&mut c, zaddress, zdtype))
-                            } else {
-                                c.register_map[&z]
-                            };
+                        let zreg = c.register_map[&z];
                         zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                     }
-                    _ => panic!("Invalid store scopes"),
+                    (Scope::Global, Scope::Register | Scope::RegTile) => {
+                        let zaddress = c.pointers_map[&(z, zscope)];
+                        let zreg = if let Some(&zaddress) = c.pointers_map.get(&(z, Scope::RegTile))
+                        {
+                            Reg::Var(xview.ir_for_indexed_load(&mut c, zaddress, zdtype))
+                        } else {
+                            c.register_map[&z]
+                        };
+                        zview.ir_for_indexed_store(&mut c, zaddress, zreg);
+                    }
+                    scopes => panic!("Invalid store scopes {scopes:?}"),
                 },
                 &VOp::Accumulator {
                     z,
@@ -507,7 +514,7 @@ impl IRCompiler {
                     ref view,
                     dtype,
                 } => {
-                    let address = c.pointers_map[&(z, Scope::Register)];
+                    let address = c.pointers_map[&(z, Scope::RegTile)];
                     let acc_init = Reg::Const(match rop {
                         ROp::Sum => dtype.zero_constant(),
                         ROp::Max => dtype.min_constant(),
@@ -615,9 +622,13 @@ impl IRCompiler {
                     cmp.insert(z, zr);
                 }
                 IROp::Store { address, offset, x } => {
-                    let Reg::Var(x) = x else { panic!() };
-                    let xr = cmp[&x];
-                    reg_rcs[xr as usize] -= 1;
+                    let xr = if let Reg::Var(x) = x {
+                        let xr = cmp[&x];
+                        reg_rcs[xr as usize] -= 1;
+                        Reg::Var(xr)
+                    } else {
+                        x
+                    };
                     let offset = if let Reg::Var(offset) = offset {
                         let offset = cmp[&offset];
                         reg_rcs[offset as usize] -= 1;
@@ -628,7 +639,7 @@ impl IRCompiler {
                     ops.push(IROp::Store {
                         address,
                         offset,
-                        x: Reg::Var(xr),
+                        x: xr,
                     });
                 }
                 IROp::Unary { z, x, uop } => {
@@ -727,6 +738,7 @@ impl IRCompiler {
     }
 
     fn fuse_multiply_add(&mut self) {
+        // TODO make it work across any length, not only short length
         for i in 0..self.ops.len() - 1 {
             if let IROp::Binary {
                 bop,

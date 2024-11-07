@@ -333,7 +333,7 @@ impl WGSLDevice {
 
         // Declare acuumulators
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Register {
+            if *scope == Scope::RegTile {
                 source += &format!(
                     "{indent}{} p{id}: array<{}, {len}>;\n",
                     if *read_only { "let" } else { "var" },
@@ -453,7 +453,7 @@ impl WGSLDevice {
                 IROp::Barrier { scope } => match scope {
                     Scope::Global => source += &format!("{indent}storageBarrier();\n"),
                     Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
-                    Scope::Register => panic!(),
+                    Scope::Register | Scope::RegTile => panic!(),
                 },
             }
         }

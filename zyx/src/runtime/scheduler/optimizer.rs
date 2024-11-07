@@ -264,34 +264,125 @@ impl Kernel {
                 let acc_view = View::binded(&rws, &[2, 5, 8]);
                 let mut accs = BTreeSet::new();
                 // TODO add load before and store after all operations with acucmulator
-                for i in 0..kernel.ops.len() {
+                let mut i = 0;
+                while i < kernel.ops.len() {
                     match &mut kernel.ops[i] {
-                        VOp::Accumulator { view, z, .. } => {
+                        &mut VOp::Accumulator {
+                            ref mut view,
+                            z,
+                            dtype,
+                            ..
+                        } => {
                             *view = acc_view.clone();
-                            accs.insert(*z);
+                            accs.insert((z, dtype));
                         }
                         VOp::Store {
                             z, xscope, xview, ..
                         } => {
-                            if accs.contains(z) && *xscope == Scope::Register {
-                                *xview = acc_view.clone();
+                            if *xscope == Scope::Register {
+                                if let Some(..) = accs.iter().find(|(x, _)| x == z) {
+                                    *xview = acc_view.clone();
+                                    *xscope = Scope::RegTile;
+                                }
                             }
                         }
                         // This cannot be triggered currently
                         //VOp::Unary { z, .. } => { if accs.contains(z) { todo!(); } }
-                        VOp::Binary { z, x, y, .. } => {
-                            /*if accs.contains(z) {
-                                *zview = acc_view.clone();
+                        &mut VOp::Binary { z, x, y, .. } => {
+                            //let dtype = crate::DType::F32;
+                            // We can add new scope called register tile.
+                            // That way each tensor will exist in one scope only once.
+                            let mut op_i = i;
+                            //if accs.contains(&x) {
+                            if let Some(&(_, dtype)) = accs.iter().find(|(id, _)| *id == x) {
+                                kernel.ops.insert(
+                                    op_i + 1,
+                                    VOp::Store {
+                                        z: x,
+                                        zscope: Scope::RegTile,
+                                        zview: acc_view.clone(),
+                                        zdtype: dtype,
+                                        xscope: Scope::Register,
+                                        xview: View::none(),
+                                    },
+                                );
+                                kernel.ops.insert(
+                                    op_i,
+                                    VOp::Load {
+                                        z: x,
+                                        zscope: Scope::Register,
+                                        zview: View::none(),
+                                        x,
+                                        xscope: Scope::RegTile,
+                                        xview: acc_view.clone(),
+                                        xdtype: dtype,
+                                    },
+                                );
+                                op_i += 1;
+                                i += 2;
                             }
-                            if accs.contains(x) {
-                                *xview = acc_view.clone();
+                            if y != x {
+                                if let Some(&(_, dtype)) = accs.iter().find(|(id, _)| *id == y) {
+                                    kernel.ops.insert(
+                                        op_i + 1,
+                                        VOp::Store {
+                                            z: y,
+                                            zscope: Scope::RegTile,
+                                            zview: acc_view.clone(),
+                                            zdtype: dtype,
+                                            xscope: Scope::Register,
+                                            xview: View::none(),
+                                        },
+                                    );
+                                    kernel.ops.insert(
+                                        op_i,
+                                        VOp::Load {
+                                            z: y,
+                                            zscope: Scope::Register,
+                                            zview: View::none(),
+                                            x: y,
+                                            xscope: Scope::RegTile,
+                                            xview: acc_view.clone(),
+                                            xdtype: dtype,
+                                        },
+                                    );
+                                    op_i += 1;
+                                    i += 2;
+                                }
                             }
-                            if accs.contains(y) {
-                                *yview = acc_view.clone();
-                            }*/
+                            if z != x && z != y {
+                                if let Some(&(_, dtype)) = accs.iter().find(|(id, _)| *id == z) {
+                                    kernel.ops.insert(
+                                        op_i + 1,
+                                        VOp::Store {
+                                            z,
+                                            zscope: Scope::RegTile,
+                                            zview: acc_view.clone(),
+                                            zdtype: dtype,
+                                            xscope: Scope::Register,
+                                            xview: View::none(),
+                                        },
+                                    );
+                                    kernel.ops.insert(
+                                        op_i,
+                                        VOp::Load {
+                                            z,
+                                            zscope: Scope::Register,
+                                            zview: View::none(),
+                                            x: z,
+                                            xscope: Scope::RegTile,
+                                            xview: acc_view.clone(),
+                                            xdtype: dtype,
+                                        },
+                                    );
+                                    //op_i += 1;
+                                    i += 2;
+                                }
+                            }
                         }
                         _ => {}
                     }
+                    i += 1;
                 }
             }
         }

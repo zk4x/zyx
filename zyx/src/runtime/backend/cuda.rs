@@ -549,7 +549,7 @@ impl CUDADevice {
 
         // Declare accumulators
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Register {
+            if *scope == Scope::RegTile {
                 source += &format!(
                     "{indent}{}{} p{id}[{len}];\n",
                     if *read_only { "const " } else { "" },
@@ -659,7 +659,7 @@ impl CUDADevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register => panic!(),
+                            Scope::Register | Scope::RegTile => panic!(),
                         }
                     );
                 }
@@ -926,7 +926,7 @@ impl CUDADevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register => panic!(),
+                            Scope::Register | Scope::RegTile => panic!(),
                         }
                     );
                 }

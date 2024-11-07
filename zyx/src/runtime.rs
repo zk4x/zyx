@@ -411,7 +411,9 @@ impl Runtime {
             return x;
         }
         let shape = permute(self.shape(x), axes);
-        self.graph.push_wshape(Node::Permute { x }, shape)
+        let id = self.graph.push_wshape(Node::Permute { x }, shape);
+        self.graph.push_axes(id, axes.to_vec());
+        id
     }
 
     #[must_use]

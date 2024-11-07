@@ -512,7 +512,7 @@ impl HIPDevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register => panic!(),
+                            Scope::Register | Scope::RegTile => panic!(),
                         }
                     );
                 }
