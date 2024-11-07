@@ -240,10 +240,86 @@ impl View {
 
     /// Load constant into variable or directly return it if view isn't padded
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: Reg) -> Reg {
-        let _ = constant;
-        let _ = c;
-        todo!()
+    pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: Constant) -> Reg {
+        let mut pc = 0;
+        let mut old_offset = None;
+        //println!("Self {self:?}");
+        for inner in self.0.iter().rev() {
+            //println!("\n{inner:?}");
+            // a = offset / ost % dim
+            let mut ost = 1;
+            let mut offset = 0;
+            for (&a, dim) in inner.iter().rev() {
+                let a = Reg::Var(old_offset.map_or_else(
+                    || u16::try_from(a).unwrap(),
+                    |old_offset| {
+                        let a = c.div(Reg::Var(old_offset), Reg::Const(Constant::U32(ost)));
+                        ost *= u32::try_from(dim.d).unwrap();
+                        c.mod_(
+                            Reg::Var(a),
+                            Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())),
+                        )
+                    },
+                ));
+                //println!("ost: {ost}, {dim:?}");
+                // Offset
+                //if dim.st != 0 && dim.d != 1 {
+                let t = if dim.lp != 0 {
+                    let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
+                    Reg::Var(if dim.lp > 0 {
+                        c.sub(a, lp)
+                    } else {
+                        c.add(a, lp)
+                    })
+                } else {
+                    a
+                };
+                let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
+                offset = c.mad(
+                    t,
+                    stride,
+                    if offset != 0 {
+                        Reg::Var(offset)
+                    } else {
+                        Reg::Const(Constant::U32(0))
+                    },
+                );
+                //}
+                // Padding condition
+                if dim.lp > 0 {
+                    let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp - 1).unwrap()));
+                    let t = c.cmpgt(a, lp);
+                    pc = c.and(
+                        Reg::Var(t),
+                        if pc != 0 {
+                            Reg::Var(pc)
+                        } else {
+                            Reg::Const(Constant::Bool(true))
+                        },
+                    );
+                }
+                if dim.rp > 0 {
+                    let rp = Reg::Const(Constant::U32(
+                        u32::try_from(isize::try_from(dim.d).unwrap() - dim.rp).unwrap(),
+                    ));
+                    let t = c.cmplt(a, rp);
+                    pc = c.and(Reg::Var(t), Reg::Var(pc));
+                }
+            }
+            old_offset = Some(offset);
+        }
+        //if pc != 0 {
+        //let pcu32 = c.cast(Reg::Var(pc), DType::U32);
+        //offset = c.mul(pcu32, Reg::Var(offset));
+        //}
+        let dtype = constant.dtype();
+        let mut z = Reg::Const(constant);
+        if pc != 0 {
+            let pcd = c.cast(Reg::Var(pc), dtype);
+            // Nullify z if padding condition is false (if there is padding at that index)
+            z = Reg::Var(c.mul(pcd, z));
+        }
+        z
     }
 
     /// Load from address into variable
@@ -265,7 +341,7 @@ impl View {
         let mut old_offset = None;
         //println!("Self {self:?}");
         for inner in self.0.iter().rev() {
-            println!("\n{inner:?}");
+            //println!("\n{inner:?}");
             // a = offset / ost % dim
             let mut ost = 1;
             offset = 0;
@@ -403,7 +479,7 @@ fn view_split() {
 #[test]
 fn view_binded() {
     let view = View::binded(&[4, 2, 3], &[5, 1, 2]);
-    println!("{view:?}");
+    //println!("{view:?}");
     assert_eq!(view.rank(), 3);
     assert_eq!(view.used_axes(), [1, 2, 5]);
     assert_eq!(view.shape(), [2, 3, 4]);

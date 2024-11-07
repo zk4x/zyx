@@ -257,9 +257,7 @@ impl IRCompiler {
                 self.ops.push(IROp::Unary { z: max_id, x, uop });
                 Reg::Var(max_id)
             }
-            Reg::Const(_) => {
-                todo!("Unary op on constant")
-            }
+            Reg::Const(c) => Reg::Const(c.unary(uop)),
         }
     }
 
@@ -456,7 +454,7 @@ impl IRCompiler {
                     }
                 }
                 &VOp::Const { z, value, ref view } => {
-                    let zreg = view.ir_for_constant_load(&mut c, Reg::Const(value));
+                    let zreg = view.ir_for_constant_load(&mut c, value);
                     c.register_map.insert(z, zreg);
                 }
                 &VOp::Load {

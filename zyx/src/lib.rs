@@ -351,7 +351,8 @@ fn t2() -> Result<(), ZyxError> {
     //Tensor::plot_dot_graph([&x, &y, &z], "graph0");
     //Tensor::realize([&x, &y, &z]);
     //println!("{x}\n{y}\n{z}");
-    println!("{z}");
+    //println!("{z}");
+    assert_eq!(z, [52f32, 52., 40.]);
 
     //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
     Ok(())
