@@ -610,6 +610,13 @@ impl Runtime {
     /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         let n: usize = self.shape(x).iter().product();
+        let dt = self.dtype(x);
+        if dt != T::dtype() {
+            return Err(ZyxError::DTypeError(format!(
+                "loading dtype {}, but the data has dtype {dt}",
+                T::dtype()
+            )));
+        }
         assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if self.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {

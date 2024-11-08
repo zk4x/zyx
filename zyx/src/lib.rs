@@ -333,6 +333,13 @@ fn t1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn t3() -> Result<(), ZyxError> {
+    let x = Tensor::from([true, true, false, true]);
+    println!("{x}");
+    Ok(())
+}
+
+#[test]
 fn t2() -> Result<(), ZyxError> {
     //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
     let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])

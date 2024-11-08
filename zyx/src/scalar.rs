@@ -102,13 +102,16 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     fn pow(self, rhs: Self) -> Self;
     /// Compare less than
     #[must_use]
-    fn cmplt(self, rhs: Self) -> Self;
+    fn cmplt(self, rhs: Self) -> bool;
     /// Compare less than
     #[must_use]
-    fn cmpgt(self, rhs: Self) -> Self;
+    fn cmpgt(self, rhs: Self) -> bool;
     /// Compare less than
     #[must_use]
-    fn or(self, rhs: Self) -> Self;
+    fn or(self, rhs: Self) -> bool;
+    /// And
+    #[must_use]
+    fn and(self, rhs: Self) -> bool;
     /// Max of two numbers
     #[must_use]
     fn max(self, rhs: Self) -> Self;

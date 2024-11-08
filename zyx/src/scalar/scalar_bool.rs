@@ -85,6 +85,14 @@ impl Scalar for bool {
         panic!()
     }
 
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
+        todo!()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self | rhs
     }
@@ -112,6 +120,18 @@ impl Scalar for bool {
         !self & rhs
     }
 
+    fn cmpgt(self, rhs: Self) -> Self {
+        self && !rhs
+    }
+
+    fn or(self, rhs: Self) -> Self {
+        self || rhs
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self && rhs
+    }
+
     fn max(self, rhs: Self) -> Self {
         <bool as Ord>::max(self, rhs)
     }
@@ -124,27 +144,11 @@ impl Scalar for bool {
         false
     }
 
-    fn epsilon() -> Self {
-        false
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
 
-    fn not(self) -> Self {
-        todo!()
-    }
-
-    fn nonzero(self) -> Self {
-        todo!()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        self && !rhs
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        self || rhs
+    fn epsilon() -> Self {
+        false
     }
 }

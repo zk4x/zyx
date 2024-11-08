@@ -148,6 +148,13 @@ impl Graph {
                 return dtype;
             } else if let Node::Const { value } = self.nodes[tensor_id].1 {
                 return value.dtype();
+            } else if let Node::Binary { bop, .. } = self.nodes[tensor_id].1 {
+                if matches!(
+                    bop,
+                    BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or
+                ) {
+                    return DType::Bool;
+                }
             }
             tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
         }
@@ -301,7 +308,6 @@ impl Graph {
                 }
             })
             .collect();
-        println!("Axes: {axes:?}");
         for &leaf in &leafs {
             shapes
                 .entry(leaf)

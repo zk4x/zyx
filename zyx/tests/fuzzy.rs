@@ -1,3 +1,4 @@
+#![allow(unused)]
 use rand::{distributions::Uniform, Rng, SeedableRng};
 use std::rc::Rc;
 use zyx::{DType, Float, Scalar, Tensor, ZyxError};
@@ -166,15 +167,18 @@ macro_rules! binary_op {
             data: match &$x.data {
                 Data::F32(xdata) => {
                     let Data::F32(ydata) = &$y.data else { panic!() };
-                    Data::F32(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    //Data::F32(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    todo!()
                 }
                 Data::F64(xdata) => {
                     let Data::F64(ydata) = &$y.data else { panic!() };
-                    Data::F64(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    //Data::F64(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    todo!()
                 }
                 Data::I32(xdata) => {
                     let Data::I32(ydata) = &$y.data else { panic!() };
-                    Data::I32(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    //Data::I32(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    todo!()
                 }
             },
         }

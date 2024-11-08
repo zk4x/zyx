@@ -460,7 +460,7 @@ impl OpenCLMemoryPool {
             )
         };
         status.check("Failed to allocate memory.")?;
-        //println!("Allocated buffer {ptr:?}, bytes {bytes}");
+        println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes -= bytes;
         Ok(OpenCLBuffer {
             ptr,
@@ -510,7 +510,7 @@ impl OpenCLMemoryPool {
         src: &OpenCLBuffer,
         dst: &mut [u8],
     ) -> Result<(), OpenCLError> {
-        //println!("OpenCL to host src: {src:?}");
+        println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         assert!(
             !src.ptr.is_null(),
             "Trying to read null memory. Internal bug."
@@ -592,7 +592,7 @@ impl OpenCLDevice {
                 .unwrap(),
         );
         self.dev_info = DeviceInfo {
-            compute: get_compute(&device_name, debug_dev),
+            compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims,
             max_local_threads: mlt,
             max_local_work_dims: [mlt, mlt, mlt],
@@ -931,25 +931,6 @@ impl OpenCLQueue {
     }
 }
 
-impl IRDType {
-    fn ocl(self) -> String {
-        match self {
-            Self::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
-            Self::F8(v) => format!("f8{v}"),
-            Self::F16(v) => format!("half{v}"),
-            Self::F32(v) => format!("float{v}"),
-            Self::F64(v) => format!("double{v}"),
-            Self::U8(v) => format!("unsigned char{v}"),
-            Self::I8(v) => format!("char{v}"),
-            Self::I16(v) => format!("short{v}"),
-            Self::I32(v) => format!("int{v}"),
-            Self::I64(v) => format!("long{v}"),
-            Self::Bool => "bool".into(),
-            Self::U32(v) => format!("unsigned int{v}"),
-        }
-    }
-}
-
 impl OpenCLStatus {
     fn check(self, info: &str) -> Result<(), OpenCLError> {
         if self == Self::CL_SUCCESS {
@@ -1180,19 +1161,21 @@ impl From<cl_int> for OpenCLStatus {
     }
 }
 
-fn get_compute(device_name: &str, debug_dev: bool) -> u128 {
-    match device_name.to_lowercase() {
-        x if x.contains("i5-4460") => 300 * 1024 * 1024 * 1024,
-        x if x.contains("i5-2500") => 150 * 1024 * 1024 * 1024,
-        x if x.contains("ryzen 5 5500u") => 300 * 1024 * 1024 * 1024,
-        x if x.contains("rx 550") => 1200 * 1024 * 1024 * 1024,
-        x if x.contains("gtx 745") => 900 * 1024 * 1024 * 1024,
-        x if x.contains("rtx 2060") => 57 * 1024 * 1024 * 1024 * 1024,
-        _ => {
-            if debug_dev {
-                println!("Unknown device {device_name}, guessing compute capability");
-            }
-            1024 * 1024 * 1024 * 1024
+impl IRDType {
+    fn ocl(self) -> String {
+        match self {
+            Self::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
+            Self::F8(v) => format!("f8{v}"),
+            Self::F16(v) => format!("half{v}"),
+            Self::F32(v) => format!("float{v}"),
+            Self::F64(v) => format!("double{v}"),
+            Self::U8(v) => format!("unsigned char{v}"),
+            Self::I8(v) => format!("char{v}"),
+            Self::I16(v) => format!("short{v}"),
+            Self::I32(v) => format!("int{v}"),
+            Self::I64(v) => format!("long{v}"),
+            Self::Bool => "bool".into(),
+            Self::U32(v) => format!("unsigned int{v}"),
         }
     }
 }

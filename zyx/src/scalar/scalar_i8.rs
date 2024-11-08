@@ -91,6 +91,14 @@ impl Scalar for i8 {
         Ord::max(self, 0)
     }
 
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
+        todo!()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -112,14 +120,24 @@ impl Scalar for i8 {
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
+
+    fn cmpgt(self, rhs: Self) -> bool {
+        (self > rhs).into()
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
     }
 
     fn max(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        <i8 as Ord>::max(self, rhs)
     }
 
     fn max_value() -> Self {
@@ -130,27 +148,11 @@ impl Scalar for i8 {
         i8::MIN
     }
 
-    fn epsilon() -> Self {
-        0
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
 
-    fn not(self) -> Self {
-        todo!()
-    }
-
-    fn nonzero(self) -> Self {
-        todo!()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs).into()
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        (self != 0 || rhs != 0).into()
+    fn epsilon() -> Self {
+        0
     }
 }

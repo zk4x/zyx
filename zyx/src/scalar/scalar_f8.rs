@@ -92,6 +92,14 @@ impl Scalar for F8E4M3 {
         self.max(Self::ZERO)
     }
 
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
+        todo!()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -112,8 +120,20 @@ impl Scalar for F8E4M3 {
         Self::from_f32(self.to_f32().pow(rhs.to_f32()))
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        Self::from_f32(u8::from(self < rhs).into())
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
+
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != Self::ZERO || rhs != Self::ZERO
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != Self::ZERO && rhs != Self::ZERO
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -128,32 +148,14 @@ impl Scalar for F8E4M3 {
         Self::MIN
     }
 
-    fn epsilon() -> Self {
-        Self::from_f32(0.00001)
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         (self == -Self::INFINITY && rhs == -Self::INFINITY)
             || (self.is_nan() && rhs.is_nan())
             || self.sub(rhs).abs() < self.abs() * Self::from_f32(0.0001)
     }
 
-    fn not(self) -> Self {
-        todo!()
-    }
-
-    fn nonzero(self) -> Self {
-        todo!()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn epsilon() -> Self {
+        Self::from_f32(0.00001)
     }
 }
 

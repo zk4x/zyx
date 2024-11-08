@@ -88,6 +88,18 @@ impl Scalar for f32 {
         self.max(0.)
     }
 
+    fn not(self) -> Self {
+        if self == 0. {
+            1.
+        } else {
+            0.
+        }
+    }
+
+    fn nonzero(self) -> Self {
+        f32::from(i8::from(self != 0.))
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -108,8 +120,20 @@ impl Scalar for f32 {
         self.powf(rhs)
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        f32::from(i8::from(self < rhs))
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
+
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != 0. || rhs != 0.
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != 0. && rhs != 0.
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -124,10 +148,6 @@ impl Scalar for f32 {
         f32::MIN
     }
 
-    fn epsilon() -> Self {
-        0.0001
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 1% error is OK
         (self == -f32::INFINITY && rhs == -f32::INFINITY)
@@ -135,24 +155,8 @@ impl Scalar for f32 {
             || (self - rhs).abs() < self.abs() * 0.0001
     }
 
-    fn not(self) -> Self {
-        if self == 0. {
-            1.
-        } else {
-            0.
-        }
-    }
-
-    fn nonzero(self) -> Self {
-        f32::from(i8::from(self != 0.))
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        f32::from(i8::from(self > rhs))
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        f32::from(i8::from(self != 0. || rhs != 0.))
+    fn epsilon() -> Self {
+        0.0001
     }
 }
 

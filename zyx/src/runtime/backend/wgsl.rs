@@ -598,8 +598,8 @@ impl IRDType {
             IRDType::I16(_) => "i16",
             IRDType::I32(_) => "i32",
             IRDType::I64(_) => "i64",
-            IRDType::Bool => "bool",
             IRDType::U32(_) => "u32",
+            IRDType::Bool => "bool",
         }
     }
 }

@@ -89,6 +89,14 @@ impl Scalar for u32 {
         todo!()
     }
 
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
+        todo!()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -110,8 +118,20 @@ impl Scalar for u32 {
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        (self < rhs).into()
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
+
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -126,27 +146,11 @@ impl Scalar for u32 {
         Self::MIN
     }
 
-    fn epsilon() -> Self {
-        0
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
 
-    fn not(self) -> Self {
-        todo!()
-    }
-
-    fn nonzero(self) -> Self {
-        todo!()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        (self > rhs).into()
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        (self != 0 || rhs != 0).into()
+    fn epsilon() -> Self {
+        0
     }
 }

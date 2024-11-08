@@ -91,6 +91,14 @@ impl Scalar for f16 {
         self.max(f16::ZERO)
     }
 
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
+        todo!()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -111,8 +119,20 @@ impl Scalar for f16 {
         f16::from_f32(self.to_f32().pow(rhs.to_f32()))
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        f16::from_f32(f32::from(i8::from(self < rhs)))
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
+
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != Self::ZERO || rhs != Self::ZERO
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != Self::ZERO && rhs != Self::ZERO
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -127,31 +147,14 @@ impl Scalar for f16 {
         f16::MIN
     }
 
-    fn epsilon() -> Self {
-        f16::from_f32(0.00001)
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         (self == -Self::INFINITY && rhs == -Self::INFINITY)
             || (self.is_nan() && rhs.is_nan())
             || self.sub(rhs).abs() < self.abs() * f16::from_f32(0.0001)
     }
 
-    fn not(self) -> Self {
-        todo!()
-    }
-
-    fn nonzero(self) -> Self {
-        todo!()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        i8::from(self > rhs).into()
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn epsilon() -> Self {
+        f16::from_f32(0.00001)
     }
 }
 

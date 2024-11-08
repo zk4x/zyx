@@ -80,6 +80,18 @@ impl Scalar for bf16 {
         -self
     }
 
+    fn relu(self) -> Self {
+        self.max(bf16::ZERO)
+    }
+
+    fn not(self) -> Self {
+        todo!()
+    }
+
+    fn nonzero(self) -> Self {
+        todo!()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -100,16 +112,20 @@ impl Scalar for bf16 {
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        if self < rhs {
-            bf16::ONE
-        } else {
-            bf16::ZERO
-        }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
     }
 
-    fn relu(self) -> Self {
-        self.max(bf16::ZERO)
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != Self::ZERO || rhs != Self::ZERO
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != Self::ZERO && rhs != Self::ZERO
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -124,30 +140,12 @@ impl Scalar for bf16 {
         bf16::MIN
     }
 
-    fn epsilon() -> Self {
-        bf16::MIN_POSITIVE
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         self == rhs
     }
 
-    fn not(self) -> Self {
-        todo!()
-    }
-
-    fn nonzero(self) -> Self {
-        todo!()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        (i8::from(self > rhs)).into()
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //((self || rhs) as i8).into()
-        todo!()
+    fn epsilon() -> Self {
+        bf16::MIN_POSITIVE
     }
 }
 

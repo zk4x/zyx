@@ -476,7 +476,7 @@ impl Runtime {
                     kernel.optimize(&optimizer[optimization_id])
                 };*/
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
-                optimized_kernel.debug();
+                //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
                 let program_id = self.devices[device_id].compile(&ir_kernel, debug_asm)?;

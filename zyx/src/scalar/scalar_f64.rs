@@ -87,6 +87,18 @@ impl Scalar for f64 {
         self.max(0.)
     }
 
+    fn not(self) -> Self {
+        if self == 0. {
+            1.
+        } else {
+            0.
+        }
+    }
+
+    fn nonzero(self) -> Self {
+        u8::from(self != 0.).into()
+    }
+
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -107,8 +119,20 @@ impl Scalar for f64 {
         self.powf(rhs)
     }
 
-    fn cmplt(self, rhs: Self) -> Self {
-        i8::from(self < rhs).into()
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
+
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != 0. || rhs != 0.
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != 0. && rhs != 0.
     }
 
     fn max(self, rhs: Self) -> Self {
@@ -123,10 +147,6 @@ impl Scalar for f64 {
         f64::MIN
     }
 
-    fn epsilon() -> Self {
-        0.00001
-    }
-
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 1% error is OK
         (self == -f64::INFINITY && rhs == -f64::INFINITY)
@@ -134,24 +154,8 @@ impl Scalar for f64 {
             || (self - rhs).abs() < self.abs() * 0.01
     }
 
-    fn not(self) -> Self {
-        if self == 0. {
-            1.
-        } else {
-            0.
-        }
-    }
-
-    fn nonzero(self) -> Self {
-        u8::from(self != 0.).into()
-    }
-
-    fn cmpgt(self, rhs: Self) -> Self {
-        u8::from(self > rhs).into()
-    }
-
-    fn or(self, rhs: Self) -> Self {
-        u8::from(self != 0. || rhs != 0.).into()
+    fn epsilon() -> Self {
+        0.00001
     }
 }
 
