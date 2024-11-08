@@ -460,7 +460,7 @@ impl OpenCLMemoryPool {
             )
         };
         status.check("Failed to allocate memory.")?;
-        println!("Allocated buffer {ptr:?}, bytes {bytes}");
+        //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes -= bytes;
         Ok(OpenCLBuffer {
             ptr,
@@ -510,7 +510,7 @@ impl OpenCLMemoryPool {
         src: &OpenCLBuffer,
         dst: &mut [u8],
     ) -> Result<(), OpenCLError> {
-        println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
+        //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         assert!(
             !src.ptr.is_null(),
             "Trying to read null memory. Internal bug."

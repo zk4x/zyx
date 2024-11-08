@@ -218,7 +218,7 @@ impl Kernel {
         // Reorder so that register work threads are last
         // Register threads are op_id 1, 4 and 7
         if true {
-            // disable register work sizes
+            // if register work sizes are enabled
             let mut threaded = true;
             let rlz = kernel.ops.remove(8);
             let rly = kernel.ops.remove(5);
@@ -263,7 +263,6 @@ impl Kernel {
                 // otherwise the results would be incorrect
                 let acc_view = View::binded(&rws, &[2, 5, 8]);
                 let mut accs = BTreeSet::new();
-                // TODO add load before and store after all operations with acucmulator
                 let mut i = 0;
                 while i < kernel.ops.len() {
                     match &mut kernel.ops[i] {

@@ -1239,14 +1239,14 @@ impl Tensor {
     pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         if (dim0 < 0 && usize::try_from(-dim0).unwrap() > rank)
-            || usize::try_from(dim0).unwrap() >= rank
+            || (dim0 >= 0 && usize::try_from(dim0).unwrap() >= rank)
         {
             return Err(ZyxError::ShapeError(format!(
                 "Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}"
             )));
         }
         if (dim1 < 0 && usize::try_from(-dim1).unwrap() > rank)
-            || usize::try_from(dim1).unwrap() >= rank
+            || (dim1 >= 0 && usize::try_from(dim1).unwrap() >= rank)
         {
             return Err(ZyxError::ShapeError(format!(
                 "Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}"
@@ -2624,8 +2624,11 @@ impl Tensor {
         let a = self.get((.., .., .., ..d / 2)).unwrap();
         let b = -self.get((.., .., .., d / 2..)).unwrap();
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
+        //println!("{ro}");
         let co = a * sin_freqs + b * cos_freqs;
-        Ok(Tensor::cat([&co, &ro], -1).unwrap())
+        //println!("{co}");
+        let r = Tensor::cat([&co, &ro], -1).unwrap();
+        Ok(r)
     }
 
     /*#[must_use]

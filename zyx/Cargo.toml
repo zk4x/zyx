@@ -72,7 +72,7 @@ crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
-    #"disk_cache",
+    "disk_cache",
     #"wgsl",
     #"complex",
     #"gguf",

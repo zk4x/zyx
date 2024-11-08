@@ -11,6 +11,15 @@ fn matmul_2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn sum1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
+    assert_eq!(x.sum([0])?, [3, 9, 4]);
+    assert_eq!(x.sum([1])?, [9, 7]);
+    assert_eq!(x.sum([])?, 16);
+    Ok(())
+}
+
+#[test]
 fn pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
@@ -40,12 +49,40 @@ fn expand_reduce() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn rope() -> Result<(), ZyxError> {
+fn rope1() -> Result<(), ZyxError> {
     let xs =
         Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
     let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-    let z = xs.rope(&cos, &sin).unwrap();
+    let z = xs.rope(&cos, &sin)?;
+    assert_eq!(
+        z,
+        [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
+    );
+    Ok(())
+}
+
+#[test]
+fn rope2() -> Result<(), ZyxError> {
+    let xs =
+        Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
+    let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+    let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+    let sh = xs.shape();
+    let sin_freqs = sin.squeeze(1).unwrap().squeeze(0).unwrap();
+    //assert_eq!(sin_freqs, [[1f32, 4., 2.], [4., 4., 3.]]);
+    let cos_freqs = cos.squeeze(1).unwrap().squeeze(0).unwrap();
+    //assert_eq!(cos_freqs, [[1f32, 4., 2.], [4., 4., 3.]]);
+    let d = isize::try_from(*sh.last().unwrap()).unwrap();
+    let a = xs.get((.., .., .., ..d / 2)).unwrap();
+    //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
+    let b = -xs.get((.., .., .., d / 2..)).unwrap();
+    //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
+    let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
+    //assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);
+    let co = a * sin_freqs + b * cos_freqs;
+    //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
+    let z = Tensor::cat([&co, &ro], -1).unwrap();
     assert_eq!(
         z,
         [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
@@ -165,6 +202,14 @@ fn uni_matmul() -> Result<(), ZyxError> {
 }*/
 
 #[test]
+fn pad1() -> Result<(), ZyxError> {
+    let a = Tensor::from([[1, 2], [3, 4]]);
+    let c = a.pad_zeros([(0, 0), (0, 2)])?;
+    assert_eq!(c, [[1, 2], [3, 4], [0, 0], [0, 0]]);
+    Ok(())
+}
+
+#[test]
 fn cat() -> Result<(), ZyxError> {
     let a = Tensor::from([[1, 2], [3, 4]]);
     let b = Tensor::from([[5, 6], [7, 8]]);
@@ -213,15 +258,18 @@ fn softmax() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
     //let y = x.softmax([]);
     //println!("{y:?}");
-    /*let y = x.max_kd([])?;
-    let e = (&x - y).exp();
-    let y = &e / e.sum_kd([])?;*/
+    //let y = x.sum_kd([])?;
+    //println!("{y}");
+    //let e = (&x - y).exp();
+    //println!("{e}");
+    //let y = &e / e.sum_kd([])?;
     //println!("{e:?}");
     //panic!();
     //Tensor::plot_graph([], "graph");
     //println!("{y:.20}");
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
+    //println!("{y}");
     let y_data: Vec<f32> = y.try_into()?;
     for (x, y) in y_data.into_iter().zip([
         0.09003056585788726807,
@@ -266,8 +314,8 @@ fn pad_zeros() -> Result<(), ZyxError> {
 
 #[test]
 fn ones() {
-    let x = Tensor::ones([2, 3], DType::F32);
-    assert_eq!(x, [[1, 1, 1], [1, 1, 1]]);
+    let x = Tensor::ones([2, 3], DType::I32);
+    assert_eq!(x, [[1i32, 1, 1], [1, 1, 1]]);
 }
 
 #[test]
@@ -275,12 +323,12 @@ fn graph_node_reuse() {
     let x = Tensor::from([4, 2, 3]);
     let y = Tensor::from([4, 2, 3]);
     let a = x + y;
-    assert_eq!(a, [[8, 4, 6], [8, 4, 6]]);
+    assert_eq!(a, [8, 4, 6]);
     drop(a);
     let x = Tensor::from([4, 2, 3]);
     let y = Tensor::from([4, 2, 3]);
     let b = x + y;
-    assert_eq!(b, [[8, 4, 6], [8, 4, 6]]);
+    assert_eq!(b, [8, 4, 6]);
 }
 
 #[test]

@@ -756,6 +756,10 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 } else {
                     //println!("Reshaping non continuous.");
                     // TODO we also have to merge axes if possible
+                    // TODO even if merge is not possible, we may be possible to apply reshape
+                    // and simply create new loops if the kernel does not contain reduce loop
+                    // or the reshape does not affect reduce loop
+                    // TODO we can sometimes insert new loops to the end of the kernel
                     let mut splits = Some(BTreeMap::new());
                     let prev_shape = graph.shape(x);
                     if shape.len() < prev_shape.len() {

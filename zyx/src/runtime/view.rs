@@ -114,13 +114,15 @@ impl View {
 
     /// Inserts new loop, shifts all axes greater than axis up by one
     pub(crate) fn insert_loop(&mut self, axis: usize) {
+        //println!("Inserting loop at axis {axis}");
         if let Some(inner) = self.0.last_mut() {
-            let keys: Vec<Axis> = inner.keys().filter(|&&a| a > axis).copied().collect();
-            for a in keys {
+            let keys: Vec<Axis> = inner.keys().filter(|&&a| a >= axis).copied().collect();
+            for a in keys.into_iter().rev() {
                 let dim = inner.remove(&a).unwrap();
                 inner.insert(a + 1, dim);
             }
         }
+        //println!("After insert loop {self:?}");
     }
 
     // TODO this will be used if split or merge are not possible
@@ -191,6 +193,12 @@ impl View {
                     // First shift axes > axis by dimensions.len()
                     split_inner(inner, axis, dimensions);
                     //println!("done {inner:?}");
+                }
+            } else {
+                let keys: Vec<Axis> = inner.keys().filter(|&&a| a > axis).copied().collect();
+                for a in keys.iter().rev() {
+                    let dim = inner.remove(&a).unwrap();
+                    inner.insert(a + dimensions.len() - 1, dim);
                 }
             }
         }
@@ -399,7 +407,14 @@ impl View {
                         u32::try_from(isize::try_from(dim.d).unwrap() - dim.rp).unwrap(),
                     ));
                     let t = c.cmplt(a, rp);
-                    pc = c.and(Reg::Var(t), Reg::Var(pc));
+                    pc = c.and(
+                        Reg::Var(t),
+                        if pc != 0 {
+                            Reg::Var(pc)
+                        } else {
+                            Reg::Const(Constant::Bool(true))
+                        },
+                    );
                 }
             }
             old_offset = Some(offset);
@@ -459,6 +474,7 @@ impl Display for View {
                 inner
                     .values()
                     .map(|d| (d.lp, d.rp))
+                    .rev()
                     .collect::<Vec<(isize, isize)>>()
             ))
         } else {
