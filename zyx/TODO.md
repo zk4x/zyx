@@ -6,7 +6,7 @@
     - [x] offset
     - [x] padding condition
   - [x] reshaped view to ir
-  - [ ] view axis merge
+  - [ ] axis merging
 - [ ] ir rewrite
   - [x] add dtype to load vop, so that we don't need to pass graph to ir
   - [x] do not pass graph to ir
@@ -21,11 +21,15 @@
 - [x] vops remove unary view
 - [x] vops remove binary views
 - [x] manual for adding new backends
-- [ ] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
+- [ ] scheduler upgrades
+  - [ ] fix reshape node
+    - [ ] merges, splits, reshapes of non reduce axes
+    - [ ] inserting new loops to the end of the kernel
+  - [ ] pad should also work even with kernels that store stuff, just pad the store view
+- [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables
 - [ ] vector dtypes in kernels
 - [ ] tensor cores support
-- [ ] matmul
 - [ ] flash attention
 - [ ] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes

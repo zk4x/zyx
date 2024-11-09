@@ -466,4 +466,143 @@ impl Kernel {
             _ => true,
         })
     }
+
+    pub(super) fn get_reshape_pattern(
+        &self,
+        nshape: &[usize],
+    ) -> Option<(
+        usize,                                                 // number of new loops to be inserted
+        Vec<std::ops::Range<usize>>, // ranges that should be merged into single axis
+        Vec<(usize, std::ops::Range<usize>)>, // axis and dimensions for splits
+        Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>, // range and new shape for reshapes
+    )> {
+        let mut unmergeable_axes = Vec::new();
+        let mut last_op_i = 0;
+        for (i, op) in self.ops.iter().enumerate() {
+            if let &VOp::Loop { axis, .. } = op {
+                if last_op_i != 0 && i != last_op_i + 1 {
+                    unmergeable_axes.push(axis);
+                }
+                last_op_i = i;
+            }
+        }
+        get_reshape_pattern(&self.shape(), nshape, &unmergeable_axes)
+    }
+}
+
+/// Searches which dimensions can be:
+/// 1. insert new loops to the end of the kernel
+/// 2. merged
+/// 3. split
+/// 4. reshaped without affecting reduce dims
+/// If neither of those are possible, None is returned. last tensor must be stored and new kernel must be created.
+fn get_reshape_pattern(
+    // original shape
+    shape: &[usize],
+    // new shape
+    nshape: &[usize],
+    // 6 means there are ops between axes 5 and 6, thus 5 and 6 cannot be merged
+    // 3 means there are ops between axes 2 and 3, thus 2 and 3 cannot be merged
+    unmergeable_axes: &[usize],
+) -> Option<(
+    // number of new loops to be inserted
+    usize,
+    // ranges that should be merged into single axis
+    Vec<std::ops::Range<usize>>,
+    // axis and dimensions for splits
+    Vec<(usize, std::ops::Range<usize>)>,
+    // range and new shape for reshapes
+    Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
+)> {
+    // reshape
+    // 2, 4, 1, 3, 1,    4, 5, 2
+    //       8, 3, 1, 2, 2, 2, 5
+    let mut merges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut splits = Vec::new();
+    let mut reshapes = Vec::new();
+
+    let mut split_dims = Vec::new();
+    let mut merge_dims = Vec::new();
+    let mut i = 0;
+    let mut ni = 0;
+    merge_dims.push(shape[i]);
+    split_dims.push(nshape[ni]);
+    while i < shape.len() + 1 && ni < nshape.len() + 1 {
+        match merge_dims
+            .iter()
+            .product::<usize>()
+            .cmp(&split_dims.iter().product())
+        {
+            std::cmp::Ordering::Less => {
+                i += 1;
+                merge_dims.push(shape[i]);
+            }
+            std::cmp::Ordering::Greater => {
+                ni += 1;
+                split_dims.push(nshape[ni]);
+            }
+            std::cmp::Ordering::Equal => {
+                //println!("merge_dims: {merge_dims:?}");
+                //println!("split_dims: {split_dims:?}");
+                match (merge_dims.len(), split_dims.len()) {
+                    (1, 1) => {} // both are the same, no changes
+                    (1, _) => {
+                        // split
+                        splits.push((i, ni - 1..ni + split_dims.len() - 1));
+                    }
+                    (_, 1) => {
+                        // merge
+                        // If merge range contains unmergeable axes, return None
+                        // Axes are not mergeable if there is some ops between those axes
+                        let merge_range = i + 1 - merge_dims.len()..i + 1;
+                        if unmergeable_axes
+                            .iter()
+                            .any(|a| merge_range.contains(a) && merge_range.contains(&(a - 1)))
+                        {
+                            return None;
+                        }
+                        merges.push(merge_range);
+                    }
+                    (_, _) => {
+                        // reshape
+                        // If merge range contains unmergeable axes, return None
+                        // Axes are not mergeable if there is some ops between those axes
+                        let merge_range = i + 1 - merge_dims.len()..i + 1;
+                        if unmergeable_axes
+                            .iter()
+                            .any(|a| merge_range.contains(a) && merge_range.contains(&(a - 1)))
+                        {
+                            return None;
+                        }
+                        reshapes.push((merge_range, ni - 1..ni + split_dims.len() - 1));
+                    }
+                }
+                merge_dims.clear();
+                i += 1;
+                if i >= shape.len() {
+                    break;
+                }
+                merge_dims.push(shape[i]);
+
+                split_dims.clear();
+                ni += 1;
+                if ni >= nshape.len() {
+                    break;
+                }
+                split_dims.push(nshape[ni]);
+            }
+        }
+    }
+    return Some((0, merges, splits, reshapes));
+}
+
+#[test]
+fn reshape_pattern() {
+    let shape = [2, 4, 1, 3, 1, 4, 5, 2];
+    let nshape = [8, 3, 1, 2, 2, 2, 5];
+    let r = get_reshape_pattern(&shape, &nshape, &[]);
+    assert_eq!(
+        r,
+        Some((0, vec![0..2, 2..4], vec![(5, 3..5)], vec![(6..8, 5..7)]))
+    );
 }
