@@ -1,12 +1,13 @@
 - [ ] tests for fusion in generate kernels, test will create it's own graph and check how the fused kernel looks
-    - [ ] softmax fusion test
-- [ ] finish view
+    - [ ] softmax fusion test (eventually should be single kernel)
+- [x] view
   - [x] split on padded view
   - [x] view padding to ir
     - [x] offset
     - [x] padding condition
   - [x] reshaped view to ir
-  - [ ] axis merging
+  - [x] axis merging
+  - [x] axes reshape
 - [ ] ir rewrite
   - [x] add dtype to load vop, so that we don't need to pass graph to ir
   - [x] do not pass graph to ir
@@ -26,6 +27,7 @@
     - [ ] merges, splits, reshapes of non reduce axes
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
+- [ ] reshape insert new loops for splits
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables

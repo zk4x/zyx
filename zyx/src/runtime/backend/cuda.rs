@@ -524,83 +524,87 @@ impl CUDADevice {
         // Declare global variables
         for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
-                source += &format!(
+                source.push_str(&format!(
                     "{indent}{}{}* p{id},\n",
                     if *read_only { "const " } else { "" },
                     dtype.cu(),
-                );
+                ));
             }
         }
 
         source.pop();
         source.pop();
-        source += "\n) {\n";
+        source.push_str("\n) {\n");
 
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
-                source += &format!(
+                source.push_str(&format!(
                     "{indent}__shared__ {} p{id}[{len}];\n",
                     //if *read_only { "const " } else { "" },
                     dtype.cu(),
-                );
+                ));
             }
         }
 
         // Declare accumulators
         for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::RegTile {
-                source += &format!(
+                source.push_str(&format!(
                     "{indent}{}{} p{id}[{len}];\n",
                     if *read_only { "const " } else { "" },
                     dtype.cu(),
-                );
+                ));
             }
         }
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}{} r{id};\n", dtype.cu());
+            source.push_str(&format!("{indent}{} r{id};\n", dtype.cu()));
         }
 
         // Add indices for global and local loops
-        source += &format!(
+        source.push_str(&format!(
             "  r{} = blockIdx.x;   /* 0..{} */\n",
             loop_ids[0], global_work_size[0]
-        );
-        source += &format!(
+        ));
+        source.push_str(&format!(
             "  r{} = threadIdx.x;   /* 0..{} */\n",
             loop_ids[1], local_work_size[0]
-        );
-        source += &format!(
+        ));
+        source.push_str(&format!(
             "  r{} = blockIdx.y;   /* 0..{} */\n",
             loop_ids[2], global_work_size[1]
-        );
-        source += &format!(
+        ));
+        source.push_str(&format!(
             "  r{} = threadIdx.y;   /* 0..{} */\n",
             loop_ids[3], local_work_size[1]
-        );
-        source += &format!(
+        ));
+        source.push_str(&format!(
             "  r{} = blockIdx.z;   /* 0..{} */\n",
             loop_ids[4], global_work_size[2]
-        );
-        source += &format!(
+        ));
+        source.push_str(&format!(
             "  r{} = threadIdx.z;   /* 0..{} */\n",
             loop_ids[5], local_work_size[2]
-        );
+        ));
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Load { z, address, offset } => {
-                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.cu());
+                    source.push_str(&format!("{indent}r{z} = p{address}[{}];\n", offset.cu()));
                 }
                 IROp::Store { address, offset, x } => {
-                    source += &format!("{indent}p{address}[{}] = {};\n", offset.cu(), x.cu());
+                    source.push_str(&format!(
+                        "{indent}p{address}[{}] = {};\n",
+                        offset.cu(),
+                        x.cu()
+                    ));
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
                     let zero = Constant::new(0).unary(UOp::Cast(dtype.dtype())).cu();
-                    source += &match uop {
+                    source.push_str(&match uop {
                         UOp::Cast(_) => {
                             format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
                         }
@@ -615,10 +619,10 @@ impl CUDADevice {
                         UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
                         UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
                         UOp::Not => format!("{indent}r{z} = !r{x};\n"),
-                    };
+                    });
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    source += &format!(
+                    source.push_str(&format!(
                         "{indent}r{z} = {};\n",
                         match bop {
                             BOp::Add => format!("{} + {}", x.cu(), y.cu()),
@@ -637,31 +641,36 @@ impl CUDADevice {
                             BOp::BitXor => format!("{} ^ {}", x.cu(), y.cu()),
                             BOp::NotEq => format!("{} != {}", x.cu(), y.cu()),
                         }
-                    );
+                    ));
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.cu(), b.cu(), c.cu());
+                    source.push_str(&format!(
+                        "{indent}r{z} = {} * {} + {};\n",
+                        a.cu(),
+                        b.cu(),
+                        c.cu()
+                    ));
                 }
                 IROp::Loop { id, len } => {
-                    source += &format!(
+                    source.push_str(&format!(
                         "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
-                    );
-                    indent += "  ";
+                    ));
+                    indent.push_str("  ");
                 }
                 IROp::EndLoop { .. } => {
                     indent.pop();
                     indent.pop();
-                    source += &format!("{indent}}}\n");
+                    source.push_str(&format!("{indent}}}\n"));
                 }
                 IROp::Barrier { scope } => {
-                    source += &format!(
+                    source.push_str(&format!(
                         "{};\n",
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
                             Scope::Register | Scope::RegTile => panic!(),
                         }
-                    );
+                    ));
                 }
             }
         }

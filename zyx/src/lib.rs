@@ -340,32 +340,6 @@ fn t3() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn t2() -> Result<(), ZyxError> {
-    //let x = Tensor::randn([2, 2], DType::F32).reshape(256).exp().expand([256, 4]);
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
-        .expand([2, 3, 2])?
-        .exp()
-        .ln()
-        .reshape([2, 3, 2, 1])?;
-    //let x = Tensor::from([[[[2f32], [3.]]], [[[4.], [5.]]]]).expand([2, 3, 2, 1]);
-    //println!("{x}");
-    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
-        .reshape([2, 3, 1, 1])?
-        .expand([2, 3, 2, 1])?;
-    //println!("{y}");
-    let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
-    let z = z.exp().ln().permute([1, 0])?.sum([0])?;
-    //Tensor::plot_dot_graph([&x, &y, &z], "graph0");
-    //Tensor::realize([&x, &y, &z]);
-    //println!("{x}\n{y}\n{z}");
-    //println!("{z}");
-    assert_eq!(z, [52f32, 52., 40.]);
-
-    //let l0 = zyx_nn::Linear::new(1024, 1024, DType::F16);
-    Ok(())
-}
-
-#[test]
 fn t4() {
     //let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
     //let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();

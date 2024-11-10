@@ -753,130 +753,66 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     });
                     //println!("Reshaping continuous.");
                     //kernel.debug();
-                } else {
-                    //println!("Reshaping non continuous.");
-                    // TODO we also have to merge axes if possible
-                    // TODO even if merge is not possible, we may be possible to apply reshape
-                    // and simply create new loops if the kernel does not contain reduce loop
-                    // or the reshape does not affect reduce loop
-                    // TODO we can sometimes insert new loops to the end of the kernel
-                    let mut splits = Some(BTreeMap::new());
-                    let prev_shape = graph.shape(x);
-                    if shape.len() < prev_shape.len() {
-                        splits = None;
-                    } else {
-                        // Example splits
-                        //    2, 4,    4,    3
-                        // 1, 2, 4, 2, 2, 1, 3
-
-                        //    3, 1, 5
-                        // 1, 3, 1, 5
-
-                        //       5, 6
-                        // 2, 1, 3, 5
-
-                        //    1, 2, 3, 1
-                        // 1, 2, 1, 3, 1
-
-                        let mut dimensions = Vec::new();
-                        let mut i = prev_shape.len() - 1;
-                        let mut dim = 1;
-                        for d in shape.iter().copied().rev() {
-                            if dim * d > prev_shape[i] {
-                                if dim == prev_shape[i] {
-                                    if dimensions.len() > 1 {
-                                        splits.as_mut().unwrap().insert(i, dimensions);
-                                    }
-                                    dimensions = vec![d];
-                                    dim = d;
-                                    i = i.saturating_sub(1);
+                } else if let Some((new_loops, reshapes)) = kernel.get_reshape_pattern(shape) {
+                    for ab in reshapes {}
+                    /*let mut loop_id = kernel.shape().len() - 1;
+                    let mut skip_loops = 0;
+                    let mut split_ids = Vec::new();
+                    for (id, vop) in kernel.ops.iter().enumerate().rev() {
+                        match vop {
+                            VOp::EndLoop => {
+                                skip_loops += 1;
+                            }
+                            VOp::Loop { len: dimension, .. } => {
+                                if skip_loops > 0 {
+                                    skip_loops -= 1;
                                 } else {
-                                    splits = None;
-                                    break;
-                                }
-                            } else {
-                                dimensions.insert(0, d);
-                                dim *= d;
-                            }
-                        }
-                        if dim == prev_shape[0] && dimensions.len() > 1 {
-                            splits.as_mut().unwrap().insert(i, dimensions);
-                        }
-                        if splits.as_ref().is_some_and(BTreeMap::is_empty) {
-                            splits = None;
-                        }
-                    }
-                    // For now we disable splits on reduced kernels
-                    // TODO later handle this properly by adding a new loop
-                    if splits.is_some() {
-                        for op in &kernel.ops {
-                            if matches!(op, VOp::Accumulator { .. }) {
-                                splits = None;
-                            }
-                        }
-                    }
-                    //kernel.debug();
-                    //println!("Splits: {splits:?}");
-                    if let Some(splits) = splits {
-                        let mut loop_id = kernel.shape().len() - 1;
-                        let mut skip_loops = 0;
-                        let mut split_ids = Vec::new();
-                        for (id, vop) in kernel.ops.iter().enumerate().rev() {
-                            match vop {
-                                VOp::EndLoop => {
-                                    skip_loops += 1;
-                                }
-                                VOp::Loop { len: dimension, .. } => {
-                                    if skip_loops > 0 {
-                                        skip_loops -= 1;
-                                    } else {
-                                        if let Some(dimensions) = splits.get(&loop_id) {
-                                            assert_eq!(
-                                                *dimension,
-                                                dimensions.iter().product::<usize>()
-                                            );
-                                            split_ids.push(id);
-                                        }
-                                        loop_id = loop_id.saturating_sub(1);
+                                    if let Some(dimensions) = splits.get(&loop_id) {
+                                        assert_eq!(
+                                            *dimension,
+                                            dimensions.iter().product::<usize>()
+                                        );
+                                        split_ids.push(id);
                                     }
+                                    loop_id = loop_id.saturating_sub(1);
                                 }
-                                _ => {}
                             }
+                            _ => {}
                         }
-                        for (&op_id, dimensions) in split_ids.iter().zip(splits.values().rev()) {
-                            //println!("Splitting at {op_id} to {dimensions:?}");
-                            kernel.split_axis(op_id, dimensions);
-                        }
-                        // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
-                        // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
-                        // However we also need to make sure all code can work with out of order loop ids.
-
-                        kernel.ops.push(VOp::Move {
-                            z: nid,
-                            x,
-                            mop: MOp::Resh,
-                        });
-                        //kernel.debug();
-                        assert_eq!(
-                            kernel.shape(),
-                            graph.shape(nid),
-                            "Shape after reshape split is incorrect."
-                        );
-                    } else {
-                        // else create new kernel after storing results of previous kernel
-                        kernel.store(x, View::contiguous(graph.shape(x)), graph.dtype(x));
-                        let mut ops = shape_to_loops(shape);
-                        ops.push(VOp::Load {
-                            z: nid,
-                            zscope: Scope::Register,
-                            zview: View::none(),
-                            x,
-                            xscope: Scope::Global,
-                            xview: View::contiguous(shape),
-                            xdtype: graph.dtype(x),
-                        });
-                        kernels.push(Kernel { ops });
                     }
+                    for (&op_id, dimensions) in split_ids.iter().zip(splits.values().rev()) {
+                        //println!("Splitting at {op_id} to {dimensions:?}");
+                        kernel.split_axis(op_id, dimensions);
+                    }*/
+                    // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
+                    // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
+                    // However we also need to make sure all code can work with out of order loop ids.
+
+                    kernel.ops.push(VOp::Move {
+                        z: nid,
+                        x,
+                        mop: MOp::Resh,
+                    });
+                    //kernel.debug();
+                    assert_eq!(
+                        kernel.shape(),
+                        graph.shape(nid),
+                        "Shape after reshape split is incorrect."
+                    );
+                } else {
+                    // else create new kernel after storing results of previous kernel
+                    kernel.store(x, View::contiguous(graph.shape(x)), graph.dtype(x));
+                    let mut ops = shape_to_loops(shape);
+                    ops.push(VOp::Load {
+                        z: nid,
+                        zscope: Scope::Register,
+                        zview: View::none(),
+                        x,
+                        xscope: Scope::Global,
+                        xview: View::contiguous(shape),
+                        xdtype: graph.dtype(x),
+                    });
+                    kernels.push(Kernel { ops });
                 }
                 //println!("\nKernels {kernels:?}\n");
             }

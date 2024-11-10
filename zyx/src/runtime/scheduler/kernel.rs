@@ -472,8 +472,6 @@ impl Kernel {
         nshape: &[usize],
     ) -> Option<(
         usize,                                                 // number of new loops to be inserted
-        Vec<std::ops::Range<usize>>, // ranges that should be merged into single axis
-        Vec<(usize, std::ops::Range<usize>)>, // axis and dimensions for splits
         Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>, // range and new shape for reshapes
     )> {
         let mut unmergeable_axes = Vec::new();
@@ -507,93 +505,50 @@ fn get_reshape_pattern(
 ) -> Option<(
     // number of new loops to be inserted
     usize,
-    // ranges that should be merged into single axis
-    Vec<std::ops::Range<usize>>,
-    // axis and dimensions for splits
-    Vec<(usize, std::ops::Range<usize>)>,
     // range and new shape for reshapes
     Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
 )> {
     // reshape
     // 2, 4, 1, 3, 1,    4, 5, 2
     //       8, 3, 1, 2, 2, 2, 5
-    let mut merges: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut splits = Vec::new();
     let mut reshapes = Vec::new();
 
-    let mut split_dims = Vec::new();
-    let mut merge_dims = Vec::new();
-    let mut i = 0;
-    let mut ni = 0;
-    merge_dims.push(shape[i]);
-    split_dims.push(nshape[ni]);
-    while i < shape.len() + 1 && ni < nshape.len() + 1 {
-        match merge_dims
+    let mut split_axes = 0..1;
+    let mut merge_axes = 0..1;
+    while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
+        match shape[merge_axes.clone()]
             .iter()
             .product::<usize>()
-            .cmp(&split_dims.iter().product())
+            .cmp(&nshape[split_axes.clone()].iter().product())
         {
             std::cmp::Ordering::Less => {
-                i += 1;
-                merge_dims.push(shape[i]);
+                merge_axes.end += 1;
             }
             std::cmp::Ordering::Greater => {
-                ni += 1;
-                split_dims.push(nshape[ni]);
+                split_axes.end += 1;
             }
             std::cmp::Ordering::Equal => {
-                //println!("merge_dims: {merge_dims:?}");
-                //println!("split_dims: {split_dims:?}");
-                match (merge_dims.len(), split_dims.len()) {
+                match (merge_axes.len(), split_axes.len()) {
                     (1, 1) => {} // both are the same, no changes
-                    (1, _) => {
-                        // split
-                        splits.push((i, ni - 1..ni + split_dims.len() - 1));
-                    }
-                    (_, 1) => {
-                        // merge
-                        // If merge range contains unmergeable axes, return None
-                        // Axes are not mergeable if there is some ops between those axes
-                        let merge_range = i + 1 - merge_dims.len()..i + 1;
-                        if unmergeable_axes
-                            .iter()
-                            .any(|a| merge_range.contains(a) && merge_range.contains(&(a - 1)))
-                        {
-                            return None;
-                        }
-                        merges.push(merge_range);
-                    }
                     (_, _) => {
                         // reshape
                         // If merge range contains unmergeable axes, return None
                         // Axes are not mergeable if there is some ops between those axes
-                        let merge_range = i + 1 - merge_dims.len()..i + 1;
                         if unmergeable_axes
                             .iter()
-                            .any(|a| merge_range.contains(a) && merge_range.contains(&(a - 1)))
+                            .any(|a| merge_axes.contains(a) && merge_axes.contains(&(a - 1)))
                         {
                             return None;
                         }
-                        reshapes.push((merge_range, ni - 1..ni + split_dims.len() - 1));
+                        reshapes.push((merge_axes.clone(), split_axes.clone()));
                     }
                 }
-                merge_dims.clear();
-                i += 1;
-                if i >= shape.len() {
-                    break;
-                }
-                merge_dims.push(shape[i]);
-
-                split_dims.clear();
-                ni += 1;
-                if ni >= nshape.len() {
-                    break;
-                }
-                split_dims.push(nshape[ni]);
+                merge_axes = merge_axes.end..merge_axes.end + 1;
+                split_axes = split_axes.end..split_axes.end + 1;
             }
         }
     }
-    return Some((0, merges, splits, reshapes));
+    return Some((0, reshapes));
 }
 
 #[test]
@@ -603,6 +558,9 @@ fn reshape_pattern() {
     let r = get_reshape_pattern(&shape, &nshape, &[]);
     assert_eq!(
         r,
-        Some((0, vec![0..2, 2..4], vec![(5, 3..5)], vec![(6..8, 5..7)]))
+        Some((
+            0,
+            vec![(0..2, 0..1), (2..4, 1..2), (5..6, 3..5), (6..8, 5..7)]
+        ))
     );
 }

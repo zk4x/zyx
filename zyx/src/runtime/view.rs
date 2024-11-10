@@ -1,6 +1,6 @@
 use super::ir::{IRCompiler, IROp, Reg};
 use crate::{dtype::Constant, shape::Axis, DType};
-use std::{collections::BTreeMap, fmt::Display};
+use std::{collections::BTreeMap, fmt::Display, ops::Range};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,12 +125,52 @@ impl View {
         //println!("After insert loop {self:?}");
     }
 
-    // TODO this will be used if split or merge are not possible
-    /*pub(crate) fn reshape(&mut self, shape: &[usize]) {
-        todo!()
-    }*/
+    // This will be used if split is not possible.
+    // This is used for both reshape and merge
+    pub(crate) fn reshape(&mut self, axes: Range<usize>, shape: &[usize]) {
+        if let Some(inner) = self.0.last_mut() {
+            // TODO if axes range is contiguous, reshape inplace, otherwise create new inner
+            let mut ost = 1;
+            let mut a = *inner.last_key_value().unwrap().0;
+            let mut new_inner = BTreeMap::new();
+            let mut axes_i = shape.len();
+            while a > 0 {
+                if axes.contains(&a) {
+                    axes_i -= 1;
+                    let st = ost;
+                    ost *= shape[axes_i];
+                    new_inner.insert(
+                        a,
+                        RDim {
+                            d: shape[axes_i],
+                            st,
+                            lp: 0,
+                            rp: 0,
+                        },
+                    );
+                } else if let Some(dim) = inner.get(&a) {
+                    let st = ost;
+                    ost *= dim.d;
+                    new_inner.insert(
+                        a,
+                        RDim {
+                            d: dim.d,
+                            st,
+                            lp: 0,
+                            rp: 0,
+                        },
+                    );
+                }
+                a -= 1;
+            }
+            self.0.push(new_inner);
+        }
+    }
 
     pub(crate) fn split(&mut self, axis: usize, dimensions: &[usize]) {
+        // TODO also check if inners can be merged after applying split.
+        // For example if axes were merged and then split again, we may be able to remove
+        // the last inner view.
         fn split_inner(inner: &mut BTreeMap<usize, RDim>, mut axis: usize, dimensions: &[usize]) {
             //println!("inner {inner:?}, split axis {axis}, dims {dimensions:?}");
             let keys: Vec<Axis> = inner.keys().copied().collect();
@@ -204,11 +244,6 @@ impl View {
         }
         //println!("Result {}", self);
     }
-
-    // TODO function for merging multiple axes together, must be used in case of very
-    // high dimensionality of tensors. It can also be used to make reduce over multiple axes
-    // reduce over single axis and such.
-    //pub(crate) fn merge(&mut self, axes: &[usize]) {}
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp

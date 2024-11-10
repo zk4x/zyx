@@ -346,3 +346,19 @@ fn split() {
     assert_eq!(tensors[1], [[1], [4]]);
     //for t in tensors { println!("{t}"); }
 }
+
+#[test]
+fn complex_movement_reduce() -> Result<(), ZyxError> {
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
+        .expand([2, 3, 2])?
+        .exp()
+        .ln()
+        .reshape([2, 3, 2, 1])?;
+    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
+        .reshape([2, 3, 1, 1])?
+        .expand([2, 3, 2, 1])?;
+    let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
+    let z = z.exp().ln().permute([1, 0])?.sum([0])?;
+    assert_eq!(z, [52f32, 52., 40.]);
+    Ok(())
+}
