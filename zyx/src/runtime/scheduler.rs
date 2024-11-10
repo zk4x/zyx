@@ -754,7 +754,12 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     //println!("Reshaping continuous.");
                     //kernel.debug();
                 } else if let Some((new_loops, reshapes)) = kernel.get_reshape_pattern(shape) {
-                    for ab in reshapes {}
+                    for res in reshapes {
+                        println!("{res:?}");
+                    }
+                    for op in kernel.ops.iter().rev() {
+                        todo!()
+                    }
                     /*let mut loop_id = kernel.shape().len() - 1;
                     let mut skip_loops = 0;
                     let mut split_ids = Vec::new();
