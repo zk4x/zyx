@@ -344,48 +344,6 @@ impl Kernel {
         //self.debug();
     }
 
-    /*fn merge_axes(&mut self, op_id: usize, num_loops: usize) {
-        // Merges multiple consecutive loops (beginning with loop at op_id) into single loop
-        // This function does not change shape of the kernel
-        // When there are loads and stores with expanded strides in merged axes,
-        // then merge is not possible unless we add multiple shapes to view
-        let mut dim_size = 1;
-        for id in op_id..op_id + num_loops {
-            if let VOp::Loop { dimension, .. } = self.ops[id] {
-                dim_size *= dimension;
-            }
-        }
-        // Get which axis is kept
-        let axis_id = if let VOp::Loop { dimension, axis } = &mut self.ops[op_id] {
-            *dimension = dim_size;
-            *axis
-        } else {
-            panic!()
-        };
-        // Remove unnecessary loops
-        for _ in op_id..op_id + num_loops - 1 {
-            self.ops.remove(op_id + 1);
-        }
-        // Merge strides and dimensions on loads and stores
-        for op in &mut self.ops[op_id + 1..] {
-            match op {
-                VOp::Reduce { num_axes, .. } => {
-                    *num_axes = 1;
-                    break;
-                }
-                VOp::Load { view, .. } | VOp::Const { view, .. } => {
-                    let stride = view.0[axis_id + num_loops - 1].stride;
-                    view.0[axis_id].dim = dim_size;
-                    view.0[axis_id].stride = stride;
-                    for _ in 0..num_loops - 1 {
-                        view.0.remove(axis_id + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }*/
-
     /// Inserts loop at `op_id`, giving it axis id and dimension 1.
     /// All loops and views axis equal or greater then axis are increased by 1
     /// Does not change reduce op's `num_axes`
@@ -485,6 +443,114 @@ impl Kernel {
             }
         }
         get_reshape_pattern(&self.shape(), nshape, &unmergeable_axes)
+    }
+
+    pub(super) fn reshape(&mut self, shape: &[usize]) -> bool {
+        // If this is just a reshape of kernel with only unary ops and contiguous loads
+        // and stores, we can remove old loops and replace them with new loops.
+        //println!("Reshape");
+        // TODO this first case can be removed
+        if self.ops.iter().all(|op| match op {
+            VOp::Loop { .. }
+            | VOp::Unary { .. }
+            | VOp::Binary { .. }
+            | VOp::Barrier { .. }
+            | VOp::Move { .. } => true,
+            VOp::Load { xview: view, .. }
+            | VOp::Store { zview: view, .. }
+            | VOp::Const { view, .. } => view.is_contiguous(),
+            VOp::Accumulator { .. } | VOp::EndLoop => false, // | VOp::Reduce { .. }
+        }) {
+            //println!("Before reshape continuous.");
+            //kernel.debug();
+            // Remove old loops
+            for _ in 0..self.shape().len() {
+                self.ops.remove(0);
+            }
+            // Put in new loops
+            for op in shape_to_loops(shape).into_iter().rev() {
+                self.ops.insert(0, op);
+            }
+            // Change Reshape loads and stores
+            for op in &mut self.ops {
+                match op {
+                    VOp::Load { xview: view, .. }
+                    | VOp::Const { view, .. }
+                    | VOp::Store { zview: view, .. } => {
+                        *view = View::contiguous(shape);
+                    }
+                    _ => {}
+                }
+            }
+            //println!("Reshaping continuous.");
+            //kernel.debug();
+            true
+        } else if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
+            let _ = new_loops; // TODO get new_loops working
+            println!("Reshapes: {reshapes:?}");
+            for (org_sh, sh) in reshapes.iter().rev() {
+                let mut op_i = self.ops.len();
+                let n = org_sh.end - org_sh.start;
+                let m = sh.end - sh.start;
+                'a: loop {
+                    op_i -= 1;
+                    if let VOp::Loop { axis, .. } = &mut self.ops[op_i] {
+                        //println!("{org_sh:?} -> {sh:?}");
+                        if *axis == org_sh.end - 1 {
+                            // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
+                            // insert respective loops from new shape
+                            let i = (op_i + 1) - n;
+                            //println!("Removing {i}");
+                            for _ in 0..n {
+                                self.ops.remove(i);
+                            }
+                            for a in sh.clone().rev() {
+                                //println!("Axis {a}, shape {shape:?}");
+                                self.ops.insert(
+                                    i,
+                                    VOp::Loop {
+                                        axis: a,
+                                        len: shape[a],
+                                    },
+                                );
+                            }
+                            //kernel.debug();
+                            break 'a;
+                        } else if *axis > org_sh.end - 1 {
+                            *axis += m;
+                        }
+                    }
+                }
+            }
+            // TODO deal with loop inserts
+            for op in &mut self.ops {
+                match op {
+                    VOp::Const { view, .. }
+                    | VOp::Load { xview: view, .. }
+                    | VOp::Store { zview: view, .. }
+                    | VOp::Accumulator { view, .. } => {
+                        for (org_sh, sh) in reshapes.iter().rev() {
+                            view.reshape(org_sh.clone(), &shape[sh.clone()]);
+                        }
+                    }
+                    VOp::Loop { .. }
+                    | VOp::EndLoop
+                    | VOp::Move { .. }
+                    | VOp::Unary { .. }
+                    | VOp::Binary { .. }
+                    | VOp::Barrier { .. } => {}
+                }
+            }
+            self.debug();
+            assert_eq!(
+                self.shape(),
+                shape,
+                "Shape after reshape split is incorrect."
+            );
+            true
+        } else {
+            false
+        }
     }
 }
 

@@ -646,6 +646,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     }
                 }
                 // We go over ops in reverse, increasing last loops dimension
+                //println!("expand_axes = {expand_axes:?}");
                 let mut done_expanding = BTreeSet::new();
                 for op in kernel.ops.iter_mut().rev() {
                     match op {
@@ -681,9 +682,9 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     x,
                     mop: MOp::Expa,
                 });
-                assert_eq!(kernel.shape(), graph.shape(nid));
-                //println!("Into");
                 //kernel.debug();
+                assert_eq!(kernel.shape(), shape);
+                //println!("Into");
             }
             &Node::Permute { x } => {
                 let axes = graph.axes(nid);
@@ -701,112 +702,17 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
             }
             &Node::Reshape { x } => {
                 // Reshape needs to add new loops to the end of the kernel if it is unsqueeze
-                // If we really want, we can get reshape working with loads and stores
-                // simply by using view for loads to have multiple reshapes in single view.
-                // But for now it is much simpler to just add new kernel.
 
                 // If reshape comes after reduce, then if it just aplits axes, it can be merged,
                 // otherwise we have to create new kernel.
                 //for kernel in &kernels { kernel.debug(); }
 
                 let shape = graph.shape(nid);
-                let kernel = get_kernel(x, &mut kernels, graph);
-                // If this is just a reshape of kernel with only unary ops and contiguous loads
-                // and stores, we can remove old loops and replace them with new loops.
-                //println!("Reshape");
-                if kernel.ops.iter().all(|op| match op {
-                    VOp::Loop { .. }
-                    | VOp::Unary { .. }
-                    | VOp::Binary { .. }
-                    | VOp::Barrier { .. }
-                    | VOp::Move { .. } => true,
-                    VOp::Load { xview: view, .. }
-                    | VOp::Store { zview: view, .. }
-                    | VOp::Const { view, .. } => view.is_contiguous(),
-                    VOp::Accumulator { .. } | VOp::EndLoop => false, // | VOp::Reduce { .. }
-                }) {
-                    //println!("Before reshape continuous.");
-                    //kernel.debug();
-                    // Remove old loops
-                    for _ in 0..kernel.shape().len() {
-                        kernel.ops.remove(0);
-                    }
-                    // Put in new loops
-                    for op in shape_to_loops(shape).into_iter().rev() {
-                        kernel.ops.insert(0, op);
-                    }
-                    // Change Reshape loads and stores
-                    for op in &mut kernel.ops {
-                        match op {
-                            VOp::Load { xview: view, .. }
-                            | VOp::Const { view, .. }
-                            | VOp::Store { zview: view, .. } => {
-                                *view = View::contiguous(shape);
-                            }
-                            _ => {}
-                        }
-                    }
-                    kernel.ops.push(VOp::Move {
-                        z: nid,
-                        x,
-                        mop: MOp::Resh,
-                    });
-                    //println!("Reshaping continuous.");
-                    //kernel.debug();
-                } else if let Some((new_loops, reshapes)) = kernel.get_reshape_pattern(shape) {
-                    for res in reshapes {
-                        println!("{res:?}");
-                    }
-                    for op in kernel.ops.iter().rev() {
-                        todo!()
-                    }
-                    /*let mut loop_id = kernel.shape().len() - 1;
-                    let mut skip_loops = 0;
-                    let mut split_ids = Vec::new();
-                    for (id, vop) in kernel.ops.iter().enumerate().rev() {
-                        match vop {
-                            VOp::EndLoop => {
-                                skip_loops += 1;
-                            }
-                            VOp::Loop { len: dimension, .. } => {
-                                if skip_loops > 0 {
-                                    skip_loops -= 1;
-                                } else {
-                                    if let Some(dimensions) = splits.get(&loop_id) {
-                                        assert_eq!(
-                                            *dimension,
-                                            dimensions.iter().product::<usize>()
-                                        );
-                                        split_ids.push(id);
-                                    }
-                                    loop_id = loop_id.saturating_sub(1);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    for (&op_id, dimensions) in split_ids.iter().zip(splits.values().rev()) {
-                        //println!("Splitting at {op_id} to {dimensions:?}");
-                        kernel.split_axis(op_id, dimensions);
-                    }*/
-                    // TODO If last axes are unsqueezes with ones, add new loops to the end of the kernel.
-                    // All unsqueezes can be adding new loops to the end of the kernel by permuting loops.
-                    // However we also need to make sure all code can work with out of order loop ids.
-
-                    kernel.ops.push(VOp::Move {
-                        z: nid,
-                        x,
-                        mop: MOp::Resh,
-                    });
-                    //kernel.debug();
-                    assert_eq!(
-                        kernel.shape(),
-                        graph.shape(nid),
-                        "Shape after reshape split is incorrect."
-                    );
-                } else {
+                let mut kernel = get_kernel(x, &mut kernels, graph);
+                if !kernel.reshape(&shape) {
                     // else create new kernel after storing results of previous kernel
-                    kernel.store(x, View::contiguous(graph.shape(x)), graph.dtype(x));
+                    let xdtype = graph.dtype(x);
+                    kernel.store(x, View::contiguous(graph.shape(x)), xdtype);
                     let mut ops = shape_to_loops(shape);
                     ops.push(VOp::Load {
                         z: nid,
@@ -815,10 +721,16 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                         x,
                         xscope: Scope::Global,
                         xview: View::contiguous(shape),
-                        xdtype: graph.dtype(x),
+                        xdtype,
                     });
                     kernels.push(Kernel { ops });
+                    kernel = kernels.last_mut().unwrap();
                 }
+                kernel.ops.push(VOp::Move {
+                    z: nid,
+                    x,
+                    mop: MOp::Resh,
+                });
                 //println!("\nKernels {kernels:?}\n");
             }
             &Node::Pad { x } => {

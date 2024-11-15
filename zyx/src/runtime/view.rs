@@ -125,48 +125,82 @@ impl View {
         //println!("After insert loop {self:?}");
     }
 
-    // This will be used if split is not possible.
-    // This is used for both reshape and merge
+    // This is used for both reshape and merge and split
     pub(crate) fn reshape(&mut self, axes: Range<usize>, shape: &[usize]) {
+        //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         if let Some(inner) = self.0.last_mut() {
-            // TODO if axes range is contiguous, reshape inplace, otherwise create new inner
-            let mut ost = 1;
-            let mut a = *inner.last_key_value().unwrap().0;
-            let mut new_inner = BTreeMap::new();
-            let mut axes_i = shape.len();
-            while a > 0 {
-                if axes.contains(&a) {
-                    axes_i -= 1;
-                    let st = ost;
-                    ost *= shape[axes_i];
-                    new_inner.insert(
-                        a,
-                        RDim {
-                            d: shape[axes_i],
-                            st,
-                            lp: 0,
-                            rp: 0,
-                        },
-                    );
-                } else if let Some(dim) = inner.get(&a) {
+            let mut contiguous = true;
+            // find first axis >= axes.end
+            let mut stride = if let Some((_, dim)) = inner.iter().find(|(a, _)| **a >= axes.end) {
+                dim.st
+            } else {
+                1
+            };
+            let mut ost = stride;
+            for a in axes.clone().rev() {
+                if let Some(dim) = inner.get(&a) {
                     let st = ost;
                     ost *= dim.d;
-                    new_inner.insert(
-                        a,
+                    if dim.st != st || dim.lp != 0 || dim.rp != 0 {
+                        contiguous = false;
+                        break;
+                    }
+                } else {
+                    contiguous = false;
+                    break;
+                }
+            }
+            if contiguous {
+                //println!("Replace contiguous");
+                for a in axes.clone().rev() {
+                    inner.remove(&a);
+                }
+                let mut axis = axes.start;
+                for &d in shape {
+                    let st = stride;
+                    stride *= d;
+                    inner.insert(
+                        axis,
                         RDim {
-                            d: dim.d,
+                            d,
                             st,
                             lp: 0,
                             rp: 0,
                         },
                     );
+                    axis += 1;
                 }
-                a -= 1;
+            } else {
+                //println!("Replace non-contiguous");
+                let mut old_shape = self.shape();
+                old_shape.splice(axes, shape.iter().copied());
+                let mut stride = 1;
+                self.0.push(
+                    old_shape
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .map(|(axis, dim)| {
+                            let st = stride;
+                            stride *= dim;
+                            (
+                                axis,
+                                RDim {
+                                    st,
+                                    d: *dim,
+                                    lp: 0,
+                                    rp: 0,
+                                },
+                            )
+                        })
+                        .collect(),
+                )
             }
-            self.0.push(new_inner);
         }
+        //println!("After reshape: {self}");
     }
 
+    // TODO merge split into reshape.
     pub(crate) fn split(&mut self, axis: usize, dimensions: &[usize]) {
         // TODO also check if inners can be merged after applying split.
         // For example if axes were merged and then split again, we may be able to remove
@@ -261,11 +295,21 @@ impl View {
     pub(crate) fn expand(&mut self, axis: usize, ndim: usize) {
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(&axis) {
-                assert_eq!(dim.d, 1);
+                assert!(dim.d == ndim || dim.d == 1);
                 assert_eq!(dim.lp, 0);
                 assert_eq!(dim.rp, 0);
                 dim.d = ndim;
                 dim.st = 0;
+            } else {
+                inner.insert(
+                    axis,
+                    RDim {
+                        d: ndim,
+                        st: 0,
+                        lp: 0,
+                        rp: 0,
+                    },
+                );
             }
         }
     }
@@ -534,4 +578,18 @@ fn view_binded() {
     assert_eq!(view.rank(), 3);
     assert_eq!(view.used_axes(), [1, 2, 5]);
     assert_eq!(view.shape(), [2, 3, 4]);
+}
+
+#[test]
+fn view_reshape() {
+    let mut view = View::contiguous(&[3, 1, 4, 2]);
+    view.reshape(1..3, &[2, 2]);
+    assert_eq!(view.shape(), [3, 2, 2, 2]);
+    let mut view = View::contiguous(&[3, 3]);
+    view.reshape(0..2, &[9]);
+    assert_eq!(view.shape(), [9]);
+    let mut view = View::contiguous(&[3, 3]);
+    view.reshape(0..1, &[1, 3]);
+    view.reshape(2..3, &[1, 3]);
+    assert_eq!(view.shape(), [1, 3, 1, 3]);
 }
