@@ -1129,9 +1129,7 @@ fn store_optimizer_cache(
         path.push("cached_kernels");
         let mut file = std::fs::File::create(path).unwrap();
         file.write_all(&bitcode::encode(optimizer_cache)).unwrap();
-    } else {
-        if debug_sched {
-            println!("Zyx config path was not found. Searched kernels won't be cached to disk.");
-        }
+    } else if debug_sched {
+        println!("Zyx config path was not found. Searched kernels won't be cached to disk.");
     }
 }

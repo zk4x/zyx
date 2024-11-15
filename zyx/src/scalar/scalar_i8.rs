@@ -125,7 +125,7 @@ impl Scalar for i8 {
     }
 
     fn cmpgt(self, rhs: Self) -> bool {
-        (self > rhs).into()
+        self > rhs
     }
 
     fn or(self, rhs: Self) -> bool {

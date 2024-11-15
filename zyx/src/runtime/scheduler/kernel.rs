@@ -287,6 +287,7 @@ impl Kernel {
         }
     }*/
 
+    // TODO remove this in favor of reshape
     pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
@@ -487,11 +488,9 @@ impl Kernel {
             true
         } else if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
             let _ = new_loops; // TODO get new_loops working
-            println!("Reshapes: {reshapes:?}");
+                               //println!("Reshapes: {reshapes:?}");
             for (org_sh, sh) in reshapes.iter().rev() {
                 let mut op_i = self.ops.len();
-                let n = org_sh.end - org_sh.start;
-                let m = sh.end - sh.start;
                 'a: loop {
                     op_i -= 1;
                     if let VOp::Loop { axis, .. } = &mut self.ops[op_i] {
@@ -499,28 +498,32 @@ impl Kernel {
                         if *axis == org_sh.end - 1 {
                             // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
                             // insert respective loops from new shape
+                            let n = org_sh.end - org_sh.start;
                             let i = (op_i + 1) - n;
                             //println!("Removing {i}");
                             for _ in 0..n {
                                 self.ops.remove(i);
                             }
+                            //self.debug();
                             for a in sh.clone().rev() {
                                 //println!("Axis {a}, shape {shape:?}");
                                 self.ops.insert(
                                     i,
                                     VOp::Loop {
-                                        axis: a,
+                                        axis: a + org_sh.start - sh.start,
                                         len: shape[a],
                                     },
                                 );
                             }
-                            //kernel.debug();
+                            //self.debug();
                             break 'a;
                         } else if *axis > org_sh.end - 1 {
-                            *axis += m;
+                            *axis += sh.end - sh.start;
+                            *axis -= org_sh.end - org_sh.start
                         }
                     }
                 }
+                //self.debug();
             }
             // TODO deal with loop inserts
             for op in &mut self.ops {
@@ -541,7 +544,7 @@ impl Kernel {
                     | VOp::Barrier { .. } => {}
                 }
             }
-            self.debug();
+            //self.debug();
             assert_eq!(
                 self.shape(),
                 shape,
@@ -581,7 +584,7 @@ fn get_reshape_pattern(
 
     let mut split_axes = 0..1;
     let mut merge_axes = 0..1;
-    while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
+    'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
         match shape[merge_axes.clone()]
             .iter()
             .product::<usize>()
@@ -594,6 +597,22 @@ fn get_reshape_pattern(
                 split_axes.end += 1;
             }
             std::cmp::Ordering::Equal => {
+                if let Some(d) = shape.get(merge_axes.end) {
+                    if *d == 1 {
+                        if split_axes.end == nshape.len() {
+                            merge_axes.end += 1;
+                            continue 'a;
+                        }
+                    }
+                }
+                if let Some(d) = nshape.get(split_axes.end) {
+                    if *d == 1 {
+                        if merge_axes.end == shape.len() {
+                            split_axes.end += 1;
+                            continue 'a;
+                        }
+                    }
+                }
                 match (merge_axes.len(), split_axes.len()) {
                     (1, 1) => {} // both are the same, no changes
                     (_, _) => {
@@ -629,4 +648,8 @@ fn reshape_pattern() {
             vec![(0..2, 0..1), (2..4, 1..2), (5..6, 3..5), (6..8, 5..7)]
         ))
     );
+    let shape = [2, 2, 1, 2, 2];
+    let nshape = [2, 2, 1, 2, 2, 1];
+    let r = get_reshape_pattern(&shape, &nshape, &[]);
+    assert_eq!(r, Some((0, vec![(4..5, 4..6)])));
 }

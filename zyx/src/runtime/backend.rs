@@ -238,8 +238,7 @@ impl Runtime {
         // Load optimizer cache from disk if it exists
         #[cfg(feature = "disk_cache")]
         {
-            if let Some(config_dir) = self.config_dir.clone() {
-                let mut path = config_dir.clone();
+            if let Some(mut path) = self.config_dir.clone() {
                 path.push("cached_kernels");
                 if let Ok(mut file) = std::fs::File::open(path) {
                     use std::io::Read;
