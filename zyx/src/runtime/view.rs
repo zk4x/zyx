@@ -151,9 +151,16 @@ impl View {
                 }
             }
             if contiguous {
-                //println!("Replace contiguous");
+                //println!("Reshape contiguous");
                 for a in axes.clone().rev() {
                     inner.remove(&a);
+                }
+                // increase axis id for all values greater than this
+                for a in inner.keys().cloned().rev().collect::<Box<[usize]>>() {
+                    if a >= axes.end {
+                        let v = inner.remove(&a).unwrap();
+                        inner.insert(a + axes.end + 1 - axes.start, v);
+                    }
                 }
                 let mut axis = axes.start;
                 for &d in shape {
@@ -171,7 +178,7 @@ impl View {
                     axis += 1;
                 }
             } else {
-                //println!("Replace non-contiguous");
+                //println!("Reshape non-contiguous");
                 let mut old_shape = self.shape();
                 old_shape.splice(axes, shape.iter().copied());
                 let mut stride = 1;

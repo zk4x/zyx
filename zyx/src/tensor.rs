@@ -536,7 +536,7 @@ impl Tensor {
         let x = Tensor::full(usize::try_from(n).unwrap(), step)?;
         //println!("{x}");
         let x = x.cumsum(0)?;
-        Ok(x + start - step)
+        Ok(x + Tensor::constant(start) - Tensor::constant(step))
     }
 
     /// Create constant that will be baked into compiled kernels.
@@ -3255,6 +3255,29 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     }
 }
 
+impl<
+        T: Scalar,
+        const D0: usize,
+        const D1: usize,
+        const D2: usize,
+        const D3: usize,
+        const D4: usize,
+    > TryFrom<Tensor> for [[[[[T; D4]; D3]; D2]; D1]; D0]
+{
+    type Error = ZyxError;
+    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
+        let mut data = [[[[[T::zero(); D4]; D3]; D2]; D1]; D0];
+        RT.lock().load(
+            value.id,
+            data.as_flattened_mut()
+                .as_flattened_mut()
+                .as_flattened_mut()
+                .as_flattened_mut(),
+        )?;
+        Ok(data)
+    }
+}
+
 impl Debug for Tensor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{self}"))
@@ -3770,6 +3793,27 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         self.clone()
             .try_into()
             .map_or(false, |data: [[[[T; D3]; D2]; D1]; D0]| &data == other)
+    }
+}
+
+impl<
+        T: Scalar,
+        const D0: usize,
+        const D1: usize,
+        const D2: usize,
+        const D3: usize,
+        const D4: usize,
+    > PartialEq<[[[[[T; D4]; D3]; D2]; D1]; D0]> for Tensor
+{
+    fn eq(&self, other: &[[[[[T; D4]; D3]; D2]; D1]; D0]) -> bool {
+        if self.shape() != [D0, D1, D2, D3, D4] {
+            return false;
+        }
+        self.clone()
+            .try_into()
+            .map_or(false, |data: [[[[[T; D4]; D3]; D2]; D1]; D0]| {
+                &data == other
+            })
     }
 }
 

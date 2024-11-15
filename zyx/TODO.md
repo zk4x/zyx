@@ -24,10 +24,10 @@
 - [x] manual for adding new backends
 - [ ] scheduler upgrades
   - [ ] fix reshape node
-    - [ ] merges, splits, reshapes of non reduce axes
+    - [x] merges, splits, reshapes of non reduce axes
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
-- [ ] reshape insert new loops for splits
+- [ ] reshape insert new loops
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables

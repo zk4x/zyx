@@ -216,7 +216,7 @@ impl Runtime {
         shape: Vec<usize>,
         value: impl Scalar,
     ) -> Result<TensorId, ZyxError> {
-        let x = self.variable(vec![1], &[value])?;
+        let x = self.constant(value);
         let expanded = self.expand(x, shape);
         self.release(x)?;
         Ok(expanded)

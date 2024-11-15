@@ -114,14 +114,14 @@ fn pad_reshape_expand() -> Result<(), ZyxError> {
 
 #[test]
 fn reshape1() -> Result<(), ZyxError> {
-    let mut x = Tensor::from([[[[2], [4]], [[3], [1]], [[5], [1]]]]);
-    println!("x shape {:?}", x.shape());
+    let mut x = Tensor::from([[[[2i32], [4]], [[3], [1]], [[5], [1]]]]);
+    //println!("x shape {:?}", x.shape());
     x = x.permute([0, 2, 1, 3])?;
     assert_eq!(x.shape(), [1, 2, 3, 1]);
     x = x.reshape([1, 2, 1, 3, 1]).unwrap();
     Tensor::realize([&x])?;
     assert_eq!(x.shape(), [1, 2, 1, 3, 1]);
-    assert_eq!(x, [[[[2], [3], [5]]], [[[4], [1], [1]]]]);
+    assert_eq!(x, [[[[[2i32], [3], [5]]], [[[4], [1], [1]]]]]);
     Ok(())
 }
 
