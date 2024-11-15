@@ -336,7 +336,7 @@ impl Kernel {
                 | VOp::Store { zview: view, .. }
                 | VOp::Const { view, .. }
                 | VOp::Accumulator { view, .. } => {
-                    view.split(axis, dimensions);
+                    view.reshape(axis..axis + 1, dimensions);
                 }
                 _ => {}
             }

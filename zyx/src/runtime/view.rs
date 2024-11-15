@@ -200,85 +200,6 @@ impl View {
         //println!("After reshape: {self}");
     }
 
-    // TODO merge split into reshape.
-    pub(crate) fn split(&mut self, axis: usize, dimensions: &[usize]) {
-        // TODO also check if inners can be merged after applying split.
-        // For example if axes were merged and then split again, we may be able to remove
-        // the last inner view.
-        fn split_inner(inner: &mut BTreeMap<usize, RDim>, mut axis: usize, dimensions: &[usize]) {
-            //println!("inner {inner:?}, split axis {axis}, dims {dimensions:?}");
-            let keys: Vec<Axis> = inner.keys().copied().collect();
-            for a in keys.into_iter().rev() {
-                if a > axis {
-                    let dim = inner.remove(&a).unwrap();
-                    inner.insert(a + dimensions.len() - 1, dim);
-                }
-            }
-            //println!("inner {inner:?}");
-            // Then remove axis and get it's stride
-            let mut stride = inner.remove(&axis).unwrap().st;
-            //println!("inner {inner:?}");
-            // At last insert all new dimensions
-            axis += dimensions.len() - 1;
-            for &d in dimensions.iter().rev() {
-                assert!(inner
-                    .insert(
-                        axis,
-                        RDim {
-                            d,
-                            st: stride,
-                            lp: 0,
-                            rp: 0,
-                        },
-                    )
-                    .is_none());
-                stride *= d;
-                axis = axis.saturating_sub(1);
-            }
-        }
-        //println!("Splitting {} axis {axis} into {dimensions:?}", self);
-        // if axis contains padding, we have to reshape, otherwise just split
-        if let Some(inner) = self.0.last_mut() {
-            if let Some(dim) = inner.get_mut(&axis) {
-                if dim.lp != 0 || dim.rp != 0 {
-                    //todo!("Reshape padded view.");
-                    let mut ost = 1;
-                    let mut inner = inner
-                        .iter()
-                        .rev()
-                        .map(|(&a, dim)| {
-                            let st = ost;
-                            ost *= dim.d;
-                            (
-                                a,
-                                RDim {
-                                    d: dim.d,
-                                    st,
-                                    lp: 0,
-                                    rp: 0,
-                                },
-                            )
-                        })
-                        .collect();
-                    split_inner(&mut inner, axis, dimensions);
-                    self.0.push(inner);
-                } else {
-                    //println!("inner {inner:?}");
-                    // First shift axes > axis by dimensions.len()
-                    split_inner(inner, axis, dimensions);
-                    //println!("done {inner:?}");
-                }
-            } else {
-                let keys: Vec<Axis> = inner.keys().filter(|&&a| a > axis).copied().collect();
-                for a in keys.iter().rev() {
-                    let dim = inner.remove(&a).unwrap();
-                    inner.insert(a + dimensions.len() - 1, dim);
-                }
-            }
-        }
-        //println!("Result {}", self);
-    }
-
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();
@@ -565,9 +486,9 @@ impl Display for View {
 #[test]
 fn view_split() {
     let mut view = View::contiguous(&[3, 1, 4, 2]);
-    view.split(2, &[2, 2, 1]);
+    view.reshape(2..3, &[2, 2, 1]);
     assert_eq!(view.shape(), [3, 1, 2, 2, 1, 2]);
-    view.split(0, &[1, 3, 1]);
+    view.reshape(0..1, &[1, 3, 1]);
     assert_eq!(view.shape(), [1, 3, 1, 1, 2, 2, 1, 2]);
 }
 
