@@ -139,7 +139,12 @@ impl View {
                     .map_or(1, |inner| inner.last_key_value().unwrap().0 + 1)
         );
         assert_eq!(
-            self.shape()[axes.clone()].iter().product::<usize>(),
+            self.0
+                .last()
+                .unwrap()
+                .iter()
+                .map(|(a, dim)| if axes.contains(a) { dim.d } else { 1 })
+                .product::<usize>(),
             shape.iter().product::<usize>()
         );
         if let Some(inner) = self.0.last_mut() {
@@ -159,7 +164,7 @@ impl View {
                         contiguous = false;
                         break;
                     }
-                } else {
+                } else if axes.len() != 1 {
                     contiguous = false;
                     break;
                 }
