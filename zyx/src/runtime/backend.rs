@@ -69,7 +69,7 @@ pub(super) type DeviceId = usize;
 trait HDevice {
     type Error;
     type Program;
-    type Queue;
+    type Queue: HQueue<Program = Self::Program>;
     fn deinitialize(self) -> Result<(), Self::Error>;
     fn info(&self) -> &DeviceInfo;
     fn memory_pool_id(&self) -> usize;

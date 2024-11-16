@@ -72,7 +72,12 @@ impl View {
     pub(crate) fn shape(&self) -> Vec<usize> {
         self.0.last().map_or_else(
             || vec![1],
-            |inner| inner.values().map(|dim| dim.d).collect(),
+            |inner| {
+                let max_axis = *inner.last_key_value().unwrap().0;
+                (0..max_axis + 1)
+                    .map(|a| inner.get(&a).map_or(1, |dim| dim.d))
+                    .collect()
+            },
         )
     }
 
@@ -130,7 +135,7 @@ impl View {
         if self.0.is_empty() {
             return;
         }
-        println!("Reshape {self} axes {axes:?} into shape {shape:?}");
+        //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         assert!(
             axes.end
                 <= self
@@ -175,10 +180,11 @@ impl View {
                     inner.remove(&a);
                 }
                 // increase axis id for all values greater than this
+                // TODO this does not seem to work correctly
                 for a in inner.keys().cloned().rev().collect::<Box<[usize]>>() {
                     if a >= axes.end {
                         let v = inner.remove(&a).unwrap();
-                        inner.insert(a + axes.end + 1 - axes.start, v);
+                        inner.insert(a + shape.len() - axes.len(), v);
                     }
                 }
                 let mut axis = axes.start;
@@ -223,7 +229,7 @@ impl View {
                 )
             }
         }
-        println!("After reshape: {self}, num views {}", self.0.len());
+        //println!("After reshape: {self}, num views {}", self.0.len());
     }
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
@@ -240,6 +246,7 @@ impl View {
     }
 
     pub(crate) fn expand(&mut self, axis: usize, ndim: usize) {
+        //println!("View expand {self} axis = {axis} to ndim {ndim}");
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(&axis) {
                 assert!(dim.d == ndim || dim.d == 1);
@@ -373,11 +380,9 @@ impl View {
         let mut pc = 0;
         let mut offset = 0;
         let mut old_offset = None;
-        println!("View");
-        for inner in self.0.iter() {
-            println!("{inner:?}")
-        }
-        println!();
+        //println!("View");
+        //for inner in self.0.iter() { println!("{inner:?}") }
+        //println!();
         for inner in self.0.iter().rev() {
             //println!("\n{inner:?}");
             // a = offset / ost % dim
@@ -528,7 +533,7 @@ fn view_binded() {
     //println!("{view:?}");
     assert_eq!(view.rank(), 3);
     assert_eq!(view.used_axes(), [1, 2, 5]);
-    assert_eq!(view.shape(), [2, 3, 4]);
+    assert_eq!(view.shape(), [1, 2, 3, 1, 1, 4]);
 }
 
 #[test]
@@ -549,5 +554,10 @@ fn view_reshape() {
 fn view_reshape2() {
     let mut view = View::binded(&[4, 2, 3], &[5, 1, 2]);
     view.reshape(0..1, &[1, 1, 1]);
-    assert_eq!(view.shape(), [1, 1, 1, 1, 2, 5]);
+    assert_eq!(view.shape(), [1, 1, 1, 2, 3, 1, 1, 4]);
+    let mut view = View::contiguous(&[3, 1, 5]);
+    view.reshape(0..1, &[1, 3]);
+    assert_eq!(view.shape(), [1, 3, 1, 5]);
+    view.expand(2, 4);
+    assert_eq!(view.shape(), [1, 3, 4, 5]);
 }

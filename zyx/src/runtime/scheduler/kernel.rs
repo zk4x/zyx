@@ -652,4 +652,8 @@ fn reshape_pattern() {
     let nshape = [2, 2, 1, 2, 2, 1];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
     assert_eq!(r, Some((0, vec![(4..5, 4..6)])));
+    let shape = [1, 3, 4, 5];
+    let nshape = [3, 20];
+    let r = get_reshape_pattern(&shape, &nshape, &[]);
+    assert_eq!(r, Some((0, vec![(0..2, 0..1), (2..4, 1..2)])));
 }

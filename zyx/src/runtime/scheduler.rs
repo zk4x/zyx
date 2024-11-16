@@ -666,13 +666,12 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                                 view.expand(*a, shape[*a]);
                             }
                         }
-                        VOp::Store { zview, .. } => {
+                        VOp::Store { .. } => {
+                            unreachable!();
                             // TODO This will do multiple writes to the same index, so this would probably be better solved in different way,
                             // perhaps doing only single write during the whole loop using if condition, but that could also be added
                             // to View in VOp::Store as optimization when converting to IROps
-                            for a in expand_axes.difference(&done_expanding) {
-                                zview.expand(*a, shape[*a]);
-                            }
+                            //for a in expand_axes.difference(&done_expanding) { zview.expand(*a, shape[*a]); }
                         }
                         _ => {}
                     }
@@ -708,6 +707,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //for kernel in &kernels { kernel.debug(); }
 
                 let shape = graph.shape(nid);
+                //println!("Reshape node from {:?} to {:?}", graph.shape(x), shape);
                 let mut kernel = get_kernel(x, &mut kernels, graph);
                 if !kernel.reshape(&shape) {
                     // else create new kernel after storing results of previous kernel
