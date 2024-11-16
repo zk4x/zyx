@@ -544,3 +544,10 @@ fn view_reshape() {
     view.reshape(2..3, &[1, 3]);
     assert_eq!(view.shape(), [1, 3, 1, 3]);
 }
+
+#[test]
+fn view_reshape2() {
+    let mut view = View::binded(&[4, 2, 3], &[5, 1, 2]);
+    view.reshape(0..1, &[1, 1, 1]);
+    assert_eq!(view.shape(), [1, 1, 1, 1, 2, 5]);
+}
