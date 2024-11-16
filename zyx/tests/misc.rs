@@ -172,13 +172,15 @@ fn rand() {
 #[test]
 fn const_() -> Result<(), ZyxError> {
     let x = Tensor::from([[3f32, 4., 2.], [4., 3., 2.]]);
-    let mut y = Tensor::constant(1) + x; //.get(1);
-    println!("{y}'");
+    //.get(1);
+    let y = Tensor::constant(1) + x;
+    //println!("{y}'");
     //Tensor::plot_graph([], "graph0");
     //let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
     //y = y.log2() * c.cast(y.dtype());
-    y = y.ln();
-    println!("{y}'");
+    assert_eq!(y, [[4f32, 5., 3.], [5., 4., 3.]]);
+    //y = y.ln();
+    //println!("{y}'");
     Ok(())
 }
 

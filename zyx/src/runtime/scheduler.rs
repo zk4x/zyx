@@ -750,7 +750,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 let mut padded_axes = BTreeMap::new();
                 for (op, &p) in kernel.ops[..rank].iter().rev().zip(padding) {
                     let &VOp::Loop { axis, .. } = op else {
-                        panic!()
+                        unreachable!()
                     };
                     padded_axes.insert(axis, p);
                 }
@@ -966,7 +966,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
             {
                 kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
             } else {
-                panic!()
+                unreachable!()
             }
         }
         // TODO only if this is not nid in user ids
@@ -993,7 +993,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     kernels.push(kernel2);
                 }
             } else {
-                panic!()
+                unreachable!()
             }
         }
     }

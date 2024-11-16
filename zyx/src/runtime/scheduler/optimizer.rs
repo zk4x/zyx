@@ -113,7 +113,7 @@ impl Kernel {
                                         reduce_found = true;
                                         let VOp::Loop { len, .. } = self.ops[id - 1 + num_loops]
                                         else {
-                                            panic!()
+                                            unreachable!()
                                         };
                                         // Register work size in the reduce loop
                                         for rr in (1..=maxrr).filter(|rr| len % rr == 0) {
@@ -187,29 +187,29 @@ impl Kernel {
 
         let mut lws = [0; 3];
         let VOp::Loop { len, .. } = kernel.ops[1] else {
-            panic!()
+            unreachable!()
         };
         lws[0] = len;
         let VOp::Loop { len, .. } = kernel.ops[4] else {
-            panic!()
+            unreachable!()
         };
         lws[1] = len;
         let VOp::Loop { len, .. } = kernel.ops[7] else {
-            panic!()
+            unreachable!()
         };
         lws[2] = len;
 
         let mut rws = [0; 3];
         let VOp::Loop { len, .. } = kernel.ops[2] else {
-            panic!()
+            unreachable!()
         };
         rws[0] = len;
         let VOp::Loop { len, .. } = kernel.ops[5] else {
-            panic!()
+            unreachable!()
         };
         rws[1] = len;
         let VOp::Loop { len, .. } = kernel.ops[8] else {
-            panic!()
+            unreachable!()
         };
         rws[2] = len;
         // Apply permutation

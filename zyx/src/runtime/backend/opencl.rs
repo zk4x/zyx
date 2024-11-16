@@ -636,7 +636,7 @@ impl OpenCLDevice {
                 }
                 loops[i] = *id;
             } else {
-                panic!()
+                unreachable!()
             }
         }
 
@@ -780,7 +780,7 @@ impl OpenCLDevice {
                         match scope {
                             Scope::Global => "GLOB",
                             Scope::Local => "LOC",
-                            Scope::Register | Scope::RegTile => panic!(),
+                            Scope::Register | Scope::RegTile => unreachable!(),
                         }
                     );
                 }

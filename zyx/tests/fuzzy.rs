@@ -166,17 +166,23 @@ macro_rules! binary_op {
             view: $x.view.clone(),
             data: match &$x.data {
                 Data::F32(xdata) => {
-                    let Data::F32(ydata) = &$y.data else { panic!() };
+                    let Data::F32(ydata) = &$y.data else {
+                        unreachable!()
+                    };
                     //Data::F32(binary(&$x.view, xdata, &$y.view, ydata, $op))
                     todo!()
                 }
                 Data::F64(xdata) => {
-                    let Data::F64(ydata) = &$y.data else { panic!() };
+                    let Data::F64(ydata) = &$y.data else {
+                        unreachable!()
+                    };
                     //Data::F64(binary(&$x.view, xdata, &$y.view, ydata, $op))
                     todo!()
                 }
                 Data::I32(xdata) => {
-                    let Data::I32(ydata) = &$y.data else { panic!() };
+                    let Data::I32(ydata) = &$y.data else {
+                        unreachable!()
+                    };
                     //Data::I32(binary(&$x.view, xdata, &$y.view, ydata, $op))
                     todo!()
                 }

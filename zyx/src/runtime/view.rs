@@ -127,7 +127,21 @@ impl View {
 
     // This is used for both reshape and merge and split
     pub(crate) fn reshape(&mut self, axes: Range<usize>, shape: &[usize]) {
-        //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
+        if self.0.is_empty() {
+            return;
+        }
+        println!("Reshape {self} axes {axes:?} into shape {shape:?}");
+        assert!(
+            axes.end
+                <= self
+                    .0
+                    .last()
+                    .map_or(1, |inner| inner.last_key_value().unwrap().0 + 1)
+        );
+        assert_eq!(
+            self.shape()[axes.clone()].iter().product::<usize>(),
+            shape.iter().product::<usize>()
+        );
         if let Some(inner) = self.0.last_mut() {
             let mut contiguous = true;
             // find first axis >= axes.end
@@ -204,7 +218,7 @@ impl View {
                 )
             }
         }
-        //println!("After reshape: {self}");
+        println!("After reshape: {self}, num views {}", self.0.len());
     }
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
@@ -354,7 +368,11 @@ impl View {
         let mut pc = 0;
         let mut offset = 0;
         let mut old_offset = None;
-        //println!("Self {self:?}");
+        println!("View");
+        for inner in self.0.iter() {
+            println!("{inner:?}")
+        }
+        println!();
         for inner in self.0.iter().rev() {
             //println!("\n{inner:?}");
             // a = offset / ost % dim

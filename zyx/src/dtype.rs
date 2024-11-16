@@ -201,7 +201,7 @@ impl Constant {
             Self::U8(_) => DType::U8,
             Self::U32(_) => DType::U32,
             Self::I8(_) => DType::I8,
-            Self::I16(_) => panic!(),
+            Self::I16(_) => DType::I16,
             Self::I32(_) => DType::I32,
             Self::I64(_) => DType::I64,
             Self::Bool(_) => DType::Bool,

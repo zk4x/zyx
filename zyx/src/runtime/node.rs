@@ -3,6 +3,9 @@
 
 use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
 
+#[allow(non_camel_case_types)]
+type f8 = float8::F8E4M3;
+
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub(super) enum BOp {
@@ -180,7 +183,7 @@ impl Constant {
                 | UOp::Inv
                 | UOp::Sqrt
                 | UOp::Sin
-                | UOp::Cos => panic!(),
+                | UOp::Cos => unreachable!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
                 UOp::Not => x.not(),
@@ -188,7 +191,7 @@ impl Constant {
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Cast(_) => panic!(),
+                UOp::Cast(_) => unreachable!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
@@ -203,14 +206,14 @@ impl Constant {
         if let UOp::Cast(dtype) = uop {
             return match self {
                 Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
-                Constant::F8(_) => panic!(),
+                Constant::F8(x) => f8::from_bits(x).cast_dtype(dtype),
                 Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
                 Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
                 Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
                 Constant::U8(x) => x.cast_dtype(dtype),
                 Constant::I8(x) => x.cast_dtype(dtype),
                 Constant::I16(x) => x.cast_dtype(dtype),
-                Constant::U32(_) => panic!(),
+                Constant::U32(x) => x.cast_dtype(dtype),
                 Constant::I32(x) => x.cast_dtype(dtype),
                 Constant::I64(x) => x.cast_dtype(dtype),
                 Constant::Bool(x) => x.cast_dtype(dtype),
@@ -220,9 +223,7 @@ impl Constant {
             Constant::BF16(x) => {
                 Constant::BF16(unary_func_float(half::bf16::from_bits(x), uop).to_bits())
             }
-            Constant::F8(x) => {
-                Constant::F8(unary_func_float(float8::F8E4M3::from_bits(x), uop).to_bits())
-            }
+            Constant::F8(x) => Constant::F8(unary_func_float(f8::from_bits(x), uop).to_bits()),
             Constant::F16(x) => {
                 Constant::F16(unary_func_float(half::f16::from_bits(x), uop).to_bits())
             }

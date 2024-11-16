@@ -242,7 +242,7 @@ impl Tensor {
             let mut rt = RT.lock();
             rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
             let Some(rng) = rt.rng.get_mut() else {
-                panic!()
+                unreachable!()
             };
             match dtype {
                 DType::BF16 => {
@@ -295,7 +295,7 @@ impl Tensor {
             let mut rt = RT.lock();
             rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
             let Some(rng) = rt.rng.get_mut() else {
-                panic!()
+                unreachable!()
             };
             match dtype {
                 DType::U8 => {
@@ -343,7 +343,7 @@ impl Tensor {
                 DType::Bool => Err(ZyxError::DTypeError(
                     "Uniform is not supported for bool".into(),
                 )),
-                DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => panic!(),
+                DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
             }
         }
         /*# threefry

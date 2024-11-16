@@ -517,7 +517,7 @@ impl CUDADevice {
                 }
                 loop_ids[i] = *id;
             } else {
-                panic!()
+                unreachable!()
             }
         }
 
@@ -668,7 +668,7 @@ impl CUDADevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register | Scope::RegTile => panic!(),
+                            Scope::Register | Scope::RegTile => unreachable!(),
                         }
                     ));
                 }
@@ -847,7 +847,7 @@ impl CUDADevice {
                     source += &format!("{indent}ld.global.{}    r{}, [a1];\n", dtype.ptx(), z);
                 }
                 IROp::Store { address, offset, x } => {
-                    let Reg::Var(id) = x else { panic!() };
+                    let Reg::Var(id) = x else { unreachable!() };
                     let dtype = kernel.registers[id as usize];
                     // Get address
                     source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
@@ -935,7 +935,7 @@ impl CUDADevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register | Scope::RegTile => panic!(),
+                            Scope::Register | Scope::RegTile => unreachable!(),
                         }
                     );
                 }

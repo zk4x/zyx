@@ -254,7 +254,20 @@ impl Runtime {
         if let Ok((memory_pools, devices)) =
             cuda::initialize_devices(&device_config.cuda, self.debug_dev())
         {
-            self.fun_name(memory_pools, devices);
+            let this = &mut *self;
+            let n = this.memory_pools.len();
+            this.memory_pools
+                .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
+                    memory_pool: m,
+                    buffers: IndexMap::new(),
+                }));
+            this.devices
+                .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
+                    memory_pool_id: device.memory_pool_id() + n,
+                    device,
+                    programs: IndexMap::new(),
+                    queues,
+                }));
         }
         if let Ok((memory_pools, devices)) =
             hip::initialize_device(&device_config.hip, self.debug_dev())
@@ -330,26 +343,6 @@ impl Runtime {
         }
         //println!("Initializing");
         Ok(())
-    }
-
-    fn fun_name(
-        &mut self,
-        memory_pools: Vec<CUDAMemoryPool>,
-        devices: Vec<(CUDADevice, Vec<CUDAQueue>)>,
-    ) {
-        let n = self.memory_pools.len();
-        self.memory_pools
-            .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
-                memory_pool: m,
-                buffers: IndexMap::new(),
-            }));
-        self.devices
-            .extend(devices.into_iter().map(|(device, queues)| Device::CUDA {
-                memory_pool_id: device.memory_pool_id() + n,
-                device,
-                programs: IndexMap::new(),
-                queues,
-            }));
     }
 }
 
@@ -879,7 +872,7 @@ impl Device {
                     queue.sync()?;
                 }
                 let MemoryPool::CUDA { buffers, .. } = memory_pool else {
-                    panic!()
+                    unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
@@ -901,7 +894,7 @@ impl Device {
                     queue.sync()?;
                 }
                 let MemoryPool::HIP { buffers, .. } = memory_pool else {
-                    panic!()
+                    unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
@@ -923,7 +916,7 @@ impl Device {
                     queue.sync()?;
                 }
                 let MemoryPool::OpenCL { buffers, .. } = memory_pool else {
-                    panic!()
+                    unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
@@ -945,7 +938,7 @@ impl Device {
                     queue.sync()?;
                 }
                 let MemoryPool::Vulkan { buffers, .. } = memory_pool else {
-                    panic!()
+                    unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
@@ -968,7 +961,7 @@ impl Device {
                     queue.sync()?;
                 }
                 let MemoryPool::WGSL { buffers, .. } = memory_pool else {
-                    panic!()
+                    unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id

@@ -400,7 +400,7 @@ impl HIPDevice {
                 }
                 loops[i] = id;
             } else {
-                panic!()
+                unreachable!()
             }
         }
         // Declare global variables
@@ -512,7 +512,7 @@ impl HIPDevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register | Scope::RegTile => panic!(),
+                            Scope::Register | Scope::RegTile => unreachable!(),
                         }
                     );
                 }

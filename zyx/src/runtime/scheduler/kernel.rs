@@ -296,7 +296,7 @@ impl Kernel {
             len: dimension,
         } = &mut self.ops[op_id]
         else {
-            panic!()
+            unreachable!()
         };
         *dimension = dimensions[0];
         let new_dim_count = dimensions.len() - 1;

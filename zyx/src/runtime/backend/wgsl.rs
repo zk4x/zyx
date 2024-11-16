@@ -291,7 +291,7 @@ impl WGSLDevice {
                 }
                 loops[i] = id;
             } else {
-                panic!()
+                unreachable!()
             }
         }
 
@@ -453,7 +453,7 @@ impl WGSLDevice {
                 IROp::Barrier { scope } => match scope {
                     Scope::Global => source += &format!("{indent}storageBarrier();\n"),
                     Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
-                    Scope::Register | Scope::RegTile => panic!(),
+                    Scope::Register | Scope::RegTile => unreachable!(),
                 },
             }
         }
