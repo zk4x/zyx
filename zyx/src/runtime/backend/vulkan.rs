@@ -24,7 +24,7 @@ pub(super) struct VulkanBuffer {}
 #[derive(Debug)]
 pub(super) struct VulkanDevice {
     dev_info: DeviceInfo,
-    memory_pool_id: usize,
+    memory_pool_id: u32,
 }
 
 #[derive(Debug)]
@@ -110,7 +110,7 @@ impl VulkanDevice {
     }
 
     // Memory pool id out of VulkanMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 

@@ -56,7 +56,7 @@ pub(super) struct HIPBuffer {
 #[derive(Debug)]
 pub(super) struct HIPDevice {
     device: HIPdevice,
-    memory_pool_id: usize,
+    memory_pool_id: u32,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
     hipModuleLoadData: unsafe extern "C" fn(*mut HIPmodule, *const u8) -> HIPStatus,
@@ -360,7 +360,7 @@ impl HIPDevice {
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 

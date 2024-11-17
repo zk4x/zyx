@@ -66,7 +66,7 @@ pub(super) struct CUDABuffer {
 #[derive(Debug)]
 pub(super) struct CUDADevice {
     device: CUdevice,
-    memory_pool_id: usize,
+    memory_pool_id: u32,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
     cuModuleLoadDataEx: unsafe extern "C" fn(
@@ -286,7 +286,7 @@ pub(super) fn initialize_devices(
                     preferred_vector_size: 16,
                     tensor_cores: major > 7,
                 },
-                memory_pool_id: 0,
+                memory_pool_id: memory_pools.len() as u32 - 1,
                 cuModuleLoadDataEx,
                 cuModuleGetFunction,
                 cuModuleUnload,
@@ -442,7 +442,7 @@ impl CUDADevice {
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 

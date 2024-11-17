@@ -53,8 +53,8 @@ pub(super) struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
-pub(super) type MemoryPoolId = usize;
-pub(super) type DeviceId = usize;
+pub(super) type MemoryPoolId = u32;
+pub(super) type DeviceId = u32;
 
 /*trait HMemoryPool {
     type Error;
@@ -121,7 +121,7 @@ pub(super) enum MemoryPool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct BufferId {
-    pub(super) memory_pool_id: usize,
+    pub(super) memory_pool_id: u32,
     pub(super) buffer_id: Id,
 }
 
@@ -255,7 +255,7 @@ impl Runtime {
             cuda::initialize_devices(&device_config.cuda, self.debug_dev())
         {
             let this = &mut *self;
-            let n = this.memory_pools.len();
+            let n = this.memory_pools.len() as u32;
             this.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::CUDA {
                     memory_pool: m,
@@ -272,7 +272,7 @@ impl Runtime {
         if let Ok((memory_pools, devices)) =
             hip::initialize_device(&device_config.hip, self.debug_dev())
         {
-            let n = self.memory_pools.len();
+            let n = self.memory_pools.len() as u32;
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::HIP {
                     memory_pool: m,
@@ -289,7 +289,7 @@ impl Runtime {
         if let Ok((memory_pools, devices)) =
             opencl::initialize_devices(&device_config.opencl, self.debug_dev())
         {
-            let n = self.memory_pools.len();
+            let n = self.memory_pools.len() as u32;
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::OpenCL {
                     memory_pool: m,
@@ -306,7 +306,7 @@ impl Runtime {
         if let Ok((memory_pools, devices)) =
             vulkan::initialize_devices(&device_config.vulkan, self.debug_dev())
         {
-            let n = self.memory_pools.len();
+            let n = self.memory_pools.len() as u32;
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::Vulkan {
                     memory_pool: m,
@@ -324,7 +324,7 @@ impl Runtime {
         if let Ok((memory_pools, devices)) =
             wgsl::initialize_backend(&device_config.wgsl, self.debug_dev())
         {
-            let n = self.memory_pools.len();
+            let n = self.memory_pools.len() as u32;
             self.memory_pools
                 .extend(memory_pools.into_iter().map(|m| MemoryPool::WGSL {
                     memory_pool: m,

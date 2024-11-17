@@ -122,10 +122,11 @@ fn cmplt() -> Result<(), ZyxError> {
     ];
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
-    let z = x.cmplt(y)?;
-    let dataz: Vec<bool> = z.try_into()?;
+    // We cast here since not all backends support bool dtype buffers.
+    let z = x.cmplt(y)?.cast(zyx::DType::U32);
+    let dataz: Vec<u32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
-        assert_eq!(x.cmplt(y), z);
+        assert_eq!(x.cmplt(y) as u32, z);
     }
     Ok(())
 }

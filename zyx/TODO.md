@@ -28,6 +28,7 @@
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
 - [ ] reshape insert new loops
+- [ ] use stable-vec instead of index_map
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables

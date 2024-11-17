@@ -167,6 +167,7 @@ impl Kernel {
             xview: View::none(),
         };
         self.ops.push(store_op);
+        //panic!("Storing");
         /*for (id, op) in self.ops.iter().enumerate().rev() {
             match op {
                 VOp::Load { x, xview, .. } => {

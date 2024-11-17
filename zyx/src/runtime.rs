@@ -59,7 +59,7 @@ pub struct Runtime {
     devices: Vec<Device>,
     // Where are tensors stored
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
-    // Cache which maps IRKernel to device and program id on the device
+    // Cache which maps optimized Kernel to device and program id on the device
     kernel_cache: BTreeMap<(Kernel, KernelOptimization), (DeviceId, Id)>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
@@ -160,19 +160,18 @@ impl Runtime {
         data: &[T],
     ) -> Result<TensorId, ZyxError> {
         assert_eq!(shape.iter().product::<usize>(), data.len());
-        let id = self
-            .graph
-            .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
         self.initialize_devices()?;
         let bytes = data.len() * T::byte_size();
+        // TODO rewrite this such that we try to allocate memory pools in fastest device
+        // order and we use first one that does not fail.
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
-        let mem_pools: Vec<usize> = self
+        let mem_pools: Vec<u32> = self
             .memory_pools
             .iter()
             .enumerate()
             .filter_map(|(id, mp)| {
                 if mp.free_bytes() > bytes {
-                    Some(id)
+                    Some(id as u32)
                 } else {
                     None
                 }
@@ -190,11 +189,14 @@ impl Runtime {
                 memory_pool_id = dev.memory_pool_id();
             }
         }
-        // Search for first memory pool where we can put this tensor
-        let buffer_id = self.memory_pools[memory_pool_id].allocate(bytes)?;
-        self.memory_pools[memory_pool_id].host_to_pool(data, buffer_id)?;
+        let buffer_id = self.memory_pools[memory_pool_id as usize].allocate(bytes)?;
+        self.memory_pools[memory_pool_id as usize].host_to_pool(data, buffer_id)?;
+        let view = View::contiguous(&shape);
+        let id = self
+            .graph
+            .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
         self.tensor_buffer_map.insert(
-            (id, View::contiguous(self.shape(id))),
+            (id, view),
             BufferId {
                 memory_pool_id,
                 buffer_id,
@@ -378,6 +380,25 @@ impl Runtime {
         if shape == sh {
             self.retain(x);
             return x;
+        }
+        // Reshape on leaf is NOOP, tensor_buffer_map traces ownership
+        if self.graph[x] == Node::Leaf {
+            let view = View::contiguous(&shape);
+            let x_view = View::contiguous(self.graph.shape(x));
+            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|((id, v), bid)| {
+                // If it is the correct id and isn't sharded
+                if *id == x && v == &x_view {
+                    Some(bid)
+                } else {
+                    None
+                }
+            }) {
+                let id = self
+                    .graph
+                    .push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+                self.tensor_buffer_map.insert((id, view), buffer_id);
+                return id;
+            }
         }
         self.graph.push_wshape(Node::Reshape { x }, shape)
     }
@@ -627,7 +648,7 @@ impl Runtime {
         for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
                 if view.numel() == n {
-                    self.memory_pools[buffer_id.memory_pool_id]
+                    self.memory_pools[buffer_id.memory_pool_id as usize]
                         .pool_to_host(buffer_id.buffer_id, data)?;
                     break;
                 }
@@ -717,6 +738,7 @@ impl Runtime {
     }
 
     fn deallocate_tensors(&mut self, to_remove: &BTreeSet<TensorId>) -> Result<(), ZyxError> {
+        // This is basically tracing GC, seems faster than reference counting
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
         let mut buffers = BTreeSet::new();
@@ -732,7 +754,7 @@ impl Runtime {
         // otherwise deallocate them
         for buffer in buffers {
             if self.tensor_buffer_map.values().all(|b| *b != buffer) {
-                self.memory_pools[buffer.memory_pool_id].deallocate(buffer.buffer_id)?;
+                self.memory_pools[buffer.memory_pool_id as usize].deallocate(buffer.buffer_id)?;
             }
         }
         Ok(())

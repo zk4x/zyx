@@ -89,7 +89,7 @@ pub(super) struct OpenCLDevice {
     ptr: *mut c_void,
     context: *mut c_void,
     dev_info: DeviceInfo,
-    memory_pool_id: usize,
+    memory_pool_id: u32,
     // Functions
     //clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> cl_int,
     clGetProgramBuildInfo: unsafe extern "C" fn(
@@ -166,7 +166,7 @@ impl OpenCLDevice {
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 

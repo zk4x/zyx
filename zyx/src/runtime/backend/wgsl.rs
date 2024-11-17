@@ -38,7 +38,7 @@ pub(super) struct WGSLBuffer {
 #[derive(Debug)]
 pub(super) struct WGSLDevice {
     dev_info: DeviceInfo,
-    memory_pool_id: usize,
+    memory_pool_id: u32,
     device: Arc<wgpu::Device>,
     #[allow(unused)]
     adapter: wgpu::Adapter,
@@ -243,7 +243,7 @@ impl WGSLDevice {
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> usize {
+    pub(super) const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 

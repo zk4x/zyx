@@ -80,8 +80,8 @@ impl Runtime {
         }
         //panic!("Done");
         let mut sched_graph: Vec<SchedulerOp> = Vec::new();
-        // Simulated device occupation. How many kernels are running on each device, if more than 5, finish first one before launching next one
-        let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..self.devices.len())
+        // Simulated device occupation. How many kernels are running on each device, if more than x, finish first one before launching next one
+        let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..self.devices.len() as u32)
             .map(|device_id| (device_id, Vec::new()))
             .collect();
         // Simulated tensor buffer map
@@ -137,7 +137,7 @@ impl Runtime {
                     // Finish some program before proceeding
                     sched_graph.push(SchedulerOp::Finish(()));
                 }*/
-                let min_devs: Vec<usize> = device_program_map
+                let min_devs: Vec<DeviceId> = device_program_map
                     .iter()
                     .filter_map(|(dev_id, p)| {
                         if p.len() == min_programs {
@@ -151,14 +151,14 @@ impl Runtime {
                     .iter()
                     .filter(|(dev_id, _)| min_devs.contains(dev_id))
                     .max_by(|x, y| {
-                        self.devices[*x.0]
+                        self.devices[*x.0 as usize]
                             .compute()
-                            .cmp(&self.devices[*y.0].compute())
+                            .cmp(&self.devices[*y.0 as usize].compute())
                     })
                     .unwrap()
                     .0;
 
-                let memory_pool_id = self.devices[device_id].memory_pool_id();
+                let memory_pool_id = self.devices[device_id as usize].memory_pool_id();
                 // Allocate memory for outputs
                 for output in kernel.outputs() {
                     let key = (output, View::contiguous(graph.shape(output)));
@@ -176,10 +176,10 @@ impl Runtime {
                         tensor_buffer_map.insert((output, view), memory_pool_id);
                     }
                 }
-                // Move necessary inputs to memory pool associated with this device
                 //kernel.debug();
                 //println!("{tensor_buffer_map:?}");
 
+                // Move necessary inputs to memory pool associated with this device
                 for input in &kernel.inputs() {
                     let view = View::contiguous(graph.shape(*input));
                     //println!("Tensor map tensor {input}");
@@ -204,16 +204,10 @@ impl Runtime {
                 }
                 // Disk cached search, works across devices and platforms
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
-                /*let optimization = KernelOptimization {
-                    //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![2, 1, 1]), (1, vec![1, 1, 2]), (0, vec![1, 1, 1])],
-                    //splits: vec![(3, vec![1, 3]), (0, vec![1, 2]), (2, vec![1, 2, 1]), (1, vec![1, 2, 1]), (0, vec![1, 1, 1])],
-                    splits: vec![(0, vec![1, 8]), (2, vec![8, 1]), (1, vec![8, 1]), (0, vec![1, 1])],
-                    permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
-                    local_tiles: false,
-                };*/
                 if self.debug_sched() {
                     println!("Using optimization {optimization}");
                 }
+                // Compile and cache program
                 let (program_id, args) =
                     self.compile_cached(kernel, &optimization, device_id, &graph)?;
                 // Since it is not sharded, sharding view is contiguous
@@ -268,7 +262,12 @@ impl Runtime {
             for sched_op in &sched_graph {
                 match sched_op {
                     SchedulerOp::Launch(program) => {
-                        println!("Launch kernel {}", self.devices[program.device_id]);
+                        println!(
+                            "Launch kernel {} on device {} with args {:?}",
+                            program.program_id,
+                            program.device_id,
+                            program.args.iter().map(|a| a.0).collect::<Vec<u32>>()
+                        );
                     }
                     SchedulerOp::Finish(program) => println!(
                         "Finish kernel {} on device {}",
@@ -318,13 +317,13 @@ impl Runtime {
                             self.tensor_buffer_map[&(arg.0, arg.1.clone())].buffer_id
                         })
                         .collect();
-                    let device = &mut self.devices[vprogram.device_id];
+                    let device = &mut self.devices[vprogram.device_id as usize];
                     let mpid = device.memory_pool_id();
                     queues.insert(
                         vprogram.clone(),
                         device.launch(
                             vprogram.program_id,
-                            &mut self.memory_pools[mpid],
+                            &mut self.memory_pools[mpid as usize],
                             &buffer_ids,
                         )?,
                     );
@@ -332,7 +331,7 @@ impl Runtime {
                 SchedulerOp::Finish(program) => {
                     for (vprogram, queue) in &mut queues {
                         if program == vprogram {
-                            self.devices[program.device_id].sync(*queue)?;
+                            self.devices[program.device_id as usize].sync(*queue)?;
                         }
                     }
                 }
@@ -346,8 +345,8 @@ impl Runtime {
                         memory_pool_id,
                         buffer_id: src_buffer_id,
                     } = self.tensor_buffer_map[&(*tensor_id, view.clone())];
-                    let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst);
-                    let src_mp = &mut src_mps[memory_pool_id];
+                    let (src_mps, dst_mps) = self.memory_pools.split_at_mut(*dst as usize);
+                    let src_mp = &mut src_mps[memory_pool_id as usize];
                     let dst_mp = &mut dst_mps[0];
                     let dst_buffer_id = dst_mp.allocate(bytes)?;
                     src_mp.pool_to_pool(src_buffer_id, dst_mp, dst_buffer_id, bytes)?;
@@ -359,7 +358,7 @@ impl Runtime {
                     bytes,
                     view,
                 } => {
-                    let buffer_id = self.memory_pools[*memory_pool_id].allocate(*bytes)?;
+                    let buffer_id = self.memory_pools[*memory_pool_id as usize].allocate(*bytes)?;
                     self.tensor_buffer_map.insert(
                         (*tensor_id, view.clone()),
                         BufferId {
@@ -375,7 +374,7 @@ impl Runtime {
                         buffer_id,
                     }) = self.tensor_buffer_map.get(key)
                     {
-                        self.memory_pools[*memory_pool_id].deallocate(*buffer_id)?;
+                        self.memory_pools[*memory_pool_id as usize].deallocate(*buffer_id)?;
                         self.tensor_buffer_map.remove(key).unwrap();
                     }
                 }
@@ -399,7 +398,7 @@ impl Runtime {
         device_id: DeviceId,
         graph: &Graph,
     ) -> Result<KernelOptimization, ZyxError> {
-        let dev_info = self.devices[device_id].info().clone();
+        let dev_info = self.devices[device_id as usize].info().clone();
         let cache_key = (kernel.clone(), dev_info.clone());
         if let Some(KernelOptimizer::Optimized(optimizations, _)) =
             self.optimizer_cache.get(&cache_key)
@@ -412,11 +411,11 @@ impl Runtime {
             let debug_asm = self.debug_asm();
             // allocate space for inputs and outputs that are not allocated for this kernel
             let mut allocated_temps = Vec::new();
-            let mpid = self.devices[device_id].memory_pool_id();
+            let mpid = self.devices[device_id as usize].memory_pool_id();
             let mut temp_ids: BTreeSet<TensorId> = kernel.inputs();
             temp_ids.extend(&kernel.outputs());
             for tid in temp_ids {
-                let buffer_id = self.memory_pools[mpid].allocate(
+                let buffer_id = self.memory_pools[mpid as usize].allocate(
                     graph.shape(tid).iter().product::<usize>() * graph.dtype(tid).byte_size(),
                 )?;
                 allocated_temps.push(buffer_id);
@@ -479,12 +478,12 @@ impl Runtime {
                 //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
-                let program_id = self.devices[device_id].compile(&ir_kernel, debug_asm)?;
+                let program_id = self.devices[device_id as usize].compile(&ir_kernel, debug_asm)?;
                 // Launch kernel and measure it's performance
                 let begin = std::time::Instant::now();
-                let queue_id = match self.devices[device_id].launch(
+                let queue_id = match self.devices[device_id as usize].launch(
                     program_id,
-                    &mut self.memory_pools[mpid],
+                    &mut self.memory_pools[mpid as usize],
                     &allocated_temps,
                 ) {
                     Ok(queue_id) => queue_id,
@@ -496,7 +495,7 @@ impl Runtime {
                         continue;
                     }
                 };
-                if let Err(e) = self.devices[device_id].sync(queue_id) {
+                if let Err(e) = self.devices[device_id as usize].sync(queue_id) {
                     optimizer.set_exec_time(optimization_id, u128::MAX);
                     if debug_sched {
                         println!("Could not sync, {e:?}, skipping");
@@ -504,7 +503,7 @@ impl Runtime {
                     continue;
                 };
                 let exec_time = begin.elapsed().as_nanos();
-                let _ = self.devices[device_id].release_program(program_id);
+                let _ = self.devices[device_id as usize].release_program(program_id);
                 if let Some((f, mr, mw)) = flop_mem_rw {
                     print_perf(f, mr, mw, exec_time);
                 }
@@ -530,7 +529,7 @@ impl Runtime {
             }
             // Deallocate inputs and outputs that are used only for beam search
             for buffer_id in allocated_temps {
-                self.memory_pools[mpid].deallocate(buffer_id)?;
+                self.memory_pools[mpid as usize].deallocate(buffer_id)?;
             }
             Ok(self.optimizer_cache.get(&cache_key).unwrap().best().clone())
         }
@@ -561,7 +560,7 @@ impl Runtime {
                 ir_kernel.debug();
             }
             let debug_asm = self.debug_asm();
-            program_id = Some(self.devices[device_id].compile(&ir_kernel, debug_asm)?);
+            program_id = Some(self.devices[device_id as usize].compile(&ir_kernel, debug_asm)?);
             self.kernel_cache
                 .insert(kernel_cache_key, (device_id, program_id.unwrap()));
         }
@@ -958,7 +957,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 }
             }
         }
-        //println!("nid: {nid} to_eval {to_eval:?}");
+        //println!("nid: {nid} to_eval {:?}", graph.to_eval);
         if graph.to_eval.contains(&nid) {
             if let Some(kernel) = kernels
                 .iter_mut()
