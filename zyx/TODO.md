@@ -14,10 +14,13 @@
   - [x] change ir register id to u16
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
+  - [ ] add optimizations for ops, merges
   - [ ] add ops reordering, all ops that can be moved before loops should be moved (loop invariant code motion)
   - [ ] deduplicate all calculations
-  - [ ] add optimizations for ops, merges
   - [ ] deletion of redundant ops
+  - [ ] loop unrolling
+  - [ ] vector dtypes
+  - [ ] one pass through IR to evaluate all operations with constants
   - [x] add new reference counting that accounts for all variables, including indexing variables
 - [x] vops remove unary view
 - [x] vops remove binary views
@@ -28,7 +31,7 @@
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
 - [ ] reshape insert new loops
-- [ ] use stable-vec instead of index_map
+- [ ] use stable-vec instead of index_map?
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables

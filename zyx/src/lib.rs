@@ -117,9 +117,9 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
-/*
 /// Execution timer
-static ET: mutex::Mutex<std::collections::BTreeMap<String, u128>, 1_000_000_000> = mutex::Mutex::new(std::collections::BTreeMap::new());
+/*static ET: mutex::Mutex<std::collections::BTreeMap<String, u128>, 1_000_000_000> =
+    mutex::Mutex::new(std::collections::BTreeMap::new());
 
 pub(crate) struct Timer {
     name: String,
@@ -140,7 +140,7 @@ impl Timer {
 impl Drop for Timer {
     fn drop(&mut self) {
         *ET.lock().get_mut(&self.name).unwrap() += self.begin.elapsed().as_micros();
-        //println!("Timer took {}us", self.begin.elapsed().as_micros());
+        println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
 }*/
 

@@ -2728,7 +2728,12 @@ impl Tensor {
             let bar = indicatif::ProgressBar::new(
                 header.chars().filter(|&c| c == '[').count() as u64 / 2,
             );
-            bar.set_style(indicatif::ProgressStyle::with_template("[{elapsed_precise}/{remaining_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}").unwrap());
+            bar.set_style(
+                indicatif::ProgressStyle::with_template(
+                    "[{elapsed_precise}/{eta_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+                )
+                .unwrap(),
+            );
             Some(bar)
         } else {
             None

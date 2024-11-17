@@ -15,7 +15,8 @@ fn repeat_kv(x: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
         return Ok(x);
     }
     return x
-        .repeat([1, 1, 1, n_rep]).unwrap()
+        .repeat([1, 1, 1, n_rep])
+        .unwrap()
         .reshape([bs, seqlen, n_kv_heads * n_rep, head_dim]);
 }
 
@@ -119,9 +120,11 @@ impl RotaryEmbedding {
             .collect();
         let inv_freq_len = inv_freq.len();
         let inv_freq = Tensor::from(inv_freq).reshape([1, inv_freq_len]).unwrap();
-        let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, 1).unwrap()
+        let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, 1)
+            .unwrap()
             .cast(DType::F32)
-            .reshape((cfg.max_position_embeddings, 1)).unwrap();
+            .reshape((cfg.max_position_embeddings, 1))
+            .unwrap();
         let freqs = t.matmul(&inv_freq).unwrap();
         Ok(Self {
             dim,
@@ -338,7 +341,8 @@ impl Attention {
 
         let attn_weights = query_states
             .cast(DType::F32)
-            .matmul(&key_states.cast(DType::F32).t()).unwrap()
+            .matmul(&key_states.cast(DType::F32).t())
+            .unwrap()
             * self.softmax_scale;
         let attn_weights = match mask {
             None => attn_weights,
@@ -417,7 +421,7 @@ impl Model {
     pub fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
         let mut vb_m = vb.g("model");
         //let embed_tokens = Embedding::new(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let embed_tokens = Embedding::from_weight(vb_m.t("embed_tokens.weight")).unwrap();
+        let embed_tokens = Embedding::from_params(vb_m.t("embed_tokens.weight")).unwrap();
         /*let final_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.layer_norm_eps,
@@ -453,7 +457,7 @@ impl Model {
         let [_b_size, seq_len] = xs.shape()[..] else {
             panic!()
         };
-        let mut xs = self.embed_tokens.forward(xs).unwrap();
+        let mut xs = self.embed_tokens.forward(xs.cast(DType::F16)).unwrap();
         let mask = if seq_len <= 1 {
             None
         } else {
@@ -920,7 +924,8 @@ fn main() -> Result<(), ZyxError> {
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
-        let mut vb: HashMap<String, Tensor> = Tensor::load("/home/x/Dev/rust/zyx/model.safetensors").unwrap();
+        let mut vb: HashMap<String, Tensor> =
+            Tensor::load("/home/x/Dev/rust/zyx/model.safetensors").unwrap();
         //let mut keys: Vec<String> = vb.keys().cloned().collect();
         //keys.sort();
         //println!("{:?}", keys);
