@@ -25,7 +25,10 @@ use crate::RT;
 pub type TensorId = u32;
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
+///
 /// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
+/// Thus tensor is only 4 bytes, but it is reference counted, so it is not Copy. Clones are cheap, but require
+/// locking a mutex.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {
     id: TensorId,

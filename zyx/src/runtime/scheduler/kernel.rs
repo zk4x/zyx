@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ops::Range};
 
 use crate::{
     runtime::{graph::Graph, ir::Scope, view::View},
@@ -337,7 +337,10 @@ impl Kernel {
                 | VOp::Store { zview: view, .. }
                 | VOp::Const { view, .. }
                 | VOp::Accumulator { view, .. } => {
-                    view.reshape(axis..axis + 1, dimensions);
+                    #[allow(clippy::range_plus_one)]
+                    {
+                        view.reshape(axis..axis + 1, dimensions);
+                    }
                 }
                 _ => {}
             }
@@ -426,12 +429,13 @@ impl Kernel {
         })
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn get_reshape_pattern(
         &self,
         nshape: &[usize],
     ) -> Option<(
-        usize,                                                 // number of new loops to be inserted
-        Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>, // range and new shape for reshapes
+        usize,                             // number of new loops to be inserted
+        Vec<(Range<usize>, Range<usize>)>, // range and new shape for reshapes
     )> {
         let mut unmergeable_axes = Vec::new();
         let mut last_op_i = 0;
@@ -495,31 +499,35 @@ impl Kernel {
                     op_i -= 1;
                     if let VOp::Loop { axis, .. } = &mut self.ops[op_i] {
                         //println!("{org_sh:?} -> {sh:?}");
-                        if *axis == org_sh.end - 1 {
-                            // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
-                            // insert respective loops from new shape
-                            let n = org_sh.end - org_sh.start;
-                            let i = (op_i + 1) - n;
-                            //println!("Removing {i}");
-                            for _ in 0..n {
-                                self.ops.remove(i);
+                        match (*axis).cmp(&(org_sh.end - 1)) {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => {
+                                // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
+                                // insert respective loops from new shape
+                                let n = org_sh.end - org_sh.start;
+                                let i = (op_i + 1) - n;
+                                //println!("Removing {i}");
+                                for _ in 0..n {
+                                    self.ops.remove(i);
+                                }
+                                //self.debug();
+                                for a in sh.clone().rev() {
+                                    //println!("Axis {a}, shape {shape:?}");
+                                    self.ops.insert(
+                                        i,
+                                        VOp::Loop {
+                                            axis: a + org_sh.start - sh.start,
+                                            len: shape[a],
+                                        },
+                                    );
+                                }
+                                //self.debug();
+                                break 'a;
                             }
-                            //self.debug();
-                            for a in sh.clone().rev() {
-                                //println!("Axis {a}, shape {shape:?}");
-                                self.ops.insert(
-                                    i,
-                                    VOp::Loop {
-                                        axis: a + org_sh.start - sh.start,
-                                        len: shape[a],
-                                    },
-                                );
+                            std::cmp::Ordering::Greater => {
+                                *axis += sh.end - sh.start;
+                                *axis -= org_sh.end - org_sh.start;
                             }
-                            //self.debug();
-                            break 'a;
-                        } else if *axis > org_sh.end - 1 {
-                            *axis += sh.end - sh.start;
-                            *axis -= org_sh.end - org_sh.start
                         }
                     }
                 }
@@ -562,7 +570,9 @@ impl Kernel {
 /// 2. merged
 /// 3. split
 /// 4. reshaped without affecting reduce dims
+///
 /// If neither of those are possible, None is returned. last tensor must be stored and new kernel must be created.
+#[allow(clippy::type_complexity)]
 fn get_reshape_pattern(
     // original shape
     shape: &[usize],
@@ -575,7 +585,7 @@ fn get_reshape_pattern(
     // number of new loops to be inserted
     usize,
     // range and new shape for reshapes
-    Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
+    Vec<(Range<usize>, Range<usize>)>,
 )> {
     // reshape
     // 2, 4, 1, 3, 1,    4, 5, 2
@@ -598,42 +608,38 @@ fn get_reshape_pattern(
             }
             std::cmp::Ordering::Equal => {
                 if let Some(d) = shape.get(merge_axes.end) {
-                    if *d == 1 {
-                        if split_axes.end == nshape.len() {
-                            merge_axes.end += 1;
-                            continue 'a;
-                        }
+                    if *d == 1 && split_axes.end == nshape.len() {
+                        merge_axes.end += 1;
+                        continue 'a;
                     }
                 }
                 if let Some(d) = nshape.get(split_axes.end) {
-                    if *d == 1 {
-                        if merge_axes.end == shape.len() {
-                            split_axes.end += 1;
-                            continue 'a;
-                        }
+                    if *d == 1 && merge_axes.end == shape.len() {
+                        split_axes.end += 1;
+                        continue 'a;
                     }
                 }
-                match (merge_axes.len(), split_axes.len()) {
-                    (1, 1) => {} // both are the same, no changes
-                    (_, _) => {
-                        // reshape
-                        // If merge range contains unmergeable axes, return None
-                        // Axes are not mergeable if there is some ops between those axes
-                        if unmergeable_axes
-                            .iter()
-                            .any(|a| merge_axes.contains(a) && merge_axes.contains(&(a - 1)))
-                        {
-                            return None;
-                        }
-                        reshapes.push((merge_axes.clone(), split_axes.clone()));
+                if (merge_axes.len(), split_axes.len()) != (1, 1) {
+                    // reshape
+                    // If merge range contains unmergeable axes, return None
+                    // Axes are not mergeable if there is some ops between those axes
+                    if unmergeable_axes
+                        .iter()
+                        .any(|a| merge_axes.contains(a) && merge_axes.contains(&(a - 1)))
+                    {
+                        return None;
                     }
+                    reshapes.push((merge_axes.clone(), split_axes.clone()));
                 }
-                merge_axes = merge_axes.end..merge_axes.end + 1;
-                split_axes = split_axes.end..split_axes.end + 1;
+                #[allow(clippy::range_plus_one)]
+                {
+                    merge_axes = merge_axes.end..merge_axes.end + 1;
+                    split_axes = split_axes.end..split_axes.end + 1;
+                }
             }
         }
     }
-    return Some((0, reshapes));
+    Some((0, reshapes))
 }
 
 #[test]

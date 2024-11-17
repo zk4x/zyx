@@ -709,7 +709,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 let shape = graph.shape(nid);
                 //println!("Reshape node from {:?} to {:?}", graph.shape(x), shape);
                 let mut kernel = get_kernel(x, &mut kernels, graph);
-                if !kernel.reshape(&shape) {
+                if !kernel.reshape(shape) {
                     // else create new kernel after storing results of previous kernel
                     let xdtype = graph.dtype(x);
                     kernel.store(x, View::contiguous(graph.shape(x)), xdtype);
@@ -1125,7 +1125,7 @@ fn store_optimizer_cache(
     debug_sched: bool,
 ) {
     use std::io::Write;
-    if let Some(mut path) = config_dir.clone() {
+    if let Some(mut path) = config_dir {
         path.push("cached_kernels");
         let mut file = std::fs::File::create(path).unwrap();
         file.write_all(&bitcode::encode(optimizer_cache)).unwrap();

@@ -74,7 +74,7 @@ impl View {
             || vec![1],
             |inner| {
                 let max_axis = *inner.last_key_value().unwrap().0;
-                (0..max_axis + 1)
+                (0..=max_axis)
                     .map(|a| inner.get(&a).map_or(1, |dim| dim.d))
                     .collect()
             },
@@ -121,8 +121,14 @@ impl View {
     pub(crate) fn insert_loop(&mut self, axis: usize) {
         //println!("Inserting loop at axis {axis}");
         if let Some(inner) = self.0.last_mut() {
-            let keys: Vec<Axis> = inner.keys().filter(|&&a| a >= axis).copied().collect();
-            for a in keys.into_iter().rev() {
+            #[allow(clippy::needless_collect)]
+            let keys: Vec<Axis> = inner
+                .keys()
+                .filter(|&&a| a >= axis)
+                .copied()
+                .rev()
+                .collect();
+            for a in keys {
                 let dim = inner.remove(&a).unwrap();
                 inner.insert(a + 1, dim);
             }
@@ -181,7 +187,8 @@ impl View {
                 }
                 // increase axis id for all values greater than this
                 // TODO this does not seem to work correctly
-                for a in inner.keys().cloned().rev().collect::<Box<[usize]>>() {
+                #[allow(clippy::needless_collect)]
+                for a in inner.keys().copied().rev().collect::<Vec<usize>>() {
                     if a >= axes.end {
                         let v = inner.remove(&a).unwrap();
                         inner.insert(a + shape.len() - axes.len(), v);
@@ -226,7 +233,7 @@ impl View {
                             )
                         })
                         .collect(),
-                )
+                );
             }
         }
         //println!("After reshape: {self}, num views {}", self.0.len());

@@ -278,11 +278,9 @@ impl Kernel {
                         VOp::Store {
                             z, xscope, xview, ..
                         } => {
-                            if *xscope == Scope::Register {
-                                if let Some(..) = accs.iter().find(|(x, _)| x == z) {
-                                    *xview = acc_view.clone();
-                                    *xscope = Scope::RegTile;
-                                }
+                            if *xscope == Scope::Register && accs.iter().any(|(x, _)| x == z) {
+                                *xview = acc_view.clone();
+                                *xscope = Scope::RegTile;
                             }
                         }
                         // This cannot be triggered currently
