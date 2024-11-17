@@ -35,9 +35,7 @@ let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
 
 ## Backends
 
-Zyx runs on different devices, current backends are CUDA, `OpenCL` and wgsl through wgpu.
-HIP would be supported too, but HIPRTC is currently broken.
-Using COMGR directly as a workaround is in the works..
+Zyx runs on different devices, current backends are CUDA, `OpenCL`, HIP and wgsl through wgpu.
 Zyx automatically tries to utilize all available devices, but you can also manually change it
 by creating file `backend_config.json` in folder zyx in home config directory (usually ~/.config/zyx/`backend_config.json`).
 There write [`DeviceConfig`] struct.
@@ -126,14 +124,12 @@ create a github issue.
 
 ## Warning
 
-Zyx breaks many principles of clean code. Clean code was tried in older versions of zyx.
-Abstractions, wrappers, dyn (virtual tables), generics and lifetimes made the code hard
-to reason about. Zyx now uses enums for everything and almost zero generics (only in functions,
-such as impl `IntoShape` to make API more flexible). If you dislike ugly code,
-please do not use zyx.
+Zyx breaks many principles of clean code. There are no dyn (virtual tables), no lifetimes on structs, generics
+are only used to make user API nicer, mostly in impl Scalar or impl IntoShape form.
+Since zyx is pretty much a compiler, internally most things are done using enums in loose data-oriented way.
+If you dislike ugly code, please do not use zyx.
 
-Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive,
-please do not use zyx.
+Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive, please do not use zyx.
 
 Zyx brings it's own runtime. It is a single global struct behind mutex.
 Tensors are indices into graph stored in this runtime. If runtime wasn't
@@ -142,6 +138,15 @@ tried and it poisoned the whole codebase with lifetimes. If you find global vari
 offensive, please do not use zyx.
 
 Zyx uses some code duplication. If you hate code that is not DRY, please do not use zyx.
+
+## Dependencies
+
+Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use serde json for config
+parsing, libloading to dynamically load backend dynamic library files (i.e. libcuda.so), float8 and half
+for numbers and memmap2 for memory mapped disk reads and writes. All dependencies are carefully considered
+and are used only if deemed absolutely necessary, that is only if they do one thing and do it well.
+Wgpu is an exception, it brings lot of it's own dependencies, but it brings lot of functionality
+like wasm, so it is used, but at least it is optional dependency.
 
 ## Code of conduct
 

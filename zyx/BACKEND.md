@@ -36,7 +36,7 @@ are exempt).
 ## Datatypes
 
 Devices can support any number of datatypes. If kernel includes unsupported datatype, backend should return
-compilation error.
+compilation error. Zyx can then try running this kernel on different device or inform user.
 
 ## Conclusion
 
