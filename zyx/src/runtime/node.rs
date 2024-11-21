@@ -233,5 +233,43 @@ impl Constant {
 
     // TODO binary constant evaluation
     // Assumes both constants are the same dtype
-    //pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant { todo!() }
+    pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
+        assert_eq!(x.dtype(), y.dtype());
+        fn binary_func<T: Scalar>(x: T, y: T, bop: BOp) -> Constant {
+            match bop {
+                BOp::Add => Constant::new(x.add(y)),
+                BOp::Sub => Constant::new(x.sub(y)),
+                BOp::Mul => Constant::new(x.mul(y)),
+                BOp::Div => Constant::new(x.div(y)),
+                BOp::Pow => Constant::new(x.pow(y)),
+                BOp::Mod => Constant::new(x.mod(y)),
+                BOp::Max => Constant::new(x.max(y)),
+                BOp::Cmplt => Constant::new(x.cmplt(y)),
+                BOp::Cmpgt => Constant::new(x.cmpgt(y)),
+                BOp::Or => Constant::new(x.or(y)),
+                BOp::And => Constant::new(x.and(y)),
+                BOp::NotEq => Constant::new(x.noteq(y)),
+                BOp::BitXor => Constant::new(x.bitxor(y)),
+                BOp::BitOr => Constant::new(x.bitor(y)),
+                BOp::BitAnd => Constant::new(x.bitand(y)),
+            }
+        }
+        match x {
+            Constant::BF16(x) => {
+                let Constant::BF16(y) = y else { unreachable!() };
+                Constant::BF16(binary_func(x, y, bop))
+            }
+            Constant::F8(_) => todo!(),
+            Constant::F16(_) => todo!(),
+            Constant::F32(_) => todo!(),
+            Constant::F64(_) => todo!(),
+            Constant::U8(_) => todo!(),
+            Constant::U32(_) => todo!(),
+            Constant::I8(_) => todo!(),
+            Constant::I16(_) => todo!(),
+            Constant::I32(_) => todo!(),
+            Constant::I64(_) => todo!(),
+            Constant::Bool(_) => todo!(),
+        }
+    }
 }

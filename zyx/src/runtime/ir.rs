@@ -261,14 +261,27 @@ impl IRCompiler {
         }
     }
 
-    fn binary_op(&mut self, x: Reg, y: Reg, bop: BOp) -> u16 {
-        // TODO Constant evaluation
+    fn binary_op(&mut self, x: Reg, y: Reg, bop: BOp) -> Reg {
+        match (x, y) {
+            (Reg::Var(_), Reg::Var(_)) => {}
+            (Reg::Var(_), Reg::Const(yv)) => {
+                if yv.is_zero() {
+                    match bop {
+                        BOp::Mul => return Reg::Const(yv.dtype().zero_constant()),
+                        BOp::Div => panic!("Division by zero constant"),
+                        _ => {}
+                    }
+                }
+            }
+            (Reg::Const(_), Reg::Var(_)) => {}
+            (Reg::Const(x), Reg::Const(y)) => return Reg::Const(Constant::binary(x, y, bop)),
+        }
         match x {
             Reg::Var(x) => {
                 self.dtypes.push(self.dtypes[x as usize]);
             }
-            Reg::Const(c) => {
-                self.dtypes.push(c.dtype());
+            Reg::Const(x) => {
+                self.dtypes.push(x.dtype());
             }
         }
         match bop {
@@ -279,48 +292,48 @@ impl IRCompiler {
         }
         let z = u16::try_from(self.dtypes.len() - 1).unwrap();
         self.ops.push(IROp::Binary { z, x, y, bop });
-        z
+        Reg::Var(z)
     }
 
     pub(super) fn cast(&mut self, x: Reg, dtype: DType) -> Reg {
         self.unary_op(x, UOp::Cast(dtype))
     }
 
-    pub(super) fn and(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn and(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::And)
     }
 
-    pub(super) fn cmplt(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn cmplt(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Cmplt)
     }
 
-    pub(super) fn cmpgt(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn cmpgt(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Cmpgt)
     }
 
-    pub(super) fn add(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn add(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Add)
     }
 
-    pub(super) fn sub(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn sub(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Sub)
     }
 
-    pub(super) fn mul(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn mul(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Mul)
     }
 
-    pub(super) fn div(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn div(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Div)
     }
 
-    pub(super) fn mod_(&mut self, x: Reg, y: Reg) -> u16 {
+    pub(super) fn mod_(&mut self, x: Reg, y: Reg) -> Reg {
         self.binary_op(x, y, BOp::Mod)
     }
 
-    pub(super) fn mad(&mut self, x: Reg, y: Reg, z: Reg) -> u16 {
+    pub(super) fn mad(&mut self, x: Reg, y: Reg, z: Reg) -> Reg {
         let t = self.mul(x, y);
-        self.add(Reg::Var(t), z)
+        self.add(t, z)
     }
 
     fn vops_to_ir(
@@ -467,7 +480,7 @@ impl IRCompiler {
                     xdtype,
                 } => {
                     let xaddress = c.pointers_map[&(x, xscope)];
-                    let zreg = Reg::Var(xview.ir_for_indexed_load(&mut c, xaddress, xdtype));
+                    let zreg = xview.ir_for_indexed_load(&mut c, xaddress, xdtype);
                     c.register_map.insert(z, zreg);
                     match (zscope, xscope) {
                         (Scope::Local, Scope::Global) => {
@@ -498,7 +511,7 @@ impl IRCompiler {
                         let zaddress = c.pointers_map[&(z, zscope)];
                         let zreg = if let Some(&zaddress) = c.pointers_map.get(&(z, Scope::RegTile))
                         {
-                            Reg::Var(xview.ir_for_indexed_load(&mut c, zaddress, zdtype))
+                            xview.ir_for_indexed_load(&mut c, zaddress, zdtype)
                         } else {
                             c.register_map[&z]
                         };
@@ -531,7 +544,7 @@ impl IRCompiler {
                     let xreg = c.register_map[&x];
                     let yreg = c.register_map[&y];
                     let zreg = c.binary_op(xreg, yreg, bop);
-                    c.register_map.insert(z, Reg::Var(zreg));
+                    c.register_map.insert(z, zreg);
                 }
                 &VOp::Barrier { scope } => {
                     c.ops.push(IROp::Barrier { scope });
@@ -736,7 +749,6 @@ impl IRCompiler {
     }
 
     fn fuse_multiply_add(&mut self) {
-        // TODO make it work across any length, not only short length
         for i in 0..self.ops.len() - 1 {
             if let IROp::Binary {
                 bop,
@@ -747,15 +759,17 @@ impl IRCompiler {
             } = self.ops[i]
             {
                 if bop == BOp::Mul {
-                    if let IROp::Binary { bop, z, x, y, .. } = self.ops[i + 1] {
-                        if bop == BOp::Add {
-                            if Reg::Var(z0) == x {
-                                self.ops[i + 1] = IROp::MAdd { z, a, b, c: y };
-                            }
-                            if Reg::Var(z0) == y {
-                                self.ops[i + 1] = IROp::MAdd { z, a, b, c: x };
-                            }
-                        };
+                    for j in i + 1..self.ops.len() {
+                        if let IROp::Binary { bop, z, x, y, .. } = self.ops[j] {
+                            if bop == BOp::Add {
+                                if Reg::Var(z0) == x {
+                                    self.ops[j] = IROp::MAdd { z, a, b, c: y };
+                                }
+                                if Reg::Var(z0) == y {
+                                    self.ops[j] = IROp::MAdd { z, a, b, c: x };
+                                }
+                            };
+                        }
                     }
                 }
             }
@@ -800,13 +814,8 @@ impl IRKernel {
         let mut compiler = IRCompiler::vops_to_ir(kernel_ops, &mut args, &mut addressables);
 
         // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
+        // loop invariant code motion
         // This will require automatic dependency resolution
-
-        // apply optimizations such as
-        // y = x + 0 -> none
-        // y = 0/x -> none
-        // y = x/1
-        // ...
 
         compiler.fuse_multiply_add();
         //for op in &compiler.ops { println!("{op:?}"); }

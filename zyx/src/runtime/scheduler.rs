@@ -553,7 +553,7 @@ impl Runtime {
         }
         let optimized_kernel = kernel.optimize(optimizations);
         //println!("Compiling kernel with shape {:?}", optimized_kernel.shape);
-        //optimized_kernel.debug();
+        optimized_kernel.debug();
         let (ir_kernel, ir_args) = IRKernel::new(&optimized_kernel.ops);
         if program_id.is_none() {
             if self.debug_ir() {

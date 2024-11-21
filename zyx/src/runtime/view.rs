@@ -141,7 +141,7 @@ impl View {
         if self.0.is_empty() {
             return;
         }
-        println!("Reshape {self} axes {axes:?} into shape {shape:?}");
+        //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         assert!(axes.end <= self.0.last().map_or(1, |inner| inner.len()));
         assert_eq!(
             self.0.last().unwrap()[axes.clone()]
@@ -154,12 +154,14 @@ impl View {
             let mut contiguous = true;
             let mut a = inner.len();
             let mut stride = 1;
+            let mut ost = 1;
             while a > axes.start {
                 a -= 1;
                 let dim = &inner[a];
                 if a >= axes.end - 1 {
                     if dim.st != 0 {
                         stride = dim.st * dim.d;
+                        ost = dim.st;
                     }
                 } else {
                     let st = stride;
@@ -177,6 +179,9 @@ impl View {
                 contiguous = true;
                 expanded_reshape = true;
             }
+            if axes.clone().any(|a| inner[a].lp != 0 || inner[a].rp != 0) {
+                contiguous = false;
+            }
 
             if contiguous {
                 //println!("Reshape contiguous");
@@ -185,12 +190,11 @@ impl View {
                     assert_eq!(dim.lp, 0);
                     assert_eq!(dim.rp, 0);
                 }
-                let mut axis = axes.start;
                 for &d in shape.iter().rev() {
-                    let st = if expanded_reshape { 0 } else { stride };
-                    stride *= d;
+                    let st = if expanded_reshape { 0 } else { ost };
+                    ost *= d;
                     inner.insert(
-                        axis,
+                        axes.start,
                         RDim {
                             d,
                             st,
@@ -198,7 +202,6 @@ impl View {
                             rp: 0,
                         },
                     );
-                    axis += 1;
                 }
             } else {
                 //println!("Reshape non-contiguous");
@@ -223,7 +226,7 @@ impl View {
                 self.0.push(res);
             }
         }
-        println!("After reshape: {self}, num views {}\n", self.0.len());
+        //println!("After reshape: {self}, num views {}\n", self.0.len());
     }
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
@@ -232,7 +235,7 @@ impl View {
         assert_eq!(inner.len(), axes.len());
         let mut new = Vec::with_capacity(axes.len());
         for &a in axes {
-            let dim = inner.remove(a);
+            let dim = inner[a].clone();
             new.push(dim);
         }
         *inner = new;
@@ -266,69 +269,51 @@ impl View {
     /// Load constant into variable or directly return it if view isn't padded
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: Constant) -> Reg {
-        let mut pc = 0;
-        let mut old_offset = None;
+        let mut pc = Reg::Const(Constant::Bool(true));
+        let mut old_offset: Option<Reg> = None;
         //println!("Self {self:?}");
         for inner in self.0.iter().rev() {
             //println!("\n{inner:?}");
             // a = offset / ost % dim
             let mut ost = 1;
-            let mut offset = 0;
+            let mut offset = Reg::Const(Constant::U32(0));
             for (a, dim) in inner.iter().enumerate().rev() {
-                let a = Reg::Var(old_offset.map_or_else(
-                    || u16::try_from(a).unwrap(),
+                let a: Reg = old_offset.map_or_else(
+                    || Reg::Var(u16::try_from(a).unwrap()),
                     |old_offset| {
-                        let a = c.div(Reg::Var(old_offset), Reg::Const(Constant::U32(ost)));
+                        let a = c.div(old_offset, Reg::Const(Constant::U32(ost)));
                         ost *= u32::try_from(dim.d).unwrap();
-                        c.mod_(
-                            Reg::Var(a),
-                            Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())),
-                        )
+                        c.mod_(a, Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())))
                     },
-                ));
+                );
                 //println!("ost: {ost}, {dim:?}");
                 // Offset
                 //if dim.st != 0 && dim.d != 1 {
                 let t = if dim.lp != 0 {
                     let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
-                    Reg::Var(if dim.lp > 0 {
+                    if dim.lp > 0 {
                         c.sub(a, lp)
                     } else {
                         c.add(a, lp)
-                    })
+                    }
                 } else {
                     a
                 };
                 let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
-                offset = c.mad(
-                    t,
-                    stride,
-                    if offset != 0 {
-                        Reg::Var(offset)
-                    } else {
-                        Reg::Const(Constant::U32(0))
-                    },
-                );
+                offset = c.mad(t, stride, offset);
                 //}
                 // Padding condition
                 if dim.lp > 0 {
                     let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp - 1).unwrap()));
                     let t = c.cmpgt(a, lp);
-                    pc = c.and(
-                        Reg::Var(t),
-                        if pc != 0 {
-                            Reg::Var(pc)
-                        } else {
-                            Reg::Const(Constant::Bool(true))
-                        },
-                    );
+                    pc = c.and(t, pc);
                 }
                 if dim.rp > 0 {
                     let rp = Reg::Const(Constant::U32(
                         u32::try_from(isize::try_from(dim.d).unwrap() - dim.rp).unwrap(),
                     ));
                     let t = c.cmplt(a, rp);
-                    pc = c.and(Reg::Var(t), Reg::Var(pc));
+                    pc = c.and(t, pc);
                 }
             }
             old_offset = Some(offset);
@@ -339,11 +324,9 @@ impl View {
         //}
         let dtype = constant.dtype();
         let mut z = Reg::Const(constant);
-        if pc != 0 {
-            let pcd = c.cast(Reg::Var(pc), dtype);
-            // Nullify z if padding condition is false (if there is padding at that index)
-            z = Reg::Var(c.mul(pcd, z));
-        }
+        let pcd = c.cast(pc, dtype);
+        // Nullify z if padding condition is false (if there is padding at that index)
+        z = c.mul(pcd, z);
         z
     }
 
@@ -353,7 +336,7 @@ impl View {
         c: &mut IRCompiler,
         address: u16,
         dtype: DType,
-    ) -> u16 {
+    ) -> Reg {
         // With padding, right padding does not affect offset
         // offset = (a0-lp0)*st0 + a1*st1
         // Padding condition, negative right padding does not affect it
@@ -361,9 +344,9 @@ impl View {
         // pc = pc.cast(dtype)
         // x = pc * value[offset]
         // Last view
-        let mut pc = 0;
-        let mut offset = 0;
-        let mut old_offset = None;
+        let mut pc = Reg::Const(Constant::Bool(true));
+        let mut offset = Reg::Const(Constant::U32(0));
+        let mut old_offset: Option<Reg> = None;
         //println!("View");
         //for inner in self.0.iter() { println!("{inner:?}") }
         //println!();
@@ -371,113 +354,71 @@ impl View {
             //println!("\n{inner:?}");
             // a = offset / ost % dim
             let mut ost = 1;
-            offset = 0;
+            offset = Reg::Const(Constant::U32(0));
             for (a, dim) in inner.iter().enumerate().rev() {
-                let a = Reg::Var(old_offset.map_or_else(
-                    || u16::try_from(a).unwrap(),
+                let a = old_offset.map_or_else(
+                    || Reg::Var(u16::try_from(a).unwrap()),
                     |old_offset| {
-                        let a = c.div(Reg::Var(old_offset), Reg::Const(Constant::U32(ost)));
+                        let a = c.div(old_offset, Reg::Const(Constant::U32(ost)));
                         ost *= u32::try_from(dim.d).unwrap();
-                        c.mod_(
-                            Reg::Var(a),
-                            Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())),
-                        )
+                        c.mod_(a, Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())))
                     },
-                ));
+                );
                 //println!("ost: {ost}, {dim:?}");
                 // Offset
                 //if dim.st != 0 && dim.d != 1 {
                 let t = if dim.lp != 0 {
                     let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
-                    Reg::Var(if dim.lp > 0 {
+                    if dim.lp > 0 {
                         c.sub(a, lp)
                     } else {
                         c.add(a, lp)
-                    })
+                    }
                 } else {
                     a
                 };
                 let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
-                offset = c.mad(
-                    t,
-                    stride,
-                    if offset != 0 {
-                        Reg::Var(offset)
-                    } else {
-                        Reg::Const(Constant::U32(0))
-                    },
-                );
+                offset = c.mad(t, stride, offset);
                 //}
                 // Padding condition
                 if dim.lp > 0 {
                     let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp - 1).unwrap()));
                     let t = c.cmpgt(a, lp);
-                    pc = c.and(
-                        Reg::Var(t),
-                        if pc != 0 {
-                            Reg::Var(pc)
-                        } else {
-                            Reg::Const(Constant::Bool(true))
-                        },
-                    );
+                    pc = c.and(t, pc);
                 }
                 if dim.rp > 0 {
                     let rp = Reg::Const(Constant::U32(
                         u32::try_from(isize::try_from(dim.d).unwrap() - dim.rp).unwrap(),
                     ));
                     let t = c.cmplt(a, rp);
-                    pc = c.and(
-                        Reg::Var(t),
-                        if pc != 0 {
-                            Reg::Var(pc)
-                        } else {
-                            Reg::Const(Constant::Bool(true))
-                        },
-                    );
+                    pc = c.and(t, pc);
                 }
             }
             old_offset = Some(offset);
         }
-        if pc != 0 {
-            let pcu32 = c.cast(Reg::Var(pc), DType::U32);
-            offset = c.mul(pcu32, Reg::Var(offset));
-        }
-        let mut z = c.load(address, Reg::Var(offset), dtype);
-        if pc != 0 {
-            let pcd = c.cast(Reg::Var(pc), dtype);
-            // Nullify z if padding condition is false (if there is padding at that index)
-            z = c.mul(pcd, Reg::Var(z));
-        }
-        z
+        let pcu32 = c.cast(pc, DType::U32);
+        offset = c.mul(pcu32, offset);
+        let z = Reg::Var(c.load(address, offset, dtype));
+        let pcd = c.cast(pc, dtype);
+        // Nullify z if padding condition is false (if there is padding at that index)
+        c.mul(pcd, z)
     }
 
     /// Store from variable into address
     pub(crate) fn ir_for_indexed_store(&self, c: &mut IRCompiler, address: u16, var: Reg) {
-        let mut offset = 0;
+        let mut offset = Reg::Const(Constant::U32(0));
         if let Some(inner) = self.0.last() {
             for (a, dim) in inner.iter().enumerate() {
                 if dim.st != 0 && dim.d != 1 {
                     let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
-                    offset = c.mad(
-                        Reg::Var(u16::try_from(a).unwrap()),
-                        stride,
-                        if offset != 0 {
-                            Reg::Var(offset)
-                        } else {
-                            Reg::Const(Constant::U32(0))
-                        },
-                    );
+                    offset = c.mad(Reg::Var(u16::try_from(a).unwrap()), stride, offset);
                 }
             }
         }
         c.ops.push(IROp::Store {
             address,
             x: var,
-            offset: if offset != 0 {
-                Reg::Var(offset)
-            } else {
-                Reg::Const(Constant::U32(0))
-            },
+            offset,
         });
     }
 }
