@@ -261,7 +261,7 @@ impl Kernel {
                 }
                 // Since we have swaped our threads around, we need bigger accumulator,
                 // otherwise the results would be incorrect
-                let acc_view = View::binded(&rws, &[2, 5, 8]);
+                let acc_view = View::binded(&rws, &[2, 5, 8], 10);
                 let mut accs = BTreeSet::new();
                 let mut i = 0;
                 while i < kernel.ops.len() {
@@ -481,7 +481,7 @@ impl Kernel {
                                 } else {
                                     [lws[1], reduce_ws, rws[2]]
                                 };
-                                let local_view = View::binded(&dims, &axes);
+                                let local_view = View::binded(&dims, &axes, 10);
                                 *xview = local_view;
                                 *xscope = Scope::Local;
                                 let z = *z;
@@ -498,7 +498,7 @@ impl Kernel {
                                 } else {
                                     [lws[1], lws[2], rws[2]]
                                 };
-                                let local_view = View::binded(&dims, &axes);
+                                let local_view = View::binded(&dims, &axes, 10);
                                 kernel.ops.insert(rl_id + 1, VOp::EndLoop);
                                 kernel.ops.insert(
                                     rl_id + 1,

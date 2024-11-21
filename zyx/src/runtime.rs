@@ -129,6 +129,10 @@ impl Runtime {
         while let Some(mp) = self.memory_pools.pop() {
             mp.deinitialize()?;
         }
+        // Timer
+        for (name, time) in crate::ET.lock().iter() {
+            println!("Timer {name} took {time} us");
+        }
         Ok(())
     }
 

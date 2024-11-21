@@ -85,14 +85,6 @@ pub(super) enum Node {
     },
 }
 
-impl Default for Node {
-    fn default() -> Self {
-        Self::Const {
-            value: Constant::Bool(false),
-        }
-    }
-}
-
 pub(super) struct NodeParametersIterator {
     parameters: [TensorId; 2],
     len: u8,

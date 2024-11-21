@@ -585,6 +585,7 @@ impl Runtime {
 #[allow(clippy::similar_names)]
 #[allow(clippy::cognitive_complexity)]
 fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kernel> {
+    let _t = crate::Timer::new("generate_kernels");
     //let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
     // This function defines loops, loads, stores and elementwise ops.
@@ -604,6 +605,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
         }
         match node {
             Node::Const { value } => {
+                let _t = crate::Timer::new("Const");
                 let mut ops = shape_to_loops(&[1]);
                 ops.push(VOp::Const {
                     z: nid,
@@ -613,9 +615,11 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 kernels.push(Kernel { ops });
             }
             Node::Leaf => {
+                let _t = crate::Timer::new("Leaf");
                 kernels.push(Kernel::load(nid, graph));
             }
             &Node::Expand { x } => {
+                let _t = crate::Timer::new("Expand");
                 let shape = graph.shape(nid);
                 let xshape = graph.shape(x);
                 assert_eq!(shape.len(), xshape.len());
@@ -685,6 +689,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //println!("Into");
             }
             &Node::Permute { x } => {
+                let _t = crate::Timer::new("Permute");
                 let axes = graph.axes(nid);
                 // Permute shuffles load and store strides
                 // It also changes the dimension of loops
@@ -699,6 +704,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
             &Node::Reshape { x } => {
+                let _t = crate::Timer::new("Reshape");
                 // Reshape needs to add new loops to the end of the kernel if it is unsqueeze
 
                 // If reshape comes after reduce, then if it just aplits axes, it can be merged,
@@ -733,6 +739,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //println!("\nKernels {kernels:?}\n");
             }
             &Node::Pad { x } => {
+                let _t = crate::Timer::new("Pad");
                 let padding = graph.padding(nid);
                 // Pad shrinks or expands dimension of axes, this is ZERO padding
                 let mut kernel = get_kernel(x, &mut kernels, graph);
@@ -790,6 +797,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 assert_eq!(kernel.shape(), graph.shape(nid));
             }
             &Node::Reduce { x, rop } => {
+                let _t = crate::Timer::new("Reduce");
                 let axes = graph.axes(nid);
                 // TODO do not apply reduce on a previously fully reduced and expanded kernel, this
                 // happens in softmax
@@ -854,6 +862,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 //kernel.merge_axes(acc_id + 1, axes.len());
             }
             Node::Unary { x, uop } => {
+                let _t = crate::Timer::new("Unary");
                 let kernel = get_kernel(*x, &mut kernels, graph);
                 kernel.ops.push(VOp::Unary {
                     z: nid,
@@ -862,6 +871,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                 });
             }
             &Node::Binary { x, y, bop } => {
+                let _t = crate::Timer::new("Binary");
                 // Binary ops may allow us to join two kernels together
                 if let Some(id) = kernels
                     .iter_mut()
@@ -891,20 +901,24 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
                     // TODO rewrite this, this is incorrect
                     //todo!();
 
+                    let _t = crate::Timer::new("Binary first part");
                     let kernel_x_id = kernels
                         .iter()
                         .enumerate()
-                        .filter(|(_, kernel)| kernel.vars().contains(&x))
-                        .min_by_key(|(_, kernel)| kernel.ops.len())
+                        .rev()
+                        .find(|(_, kernel)| kernel.vars().contains(&x))
+                        //.min_by_key(|(_, kernel)| kernel.ops.len())
                         .unwrap()
                         .0;
                     let kernel_y_id = kernels
                         .iter()
                         .enumerate()
-                        .filter(|(_, kernel)| kernel.vars().contains(&y))
-                        .min_by_key(|(_, kernel)| kernel.ops.len())
+                        .rev()
+                        .find(|(_, kernel)| kernel.vars().contains(&y))
+                        //.min_by_key(|(_, kernel)| kernel.ops.len())
                         .unwrap()
                         .0;
+                    drop(_t);
 
                     // Check which kernel needs to be evaluated first
                     // TODO make sure that depends on is never needed
@@ -933,6 +947,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
 
                     // Now we know that kernel x depends on kernel y or there is no dependence at all
                     // So kernel y must go first
+                    let _t = crate::Timer::new("Binary second part");
                     let (kernel_y, kernel_x) = if kernel_x_id > kernel_y_id {
                         (kernels.remove(kernel_y_id), &mut kernels[kernel_x_id - 1])
                     } else {
@@ -1071,7 +1086,10 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
     }
     kernels
         .iter_mut()
-        .filter(|kernel| kernel.vars().contains(&x))
+        .rev()
+        // we need to memorize this so that it is much faster,
+        // then we can drop the whole compiled_graph_cache
+        .filter(|kernel| kernel.vars().contains(&x)) // todo filter is more ideal, but it is slow...
         .min_by_key(|kernel| kernel.ops.len())
         .unwrap()
 }

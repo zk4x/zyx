@@ -201,6 +201,7 @@ impl Graph {
         tensors: BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
     ) -> (Graph, BTreeSet<TensorId>, Vec<TensorId>) {
+        //let _t = crate::Timer::new("realize_graph");
         //for (i, (rc, node)) in self.nodes.iter() { println!("{i} x {rc} -> {node:?}"); }
         // First topo search for minimum number of required nodes and create graph from it
         // Then replace all realized nodes with Node::Leaf

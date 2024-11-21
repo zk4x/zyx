@@ -131,7 +131,7 @@ pub(super) fn initialize_devices(
         .find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         return Err(CUDAError {
-            info: "CUDA runtime not found.".into(),
+            info: String::from("CUDA runtime not found."),
             status: CUDAStatus::CUDA_ERROR_UNKNOWN,
         });
     };
