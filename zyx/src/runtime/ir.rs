@@ -262,20 +262,6 @@ impl IRCompiler {
     }
 
     fn binary_op(&mut self, x: Reg, y: Reg, bop: BOp) -> Reg {
-        match (x, y) {
-            (Reg::Var(_), Reg::Var(_)) => {}
-            (Reg::Var(_), Reg::Const(yv)) => {
-                if yv.is_zero() {
-                    match bop {
-                        BOp::Mul => return Reg::Const(yv.dtype().zero_constant()),
-                        BOp::Div => panic!("Division by zero constant"),
-                        _ => {}
-                    }
-                }
-            }
-            (Reg::Const(_), Reg::Var(_)) => {}
-            (Reg::Const(x), Reg::Const(y)) => return Reg::Const(Constant::binary(x, y, bop)),
-        }
         match x {
             Reg::Var(x) => {
                 self.dtypes.push(self.dtypes[x as usize]);
@@ -748,7 +734,8 @@ impl IRCompiler {
         (registers, ops)
     }
 
-    fn fuse_multiply_add(&mut self) {
+    // i.e. peephole optimization
+    fn fuse_ops(&mut self) {
         for i in 0..self.ops.len() - 1 {
             if let IROp::Binary {
                 bop,
@@ -772,6 +759,64 @@ impl IRCompiler {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn unroll_loops(&mut self) {
+        // TODO
+        // simply duplicate code in required loops replacing every axis variable with constant
+    }
+
+    fn common_subexpression_elimination(&mut self) {
+        // TODO
+    }
+
+    // Loop invariant code motion and dependence analysis
+    fn loop_invariant_code_motion(&mut self) {
+        // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
+        // loop invariant code motion
+        // This will require automatic dependency resolution
+    }
+
+    // Replace all occurences of z with register x
+    fn replace(&mut self, z: u16, x: Reg) {
+        for i in 0..self.ops.len() {}
+    }
+
+    fn constant_propagation(&mut self) {
+        for i in 0..self.ops.len() {
+            match self.ops[i] {
+                IROp::Load { z, address, offset } => todo!(),
+                IROp::Store { address, offset, x } => todo!(),
+                IROp::Unary { z, x, uop } => todo!(),
+                IROp::Binary { z, x, y, bop } => match (x, y) {
+                    (Reg::Var(_), Reg::Var(_)) => {}
+                    (Reg::Var(_), Reg::Const(yv)) => {
+                        if yv.is_zero() {
+                            match bop {
+                                BOp::Mul => self.replace(z, Reg::Const(yv.dtype().zero_constant())),
+                                BOp::Div => panic!("Division by zero constant"),
+                                _ => {}
+                            }
+                        }
+                        if yv.is_one() {
+                            match bop {
+                                BOp::Mul => self.replace(z, Reg::Const(yv.dtype().zero_constant())),
+                                BOp::Div => panic!("Division by zero constant"),
+                                _ => {}
+                            }
+                        }
+                    }
+                    (Reg::Const(_), Reg::Var(_)) => {}
+                    (Reg::Const(x), Reg::Const(y)) => {
+                        self.replace(z, Reg::Const(Constant::binary(x, y, bop)));
+                    }
+                },
+                IROp::MAdd { z, a, b, c } => todo!(),
+                IROp::Loop { id, len } => todo!(),
+                IROp::EndLoop { id, len } => todo!(),
+                IROp::Barrier { scope } => todo!(),
             }
         }
     }
@@ -813,11 +858,21 @@ impl IRKernel {
 
         let mut compiler = IRCompiler::vops_to_ir(kernel_ops, &mut args, &mut addressables);
 
-        // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
-        // loop invariant code motion
-        // This will require automatic dependency resolution
+        // Optimizations
+        compiler.unroll_loops();
+        compiler.loop_invariant_code_motion();
 
-        compiler.fuse_multiply_add();
+        compiler.constant_propagation();
+        compiler.common_subexpression_elimination();
+
+        compiler.fuse_ops();
+        // Optimize constants again?
+        //compiler.constant_propagation();
+
+        // TODO perhaps we can do even more optimizations with instruction scheduling
+        // and register allocation? But that's a big perhaps...
+        // TODO loop splitting and loop peeling
+
         //for op in &compiler.ops { println!("{op:?}"); }
         let (registers, ops) = compiler.into_deduplicated_ir();
         //println!();

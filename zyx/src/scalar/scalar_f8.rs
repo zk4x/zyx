@@ -157,6 +157,32 @@ impl Scalar for F8E4M3 {
     fn epsilon() -> Self {
         Self::from_f32(0.00001)
     }
+
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self ^ rhs
+        todo!()
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self | rhs
+        todo!()
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self & rhs
+        todo!()
+    }
 }
 
 impl Float for F8E4M3 {
@@ -181,10 +207,10 @@ impl Float for F8E4M3 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        Self::from_f32(self.to_f32().exp2())
     }
 
     fn log2(self) -> Self {
-        todo!()
+        Self::from_f32(self.to_f32().log2())
     }
 }

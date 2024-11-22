@@ -2,6 +2,7 @@
 //! represent the opset that is available on tensors.
 
 use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
+use half::{bf16, f16};
 
 #[allow(non_camel_case_types)]
 type f8 = float8::F8E4M3;
@@ -242,7 +243,7 @@ impl Constant {
                 BOp::Mul => Constant::new(x.mul(y)),
                 BOp::Div => Constant::new(x.div(y)),
                 BOp::Pow => Constant::new(x.pow(y)),
-                BOp::Mod => Constant::new(x.mod(y)),
+                BOp::Mod => Constant::new(x.mod_(y)),
                 BOp::Max => Constant::new(x.max(y)),
                 BOp::Cmplt => Constant::new(x.cmplt(y)),
                 BOp::Cmpgt => Constant::new(x.cmpgt(y)),
@@ -257,19 +258,52 @@ impl Constant {
         match x {
             Constant::BF16(x) => {
                 let Constant::BF16(y) = y else { unreachable!() };
-                Constant::BF16(binary_func(x, y, bop))
+                binary_func(bf16::from_bits(x), bf16::from_bits(y), bop)
             }
-            Constant::F8(_) => todo!(),
-            Constant::F16(_) => todo!(),
-            Constant::F32(_) => todo!(),
-            Constant::F64(_) => todo!(),
-            Constant::U8(_) => todo!(),
-            Constant::U32(_) => todo!(),
-            Constant::I8(_) => todo!(),
-            Constant::I16(_) => todo!(),
-            Constant::I32(_) => todo!(),
-            Constant::I64(_) => todo!(),
-            Constant::Bool(_) => todo!(),
+            Constant::F8(x) => {
+                let Constant::F8(y) = y else { unreachable!() };
+                binary_func(f8::from_bits(x), f8::from_bits(y), bop)
+            }
+            Constant::F16(x) => {
+                let Constant::F16(y) = y else { unreachable!() };
+                binary_func(f16::from_bits(x), f16::from_bits(y), bop)
+            }
+            Constant::F32(x) => {
+                let Constant::F32(y) = y else { unreachable!() };
+                binary_func(f32::from_bits(x), f32::from_bits(y), bop)
+            }
+            Constant::F64(x) => {
+                let Constant::F64(y) = y else { unreachable!() };
+                binary_func(f64::from_bits(x), f64::from_bits(y), bop)
+            }
+            Constant::U8(x) => {
+                let Constant::U8(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::U32(x) => {
+                let Constant::U32(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::I8(x) => {
+                let Constant::I8(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::I16(x) => {
+                let Constant::I16(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::I32(x) => {
+                let Constant::I32(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::I64(x) => {
+                let Constant::I64(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::Bool(x) => {
+                let Constant::Bool(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
         }
     }
 }

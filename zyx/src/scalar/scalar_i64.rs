@@ -154,4 +154,24 @@ impl Scalar for i64 {
     fn epsilon() -> Self {
         0
     }
+
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 }

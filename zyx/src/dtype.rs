@@ -225,6 +225,23 @@ impl Constant {
             Constant::Bool(x) => x == false,
         }
     }
+
+    pub(crate) fn is_one(&self) -> bool {
+        match *self {
+            Constant::BF16(x) => bf16::from_bits(x) == bf16::ZERO,
+            Constant::F8(x) => f8::from_bits(x) == f8::ZERO,
+            Constant::F16(x) => f16::from_bits(x) == f16::ZERO,
+            Constant::F32(x) => f32::from_bits(x) == 0f32,
+            Constant::F64(x) => f64::from_bits(x) == 0f64,
+            Constant::U8(x) => x == 0,
+            Constant::U32(x) => x == 0,
+            Constant::I8(x) => x == 0,
+            Constant::I16(x) => x == 0,
+            Constant::I32(x) => x == 0,
+            Constant::I64(x) => x == 0,
+            Constant::Bool(x) => x == false,
+        }
+    }
 }
 
 impl Display for Constant {

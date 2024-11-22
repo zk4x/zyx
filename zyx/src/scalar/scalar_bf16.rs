@@ -147,6 +147,32 @@ impl Scalar for bf16 {
     fn epsilon() -> Self {
         bf16::MIN_POSITIVE
     }
+
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self | rhs
+        todo!()
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self ^ rhs
+        todo!()
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self & rhs
+        todo!()
+    }
 }
 
 impl Float for bf16 {

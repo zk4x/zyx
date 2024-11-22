@@ -156,6 +156,32 @@ impl Scalar for f16 {
     fn epsilon() -> Self {
         f16::from_f32(0.00001)
     }
+
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self ^ rhs
+        todo!()
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self | rhs
+        todo!()
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self & rhs
+        todo!()
+    }
 }
 
 impl Float for f16 {
@@ -176,14 +202,14 @@ impl Float for f16 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        f16::from_f32(self.to_f32().exp2())
     }
 
     fn log2(self) -> Self {
-        todo!()
+        f16::from_f32(self.to_f32().log2())
     }
 
     fn floor(self) -> Self {
-        todo!()
+        f16::from_f32(self.to_f32().floor())
     }
 }

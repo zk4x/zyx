@@ -100,15 +100,30 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// Pow
     #[must_use]
     fn pow(self, rhs: Self) -> Self;
+    /// Mod
+    #[must_use]
+    fn mod_(self, rhs: Self) -> Self;
     /// Compare less than
     #[must_use]
     fn cmplt(self, rhs: Self) -> bool;
     /// Compare less than
     #[must_use]
     fn cmpgt(self, rhs: Self) -> bool;
+    /// Noteq
+    #[must_use]
+    fn noteq(self, rhs: Self) -> bool;
     /// Compare less than
     #[must_use]
     fn or(self, rhs: Self) -> bool;
+    /// Bitxor
+    #[must_use]
+    fn bitxor(self, rhs: Self) -> Self;
+    /// Bitor
+    #[must_use]
+    fn bitor(self, rhs: Self) -> Self;
+    /// Bitand
+    #[must_use]
+    fn bitand(self, rhs: Self) -> Self;
     /// And
     #[must_use]
     fn and(self, rhs: Self) -> bool;
