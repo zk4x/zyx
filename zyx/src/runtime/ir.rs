@@ -780,43 +780,100 @@ impl IRCompiler {
     }
 
     // Replace all occurences of z with register x
-    fn replace(&mut self, z: u16, x: Reg) {
-        for i in 0..self.ops.len() {}
+    fn replace(&mut self, to_replace: u16, replace_with: Reg) {
+        // TODO make this non recursive
+        for i in 0..self.ops.len() {
+            match self.ops[i] {
+                IROp::Unary { z, x, uop } => {
+                    if x == to_replace {
+                        if let Reg::Const(replace_with) = replace_with {
+                            self.replace(z, Reg::Const(replace_with.unary(uop)));
+                        }
+                    }
+                }
+                IROp::Binary {
+                    ref mut x,
+                    ref mut y,
+                    ..
+                } => {
+                    if *x == Reg::Var(to_replace) {
+                        *x = replace_with;
+                    }
+                    if *y == Reg::Var(to_replace) {
+                        *y = replace_with;
+                    }
+                }
+                IROp::MAdd { .. } => todo!(),
+                IROp::Load { ref mut offset, .. } => {
+                    if *offset == Reg::Var(to_replace) {
+                        *offset = replace_with;
+                    }
+                }
+                IROp::Store {
+                    ref mut offset,
+                    ref mut x,
+                    ..
+                } => {
+                    if *offset == Reg::Var(to_replace) {
+                        *offset = replace_with;
+                    }
+                    if *x == Reg::Var(to_replace) {
+                        *x = replace_with;
+                    }
+                }
+                IROp::Loop { .. } | IROp::EndLoop { .. } | IROp::Barrier { .. } => {}
+            }
+        }
     }
 
     fn constant_propagation(&mut self) {
         for i in 0..self.ops.len() {
             match self.ops[i] {
-                IROp::Load { z, address, offset } => todo!(),
-                IROp::Store { address, offset, x } => todo!(),
-                IROp::Unary { z, x, uop } => todo!(),
+                IROp::Unary { .. } => {}
                 IROp::Binary { z, x, y, bop } => match (x, y) {
                     (Reg::Var(_), Reg::Var(_)) => {}
-                    (Reg::Var(_), Reg::Const(yv)) => {
+                    (Reg::Var(xv), Reg::Const(yv)) => {
                         if yv.is_zero() {
                             match bop {
-                                BOp::Mul => self.replace(z, Reg::Const(yv.dtype().zero_constant())),
+                                BOp::Mul => self.replace(z, Reg::Const(yv)),
+                                BOp::Add => self.replace(z, Reg::Var(xv)),
                                 BOp::Div => panic!("Division by zero constant"),
                                 _ => {}
                             }
                         }
                         if yv.is_one() {
                             match bop {
-                                BOp::Mul => self.replace(z, Reg::Const(yv.dtype().zero_constant())),
-                                BOp::Div => panic!("Division by zero constant"),
+                                BOp::Mul => self.replace(z, Reg::Var(xv)),
                                 _ => {}
                             }
                         }
                     }
-                    (Reg::Const(_), Reg::Var(_)) => {}
+                    (Reg::Const(xv), Reg::Var(yv)) => {
+                        if xv.is_zero() {
+                            match bop {
+                                BOp::Add => self.replace(z, Reg::Var(yv)),
+                                BOp::Mul => self.replace(z, Reg::Const(xv)),
+                                BOp::Div => panic!("Division by zero constant"),
+                                _ => {}
+                            }
+                        }
+                        if xv.is_one() {
+                            match bop {
+                                BOp::Mul => self.replace(z, Reg::Var(yv)),
+                                _ => {}
+                            }
+                        }
+                    }
                     (Reg::Const(x), Reg::Const(y)) => {
                         self.replace(z, Reg::Const(Constant::binary(x, y, bop)));
                     }
                 },
-                IROp::MAdd { z, a, b, c } => todo!(),
-                IROp::Loop { id, len } => todo!(),
-                IROp::EndLoop { id, len } => todo!(),
-                IROp::Barrier { scope } => todo!(),
+                IROp::MAdd { .. } => todo!(),
+                IROp::Loop { .. }
+                | IROp::EndLoop { .. }
+                | IROp::Load { .. }
+                | IROp::Store { .. }
+                | IROp::Barrier { .. } => {}
             }
         }
     }
