@@ -176,13 +176,13 @@ impl Runtime {
                         tensor_buffer_map.insert((output, view), memory_pool_id);
                     }
                 }
-                kernel.debug();
+                //kernel.debug();
                 //println!("{tensor_buffer_map:?}");
 
                 // Move necessary inputs to memory pool associated with this device
                 for input in &kernel.inputs() {
                     let view = View::contiguous(graph.shape(*input));
-                    println!("Tensor map tensor {input}");
+                    //println!("Tensor map tensor {input}");
                     let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                     if buf_mpid != memory_pool_id {
@@ -584,7 +584,7 @@ impl Runtime {
 /// and how many kernels will be created.
 #[allow(clippy::similar_names)]
 #[allow(clippy::cognitive_complexity)]
-fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kernel> {
+fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec<Kernel> {
     let _t = crate::Timer::new("generate_kernels");
     //let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
@@ -596,7 +596,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug: bool) -> Vec<Kerne
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        if debug {
+        if debug_sched {
             println!(
                 "ID({nid})x{}: {node:?}, sh: {:?}",
                 graph.rc(nid),
