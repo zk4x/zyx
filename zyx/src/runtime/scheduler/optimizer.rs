@@ -53,10 +53,14 @@ impl Kernel {
 
         //let mgwd = dev_info.max_global_work_dims;
         let mlws = dev_info.max_local_threads;
-        let mlwd = dev_info.max_local_work_dims;
+        let mut mlwd = dev_info.max_local_work_dims;
         let mrws = dev_info.num_registers;
-        let mrwd = [16, 16, 16]; // For now 16, can be raised to 32 on some hardware perhaps
-        let maxrr = 8; // Max reduce register work dimension
+        let (maxrr, mrwd) = if true {
+            (8, [16, 16, 16]) // For now 16, can be raised to 32 on some hardware perhaps
+        } else {
+            mlwd = [1, 1, 1];
+            (1, [1, 1, 1]) // For debugging
+        };
 
         let mut splits = Vec::new();
         let num_loops = self

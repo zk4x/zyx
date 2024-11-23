@@ -46,6 +46,8 @@ all backends, even if they run on the same device. To avoid this, you need to wr
 If you'd like to add new backend to zyx, that would be awesome! Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md) on prerequisities
 (required device capabilities).
 
+With env var ZYX_DEBUG=16 zyx prints generated kernel source code.
+
 ## Simple neural network
 
 ```shell

@@ -176,13 +176,13 @@ impl Runtime {
                         tensor_buffer_map.insert((output, view), memory_pool_id);
                     }
                 }
-                //kernel.debug();
+                kernel.debug();
                 //println!("{tensor_buffer_map:?}");
 
                 // Move necessary inputs to memory pool associated with this device
                 for input in &kernel.inputs() {
                     let view = View::contiguous(graph.shape(*input));
-                    //println!("Tensor map tensor {input}");
+                    println!("Tensor map tensor {input}");
                     let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                     //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                     if buf_mpid != memory_pool_id {
