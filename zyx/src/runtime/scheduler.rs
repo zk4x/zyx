@@ -741,6 +741,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
             &Node::Pad { x } => {
                 let _t = crate::Timer::new("Pad");
                 let padding = graph.padding(nid);
+                //println!("Padding: {padding:?}");
                 // Pad shrinks or expands dimension of axes, this is ZERO padding
                 let mut kernel = get_kernel(x, &mut kernels, graph);
                 // Kernel cannot be padded if it containe max reduce.
@@ -751,6 +752,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
                 }
+                //kernel.debug();
                 let rank = kernel.shape().len();
                 // Get which axes are padded
                 let mut padded_axes = BTreeMap::new();
@@ -988,7 +990,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                 unreachable!()
             }
         }
-        // TODO only if this is not nid in user ids
+        // TODO only if this is more than user rcs
         if graph.rc(nid) > 1 {
             if let Some(kernel) = kernels
                 .iter_mut()
@@ -1000,11 +1002,12 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                 // the same work twice.
                 //if user_leafs.contains(&nid) {
                 //kernel.store(nid, View::new(graph.shape(nid)));
-                if (kernel.ops.len() > 10
+                if (kernel.ops.len() > 100
                     && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
                     || kernel.is_reduce()
                     || !kernel.outputs().is_empty()
                 {
+                    //println!("Storing {nid}");
                     kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
                     kernels.push(Kernel::load(nid, graph));
                 } else {
@@ -1016,7 +1019,8 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
             }
         }
     }
-    // Remove unnecessary kernels (these should be only loads for user_rc > 1 kernels)
+    // Remove unnecessary kernels
+    // TODO these should be only loads for user_rc > 1 kernels, remove this
     kernels.retain(|kernel| !kernel.outputs().is_empty());
     // Remove unnecessary stores not for tensors moved across kernels
     // and not in to_eval that were inserted for rc > 1, but ops got merged,

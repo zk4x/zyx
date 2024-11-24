@@ -64,24 +64,25 @@ fn rope1() -> Result<(), ZyxError> {
 
 #[test]
 fn rope2() -> Result<(), ZyxError> {
-    let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]])
-        .reshape([1, 1, 2, 6])?;
-
-    let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-    let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-    let sh = xs.shape();
-    let sin_freqs = sin.squeeze(1).unwrap().squeeze(0).unwrap();
-    let cos_freqs = cos.squeeze(1).unwrap().squeeze(0).unwrap();
-    let d = isize::try_from(*sh.last().unwrap()).unwrap();
-    let a = xs.get((.., .., .., ..d / 2)).unwrap();
-    //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
-    let b = -xs.get((.., .., .., d / 2..)).unwrap();
-    //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
-    let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
-    //assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);
-    let co = a * sin_freqs + b * cos_freqs;
-    //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
-    let z = Tensor::cat([&co, &ro], -1).unwrap();
+    let z = {
+        let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]])
+            .reshape([1, 1, 2, 6])?;
+        let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+        let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+        let sh = xs.shape();
+        let sin_freqs = sin.squeeze(1).unwrap().squeeze(0).unwrap();
+        let cos_freqs = cos.squeeze(1).unwrap().squeeze(0).unwrap();
+        let d = isize::try_from(*sh.last().unwrap()).unwrap();
+        let a = xs.get((.., .., .., ..d / 2)).unwrap();
+        //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
+        let b = -xs.get((.., .., .., d / 2..)).unwrap();
+        //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
+        let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
+        //assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);
+        let co = a * sin_freqs + b * cos_freqs;
+        //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
+        Tensor::cat([&co, &ro], -1).unwrap()
+    };
     assert_eq!(
         z,
         [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
@@ -208,6 +209,44 @@ fn pad1() -> Result<(), ZyxError> {
     let a = Tensor::from([[1, 2], [3, 4]]);
     let c = a.pad_zeros([(0, 0), (0, 2)])?;
     assert_eq!(c, [[1, 2], [3, 4], [0, 0], [0, 0]]);
+    Ok(())
+}
+
+#[test]
+fn pad2() -> Result<(), ZyxError> {
+    let a = Tensor::from([[1, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
+    let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
+    let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
+    assert_eq!(
+        c,
+        [[[[6, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]
+    );
+    Ok(())
+}
+
+#[test]
+fn pad3() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([2, 4])?;
+    let a = x.pad_zeros([(-2, 0)])?;
+    let b = -x.pad_zeros([(0, -2)])?;
+    let sin = Tensor::from([[2, 3], [3, 1]]);
+    let cos = Tensor::from([[2, 3], [3, 1]]);
+    let z = &a * &sin - &b * &cos;
+    let z2 = a * sin + b * cos;
+    let z = z.pad_zeros([(0, 2)])? + z2.pad_zeros([(2, 0)])?;
+    println!("{z}");
+    Ok(())
+}
+
+#[test]
+fn expand1() -> Result<(), ZyxError> {
+    let a = Tensor::from([[1, 2], [3, 4]]).reshape([1, 1, 1, 4])?;
+    let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 4, 1])?;
+    let c = a + b;
+    assert_eq!(
+        c,
+        [[[[6, 7, 8, 9], [7, 8, 9, 10], [8, 9, 10, 11], [9, 10, 11, 12]]]]
+    );
     Ok(())
 }
 

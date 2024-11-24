@@ -916,12 +916,12 @@ impl IRKernel {
         let mut compiler = IRCompiler::vops_to_ir(kernel_ops, &mut args, &mut addressables);
 
         // Optimizations
-        compiler.unroll_loops();
-        compiler.loop_invariant_code_motion();
-
-        compiler.constant_propagation();
-        compiler.common_subexpression_elimination();
-
+        if true {
+            compiler.unroll_loops();
+            compiler.loop_invariant_code_motion();
+            compiler.constant_propagation();
+            compiler.common_subexpression_elimination();
+        }
         compiler.fuse_ops();
         // Optimize constants again?
         //compiler.constant_propagation();

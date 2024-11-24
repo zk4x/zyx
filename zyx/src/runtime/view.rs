@@ -173,6 +173,9 @@ impl View {
                     }
                 }
             }
+            if axes.clone().any(|a| inner[a].st == 0) {
+                contiguous = false;
+            }
             let mut expanded_reshape = false;
             // If all reshaped axes are expanded
             if axes.clone().all(|a| inner[a].st == 0) {
@@ -226,7 +229,7 @@ impl View {
                 self.0.push(res);
             }
         }
-        //println!("After reshape: {self}, num views {}\n", self.0.len());
+        //println!("After reshape: {self}\n");
     }
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
@@ -257,12 +260,69 @@ impl View {
     }
 
     pub(crate) fn pad(&mut self, axis: usize, left_pad: isize, right_pad: isize) {
+        let old_shape = self.shape();
         if let Some(inner) = self.0.last_mut() {
-            let dim = &mut inner[axis];
+            let mut dim = &mut inner[axis];
             dim.d =
                 usize::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
-            dim.lp = left_pad;
-            dim.rp = right_pad;
+            // TODO this is possible only if original padding has the same sign or is zero
+            // otherwise we need to create a new inner
+            if dim.lp == 0 || ((dim.lp > 0 && left_pad > 0) || (dim.lp < 0 && left_pad < 0)) {
+                dim.lp += left_pad;
+            } else {
+                dim.d = (dim.d as isize - left_pad) as usize;
+                let mut stride = 1;
+                let mut res: Vec<RDim> = old_shape
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .map(|(a, &d)| {
+                        let st = stride;
+                        stride *= d;
+                        RDim {
+                            st,
+                            d: if a == axis {
+                                (d as isize + left_pad) as usize
+                            } else {
+                                d
+                            },
+                            lp: if a == axis { left_pad } else { 0 },
+                            rp: 0,
+                        }
+                    })
+                    .collect();
+                res.reverse();
+                self.0.push(res);
+                dim = &mut self.0.last_mut().unwrap()[axis];
+            }
+            if dim.rp == 0 || ((dim.rp > 0 && right_pad > 0) || (dim.rp < 0 && right_pad < 0)) {
+                dim.rp += right_pad;
+            } else {
+                dim.d = (dim.d as isize - right_pad) as usize;
+                let old_shape = self.shape();
+                let mut stride = 1;
+                let mut res: Vec<RDim> = old_shape
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .map(|(a, &d)| {
+                        let st = stride;
+                        stride *= d;
+                        RDim {
+                            st,
+                            d: if a == axis {
+                                (d as isize + right_pad) as usize
+                            } else {
+                                d
+                            },
+                            lp: 0,
+                            rp: if a == axis { right_pad } else { 0 },
+                        }
+                    })
+                    .collect();
+                res.reverse();
+                self.0.push(res);
+            }
         }
     }
 
@@ -364,24 +424,20 @@ impl View {
                         c.mod_(a, Reg::Const(Constant::U32(u32::try_from(dim.d).unwrap())))
                     },
                 );
-                //println!("ost: {ost}, {dim:?}");
+                //println!("ost: {ost}, a: {a:?}, {dim:?}");
                 // Offset
-                // TODO later remove this condition, when IR unrolls loops
-                if dim.d != 1 {
-                    let t = if dim.lp != 0 {
-                        let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
-                        if dim.lp > 0 {
-                            c.sub(a, lp)
-                        } else {
-                            c.add(a, lp)
-                        }
+                let t = if dim.lp != 0 {
+                    let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
+                    if dim.lp > 0 {
+                        c.sub(a, lp)
                     } else {
-                        a
-                    };
-                    let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
-                    offset = c.mad(t, stride, offset);
-                }
-                //}
+                        c.add(a, lp)
+                    }
+                } else {
+                    a
+                };
+                let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
+                offset = c.mad(t, stride, offset);
                 // Padding condition
                 if dim.lp > 0 {
                     let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp - 1).unwrap()));
@@ -427,7 +483,19 @@ impl View {
 
 impl Display for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(inner) = self.0.last() {
+        for inner in &self.0 {
+            f.write_fmt(format_args!(
+                "V(sh{:?} st{:?} pd{:?})",
+                inner.iter().map(|d| d.d).collect::<Vec<usize>>(),
+                inner.iter().map(|d| d.st).collect::<Vec<usize>>(),
+                inner
+                    .iter()
+                    .map(|d| (d.lp, d.rp))
+                    .collect::<Vec<(isize, isize)>>()
+            ))?;
+        }
+        Ok(())
+        /*if let Some(inner) = self.0.last() {
             f.write_fmt(format_args!(
                 "V.{}(sh{:?} st{:?} pd{:?})",
                 self.0.len(),
@@ -440,7 +508,7 @@ impl Display for View {
             ))
         } else {
             f.write_str("none")
-        }
+        }*/
     }
 }
 
@@ -492,4 +560,10 @@ fn view_reshape2() {
     view.expand(2, 4);
     assert_eq!(view.shape(), [1, 3, 4, 5]);
     assert_eq!(view.0.len(), 1);
+}
+
+#[test]
+fn view_pad2() {
+    // Pad view twice in with opposite sings
+    todo!()
 }

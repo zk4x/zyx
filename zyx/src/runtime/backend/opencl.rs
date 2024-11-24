@@ -714,6 +714,7 @@ impl OpenCLDevice {
                         }
                     }
                     source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
+                    //source += &format!( "  printf(\"r{z}, p{address} = %f r2 = %u r4 = %u\\n\", r{z}, r2, r4);\n" );
                 }
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
@@ -759,6 +760,7 @@ impl OpenCLDevice {
                             BOp::BitXor => format!("{} ^ {}", x.ocl(), y.ocl()),
                         }
                     );
+                    //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
                 }
                 IROp::MAdd { z, a, b, c } => {
                     source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());

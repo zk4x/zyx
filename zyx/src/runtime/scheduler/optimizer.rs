@@ -187,12 +187,14 @@ impl Kernel {
     pub(super) fn optimize(&self, optimization: &KernelOptimization) -> Kernel {
         let mut kernel = self.clone();
         let sh = kernel.shape();
-        let sh: Vec<usize> = [sh[..sh.len() - 2].iter().product::<usize>()]
-            .iter()
-            .chain(sh[sh.len() - 2..].iter())
-            .copied()
-            .collect();
-        assert!(kernel.reshape(&sh));
+        if sh.len() > 3 {
+            let sh: Vec<usize> = [sh[..sh.len() - 2].iter().product::<usize>()]
+                .iter()
+                .chain(sh[sh.len() - 2..].iter())
+                .copied()
+                .collect();
+            assert!(kernel.reshape(&sh));
+        }
 
         // Apply axis splits
         for (op_id, dimensions) in &optimization.splits {

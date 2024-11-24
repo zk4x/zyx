@@ -59,21 +59,25 @@ pub(super) enum Node {
     Leaf,
     Expand {
         x: TensorId,
+        //shape: Box<Vec<usize>>,
     },
     Permute {
         x: TensorId,
+        //axes: Box<Vec<usize>>,
     },
     // Reshape can be sometimes axis split or axis join
     Reshape {
         x: TensorId,
+        //shape: Box<Vec<usize>>,
     },
     Pad {
         x: TensorId,
-        //padding: Vec<(isize, isize)>,
+        //padding: Box<Vec<(isize, isize)>>,
     },
     Reduce {
         x: TensorId,
         rop: ROp,
+        //axes: Box<Vec<usize>>,
     },
     Unary {
         x: TensorId,
