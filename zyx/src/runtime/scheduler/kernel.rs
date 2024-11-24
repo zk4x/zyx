@@ -534,7 +534,6 @@ impl Kernel {
                 }
                 //self.debug();
             }
-            // TODO deal with loop inserts
             for op in &mut self.ops {
                 match op {
                     VOp::Const { view, .. }
@@ -554,6 +553,7 @@ impl Kernel {
                 }
             }
             //self.debug();
+            // TODO deal with loop inserts
             assert_eq!(
                 self.shape(),
                 shape,

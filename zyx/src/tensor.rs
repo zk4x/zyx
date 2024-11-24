@@ -2627,9 +2627,7 @@ impl Tensor {
         let a = self.get((.., .., .., ..d / 2)).unwrap();
         let b = -self.get((.., .., .., d / 2..)).unwrap();
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
-        //println!("{ro}");
         let co = a * sin_freqs + b * cos_freqs;
-        //println!("{co}");
         let r = Tensor::cat([&co, &ro], -1).unwrap();
         Ok(r)
     }

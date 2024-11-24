@@ -64,15 +64,14 @@ fn rope1() -> Result<(), ZyxError> {
 
 #[test]
 fn rope2() -> Result<(), ZyxError> {
-    let xs =
-        Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
+    let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]])
+        .reshape([1, 1, 2, 6])?;
+
     let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let sh = xs.shape();
     let sin_freqs = sin.squeeze(1).unwrap().squeeze(0).unwrap();
-    //assert_eq!(sin_freqs, [[1f32, 4., 2.], [4., 4., 3.]]);
     let cos_freqs = cos.squeeze(1).unwrap().squeeze(0).unwrap();
-    //assert_eq!(cos_freqs, [[1f32, 4., 2.], [4., 4., 3.]]);
     let d = isize::try_from(*sh.last().unwrap()).unwrap();
     let a = xs.get((.., .., .., ..d / 2)).unwrap();
     //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);

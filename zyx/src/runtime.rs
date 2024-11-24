@@ -410,9 +410,31 @@ impl Runtime {
     #[must_use]
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         let sh = self.shape(x);
+        println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape == sh {
             self.retain(x);
             return x;
+        }
+        // Expand with only inserting first dimensions is noop
+        if self.graph[x] == Node::Leaf
+            && sh.iter().product::<usize>() == shape.iter().product::<usize>()
+        {
+            let view = View::contiguous(&shape);
+            let x_view = View::contiguous(self.graph.shape(x));
+            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|((id, v), bid)| {
+                // If it is the correct id and isn't sharded
+                if *id == x && v == &x_view {
+                    Some(bid)
+                } else {
+                    None
+                }
+            }) {
+                let id = self
+                    .graph
+                    .push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+                self.tensor_buffer_map.insert((id, view), buffer_id);
+                return id;
+            }
         }
         if shape.len() > sh.len() {
             let sh: Vec<usize> = std::iter::repeat(1)

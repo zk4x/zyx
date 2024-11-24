@@ -878,10 +878,14 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                     .position(|kernel| kernel.vars().is_superset(&[x, y].into()))
                 {
                     // If both inputs are in the same kernel
-                    let kernel = if kernels[id].shape() == graph.shape(x) {
+                    /*let kernel = if kernels[id].shape() == graph.shape(x) {
                         &mut kernels[id]
                     } else {
                         // create new kernel using already predefined stores of both x and y
+                        println!("Binary op");
+                        for kernel in &kernels {
+                            kernel.debug();
+                        }
                         let mut kernel = Kernel::load(x, graph);
                         kernel.ops.push(VOp::Load {
                             z: y,
@@ -895,30 +899,33 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                         kernels.push(kernel);
                         kernels.last_mut().unwrap()
                     };
-                    kernel.ops.push(VOp::Binary { z: nid, x, y, bop });
+                    kernel.ops.push(VOp::Binary { z: nid, x, y, bop });*/
+                    kernels[id].ops.push(VOp::Binary { z: nid, x, y, bop });
                 } else {
                     // If inputs are in different kernels
-                    // TODO rewrite this, this is incorrect
-                    //todo!();
-
                     let _t = crate::Timer::new("Binary first part");
                     let kernel_x_id = kernels
                         .iter()
                         .enumerate()
                         .rev()
-                        .find(|(_, kernel)| kernel.vars().contains(&x))
-                        //.min_by_key(|(_, kernel)| kernel.ops.len())
+                        .filter(|(_, kernel)| kernel.vars().contains(&x))
+                        .min_by_key(|(_, kernel)| kernel.ops.len())
                         .unwrap()
                         .0;
                     let kernel_y_id = kernels
                         .iter()
                         .enumerate()
                         .rev()
-                        .find(|(_, kernel)| kernel.vars().contains(&y))
-                        //.min_by_key(|(_, kernel)| kernel.ops.len())
+                        .filter(|(_, kernel)| kernel.vars().contains(&y))
+                        .min_by_key(|(_, kernel)| kernel.ops.len())
                         .unwrap()
                         .0;
                     drop(_t);
+                    if kernels[kernel_x_id].shape() != kernels[kernel_y_id].shape() {
+                        kernels[kernel_x_id].debug();
+                        kernels[kernel_y_id].debug();
+                        panic!();
+                    }
 
                     // Check which kernel needs to be evaluated first
                     // TODO make sure that depends on is never needed
@@ -957,9 +964,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                         .ops
                         .into_iter()
                         .enumerate()
-                        .skip_while(|(i, op)| {
-                            matches!(op, VOp::Loop { .. }) && op == &kernel_x.ops[*i]
-                        })
+                        .skip_while(|(i, op)| op == &kernel_x.ops[*i])
                         .map(|(_, op)| op)
                         .collect();
                     kernel_x.ops.extend(kernel_y_ops);

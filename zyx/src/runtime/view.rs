@@ -366,19 +366,21 @@ impl View {
                 );
                 //println!("ost: {ost}, {dim:?}");
                 // Offset
-                //if dim.st != 0 && dim.d != 1 {
-                let t = if dim.lp != 0 {
-                    let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
-                    if dim.lp > 0 {
-                        c.sub(a, lp)
+                // TODO later remove this condition, when IR unrolls loops
+                if dim.d != 1 {
+                    let t = if dim.lp != 0 {
+                        let lp = Reg::Const(Constant::U32(u32::try_from(dim.lp.abs()).unwrap()));
+                        if dim.lp > 0 {
+                            c.sub(a, lp)
+                        } else {
+                            c.add(a, lp)
+                        }
                     } else {
-                        c.add(a, lp)
-                    }
-                } else {
-                    a
-                };
-                let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
-                offset = c.mad(t, stride, offset);
+                        a
+                    };
+                    let stride = Reg::Const(Constant::U32(u32::try_from(dim.st).unwrap()));
+                    offset = c.mad(t, stride, offset);
+                }
                 //}
                 // Padding condition
                 if dim.lp > 0 {
@@ -434,7 +436,6 @@ impl Display for View {
                 inner
                     .iter()
                     .map(|d| (d.lp, d.rp))
-                    .rev()
                     .collect::<Vec<(isize, isize)>>()
             ))
         } else {

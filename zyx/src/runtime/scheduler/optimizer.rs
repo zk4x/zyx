@@ -55,14 +55,14 @@ impl Kernel {
         let mlws = dev_info.max_local_threads;
         let mut mlwd = dev_info.max_local_work_dims;
         let mrws = dev_info.num_registers;
-        let (maxrr, mrwd) = if true {
+        let (maxrr, mrwd) = if false {
             (8, [16, 16, 16]) // For now 16, can be raised to 32 on some hardware perhaps
         } else {
             mlwd = [1, 1, 1];
             (1, [1, 1, 1]) // For debugging
         };
 
-        let mut splits = Vec::new();
+        let mut reshapes = Vec::new();
         let num_loops = self
             .ops
             .iter()
@@ -75,16 +75,18 @@ impl Kernel {
                 .take(3 - num_loops)
                 .chain([self.shape()[0]])
                 .collect();
-            splits.push((0, dims));
+            reshapes.push((0, dims));
             let mut gws_i = 3 - num_loops;
             for d in &self.shape() {
                 gws[gws_i] = *d;
                 gws_i += 1;
             }
         } else {
-            for (gws_d, d) in gws.iter_mut().zip(self.shape()[..3].iter()) {
+            let sh = self.shape();
+            for (gws_d, d) in gws.iter_mut().zip(sh[sh.len() - 3..].iter()) {
                 *gws_d = *d;
             }
+            gws[0] = sh[..sh.len() - 2].iter().product();
         }
         //println!("Using gws {gws:?}");
         // Local work size
@@ -99,7 +101,7 @@ impl Kernel {
                                 .filter(|z| (gws[2] / lz) % z == 0)
                             {
                                 // Get splits for local and global work dims
-                                let mut splits = splits.clone();
+                                let mut splits = reshapes.clone();
                                 splits.push((2, vec![gws[2] / (lz * rz), lz, rz]));
                                 splits.push((1, vec![gws[1] / (ly * ry), ly, ry]));
                                 splits.push((0, vec![gws[0] / (lx * rx), lx, rx]));
@@ -184,6 +186,14 @@ impl Kernel {
     #[allow(clippy::cognitive_complexity)]
     pub(super) fn optimize(&self, optimization: &KernelOptimization) -> Kernel {
         let mut kernel = self.clone();
+        let sh = kernel.shape();
+        let sh: Vec<usize> = [sh[..sh.len() - 2].iter().product::<usize>()]
+            .iter()
+            .chain(sh[sh.len() - 2..].iter())
+            .copied()
+            .collect();
+        assert!(kernel.reshape(&sh));
+
         // Apply axis splits
         for (op_id, dimensions) in &optimization.splits {
             kernel.split_axis(*op_id, dimensions);
