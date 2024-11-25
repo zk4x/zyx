@@ -206,6 +206,7 @@ impl CPUTensor {
                 DType::F64 => todo!(),
                 DType::U8 => todo!(),
                 DType::U32 => todo!(),
+                DType::U64 => todo!(),
                 DType::I8 => todo!(),
                 DType::I16 => todo!(),
                 DType::I32 => todo!(),

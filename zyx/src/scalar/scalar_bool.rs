@@ -17,6 +17,10 @@ impl Scalar for bool {
         t != f16::ZERO
     }
 
+    fn from_u64(t: u64) -> Self {
+        t != 0
+    }
+
     fn from_f32(t: f32) -> Self {
         t != 0.
     }

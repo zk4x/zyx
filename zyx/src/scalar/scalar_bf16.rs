@@ -16,6 +16,11 @@ impl Scalar for bf16 {
         bf16::from_f32(t.into())
     }
 
+    fn from_u64(t: u64) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_f32(t: f32) -> Self {
         bf16::from_f32(t)
     }
@@ -29,7 +34,7 @@ impl Scalar for bf16 {
     }
 
     fn from_u32(t: u32) -> Self {
-        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
+        bf16::from_f64(f64::from(t))
     }
 
     fn from_i8(t: i8) -> Self {

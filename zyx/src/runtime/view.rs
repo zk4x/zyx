@@ -568,4 +568,64 @@ fn view_reshape2() {
 fn view_pad2() {
     // Pad view twice in with opposite sings
     //todo!()
+    let mut view = View::contiguous(&[1, 1, 2, 6]);
+    view.pad(3, -3, 0);
+    view.pad(3, 2, 0);
+    assert_eq!(
+        view,
+        View(vec![
+            vec![
+                RDim {
+                    d: 1,
+                    st: 12,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 1,
+                    st: 12,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 2,
+                    st: 6,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 3,
+                    st: 1,
+                    lp: -3,
+                    rp: 0
+                }
+            ],
+            vec![
+                RDim {
+                    d: 1,
+                    st: 6,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 1,
+                    st: 6,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 2,
+                    st: 3,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 5,
+                    st: 1,
+                    lp: 2,
+                    rp: 0
+                }
+            ]
+        ])
+    );
 }

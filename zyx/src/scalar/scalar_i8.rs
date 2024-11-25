@@ -21,6 +21,10 @@ impl Scalar for i8 {
         t as Self
     }
 
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
         t as Self

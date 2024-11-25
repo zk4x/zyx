@@ -127,7 +127,11 @@ impl Kernel {
                                             let mut splits = splits.clone();
                                             splits.insert(
                                                 0,
-                                                (id - 1 + num_loops, vec![len / rr, rr]),
+                                                (
+                                                    id - 1
+                                                        + if num_loops > 3 { 3 } else { num_loops },
+                                                    vec![len / rr, rr],
+                                                ),
                                             );
                                             // Permute, private loops last
                                             opts.push((

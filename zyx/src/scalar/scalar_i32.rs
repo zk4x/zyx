@@ -19,6 +19,10 @@ impl Scalar for i32 {
         todo!()
     }
 
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
         t as i32

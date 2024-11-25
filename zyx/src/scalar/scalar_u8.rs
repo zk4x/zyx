@@ -37,6 +37,10 @@ impl Scalar for u8 {
         t.try_into().unwrap()
     }
 
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
+
     fn from_i8(t: i8) -> Self {
         t.try_into().unwrap()
     }

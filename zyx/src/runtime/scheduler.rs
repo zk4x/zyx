@@ -475,7 +475,7 @@ impl Runtime {
                     kernel.optimize(&optimizer[optimization_id])
                 };*/
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
-                //optimized_kernel.debug();
+                optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
                 let program_id = self.devices[device_id as usize].compile(&ir_kernel, debug_asm)?;
@@ -1002,7 +1002,7 @@ fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec
                 // the same work twice.
                 //if user_leafs.contains(&nid) {
                 //kernel.store(nid, View::new(graph.shape(nid)));
-                if (kernel.ops.len() > 100
+                if ((kernel.ops.len() > 100 || graph.rc(nid) > 2)
                     && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
                     || kernel.is_reduce()
                     || !kernel.outputs().is_empty()

@@ -81,6 +81,7 @@ pub(super) enum IROp {
     },
 }
 
+// TODO remove this, just use DType and add vectors separately
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IRDType {
     BF16(IRVec),
@@ -90,6 +91,7 @@ pub(super) enum IRDType {
     F64(IRVec),
     U8(IRVec),
     U32(IRVec),
+    U64(IRVec),
     I8(IRVec),
     I16(IRVec),
     I32(IRVec),
@@ -157,6 +159,7 @@ impl DType {
             DType::F64 => IRDType::F64(IRVec::Scalar),
             DType::U8 => IRDType::U8(IRVec::Scalar),
             DType::U32 => IRDType::U32(IRVec::Scalar),
+            DType::U64 => IRDType::U64(IRVec::Scalar),
             DType::I8 => IRDType::I8(IRVec::Scalar),
             DType::I16 => IRDType::I16(IRVec::Scalar),
             DType::I32 => IRDType::I32(IRVec::Scalar),
@@ -175,7 +178,7 @@ impl IRDType {
             IRDType::F8(v) | IRDType::U8(v) | IRDType::I8(v) => v.len(),
             IRDType::BF16(v) | IRDType::F16(v) | IRDType::I16(v) => 2 * v.len(),
             IRDType::F32(v) | IRDType::I32(v) | IRDType::U32(v) => 4 * v.len(),
-            IRDType::F64(v) | IRDType::I64(v) => 8 * v.len(),
+            IRDType::F64(v) | IRDType::I64(v) | IRDType::U64(v) => 8 * v.len(),
         }
     }
 
@@ -188,6 +191,7 @@ impl IRDType {
             IRDType::F64(_) => DType::F64,
             IRDType::U8(_) => DType::U8,
             IRDType::U32(_) => DType::U32,
+            IRDType::U64(_) => DType::U64,
             IRDType::I8(_) => DType::I8,
             IRDType::I16(_) => DType::I16,
             IRDType::I32(_) => DType::I32,
@@ -207,6 +211,7 @@ impl From<DType> for IRDType {
             DType::F64 => IRDType::F64(IRVec::Scalar),
             DType::U8 => IRDType::U8(IRVec::Scalar),
             DType::U32 => IRDType::U32(IRVec::Scalar),
+            DType::U64 => IRDType::U64(IRVec::Scalar),
             DType::I8 => IRDType::I8(IRVec::Scalar),
             DType::I16 => IRDType::I16(IRVec::Scalar),
             DType::I32 => IRDType::I32(IRVec::Scalar),

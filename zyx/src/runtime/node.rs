@@ -157,6 +157,7 @@ trait CastDType: Scalar {
             DType::F64 => Constant::F64(self.cast::<f64>().to_bits()),
             DType::U8 => Constant::U8(self.cast()),
             DType::U32 => Constant::U32(self.cast()),
+            DType::U64 => Constant::U64(self.cast()),
             DType::I8 => Constant::I8(self.cast()),
             DType::I16 => Constant::I16(self.cast()),
             DType::I32 => Constant::I32(self.cast()),
@@ -211,6 +212,7 @@ impl Constant {
                 Constant::I8(x) => x.cast_dtype(dtype),
                 Constant::I16(x) => x.cast_dtype(dtype),
                 Constant::U32(x) => x.cast_dtype(dtype),
+                Constant::U64(x) => x.cast_dtype(dtype),
                 Constant::I32(x) => x.cast_dtype(dtype),
                 Constant::I64(x) => x.cast_dtype(dtype),
                 Constant::Bool(x) => x.cast_dtype(dtype),
@@ -228,6 +230,7 @@ impl Constant {
             Constant::F64(x) => Constant::F64(unary_func_float(f64::from_bits(x), uop).to_bits()),
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
             Constant::U32(x) => Constant::U32(unary_func(x, uop)),
+            Constant::U64(x) => Constant::U64(unary_func(x, uop)),
             Constant::I8(x) => Constant::I8(unary_func(x, uop)),
             Constant::I16(x) => Constant::I16(unary_func(x, uop)),
             Constant::I32(x) => Constant::I32(unary_func(x, uop)),
@@ -286,6 +289,10 @@ impl Constant {
             }
             Constant::U32(x) => {
                 let Constant::U32(y) = y else { unreachable!() };
+                binary_func(x, y, bop)
+            }
+            Constant::U64(x) => {
+                let Constant::U64(y) = y else { unreachable!() };
                 binary_func(x, y, bop)
             }
             Constant::I8(x) => {

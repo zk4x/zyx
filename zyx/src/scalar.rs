@@ -11,6 +11,7 @@ mod scalar_i32;
 mod scalar_i64;
 mod scalar_i8;
 mod scalar_u32;
+mod scalar_u64;
 mod scalar_u8;
 
 use float8::F8E4M3;
@@ -41,6 +42,9 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// From u32
     #[must_use]
     fn from_u32(t: u32) -> Self;
+    /// From u64
+    #[must_use]
+    fn from_u64(t: u64) -> Self;
     /// From i8
     #[must_use]
     fn from_i8(t: i8) -> Self;
@@ -153,6 +157,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
                 DType::F64 => T::from_f64(t(&self)),
                 DType::U8 => T::from_u8(t(&self)),
                 DType::U32 => T::from_u32(t(&self)),
+                DType::U64 => T::from_u64(t(&self)),
                 DType::I8 => T::from_i8(t(&self)),
                 DType::I16 => T::from_i16(t(&self)),
                 DType::I32 => T::from_i32(t(&self)),

@@ -709,6 +709,7 @@ impl IRDType {
             Self::I64(v) => "long",
             Self::Bool => "bool",
             Self::U32(v) => "unsigned int",
+            Self::U64(v) => "unsigned long",
         }
     }
 }
@@ -735,6 +736,7 @@ impl Constant {
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}"),
+            Self::U64(x) => format!("{x}"),
             Self::I32(x) => format!("{x}"),
             Self::I64(x) => format!("{x}"),
             Self::Bool(x) => format!("{x}"),

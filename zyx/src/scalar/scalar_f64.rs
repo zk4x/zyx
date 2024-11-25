@@ -16,6 +16,11 @@ impl Scalar for f64 {
         t.into()
     }
 
+    fn from_u64(t: u64) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_f32(t: f32) -> Self {
         f64::from(t)
     }

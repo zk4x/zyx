@@ -25,6 +25,8 @@ pub enum DType {
     U8,
     /// 32 bit unsigned integer data type.
     U32,
+    /// 64 bit unsigned integer data type.
+    U64,
     /// 8 bit signed integer data type.
     I8,
     /// 16 bit signed integer data type.
@@ -47,6 +49,7 @@ impl Display for DType {
             Self::F64 => "F64",
             Self::U8 => "U8",
             Self::U32 => "U32",
+            Self::U64 => "U64",
             Self::I8 => "I8",
             Self::I16 => "I16",
             Self::I32 => "I32",
@@ -62,9 +65,14 @@ impl DType {
     pub const fn is_float(&self) -> bool {
         match self {
             Self::BF16 | Self::F8 | Self::F16 | Self::F32 | Self::F64 => true,
-            Self::U8 | Self::U32 | Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Bool => {
-                false
-            }
+            Self::U8
+            | Self::U32
+            | Self::U64
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::Bool => false,
         }
     }
 
@@ -75,7 +83,7 @@ impl DType {
             Self::F8 | Self::U8 | Self::I8 | Self::Bool => 1,
             Self::BF16 | Self::F16 | Self::I16 => 2,
             Self::F32 | Self::I32 | Self::U32 => 4,
-            Self::F64 | Self::I64 => 8,
+            Self::F64 | Self::I64 | Self::U64 => 8,
         }
     }
 
@@ -93,6 +101,7 @@ impl DType {
             Self::I16 => Constant::I16(0),
             Self::I32 => Constant::I32(0),
             Self::I64 => Constant::I64(0),
+            Self::U64 => Constant::U64(0),
             Self::Bool => Constant::Bool(false),
         }
     }
@@ -111,6 +120,7 @@ impl DType {
             Self::I16 => Constant::I16(i16::MIN),
             Self::I32 => Constant::I32(i32::MIN),
             Self::I64 => Constant::I64(i64::MIN),
+            Self::U64 => Constant::U64(u64::MIN),
             Self::Bool => Constant::Bool(false),
         }
     }
@@ -129,6 +139,7 @@ impl DType {
             Self::I16 => "I16",
             Self::I32 => "I32",
             Self::I64 => "I64",
+            Self::U64 => "U64",
             Self::Bool => "BOOL",
         }
     }
@@ -146,6 +157,7 @@ impl DType {
             "I16" => Self::I16,
             "I32" => Self::I32,
             "I64" => Self::I64,
+            "U64" => Self::U64,
             "BOOL" => Self::Bool,
             _ => {
                 return Err(ZyxError::ParseError(format!(
@@ -166,6 +178,7 @@ pub enum Constant {
     F64(u64),
     U8(u8),
     U32(u32),
+    U64(u64),
     I8(i8),
     I16(i16),
     I32(i32),
@@ -184,6 +197,7 @@ impl Constant {
             DType::F64 => Self::F64(unsafe { t(&x) }),
             DType::U8 => Self::U8(unsafe { t(&x) }),
             DType::U32 => Self::U32(unsafe { t(&x) }),
+            DType::U64 => Self::U64(unsafe { t(&x) }),
             DType::I8 => Self::I8(unsafe { t(&x) }),
             DType::I16 => Self::I16(unsafe { t(&x) }),
             DType::I32 => Self::I32(unsafe { t(&x) }),
@@ -201,6 +215,7 @@ impl Constant {
             Self::F64(_) => DType::F64,
             Self::U8(_) => DType::U8,
             Self::U32(_) => DType::U32,
+            Self::U64(_) => DType::U64,
             Self::I8(_) => DType::I8,
             Self::I16(_) => DType::I16,
             Self::I32(_) => DType::I32,
@@ -218,6 +233,7 @@ impl Constant {
             Constant::F64(x) => f64::from_bits(x) == 0f64,
             Constant::U8(x) => x == 0,
             Constant::U32(x) => x == 0,
+            Constant::U64(x) => x == 0,
             Constant::I8(x) => x == 0,
             Constant::I16(x) => x == 0,
             Constant::I32(x) => x == 0,
@@ -235,6 +251,7 @@ impl Constant {
             Constant::F64(x) => f64::from_bits(x) == 1f64,
             Constant::U8(x) => x == 1,
             Constant::U32(x) => x == 1,
+            Constant::U64(x) => x == 1,
             Constant::I8(x) => x == 1,
             Constant::I16(x) => x == 1,
             Constant::I32(x) => x == 1,
@@ -261,6 +278,7 @@ impl Display for Constant {
             Self::I16(value) => f.write_fmt(format_args!("{value}")),
             Self::I32(value) => f.write_fmt(format_args!("{value}")),
             Self::I64(value) => f.write_fmt(format_args!("{value}")),
+            Self::U64(value) => f.write_fmt(format_args!("{value}")),
             Self::Bool(value) => f.write_fmt(format_args!("{value}")),
         }
     }

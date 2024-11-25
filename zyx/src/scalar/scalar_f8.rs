@@ -16,6 +16,11 @@ impl Scalar for F8E4M3 {
         Self::from_f32(t.to_f32())
     }
 
+    fn from_u64(t: u64) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_f32(t: f32) -> Self {
         Self::from_f32(t)
     }
