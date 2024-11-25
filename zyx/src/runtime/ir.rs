@@ -439,7 +439,7 @@ impl IRCompiler {
                 _ => {}
             }
         }
-        c.dtypes = vec![DType::U32; max_axis as usize + 1];
+        c.dtypes = vec![DType::U64; max_axis as usize + 1];
 
         // Transpiling from Kernel to IRKernel, VOp -> IROp
         let mut loops = Vec::new();
