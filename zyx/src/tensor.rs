@@ -5,7 +5,7 @@
 #![allow(clippy::fallible_impl_from)]
 
 use crate::dtype::DType;
-use crate::runtime::ZyxError;
+use crate::runtime::{apply_padding, ZyxError};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{into_axes, into_axis, IntoShape};
 use core::cmp::Ordering;
@@ -1102,7 +1102,9 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let x = Tensor::from([[2, 3],
     ///                       [4, 1]]);
+    /// println!("{:?}\n{x}", x.shape());
     /// let z = x.pad([(1, 2)], 0)?;
+    /// println!("{:?}\n{z}", z.shape());
     /// assert_eq!(z, [[0, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);
     /// # Ok::<(), zyx::ZyxError>(())
@@ -1131,7 +1133,7 @@ impl Tensor {
         let dtype = self.dtype();
         let value: Tensor = value.into();
         let padding: Vec<(isize, isize)> = padding.into_iter().collect();
-        let sh = self.shape();
+        let mut sh = self.shape();
         if value.dtype() != dtype {
             return Err(ZyxError::DTypeError(format!(
                 "Cannot pad tensor with dtype {} with value of dtype {}",
@@ -1144,6 +1146,7 @@ impl Tensor {
         }
         let t0 = self.pad_zeros(padding.clone());
         let ones = Tensor::ones(sh.clone(), dtype);
+        apply_padding(&mut sh, &padding);
         let zeros = Tensor::zeros(sh, self.dtype());
         Ok(t0? + ones.pad_zeros(padding)?.where_(zeros, value)?)
     }
@@ -1750,7 +1753,7 @@ impl Tensor {
     ///
     /// let a = Tensor::from([1.0, 2.0, 3.0]);
     /// let b = Tensor::from([4.0, 5.0, 6.0]);
-    /// assert_eq!(a.cmplt(b)?, [1., 1., 1.]);
+    /// assert_eq!(a.cmplt(b)?, [true, true, true]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -2948,7 +2951,9 @@ impl Tensor {
         );*/
         // Now we just do implicit conversions. Not exactly rust style, but it's convenient.
         // We can later add option for backend to disable these implicit conversions.
-        match (x.dtype(), y.dtype()) {
+        let y_dtype = y.dtype();
+        let x_dtype = x.dtype();
+        match (x_dtype, y_dtype) {
             (DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8, DType::BF16) => {
                 x = x.cast(DType::BF16);
             }
@@ -3029,6 +3034,18 @@ impl Tensor {
             | (DType::I32, DType::I32)
             | (DType::I64, DType::I64)
             | (DType::Bool, DType::Bool) => {}
+            (
+                DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8,
+                DType::Bool,
+            ) => {
+                y = y.cast(x_dtype);
+            }
+            (
+                DType::Bool,
+                DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8,
+            ) => {
+                x = x.cast(y_dtype);
+            }
             (dt0, dt1) => {
                 return Err(ZyxError::DTypeError(format!("Binary operands have dtypes {dt0} and {dt1}, which could not be implicitly casted. Please explicitly cast them to common dtype.")));
             }

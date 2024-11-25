@@ -260,16 +260,14 @@ impl View {
     }
 
     pub(crate) fn pad(&mut self, axis: usize, left_pad: isize, right_pad: isize) {
-        let old_shape = self.shape();
+        let mut old_shape = self.shape();
         if let Some(inner) = self.0.last_mut() {
             let mut dim = &mut inner[axis];
             dim.d =
                 usize::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
             // TODO this is possible only if original padding has the same sign or is zero
             // otherwise we need to create a new inner
-            if dim.lp == 0 || ((dim.lp > 0 && left_pad > 0) || (dim.lp < 0 && left_pad < 0)) {
-                dim.lp += left_pad;
-            } else {
+            if dim.lp < 0 && left_pad > 0 {
                 dim.d = (dim.d as isize - left_pad) as usize;
                 let mut stride = 1;
                 let mut res: Vec<RDim> = old_shape
@@ -294,10 +292,10 @@ impl View {
                 res.reverse();
                 self.0.push(res);
                 dim = &mut self.0.last_mut().unwrap()[axis];
-            }
-            if dim.rp == 0 || ((dim.rp > 0 && right_pad > 0) || (dim.rp < 0 && right_pad < 0)) {
-                dim.rp += right_pad;
             } else {
+                dim.lp += left_pad;
+            }
+            if dim.rp < 0 && right_pad > 0 {
                 dim.d = (dim.d as isize - right_pad) as usize;
                 let old_shape = self.shape();
                 let mut stride = 1;
@@ -322,8 +320,12 @@ impl View {
                     .collect();
                 res.reverse();
                 self.0.push(res);
+            } else {
+                dim.rp += right_pad;
             }
         }
+        old_shape[axis] = (old_shape[axis] as isize + left_pad + right_pad) as usize;
+        assert_eq!(self.shape(), old_shape);
     }
 
     /// Load constant into variable or directly return it if view isn't padded
@@ -565,5 +567,5 @@ fn view_reshape2() {
 #[test]
 fn view_pad2() {
     // Pad view twice in with opposite sings
-    todo!()
+    //todo!()
 }

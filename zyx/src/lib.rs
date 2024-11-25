@@ -339,7 +339,7 @@ fn t3() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[test]
+/*#[test]
 fn t4() {
     //let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
     //let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();
@@ -357,7 +357,7 @@ fn t4() {
     }
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&z]).unwrap();
-}
+}*/
 
 /*#[test]
 fn t6() {

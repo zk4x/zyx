@@ -410,7 +410,7 @@ impl Runtime {
     #[must_use]
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         let sh = self.shape(x);
-        println!("Expanding {x} from {sh:?} to {shape:?}");
+        //println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape == sh {
             self.retain(x);
             return x;
@@ -467,15 +467,7 @@ impl Runtime {
     pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
         let mut shape: Vec<usize> = self.shape(x).into();
         //println!("Self shape: {shape:?}, padding: {padding:?}");
-        let mut i = 0;
-        for d in shape.iter_mut().rev() {
-            *d = usize::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
-                .unwrap();
-            i += 1;
-            if i >= padding.len() {
-                break;
-            }
-        }
+        apply_padding(&mut shape, &padding);
         let id = self.graph.push_wshape(Node::Pad { x }, shape);
         self.graph.push_padding(id, padding);
         id
@@ -629,6 +621,17 @@ impl Runtime {
             y,
             bop: BOp::Max,
         })
+    }
+}
+
+pub(crate) fn apply_padding(shape: &mut Vec<usize>, padding: &Vec<(isize, isize)>) {
+    let mut i = 0;
+    for d in shape.iter_mut().rev() {
+        *d = usize::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        i += 1;
+        if i >= padding.len() {
+            break;
+        }
     }
 }
 
