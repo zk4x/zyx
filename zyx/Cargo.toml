@@ -19,12 +19,12 @@ maintenance = { status = "experimental" }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.5", default-features = false } # ISC
 # serde is used to read backend config
-serde = { version = "1.0.209", default-features = false, features = [
+serde = { version = "1.0.215", default-features = false, features = [
     "std",
     "derive",
 ] } # MIT or Apache 2.0
 # JSON is used to read backend config
-serde_json = { version = "1.0.128", default-features = false, features = [
+serde_json = { version = "1.0.133", default-features = false, features = [
     "std",
 ] } # MIT or Apache 2.0
 # Support for random number generation
@@ -40,7 +40,7 @@ float8 = { version = "0.1.1" } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1" } # MIT or Apache 2.0
 # Progress bar for loading tensors and such
-indicatif = { version = "0.17.8" }
+indicatif = { version = "0.17.9" }
 # Memory mapped loading of tensors from disk
 memmap2 = { version = "0.9.5" }
 
@@ -52,7 +52,7 @@ bitcode = { version = "0.6.3", default-features = false, features = [
 ], optional = true } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "23.0.0", default-features = false, features = [
+wgpu = { version = "23.0.1", default-features = false, features = [
     "wgsl",
 ], optional = true }
 # Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
@@ -65,7 +65,7 @@ pollster = { version = "0.4.0", default-features = false, optional = true }
 gguf = { version = "0.1.2", default-features = false, optional = true }
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.22.2", optional = true } # MIT or Apache 2.0
+pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
 
 [lib]
 crate-type = ["lib"] #, "cdylib"]

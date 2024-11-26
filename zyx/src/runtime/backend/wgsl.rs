@@ -462,6 +462,9 @@ impl WGSLDevice {
         if debug_asm {
             println!("{source}");
         }
+        if source.contains("f16") {
+            source.insert_str(0, "enable f16;\n");
+        }
 
         let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
             label: None,
@@ -599,6 +602,7 @@ impl IRDType {
             IRDType::I32(_) => "i32",
             IRDType::I64(_) => "i64",
             IRDType::U32(_) => "u32",
+            IRDType::U64(_) => "u64",
             IRDType::Bool => "bool",
         }
     }
@@ -616,6 +620,7 @@ impl Constant {
             Constant::I8(x) => format!("{x}"),
             Constant::I16(x) => format!("{x}"),
             Constant::U32(x) => format!("{x}u"),
+            Constant::U64(x) => format!("u64({x})"),
             Constant::I32(x) => format!("{x}"),
             Constant::I64(x) => format!("{x}"),
             Constant::Bool(x) => format!("{x}"),

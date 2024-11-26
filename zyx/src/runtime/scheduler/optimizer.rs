@@ -55,7 +55,7 @@ impl Kernel {
         let mlws = dev_info.max_local_threads;
         let mut mlwd = dev_info.max_local_work_dims;
         let mrws = dev_info.num_registers;
-        let (maxrr, mrwd) = if false {
+        let (maxrr, mrwd) = if true {
             (8, [16, 16, 16]) // For now 16, can be raised to 32 on some hardware perhaps
         } else {
             mlwd = [1, 1, 1];

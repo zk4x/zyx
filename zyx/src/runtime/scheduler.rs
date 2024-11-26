@@ -92,7 +92,8 @@ impl Runtime {
             .collect();
         let mut temp_tensors: BTreeSet<TensorId> = BTreeSet::new();
 
-        for kid in 0..kernels.len() {
+        let kernels_len = kernels.len();
+        for kid in 0..kernels_len {
             //for mut kernel in kernels {
             let kernel = &mut kernels[kid];
             let mut program_wait_list = Vec::new();
@@ -205,7 +206,7 @@ impl Runtime {
                 // Disk cached search, works across devices and platforms
                 let optimization = self.search_kernel_optimization(kernel, device_id, &graph)?;
                 if self.debug_sched() {
-                    println!("Using optimization {optimization}");
+                    println!("Kernel {kid}/{kernels_len} using {optimization}");
                 }
                 // Compile and cache program
                 let (program_id, args) =
@@ -475,7 +476,7 @@ impl Runtime {
                     kernel.optimize(&optimizer[optimization_id])
                 };*/
                 let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
-                optimized_kernel.debug();
+                //optimized_kernel.debug();
                 //panic!();
                 let (ir_kernel, _) = IRKernel::new(&optimized_kernel.ops);
                 let program_id = self.devices[device_id as usize].compile(&ir_kernel, debug_asm)?;
