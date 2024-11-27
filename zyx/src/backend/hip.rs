@@ -5,9 +5,9 @@
 use super::DeviceInfo;
 use crate::dtype::Constant;
 use crate::index_map::Id;
-use crate::runtime::ir::{IRDType, IROp, Reg, Scope};
-use crate::runtime::node::{BOp, UOp};
-use crate::{index_map::IndexMap, runtime::ir::IRKernel};
+use crate::ir::{IRDType, IROp, Reg, Scope};
+use crate::node::{BOp, UOp};
+use crate::{index_map::IndexMap, ir::IRKernel};
 use libloading::Library;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;

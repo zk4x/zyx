@@ -1,13 +1,13 @@
 use std::{collections::BTreeSet, ops::Range};
 
 use crate::{
-    runtime::{graph::Graph, ir::Scope, view::View},
+    graph::Graph, ir::Scope, view::View,
     shape::{Axis, Dimension},
     tensor::TensorId,
     DType,
 };
 
-use super::{shape_to_loops, vop::VOp};
+use super::vop::VOp;
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,6 +45,12 @@ impl Kernel {
             }
         }
         println!();
+    }
+
+    pub(super) fn with_shape(shape: &[usize]) -> Kernel {
+        Kernel {
+            ops: shape_to_loops(shape),
+        }
     }
 
     pub(super) fn shape(&self) -> Vec<usize> {
@@ -642,6 +648,17 @@ fn get_reshape_pattern(
         }
     }
     Some((0, reshapes))
+}
+
+fn shape_to_loops(shape: &[usize]) -> Vec<VOp> {
+    let mut res = Vec::with_capacity(20);
+    for (axis, dimension) in shape.iter().copied().enumerate() {
+        res.push(VOp::Loop {
+            axis,
+            len: dimension,
+        });
+    }
+    res
 }
 
 #[test]

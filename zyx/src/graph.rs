@@ -1,9 +1,7 @@
 //! Graph of tensor operations.
 
-use super::{
-    node::{BOp, Node},
-    TensorId,
-};
+use crate::node::{BOp, Node};
+use crate::tensor::TensorId;
 use crate::{
     index_map::IndexMap,
     shape::{Axis, Dimension},

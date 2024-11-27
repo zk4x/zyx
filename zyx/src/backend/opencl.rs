@@ -5,10 +5,8 @@ use super::DeviceInfo;
 use crate::{
     dtype::Constant,
     index_map::{Id, IndexMap},
-    runtime::{
-        ir::{IRDType, IRKernel, IROp, Reg, Scope},
-        node::{BOp, UOp},
-    },
+    ir::{IRDType, IRKernel, IROp, Reg, Scope},
+    node::{BOp, UOp},
 };
 use libloading::Library;
 use std::{

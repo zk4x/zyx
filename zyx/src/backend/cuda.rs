@@ -12,9 +12,9 @@ use libloading::Library;
 use super::DeviceInfo;
 use crate::dtype::Constant;
 use crate::index_map::{Id, IndexMap};
-use crate::runtime::ir::IRKernel;
-use crate::runtime::ir::{IRDType, IROp, Reg, Scope};
-use crate::runtime::node::{BOp, UOp};
+use crate::ir::IRKernel;
+use crate::ir::{IRDType, IROp, Reg, Scope};
+use crate::node::{BOp, UOp};
 use crate::DType;
 
 /// CUDA configuration

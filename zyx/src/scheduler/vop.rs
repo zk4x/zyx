@@ -1,10 +1,8 @@
 use crate::{
     dtype::{Constant, DType},
-    runtime::{
-        ir::Scope,
-        node::{BOp, ROp, UOp},
-        view::View,
-    },
+    ir::Scope,
+    node::{BOp, ROp, UOp},
+    view::View,
     shape::{Axis, Dimension},
     tensor::TensorId,
 };

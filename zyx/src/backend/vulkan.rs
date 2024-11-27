@@ -2,7 +2,7 @@
 
 use crate::{
     index_map::{Id, IndexMap},
-    runtime::ir::IRKernel,
+    ir::IRKernel,
 };
 
 use super::DeviceInfo;

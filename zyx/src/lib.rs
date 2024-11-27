@@ -57,6 +57,13 @@ mod runtime;
 mod scalar;
 mod shape;
 mod tensor;
+
+mod backend;
+mod graph;
+mod ir;
+mod node;
+mod scheduler;
+mod view;
 // Constant hasher because apparently noone invented that yet...
 //mod chasher;
 

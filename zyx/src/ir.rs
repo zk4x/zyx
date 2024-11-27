@@ -5,7 +5,7 @@
 use super::{node::ROp, scheduler::VOp};
 use crate::{
     dtype::Constant,
-    runtime::node::{BOp, UOp},
+    node::{BOp, UOp},
     tensor::TensorId,
     DType,
 };

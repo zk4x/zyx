@@ -1,34 +1,26 @@
 use crate::dtype::{Constant, DType};
-use crate::index_map::Id;
+use crate::ir::IRKernel;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
-use backend::{
-    BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool,
-    OpenCLConfig, OpenCLError, VulkanConfig, VulkanError,
+use crate::backend::{
+    BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool, OpenCLConfig, OpenCLError, ProgramId, VulkanConfig, VulkanError
 };
 #[cfg(feature = "wgsl")]
-use backend::{WGSLConfig, WGSLError};
-use graph::Graph;
-use node::{BOp, Node, ROp, UOp};
-use scheduler::{CompiledGraph, Kernel, KernelOptimization, KernelOptimizer};
+use crate::backend::{WGSLConfig, WGSLError};
+use crate::graph::Graph;
+use crate::node::{BOp, Node, ROp, UOp};
+use crate::scheduler::{CompiledGraph, Kernel, KernelOptimizer};
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-use view::View;
+use crate::view::View;
 
 use half::{bf16, f16};
 use rand::rngs::SmallRng;
-
-mod backend;
-mod graph;
-mod ir;
-mod node;
-mod scheduler;
-mod view;
 
 /// Device configuration
 #[cfg_attr(feature = "py", pyo3::pyclass)]
@@ -60,7 +52,7 @@ pub struct Runtime {
     // Where are tensors stored
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
     // Cache which maps optimized Kernel to device and program id on the device
-    kernel_cache: BTreeMap<(Kernel, KernelOptimization), (DeviceId, Id)>,
+    kernel_cache: BTreeMap<IRKernel, (DeviceId, ProgramId)>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
     // Zyx configuration directory path
@@ -107,6 +99,99 @@ impl Runtime {
             self.deinitialize()?;
         }
         Ok(())
+    }
+
+    // Initializes all available devices, creating a device for each compute
+    // device and a memory pool for each physical memory.
+    // Does nothing if devices were already initialized.
+    // Returns error if all devices failed to initialize
+    // DeviceParameters allows to disable some devices if requested
+    pub(crate) fn initialize_devices(&mut self) -> Result<(), ZyxError> {
+        if !self.devices.is_empty() {
+            return Ok(());
+        }
+
+        // Set env vars
+        if let Ok(x) = std::env::var("ZYX_DEBUG") {
+            if let Ok(x) = x.parse::<u32>() {
+                self.debug = x;
+            }
+        }
+
+        // ZYX_SEARCH is number of variations of one kernel that will be tried
+        // during each run of the program. Timings are cached to disk,
+        // so rerunning the same kernels will continue the search where it left of.
+        if let Ok(x) = std::env::var("ZYX_SEARCH") {
+            if let Ok(x) = x.parse() {
+                self.search_iterations = x;
+            }
+        }
+
+        // Search through config directories and find zyx/backend_config.json
+        // If not found or failed to parse, use defaults.
+        let device_config = xdg::BaseDirectories::new()
+            .map_err(|e| {
+                if self.debug_dev() {
+                    println!("Failed to find config directories for device_config.json, {e}");
+                }
+            })
+            .ok()
+            .map(|bd| {
+                let mut dirs = bd.get_config_dirs();
+                dirs.push(bd.get_config_home());
+                dirs
+            })
+            .and_then(|paths| {
+                paths.into_iter().find_map(|mut path| {
+                    path.push("zyx/device_config.json");
+                    if let Ok(file) = std::fs::read_to_string(&path) {
+                        path.pop();
+                        self.config_dir = Some(path);
+                        Some(file)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .and_then(|file| {
+                serde_json::from_str(&file)
+                    .map_err(|e| {
+                        if self.debug_dev() {
+                            println!("Failed to parse device_config.json, {e}");
+                        }
+                    })
+                    .ok()
+            })
+            .inspect(|_| {
+                if self.debug_dev() {
+                    println!("Device config successfully read and parsed.");
+                }
+            })
+            .unwrap_or_else(|| {
+                if self.debug_dev() {
+                    println!("Failed to get device config, using defaults.");
+                }
+                DeviceConfig::default()
+            });
+
+        // Load optimizer cache from disk if it exists
+        #[cfg(feature = "disk_cache")]
+        {
+            if let Some(mut path) = self.config_dir.clone() {
+                path.push("cached_kernels");
+                if let Ok(mut file) = std::fs::File::open(path) {
+                    use std::io::Read;
+                    let mut buf = Vec::new();
+                    file.read_to_end(&mut buf).unwrap();
+                    if let Ok(optimizer_cache) = bitcode::decode(&buf) {
+                        self.optimizer_cache = optimizer_cache;
+                    }
+                }
+            }
+        }
+        //println!("Initializing");
+        let debug_dev = self.debug_dev();
+        crate::backend::initialize_backends(&device_config, &mut self.memory_pools, &mut self.devices, debug_dev)
     }
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
@@ -749,11 +834,17 @@ impl Runtime {
         //println!("Realizing {:?}", graph.to_eval);
         // Compile and launch
         if !self.compiled_graph_cache.contains_key(&graph) {
-            let compiled_graph = self.compile_graph(graph.clone())?;
+            let debug_perf = self.debug_perf();
+            let debug_sched = self.debug_sched();
+            let debug_ir = self.debug_ir();
+            let debug_asm = self.debug_asm();
+            let compiled_graph = crate::scheduler::compile_graph(graph.clone(), &mut self.memory_pools, &mut self.devices, &self.tensor_buffer_map,
+                &mut self.optimizer_cache, &mut self.kernel_cache, self.search_iterations, self.config_dir.as_ref().map(|x| x.as_path()), debug_perf, debug_sched, debug_ir, debug_asm)?;
             self.compiled_graph_cache
                 .insert(graph.clone(), compiled_graph);
         }
-        self.launch_graph(&graph)?;
+        let debug_perf = self.debug_perf();
+        crate::scheduler::launch_graph(&graph, &self.compiled_graph_cache[&graph], &mut self.memory_pools, &mut self.devices, &mut self.tensor_buffer_map, debug_perf)?;
         // Deallocate them from devices
         self.deallocate_tensors(&to_delete)?;
         // Remove evaluated part of graph unless needed for backpropagation
