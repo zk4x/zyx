@@ -78,12 +78,18 @@ pub fn compile_graph(
     //println!("{:?}", self.tensor_buffer_map);
     if debug_sched {
         //for kernel in &kernels { kernel.debug(); }
-        println!("split graph into {} kernels, kernel ops min {}, max {}, optimizing kernels:", kernels.len(), kernels.iter().map(|kernel| kernel.ops.len()).min().unwrap(), kernels.iter().map(|kernel| kernel.ops.len()).max().unwrap());
+        println!(
+            "split graph into {} kernels, kernel ops min {}, max {}, optimizing kernels:",
+            kernels.len(),
+            kernels.iter().map(|kernel| kernel.ops.len()).min().unwrap(),
+            kernels.iter().map(|kernel| kernel.ops.len()).max().unwrap()
+        );
     }
     //panic!("Done");
     let mut sched_graph: Vec<SchedulerOp> = Vec::new();
     // Simulated device occupation. How many kernels are running on each device, if more than x, finish first one before launching next one
-    let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..u32::try_from(devices.len()).unwrap())
+    let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..u32::try_from(devices.len())
+        .unwrap())
         .map(|device_id| (device_id, Vec::new()))
         .collect();
     // Simulated tensor buffer map
@@ -196,7 +202,7 @@ pub fn compile_graph(
             // Move necessary inputs to memory pool associated with this device
             for input in &kernel.inputs() {
                 let view = View::contiguous(graph.shape(*input));
-                println!("Tensor map tensor {input}");
+                //println!("Tensor map tensor {input}");
                 let buf_mpid = tensor_buffer_map.remove(&(*input, view.clone())).unwrap();
                 //println!("From {memory_pool_id} to {buf_mpid} {}", self.memory_pools[memory_pool_id].free_bytes());
                 if buf_mpid != memory_pool_id {
@@ -419,12 +425,15 @@ pub fn launch_graph(
     }
     if debug_perf {
         let duration = begin.elapsed();
-        println!("Graph perf: {}", perf_string(
-            compiled_graph.flop,
-            compiled_graph.bytes_read,
-            compiled_graph.bytes_written,
-            duration.as_nanos(),
-        ));
+        println!(
+            "Graph perf: {}",
+            perf_string(
+                compiled_graph.flop,
+                compiled_graph.bytes_read,
+                compiled_graph.bytes_written,
+                duration.as_nanos(),
+            )
+        );
     }
     Ok(())
 }
@@ -507,7 +516,12 @@ fn search_kernel_optimization(
             optimizer.set_exec_time(optimization_id, exec_time);
             if let Some((f, mr, mw)) = flop_mem_rw {
                 if let Some(bar) = &progress_bar {
-                    bar.set_message(format!("{}/{} {}", i + 1, search_iterations.min(rem_opts), perf_string(f, mr, mw, optimizer.best_exec_time())));
+                    bar.set_message(format!(
+                        "{}/{} {}",
+                        i + 1,
+                        search_iterations.min(rem_opts),
+                        perf_string(f, mr, mw, optimizer.best_exec_time())
+                    ));
                 }
             }
             #[cfg(feature = "disk_cache")]
