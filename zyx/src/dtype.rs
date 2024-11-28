@@ -238,10 +238,11 @@ impl Constant {
             Constant::I16(x) => x == 0,
             Constant::I32(x) => x == 0,
             Constant::I64(x) => x == 0,
-            Constant::Bool(x) => x == false,
+            Constant::Bool(x) => !x,
         }
     }
 
+    #[allow(clippy::float_cmp)]
     pub(crate) fn is_one(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_bits(x) == bf16::ONE,
@@ -256,7 +257,7 @@ impl Constant {
             Constant::I16(x) => x == 1,
             Constant::I32(x) => x == 1,
             Constant::I64(x) => x == 1,
-            Constant::Bool(x) => x == true,
+            Constant::Bool(x) => x,
         }
     }
 }

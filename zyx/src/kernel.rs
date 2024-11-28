@@ -1,4 +1,4 @@
-//! Kernel
+//! Kernel represents hardware kernel, uses view for movement ops and can have all optimizations applied.
 
 use std::{collections::BTreeSet, ops::Range};
 

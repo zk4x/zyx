@@ -1,3 +1,5 @@
+//! Runtime handles tensor graph and connects tensors to device buffers.
+
 use crate::backend::{
     BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool,
     OpenCLConfig, OpenCLError, ProgramId, VulkanConfig, VulkanError,

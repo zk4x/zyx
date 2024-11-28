@@ -1,3 +1,5 @@
+//! View handles movement operations.
+
 use super::ir::{IRCompiler, IROp, Reg};
 use crate::{dtype::Constant, DType};
 use std::{fmt::Display, ops::Range};

@@ -1,3 +1,5 @@
+//! Generates possible optimizations for kernelw
+
 use std::{collections::BTreeSet, fmt::Display};
 
 use super::kernel::Kernel;
