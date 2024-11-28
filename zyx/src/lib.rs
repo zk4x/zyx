@@ -65,10 +65,10 @@ mod node;
 mod scheduler;
 mod view;
 
+mod generator;
 mod kernel;
 mod optimizer;
-mod generator;
-// Constant hasher because apparently noone invented that yet...
+// Constant initializable hasher because apparently noone invented that yet...
 //mod chasher;
 
 pub use dtype::DType;

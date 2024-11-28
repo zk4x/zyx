@@ -1,7 +1,14 @@
 use std::{collections::BTreeSet, ops::Range};
 
 use crate::{
-    dtype::Constant, graph::Graph, ir::Scope, node::{BOp, ROp, UOp}, shape::{Axis, Dimension}, tensor::TensorId, view::View, DType
+    dtype::Constant,
+    graph::Graph,
+    ir::Scope,
+    node::{BOp, ROp, UOp},
+    shape::{Axis, Dimension},
+    tensor::TensorId,
+    view::View,
+    DType,
 };
 
 // Should be just Unary, Binary, Const, Copy, Loop, Reduce

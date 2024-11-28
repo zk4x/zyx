@@ -1,10 +1,7 @@
 use std::{collections::BTreeSet, fmt::Display};
 
 use super::kernel::Kernel;
-use crate::{
-    backend::DeviceInfo, ir::Scope, kernel::VOp, view::View,
-    shape::Dimension,
-};
+use crate::{backend::DeviceInfo, ir::Scope, kernel::VOp, shape::Dimension, view::View};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug)]

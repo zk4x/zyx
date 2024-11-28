@@ -1,25 +1,26 @@
-use crate::dtype::{Constant, DType};
-use crate::ir::IRKernel;
-use crate::kernel::Kernel;
-use crate::optimizer::KernelOptimizer;
-use crate::scalar::Scalar;
-use crate::shape::{permute, reduce, Dimension};
-use crate::tensor::TensorId;
 use crate::backend::{
-    BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool, OpenCLConfig, OpenCLError, ProgramId, VulkanConfig, VulkanError
+    BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool,
+    OpenCLConfig, OpenCLError, ProgramId, VulkanConfig, VulkanError,
 };
 #[cfg(feature = "wgsl")]
 use crate::backend::{WGSLConfig, WGSLError};
+use crate::dtype::{Constant, DType};
 use crate::graph::Graph;
+use crate::ir::IRKernel;
+use crate::kernel::Kernel;
 use crate::node::{BOp, Node, ROp, UOp};
+use crate::optimizer::KernelOptimizer;
+use crate::scalar::Scalar;
 use crate::scheduler::CompiledGraph;
+use crate::shape::{permute, reduce, Dimension};
+use crate::tensor::TensorId;
+use crate::view::View;
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-use crate::view::View;
 
 use half::{bf16, f16};
 use rand::rngs::SmallRng;
@@ -193,7 +194,12 @@ impl Runtime {
         }
         //println!("Initializing");
         let debug_dev = self.debug_dev();
-        crate::backend::initialize_backends(&device_config, &mut self.memory_pools, &mut self.devices, debug_dev)
+        crate::backend::initialize_backends(
+            &device_config,
+            &mut self.memory_pools,
+            &mut self.devices,
+            debug_dev,
+        )
     }
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
@@ -788,19 +794,22 @@ impl Runtime {
         if tensors.is_empty() {
             return Ok(());
         }
-        if tensors
+        let realized_tensors: BTreeSet<TensorId> = self
+            .tensor_buffer_map
             .iter()
-            .all(|tensor| self.tensor_buffer_map.iter().any(|((t, _), _)| tensor == t))
-        {
+            .map(|((id, _), _)| *id)
+            .collect();
+        if tensors.is_subset(&realized_tensors) {
             return Ok(());
         }
         if self.devices.is_empty() {
             self.initialize_devices()?;
         }
+        let _t = crate::Timer::new("realize create graph");
         // Get rcs of nodes outside of realized graph
-        let (mut graph, outside_nodes, order) = self.graph.realize_graph(tensors, |x| {
-            self.tensor_buffer_map.iter().any(|((id, _), _)| *id == x)
-        });
+        let (mut graph, outside_nodes, order) = self
+            .graph
+            .realize_graph(tensors, |x| realized_tensors.contains(&x));
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         // New leafs never store data, so we can deallocate them if they are allocated.
         let mut to_delete = BTreeSet::new();
@@ -808,6 +817,8 @@ impl Runtime {
         //println!("Graph: {:?}", graph);
         //println!("Outside nodes: {outside_nodes:?}");
         //println!("Order: {order:?}");
+        // Calculates which tensors are not needed and which tensors need to be evaluated
+        // in order to drop those unneeded tensors. This is basically constant folding.
         for tensor in &order {
             if matches!(self.graph[*tensor], Node::Leaf | Node::Const { .. }) {
                 if !outside_nodes.contains(tensor) {
@@ -840,13 +851,33 @@ impl Runtime {
             let debug_sched = self.debug_sched();
             let debug_ir = self.debug_ir();
             let debug_asm = self.debug_asm();
-            let compiled_graph = crate::scheduler::compile_graph(graph.clone(), &mut self.memory_pools, &mut self.devices, &self.tensor_buffer_map,
-                &mut self.optimizer_cache, &mut self.kernel_cache, self.search_iterations, self.config_dir.as_ref().map(|x| x.as_path()), debug_perf, debug_sched, debug_ir, debug_asm)?;
+            drop(_t);
+            let compiled_graph = crate::scheduler::compile_graph(
+                graph.clone(),
+                &mut self.memory_pools,
+                &mut self.devices,
+                &self.tensor_buffer_map,
+                &mut self.optimizer_cache,
+                &mut self.kernel_cache,
+                self.search_iterations,
+                self.config_dir.as_ref().map(|x| x.as_path()),
+                debug_perf,
+                debug_sched,
+                debug_ir,
+                debug_asm,
+            )?;
             self.compiled_graph_cache
                 .insert(graph.clone(), compiled_graph);
         }
         let debug_perf = self.debug_perf();
-        crate::scheduler::launch_graph(&graph, &self.compiled_graph_cache[&graph], &mut self.memory_pools, &mut self.devices, &mut self.tensor_buffer_map, debug_perf)?;
+        crate::scheduler::launch_graph(
+            &graph,
+            &self.compiled_graph_cache[&graph],
+            &mut self.memory_pools,
+            &mut self.devices,
+            &mut self.tensor_buffer_map,
+            debug_perf,
+        )?;
         // Deallocate them from devices
         self.deallocate_tensors(&to_delete)?;
         // Remove evaluated part of graph unless needed for backpropagation

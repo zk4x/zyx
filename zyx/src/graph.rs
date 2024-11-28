@@ -199,11 +199,14 @@ impl Graph {
         tensors: BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
     ) -> (Graph, BTreeSet<TensorId>, Vec<TensorId>) {
-        //let _t = crate::Timer::new("realize_graph");
+        // TODO this is stiill slow, we need to make it faster or somehow cache this.
+        // Or perhaps we can keep order of ops as they keep coming.
+        let _t = crate::Timer::new("realize_graph");
         //for (i, (rc, node)) in self.nodes.iter() { println!("{i} x {rc} -> {node:?}"); }
         // First topo search for minimum number of required nodes and create graph from it
         // Then replace all realized nodes with Node::Leaf
         // topo search
+        let _t2 = crate::Timer::new("realize_graph visited");
         let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         let mut visited = BTreeSet::new();
         let mut leafs = BTreeSet::new();
@@ -216,6 +219,7 @@ impl Graph {
                 }
             }
         }
+        drop(_t2);
         // While visited only contains nodes up to realized nodes,
         // following loops visit all children nodes up to leafs,
         // because we need to know which parts of the graph can be dropped.

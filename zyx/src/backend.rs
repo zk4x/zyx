@@ -162,92 +162,77 @@ pub(super) enum Device {
     },
 }
 
-pub(super) fn initialize_backends(device_config: &DeviceConfig, memory_pools: &mut Vec<MemoryPool>, devices: &mut Vec<Device>, debug_dev: bool) -> Result<(), ZyxError> {
-    if let Ok((mem_pools, devs)) =
-        cuda::initialize_devices(&device_config.cuda, debug_dev)
-    {
+pub(super) fn initialize_backends(
+    device_config: &DeviceConfig,
+    memory_pools: &mut Vec<MemoryPool>,
+    devices: &mut Vec<Device>,
+    debug_dev: bool,
+) -> Result<(), ZyxError> {
+    if let Ok((mem_pools, devs)) = cuda::initialize_devices(&device_config.cuda, debug_dev) {
         let n = memory_pools.len() as u32;
-        memory_pools
-            .extend(mem_pools.into_iter().map(|m| MemoryPool::CUDA {
-                memory_pool: m,
-                buffers: IndexMap::new(),
-            }));
-        devices
-            .extend(devs.into_iter().map(|(device, queues)| Device::CUDA {
-                memory_pool_id: device.memory_pool_id() + n,
-                device,
-                programs: IndexMap::new(),
-                queues,
-            }));
+        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::CUDA {
+            memory_pool: m,
+            buffers: IndexMap::new(),
+        }));
+        devices.extend(devs.into_iter().map(|(device, queues)| Device::CUDA {
+            memory_pool_id: device.memory_pool_id() + n,
+            device,
+            programs: IndexMap::new(),
+            queues,
+        }));
     }
-    if let Ok((mem_pools, devs)) =
-        hip::initialize_device(&device_config.hip, debug_dev)
-    {
+    if let Ok((mem_pools, devs)) = hip::initialize_device(&device_config.hip, debug_dev) {
         let n = memory_pools.len() as u32;
-        memory_pools
-            .extend(mem_pools.into_iter().map(|m| MemoryPool::HIP {
-                memory_pool: m,
-                buffers: IndexMap::new(),
-            }));
-        devices
-            .extend(devs.into_iter().map(|(device, queues)| Device::HIP {
-                memory_pool_id: device.memory_pool_id() + n,
-                device,
-                programs: IndexMap::new(),
-                queues,
-            }));
+        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::HIP {
+            memory_pool: m,
+            buffers: IndexMap::new(),
+        }));
+        devices.extend(devs.into_iter().map(|(device, queues)| Device::HIP {
+            memory_pool_id: device.memory_pool_id() + n,
+            device,
+            programs: IndexMap::new(),
+            queues,
+        }));
     }
-    if let Ok((mem_pools, devs)) =
-        opencl::initialize_devices(&device_config.opencl, debug_dev)
-    {
+    if let Ok((mem_pools, devs)) = opencl::initialize_devices(&device_config.opencl, debug_dev) {
         let n = memory_pools.len() as u32;
-        memory_pools
-            .extend(mem_pools.into_iter().map(|m| MemoryPool::OpenCL {
-                memory_pool: m,
-                buffers: IndexMap::new(),
-            }));
-        devices
-            .extend(devs.into_iter().map(|(device, queues)| Device::OpenCL {
-                memory_pool_id: device.memory_pool_id() + n,
-                device,
-                programs: IndexMap::new(),
-                queues,
-            }));
+        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::OpenCL {
+            memory_pool: m,
+            buffers: IndexMap::new(),
+        }));
+        devices.extend(devs.into_iter().map(|(device, queues)| Device::OpenCL {
+            memory_pool_id: device.memory_pool_id() + n,
+            device,
+            programs: IndexMap::new(),
+            queues,
+        }));
     }
-    if let Ok((mem_pools, devs)) =
-        vulkan::initialize_devices(&device_config.vulkan, debug_dev)
-    {
+    if let Ok((mem_pools, devs)) = vulkan::initialize_devices(&device_config.vulkan, debug_dev) {
         let n = memory_pools.len() as u32;
-        memory_pools
-            .extend(mem_pools.into_iter().map(|m| MemoryPool::Vulkan {
-                memory_pool: m,
-                buffers: IndexMap::new(),
-            }));
-        devices
-            .extend(devs.into_iter().map(|(device, queues)| Device::Vulkan {
-                memory_pool_id: device.memory_pool_id() + n,
-                device,
-                programs: IndexMap::new(),
-                queues,
-            }));
+        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::Vulkan {
+            memory_pool: m,
+            buffers: IndexMap::new(),
+        }));
+        devices.extend(devs.into_iter().map(|(device, queues)| Device::Vulkan {
+            memory_pool_id: device.memory_pool_id() + n,
+            device,
+            programs: IndexMap::new(),
+            queues,
+        }));
     }
     #[cfg(feature = "wgsl")]
-    if let Ok((mem_pools, devs)) =
-        wgsl::initialize_backend(&device_config.wgsl, debug_dev)
-    {
+    if let Ok((mem_pools, devs)) = wgsl::initialize_backend(&device_config.wgsl, debug_dev) {
         let n = memory_pools.len() as u32;
-        memory_pools
-            .extend(mem_pools.into_iter().map(|m| MemoryPool::WGSL {
-                memory_pool: m,
-                buffers: IndexMap::new(),
-            }));
-        devices
-            .extend(devs.into_iter().map(|(device, queues)| Device::WGSL {
-                memory_pool_id: device.memory_pool_id() + n,
-                device,
-                programs: IndexMap::new(),
-                queues,
-            }));
+        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::WGSL {
+            memory_pool: m,
+            buffers: IndexMap::new(),
+        }));
+        devices.extend(devs.into_iter().map(|(device, queues)| Device::WGSL {
+            memory_pool_id: device.memory_pool_id() + n,
+            device,
+            programs: IndexMap::new(),
+            queues,
+        }));
     }
     if devices.is_empty() {
         return Err(ZyxError::NoBackendAvailable);

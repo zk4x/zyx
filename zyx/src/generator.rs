@@ -3,13 +3,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{graph::Graph, ir::Scope, kernel::{Kernel, MOp, VOp}, node::{BOp, Node, ROp}, tensor::TensorId, view::View};
+use crate::{
+    graph::Graph,
+    ir::Scope,
+    kernel::{Kernel, MOp, VOp},
+    node::{BOp, Node, ROp},
+    tensor::TensorId,
+    view::View,
+};
 
 /// Generate kernels from graph. This function determines which ops will get fused together
 /// and how many kernels will be created.
 #[allow(clippy::similar_names)]
 #[allow(clippy::cognitive_complexity)]
-pub(super) fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec<Kernel> {
+pub(super) fn generate_kernels(
+    graph: &Graph,
+    order: &[TensorId],
+    debug_sched: bool,
+) -> Vec<Kernel> {
     let _t = crate::Timer::new("generate_kernels");
     //let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
@@ -497,7 +508,7 @@ pub(super) fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: b
 }*/
 
 fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &'a mut Kernel {
-    //let _t = crate::Timer::new("get_kernel");
+    let _t = crate::Timer::new("get_kernel");
     // First if there is kernel which stores x, then just return new load kernel
     if kernels
         .iter()
