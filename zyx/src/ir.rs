@@ -2,7 +2,7 @@
 //! It is passed into different backends. Each backend
 //! compiles IR into their own bytecode.
 
-use super::{node::ROp, scheduler::VOp};
+use super::{node::ROp, kernel::VOp};
 use crate::{
     dtype::Constant,
     node::{BOp, UOp},

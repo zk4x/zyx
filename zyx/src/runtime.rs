@@ -1,5 +1,7 @@
 use crate::dtype::{Constant, DType};
 use crate::ir::IRKernel;
+use crate::kernel::Kernel;
+use crate::optimizer::KernelOptimizer;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
@@ -10,7 +12,7 @@ use crate::backend::{
 use crate::backend::{WGSLConfig, WGSLError};
 use crate::graph::Graph;
 use crate::node::{BOp, Node, ROp, UOp};
-use crate::scheduler::{CompiledGraph, Kernel, KernelOptimizer};
+use crate::scheduler::CompiledGraph;
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},

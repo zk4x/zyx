@@ -3,8 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{graph::Graph, ir::Scope, node::{BOp, Node, ROp}, scheduler::vop::MOp, view::View, tensor::TensorId};
-use super::{Kernel, VOp};
+use crate::{graph::Graph, ir::Scope, kernel::{Kernel, MOp, VOp}, node::{BOp, Node, ROp}, tensor::TensorId, view::View};
 
 /// Generate kernels from graph. This function determines which ops will get fused together
 /// and how many kernels will be created.

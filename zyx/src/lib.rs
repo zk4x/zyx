@@ -64,6 +64,10 @@ mod ir;
 mod node;
 mod scheduler;
 mod view;
+
+mod kernel;
+mod optimizer;
+mod generator;
 // Constant hasher because apparently noone invented that yet...
 //mod chasher;
 

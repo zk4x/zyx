@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fmt::Display};
 
 use super::kernel::Kernel;
 use crate::{
-    backend::DeviceInfo, ir::Scope, scheduler::VOp, view::View,
+    backend::DeviceInfo, ir::Scope, kernel::VOp, view::View,
     shape::Dimension,
 };
 

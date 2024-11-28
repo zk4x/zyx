@@ -1,22 +1,9 @@
 //! Scheduler schedules kernels to hardware devices with respect to memory allocation limits.
 
 use crate::{
-    backend::{BufferId, Device, DeviceId, DeviceInfo, MemoryPool, MemoryPoolId}, graph::Graph, index_map::Id, ir::IRKernel, tensor::TensorId, view::View, ZyxError
+    backend::{BufferId, Device, DeviceId, DeviceInfo, MemoryPool, MemoryPoolId}, graph::Graph, index_map::Id, ir::IRKernel, kernel::Kernel, optimizer::{KernelOptimization, KernelOptimizer}, tensor::TensorId, view::View, ZyxError
 };
-use generator::generate_kernels;
-pub(super) use optimizer::KernelOptimizer;
 use std::collections::{BTreeMap, BTreeSet};
-
-// Export Kernel and VOp for IR
-pub(super) use kernel::Kernel;
-pub(super) use optimizer::KernelOptimization;
-pub(super) use vop::VOp;
-
-mod kernel;
-// Kernel optimizer, multi device scheduler is optimized elsewhere
-mod optimizer;
-mod vop;
-mod generator;
 
 #[derive(Debug)]
 pub(super) struct CompiledGraph {
@@ -73,7 +60,7 @@ pub(super) struct VProgram {
         // get order of nodes and graph characteristics, some basic optimizations are node reordering are applied
         let (order, flop, bytes_read, bytes_written) = graph.execution_order();
         // create vop representation
-        let mut kernels: Vec<Kernel> = generate_kernels(&graph, &order, debug_sched);
+        let mut kernels: Vec<Kernel> = crate::generator::generate_kernels(&graph, &order, debug_sched);
         //println!("{:?}", &*crate::ET.lock());
         //panic!();
         //println!("{:?}", self.tensor_buffer_map);
