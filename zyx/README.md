@@ -35,18 +35,18 @@ let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
 
 ## Backends
 
-Zyx runs on different devices, current backends are CUDA, `OpenCL`, HIP and wgsl through wgpu.
-Zyx automatically tries to utilize all available devices, but you can also manually change it
-by creating file `backend_config.json` in folder zyx in home config directory (usually ~/.config/zyx/`backend_config.json`).
-There write [`DeviceConfig`] struct.
-Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md) for detailed info how to write configuration for your PC.
-Zyx currently does not know how to differentiate between devices, so it will by default run
-all backends, even if they run on the same device. To avoid this, you need to write `device_config.json`.
+- [x] CUDA
+- [x] HIP
+- [x] `OpenCL`
+- [x] WGSL
 
-If you'd like to add new backend to zyx, that would be awesome! Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md) on prerequisities
-(required device capabilities).
+Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md)
+for detailed info how to tell Zyx which hardware it should utilize.
 
-With env var ZYX_DEBUG=16 zyx prints generated kernel source code.
+If you'd like to add new backend to zyx, that would be awesome!
+Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)
+
+With env var `ZYX_DEBUG`=16 zyx prints generated kernel source code.
 
 ## Simple neural network
 
@@ -109,7 +109,7 @@ This function might get obsolete in the future once detection of repeating graph
 
 ## Rust version
 
-Zyx currently only supports latest rust stable version. Zyx also requires std,
+Zyx currently only supports latest stable version of rust. Zyx also requires std,
 as it accesses files (like cuda, hip and opencl runtimes), env vars (mostly for debugging)
 and also some other stuff that requires filesystem and threads.
 
@@ -127,7 +127,7 @@ create a github issue.
 ## Warning
 
 Zyx breaks many principles of clean code. There are no dyn (virtual tables), no lifetimes on structs, generics
-are only used to make user API nicer, mostly in impl Scalar or impl IntoShape form.
+are only used to make user API nicer, mostly in impl Scalar or impl `IntoShape` form.
 Since zyx is pretty much a compiler, internally most things are done using enums in loose data-oriented way.
 If you dislike ugly code, please do not use zyx.
 

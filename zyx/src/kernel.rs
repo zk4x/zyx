@@ -1,3 +1,5 @@
+//! Kernel
+
 use std::{collections::BTreeSet, ops::Range};
 
 use crate::{

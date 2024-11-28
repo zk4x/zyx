@@ -1,3 +1,5 @@
+//! WGSL backend
+
 use pollster::FutureExt;
 use std::{borrow::Cow, sync::Arc};
 use wgpu::{

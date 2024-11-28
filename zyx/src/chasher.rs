@@ -1,3 +1,5 @@
+//! Fnv hasher const initializable
+
 pub struct CHasher(u64);
 
 impl Default for CHasher {

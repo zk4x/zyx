@@ -6,7 +6,6 @@ use crate::{backend::DeviceInfo, ir::Scope, kernel::VOp, shape::Dimension, view:
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug)]
 pub enum KernelOptimizer {
-    #[allow(dead_code)]
     Optimized(KernelOptimization, u128),
     // All optimizations, best optimization id
     Optimizing(Vec<(KernelOptimization, u128)>, usize),
@@ -604,6 +603,13 @@ impl KernelOptimizer {
         match self {
             KernelOptimizer::Optimized(optimization, _) => optimization,
             KernelOptimizer::Optimizing(opts, best) => &opts[*best].0,
+        }
+    }
+
+    pub(super) fn best_exec_time(&self) -> u128 {
+        match self {
+            KernelOptimizer::Optimized(_, exec_time) => *exec_time,
+            KernelOptimizer::Optimizing(opts, best) => opts[*best].1,
         }
     }
 

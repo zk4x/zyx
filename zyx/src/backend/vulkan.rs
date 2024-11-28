@@ -1,3 +1,5 @@
+//! Vulkan backend
+
 #![allow(unused)]
 
 use crate::{

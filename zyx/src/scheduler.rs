@@ -78,7 +78,7 @@ pub(super) fn compile_graph(
     //println!("{:?}", self.tensor_buffer_map);
     if debug_sched {
         //for kernel in &kernels { kernel.debug(); }
-        println!("Scheduler generated {} kernels", kernels.len());
+        println!("split graph into {} kernels, kernel ops min {}, max {}, optimizing kernels:", kernels.len(), kernels.iter().map(|kernel| kernel.ops.len()).min().unwrap(), kernels.iter().map(|kernel| kernel.ops.len()).max().unwrap());
     }
     //panic!("Done");
     let mut sched_graph: Vec<SchedulerOp> = Vec::new();
@@ -94,6 +94,19 @@ pub(super) fn compile_graph(
     let mut temp_tensors: BTreeSet<TensorId> = BTreeSet::new();
 
     let kernels_len = kernels.len();
+    let progress_bar = if debug_sched {
+        let bar = indicatif::ProgressBar::new(kernels_len as u64);
+        bar.set_style(
+            indicatif::ProgressStyle::with_template(
+                "[{elapsed_precise}/{eta_precise}] {bar:40.cyan/blue} {pos:>7}/{len} {msg}",
+            )
+            .unwrap(),
+        );
+        Some(bar)
+    } else {
+        None
+    };
+
     for kid in 0..kernels_len {
         //for mut kernel in kernels {
         let kernel = &mut kernels[kid];
@@ -200,9 +213,7 @@ pub(super) fn compile_graph(
                 sched_graph.push(SchedulerOp::Finish(vprogram));
             }
             // Prints unoptimized kernel
-            if debug_sched {
-                kernel.debug();
-            }
+            //if debug_sched { kernel.debug(); }
             // Disk cached search, works across devices and platforms
             let optimization = search_kernel_optimization(
                 kernel,
@@ -216,10 +227,9 @@ pub(super) fn compile_graph(
                 debug_perf,
                 debug_sched,
                 debug_asm,
+                progress_bar.as_ref(),
             )?;
-            if debug_sched {
-                println!("Kernel {kid}/{kernels_len} using {optimization}");
-            }
+            //if debug_sched { println!("Kernel {kid}/{kernels_len} using {optimization}"); }
             // Compile and cache program
             let (program_id, args) = compile_cached(
                 kernel,
@@ -409,12 +419,12 @@ pub(super) fn launch_graph(
     }
     if debug_perf {
         let duration = begin.elapsed();
-        print_perf(
+        println!("Graph perf: {}", perf_string(
             compiled_graph.flop,
             compiled_graph.bytes_read,
             compiled_graph.bytes_written,
             duration.as_nanos(),
-        );
+        ));
     }
     Ok(())
 }
@@ -431,6 +441,7 @@ fn search_kernel_optimization(
     debug_perf: bool,
     debug_sched: bool,
     debug_asm: bool,
+    progress_bar: Option<&indicatif::ProgressBar>,
 ) -> Result<KernelOptimization, ZyxError> {
     let dev_info = devices[device_id as usize].info().clone();
     let cache_key = (kernel.clone(), dev_info.clone());
@@ -459,42 +470,17 @@ fn search_kernel_optimization(
             .entry(cache_key.clone())
             .or_insert_with(|| kernel.new_optimizer(&dev_info));
         let rem_opts = optimizer.remaining();
-        if debug_sched {
-            println!(
-                "Searching over {search_iterations} out of {rem_opts} remaining optimizations.",
-            );
-        }
         #[cfg(feature = "disk_cache")]
         let mut timer = std::time::Instant::now();
         for i in 0..search_iterations {
             let optimizer = optimizer_cache.get_mut(&cache_key).unwrap();
             let Some(optimization_id) = optimizer.next() else {
-                if debug_sched {
-                    println!("All optimizations were tried and fastest kernel has been selected.");
-                }
+                //if debug_sched { println!("All optimizations were tried and fastest kernel has been selected."); }
                 #[cfg(feature = "disk_cache")]
                 store_optimizer_cache(&optimizer_cache, config_dir, debug_sched);
                 break;
             };
-            if debug_sched {
-                println!(
-                    "{:>6}/{} {}",
-                    i + 1,
-                    search_iterations.min(rem_opts),
-                    optimizer[optimization_id]
-                );
-            }
-            // Optimize and compile multiple kernels at once on different threads,
-            // since compilation takes ~50ms,
-            /*let optimized_kernel = if kernel.is_reduce() {
-                kernel.optimize(&KernelOptimization {
-                    local_tiles: true,
-                    permutation: vec![0, 1, 2, 3, 4, 5, 6, 7],
-                    splits: vec![(3, vec![64, 16]), (0, vec![1, 1024]), (2, vec![8, 16, 8]), (1, vec![8, 16, 8]), (0, vec![1, 1, 1])],
-                })
-            } else {
-                kernel.optimize(&optimizer[optimization_id])
-            };*/
+            // TODO Optimize and compile multiple kernels at once on different threads,
             let optimized_kernel = kernel.optimize(&optimizer[optimization_id]);
             //optimized_kernel.debug();
             //panic!();
@@ -508,27 +494,25 @@ fn search_kernel_optimization(
                 &allocated_temps,
             ) {
                 Ok(queue_id) => queue_id,
-                Err(e) => {
+                Err(_) => {
                     optimizer.set_exec_time(optimization_id, u128::MAX);
-                    if debug_sched {
-                        println!("Could not launch, {e:?}, skipping");
-                    }
+                    //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
                     continue;
                 }
             };
-            if let Err(e) = devices[device_id as usize].sync(queue_id) {
+            if let Err(_) = devices[device_id as usize].sync(queue_id) {
                 optimizer.set_exec_time(optimization_id, u128::MAX);
-                if debug_sched {
-                    println!("Could not sync, {e:?}, skipping");
-                }
+                //if debug_sched { println!("Could not sync, {e:?}, skipping"); }
                 continue;
             };
             let exec_time = begin.elapsed().as_nanos();
             let _ = devices[device_id as usize].release_program(program_id);
-            if let Some((f, mr, mw)) = flop_mem_rw {
-                print_perf(f, mr, mw, exec_time);
-            }
             optimizer.set_exec_time(optimization_id, exec_time);
+            if let Some((f, mr, mw)) = flop_mem_rw {
+                if let Some(bar) = &progress_bar {
+                    bar.set_message(format!("{}/{} {}", i + 1, search_iterations.min(rem_opts), perf_string(f, mr, mw, optimizer.best_exec_time())));
+                }
+            }
             #[cfg(feature = "disk_cache")]
             if timer.elapsed().as_secs() > 60 {
                 store_optimizer_cache(&optimizer_cache, config_dir.clone(), debug_sched);
@@ -536,13 +520,13 @@ fn search_kernel_optimization(
             }
         }
         #[cfg(feature = "disk_cache")]
-        store_optimizer_cache(&optimizer_cache, config_dir.clone(), debug_sched);
-        if debug_sched {
-            println!("Optimization has been finished.\n");
-        }
+        store_optimizer_cache(&optimizer_cache, config_dir, debug_sched);
         // Deallocate inputs and outputs that are used only for beam search
         for buffer_id in allocated_temps {
             memory_pools[mpid as usize].deallocate(buffer_id)?;
+        }
+        if let Some(bar) = &progress_bar {
+            bar.inc(1);
         }
         Ok(optimizer_cache.get(&cache_key).unwrap().best().clone())
     }
@@ -610,7 +594,8 @@ fn store_optimizer_cache(
 }
 
 #[allow(clippy::similar_names)]
-fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
+#[must_use]
+fn perf_string(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {
     const fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
             0..1000 => (x / 100, ""),
@@ -638,7 +623,7 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
-    println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write",
+    format!("{}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {}.{} {f_u}FLOP, {}.{} {br_u}B read, {}.{} {bw_u}B write",
         nanos/(t_d*10),
         (nanos/t_d)%10,
         fs/100,
@@ -647,5 +632,11 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
         brs%100,
         bws/100,
         bws%100,
-    );
+        f/100,
+        f%100,
+        br/100,
+        br%100,
+        bw/100,
+        bw%100,
+    )
 }
