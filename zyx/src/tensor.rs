@@ -212,10 +212,10 @@ impl Tensor {
             .plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
         std::fs::write(format!("{name}.dot"), graph)?;
         let output = std::process::Command::new("dot")
-            .arg("-Tpng")
+            .arg("-Tsvg")
             .arg(format!("{name}.dot"))
             .arg("-o")
-            .arg(format!("{name}.png"))
+            .arg(format!("{name}.svg"))
             .output();
         if let Err(err) = output {
             println!("Graph png could not be created: {err}");

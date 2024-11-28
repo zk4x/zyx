@@ -60,11 +60,10 @@ pub fn generate_kernels(
                 // that expanded loop.
                 if kernel.ops.iter().any(|op| matches!(op, VOp::Store { .. })) || kernel.is_reduce()
                 {
-                    // TODO not sure if this is perfectly correct. Can it contain x in outputs,
-                    // but can it be x evaluated to different values, i.e. some intermediate?
                     if !kernel.outputs().contains(&x) {
                         kernel.store(x, View::contiguous(xshape), graph.dtype(x));
                     }
+                    assert!(kernel.outputs().contains(&x));
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
                 }
@@ -144,10 +143,12 @@ pub fn generate_kernels(
                 let shape = graph.shape(nid);
                 //println!("Reshape node from {:?} to {:?}", graph.shape(x), shape);
                 let mut kernel = get_kernel(x, &mut kernels, graph);
+                //if x == 1179 { kernel.debug(); panic!(); }
                 if !kernel.reshape(shape) {
                     // else create new kernel after storing results of previous kernel
                     let xdtype = graph.dtype(x);
                     kernel.store(x, View::contiguous(graph.shape(x)), xdtype);
+                    assert!(kernel.outputs().contains(&x));
                     let mut new_kernel = Kernel::with_shape(shape);
                     new_kernel.ops.push(VOp::Load {
                         z: nid,
@@ -179,6 +180,7 @@ pub fn generate_kernels(
                 // but that can be changed.
                 if !kernel.can_be_zero_padded() {
                     kernel.store(x, View::contiguous(graph.shape(x)), graph.dtype(x));
+                    assert!(kernel.outputs().contains(&x));
                     kernels.push(Kernel::load(x, graph));
                     kernel = kernels.last_mut().unwrap();
                 }
@@ -310,11 +312,12 @@ pub fn generate_kernels(
                     .position(|kernel| kernel.vars().is_superset(&[x, y].into()))
                 {
                     // If both inputs are in the same kernel
-                    /*let kernel = if kernels[id].shape() == graph.shape(x) {
+                    let kernel = if kernels[id].shape() == graph.shape(x) {
                         &mut kernels[id]
                     } else {
+                        panic!();
                         // create new kernel using already predefined stores of both x and y
-                        println!("Binary op");
+                        /*println!("Binary op with different shapes");
                         for kernel in &kernels {
                             kernel.debug();
                         }
@@ -329,10 +332,10 @@ pub fn generate_kernels(
                             xdtype: graph.dtype(x),
                         });
                         kernels.push(kernel);
-                        kernels.last_mut().unwrap()
+                        kernels.last_mut().unwrap()*/
                     };
-                    kernel.ops.push(VOp::Binary { z: nid, x, y, bop });*/
-                    kernels[id].ops.push(VOp::Binary { z: nid, x, y, bop });
+                    kernel.ops.push(VOp::Binary { z: nid, x, y, bop });
+                    //kernels[id].ops.push(VOp::Binary { z: nid, x, y, bop });
                 } else {
                     // If inputs are in different kernels
                     let _t = crate::Timer::new("Binary first part");
@@ -421,7 +424,9 @@ pub fn generate_kernels(
             }
         }
         // TODO only if this is more than user rcs
-        if graph.rc(nid) > 1 {
+        // TODO this should be non user rcs
+        let rc = graph.rc(nid);
+        if rc > 1 {
             if let Some(kernel) = kernels
                 .iter_mut()
                 .find(|kernel| kernel.vars().contains(&nid))
@@ -432,26 +437,34 @@ pub fn generate_kernels(
                 // the same work twice.
                 //if user_leafs.contains(&nid) {
                 //kernel.store(nid, View::new(graph.shape(nid)));
-                if ((kernel.ops.len() > 100 || graph.rc(nid) > 2)
+                if ((kernel.ops.len() > 30 || graph.rc(nid) > 2)
                     && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
                     || kernel.is_reduce()
                     || !kernel.outputs().is_empty()
                 {
                     //println!("Storing {nid}");
                     kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
+                    assert!(kernel.outputs().contains(&nid));
+                    if nid == 1179 {
+                        kernel.debug();
+                    }
                     kernels.push(Kernel::load(nid, graph));
                 } else {
                     let kernel2 = kernel.clone();
-                    kernels.push(kernel2);
+                    for _ in 0..rc-1 {
+                        kernels.push(kernel2.clone());
+                    }
                 }
             } else {
                 unreachable!()
             }
         }
     }
+
     // Remove unnecessary kernels
     // TODO these should be only loads for user_rc > 1 kernels, remove this
     kernels.retain(|kernel| !kernel.outputs().is_empty());
+
     // Remove unnecessary stores not for tensors moved across kernels
     // and not in to_eval that were inserted for rc > 1, but ops got merged,
     // and these stores were not used.
@@ -470,6 +483,30 @@ pub fn generate_kernels(
             i += 1;
         }
     }
+
+    // Check for IO consistency.
+    // Each kernel's inputs must be outputs of some other kernel or leafs.
+    // There must be no two kernels outputting the same tensor (no output duplication).
+    let mut outputs = BTreeSet::new();
+    let mut inputs = BTreeSet::new();
+    for nid in order {
+        if graph[*nid] == Node::Leaf {
+            assert!(outputs.insert(*nid));
+        }
+    }
+    for kernel in &kernels {
+        let kernel_outputs = kernel.outputs();
+        let kernel_inputs = kernel.inputs();
+        assert_eq!(outputs.intersection(&kernel_outputs).count(), 0);
+        outputs.extend(kernel_outputs);
+        if !kernel_inputs.is_subset(&outputs) {
+            println!("Kernel generator bug inputs {:?} unavailable in kernel:", kernel_inputs.difference(&outputs).copied().collect::<BTreeSet<TensorId>>());
+            kernel.debug();
+            panic!();
+        }
+        inputs.extend(kernel_inputs);
+    }
+
     kernels
 }
 
@@ -517,6 +554,7 @@ fn get_kernel<'a>(x: TensorId, kernels: &'a mut Vec<Kernel>, graph: &Graph) -> &
         .rev()
         // we need to memorize this so that it is much faster,
         // then we can drop the whole compiled_graph_cache
+        // The way we can make this faster is to simply store BTreeMap<BTreeSet<TensorId>, KernelId> or something similar
         .filter(|kernel| kernel.vars().contains(&x)) // todo filter is more ideal, but it is slow...
         .min_by_key(|kernel| kernel.ops.len())
         .unwrap()

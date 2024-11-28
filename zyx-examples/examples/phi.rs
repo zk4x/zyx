@@ -813,7 +813,7 @@ impl TextGeneration {
             Some(token) => token,
             None => panic!("cannot find the endoftext token"),
         };
-        print!("{prompt}");
+        println!("{prompt}");
         std::io::stdout().flush().unwrap();
         let start_gen = std::time::Instant::now();
         //let mut pos = 0;
@@ -822,6 +822,7 @@ impl TextGeneration {
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
             let input = Tensor::from(ctxt).unsqueeze(0).unwrap();
             let logits = self.model.forward(&input);
+            //Tensor::plot_graph([], "phi")?;
             let logits = logits.squeeze(0).unwrap().cast(DType::F32);
             let logits = if self.repeat_penalty == 1. {
                 logits

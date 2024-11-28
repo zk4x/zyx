@@ -610,7 +610,7 @@ impl Graph {
         let mut res_dot_graph =
             String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {
-            let fillcolor = if user_rc[&i] > 0 { "lightblue" } else { "grey" };
+            let fillcolor = if user_rc[&i] > 0 { "coral" } else { "aqua" };
             /*if let Some(label) = labels.get(&NodeId::new(id)) {
                 write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
                     label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
