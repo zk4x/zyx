@@ -35,7 +35,7 @@ pub use wgsl::{WGSLConfig, WGSLError};
 /// Hardware information needed for applying optimizations
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct DeviceInfo {
+pub struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
     /// Biggest kernel dimensions
@@ -53,9 +53,9 @@ pub(super) struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
-pub(super) type MemoryPoolId = u32;
-pub(super) type DeviceId = u32;
-pub(super) type ProgramId = u32;
+pub type MemoryPoolId = u32;
+pub type DeviceId = u32;
+pub type ProgramId = u32;
 
 /*trait HMemoryPool {
     type Error;
@@ -96,7 +96,7 @@ trait HQueue {
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
-pub(super) enum MemoryPool {
+pub enum MemoryPool {
     CUDA {
         memory_pool: CUDAMemoryPool,
         buffers: IndexMap<CUDABuffer>,
@@ -121,14 +121,14 @@ pub(super) enum MemoryPool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct BufferId {
+pub struct BufferId {
     pub(super) memory_pool_id: u32,
     pub(super) buffer_id: Id,
 }
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
-pub(super) enum Device {
+pub enum Device {
     CUDA {
         memory_pool_id: MemoryPoolId,
         device: CUDADevice,
@@ -162,14 +162,14 @@ pub(super) enum Device {
     },
 }
 
-pub(super) fn initialize_backends(
+pub fn initialize_backends(
     device_config: &DeviceConfig,
     memory_pools: &mut Vec<MemoryPool>,
     devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), ZyxError> {
     if let Ok((mem_pools, devs)) = cuda::initialize_devices(&device_config.cuda, debug_dev) {
-        let n = memory_pools.len() as u32;
+        let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::CUDA {
             memory_pool: m,
             buffers: IndexMap::new(),
@@ -182,7 +182,7 @@ pub(super) fn initialize_backends(
         }));
     }
     if let Ok((mem_pools, devs)) = hip::initialize_device(&device_config.hip, debug_dev) {
-        let n = memory_pools.len() as u32;
+        let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::HIP {
             memory_pool: m,
             buffers: IndexMap::new(),
@@ -195,7 +195,7 @@ pub(super) fn initialize_backends(
         }));
     }
     if let Ok((mem_pools, devs)) = opencl::initialize_devices(&device_config.opencl, debug_dev) {
-        let n = memory_pools.len() as u32;
+        let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::OpenCL {
             memory_pool: m,
             buffers: IndexMap::new(),
@@ -208,7 +208,7 @@ pub(super) fn initialize_backends(
         }));
     }
     if let Ok((mem_pools, devs)) = vulkan::initialize_devices(&device_config.vulkan, debug_dev) {
-        let n = memory_pools.len() as u32;
+        let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::Vulkan {
             memory_pool: m,
             buffers: IndexMap::new(),
@@ -222,7 +222,7 @@ pub(super) fn initialize_backends(
     }
     #[cfg(feature = "wgsl")]
     if let Ok((mem_pools, devs)) = wgsl::initialize_backend(&device_config.wgsl, debug_dev) {
-        let n = memory_pools.len() as u32;
+        let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::WGSL {
             memory_pool: m,
             buffers: IndexMap::new(),

@@ -288,7 +288,7 @@ pub(super) fn initialize_devices(
                     preferred_vector_size: 16,
                     tensor_cores: major > 7,
                 },
-                memory_pool_id: memory_pools.len() as u32 - 1,
+                memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
                 cuModuleLoadDataEx,
                 cuModuleGetFunction,
                 cuModuleUnload,

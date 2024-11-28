@@ -14,7 +14,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
-pub(super) struct CompiledGraph {
+pub struct CompiledGraph {
     sched_graph: Vec<SchedulerOp>,
     flop: u128,
     bytes_read: u128,
@@ -48,14 +48,14 @@ enum SchedulerOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct VProgram {
+pub struct VProgram {
     pub(super) device_id: DeviceId,
     pub(super) program_id: Id,
     pub(super) args: Vec<(TensorId, View, bool)>,
 }
 
 #[allow(clippy::cognitive_complexity)]
-pub(super) fn compile_graph(
+pub fn compile_graph(
     mut graph: Graph,
     memory_pools: &mut [MemoryPool],
     devices: &mut [Device],
@@ -83,7 +83,7 @@ pub(super) fn compile_graph(
     //panic!("Done");
     let mut sched_graph: Vec<SchedulerOp> = Vec::new();
     // Simulated device occupation. How many kernels are running on each device, if more than x, finish first one before launching next one
-    let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..devices.len() as u32)
+    let mut device_program_map: BTreeMap<DeviceId, Vec<Id>> = (0..u32::try_from(devices.len()).unwrap())
         .map(|device_id| (device_id, Vec::new()))
         .collect();
     // Simulated tensor buffer map
@@ -332,7 +332,7 @@ pub(super) fn compile_graph(
     })
 }
 
-pub(super) fn launch_graph(
+pub fn launch_graph(
     graph: &Graph,
     compiled_graph: &CompiledGraph,
     memory_pools: &mut [MemoryPool],
@@ -477,7 +477,7 @@ fn search_kernel_optimization(
             let Some(optimization_id) = optimizer.next() else {
                 //if debug_sched { println!("All optimizations were tried and fastest kernel has been selected."); }
                 #[cfg(feature = "disk_cache")]
-                store_optimizer_cache(&optimizer_cache, config_dir, debug_sched);
+                store_optimizer_cache(optimizer_cache, config_dir, debug_sched);
                 break;
             };
             // TODO Optimize and compile multiple kernels at once on different threads,
@@ -488,19 +488,16 @@ fn search_kernel_optimization(
             let program_id = devices[device_id as usize].compile(&ir_kernel, debug_asm)?;
             // Launch kernel and measure it's performance
             let begin = std::time::Instant::now();
-            let queue_id = match devices[device_id as usize].launch(
+            let Ok(queue_id) = devices[device_id as usize].launch(
                 program_id,
                 &mut memory_pools[mpid as usize],
                 &allocated_temps,
-            ) {
-                Ok(queue_id) => queue_id,
-                Err(_) => {
-                    optimizer.set_exec_time(optimization_id, u128::MAX);
-                    //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
-                    continue;
-                }
+            ) else {
+                optimizer.set_exec_time(optimization_id, u128::MAX);
+                //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
+                continue;
             };
-            if let Err(_) = devices[device_id as usize].sync(queue_id) {
+            if devices[device_id as usize].sync(queue_id).is_err() {
                 optimizer.set_exec_time(optimization_id, u128::MAX);
                 //if debug_sched { println!("Could not sync, {e:?}, skipping"); }
                 continue;
@@ -515,12 +512,12 @@ fn search_kernel_optimization(
             }
             #[cfg(feature = "disk_cache")]
             if timer.elapsed().as_secs() > 60 {
-                store_optimizer_cache(&optimizer_cache, config_dir.clone(), debug_sched);
+                store_optimizer_cache(optimizer_cache, config_dir, debug_sched);
                 timer = std::time::Instant::now();
             }
         }
         #[cfg(feature = "disk_cache")]
-        store_optimizer_cache(&optimizer_cache, config_dir, debug_sched);
+        store_optimizer_cache(optimizer_cache, config_dir, debug_sched);
         // Deallocate inputs and outputs that are used only for beam search
         for buffer_id in allocated_temps {
             memory_pools[mpid as usize].deallocate(buffer_id)?;
@@ -534,7 +531,7 @@ fn search_kernel_optimization(
 
 // Compiles kernel using given optimizations
 #[allow(clippy::type_complexity)]
-pub(super) fn compile_cached(
+pub fn compile_cached(
     kernel: &Kernel,
     optimization: &KernelOptimization,
     device_id: DeviceId,

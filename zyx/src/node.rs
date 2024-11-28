@@ -9,7 +9,7 @@ type f8 = float8::F8E4M3;
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub(super) enum BOp {
+pub enum BOp {
     Add,
     Sub,
     Mul,
@@ -29,7 +29,7 @@ pub(super) enum BOp {
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub(super) enum UOp {
+pub enum UOp {
     Cast(DType),
     ReLU,
     Neg,
@@ -44,13 +44,13 @@ pub(super) enum UOp {
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub(super) enum ROp {
+pub enum ROp {
     Sum,
     Max,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-pub(super) enum Node {
+pub enum Node {
     // Constant tensor baked into kernels
     Const {
         value: Constant,
@@ -90,7 +90,7 @@ pub(super) enum Node {
     },
 }
 
-pub(super) struct NodeParametersIterator {
+pub struct NodeParametersIterator {
     parameters: [TensorId; 2],
     len: u8,
     idx: u8,
@@ -242,7 +242,6 @@ impl Constant {
     // TODO binary constant evaluation
     // Assumes both constants are the same dtype
     pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
-        assert_eq!(x.dtype(), y.dtype());
         fn binary_func<T: Scalar>(x: T, y: T, bop: BOp) -> Constant {
             match bop {
                 BOp::Add => Constant::new(x.add(y)),
@@ -262,6 +261,7 @@ impl Constant {
                 BOp::BitAnd => Constant::new(x.bitand(y)),
             }
         }
+        assert_eq!(x.dtype(), y.dtype());
         match x {
             Constant::BF16(x) => {
                 let Constant::BF16(y) = y else { unreachable!() };

@@ -144,7 +144,7 @@ impl View {
             return;
         }
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
-        assert!(axes.end <= self.0.last().map_or(1, |inner| inner.len()));
+        assert!(axes.end <= self.0.last().map_or(1, Vec::len));
         assert_eq!(
             self.0.last().unwrap()[axes.clone()]
                 .iter()
@@ -178,12 +178,13 @@ impl View {
             if axes.clone().any(|a| inner[a].st == 0) {
                 contiguous = false;
             }
-            let mut expanded_reshape = false;
             // If all reshaped axes are expanded
-            if axes.clone().all(|a| inner[a].st == 0) {
+            let expanded_reshape = if axes.clone().all(|a| inner[a].st == 0) {
                 contiguous = true;
-                expanded_reshape = true;
-            }
+                true
+            } else {
+                false
+            };
             if axes.clone().any(|a| inner[a].lp != 0 || inner[a].rp != 0) {
                 contiguous = false;
             }

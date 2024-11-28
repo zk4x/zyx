@@ -1,4 +1,4 @@
-//! OpenCL backend
+//! `OpenCL` backend
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -1185,7 +1185,7 @@ impl IRDType {
             Self::I64(v) => format!("long{v}"),
             Self::Bool => "bool".into(),
             Self::U32(v) => format!("unsigned int{v}"),
-            Self::U64(v) => format!("unsigned int{v}"),
+            Self::U64(v) => format!("unsigned long{v}"),
         }
     }
 }

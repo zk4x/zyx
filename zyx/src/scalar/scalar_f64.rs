@@ -168,7 +168,7 @@ impl Scalar for f64 {
     }
 
     fn noteq(self, rhs: Self) -> bool {
-        self != rhs
+        !self.is_equal(rhs)
     }
 
     fn bitxor(self, rhs: Self) -> Self {

@@ -15,7 +15,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Reg {
+pub enum Reg {
     // This is id into kernel.registers
     Var(u16),
     Const(Constant),
@@ -23,7 +23,7 @@ pub(super) enum Reg {
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Scope {
+pub enum Scope {
     Global,
     Local,
     RegTile,
@@ -31,7 +31,7 @@ pub(super) enum Scope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum IROp {
+pub enum IROp {
     // Loads variable from address to variable z at give offset.
     Load {
         z: u16,
@@ -83,7 +83,7 @@ pub(super) enum IROp {
 
 // TODO remove this, just use DType and add vectors separately
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum IRDType {
+pub enum IRDType {
     BF16(IRVec),
     F8(IRVec),
     F16(IRVec),
@@ -102,7 +102,7 @@ pub(super) enum IRDType {
 // TODO add vectorization
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum IRVec {
+pub enum IRVec {
     Scalar,
     V2,
     V4,
@@ -111,7 +111,7 @@ pub(super) enum IRVec {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct IRKernel {
+pub struct IRKernel {
     // Index of var is it's Id
     // All addressable variables (those that use indexing for access)
     // These can be global args, local variables or variables in registers
@@ -235,7 +235,7 @@ impl std::fmt::Display for Scope {
 // Indexing also needs to be rewritten so that as much of it happens outside of the loops
 // and so that it does work properly
 
-pub(super) struct IRCompiler {
+pub struct IRCompiler {
     pub(super) ops: Vec<IROp>,
     register_map: BTreeMap<TensorId, Reg>,
     pointers_map: BTreeMap<(TensorId, Scope), u16>,
@@ -769,22 +769,26 @@ impl IRCompiler {
     }
 
     fn unroll_loops(&mut self) {
+        let _ = self;
         // TODO
         // simply duplicate code in required loops replacing every axis variable with constant
     }
 
     fn common_subexpression_elimination(&mut self) {
+        let _ = self;
         // TODO
     }
 
     // Loop invariant code motion and dependence analysis
     fn loop_invariant_code_motion(&mut self) {
+        let _ = self;
         // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
         // loop invariant code motion
         // This will require automatic dependency resolution
     }
 
     // Replace all occurences of z with register x
+    #[allow(clippy::match_on_vec_items)]
     fn replace(&mut self, to_replace: u16, replace_with: Reg) {
         // TODO make this non recursive
         for i in 0..self.ops.len() {
@@ -831,10 +835,10 @@ impl IRCompiler {
         }
     }
 
+    #[allow(clippy::match_on_vec_items)]
     fn constant_propagation(&mut self) {
         for i in 0..self.ops.len() {
             match self.ops[i] {
-                IROp::Unary { .. } => {}
                 IROp::Binary { z, x, y, bop } => match (x, y) {
                     (Reg::Var(_), Reg::Var(_)) => {}
                     (Reg::Var(xv), Reg::Const(yv)) => {
@@ -874,7 +878,8 @@ impl IRCompiler {
                     }
                 },
                 IROp::MAdd { .. } => todo!(),
-                IROp::Loop { .. }
+                IROp::Unary { .. }
+                | IROp::Loop { .. }
                 | IROp::EndLoop { .. }
                 | IROp::Load { .. }
                 | IROp::Store { .. }

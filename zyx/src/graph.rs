@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // This is probably not very high priority. It probably works fine
 // even this way.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-pub(super) struct Graph {
+pub struct Graph {
     // Which nodes need to be evaluated
     pub(super) to_eval: BTreeSet<TensorId>,
     // First value is reference count, second is node
@@ -206,7 +206,7 @@ impl Graph {
         // First topo search for minimum number of required nodes and create graph from it
         // Then replace all realized nodes with Node::Leaf
         // topo search
-        let _t2 = crate::Timer::new("realize_graph visited");
+        let t2 = crate::Timer::new("realize_graph visited");
         let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         let mut visited = BTreeSet::new();
         let mut leafs = BTreeSet::new();
@@ -219,7 +219,7 @@ impl Graph {
                 }
             }
         }
-        drop(_t2);
+        drop(t2);
         // While visited only contains nodes up to realized nodes,
         // following loops visit all children nodes up to leafs,
         // because we need to know which parts of the graph can be dropped.

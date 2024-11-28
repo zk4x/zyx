@@ -270,7 +270,7 @@ impl Runtime {
             .enumerate()
             .filter_map(|(id, mp)| {
                 if mp.free_bytes() > bytes {
-                    Some(id as u32)
+                    Some(u32::try_from(id).unwrap())
                 } else {
                     None
                 }
@@ -721,7 +721,7 @@ impl Runtime {
     }
 }
 
-pub(crate) fn apply_padding(shape: &mut Vec<usize>, padding: &Vec<(isize, isize)>) {
+pub fn apply_padding(shape: &mut [usize], padding: &[(isize, isize)]) {
     let mut i = 0;
     for d in shape.iter_mut().rev() {
         *d = usize::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
@@ -807,7 +807,7 @@ impl Runtime {
         if self.devices.is_empty() {
             self.initialize_devices()?;
         }
-        let _t = crate::Timer::new("realize create graph");
+        //let t = crate::Timer::new("realize create graph");
         // Get rcs of nodes outside of realized graph
         let (mut graph, outside_nodes, order) = self
             .graph
@@ -853,7 +853,6 @@ impl Runtime {
             let debug_sched = self.debug_sched();
             let debug_ir = self.debug_ir();
             let debug_asm = self.debug_asm();
-            drop(_t);
             let compiled_graph = crate::scheduler::compile_graph(
                 graph.clone(),
                 &mut self.memory_pools,
@@ -862,7 +861,7 @@ impl Runtime {
                 &mut self.optimizer_cache,
                 &mut self.kernel_cache,
                 self.search_iterations,
-                self.config_dir.as_ref().map(|x| x.as_path()),
+                self.config_dir.as_deref(),
                 debug_perf,
                 debug_sched,
                 debug_ir,

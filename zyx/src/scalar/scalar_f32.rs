@@ -155,10 +155,9 @@ impl Scalar for f32 {
 
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 0.01% error is OK
-        self == rhs
+        (self - rhs).abs() < self.abs() * 0.0001
             || (self == -f32::INFINITY && rhs == -f32::INFINITY)
             || (self.is_nan() && rhs.is_nan())
-            || (self - rhs).abs() < self.abs() * 0.0001
     }
 
     fn epsilon() -> Self {
@@ -170,7 +169,7 @@ impl Scalar for f32 {
     }
 
     fn noteq(self, rhs: Self) -> bool {
-        self != rhs
+        !self.is_equal(rhs)
     }
 
     fn bitxor(self, rhs: Self) -> Self {

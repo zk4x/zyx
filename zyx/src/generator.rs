@@ -16,7 +16,7 @@ use crate::{
 /// and how many kernels will be created.
 #[allow(clippy::similar_names)]
 #[allow(clippy::cognitive_complexity)]
-pub(super) fn generate_kernels(
+pub fn generate_kernels(
     graph: &Graph,
     order: &[TensorId],
     debug_sched: bool,
