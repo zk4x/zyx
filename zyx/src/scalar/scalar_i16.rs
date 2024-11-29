@@ -38,6 +38,11 @@ impl Scalar for i16 {
     }
 
     #[allow(clippy::cast_possible_truncation)]
+    fn from_u16(t: u16) -> Self {
+        t as i16
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
     fn from_u32(t: u32) -> Self {
         t as i16
     }

@@ -34,6 +34,11 @@ impl Scalar for f16 {
         todo!()
     }
 
+    fn from_u16(t: u16) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_u32(t: u32) -> Self {
         let _ = t;
         todo!()

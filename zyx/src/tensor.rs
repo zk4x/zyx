@@ -153,6 +153,10 @@ impl Tensor {
                 let data: Vec<u8> = self.try_into()?;
                 Tensor::from(data)
             }
+            DType::U16 => {
+                let data: Vec<u16> = self.try_into()?;
+                Tensor::from(data)
+            }
             DType::U32 => {
                 let data: Vec<u32> = self.try_into()?;
                 Tensor::from(data)
@@ -291,6 +295,7 @@ impl Tensor {
                     })
                 }
                 DType::U8
+                | DType::U16
                 | DType::U32
                 | DType::U64
                 | DType::I8
@@ -309,6 +314,13 @@ impl Tensor {
                 DType::U8 => {
                     let range = Uniform::new(0, u8::MAX);
                     let data: Vec<u8> = (0..n).map(|_| rng.sample(range)).collect();
+                    Ok(Tensor {
+                        id: rt.variable(shape, &data)?,
+                    })
+                }
+                DType::U16 => {
+                    let range = Uniform::new(0, u16::MAX);
+                    let data: Vec<u16> = (0..n).map(|_| rng.sample(range)).collect();
                     Ok(Tensor {
                         id: rt.variable(shape, &data)?,
                     })
@@ -2814,6 +2826,7 @@ impl Tensor {
                                 DType::I8 => read_into_tensor::<i8>(&mut mptr, &shape)?,
                                 DType::I16 => read_into_tensor::<i16>(&mut mptr, &shape)?,
                                 DType::I32 => read_into_tensor::<i32>(&mut mptr, &shape)?,
+                                DType::U16 => read_into_tensor::<u16>(&mut mptr, &shape)?,
                                 DType::U32 => read_into_tensor::<u32>(&mut mptr, &shape)?,
                                 DType::U64 => read_into_tensor::<u64>(&mut mptr, &shape)?,
                                 DType::I64 => read_into_tensor::<i64>(&mut mptr, &shape)?,
@@ -2877,6 +2890,10 @@ impl Tensor {
             DType::U8 => {
                 let data: Vec<u8> = self.clone().try_into()?;
                 data.into_iter().flat_map(u8::to_le_bytes).collect()
+            }
+            DType::U16 => {
+                let data: Vec<u16> = self.clone().try_into()?;
+                data.into_iter().flat_map(u16::to_le_bytes).collect()
             }
             DType::U32 => {
                 let data: Vec<u32> = self.clone().try_into()?;
@@ -3364,6 +3381,13 @@ impl Display for Tensor {
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("u8 tensor failed to realize {e:?}"),
+                }
+            }
+            DType::U16 => {
+                let data: Result<Vec<u16>, _> = x.try_into();
+                match data {
+                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
+                    Err(e) => format!("u16 tensor failed to realize {e:?}"),
                 }
             }
             DType::U32 => {

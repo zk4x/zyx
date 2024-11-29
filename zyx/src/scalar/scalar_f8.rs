@@ -34,6 +34,11 @@ impl Scalar for F8E4M3 {
         todo!()
     }
 
+    fn from_u16(t: u16) -> Self {
+        let _ = t;
+        todo!()
+    }
+
     fn from_u32(t: u32) -> Self {
         let _ = t;
         todo!()

@@ -1209,6 +1209,7 @@ impl DType {
             Self::I32 => "s32",
             Self::I64 => "s64",
             Self::Bool => "b8",
+            Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
         }
@@ -1242,6 +1243,7 @@ impl Constant {
             Self::U8(_) => todo!(),
             Self::I8(_) => todo!(),
             Self::I16(_) => todo!(),
+            Self::U16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}"),
             Self::U64(x) => format!("{x}"),
             Self::I32(x) => format!("{x}"),
@@ -1274,6 +1276,7 @@ impl DType {
             Self::I32 => "int",
             Self::I64 => "long",
             Self::Bool => "bool",
+            Self::U16 => "unsigned short",
             Self::U32 => "unsigned int",
             Self::U64 => "unsigned long",
         }
@@ -1300,6 +1303,7 @@ impl Constant {
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
+            Self::U16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}"),
             Self::U64(x) => format!("{x}"),
             Self::I32(x) => format!("{x}"),

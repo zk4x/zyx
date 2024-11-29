@@ -37,6 +37,10 @@ impl Scalar for i32 {
         t.into()
     }
 
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
+
     fn from_u32(t: u32) -> Self {
         i32::try_from(t).unwrap()
     }

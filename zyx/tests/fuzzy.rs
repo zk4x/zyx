@@ -205,6 +205,7 @@ impl CPUTensor {
                 DType::F32 => Data::F32(unsafe { t::<_, &[f32]>(data) }.into()),
                 DType::F64 => todo!(),
                 DType::U8 => todo!(),
+                DType::U16 => todo!(),
                 DType::U32 => todo!(),
                 DType::U64 => todo!(),
                 DType::I8 => todo!(),

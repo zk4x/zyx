@@ -33,6 +33,10 @@ impl Scalar for bf16 {
         bf16::from_f32(f32::from(t))
     }
 
+    fn from_u16(t: u16) -> Self {
+        bf16::from_f32(f32::from(t))
+    }
+
     fn from_u32(t: u32) -> Self {
         bf16::from_f64(f64::from(t))
     }

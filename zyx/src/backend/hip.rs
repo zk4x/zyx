@@ -711,6 +711,7 @@ impl DType {
             Self::I32 => "int",
             Self::I64 => "long",
             Self::Bool => "bool",
+            Self::U16 => "unsigned short",
             Self::U32 => "unsigned int",
             Self::U64 => "unsigned long",
         }
@@ -738,6 +739,7 @@ impl Constant {
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
+            Self::U16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}"),
             Self::U64(x) => format!("{x}"),
             Self::I32(x) => format!("{x}"),

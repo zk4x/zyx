@@ -3,7 +3,7 @@ use crate::scalar::Scalar;
 use float8::F8E4M3;
 use half::{bf16, f16};
 
-impl Scalar for u64 {
+impl Scalar for u16 {
     fn from_bf16(t: bf16) -> Self {
         let _ = t;
         todo!()
@@ -33,16 +33,12 @@ impl Scalar for u64 {
         t.into()
     }
 
-    fn from_u16 (t: u16) -> Self {
-        t.into()
-    }
-
     fn from_u32(t: u32) -> Self {
-        t.into()
+        t.try_into().unwrap()
     }
 
     fn from_u64(t: u64) -> Self {
-        t
+        t.try_into().unwrap()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -66,13 +62,11 @@ impl Scalar for u64 {
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        Self::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
+        Self::from_le_bytes([bytes[0], bytes[1]])
     }
 
     fn dtype() -> DType {
-        DType::U64
+        DType::U32
     }
 
     fn zero() -> Self {
@@ -182,5 +176,9 @@ impl Scalar for u64 {
 
     fn bitand(self, rhs: Self) -> Self {
         self & rhs
+    }
+    
+    fn from_u16(t: u16) -> Self {
+        t
     }
 }
