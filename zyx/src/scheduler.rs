@@ -73,16 +73,22 @@ pub fn compile_graph(
     let (order, flop, bytes_read, bytes_written) = graph.execution_order();
     // create vop representation
     let mut kernels: Vec<Kernel> = crate::generator::generate_kernels(&graph, &order, debug_sched);
-    //println!("{:?}", &*crate::ET.lock());
+    let kernels_len = kernels.len();
     //panic!();
     //println!("{:?}", self.tensor_buffer_map);
     if debug_sched {
-        //for kernel in &kernels { kernel.debug(); }
+        for kernel in &kernels {
+            kernel.debug();
+        }
+        let n_reduce_kernels: usize = kernels.iter().filter(|kernel| kernel.is_reduce()).count();
         println!(
-            "split graph into {} kernels, kernel ops min {}, max {}, optimizing kernels:",
+            "split graph into {} kernels, avg {}, min {}, max {} ops/kernel, {} elementwise, {} reduce kernels, optimizing kernels:",
             kernels.len(),
+            kernels.iter().map(|kernel| kernel.ops.len()).sum::<usize>() / kernels_len,
             kernels.iter().map(|kernel| kernel.ops.len()).min().unwrap(),
-            kernels.iter().map(|kernel| kernel.ops.len()).max().unwrap()
+            kernels.iter().map(|kernel| kernel.ops.len()).max().unwrap(),
+            kernels_len - n_reduce_kernels,
+            n_reduce_kernels,
         );
     }
     //panic!("Done");
@@ -99,7 +105,6 @@ pub fn compile_graph(
         .collect();
     let mut temp_tensors: BTreeSet<TensorId> = BTreeSet::new();
 
-    let kernels_len = kernels.len();
     let progress_bar = if debug_sched {
         let bar = indicatif::ProgressBar::new(kernels_len as u64);
         bar.set_style(

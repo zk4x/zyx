@@ -182,9 +182,7 @@ impl Graph {
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }
 
-    pub(super) fn rc(&self, x: TensorId) -> u32 {
-        self.nodes[x].0
-    }
+    //pub(super) fn rc(&self, x: TensorId) -> u32 { self.nodes[x].0 }
 
     pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
         for &tensor in tensors {

@@ -1,7 +1,7 @@
 //! This file contains kernel generator. It converts graph into a sequence of kernels
 //! that will be executed by devices.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{
     graph::Graph,
@@ -17,6 +17,16 @@ use crate::{
 #[allow(clippy::similar_names)]
 #[allow(clippy::cognitive_complexity)]
 pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) -> Vec<Kernel> {
+    let _ = debug_sched;
+
+    // ref counts in graph without user ref counts
+    let mut graph_rcs: HashMap<TensorId, u32> = HashMap::with_capacity(order.len());
+    for nid in order.iter().copied() {
+        for p in graph[nid].parameters() {
+            graph_rcs.entry(p).and_modify(|rc| *rc += 1).or_insert(1);
+        }
+    }
+
     let _t = crate::Timer::new("generate_kernels");
     //let _t = crate::Timer::new("generate_kernels");
     // This function sorts nodes into smallest number of kernels that can be compiled on the device
@@ -28,13 +38,7 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        if debug_sched {
-            println!(
-                "ID({nid})x{}: {node:?}, sh: {:?}",
-                graph.rc(nid),
-                graph.shape(nid)
-            );
-        }
+        //if debug_sched { println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid)); }
         match node {
             &Node::Const { value } => {
                 let _t = crate::Timer::new("Const");
@@ -308,37 +312,22 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
             }
             &Node::Binary { x, y, bop } => {
                 let _t = crate::Timer::new("Binary");
+                let mut different = false;
                 // Binary ops may allow us to join two kernels together
                 if let Some(id) = kernels
                     .iter_mut()
                     .position(|kernel| kernel.vars().is_superset(&[x, y].into()))
                 {
                     // If both inputs are in the same kernel
-                    let kernel = if kernels[id].shape() == graph.shape(x) {
-                        &mut kernels[id]
+                    if kernels[id].shape() == graph.shape(x) {
+                        kernels[id].ops.push(VOp::Binary { z: nid, x, y, bop });
                     } else {
-                        panic!();
-                        // create new kernel using already predefined stores of both x and y
-                        /*println!("Binary op with different shapes");
-                        for kernel in &kernels {
-                            kernel.debug();
-                        }
-                        let mut kernel = Kernel::load(x, graph);
-                        kernel.ops.push(VOp::Load {
-                            z: y,
-                            zscope: Scope::Register,
-                            zview: View::none(),
-                            x: y,
-                            xscope: Scope::Global,
-                            xview: View::contiguous(graph.shape(y)),
-                            xdtype: graph.dtype(x),
-                        });
-                        kernels.push(kernel);
-                        kernels.last_mut().unwrap()*/
+                        different = true;
                     };
-                    kernel.ops.push(VOp::Binary { z: nid, x, y, bop });
-                    //kernels[id].ops.push(VOp::Binary { z: nid, x, y, bop });
                 } else {
+                    different = true;
+                }
+                if different {
                     // If inputs are in different kernels
                     let _t = crate::Timer::new("Binary first part");
                     let kernel_x_id = kernels
@@ -363,12 +352,7 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
                         kernels[kernel_y_id].debug();
                         panic!();
                     }
-
-                    // Now we know that kernel x depends on kernel y or there is no dependence at all
-                    // So kernel y must go first
                     let _t = crate::Timer::new("Binary second part");
-                    // TODO If kernel_y of kernel_x are not needed elsewhere, just remove one of them
-                    // (the one that is older)
                     let (kernel_y, kernel_x) =
                         (kernels[kernel_y_id].clone(), &mut kernels[kernel_x_id]);
                     let kernel_y_ops: Vec<VOp> = kernel_y
@@ -399,63 +383,75 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
                 unreachable!()
             }
         }
-        // TODO only if this is more than user rcs
-        // TODO this should be non user rcs
-        let rc = graph.rc(nid);
+        let mut is_user_leaf = false;
+        let rc = if let Some(&rc) = graph_rcs.get(&nid) {
+            rc
+        } else {
+            is_user_leaf = true;
+            0 // only referenced in to_eval
+        };
         if rc > 1 {
             if let Some(kernel) = kernels
                 .iter_mut()
                 .find(|kernel| kernel.vars().contains(&nid))
             {
-                // if graph.rc(nid) > 1 then just copy that graph if it is not too big graph
+                // if graph_rcs[nid] > 1 then just copy that graph if it is not too big graph
                 // and if the kernel does not have too big shape.
-                // TODO beware of too many copies. We need to make sure that we are not doing
-                // the same work twice.
                 //if user_leafs.contains(&nid) {
                 //kernel.store(nid, View::new(graph.shape(nid)));
-                if ((kernel.ops.len() > 30 || graph.rc(nid) > 2)
-                    && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
+                if is_user_leaf
+                    || ((kernel.ops.len() > 1000 || rc > 10)
+                        && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
                     || kernel.is_reduce()
                     || !kernel.outputs().is_empty()
                 {
                     //println!("Storing {nid}");
                     kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
                     assert!(kernel.outputs().contains(&nid));
-                    kernels.push(Kernel::load(nid, graph));
+                    if !is_user_leaf {
+                        kernels.push(Kernel::load(nid, graph));
+                    }
                 } else {
                     let kernel2 = kernel.clone();
-                    for _ in 0..rc - 1 {
-                        kernels.push(kernel2.clone());
-                    }
+                    // TODO perhaps fix this, because this creates one too many kernels which
+                    // need to be removed later by garbage collection :D
+                    kernels.push(kernel2.clone());
                 }
             } else {
                 unreachable!()
             }
-        }
+        };
     }
 
-    // Remove unnecessary kernels
-    // TODO these should be only loads for user_rc > 1 kernels, remove this
-    kernels.retain(|kernel| !kernel.outputs().is_empty());
+    // TODO this is garbage collection. Later we perhaps should be able to do it on the fly.
 
     // Remove unnecessary stores not for tensors moved across kernels
     // and not in to_eval that were inserted for rc > 1, but ops got merged,
     // and these stores were not used.
     let mut necessary_stores = graph.to_eval.clone();
-    for kernel in &kernels {
-        necessary_stores.extend(kernel.inputs().iter());
-    }
-    for kernel in &mut kernels {
+    let mut already_stored = BTreeSet::new();
+    for kernel in kernels.iter_mut().rev() {
+        let kernel_inputs = kernel.inputs();
+        // All stores not in necessary stores should be removed
         let mut i = 0;
         while i < kernel.ops.len() {
             if let VOp::Store { z, .. } = kernel.ops[i] {
+                if !already_stored.insert(z) {
+                    kernel.ops.remove(i);
+                }
                 if !necessary_stores.contains(&z) {
                     kernel.ops.remove(i);
                 }
             }
             i += 1;
         }
+        if !kernel.outputs().is_empty() {
+            necessary_stores.extend(kernel_inputs);
+        }
     }
+
+    // All kernels without stores are useless
+    kernels.retain(|kernel| !kernel.outputs().is_empty());
 
     // Check for IO consistency.
     // Each kernel's inputs must be outputs of some other kernel or leafs.
@@ -471,15 +467,15 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
         let kernel_outputs = kernel.outputs();
         let kernel_inputs = kernel.inputs();
         // TODO fix this assert
-        if outputs.intersection(&kernel_outputs).count() != 0 {
-            println!(
-                "Warning, tensors {:?} are evaluated in multiple places.",
-                outputs
-                    .intersection(&kernel_outputs)
-                    .copied()
-                    .collect::<BTreeSet<TensorId>>()
-            );
-        }
+        assert_eq!(
+            outputs.intersection(&kernel_outputs).count(),
+            0,
+            "tensors {:?} are evaluated in multiple places.",
+            outputs
+                .intersection(&kernel_outputs)
+                .copied()
+                .collect::<BTreeSet<TensorId>>()
+        );
         outputs.extend(kernel_outputs);
         if !kernel_inputs.is_subset(&outputs) {
             println!(

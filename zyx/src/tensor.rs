@@ -1218,13 +1218,6 @@ impl Tensor {
         })
     }
 
-    /// An alias to reshape
-    /// # Errors
-    /// Returns error if self cannot be reshaped to shape.
-    pub fn view(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        self.reshape(shape)
-    }
-
     /// Transpose last two dimensions of this tensor.
     /// If `self.rank() == 1`, returns tensor with shape `[self.shape()[0], 1]` (column tensor)
     #[allow(clippy::missing_panics_doc)]
