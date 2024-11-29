@@ -464,7 +464,8 @@ impl CUDADevice {
         debug_asm: bool,
     ) -> Result<CUDAProgram, CUDAError> {
         let (global_work_size, local_work_size, name, ptx_vec) =
-            self.compile_cuda(kernel, debug_asm)?;
+            //self.compile_cuda(kernel, debug_asm)?;
+            self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
         unsafe {
@@ -481,11 +482,6 @@ impl CUDADevice {
         // Don't forget that the name is null terminated string
         unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
             .check("Failed to load function.")?;
-
-        /*if debug_asm {
-            let ptx_source: String = unsafe { std::ffi::CString::from_vec_unchecked(ptx_vec) }.into_string().unwrap();
-            println!("{ptx_source}");
-        }*/
 
         Ok(CUDAProgram {
             //name,
@@ -776,7 +772,7 @@ impl CUDADevice {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    fn compile_ptx(&mut self, kernel: &IRKernel, debug_asm: bool) -> String {
+    fn compile_ptx(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), CUDAError> {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
@@ -849,8 +845,10 @@ impl CUDADevice {
                     source += &format!("{indent}ld.global.{}    r{}, [a1];\n", dtype.ptx(), z);
                 }
                 IROp::Store { address, offset, x } => {
-                    let Reg::Var(id) = x else { unreachable!() };
-                    let dtype = kernel.registers[id as usize];
+                    let dtype = match x {
+                        Reg::Var(id) => kernel.registers[id as usize],
+                        Reg::Const(constant) => constant.dtype(),
+                    };
                     // Get address
                     source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
                     // Convert address to global
@@ -948,7 +946,7 @@ impl CUDADevice {
         if debug_asm {
             println!("Compiling kernel {name}, PTX source:\n{source}");
         }
-        source
+        Ok((global_work_size, local_work_size, name, source.bytes().collect()))
     }
 }
 

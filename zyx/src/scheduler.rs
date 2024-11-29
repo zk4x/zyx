@@ -77,9 +77,7 @@ pub fn compile_graph(
     //panic!();
     //println!("{:?}", self.tensor_buffer_map);
     if debug_sched {
-        for kernel in &kernels {
-            kernel.debug();
-        }
+        //for kernel in &kernels { kernel.debug(); }
         let n_reduce_kernels: usize = kernels.iter().filter(|kernel| kernel.is_reduce()).count();
         println!(
             "split graph into {} kernels, avg {}, min {}, max {} ops/kernel, {} elementwise, {} reduce kernels, optimizing kernels:",
@@ -201,7 +199,7 @@ pub fn compile_graph(
                     tensor_buffer_map.insert((output, view), memory_pool_id);
                 }
             }
-            //kernel.debug();
+            kernel.debug();
             //println!("{tensor_buffer_map:?}");
 
             // Move necessary inputs to memory pool associated with this device

@@ -38,7 +38,7 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
     let mut kernels: Vec<Kernel> = Vec::new();
     for nid in order.iter().copied() {
         let node = &graph[nid];
-        //if debug_sched { println!("ID({nid})x{}: {node:?}, sh: {:?}", graph.rc(nid), graph.shape(nid)); }
+        //if debug_sched { println!("ID({nid})x{}: {node:?}, sh: {:?}", graph_rcs.get(&nid).unwrap_or(&1), graph.shape(nid)); }
         match node {
             &Node::Const { value } => {
                 let _t = crate::Timer::new("Const");
@@ -312,21 +312,21 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
             }
             &Node::Binary { x, y, bop } => {
                 let _t = crate::Timer::new("Binary");
-                let mut different = false;
                 // Binary ops may allow us to join two kernels together
-                if let Some(id) = kernels
+                let different = if let Some(id) = kernels
                     .iter_mut()
                     .position(|kernel| kernel.vars().is_superset(&[x, y].into()))
                 {
                     // If both inputs are in the same kernel
                     if kernels[id].shape() == graph.shape(x) {
                         kernels[id].ops.push(VOp::Binary { z: nid, x, y, bop });
+                        false
                     } else {
-                        different = true;
-                    };
+                        true
+                    }
                 } else {
-                    different = true;
-                }
+                    true
+                };
                 if different {
                     // If inputs are in different kernels
                     let _t = crate::Timer::new("Binary first part");
@@ -391,34 +391,32 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
             0 // only referenced in to_eval
         };
         if rc > 1 {
-            if let Some(kernel) = kernels
+            let Some(kernel) = kernels
                 .iter_mut()
-                .find(|kernel| kernel.vars().contains(&nid))
+                .find(|kernel| kernel.vars().contains(&nid)) else { unreachable!() };
+            // if graph_rcs[nid] > 1 then just copy that graph if it is not too big graph
+            // and if the kernel does not have too big shape.
+            //if user_leafs.contains(&nid) {
+            //kernel.store(nid, View::new(graph.shape(nid)));
+            if is_user_leaf
+                || ((kernel.ops.len() > 30 || rc > 2)
+                    && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
+                || kernel.is_reduce()
+                || !kernel.outputs().is_empty()
             {
-                // if graph_rcs[nid] > 1 then just copy that graph if it is not too big graph
-                // and if the kernel does not have too big shape.
-                //if user_leafs.contains(&nid) {
-                //kernel.store(nid, View::new(graph.shape(nid)));
-                if is_user_leaf
-                    || ((kernel.ops.len() > 1000 || rc > 10)
-                        && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
-                    || kernel.is_reduce()
-                    || !kernel.outputs().is_empty()
-                {
-                    //println!("Storing {nid}");
-                    kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
-                    assert!(kernel.outputs().contains(&nid));
-                    if !is_user_leaf {
-                        kernels.push(Kernel::load(nid, graph));
-                    }
-                } else {
-                    let kernel2 = kernel.clone();
-                    // TODO perhaps fix this, because this creates one too many kernels which
-                    // need to be removed later by garbage collection :D
-                    kernels.push(kernel2.clone());
+                //println!("Storing {nid}");
+                kernel.store(nid, View::contiguous(graph.shape(nid)), graph.dtype(nid));
+                assert!(kernel.outputs().contains(&nid));
+                if !is_user_leaf {
+                    kernels.push(Kernel::load(nid, graph));
                 }
             } else {
-                unreachable!()
+                let kernel2 = kernel.clone();
+                // TODO perhaps fix this, because this creates one too many kernels which
+                // need to be removed later by garbage collection :D
+                for _ in 0..rc {
+                    kernels.push(kernel2.clone());
+                }
             }
         };
     }

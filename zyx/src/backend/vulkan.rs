@@ -5,8 +5,8 @@
 use std::ptr;
 use std::{ffi::CString, sync::Arc};
 
-use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::{LoadingError, Validated, VulkanLibrary};
+//use vulkano::instance::{Instance, InstanceCreateInfo};
+//use vulkano::{LoadingError, Validated, VulkanLibrary};
 
 use crate::{
     index_map::{Id, IndexMap},
@@ -19,7 +19,7 @@ use super::DeviceInfo;
 pub struct VulkanConfig {}
 
 #[derive(Debug)]
-pub struct VulkanError(vulkano::VulkanError);
+pub struct VulkanError; //(vulkano::VulkanError);
 
 #[derive(Debug)]
 pub(super) struct VulkanMemoryPool {
@@ -263,7 +263,7 @@ impl VulkanQueue {
     }
 }
 
-impl From<LoadingError> for VulkanError {
+/*impl From<LoadingError> for VulkanError {
     fn from(value: LoadingError) -> Self {
         match value {
             LoadingError::LibraryLoadFailure(error) => Self(vulkano::VulkanError::Unknown),
@@ -285,7 +285,7 @@ impl From<vulkano::VulkanError> for VulkanError {
     fn from(value: vulkano::VulkanError) -> Self {
         Self(value)
     }
-}
+}*/
 
 /*#[repr(C)]
 #[derive(Debug)]

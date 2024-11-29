@@ -461,7 +461,7 @@ impl OpenCLMemoryPool {
         };
         status.check("Failed to allocate memory.")?;
         //println!("Allocated buffer {ptr:?}, bytes {bytes}");
-        self.free_bytes -= bytes;
+        self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok(OpenCLBuffer {
             ptr,
             bytes,
