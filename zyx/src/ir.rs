@@ -81,24 +81,6 @@ pub enum IROp {
     },
 }
 
-// TODO remove this, just use DType and add vectors separately
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IRDType {
-    BF16(IRVec),
-    F8(IRVec),
-    F16(IRVec),
-    F32(IRVec),
-    F64(IRVec),
-    U8(IRVec),
-    U32(IRVec),
-    U64(IRVec),
-    I8(IRVec),
-    I16(IRVec),
-    I32(IRVec),
-    I64(IRVec),
-    Bool,
-}
-
 // TODO add vectorization
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -116,10 +98,10 @@ pub struct IRKernel {
     // All addressable variables (those that use indexing for access)
     // These can be global args, local variables or variables in registers
     // scope, dtype, byte_size, read_only
-    pub(super) addressables: Vec<(Scope, IRDType, usize, bool)>,
+    pub(super) addressables: Vec<(Scope, DType, usize, bool)>,
     // Registers with single value or vector stored in them
     // dtype
-    pub(super) registers: Vec<IRDType>,
+    pub(super) registers: Vec<DType>,
     pub(super) ops: Vec<IROp>,
 }
 
@@ -145,78 +127,6 @@ impl Display for IRVec {
             IRVec::V4 => f.write_char('4'),
             IRVec::V8 => f.write_char('8'),
             IRVec::V16 => f.write_str("16"),
-        }
-    }
-}
-
-impl DType {
-    pub(super) const fn ir_dtype(self) -> IRDType {
-        match self {
-            DType::BF16 => IRDType::BF16(IRVec::Scalar),
-            DType::F8 => IRDType::F8(IRVec::Scalar),
-            DType::F16 => IRDType::F16(IRVec::Scalar),
-            DType::F32 => IRDType::F32(IRVec::Scalar),
-            DType::F64 => IRDType::F64(IRVec::Scalar),
-            DType::U8 => IRDType::U8(IRVec::Scalar),
-            DType::U32 => IRDType::U32(IRVec::Scalar),
-            DType::U64 => IRDType::U64(IRVec::Scalar),
-            DType::I8 => IRDType::I8(IRVec::Scalar),
-            DType::I16 => IRDType::I16(IRVec::Scalar),
-            DType::I32 => IRDType::I32(IRVec::Scalar),
-            DType::I64 => IRDType::I64(IRVec::Scalar),
-            DType::Bool => IRDType::Bool,
-        }
-    }
-}
-
-impl IRDType {
-    // TODO vectorization
-    #[allow(unused)]
-    pub(super) const fn byte_size(self) -> usize {
-        match self {
-            IRDType::Bool => 1,
-            IRDType::F8(v) | IRDType::U8(v) | IRDType::I8(v) => v.len(),
-            IRDType::BF16(v) | IRDType::F16(v) | IRDType::I16(v) => 2 * v.len(),
-            IRDType::F32(v) | IRDType::I32(v) | IRDType::U32(v) => 4 * v.len(),
-            IRDType::F64(v) | IRDType::I64(v) | IRDType::U64(v) => 8 * v.len(),
-        }
-    }
-
-    pub(super) const fn dtype(self) -> DType {
-        match self {
-            IRDType::BF16(_) => DType::BF16,
-            IRDType::F8(_) => DType::F8,
-            IRDType::F16(_) => DType::F16,
-            IRDType::F32(_) => DType::F32,
-            IRDType::F64(_) => DType::F64,
-            IRDType::U8(_) => DType::U8,
-            IRDType::U32(_) => DType::U32,
-            IRDType::U64(_) => DType::U64,
-            IRDType::I8(_) => DType::I8,
-            IRDType::I16(_) => DType::I16,
-            IRDType::I32(_) => DType::I32,
-            IRDType::I64(_) => DType::I64,
-            IRDType::Bool => DType::Bool,
-        }
-    }
-}
-
-impl From<DType> for IRDType {
-    fn from(value: DType) -> Self {
-        match value {
-            DType::BF16 => IRDType::BF16(IRVec::Scalar),
-            DType::F8 => IRDType::F8(IRVec::Scalar),
-            DType::F16 => IRDType::F16(IRVec::Scalar),
-            DType::F32 => IRDType::F32(IRVec::Scalar),
-            DType::F64 => IRDType::F64(IRVec::Scalar),
-            DType::U8 => IRDType::U8(IRVec::Scalar),
-            DType::U32 => IRDType::U32(IRVec::Scalar),
-            DType::U64 => IRDType::U64(IRVec::Scalar),
-            DType::I8 => IRDType::I8(IRVec::Scalar),
-            DType::I16 => IRDType::I16(IRVec::Scalar),
-            DType::I32 => IRDType::I32(IRVec::Scalar),
-            DType::I64 => IRDType::I64(IRVec::Scalar),
-            DType::Bool => IRDType::Bool,
         }
     }
 }
@@ -330,7 +240,7 @@ impl IRCompiler {
     fn vops_to_ir(
         kernel_ops: &[VOp],
         args: &mut Vec<u32>,
-        addressables: &mut Vec<(Scope, IRDType, usize, bool)>,
+        addressables: &mut Vec<(Scope, DType, usize, bool)>,
     ) -> IRCompiler {
         let mut c = IRCompiler {
             ops: Vec::new(),
@@ -351,7 +261,7 @@ impl IRCompiler {
                 } => {
                     if xscope == Scope::Global && !c.pointers_map.contains_key(&(x, xscope)) {
                         args.push(x);
-                        let dtype = xdtype.ir_dtype();
+                        let dtype = xdtype;
                         addressables.push((xscope, dtype, xview.original_numel(), true));
                         let id = u16::try_from(addressables.len() - 1).unwrap();
                         c.pointers_map.insert((x, xscope), id);
@@ -377,7 +287,7 @@ impl IRCompiler {
                                 args.push(z);
                                 addressables.push((
                                     zscope,
-                                    zdtype.ir_dtype(),
+                                    zdtype,
                                     zview.original_numel(),
                                     false,
                                 ));
@@ -402,7 +312,7 @@ impl IRCompiler {
                     if xscope == Scope::Local && !c.pointers_map.contains_key(&(x, xscope)) {
                         addressables.push((
                             xscope,
-                            xdtype.ir_dtype(),
+                            xdtype,
                             xview.original_numel(),
                             true,
                         ));
@@ -428,7 +338,7 @@ impl IRCompiler {
                 } => {
                     addressables.push((
                         Scope::RegTile,
-                        dtype.ir_dtype(),
+                        dtype,
                         view.original_numel(),
                         false,
                     ));
@@ -548,7 +458,7 @@ impl IRCompiler {
         c
     }
 
-    fn into_deduplicated_ir(self) -> (Vec<IRDType>, Vec<IROp>) {
+    fn into_deduplicated_ir(self) -> (Vec<DType>, Vec<IROp>) {
         let mut ref_counts: BTreeMap<u16, u32> = BTreeMap::new();
         // Get reference counts
         for op in &self.ops {
@@ -606,7 +516,7 @@ impl IRCompiler {
                     let zr = new_var(
                         &mut registers,
                         &mut reg_rcs,
-                        self.dtypes[z as usize].ir_dtype(),
+                        self.dtypes[z as usize],
                         ref_counts[&z],
                     );
                     let offset = if let Reg::Var(offset) = offset {
@@ -649,7 +559,7 @@ impl IRCompiler {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            self.dtypes[z as usize].ir_dtype(),
+                            self.dtypes[z as usize],
                             zrc,
                         );
                         let xr = cmp[&x];
@@ -677,7 +587,7 @@ impl IRCompiler {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            self.dtypes[z as usize].ir_dtype(),
+                            self.dtypes[z as usize],
                             zrc,
                         );
                         ops.push(IROp::Binary { z: zr, x, y, bop });
@@ -710,7 +620,7 @@ impl IRCompiler {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            self.dtypes[z as usize].ir_dtype(),
+                            self.dtypes[z as usize],
                             zrc,
                         );
                         ops.push(IROp::MAdd { z: zr, a, b, c });
@@ -722,7 +632,7 @@ impl IRCompiler {
                         let zr = new_var(
                             &mut registers,
                             &mut reg_rcs,
-                            self.dtypes[id as usize].ir_dtype(),
+                            self.dtypes[id as usize],
                             zrc,
                         );
                         ops.push(IROp::Loop { id: zr, len });
@@ -890,9 +800,9 @@ impl IRCompiler {
 }
 
 fn new_var(
-    registers: &mut Vec<IRDType>,
+    registers: &mut Vec<DType>,
     reg_rcs: &mut Vec<u32>,
-    ir_dtype: IRDType,
+    ir_dtype: DType,
     ref_count: u32,
 ) -> u16 {
     for (i, rc) in reg_rcs.iter_mut().enumerate() {
@@ -919,7 +829,7 @@ impl IRKernel {
     pub(super) fn new(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
         // What we need to calculate (outputs of this function)
         // IRKernel
-        let mut addressables: Vec<(Scope, IRDType, usize, bool)> = Vec::new();
+        let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
         // Returned tensors
         let mut args = Vec::new();
 

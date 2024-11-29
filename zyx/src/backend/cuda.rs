@@ -15,7 +15,7 @@ use super::DeviceInfo;
 use crate::dtype::Constant;
 use crate::index_map::{Id, IndexMap};
 use crate::ir::IRKernel;
-use crate::ir::{IRDType, IROp, Reg, Scope};
+use crate::ir::{IROp, Reg, Scope};
 use crate::node::{BOp, UOp};
 use crate::DType;
 
@@ -464,8 +464,8 @@ impl CUDADevice {
         debug_asm: bool,
     ) -> Result<CUDAProgram, CUDAError> {
         let (global_work_size, local_work_size, name, ptx_vec) =
-            //self.compile_cuda(kernel, debug_asm)?;
-            self.compile_ptx(kernel, debug_asm)?;
+            self.compile_cuda(kernel, debug_asm)?;
+            //self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
         unsafe {
@@ -601,7 +601,7 @@ impl CUDADevice {
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
-                    let zero = Constant::new(0).unary(UOp::Cast(dtype.dtype())).cu();
+                    let zero = Constant::new(0).unary(UOp::Cast(dtype)).cu();
                     source.push_str(&match uop {
                         UOp::Cast(_) => {
                             format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
@@ -861,7 +861,7 @@ impl CUDADevice {
                     source += &match uop {
                         UOp::Cast(cdt) => format!(
                             "{indent}cvt.{}.{}    r{z}, r{x};\n",
-                            <DType as Into<IRDType>>::into(cdt).ptx(),
+                            <DType as Into<DType>>::into(cdt).ptx(),
                             dtype.ptx(),
                         ),
                         UOp::ReLU => todo!(),
@@ -1195,22 +1195,22 @@ enum CUdevice_attribute {
     CU_DEVICE_ATTRIBUTE_MAX,
 }
 
-impl IRDType {
+impl DType {
     pub(super) fn ptx(&self) -> &str {
         match self {
-            Self::BF16(v) => panic!("BF16 is not native to OpenCL, workaround is WIP."),
-            Self::F8(v) => "f8",
-            Self::F16(v) => "f16",
-            Self::F32(v) => "f32",
-            Self::F64(v) => "f64",
-            Self::U8(v) => "u8",
-            Self::I8(v) => "s8",
-            Self::I16(v) => "s16",
-            Self::I32(v) => "s32",
-            Self::I64(v) => "s64",
+            Self::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
+            Self::F8 => "f8",
+            Self::F16 => "f16",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::U8 => "u8",
+            Self::I8 => "s8",
+            Self::I16 => "s16",
+            Self::I32 => "s32",
+            Self::I64 => "s64",
             Self::Bool => "b8",
-            Self::U32(v) => "u32",
-            Self::U64(v) => "u64",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
         }
     }
 }
@@ -1260,22 +1260,22 @@ impl Reg {
     }
 }
 
-impl IRDType {
+impl DType {
     pub(super) fn cu(&self) -> &str {
         match self {
-            Self::BF16(_) => todo!("BF16 is not native to OpenCL, workaround is WIP."),
-            Self::F8(_) => todo!("F8 is not native to OpenCL, workaround is WIP."),
-            Self::F16(_) => "__half",
-            Self::F32(_) => "float",
-            Self::F64(_) => "double",
-            Self::U8(_) => "unsigned char",
-            Self::I8(_) => "char",
-            Self::I16(_) => "short",
-            Self::I32(_) => "int",
-            Self::I64(_) => "long",
+            Self::BF16 => todo!("BF16 is not native to OpenCL, workaround is WIP."),
+            Self::F8 => todo!("F8 is not native to OpenCL, workaround is WIP."),
+            Self::F16 => "__half",
+            Self::F32 => "float",
+            Self::F64 => "double",
+            Self::U8 => "unsigned char",
+            Self::I8 => "char",
+            Self::I16 => "short",
+            Self::I32 => "int",
+            Self::I64 => "long",
             Self::Bool => "bool",
-            Self::U32(_) => "unsigned int",
-            Self::U64(_) => "unsigned long",
+            Self::U32 => "unsigned int",
+            Self::U64 => "unsigned long",
         }
     }
 }

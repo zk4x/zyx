@@ -7,8 +7,9 @@
 use super::DeviceInfo;
 use crate::dtype::Constant;
 use crate::index_map::Id;
-use crate::ir::{IRDType, IROp, Reg, Scope};
+use crate::ir::{IROp, Reg, Scope};
 use crate::node::{BOp, UOp};
+use crate::DType;
 use crate::{index_map::IndexMap, ir::IRKernel};
 use libloading::Library;
 use std::ffi::{c_char, c_int, c_uint, c_void};
@@ -696,22 +697,22 @@ impl HIPStatus {
     }
 }
 
-impl IRDType {
+impl DType {
     pub(super) fn hip(&self) -> &str {
         match self {
-            Self::BF16(v) => panic!("BF16 is WIP."),
-            Self::F8(v) => "f8",
-            Self::F16(v) => "half",
-            Self::F32(v) => "float",
-            Self::F64(v) => "double",
-            Self::U8(v) => "unsigned char",
-            Self::I8(v) => "char",
-            Self::I16(v) => "short",
-            Self::I32(v) => "int",
-            Self::I64(v) => "long",
+            Self::BF16 => panic!("BF16 is WIP."),
+            Self::F8 => "f8",
+            Self::F16 => "half",
+            Self::F32 => "float",
+            Self::F64 => "double",
+            Self::U8 => "unsigned char",
+            Self::I8 => "char",
+            Self::I16 => "short",
+            Self::I32 => "int",
+            Self::I64 => "long",
             Self::Bool => "bool",
-            Self::U32(v) => "unsigned int",
-            Self::U64(v) => "unsigned long",
+            Self::U32 => "unsigned int",
+            Self::U64 => "unsigned long",
         }
     }
 }

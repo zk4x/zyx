@@ -199,7 +199,9 @@ pub fn compile_graph(
                     tensor_buffer_map.insert((output, view), memory_pool_id);
                 }
             }
-            kernel.debug();
+            if debug_sched {
+                kernel.debug();
+            }
             //println!("{tensor_buffer_map:?}");
 
             // Move necessary inputs to memory pool associated with this device

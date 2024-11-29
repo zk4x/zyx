@@ -11,7 +11,7 @@ use super::DeviceInfo;
 use crate::{
     dtype::Constant,
     index_map::{Id, IndexMap},
-    ir::{IRDType, IRKernel, IROp, Reg, Scope},
+    ir::{DType, IRKernel, IROp, Reg, Scope},
     node::{BOp, UOp},
 };
 
@@ -588,22 +588,22 @@ impl WGSLQueue {
     }
 }
 
-impl IRDType {
+impl DType {
     fn wgsl(&self) -> &str {
         match self {
-            IRDType::BF16(_) => todo!("WIP"),
-            IRDType::F8(_) => "f8",
-            IRDType::F16(_) => "f16",
-            IRDType::F32(_) => "f32",
-            IRDType::F64(_) => "f64",
-            IRDType::U8(_) => "u8",
-            IRDType::I8(_) => "i8",
-            IRDType::I16(_) => "i16",
-            IRDType::I32(_) => "i32",
-            IRDType::I64(_) => "i64",
-            IRDType::U32(_) => "u32",
-            IRDType::U64(_) => "u64",
-            IRDType::Bool => "bool",
+            DType::BF16(_) => todo!("WIP"),
+            DType::F8(_) => "f8",
+            DType::F16(_) => "f16",
+            DType::F32(_) => "f32",
+            DType::F64(_) => "f64",
+            DType::U8(_) => "u8",
+            DType::I8(_) => "i8",
+            DType::I16(_) => "i16",
+            DType::I32(_) => "i32",
+            DType::I64(_) => "i64",
+            DType::U32(_) => "u32",
+            DType::U64(_) => "u64",
+            DType::Bool => "bool",
         }
     }
 }

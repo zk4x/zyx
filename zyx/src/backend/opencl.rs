@@ -7,8 +7,8 @@ use super::DeviceInfo;
 use crate::{
     dtype::Constant,
     index_map::{Id, IndexMap},
-    ir::{IRDType, IRKernel, IROp, Reg, Scope},
-    node::{BOp, UOp},
+    ir::{IRKernel, IROp, Reg, Scope},
+    node::{BOp, UOp}, DType,
 };
 use libloading::Library;
 use std::{
@@ -727,7 +727,7 @@ impl OpenCLDevice {
                         }
                         UOp::ReLU => format!(
                             "{indent}r{z} = max(r{x}, {});\n",
-                            dtype.dtype().zero_constant().ocl()
+                            dtype.zero_constant().ocl()
                         ),
                         UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
                         UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
@@ -735,7 +735,7 @@ impl OpenCLDevice {
                         UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
                         UOp::Sqrt => format!(
                             "{indent}r{z} = sqrt({}r{x});\n",
-                            if matches!(dtype, IRDType::F16(_)) {
+                            if matches!(dtype, DType::F16) {
                                 "(float)"
                             } else {
                                 ""
@@ -1170,22 +1170,22 @@ impl From<cl_int> for OpenCLStatus {
     }
 }
 
-impl IRDType {
+impl DType {
     fn ocl(self) -> String {
         match self {
-            Self::BF16(_) => todo!("bf16 should be casted to f16 or f32"),
-            Self::F8(v) => format!("f8{v}"),
-            Self::F16(v) => format!("half{v}"),
-            Self::F32(v) => format!("float{v}"),
-            Self::F64(v) => format!("double{v}"),
-            Self::U8(v) => format!("unsigned char{v}"),
-            Self::I8(v) => format!("char{v}"),
-            Self::I16(v) => format!("short{v}"),
-            Self::I32(v) => format!("int{v}"),
-            Self::I64(v) => format!("long{v}"),
+            Self::BF16 => todo!("bf16 should be casted to f16 or f32"),
+            Self::F8 => format!("f8"),
+            Self::F16 => format!("half"),
+            Self::F32 => format!("float"),
+            Self::F64 => format!("double"),
+            Self::U8 => format!("unsigned char"),
+            Self::I8 => format!("char"),
+            Self::I16 => format!("short"),
+            Self::I32 => format!("int"),
+            Self::I64 => format!("long"),
             Self::Bool => "bool".into(),
-            Self::U32(v) => format!("unsigned int{v}"),
-            Self::U64(v) => format!("unsigned long{v}"),
+            Self::U32 => format!("unsigned int"),
+            Self::U64 => format!("unsigned long"),
         }
     }
 }
