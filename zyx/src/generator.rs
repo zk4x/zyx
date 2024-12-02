@@ -464,7 +464,6 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
     for kernel in &kernels {
         let kernel_outputs = kernel.outputs();
         let kernel_inputs = kernel.inputs();
-        // TODO fix this assert
         assert_eq!(
             outputs.intersection(&kernel_outputs).count(),
             0,

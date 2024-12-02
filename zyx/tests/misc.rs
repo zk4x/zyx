@@ -403,3 +403,11 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
     assert_eq!(z, [52f32, 52., 40.]);
     Ok(())
 }
+
+#[test]
+fn fp16() -> Result<(), ZyxError> {
+    let x = Tensor::from([0., 1., 2.]).cast(DType::F16);
+    let x = x.exp2();
+    println!("{x}");
+    Ok(())
+}

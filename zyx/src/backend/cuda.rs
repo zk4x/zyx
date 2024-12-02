@@ -607,7 +607,11 @@ impl CUDADevice {
                             format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
                         }
                         UOp::ReLU => {
-                            format!("{indent}r{z} = r{x} * (r{x} > {zero});\n")
+                            if dtype == DType::F16 {
+                                format!("{indent}r{z} = r{x} * __float2half(r{x} > {zero});\n")
+                            } else {
+                                format!("{indent}r{z} = r{x} * (r{x} > {zero});\n")
+                            }
                         }
                         UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
                         UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
@@ -730,6 +734,8 @@ impl CUDADevice {
         let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
             *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
 
+        //let include_folders = ["/usr/local/cuda-12.6/targets/x86_64-linux/include/\0".as_ptr().cast()];
+        //let include_files = ["cuda_fp16.h\0".as_ptr().cast()];
         let mut program = ptr::null_mut();
         unsafe {
             nvrtcCreateProgram(
@@ -737,8 +743,8 @@ impl CUDADevice {
                 source.as_ptr().cast(),
                 name.as_ptr().cast(),
                 0,
-                ptr::null_mut(),
-                ptr::null_mut(),
+                ptr::null_mut(), //include_folders.as_ptr(),
+                ptr::null_mut(), //include_files.as_ptr(),
             )
         }
         .check("nvrtcCreateProgram")?;
@@ -746,8 +752,8 @@ impl CUDADevice {
             "--gpu-architecture=compute_{}{}\0",
             self.compute_capability[0], self.compute_capability[1]
         );
-        let opts = [df.as_str()];
-        if let Err(e) = unsafe { nvrtcCompileProgram(program, 1, opts.as_ptr().cast()) }
+        let opts = [df.as_ptr().cast(), "-I/usr/local/cuda-12.6/targets/x86_64-linux/include\0".as_ptr().cast()];
+        if let Err(e) = unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }
             .check("nvrtcCompileProgram")
         {
             println!("CUDA compilation error {e:?}");
@@ -1297,7 +1303,7 @@ impl Constant {
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
             &Self::F8(x) => format!("{:.16}f", F8E4M3::from_bits(x)),
-            &Self::F16(x) => format!("{}f", half::f16::from_bits(x)),
+            &Self::F16(x) => format!("__float2half({:.6}f)", half::f16::from_bits(x)),
             &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
             &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
             Self::U8(x) => format!("{x}"),
