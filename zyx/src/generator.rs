@@ -390,16 +390,19 @@ pub fn generate_kernels(graph: &Graph, order: &[TensorId], debug_sched: bool) ->
             is_user_leaf = true;
             0 // only referenced in to_eval
         };
+        let Some(kernel) = kernels
+            .iter_mut()
+            .find(|kernel| kernel.vars().contains(&nid))
+        else {
+            unreachable!()
+        };
         if rc > 1 {
-            let Some(kernel) = kernels
-                .iter_mut()
-                .find(|kernel| kernel.vars().contains(&nid)) else { unreachable!() };
             // if graph_rcs[nid] > 1 then just copy that graph if it is not too big graph
             // and if the kernel does not have too big shape.
             //if user_leafs.contains(&nid) {
             //kernel.store(nid, View::new(graph.shape(nid)));
             if is_user_leaf
-                || ((kernel.ops.len() > 30 || rc > 2)
+                || ((kernel.ops.len() > 100 || rc > 2)
                     && kernel.shape().into_iter().product::<usize>() < 1024 * 1024 * 1024)
                 || kernel.is_reduce()
                 || !kernel.outputs().is_empty()

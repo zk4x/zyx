@@ -44,7 +44,7 @@ indicatif = { version = "0.17.9" }
 # Memory mapped loading of tensors from disk
 memmap2 = { version = "0.9.5" }
 # Vulkano
-#vulkano = { version = "*" }
+vulkano = { version = "*" }
 
 # Optional dependencies
 # For caching of searched kernels

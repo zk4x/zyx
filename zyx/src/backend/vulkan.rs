@@ -5,8 +5,14 @@
 use std::ptr;
 use std::{ffi::CString, sync::Arc};
 
-//use vulkano::instance::{Instance, InstanceCreateInfo};
-//use vulkano::{LoadingError, Validated, VulkanLibrary};
+use vulkano::buffer::BufferCreateInfo;
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+use vulkano::device::{
+    DeviceCreateInfo, DeviceExtensions, QueueCreateFlags, QueueCreateInfo, QueueFlags,
+};
+use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::memory::allocator::{AllocationCreateInfo, DeviceLayout, StandardMemoryAllocator};
+use vulkano::{LoadingError, NonExhaustive, Validated, VulkanLibrary};
 
 use crate::{
     index_map::{Id, IndexMap},
@@ -19,11 +25,14 @@ use super::DeviceInfo;
 pub struct VulkanConfig {}
 
 #[derive(Debug)]
-pub struct VulkanError; //(vulkano::VulkanError);
+pub struct VulkanError(vulkano::VulkanError);
 
 #[derive(Debug)]
 pub(super) struct VulkanMemoryPool {
     free_bytes: usize,
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    //device: Arc<vulkano::device::Device>,
+    //queue: Arc<vulkano::device::Queue>,
 }
 
 #[derive(Debug)]
@@ -33,6 +42,7 @@ pub(super) struct VulkanBuffer {}
 pub(super) struct VulkanDevice {
     dev_info: DeviceInfo,
     memory_pool_id: u32,
+    device: Arc<vulkano::device::Device>,
 }
 
 #[derive(Debug)]
@@ -47,6 +57,7 @@ pub(super) struct VulkanProgram {
 #[derive(Debug)]
 pub(super) struct VulkanQueue {
     load: usize,
+    queue: Arc<vulkano::device::Queue>,
 }
 
 type VulkanQueuePool = Vec<(VulkanDevice, Vec<VulkanQueue>)>;
@@ -138,7 +149,7 @@ pub(super) fn initialize_devices(
         // Free memory (in reality, you should call vkFreeMemory and destroy instances/devices)
     }*/
 
-    /*let lib = VulkanLibrary::new()?;
+    let lib = VulkanLibrary::new()?;
     if debug_dev {
         println!(
             "Using Vulkan backend API version {} on devices:",
@@ -148,12 +159,54 @@ pub(super) fn initialize_devices(
 
     let instance = Instance::new(lib, InstanceCreateInfo::default())?;
 
-    for device in instance.enumerate_physical_devices()? {
-        println!("{}", device.properties().device_name);
-    }*/
+    let mut memory_pools = Vec::new();
+    let mut devices = Vec::new();
 
-    let memory_pools = Vec::new();
-    let devices = Vec::new();
+    for (phys_device, queue_family_index) in
+        instance.enumerate_physical_devices()?.filter_map(|p| {
+            p.queue_family_properties()
+                .iter()
+                .enumerate()
+                .position(|(i, q)| q.queue_flags.intersects(QueueFlags::COMPUTE))
+                .map(|i| (p, i as u32))
+        })
+    {
+        if debug_dev {
+            println!("{}", phys_device.properties().device_name);
+        }
+        let (device, queues) = vulkano::device::Device::new(
+            phys_device,
+            DeviceCreateInfo {
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index,
+                    ..Default::default()
+                }],
+                enabled_extensions: DeviceExtensions::empty(),
+                enabled_features: Default::default(),
+                physical_devices: Default::default(),
+                private_data_slot_request_count: Default::default(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let memory_pool = VulkanMemoryPool {
+            free_bytes: 1024 * 1024 * 1024,
+            memory_allocator,
+        };
+        let device = VulkanDevice {
+            dev_info: DeviceInfo::default(),
+            memory_pool_id: 0,
+            device,
+        };
+        let queues = queues.map(|queue| VulkanQueue { load: 0, queue }).collect();
+        devices.push((device, queues));
+        memory_pools.push(memory_pool);
+    }
 
     Ok((memory_pools, devices))
 }
@@ -165,12 +218,18 @@ impl VulkanMemoryPool {
 
     #[allow(clippy::unused_self)]
     #[allow(clippy::unnecessary_wraps)]
-    pub(super) const fn deinitialize(self) -> Result<(), VulkanError> {
+    pub(super) fn deinitialize(self) -> Result<(), VulkanError> {
         Ok(())
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<VulkanBuffer, VulkanError> {
+        let buffer = vulkano::buffer::Buffer::new(
+            self.memory_allocator,
+            BufferCreateInfo::default(),
+            AllocationCreateInfo::default(),
+            DeviceLayout::new(bytes, 1),
+        )?;
         todo!()
     }
 
@@ -263,7 +322,7 @@ impl VulkanQueue {
     }
 }
 
-/*impl From<LoadingError> for VulkanError {
+impl From<LoadingError> for VulkanError {
     fn from(value: LoadingError) -> Self {
         match value {
             LoadingError::LibraryLoadFailure(error) => Self(vulkano::VulkanError::Unknown),
@@ -285,7 +344,7 @@ impl From<vulkano::VulkanError> for VulkanError {
     fn from(value: vulkano::VulkanError) -> Self {
         Self(value)
     }
-}*/
+}
 
 /*#[repr(C)]
 #[derive(Debug)]
