@@ -2,16 +2,20 @@
 
 #![allow(unused)]
 
+use std::num::NonZero;
 use std::ptr;
 use std::{ffi::CString, sync::Arc};
 
-use vulkano::buffer::BufferCreateInfo;
+use vulkano::buffer::{AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::device::{
     DeviceCreateInfo, DeviceExtensions, QueueCreateFlags, QueueCreateInfo, QueueFlags,
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::memory::allocator::{AllocationCreateInfo, DeviceLayout, StandardMemoryAllocator};
+use vulkano::memory::allocator::{
+    AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
+};
+use vulkano::memory::DeviceAlignment;
 use vulkano::{LoadingError, NonExhaustive, Validated, VulkanLibrary};
 
 use crate::{
@@ -22,10 +26,15 @@ use crate::{
 use super::DeviceInfo;
 
 #[derive(serde::Deserialize, Debug, Default)]
-pub struct VulkanConfig {}
+pub struct VulkanConfig {
+    device_ids: Option<Vec<i32>>,
+}
 
 #[derive(Debug)]
-pub struct VulkanError(vulkano::VulkanError);
+pub struct VulkanError {
+    info: String,
+    status: vulkano::VulkanError
+}
 
 #[derive(Debug)]
 pub(super) struct VulkanMemoryPool {
@@ -36,7 +45,9 @@ pub(super) struct VulkanMemoryPool {
 }
 
 #[derive(Debug)]
-pub(super) struct VulkanBuffer {}
+pub(super) struct VulkanBuffer {
+    buffer: Arc<Buffer>,
+}
 
 #[derive(Debug)]
 pub(super) struct VulkanDevice {
@@ -67,103 +78,37 @@ pub(super) fn initialize_devices(
     config: &VulkanConfig,
     debug_dev: bool,
 ) -> Result<(Vec<VulkanMemoryPool>, VulkanQueuePool), VulkanError> {
-    // Load libvulkan.so dynamically
-    /*let lib =
-        unsafe { libloading::Library::new("libvulkan.so") }.expect("Could not load libvulkan.so");
-
-    // Load Vulkan functions
-    let vk_create_instance: PFN_vkCreateInstance =
-        *unsafe { lib.get(b"vkCreateInstance") }.unwrap();
-    let vk_enumerate_physical_devices: PFN_vkEnumeratePhysicalDevices =
-        *unsafe { lib.get(b"vkEnumeratePhysicalDevices") }.unwrap();
-    let vk_create_device: PFN_vkCreateDevice = *unsafe { lib.get(b"vkCreateDevice") }.unwrap();
-    let vk_allocate_memory: PFN_vkAllocateMemory =
-        *unsafe { lib.get(b"vkAllocateMemory") }.unwrap();
-    // Create Vulkan instance
-    let app_name = CString::new("Vulkan Example").unwrap();
-    let engine_name = CString::new("No Engine").unwrap();
-    let app_info = VkApplicationInfo {
-        p_application_name: app_name.as_ptr(),
-        application_version: 0x00010000, // Version 1.0.0
-        p_engine_name: engine_name.as_ptr(),
-        engine_version: 0x00010000, // Version 1.0.0
-        api_version: 0x01000000,    // Vulkan 1.0
-    };
-
-    let instance_create_info = VkInstanceCreateInfo {
-        s_type: 0, // VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
-        p_next: ptr::null(),
-        flags: 0,
-        p_application_info: &app_info,
-        enabled_layer_count: 0,
-        pp_enabled_layer_names: ptr::null(),
-        enabled_extension_count: 0,
-        pp_enabled_extension_names: ptr::null(),
-    };
-    let lib = Arc::new(lib);
-
-    let mut instance: VkInstance = ptr::null_mut();
-    unsafe {
-        let result = vk_create_instance(&instance_create_info, ptr::null(), &mut instance);
-        if result != 0 {
-            panic!("Failed to create Vulkan instance");
-        }
-    }
-
-    // Enumerate physical devices
-    let mut device_count = 0;
-    unsafe {
-        vk_enumerate_physical_devices(instance, &mut device_count, ptr::null_mut());
-    }
-    let mut devices: Vec<VkPhysicalDevice> = Vec::with_capacity(device_count as usize);
-    unsafe {
-        vk_enumerate_physical_devices(instance, &mut device_count, devices.as_mut_ptr());
-    }
-
-    // Create logical device (just a simple example, no extensions or queues)
-    let mut device: VkDevice = ptr::null_mut();
-    unsafe {
-        vk_create_device(devices[0], ptr::null(), ptr::null(), &mut device);
-    }
-
-    // Allocate memory on the device
-    let memory_info = VkMemoryAllocateInfo {
-        s_type: 0, // VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-        p_next: ptr::null(),
-        allocation_size: 1024 * 1024, // 1 MB
-        memory_type_index: 0,         // You need to select a proper memory type
-    };
-
-    let mut memory: VkDeviceMemory = ptr::null_mut();
-    unsafe {
-        let result = vk_allocate_memory(device, &memory_info, ptr::null(), &mut memory);
-        if result != 0 {
-            panic!("Memory allocation failed");
-        }
-    }
-
-    println!("Memory allocated successfully!");
-
-    // Cleanup resources
-    unsafe {
-        // Free memory (in reality, you should call vkFreeMemory and destroy instances/devices)
-    }*/
-
     let lib = VulkanLibrary::new()?;
-    if debug_dev {
-        println!(
-            "Using Vulkan backend API version {} on devices:",
-            lib.api_version()
-        );
-    }
-
+    let api_version = lib.api_version();
     let instance = Instance::new(lib, InstanceCreateInfo::default())?;
 
     let mut memory_pools = Vec::new();
     let mut devices = Vec::new();
 
+    let physical_devices = instance.enumerate_physical_devices()?;
+
+    let device_ids: Vec<usize> = (0..physical_devices.len())
+        .filter(|id| {
+            config
+                .device_ids
+                .as_ref()
+                .map_or(true, |ids| ids.contains(&(*id as i32)))
+        })
+        .collect();
+    if debug_dev && !device_ids.is_empty() {
+        println!(
+            "Using Vulkan backend API version {} on devices:",
+            api_version
+        );
+    }
+
+    // TODO apply this as filter on physical_devices
+    if device_ids.is_empty() {
+        return Err(VulkanError { info: "".into(), status: vulkano::VulkanError::Unknown })
+    }
+
     for (phys_device, queue_family_index) in
-        instance.enumerate_physical_devices()?.filter_map(|p| {
+        physical_devices.filter_map(|p| {
             p.queue_family_properties()
                 .iter()
                 .enumerate()
@@ -225,12 +170,33 @@ impl VulkanMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<VulkanBuffer, VulkanError> {
         let buffer = vulkano::buffer::Buffer::new(
-            self.memory_allocator,
+            self.memory_allocator.clone(),
             BufferCreateInfo::default(),
-            AllocationCreateInfo::default(),
-            DeviceLayout::new(bytes, 1),
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                ..Default::default()
+            },
+            DeviceLayout::new(NonZero::new(bytes as u64).unwrap(), DeviceAlignment::default()).unwrap(),
         )?;
-        todo!()
+        /*let data_buffer = Buffer::from_iter(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                ..Default::default()
+            },
+            // Iterator that produces the data.
+            0..65536u32,
+        )
+        .unwrap();*/
+        Ok(VulkanBuffer {
+            buffer,
+        })
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -325,8 +291,14 @@ impl VulkanQueue {
 impl From<LoadingError> for VulkanError {
     fn from(value: LoadingError) -> Self {
         match value {
-            LoadingError::LibraryLoadFailure(error) => Self(vulkano::VulkanError::Unknown),
-            LoadingError::VulkanError(vulkan_error) => Self(vulkan_error),
+            LoadingError::VulkanError(status) => Self {
+                info: "LoadingError".into(),
+                status
+            },
+            LoadingError::LibraryLoadFailure(error) => Self {
+                info: format!("LoadingError {error}"),
+                status: vulkano::VulkanError::Unknown,
+            },
         }
     }
 }
@@ -334,100 +306,38 @@ impl From<LoadingError> for VulkanError {
 impl From<Validated<vulkano::VulkanError>> for VulkanError {
     fn from(value: Validated<vulkano::VulkanError>) -> Self {
         match value {
-            Validated::Error(value) => Self(value),
-            Validated::ValidationError(_) => Self(vulkano::VulkanError::Unknown),
+            Validated::Error(status) => Self {
+                info: "Vulkan error".into(),
+                status
+            },
+            Validated::ValidationError(err) => Self {
+                info: format!("Validation error {err}"),
+                status: vulkano::VulkanError::Unknown
+            },
         }
     }
 }
 
 impl From<vulkano::VulkanError> for VulkanError {
-    fn from(value: vulkano::VulkanError) -> Self {
-        Self(value)
+    fn from(status: vulkano::VulkanError) -> Self {
+        Self {
+            info: "".into(),
+            status,
+        }
     }
 }
 
-/*#[repr(C)]
-#[derive(Debug)]
-struct VkApplicationInfo {
-    p_application_name: *const i8,
-    application_version: u32,
-    p_engine_name: *const i8,
-    engine_version: u32,
-    api_version: u32,
+impl From<vulkano::Validated<AllocateBufferError>> for VulkanError {
+    fn from(value: vulkano::Validated<AllocateBufferError>) -> Self {
+        match value {
+            Validated::Error(value) => Self {
+                info: "Buffer allocation failure".into(),
+                status: vulkano::VulkanError::OutOfDeviceMemory
+            },
+            Validated::ValidationError(err) => Self {
+                info: format!("Buffer allocation failure {err}"),
+                status: vulkano::VulkanError::Unknown,
+            },
+        }
+    }
 }
-
-#[repr(C)]
-#[derive(Debug)]
-struct VkInstanceCreateInfo {
-    s_type: u32,
-    p_next: *const std::ffi::c_void,
-    flags: u32,
-    p_application_info: *const VkApplicationInfo,
-    enabled_layer_count: u32,
-    pp_enabled_layer_names: *const *const i8,
-    enabled_extension_count: u32,
-    pp_enabled_extension_names: *const *const i8,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct VkMemoryAllocateInfo {
-    s_type: u32,
-    p_next: *const std::ffi::c_void,
-    allocation_size: u64,
-    memory_type_index: u32,
-}
-
-type VkDevice = *mut VkDeviceData;
-#[repr(C)]
-#[derive(Debug)]
-struct VkDeviceData {
-    _unused: [u8; 0],
-}
-
-type VkInstance = *mut VkInstanceData;
-#[repr(C)]
-#[derive(Debug)]
-struct VkInstanceData {
-    _unused: [u8; 0],
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-struct VkPhysicalDevice {
-    _unused: [u8; 0],
-}
-
-type VkDeviceMemory = *mut VkDeviceMemoryData;
-#[repr(C)]
-#[derive(Debug)]
-struct VkDeviceMemoryData {
-    _unused: [u8; 0],
-}
-
-// Function types for Vulkan API functions
-type PFN_vkCreateInstance = unsafe extern "system" fn(
-    create_info: *const VkInstanceCreateInfo,
-    p_allocator: *const std::ffi::c_void,
-    p_instance: *mut VkInstance,
-) -> u32;
-
-type PFN_vkEnumeratePhysicalDevices = unsafe extern "system" fn(
-    instance: VkInstance,
-    p_device_count: *mut u32,
-    p_devices: *mut VkPhysicalDevice,
-) -> u32;
-
-type PFN_vkCreateDevice = unsafe extern "system" fn(
-    physical_device: VkPhysicalDevice,
-    p_create_info: *const std::ffi::c_void,
-    p_allocator: *const std::ffi::c_void,
-    p_device: *mut VkDevice,
-) -> u32;
-
-type PFN_vkAllocateMemory = unsafe extern "system" fn(
-    device: VkDevice,
-    p_allocate_info: *const VkMemoryAllocateInfo,
-    p_allocator: *const std::ffi::c_void,
-    p_memory: *mut VkDeviceMemory,
-) -> u32;*/
