@@ -822,6 +822,9 @@ impl TextGeneration {
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
             let input = Tensor::from(ctxt).unsqueeze(0).unwrap();
             let logits = self.model.forward(&input);
+            //println!("Realizing.");
+            //Tensor::realize([&logits]).unwrap();
+            //let res: String = self.tokenizer.decode_all().unwrap();
             //Tensor::plot_graph([], "phi")?;
             let logits = logits.squeeze(0).unwrap().cast(DType::F32);
             let logits = if self.repeat_penalty == 1. {
@@ -901,7 +904,7 @@ struct Args {
     quantized: bool,
 
     /// Penalty to be applied for repeating tokens, 1. means no penalty.
-    #[arg(long, default_value_t = 1.1)]
+    #[arg(long, default_value_t = 1.0)]
     repeat_penalty: f32,
 
     /// The context size to consider for the repeat penalty.

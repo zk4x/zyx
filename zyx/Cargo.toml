@@ -43,8 +43,6 @@ half = { version = "2.4.1" } # MIT or Apache 2.0
 indicatif = { version = "0.17.9" }
 # Memory mapped loading of tensors from disk
 memmap2 = { version = "0.9.5" }
-# Vulkano
-vulkano = { version = "*" }
 
 # Optional dependencies
 # For caching of searched kernels
@@ -69,12 +67,15 @@ gguf = { version = "0.1.2", default-features = false, optional = true }
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
 
+# Vulkano, will be later removed
+vulkano = { version = "*", optional = true }
+
 [lib]
 crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
-    "disk_cache",
+    #"disk_cache",
     #"wgsl",
     #"complex",
     #"gguf",
@@ -86,6 +87,9 @@ disk_cache = ["dep:bitcode"]
 
 # Enables wgsl backend
 wgsl = ["dep:wgpu", "dep:pollster", "dep:futures"]
+
+# Enables vulkan backend, dependency will be later removed
+vulkan = ["dep:vulkano"]
 
 # Enables loading of gguf models
 gguf = ["dep:gguf"]

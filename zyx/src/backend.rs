@@ -12,7 +12,6 @@ use crate::{
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{OpenCLBuffer, OpenCLDevice, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue};
-use vulkan::{VulkanBuffer, VulkanDevice, VulkanMemoryPool, VulkanProgram, VulkanQueue};
 
 #[cfg(feature = "wgsl")]
 use wgsl::{WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue};
@@ -20,6 +19,7 @@ use wgsl::{WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue};
 mod cuda;
 mod hip;
 mod opencl;
+#[cfg(feature = "vulkan")]
 mod vulkan;
 #[cfg(feature = "wgsl")]
 mod wgsl;
@@ -28,6 +28,7 @@ mod wgsl;
 pub use cuda::{CUDAConfig, CUDAError};
 pub use hip::{HIPConfig, HIPError};
 pub use opencl::{OpenCLConfig, OpenCLError};
+#[cfg(feature = "vulkan")]
 pub use vulkan::{VulkanConfig, VulkanError};
 #[cfg(feature = "wgsl")]
 pub use wgsl::{WGSLConfig, WGSLError};
@@ -109,6 +110,7 @@ pub enum MemoryPool {
         memory_pool: OpenCLMemoryPool,
         buffers: IndexMap<OpenCLBuffer>,
     },
+    #[cfg(feature = "vulkan")]
     Vulkan {
         memory_pool: VulkanMemoryPool,
         buffers: IndexMap<VulkanBuffer>,
@@ -147,6 +149,7 @@ pub enum Device {
         programs: IndexMap<OpenCLProgram>,
         queues: Vec<OpenCLQueue>,
     },
+    #[cfg(feature = "vulkan")]
     Vulkan {
         memory_pool_id: MemoryPoolId,
         device: VulkanDevice,
@@ -207,6 +210,7 @@ pub fn initialize_backends(
             queues,
         }));
     }
+    #[cfg(feature = "vulkan")]
     if let Ok((mem_pools, devs)) = vulkan::initialize_devices(&device_config.vulkan, debug_dev) {
         let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::Vulkan {
@@ -276,6 +280,7 @@ impl MemoryPool {
                 }
                 memory_pool.deinitialize()?;
             }
+            #[cfg(feature = "vulkan")]
             MemoryPool::Vulkan {
                 mut memory_pool,
                 mut buffers,
@@ -308,6 +313,7 @@ impl MemoryPool {
             MemoryPool::CUDA { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::HIP { memory_pool, .. } => memory_pool.free_bytes(),
             MemoryPool::OpenCL { memory_pool, .. } => memory_pool.free_bytes(),
+            #[cfg(feature = "vulkan")]
             MemoryPool::Vulkan { memory_pool, .. } => memory_pool.free_bytes(),
             #[cfg(feature = "wgsl")]
             MemoryPool::WGSL { memory_pool, .. } => memory_pool.free_bytes(),
@@ -329,6 +335,7 @@ impl MemoryPool {
                 memory_pool,
                 buffers,
             } => buffers.push(memory_pool.allocate(bytes)?),
+            #[cfg(feature = "vulkan")]
             MemoryPool::Vulkan {
                 memory_pool,
                 buffers,
@@ -367,6 +374,7 @@ impl MemoryPool {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
+            #[cfg(feature = "vulkan")]
             MemoryPool::Vulkan {
                 memory_pool,
                 buffers,
@@ -423,6 +431,7 @@ impl MemoryPool {
                     &buffers[buffer_id],
                 )?;
             }
+            #[cfg(feature = "vulkan")]
             MemoryPool::Vulkan {
                 memory_pool,
                 buffers,
@@ -475,6 +484,7 @@ impl MemoryPool {
             } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
+            #[cfg(feature = "vulkan")]
             MemoryPool::Vulkan {
                 memory_pool,
                 buffers,
@@ -508,6 +518,7 @@ impl MemoryPool {
             (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
             (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::Vulkan { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "wgsl")]
@@ -519,6 +530,7 @@ impl MemoryPool {
             (MemoryPool::HIP { buffers: sb, .. }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[rustfmt::skip]
             (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::Vulkan { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "wgsl")]
@@ -530,16 +542,22 @@ impl MemoryPool {
             (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
             (MemoryPool::OpenCL { buffers: sb, .. }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
+            #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::Vulkan { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "wgsl")]
             #[rustfmt::skip]
             (MemoryPool::OpenCL { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            #[cfg(feature = "vulkan")]
+            #[rustfmt::skip]
             (MemoryPool::Vulkan { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::Vulkan { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::Vulkan { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::Vulkan { buffers: sb, .. }, MemoryPool::Vulkan { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[cfg(feature = "wgsl")]
@@ -616,6 +634,7 @@ impl Device {
                 }
                 device.deinitialize()?;
             }
+            #[cfg(feature = "vulkan")]
             Device::Vulkan {
                 device,
                 mut programs,
@@ -659,6 +678,7 @@ impl Device {
             Device::CUDA { memory_pool_id, .. } => *memory_pool_id,
             Device::HIP { memory_pool_id, .. } => *memory_pool_id,
             Device::OpenCL { memory_pool_id, .. } => *memory_pool_id,
+            #[cfg(feature = "vulkan")]
             Device::Vulkan { memory_pool_id, .. } => *memory_pool_id,
             #[cfg(feature = "wgsl")]
             Device::WGSL { memory_pool_id, .. } => *memory_pool_id,
@@ -670,6 +690,7 @@ impl Device {
             Device::CUDA { device, .. } => device.info(),
             Device::HIP { device, .. } => device.info(),
             Device::OpenCL { device, .. } => device.info(),
+            #[cfg(feature = "vulkan")]
             Device::Vulkan { device, .. } => device.info(),
             #[cfg(feature = "wgsl")]
             Device::WGSL { device, .. } => device.info(),
@@ -685,6 +706,7 @@ impl Device {
             Device::CUDA { queues, .. } => queues[queue_id].sync()?,
             Device::HIP { queues, .. } => queues[queue_id].sync()?,
             Device::OpenCL { queues, .. } => queues[queue_id].sync()?,
+            #[cfg(feature = "vulkan")]
             Device::Vulkan { queues, .. } => queues[queue_id].sync()?,
             #[cfg(feature = "wgsl")]
             Device::WGSL { queues, .. } => queues[queue_id].sync()?,
@@ -704,6 +726,7 @@ impl Device {
             Device::OpenCL {
                 device, programs, ..
             } => device.release_program(programs.remove(program_id).unwrap())?,
+            #[cfg(feature = "vulkan")]
             Device::Vulkan {
                 device, programs, ..
             } => device.release_program(programs.remove(program_id).unwrap())?,
@@ -730,6 +753,7 @@ impl Device {
             Device::OpenCL {
                 device, programs, ..
             } => programs.push(device.compile(ir_kernel, debug_asm)?),
+            #[cfg(feature = "vulkan")]
             Device::Vulkan {
                 device, programs, ..
             } => programs.push(device.compile(ir_kernel, debug_asm)?),
@@ -815,6 +839,7 @@ impl Device {
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
                 id
             }
+            #[cfg(feature = "vulkan")]
             Device::Vulkan {
                 programs, queues, ..
             } => {
@@ -876,6 +901,7 @@ impl std::fmt::Display for Device {
             Device::OpenCL { memory_pool_id, .. } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),
+            #[cfg(feature = "vulkan")]
             Device::Vulkan { memory_pool_id, .. } => f.write_fmt(format_args!(
                 "Device {{ memory_pool_id: {memory_pool_id} }})"
             )),

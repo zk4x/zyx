@@ -47,6 +47,7 @@ enum SchedulerOp {
     },
 }
 
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VProgram {
     pub(super) device_id: DeviceId,
@@ -199,9 +200,7 @@ pub fn compile_graph(
                     tensor_buffer_map.insert((output, view), memory_pool_id);
                 }
             }
-            if debug_sched {
-                kernel.debug();
-            }
+            //if debug_sched { kernel.debug(); }
             //println!("{tensor_buffer_map:?}");
 
             // Move necessary inputs to memory pool associated with this device
@@ -234,11 +233,11 @@ pub fn compile_graph(
                 devices,
                 optimizer_cache,
                 search_iterations,
-                config_dir,
                 debug_perf,
-                debug_sched,
                 debug_asm,
                 progress_bar.as_ref(),
+                config_dir,
+                debug_sched,
             )?;
             //if debug_sched { println!("Kernel {kid}/{kernels_len} using {optimization}"); }
             // Compile and cache program
@@ -300,7 +299,7 @@ pub fn compile_graph(
         sched_graph.push(SchedulerOp::Finish(program));
     }
 
-    if debug_sched {
+    /*if debug_sched {
         for sched_op in &sched_graph {
             match sched_op {
                 SchedulerOp::Launch(program) => {
@@ -333,7 +332,7 @@ pub fn compile_graph(
                 }
             }
         }
-    }
+    }*/
 
     Ok(CompiledGraph {
         sched_graph,
@@ -451,12 +450,17 @@ fn search_kernel_optimization(
     devices: &mut [Device],
     optimizer_cache: &mut BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
     search_iterations: usize,
-    config_dir: Option<&std::path::Path>,
     debug_perf: bool,
-    debug_sched: bool,
     debug_asm: bool,
     progress_bar: Option<&indicatif::ProgressBar>,
+    config_dir: Option<&std::path::Path>,
+    debug_sched: bool,
 ) -> Result<KernelOptimization, ZyxError> {
+    #[cfg(not(feature = "disk_cache"))]
+    {
+        let _ = config_dir;
+        let _ = debug_sched;
+    }
     let dev_info = devices[device_id as usize].info().clone();
     let cache_key = (kernel.clone(), dev_info.clone());
     if let Some(KernelOptimizer::Optimized(optimizations, _)) = optimizer_cache.get(&cache_key) {
