@@ -63,14 +63,10 @@ mod graph;
 mod ir;
 mod node;
 mod scheduler;
-mod optimizer2;
-mod kernel2;
-mod scheduler2;
+mod optimizer;
+mod kernel;
 mod view;
 
-mod generator;
-mod kernel;
-mod optimizer;
 // Constant initializable hasher because apparently noone invented that yet...
 //mod chasher;
 
@@ -84,6 +80,32 @@ pub use tensor::Tensor;
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
 static RT: mutex::Mutex<Runtime, 1_000_000_000> = mutex::Mutex::new(Runtime::new());
 //static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
+
+#[derive(Clone, Copy)]
+struct DebugMask(u32);
+
+impl DebugMask {
+    pub const fn dev(&self) -> bool {
+        self.0 % 2 == 1
+    }
+
+    pub const fn perf(&self) -> bool {
+        (self.0 >> 1) % 2 == 1
+    }
+
+    pub const fn sched(&self) -> bool {
+        (self.0 >> 2) % 2 == 1
+    }
+
+    pub const fn ir(&self) -> bool {
+        (self.0 >> 3) % 2 == 1
+    }
+
+    pub const fn asm(&self) -> bool {
+        (self.0 >> 4) % 2 == 1
+    }
+
+}
 
 /// Save tensors or modules
 pub trait TensorSave {

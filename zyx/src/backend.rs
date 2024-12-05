@@ -4,10 +4,11 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
+use std::collections::BTreeMap;
+
 use super::{ir::IRKernel, DeviceConfig, ZyxError};
 use crate::{
-    index_map::{Id, IndexMap},
-    Scalar,
+    index_map::{Id, IndexMap}, kernel::Kernel, Scalar
 };
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
@@ -134,35 +135,34 @@ pub enum Device {
     CUDA {
         memory_pool_id: MemoryPoolId,
         device: CUDADevice,
-        programs: IndexMap<CUDAProgram>,
         queues: Vec<CUDAQueue>,
-        //program_cache: BTreeMap<Kernel, CUDAProgram>,
+        kernels: BTreeMap<Kernel, CUDAProgram>,
     },
     HIP {
         memory_pool_id: MemoryPoolId,
         device: HIPDevice,
-        programs: IndexMap<HIPProgram>,
         queues: Vec<HIPQueue>,
+        kernels: BTreeMap<Kernel, HIPProgram>,
     },
     OpenCL {
         memory_pool_id: MemoryPoolId,
         device: OpenCLDevice,
-        programs: IndexMap<OpenCLProgram>,
         queues: Vec<OpenCLQueue>,
+        kernels: BTreeMap<Kernel, OpenCLProgram>,
     },
     #[cfg(feature = "vulkan")]
     Vulkan {
         memory_pool_id: MemoryPoolId,
         device: VulkanDevice,
-        programs: IndexMap<VulkanProgram>,
         queues: Vec<VulkanQueue>,
+        kernels: BTreeMap<Kernel, VulkanProgram>,
     },
     #[cfg(feature = "wgsl")]
     WGSL {
         memory_pool_id: MemoryPoolId,
         device: WGSLDevice,
-        programs: IndexMap<WGSLProgram>,
         queues: Vec<WGSLQueue>,
+        kernels: BTreeMap<Kernel, WGSLProgram>,
     },
 }
 
@@ -181,8 +181,8 @@ pub fn initialize_backends(
         devices.extend(devs.into_iter().map(|(device, queues)| Device::CUDA {
             memory_pool_id: device.memory_pool_id() + n,
             device,
-            programs: IndexMap::new(),
             queues,
+            kernels: BTreeMap::new(),
         }));
     }
     if let Ok((mem_pools, devs)) = hip::initialize_device(&device_config.hip, debug_dev) {
@@ -194,8 +194,8 @@ pub fn initialize_backends(
         devices.extend(devs.into_iter().map(|(device, queues)| Device::HIP {
             memory_pool_id: device.memory_pool_id() + n,
             device,
-            programs: IndexMap::new(),
             queues,
+            kernels: BTreeMap::new(),
         }));
     }
     if let Ok((mem_pools, devs)) = opencl::initialize_devices(&device_config.opencl, debug_dev) {
@@ -207,8 +207,8 @@ pub fn initialize_backends(
         devices.extend(devs.into_iter().map(|(device, queues)| Device::OpenCL {
             memory_pool_id: device.memory_pool_id() + n,
             device,
-            programs: IndexMap::new(),
             queues,
+            kernels: BTreeMap::new(),
         }));
     }
     #[cfg(feature = "vulkan")]
@@ -590,12 +590,10 @@ impl Device {
             Device::CUDA {
                 device,
                 mut queues,
-                mut programs,
+                mut kernels,
                 ..
             } => {
-                let ids: Vec<Id> = programs.ids().collect();
-                for id in ids {
-                    let program = programs.remove(id).unwrap();
+                while let Some((_, program)) = kernels.pop_last() {
                     device.release_program(program)?;
                 }
                 while let Some(queue) = queues.pop() {
@@ -605,13 +603,11 @@ impl Device {
             }
             Device::HIP {
                 device,
-                mut programs,
                 mut queues,
+                mut kernels,
                 ..
             } => {
-                let ids: Vec<Id> = programs.ids().collect();
-                for id in ids {
-                    let program = programs.remove(id).unwrap();
+                while let Some((_, program)) = kernels.pop_last() {
                     device.release_program(program)?;
                 }
                 while let Some(queue) = queues.pop() {
@@ -621,13 +617,11 @@ impl Device {
             }
             Device::OpenCL {
                 device,
-                mut programs,
                 mut queues,
+                mut kernels,
                 ..
             } => {
-                let ids: Vec<Id> = programs.ids().collect();
-                for id in ids {
-                    let program = programs.remove(id).unwrap();
+                while let Some((_, program)) = kernels.pop_last() {
                     device.release_program(program)?;
                 }
                 while let Some(queue) = queues.pop() {
@@ -715,18 +709,18 @@ impl Device {
         Ok(())
     }
 
-    pub(super) fn release_program(&mut self, program_id: Id) -> Result<(), ZyxError> {
+    pub(super) fn release_program(&mut self, kernel: &Kernel) -> Result<(), ZyxError> {
         //println!("Release program {program_id}");
         match self {
             Device::CUDA {
-                device, programs, ..
-            } => device.release_program(programs.remove(program_id).unwrap())?,
+                device, kernels, ..
+            } => device.release_program(kernels.remove(kernel).unwrap())?,
             Device::HIP {
-                device, programs, ..
-            } => device.release_program(programs.remove(program_id).unwrap())?,
+                device, kernels, ..
+            } => device.release_program(kernels.remove(kernel).unwrap())?,
             Device::OpenCL {
-                device, programs, ..
-            } => device.release_program(programs.remove(program_id).unwrap())?,
+                device, kernels, ..
+            } => device.release_program(kernels.remove(kernel).unwrap())?,
             #[cfg(feature = "vulkan")]
             Device::Vulkan {
                 device, programs, ..
@@ -741,19 +735,20 @@ impl Device {
 
     pub(super) fn compile(
         &mut self,
+        kernel: Kernel,
         ir_kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<Id, ZyxError> {
-        let id = match self {
-            Device::CUDA {
-                device, programs, ..
-            } => programs.push(device.compile(ir_kernel, debug_asm)?),
-            Device::HIP {
-                device, programs, ..
-            } => programs.push(device.compile(ir_kernel, debug_asm)?),
-            Device::OpenCL {
-                device, programs, ..
-            } => programs.push(device.compile(ir_kernel, debug_asm)?),
+    ) -> Result<(), ZyxError> {
+        match self {
+            Device::CUDA { device, kernels, ..  } => {
+                kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
+            }
+            Device::HIP { device, kernels, ..  } => {
+                kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
+            }
+            Device::OpenCL { device, kernels, ..  } => {
+                kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
+            }
             #[cfg(feature = "vulkan")]
             Device::Vulkan {
                 device, programs, ..
@@ -763,19 +758,30 @@ impl Device {
                 device, programs, ..
             } => programs.push(device.compile(ir_kernel, debug_asm)?),
         };
-        //println!("Compile program {id}");
-        Ok(id)
+        Ok(())
+    }
+
+    pub(super) fn is_cached(&self, kernel: &Kernel) -> bool {
+        match self {
+            Device::CUDA { kernels, .. } => kernels.contains_key(kernel),
+            Device::HIP { kernels, .. } => kernels.contains_key(kernel),
+            Device::OpenCL { kernels, .. } => kernels.contains_key(kernel),
+            #[cfg(feature = "vulkan")]
+            Device::Vulkan { kernels, .. } => kernels.contains_key(kernel),
+            #[cfg(feature = "wgsl")]
+            Device::WGSL { kernels, .. } => kernels.contains_key(kernel),
+        }
     }
 
     pub(super) fn launch(
         &mut self,
-        program_id: Id,
+        kernel: &Kernel,
         memory_pool: &mut MemoryPool,
         buffer_ids: &[Id],
     ) -> Result<usize, ZyxError> {
         Ok(match self {
             Device::CUDA {
-                programs, queues, ..
+                kernels, queues, ..
             } => {
                 let (mut id, mut queue) = queues
                     .iter_mut()
@@ -793,11 +799,11 @@ impl Device {
                 let MemoryPool::CUDA { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
-                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
+                queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
                 id
             }
             Device::HIP {
-                programs, queues, ..
+                kernels, queues, ..
             } => {
                 let (mut id, mut queue) = queues
                     .iter_mut()
@@ -815,11 +821,11 @@ impl Device {
                 let MemoryPool::HIP { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
-                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
+                queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
                 id
             }
             Device::OpenCL {
-                programs, queues, ..
+                kernels, queues, ..
             } => {
                 let (mut id, mut queue) = queues
                     .iter_mut()
@@ -837,7 +843,7 @@ impl Device {
                 let MemoryPool::OpenCL { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
-                queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
+                queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
                 id
             }
             #[cfg(feature = "vulkan")]

@@ -20,7 +20,7 @@ use std::ops::{
 };
 use std::path::Path;
 
-use crate::RT;
+use crate::{DebugMask, RT};
 
 pub type TensorId = u32;
 
@@ -194,7 +194,7 @@ impl Tensor {
     /// the one set `by ZYX_DEBUG` env variable.
     /// For more look at `ENV_VARS.md`
     #[must_use]
-    pub fn debug_guard(debug: u32) -> DebugGuard {
+    pub fn debug_guard(debug: DebugMask) -> DebugGuard {
         let mut rt = RT.lock();
         let guard = DebugGuard { debug: rt.debug };
         rt.debug = debug;
@@ -2719,7 +2719,7 @@ impl Tensor {
         }
         use std::io::Read;
         RT.lock().initialize_devices()?;
-        let debug_print: bool = RT.lock().debug_dev();
+        let debug_print: bool = RT.lock().debug.dev();
         let mut f = std::fs::File::open(path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
@@ -2937,7 +2937,7 @@ impl Tensor {
 }
 
 pub struct DebugGuard {
-    debug: u32,
+    debug: DebugMask,
 }
 
 impl Drop for DebugGuard {

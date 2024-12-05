@@ -14,8 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // even this way.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Graph {
-    // Which nodes need to be evaluated
-    pub(super) to_eval: BTreeSet<TensorId>,
     // First value is reference count, second is node
     nodes: IndexMap<(u32, Node)>,
     dtypes: BTreeMap<TensorId, DType>,
@@ -28,7 +26,6 @@ pub struct Graph {
 impl Graph {
     pub(super) const fn new() -> Self {
         Self {
-            to_eval: BTreeSet::new(),
             nodes: IndexMap::new(),
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
@@ -192,7 +189,69 @@ impl Graph {
         }
     }
 
-    pub(super) fn realize_graph(
+    pub(super) fn realization_order(&self, to_eval: &BTreeSet<TensorId>, is_realized: impl Fn(TensorId) -> bool) -> (BTreeSet<TensorId>, Vec<TensorId>) {
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut visited = BTreeSet::new();
+        let mut leafs = BTreeSet::new();
+        while let Some(param) = params.pop() {
+            if visited.insert(param) {
+                if is_realized(param) {
+                    leafs.insert(param);
+                } else {
+                    params.extend(self.nodes[param].1.parameters());
+                }
+            }
+        }
+        // While visited only contains nodes up to realized nodes,
+        // following loops visit all children nodes up to leafs,
+        // because we need to know which parts of the graph can be dropped.
+        // Get refcounts of all nodes
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                params.extend(self.nodes[nid].1.parameters());
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc
+                    == *internal_rcs
+                        .entry(nid)
+                        .and_modify(|rc| *rc += 1)
+                        .or_insert(1)
+                {
+                    order.push(nid);
+                    params.extend(self.nodes[nid].1.parameters());
+                }
+            }
+        }
+        order.reverse();
+        let outside_nodes = self
+            .nodes
+            .iter()
+            .filter_map(|(id, (rc, _))| {
+                if let Some(&rc2) = rcs.get(&id) {
+                    if *rc > rc2 {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(id)
+                }
+            })
+            .chain(to_eval.iter().copied())
+            .collect();
+        (outside_nodes, order)
+    }
+
+    /*pub(super) fn realize_graph(
         &self,
         tensors: BTreeSet<TensorId>,
         is_realized: impl Fn(TensorId) -> bool,
@@ -493,7 +552,7 @@ impl Graph {
                 self.dtypes.insert(first, second_dtype);
             }
         }
-    }
+    }*/
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {
         // Make a list of visited nodes and their reference counts.

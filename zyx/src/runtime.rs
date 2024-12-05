@@ -1,8 +1,8 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 
 use crate::backend::{
-    BufferId, CUDAConfig, CUDAError, Device, DeviceId, DeviceInfo, HIPConfig, HIPError, MemoryPool,
-    OpenCLConfig, OpenCLError, ProgramId,
+    BufferId, CUDAConfig, CUDAError, Device, HIPConfig, HIPError, MemoryPool,
+    OpenCLConfig, OpenCLError
 };
 #[cfg(feature = "vulkan")]
 use crate::backend::{VulkanConfig, VulkanError};
@@ -10,15 +10,13 @@ use crate::backend::{VulkanConfig, VulkanError};
 use crate::backend::{WGSLConfig, WGSLError};
 use crate::dtype::{Constant, DType};
 use crate::graph::Graph;
-use crate::ir::IRKernel;
-use crate::kernel::Kernel;
 use crate::node::{BOp, Node, ROp, UOp};
-use crate::optimizer::KernelOptimizer;
+use crate::optimizer::Optimizer;
 use crate::scalar::Scalar;
-use crate::scheduler::CompiledGraph;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
 use crate::view::View;
+use crate::DebugMask;
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -51,18 +49,15 @@ pub struct DeviceConfig {
 pub struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
-    // Cache for compiled graphs
-    compiled_graph_cache: BTreeMap<Graph, CompiledGraph>,
+    // TODO perhaps remove tensor_buffer_map and put it inside each device
     // Physical memory pools
     memory_pools: Vec<MemoryPool>,
-    // Physical compute devices
-    devices: Vec<Device>,
     // Where are tensors stored
     tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
-    // Cache which maps optimized Kernel to device and program id on the device
-    kernel_cache: BTreeMap<IRKernel, (DeviceId, ProgramId)>,
+    // Physical compute devices, each has their own program cache
+    devices: Vec<Device>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
-    optimizer_cache: BTreeMap<(Kernel, DeviceInfo), KernelOptimizer>,
+    optimizer: Optimizer,
     // Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Random number generator
@@ -72,25 +67,23 @@ pub struct Runtime {
     /// How many variations of one kernel to try during optimization
     pub(super) search_iterations: usize,
     /// Debug mask
-    pub(super) debug: u32,
+    pub(super) debug: DebugMask,
 }
 
 impl Runtime {
     #[must_use]
     pub(super) const fn new() -> Self {
         Runtime {
-            compiled_graph_cache: BTreeMap::new(),
             tensor_buffer_map: BTreeMap::new(),
             graph: Graph::new(),
-            kernel_cache: BTreeMap::new(),
             devices: Vec::new(),
             memory_pools: Vec::new(),
             rng: std::cell::OnceCell::new(),
             config_dir: None,
-            optimizer_cache: BTreeMap::new(),
+            optimizer: Optimizer::new(),
             training: false,
             search_iterations: 5,
-            debug: 0,
+            debug: DebugMask(0),
         }
     }
 
@@ -122,7 +115,7 @@ impl Runtime {
         // Set env vars
         if let Ok(x) = std::env::var("ZYX_DEBUG") {
             if let Ok(x) = x.parse::<u32>() {
-                self.debug = x;
+                self.debug = DebugMask(x);
             }
         }
 
@@ -139,7 +132,7 @@ impl Runtime {
         // If not found or failed to parse, use defaults.
         let device_config = xdg::BaseDirectories::new()
             .map_err(|e| {
-                if self.debug_dev() {
+                if self.debug.dev() {
                     println!("Failed to find config directories for device_config.json, {e}");
                 }
             })
@@ -164,19 +157,19 @@ impl Runtime {
             .and_then(|file| {
                 serde_json::from_str(&file)
                     .map_err(|e| {
-                        if self.debug_dev() {
+                        if self.debug.dev() {
                             println!("Failed to parse device_config.json, {e}");
                         }
                     })
                     .ok()
             })
             .inspect(|_| {
-                if self.debug_dev() {
+                if self.debug.dev() {
                     println!("Device config successfully read and parsed.");
                 }
             })
             .unwrap_or_else(|| {
-                if self.debug_dev() {
+                if self.debug.dev() {
                     println!("Failed to get device config, using defaults.");
                 }
                 DeviceConfig::default()
@@ -198,7 +191,7 @@ impl Runtime {
             }
         }
         //println!("Initializing");
-        let debug_dev = self.debug_dev();
+        let debug_dev = self.debug.dev();
         crate::backend::initialize_backends(
             &device_config,
             &mut self.memory_pools,
@@ -211,14 +204,10 @@ impl Runtime {
     /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
     fn deinitialize(&mut self) -> Result<(), ZyxError> {
         //println!("Deinitialize");
-        // drop compiled graph cache
-        self.compiled_graph_cache = BTreeMap::new();
         // drop tensor buffer_map
         self.tensor_buffer_map = BTreeMap::new();
         // drop graph
         self.graph = Graph::new();
-        // drop ir kernel cache
-        self.kernel_cache = BTreeMap::new();
         // drop devices
         while let Some(dev) = self.devices.pop() {
             dev.deinitialize()?;
@@ -738,26 +727,6 @@ pub fn apply_padding(shape: &mut [usize], padding: &[(isize, isize)]) {
 }
 
 impl Runtime {
-    pub(super) const fn debug_dev(&self) -> bool {
-        self.debug % 2 == 1
-    }
-
-    const fn debug_perf(&self) -> bool {
-        (self.debug >> 1) % 2 == 1
-    }
-
-    const fn debug_sched(&self) -> bool {
-        (self.debug >> 2) % 2 == 1
-    }
-
-    const fn debug_ir(&self) -> bool {
-        (self.debug >> 3) % 2 == 1
-    }
-
-    const fn debug_asm(&self) -> bool {
-        (self.debug >> 4) % 2 == 1
-    }
-
     /// Loads data with beginning elements of the tensor x.
     /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
@@ -792,13 +761,13 @@ impl Runtime {
         Ok(())
     }
 
-    pub(super) fn realize(&mut self, tensors: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    pub(super) fn realize(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
         // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
         // fourth pass for to_delete and new_leafs
         // Could possibly be optimized a bit
-        if tensors.is_empty() {
+        if to_eval.is_empty() {
             return Ok(());
         }
         let realized_tensors: BTreeSet<TensorId> = self
@@ -806,17 +775,16 @@ impl Runtime {
             .iter()
             .map(|((id, _), _)| *id)
             .collect();
-        if tensors.is_subset(&realized_tensors) {
+        if to_eval.is_subset(&realized_tensors) {
             return Ok(());
         }
         if self.devices.is_empty() {
             self.initialize_devices()?;
         }
         //let t = crate::Timer::new("realize create graph");
-        // Get rcs of nodes outside of realized graph
-        let (mut graph, outside_nodes, order) = self
-            .graph
-            .realize_graph(tensors, |x| realized_tensors.contains(&x));
+        // Outside nodes are nodes that exist in realization graph, but also are needed by other parts of the graph or by user.
+        // That is outside nodes have reference counts greater than their reference counts in realization graph.
+        let (outside_nodes, order) = self.graph.realization_order(&to_eval, |x| realized_tensors.contains(&x));
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         // New leafs never store data, so we can deallocate them if they are allocated.
         let mut to_delete = BTreeSet::new();
@@ -837,7 +805,7 @@ impl Runtime {
                 .all(|tensor| to_delete.contains(&tensor))
             {
                 if outside_nodes.contains(tensor) {
-                    graph.to_eval.insert(*tensor);
+                    to_eval.insert(*tensor);
                     new_leafs.insert(*tensor);
                 } else {
                     to_delete.insert(*tensor);
@@ -852,38 +820,9 @@ impl Runtime {
         }
         //println!("New leafs: {new_leafs:?}");
         //println!("Realizing {:?}", graph.to_eval);
-        // Compile and launch
-        if !self.compiled_graph_cache.contains_key(&graph) {
-            let debug_perf = self.debug_perf();
-            let debug_sched = self.debug_sched();
-            let debug_ir = self.debug_ir();
-            let debug_asm = self.debug_asm();
-            let compiled_graph = crate::scheduler::compile_graph(
-                graph.clone(),
-                &mut self.memory_pools,
-                &mut self.devices,
-                &self.tensor_buffer_map,
-                &mut self.optimizer_cache,
-                &mut self.kernel_cache,
-                self.search_iterations,
-                self.config_dir.as_deref(),
-                debug_perf,
-                debug_sched,
-                debug_ir,
-                debug_asm,
-            )?;
-            self.compiled_graph_cache
-                .insert(graph.clone(), compiled_graph);
-        }
-        let debug_perf = self.debug_perf();
-        crate::scheduler::launch_graph(
-            &graph,
-            &self.compiled_graph_cache[&graph],
-            &mut self.memory_pools,
-            &mut self.devices,
-            &mut self.tensor_buffer_map,
-            debug_perf,
-        )?;
+
+        crate::scheduler::realize_graph(&self.graph, &order, &to_eval, &mut self.devices, &mut self.optimizer, self.search_iterations, self.debug)?;
+
         // Deallocate them from devices
         self.deallocate_tensors(&to_delete)?;
         // Remove evaluated part of graph unless needed for backpropagation

@@ -9,12 +9,8 @@ and simply uses enum as an op.
 
 ## Performance
 
-Zyx creates graph of nodes at runtime. It takes about a second to compile graph with 10k nodes. Typical
-models have fewer nodes than that, but zyx should be able to scale to millions of nodes if it is needed.
-Both compilation of the whole graph and hardware kernels is cached, therefore this cost is payed only once
-per model launch. As for kernel optimizations, these are done automatically and results are cached to disk,
-so price is payed once per model per hardware configuration. It takes about 30 minutes to finish all optimizations
-on typical LLM on modern GPU. We will work on further optimizations to cut this time down.
+Zyx creates graph of nodes at runtime. Kernel are generated from the graph and immediatelly asynchronously launched
+during realization. Optionally these kernels can be optimized before launching.
 
 ## Error handling
 

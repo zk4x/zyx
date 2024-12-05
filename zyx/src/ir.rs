@@ -2,12 +2,9 @@
 //! It is passed into different backends. Each backend
 //! compiles IR into their own bytecode.
 
-use super::{kernel::VOp, node::ROp};
+use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant,
-    node::{BOp, UOp},
-    tensor::TensorId,
-    DType,
+    dtype::Constant, kernel::TId, node::{BOp, UOp}, DType
 };
 use std::{
     collections::BTreeMap,
@@ -147,8 +144,8 @@ impl std::fmt::Display for Scope {
 
 pub struct IRCompiler {
     pub(super) ops: Vec<IROp>,
-    register_map: BTreeMap<TensorId, Reg>,
-    pointers_map: BTreeMap<(TensorId, Scope), u16>,
+    register_map: BTreeMap<TId, Reg>,
+    pointers_map: BTreeMap<(TId, Scope), u16>,
     dtypes: Vec<DType>,
 }
 
@@ -238,8 +235,8 @@ impl IRCompiler {
     }
 
     fn vops_to_ir(
-        kernel_ops: &[VOp],
-        args: &mut Vec<u32>,
+        kernel_ops: &[Op],
+        args: &mut Vec<TId>,
         addressables: &mut Vec<(Scope, DType, usize, bool)>,
     ) -> IRCompiler {
         let mut c = IRCompiler {
@@ -252,22 +249,22 @@ impl IRCompiler {
         // Declare global arguments
         for op in kernel_ops {
             match *op {
-                VOp::Load {
-                    x,
+                Op::Load {
+                    z,
                     xscope,
                     ref xview,
                     xdtype,
                     ..
                 } => {
-                    if xscope == Scope::Global && !c.pointers_map.contains_key(&(x, xscope)) {
-                        args.push(x);
+                    if xscope == Scope::Global && !c.pointers_map.contains_key(&(z, xscope)) {
+                        args.push(z);
                         let dtype = xdtype;
                         addressables.push((xscope, dtype, xview.original_numel(), true));
                         let id = u16::try_from(addressables.len() - 1).unwrap();
-                        c.pointers_map.insert((x, xscope), id);
+                        c.pointers_map.insert((z, xscope), id);
                     }
                 }
-                VOp::Store {
+                Op::Store {
                     z,
                     zscope,
                     ref zview,
@@ -302,14 +299,14 @@ impl IRCompiler {
         // Declare local variables
         for op in kernel_ops {
             match *op {
-                VOp::Load {
-                    x,
+                Op::Load {
+                    z,
                     xscope,
                     ref xview,
                     xdtype,
                     ..
                 } => {
-                    if xscope == Scope::Local && !c.pointers_map.contains_key(&(x, xscope)) {
+                    if xscope == Scope::Local && !c.pointers_map.contains_key(&(z, xscope)) {
                         addressables.push((
                             xscope,
                             xdtype,
@@ -317,10 +314,10 @@ impl IRCompiler {
                             true,
                         ));
                         let id = u16::try_from(addressables.len() - 1).unwrap();
-                        c.pointers_map.insert((x, xscope), id);
+                        c.pointers_map.insert((z, xscope), id);
                     }
                 }
-                VOp::Store { zscope, .. } => {
+                Op::Store { zscope, .. } => {
                     if zscope == Scope::Local {
                         todo!()
                     }
@@ -333,7 +330,7 @@ impl IRCompiler {
         let mut max_axis = 0;
         for op in kernel_ops {
             match *op {
-                VOp::Accumulator {
+                Op::Accumulator {
                     z, ref view, dtype, ..
                 } => {
                     addressables.push((
@@ -345,42 +342,41 @@ impl IRCompiler {
                     let id = u16::try_from(addressables.len() - 1).unwrap();
                     c.pointers_map.insert((z, Scope::RegTile), id);
                 }
-                VOp::Loop { axis, .. } => max_axis = max_axis.max(u16::try_from(axis).unwrap()),
+                Op::Loop { axis, .. } => max_axis = max_axis.max(u16::try_from(axis).unwrap()),
                 _ => {}
             }
         }
         c.dtypes = vec![DType::U64; max_axis as usize + 1];
 
-        // Transpiling from Kernel to IRKernel, VOp -> IROp
+        // Transpiling from Kernel to IRKernel, Op -> IROp
         let mut loops = Vec::new();
         for op in kernel_ops {
             //println!("{op}");
             match op {
-                &VOp::Loop { axis, len } => {
+                &Op::Loop { axis, len } => {
                     // Axis always maps to register ids
                     let id = u16::try_from(axis).unwrap();
                     c.ops.push(IROp::Loop { id, len });
                     loops.push((id, len));
                 }
-                VOp::EndLoop => {
+                Op::EndLoop => {
                     if let Some((id, len)) = loops.pop() {
                         c.ops.push(IROp::EndLoop { id, len });
                     }
                 }
-                &VOp::Const { z, value, ref view } => {
+                &Op::Const { z, value, ref view } => {
                     let zreg = view.ir_for_constant_load(&mut c, value);
                     c.register_map.insert(z, zreg);
                 }
-                &VOp::Load {
+                &Op::Load {
                     z,
                     zscope,
                     ref zview,
-                    x,
                     xscope,
                     ref xview,
                     xdtype,
                 } => {
-                    let xaddress = c.pointers_map[&(x, xscope)];
+                    let xaddress = c.pointers_map[&(z, xscope)];
                     let zreg = xview.ir_for_indexed_load(&mut c, xaddress, xdtype);
                     c.register_map.insert(z, zreg);
                     match (zscope, xscope) {
@@ -392,7 +388,7 @@ impl IRCompiler {
                         scopes => panic!("Invalid load scopes {scopes:?}. Internal bug."),
                     }
                 }
-                &VOp::Store {
+                &Op::Store {
                     z,
                     zscope,
                     ref zview,
@@ -420,7 +416,7 @@ impl IRCompiler {
                     }
                     scopes => panic!("Invalid store scopes {scopes:?}"),
                 },
-                &VOp::Accumulator {
+                &Op::Accumulator {
                     z,
                     rop,
                     ref view,
@@ -433,21 +429,21 @@ impl IRCompiler {
                     });
                     view.ir_for_indexed_store(&mut c, address, acc_init);
                 }
-                &VOp::Move { z, x, .. } => {
+                &Op::Move { z, x, .. } => {
                     c.register_map.insert(z, c.register_map[&x]);
                 }
-                &VOp::Unary { z, x, uop } => {
+                &Op::Unary { z, x, uop } => {
                     let xreg = c.register_map[&x];
                     let zreg = c.unary_op(xreg, uop);
                     c.register_map.insert(z, zreg);
                 }
-                &VOp::Binary { z, x, y, bop } => {
+                &Op::Binary { z, x, y, bop } => {
                     let xreg = c.register_map[&x];
                     let yreg = c.register_map[&y];
                     let zreg = c.binary_op(xreg, yreg, bop);
                     c.register_map.insert(z, zreg);
                 }
-                &VOp::Barrier { scope } => {
+                &Op::Barrier { scope } => {
                     c.ops.push(IROp::Barrier { scope });
                 }
             }
@@ -826,7 +822,7 @@ impl IRKernel {
         }
     }
 
-    pub(super) fn new(kernel_ops: &[VOp]) -> (IRKernel, Vec<TensorId>) {
+    pub(super) fn new(kernel_ops: &[Op]) -> IRKernel {
         // What we need to calculate (outputs of this function)
         // IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
@@ -856,14 +852,11 @@ impl IRKernel {
         //println!();
         //for op in &ops { println!("{op:?}"); }
         //panic!();
-
-        (
-            IRKernel {
-                addressables,
-                registers,
-                ops,
-            },
-            args,
-        )
+ 
+        IRKernel {
+            addressables,
+            registers,
+            ops,
+        }
     }
 }
