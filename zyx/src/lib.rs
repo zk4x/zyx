@@ -63,6 +63,9 @@ mod graph;
 mod ir;
 mod node;
 mod scheduler;
+mod optimizer2;
+mod kernel2;
+mod scheduler2;
 mod view;
 
 mod generator;

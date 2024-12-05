@@ -9,7 +9,7 @@ use crate::{Scalar, ZyxError};
 /// Represents the data type used for operations.
 #[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DType {
     /// 16 bit bfloat data type.
     BF16,
@@ -176,7 +176,7 @@ impl DType {
 }
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Constant {
     BF16(u16),
     F8(u8),

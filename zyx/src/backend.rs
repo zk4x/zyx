@@ -136,6 +136,7 @@ pub enum Device {
         device: CUDADevice,
         programs: IndexMap<CUDAProgram>,
         queues: Vec<CUDAQueue>,
+        //program_cache: BTreeMap<Kernel, CUDAProgram>,
     },
     HIP {
         memory_pool_id: MemoryPoolId,
