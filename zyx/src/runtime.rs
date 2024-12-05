@@ -1,8 +1,8 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 
 use crate::backend::{
-    BufferId, CUDAConfig, CUDAError, Device, HIPConfig, HIPError, MemoryPool,
-    OpenCLConfig, OpenCLError
+    BufferId, CUDAConfig, CUDAError, Device, HIPConfig, HIPError, MemoryPool, OpenCLConfig,
+    OpenCLError,
 };
 #[cfg(feature = "vulkan")]
 use crate::backend::{VulkanConfig, VulkanError};
@@ -784,7 +784,9 @@ impl Runtime {
         //let t = crate::Timer::new("realize create graph");
         // Outside nodes are nodes that exist in realization graph, but also are needed by other parts of the graph or by user.
         // That is outside nodes have reference counts greater than their reference counts in realization graph.
-        let (outside_nodes, order) = self.graph.realization_order(&to_eval, |x| realized_tensors.contains(&x));
+        let (outside_nodes, order) = self
+            .graph
+            .realization_order(&to_eval, |x| realized_tensors.contains(&x));
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         // New leafs never store data, so we can deallocate them if they are allocated.
         let mut to_delete = BTreeSet::new();
@@ -821,7 +823,17 @@ impl Runtime {
         //println!("New leafs: {new_leafs:?}");
         //println!("Realizing {:?}", graph.to_eval);
 
-        crate::scheduler::realize_graph(&self.graph, &order, &to_eval, &mut self.devices, &mut self.optimizer, self.search_iterations, self.debug)?;
+        crate::scheduler::realize_graph(
+            &self.graph,
+            &order,
+            &to_eval,
+            &mut self.devices,
+            &mut self.memory_pools,
+            &mut self.tensor_buffer_map,
+            &mut self.optimizer,
+            self.search_iterations,
+            self.debug,
+        )?;
 
         // Deallocate them from devices
         self.deallocate_tensors(&to_delete)?;

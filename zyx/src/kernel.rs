@@ -1,5 +1,11 @@
-use crate::{dtype::Constant, ir::Scope, node::{BOp, ROp, UOp}, shape::{Axis, Dimension}, view::View, DType};
-
+use crate::{
+    dtype::Constant,
+    ir::Scope,
+    node::{BOp, ROp, UOp},
+    shape::{Axis, Dimension},
+    view::View,
+    DType,
+};
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
