@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::{
     dtype::Constant,
     ir::Scope,
@@ -147,4 +149,396 @@ impl Kernel {
         };
         self.ops.push(store_op);
     }
+
+    pub(super) fn shape(&self) -> Vec<usize> {
+        self.ops
+            .iter()
+            .map_while(|op| {
+                if let Op::Loop { len, .. } = op {
+                    Some(*len)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn reshape(&mut self, shape: &[usize]) -> bool {
+        // If this is just a reshape of kernel with only unary ops and contiguous loads
+        // and stores, we can remove old loops and replace them with new loops.
+        //println!("Reshape");
+        // TODO this first case can be removed
+        if self.ops.iter().all(|op| match op {
+            Op::Loop { .. }
+            | Op::Unary { .. }
+            | Op::Binary { .. }
+            | Op::Barrier { .. }
+            | Op::Move { .. } => true,
+            Op::Load { xview: view, .. }
+            | Op::Store { zview: view, .. }
+            | Op::Const { view, .. } => view.is_contiguous(),
+            Op::Accumulator { .. } | Op::EndLoop => false, // | Op::Reduce { .. }
+        }) {
+            //println!("Before reshape continuous.");
+            //kernel.debug();
+            // Remove old loops
+            for _ in 0..self.shape().len() {
+                self.ops.remove(0);
+            }
+            // Put in new loops
+            for op in shape_to_loops(shape).into_iter().rev() {
+                self.ops.insert(0, op);
+            }
+            // Change Reshape loads and stores
+            for op in &mut self.ops {
+                match op {
+                    Op::Load { xview: view, .. }
+                    | Op::Const { view, .. }
+                    | Op::Store { zview: view, .. } => {
+                        *view = View::contiguous(shape);
+                    }
+                    _ => {}
+                }
+            }
+            //println!("Reshaping continuous.");
+            //kernel.debug();
+            true
+        } else if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
+            let _ = new_loops; // TODO get new_loops working
+                               //println!("Reshapes: {reshapes:?}");
+            for (org_sh, sh) in reshapes.iter().rev() {
+                let mut op_i = self.ops.len();
+                'a: loop {
+                    op_i -= 1;
+                    if let Op::Loop { axis, .. } = &mut self.ops[op_i] {
+                        //println!("{org_sh:?} -> {sh:?}");
+                        match (*axis).cmp(&(org_sh.end - 1)) {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => {
+                                // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
+                                // insert respective loops from new shape
+                                let n = org_sh.end - org_sh.start;
+                                let i = (op_i + 1) - n;
+                                //println!("Removing {i}");
+                                for _ in 0..n {
+                                    self.ops.remove(i);
+                                }
+                                //self.debug();
+                                for a in sh.clone().rev() {
+                                    //println!("Axis {a}, shape {shape:?}");
+                                    self.ops.insert(
+                                        i,
+                                        Op::Loop {
+                                            axis: a + org_sh.start - sh.start,
+                                            len: shape[a],
+                                        },
+                                    );
+                                }
+                                //self.debug();
+                                break 'a;
+                            }
+                            std::cmp::Ordering::Greater => {
+                                *axis += sh.end - sh.start;
+                                *axis -= org_sh.end - org_sh.start;
+                            }
+                        }
+                    }
+                }
+                //self.debug();
+            }
+            for op in &mut self.ops {
+                match op {
+                    Op::Const { view, .. }
+                    | Op::Load { xview: view, .. }
+                    | Op::Store { zview: view, .. }
+                    | Op::Accumulator { view, .. } => {
+                        for (org_sh, sh) in reshapes.iter().rev() {
+                            view.reshape(org_sh.clone(), &shape[sh.clone()]);
+                        }
+                    }
+                    Op::Loop { .. }
+                    | Op::EndLoop
+                    | Op::Move { .. }
+                    | Op::Unary { .. }
+                    | Op::Binary { .. }
+                    | Op::Barrier { .. } => {}
+                }
+            }
+            //self.debug();
+            // TODO deal with loop inserts
+            assert_eq!(
+                self.shape(),
+                shape,
+                "Shape after reshape split is incorrect."
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(super) fn get_reshape_pattern(
+        &self,
+        nshape: &[usize],
+    ) -> Option<(
+        usize,                             // number of new loops to be inserted
+        Vec<(Range<usize>, Range<usize>)>, // range and new shape for reshapes
+    )> {
+        let mut unmergeable_axes = Vec::new();
+        let mut last_op_i = 0;
+        for (i, op) in self.ops.iter().enumerate() {
+            if let &Op::Loop { axis, .. } = op {
+                if last_op_i != 0 && i != last_op_i + 1 {
+                    unmergeable_axes.push(axis);
+                }
+                last_op_i = i;
+            }
+        }
+        get_reshape_pattern(&self.shape(), nshape, &unmergeable_axes)
+    }
+
+    // TODO remove this in favor of reshape
+    pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
+        //self.debug();
+        //println!("Splitting {op_id} into {dimensions:?}");
+        // First split loop at op_id
+        let Op::Loop {
+            axis,
+            len: dimension,
+        } = &mut self.ops[op_id]
+        else {
+            unreachable!()
+        };
+        *dimension = dimensions[0];
+        let new_dim_count = dimensions.len() - 1;
+        let axis = *axis;
+        let mut temp_axis = axis;
+        let mut id = op_id;
+        for dim in &dimensions[1..] {
+            id += 1;
+            temp_axis += 1;
+            self.ops.insert(
+                id,
+                Op::Loop {
+                    axis: temp_axis,
+                    len: *dim,
+                },
+            );
+        }
+        let mut num_loops = 0;
+        // Update loops, loads and stores
+        for i in id + 1..self.ops.len() {
+            if self.ops[i] == Op::EndLoop {
+                if num_loops == 0 {
+                    for _ in 0..new_dim_count {
+                        self.ops.insert(i, Op::EndLoop);
+                    }
+                    break;
+                }
+                num_loops -= 1;
+            }
+            match &mut self.ops[i] {
+                // Then change axis ids for all following loops
+                Op::Loop { axis, .. } => {
+                    *axis += new_dim_count;
+                    num_loops += 1;
+                }
+                // Then change all load and store operations in this loop in the same way.
+                Op::Load { xview: view, .. }
+                | Op::Store { zview: view, .. }
+                | Op::Const { view, .. }
+                | Op::Accumulator { view, .. } => {
+                    #[allow(clippy::range_plus_one)]
+                    {
+                        view.reshape(axis..axis + 1, dimensions);
+                    }
+                }
+                _ => {}
+            }
+        }
+        //self.debug();
+    }
+}
+
+impl std::fmt::Display for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const C_BLUE: &str = "\x1B[34m";
+        const C_GREEN: &str = "\x1B[32m";
+        const C_MAGENTA: &str = "\x1B[35m";
+        const C_RED: &str = "\x1B[31m";
+        const C_WHITE: &str = "\x1B[37m";
+        const C_YELLOW: &str = "\x1B[33m";
+        const C_RESET: &str = "\x1B[39m";
+        match self {
+            Op::Const { z, value, view } => f.write_fmt(format_args!(
+                "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
+            )),
+            Op::Load {
+                z,
+                zscope,
+                zview: _,
+                xscope,
+                xview,
+                xdtype,
+            } => f.write_fmt(format_args!(
+                "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- [{xscope:?}, {xdtype}], {xview}"
+            )),
+            Op::Store {
+                z,
+                zview,
+                zscope,
+                zdtype,
+                xscope,
+                xview: _,
+            } => f.write_fmt(format_args!(
+                "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
+            )),
+            Op::Loop {
+                axis,
+                len: dimension,
+            } => f.write_fmt(format_args!(
+                "{C_GREEN}Loop{C_RESET}        axis: {axis}, dimension: {dimension}"
+            )),
+            Op::Accumulator {
+                z,
+                rop,
+                view,
+                dtype,
+            } => f.write_fmt(format_args!(
+                "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, shape: {:?}, {dtype}",
+                view.shape()
+            )),
+            Op::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
+            Op::Move { z, x, mop } => {
+                f.write_fmt(format_args!("{C_WHITE}Move{C_RESET}.{mop:?}   {z} <- {x}"))
+            }
+            Op::Unary { z, x, uop } => {
+                let mut len = format!("{uop:?}").len();
+                if len > 5 {
+                    len = 5;
+                }
+                f.write_fmt(format_args!(
+                    "{C_WHITE}Unary{C_RESET}.{uop:?}{} {z} <- {x}",
+                    " ".repeat(5 - len)
+                ))
+            }
+            Op::Binary { z, x, y, bop } => f.write_fmt(format_args!(
+                "{C_WHITE}Binary{C_RESET}.{bop:?}  {z} <- {x}, {y}"
+            )),
+            Op::Barrier { scope } => {
+                f.write_fmt(format_args!("{C_MAGENTA}Barrier{C_RESET}({scope})"))
+            }
+        }
+    }
+}
+
+/// Searches which dimensions can be:
+/// 1. insert new loops to the end of the kernel
+/// 2. merged
+/// 3. split
+/// 4. reshaped without affecting reduce dims
+///
+/// If neither of those are possible, None is returned. last tensor must be stored and new kernel must be created.
+#[allow(clippy::type_complexity)]
+fn get_reshape_pattern(
+    // original shape
+    shape: &[usize],
+    // new shape
+    nshape: &[usize],
+    // 6 means there are ops between axes 5 and 6, thus 5 and 6 cannot be merged
+    // 3 means there are ops between axes 2 and 3, thus 2 and 3 cannot be merged
+    unmergeable_axes: &[usize],
+) -> Option<(
+    // number of new loops to be inserted
+    usize,
+    // range and new shape for reshapes
+    Vec<(Range<usize>, Range<usize>)>,
+)> {
+    // reshape
+    // 2, 4, 1, 3, 1,    4, 5, 2
+    //       8, 3, 1, 2, 2, 2, 5
+    let mut reshapes = Vec::new();
+
+    let mut split_axes = 0..1;
+    let mut merge_axes = 0..1;
+    'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
+        match shape[merge_axes.clone()]
+            .iter()
+            .product::<usize>()
+            .cmp(&nshape[split_axes.clone()].iter().product())
+        {
+            std::cmp::Ordering::Less => {
+                merge_axes.end += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                split_axes.end += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                if let Some(d) = shape.get(merge_axes.end) {
+                    if *d == 1 && split_axes.end == nshape.len() {
+                        merge_axes.end += 1;
+                        continue 'a;
+                    }
+                }
+                if let Some(d) = nshape.get(split_axes.end) {
+                    if *d == 1 && merge_axes.end == shape.len() {
+                        split_axes.end += 1;
+                        continue 'a;
+                    }
+                }
+                if (merge_axes.len(), split_axes.len()) != (1, 1) {
+                    // reshape
+                    // If merge range contains unmergeable axes, return None
+                    // Axes are not mergeable if there is some ops between those axes
+                    if unmergeable_axes
+                        .iter()
+                        .any(|a| merge_axes.contains(a) && merge_axes.contains(&(a - 1)))
+                    {
+                        return None;
+                    }
+                    reshapes.push((merge_axes.clone(), split_axes.clone()));
+                }
+                #[allow(clippy::range_plus_one)]
+                {
+                    merge_axes = merge_axes.end..merge_axes.end + 1;
+                    split_axes = split_axes.end..split_axes.end + 1;
+                }
+            }
+        }
+    }
+    Some((0, reshapes))
+}
+
+fn shape_to_loops(shape: &[usize]) -> Vec<Op> {
+    let mut res = Vec::with_capacity(20);
+    for (axis, dimension) in shape.iter().copied().enumerate() {
+        res.push(Op::Loop {
+            axis,
+            len: dimension,
+        });
+    }
+    res
+}
+
+#[test]
+fn reshape_pattern() {
+    let shape = [2, 4, 1, 3, 1, 4, 5, 2];
+    let nshape = [8, 3, 1, 2, 2, 2, 5];
+    let r = get_reshape_pattern(&shape, &nshape, &[]);
+    assert_eq!(
+        r,
+        Some((
+            0,
+            vec![(0..2, 0..1), (2..4, 1..2), (5..6, 3..5), (6..8, 5..7)]
+        ))
+    );
+    let shape = [2, 2, 1, 2, 2];
+    let nshape = [2, 2, 1, 2, 2, 1];
+    let r = get_reshape_pattern(&shape, &nshape, &[]);
+    assert_eq!(r, Some((0, vec![(4..5, 4..6)])));
+    let shape = [1, 3, 4, 5];
+    let nshape = [3, 20];
+    let r = get_reshape_pattern(&shape, &nshape, &[]);
+    assert_eq!(r, Some((0, vec![(0..2, 0..1), (2..4, 1..2)])));
 }

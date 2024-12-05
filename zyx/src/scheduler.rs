@@ -3,6 +3,7 @@
 use crate::{
     backend::{BufferId, Device, MemoryPool},
     graph::Graph,
+    index_map::Id,
     ir::IRKernel,
     kernel::{Kernel, Op, TId},
     node::Node,
@@ -24,7 +25,7 @@ pub(super) fn realize_graph(
     to_eval: &BTreeSet<TensorId>,
     devices: &mut [Device],
     memory_pools: &mut [MemoryPool],
-    tensor_buffer_map: &mut BTreeMap<(TensorId, View), BufferId>,
+    tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
     optimizer: &mut Optimizer,
     search_iters: usize,
     debug: DebugMask,
@@ -32,7 +33,7 @@ pub(super) fn realize_graph(
     // Unfinished kernels represented by ops
     let mut kernels: Vec<Kernel> = Vec::with_capacity(100);
     // Mapping from tensor ids to loads in kernels
-    let mut kernel_inputs: Vec<BTreeMap<TensorId, TId>> = Vec::with_capacity(100);
+    let mut kernel_tensors: Vec<BTreeMap<TensorId, TId>> = Vec::with_capacity(100);
     // Mapping from tensor ids to unused tensors in kernels.
     // Once number of unused ids reaches zero, kernel gets scheduled to device.
     let mut kernel_outputs: Vec<BTreeMap<TensorId, TId>> = Vec::with_capacity(100);
@@ -42,7 +43,7 @@ pub(super) fn realize_graph(
     for nid in order.iter().copied() {
         if free_kernels.is_empty() {
             kernels.push(Kernel::empty());
-            kernel_inputs.push(BTreeMap::new());
+            kernel_tensors.push(BTreeMap::new());
             kernel_outputs.push(BTreeMap::new());
             free_kernels.insert(kernels.len() - 1);
         }
@@ -56,7 +57,7 @@ pub(super) fn realize_graph(
             Node::Leaf => {
                 let kid = free_kernels.pop_first().unwrap();
                 kernels[kid] = Kernel::leaf(graph.shape(nid), graph.dtype(nid));
-                kernel_inputs[kid] = BTreeMap::from([(nid, 0)]);
+                kernel_tensors[kid] = BTreeMap::from([(nid, 0)]);
                 kid
             }
             Node::Expand { x } => todo!(),
@@ -93,26 +94,45 @@ pub(super) fn realize_graph(
             let memory_pool = &mut memory_pools[0];
 
             // Move all other tensors to that memory pool
+            // and finish queues with this kernel's inputs
 
             // Get device which is associated with that memory pool
             let device = &mut devices[0];
 
-            let buffer_ids = todo!();
+            let buffer_ids: Vec<Id> = kernel_tensors[kid]
+                .keys()
+                .map(|tensor| tensor_buffer_map[tensor].buffer_id)
+                .collect();
 
             if device.is_cached(&kernel) {
-                device.launch(&kernel, memory_pool, buffer_ids);
+                device.launch(&kernel, memory_pool, &buffer_ids)?;
             } else {
-                // Check if disk caching is enabled
-                let device_info = device.info();
                 let optimization =
                     optimizer.get_optimization(&kernel, device, memory_pool, search_iters);
                 let optimized_kernel = kernel.optimize(optimization);
                 let ir_kernel = IRKernel::new(&optimized_kernel.ops);
-                device.compile(kernel.clone(), &ir_kernel, true);
-                device.launch(&kernel, memory_pool, buffer_ids);
+                device.compile(kernel.clone(), &ir_kernel, true)?;
+                device.launch(&kernel, memory_pool, &buffer_ids)?;
             }
 
             // add load kernels for all outputs of this kernel
+            for op in kernel.ops {
+                if let Op::Store { z, .. } = op {
+                    let shape = graph.shape(nid);
+                    let dtype = graph.dtype(nid);
+                    kernel_tensors.push(BTreeMap::from([(
+                        kernel_tensors[kid]
+                            .iter()
+                            .find(|(_, tid)| **tid == z)
+                            .unwrap()
+                            .0
+                            .clone(),
+                        0,
+                    )]));
+                    kernel_outputs.push(BTreeMap::new());
+                    kernels.push(Kernel::leaf(shape, dtype));
+                }
+            }
         }
     }
 

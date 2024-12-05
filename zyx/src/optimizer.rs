@@ -2,6 +2,7 @@ use crate::{
     backend::{Device, DeviceInfo, MemoryPool},
     ir::Scope,
     kernel::{Kernel, Op},
+    shape::Dimension,
     view::View,
 };
 use std::{
@@ -24,17 +25,15 @@ enum OptimizerProgress {
     },
 }
 
-struct Optimization {}
+pub(super) struct Optimization {
+    splits: Vec<(usize, Vec<Dimension>)>,
+}
 
 impl Optimizer {
     pub(super) const fn new() -> Optimizer {
         Optimizer {
             cache: BTreeMap::new(),
         }
-    }
-
-    pub(super) fn get(&self, key: &(Kernel, DeviceInfo)) -> Option<&OptimizerProgress> {
-        self.cache.get(key)
     }
 
     pub(super) fn get_optimization(
@@ -44,7 +43,7 @@ impl Optimizer {
         memory_pool: &mut MemoryPool,
         search_iters: usize,
     ) -> &Optimization {
-        match self.get(&(kernel.clone(), device.info().clone())) {
+        match self.cache.get(&(kernel.clone(), device.info().clone())) {
             Some(OptimizerProgress::Finished { optimization }) => optimization,
             Some(OptimizerProgress::Optimizing { best, done }) => {
                 if search_iters == 0 {
@@ -121,7 +120,7 @@ impl Kernel {
         };
         rws[2] = len;
         // Apply permutation
-        kernel.permute(&optimization.permutation);
+        //kernel.permute(&optimization.permutation);
 
         // Reorder so that register work threads are last
         // Register threads are op_id 1, 4 and 7

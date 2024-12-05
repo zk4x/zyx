@@ -15,7 +15,6 @@ use crate::optimizer::Optimizer;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
-use crate::view::View;
 use crate::DebugMask;
 use std::path::PathBuf;
 use std::{
@@ -53,7 +52,7 @@ pub struct Runtime {
     // Physical memory pools
     memory_pools: Vec<MemoryPool>,
     // Where are tensors stored
-    tensor_buffer_map: BTreeMap<(TensorId, View), BufferId>,
+    tensor_buffer_map: BTreeMap<TensorId, BufferId>,
     // Physical compute devices, each has their own program cache
     devices: Vec<Device>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
@@ -282,12 +281,11 @@ impl Runtime {
         }
         let buffer_id = self.memory_pools[memory_pool_id as usize].allocate(bytes)?;
         self.memory_pools[memory_pool_id as usize].host_to_pool(data, buffer_id)?;
-        let view = View::contiguous(&shape);
         let id = self
             .graph
             .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
         self.tensor_buffer_map.insert(
-            (id, view),
+            id,
             BufferId {
                 memory_pool_id,
                 buffer_id,
@@ -389,7 +387,6 @@ impl Runtime {
         }
         self.realize(BTreeSet::from([x]))?;
         let mut shape = self.shape(x).to_vec();
-        let old_k = (x, View::contiguous(&shape));
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
         //self.tensor_buffer_map.find();
@@ -403,10 +400,9 @@ impl Runtime {
         let id = self
             .graph
             .push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
-        if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &old_k) {
+        if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &x) {
             //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
-            self.tensor_buffer_map
-                .insert((id, View::contiguous(&shape)), *bid);
+            self.tensor_buffer_map.insert(id, *bid);
         } else {
             panic!("Tensor sharded across multiple devices can't be currently bitcasted. Internal bug.");
         }
@@ -478,11 +474,9 @@ impl Runtime {
         }
         // Reshape on leaf is NOOP, tensor_buffer_map traces ownership
         if self.graph[x] == Node::Leaf {
-            let view = View::contiguous(&shape);
-            let x_view = View::contiguous(self.graph.shape(x));
-            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|((id, v), bid)| {
+            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|(id, bid)| {
                 // If it is the correct id and isn't sharded
-                if *id == x && v == &x_view {
+                if *id == x {
                     Some(bid)
                 } else {
                     None
@@ -491,7 +485,7 @@ impl Runtime {
                 let id = self
                     .graph
                     .push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
-                self.tensor_buffer_map.insert((id, view), buffer_id);
+                self.tensor_buffer_map.insert(id, buffer_id);
                 return id;
             }
         }
@@ -510,11 +504,9 @@ impl Runtime {
         if self.graph[x] == Node::Leaf
             && sh.iter().product::<usize>() == shape.iter().product::<usize>()
         {
-            let view = View::contiguous(&shape);
-            let x_view = View::contiguous(self.graph.shape(x));
-            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|((id, v), bid)| {
+            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|(id, bid)| {
                 // If it is the correct id and isn't sharded
-                if *id == x && v == &x_view {
+                if *id == x {
                     Some(bid)
                 } else {
                     None
@@ -523,7 +515,7 @@ impl Runtime {
                 let id = self
                     .graph
                     .push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
-                self.tensor_buffer_map.insert((id, view), buffer_id);
+                self.tensor_buffer_map.insert(id, buffer_id);
                 return id;
             }
         }
@@ -740,20 +732,16 @@ impl Runtime {
         }
         assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
-        if self.tensor_buffer_map.iter().all(|((id, _), _)| *id != x) {
+        if self.tensor_buffer_map.iter().all(|(id, _)| *id != x) {
             self.realize(BTreeSet::from([x]))?;
         }
         // If at least part of tensor exists in some device, there must be
         // the rest of the tensor in other devices
-        for ((tensor_id, view), buffer_id) in &self.tensor_buffer_map {
+        for (tensor_id, buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
-                if view.numel() == n {
-                    self.memory_pools[buffer_id.memory_pool_id as usize]
-                        .pool_to_host(buffer_id.buffer_id, data)?;
-                    break;
-                }
-                // load for partial views from multiple memory pools
-                todo!()
+                self.memory_pools[buffer_id.memory_pool_id as usize]
+                    .pool_to_host(buffer_id.buffer_id, data)?;
+                break;
             }
         }
         //println!("{data:?}, {}", data.len());
@@ -770,11 +758,8 @@ impl Runtime {
         if to_eval.is_empty() {
             return Ok(());
         }
-        let realized_tensors: BTreeSet<TensorId> = self
-            .tensor_buffer_map
-            .iter()
-            .map(|((id, _), _)| *id)
-            .collect();
+        let realized_tensors: BTreeSet<TensorId> =
+            self.tensor_buffer_map.iter().map(|(id, _)| *id).collect();
         if to_eval.is_subset(&realized_tensors) {
             return Ok(());
         }
@@ -854,14 +839,13 @@ impl Runtime {
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
         let mut buffers = BTreeSet::new();
-        for ((t, _), b) in self.tensor_buffer_map.iter() {
+        for (t, b) in self.tensor_buffer_map.iter() {
             if to_remove.contains(t) {
                 buffers.insert(*b);
             }
         }
         // Remove unnedded tensors from the map
-        self.tensor_buffer_map
-            .retain(|(t, _), _| !to_remove.contains(t));
+        self.tensor_buffer_map.retain(|t, _| !to_remove.contains(t));
         // Check if buffers are needed elsewhere in the map,
         // otherwise deallocate them
         for buffer in buffers {

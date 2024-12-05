@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 
 use super::{ir::IRKernel, DeviceConfig, ZyxError};
 use crate::{
-    index_map::{Id, IndexMap}, kernel::Kernel, Scalar
+    index_map::{Id, IndexMap},
+    kernel::Kernel,
+    Scalar,
 };
 use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
@@ -56,8 +58,6 @@ pub struct DeviceInfo {
 }
 
 pub type MemoryPoolId = u32;
-pub type DeviceId = u32;
-pub type ProgramId = u32;
 
 /*trait HMemoryPool {
     type Error;
@@ -740,13 +740,19 @@ impl Device {
         debug_asm: bool,
     ) -> Result<(), ZyxError> {
         match self {
-            Device::CUDA { device, kernels, ..  } => {
+            Device::CUDA {
+                device, kernels, ..
+            } => {
                 kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
             }
-            Device::HIP { device, kernels, ..  } => {
+            Device::HIP {
+                device, kernels, ..
+            } => {
                 kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
             }
-            Device::OpenCL { device, kernels, ..  } => {
+            Device::OpenCL {
+                device, kernels, ..
+            } => {
                 kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
             }
             #[cfg(feature = "vulkan")]
@@ -778,73 +784,46 @@ impl Device {
         kernel: &Kernel,
         memory_pool: &mut MemoryPool,
         buffer_ids: &[Id],
-    ) -> Result<usize, ZyxError> {
-        Ok(match self {
+    ) -> Result<(), ZyxError> {
+        match self {
             Device::CUDA {
                 kernels, queues, ..
             } => {
-                let (mut id, mut queue) = queues
-                    .iter_mut()
-                    .enumerate()
-                    .min_by_key(|(_, queue)| queue.load())
-                    .unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues
-                        .iter_mut()
-                        .enumerate()
-                        .max_by_key(|(_, queue)| queue.load())
-                        .unwrap();
+                let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
+                if queue.load() > 20 {
+                    queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                     queue.sync()?;
                 }
                 let MemoryPool::CUDA { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
                 queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                id
             }
             Device::HIP {
                 kernels, queues, ..
             } => {
-                let (mut id, mut queue) = queues
-                    .iter_mut()
-                    .enumerate()
-                    .min_by_key(|(_, queue)| queue.load())
-                    .unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues
-                        .iter_mut()
-                        .enumerate()
-                        .max_by_key(|(_, queue)| queue.load())
-                        .unwrap();
+                let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
+                if queue.load() > 20 {
+                    queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                     queue.sync()?;
                 }
                 let MemoryPool::HIP { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
                 queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                id
             }
             Device::OpenCL {
                 kernels, queues, ..
             } => {
-                let (mut id, mut queue) = queues
-                    .iter_mut()
-                    .enumerate()
-                    .min_by_key(|(_, queue)| queue.load())
-                    .unwrap();
-                if queue.load() > 10 {
-                    (id, queue) = queues
-                        .iter_mut()
-                        .enumerate()
-                        .max_by_key(|(_, queue)| queue.load())
-                        .unwrap();
+                let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
+                if queue.load() > 20 {
+                    queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                     queue.sync()?;
                 }
                 let MemoryPool::OpenCL { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
                 queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                id
             }
             #[cfg(feature = "vulkan")]
             Device::Vulkan {
@@ -867,7 +846,6 @@ impl Device {
                     unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
-                id
             }
             #[cfg(feature = "wgsl")]
             Device::WGSL {
@@ -890,9 +868,9 @@ impl Device {
                     unreachable!()
                 };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
-                id
             }
-        })
+        }
+        Ok(())
     }
 }
 
