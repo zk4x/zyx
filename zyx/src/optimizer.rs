@@ -1,7 +1,7 @@
 use crate::{
     backend::{Device, DeviceInfo, MemoryPool},
-    ir::Scope,
-    kernel::{Kernel, Op},
+    ir::{IRKernel, Scope},
+    kernel::{Kernel, Op, TId},
     shape::Dimension,
     view::View,
 };
@@ -25,8 +25,10 @@ enum OptimizerProgress {
     },
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Optimization {
     splits: Vec<(usize, Vec<Dimension>)>,
+    local_tiles: bool,
 }
 
 impl Optimizer {
@@ -43,24 +45,104 @@ impl Optimizer {
         memory_pool: &mut MemoryPool,
         search_iters: usize,
     ) -> &Optimization {
-        match self.cache.get(&(kernel.clone(), device.info().clone())) {
-            Some(OptimizerProgress::Finished { optimization }) => optimization,
-            Some(OptimizerProgress::Optimizing { best, done }) => {
-                if search_iters == 0 {
-                    best
-                } else {
-                    //self.optimize_kernel(kernel.clone(), device, memory_pool, search_iters)
-                    todo!()
+        fn optimize_kernel(
+            kernel: &Kernel,
+            device: &mut Device,
+            memory_pool: &mut MemoryPool,
+            search_iters: usize,
+            done: &mut BTreeMap<Optimization, Duration>,
+        ) -> Optimization {
+            //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
+            // list untried optimizations
+            let mut opts = kernel.available_optimizations(device.info(), done);
+            // Allocate temporary buffers
+            let mut allocated_temps = Vec::new();
+            let mut temp_ids: BTreeSet<TId> = kernel.inputs();
+            temp_ids.extend(&kernel.outputs());
+            for tid in temp_ids {
+                let buffer_id = memory_pool.allocate(
+                    graph.shape(tid).iter().product::<usize>() * graph.dtype(tid).byte_size(),
+                )?;
+                allocated_temps.push(buffer_id);
+            }
+            let flop_mem_rw = if debug_perf {
+                Some(kernel.flop_mem_rw())
+            } else {
+                None
+            };
+            let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
+            // pick an optimization
+            for i in 0..search_iters.min(opts.len()) {
+                if let Some(optimization) = opts.pop() {
+                    let optimized_kernel = kernel.optimize(&optimization);
+                    //optimized_kernel.debug();
+                    //panic!();
+                    let ir_kernel = IRKernel::new(&optimized_kernel.ops);
+                    if device
+                        .compile(optimized_kernel, &ir_kernel, debug_asm)
+                        .is_err()
+                    {
+                        done.insert(optimization, Duration::MAX);
+                        //if debug_sched { println!("Could not compile, {e:?}, skipping"); }
+                        continue;
+                    }
+                    // Launch kernel and measure it's performance
+                    let begin = std::time::Instant::now();
+                    let Ok(queue_id) =
+                        device.launch(&optimized_kernel, &mut memory_pool, &allocated_temps)
+                    else {
+                        done.insert(optimization, Duration::MAX);
+                        //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
+                        continue;
+                    };
+                    if device.sync(queue_id).is_err() {
+                        done.insert(optimization, Duration::MAX);
+                        //if debug_sched { println!("Could not sync, {e:?}, skipping"); }
+                        continue;
+                    };
+                    let exec_time = begin.elapsed();
+                    let _ = device.release_program(&optimized_kernel);
+                    done.insert(optimization, exec_time);
+                    if exec_time < best_exec_time {
+                        best_exec_time = exec_time;
+                    }
+                    if let Some((f, mr, mw)) = flop_mem_rw {
+                        if let Some(bar) = &progress_bar {
+                            bar.set_message(format!(
+                                "{}/{} {}",
+                                i + 1,
+                                search_iters.min(opts.len()),
+                                perf_string(f, mr, mw, best_exec_time)
+                            ));
+                        }
+                    }
+                    #[cfg(feature = "disk_cache")]
+                    if timer.elapsed().as_secs() > 60 {
+                        store_optimizer_cache(optimizer_cache, config_dir, debug_sched);
+                        timer = std::time::Instant::now();
+                    }
                 }
             }
-            None => {
-                if search_iters == 0 {
-                    self.default_optimizations(kernel, device.info())
-                } else {
-                    //self.optimize_kernel(kernel.clone(), device, memory_pool, search_iters);
-                    todo!()
+            done.iter().min_by_key(|x| x.1).unwrap().0.clone()
+        }
+
+        // TODO do not clone kernel and device info, borrowck really sucks here
+        let key = (kernel.clone(), device.info().clone());
+        match self
+            .cache
+            .entry(key)
+            .and_modify(|progress| {
+                if let OptimizerProgress::Optimizing { best, done } = progress {
+                    *best = optimize_kernel(kernel, device, memory_pool, search_iters, done);
                 }
-            }
+            })
+            .or_insert_with(|| {
+                let mut done = BTreeMap::new();
+                let best = optimize_kernel(kernel, device, memory_pool, search_iters, &mut done);
+                OptimizerProgress::Optimizing { best, done }
+            }) {
+            OptimizerProgress::Finished { optimization } => optimization,
+            OptimizerProgress::Optimizing { best, .. } => best,
         }
     }
 
@@ -69,10 +151,139 @@ impl Optimizer {
         let _ = device_info;
         todo!()
     }
-    //fn optimize_kernel(&mut self, kernel: Kernel, device: &mut Device, memory_pool: &mut MemoryPool, search_iters: usize) { todo!() }
 }
 
 impl Kernel {
+    fn available_optimizations(
+        &self,
+        dev_info: &DeviceInfo,
+        done: &BTreeMap<Optimization, Duration>,
+    ) -> Vec<Optimization> {
+        let mut opts = Vec::new();
+
+        //let mgwd = dev_info.max_global_work_dims;
+        let mlws = dev_info.max_local_threads;
+        let mut mlwd = dev_info.max_local_work_dims;
+        let mrws = dev_info.num_registers;
+        let (maxrr, mrwd) = if true {
+            (8, [16, 16, 16]) // For now 16, can be raised to 32 on some hardware perhaps
+        } else {
+            mlwd = [1, 1, 1];
+            (1, [1, 1, 1]) // For debugging
+        };
+
+        let mut reshapes = Vec::new();
+        let num_loops = self
+            .ops
+            .iter()
+            .position(|op| !matches!(op, Op::Loop { .. }))
+            .unwrap();
+        assert_ne!(num_loops, 0);
+        let mut gws = [1; 3];
+        if num_loops < 3 {
+            let dims: Vec<usize> = core::iter::repeat(1)
+                .take(3 - num_loops)
+                .chain([self.shape()[0]])
+                .collect();
+            reshapes.push((0, dims));
+            let mut gws_i = 3 - num_loops;
+            for d in &self.shape() {
+                gws[gws_i] = *d;
+                gws_i += 1;
+            }
+        } else {
+            let sh = self.shape();
+            for (gws_d, d) in gws.iter_mut().zip(sh[sh.len() - 3..].iter()) {
+                *gws_d = *d;
+            }
+            gws[0] = sh[..sh.len() - 2].iter().product();
+        }
+        //println!("Using gws {gws:?}");
+        // Local work size
+        for lx in (1..=mlws.min(mlwd[0])).filter(|x| gws[0] % x == 0) {
+            for ly in (1..=(mlws / lx).min(mlwd[1])).filter(|y| gws[1] % y == 0) {
+                for lz in (1..=(mlws / (lx * ly)).min(mlwd[2])).filter(|z| gws[2] % z == 0) {
+                    // register work size
+                    for rx in (1..=mrws.min(mrwd[0])).filter(|x| (gws[0] / lx) % x == 0) {
+                        for ry in (1..=(mrws / rx).min(mrwd[1])).filter(|y| (gws[1] / ly) % y == 0)
+                        {
+                            for rz in (1..=(mrws / (rx * ry)).min(mrwd[2]))
+                                .filter(|z| (gws[2] / lz) % z == 0)
+                            {
+                                // Get splits for local and global work dims
+                                let mut splits = reshapes.clone();
+                                splits.push((2, vec![gws[2] / (lz * rz), lz, rz]));
+                                splits.push((1, vec![gws[1] / (ly * ry), ly, ry]));
+                                splits.push((0, vec![gws[0] / (lx * rx), lx, rx]));
+
+                                // For each reduce loop
+                                let mut acc_found = false;
+                                let mut loop_found = false;
+                                let mut reduce_found = false;
+                                // Find first non loop op after loop after accumulator
+                                // that op_id - 1 is loop and there we split
+                                for (id, op) in self.ops[num_loops..].iter().enumerate() {
+                                    if loop_found && !matches!(op, Op::Loop { .. }) {
+                                        loop_found = false;
+                                        acc_found = false;
+                                        reduce_found = true;
+                                        let Op::Loop { len, .. } = self.ops[id - 1 + num_loops]
+                                        else {
+                                            unreachable!()
+                                        };
+                                        // Register work size in the reduce loop
+                                        for rr in (1..=maxrr).filter(|rr| len % rr == 0) {
+                                            // Get splits for local and global work dims
+                                            let mut splits = splits.clone();
+                                            splits.insert(
+                                                0,
+                                                (
+                                                    id - 1
+                                                        + if num_loops > 3 { 3 } else { num_loops },
+                                                    vec![len / rr, rr],
+                                                ),
+                                            );
+                                            // Permute, private loops last
+                                            let mut optimization = Optimization {
+                                                splits,
+                                                local_tiles: false,
+                                            };
+                                            if !done.contains_key(&optimization) {
+                                                opts.push(optimization.clone());
+                                            }
+                                            if rr == ly && rr == lz {
+                                                optimization.local_tiles = true;
+                                                if !done.contains_key(&optimization) {
+                                                    opts.push(optimization);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if acc_found && matches!(op, Op::Loop { .. }) {
+                                        //println!("Loop found at {id}");
+                                        loop_found = true;
+                                    }
+                                    if matches!(op, Op::Accumulator { .. }) {
+                                        //println!("Acc found at {id}");
+                                        acc_found = true;
+                                    }
+                                }
+                                if !reduce_found {
+                                    // Permute, private loops last
+                                    opts.push(Optimization {
+                                        splits,
+                                        local_tiles: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        opts
+    }
+
     #[allow(clippy::similar_names)]
     #[allow(clippy::cognitive_complexity)]
     pub(super) fn optimize(&self, optimization: &Optimization) -> Kernel {

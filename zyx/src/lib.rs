@@ -61,10 +61,10 @@ mod tensor;
 mod backend;
 mod graph;
 mod ir;
-mod node;
-mod scheduler;
-mod optimizer;
 mod kernel;
+mod node;
+mod optimizer;
+mod scheduler;
 mod view;
 
 // Constant initializable hasher because apparently noone invented that yet...
@@ -104,7 +104,6 @@ impl DebugMask {
     pub const fn asm(&self) -> bool {
         (self.0 >> 4) % 2 == 1
     }
-
 }
 
 /// Save tensors or modules
@@ -362,8 +361,8 @@ fn t1() {
 
 #[test]
 fn t1() -> Result<(), ZyxError> {
-    let x = Tensor::rand([4, 2, 3], DType::F32)?;
-    let y = x.sum([-1])?;
+    let x = Tensor::rand([4, 2, 3], DType::F32).unwrap();
+    let y = x.sum([-1]).unwrap();
     println!("{y}");
     Ok(())
 }
