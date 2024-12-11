@@ -8,7 +8,8 @@ use crate::{
     dtype::Constant,
     index_map::{Id, IndexMap},
     ir::{IRKernel, IROp, Reg, Scope},
-    node::{BOp, UOp}, DType,
+    node::{BOp, UOp},
+    DType,
 };
 use libloading::Library;
 use std::{

@@ -359,6 +359,90 @@ impl Kernel {
         }
         //self.debug();
     }
+
+    pub(super) fn debug(&self) {
+        println!("Kernel shape: {:?}", self.shape(),);
+        let mut first_loops = true;
+        let mut indent = String::new();
+        for vop in &self.ops {
+            match vop {
+                Op::Loop { .. } => {
+                    println!("{indent}{vop}");
+                    if !first_loops {
+                        indent += "  ";
+                    }
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    println!("{indent}{vop}");
+                }
+                _ => {
+                    println!("{indent}{vop}");
+                    first_loops = false;
+                }
+            }
+        }
+        println!();
+    }
+
+    pub(super) fn expand(&mut self, shape: &[usize]) -> bool {
+        todo!()
+    }
+
+    pub(super) fn permute(&mut self, axes: &[usize]) {
+        //self.debug();
+        if (0..axes.len()).zip(axes).all(|(a, ca)| a == *ca) {
+            // no permute
+            return;
+        }
+        let shape: Vec<usize> = axes.iter().map(|a| self.shape()[*a]).collect();
+        //let mut permuted_loops: BTreeSet<usize> = axes.iter().copied().collect();
+        let mut skip_loops = 0;
+        let mut last_axis = axes.len() - 1;
+        for op in self.ops.iter_mut().rev() {
+            match op {
+                Op::Loop { len: dimension, .. } => {
+                    if skip_loops > 0 {
+                        skip_loops -= 1;
+                    } else {
+                        *dimension = shape[last_axis];
+                        last_axis = last_axis.saturating_sub(1);
+                    }
+                }
+                Op::Load { xview: view, .. }
+                | Op::Store { zview: view, .. }
+                | Op::Const { view, .. } => {
+                    //| VOp::Accumulator { view, .. } => {
+                    let n = view.rank();
+                    let permute_axes: Vec<usize> = if last_axis > n {
+                        // We actually need to check which axis view refers to, then check which loops those were
+                        // and if and how those loops are permuted
+                        todo!()
+                    } else {
+                        axes[..=last_axis]
+                            .iter()
+                            .copied()
+                            .chain(last_axis + 1..n)
+                            .collect()
+                    };
+                    view.permute(&permute_axes);
+                }
+                Op::EndLoop => {
+                    skip_loops += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(super) fn pad(&mut self, padding: &[(isize, isize)]) -> bool {
+        todo!()
+    }
+
+    pub(super) fn reduce(&mut self, xt: TId, axes: &[usize], rop: ROp) {
+        todo!()
+    }
 }
 
 impl std::fmt::Display for Op {
