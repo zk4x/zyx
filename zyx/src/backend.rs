@@ -110,6 +110,9 @@ pub enum MemoryPool {
     OpenCL {
         memory_pool: OpenCLMemoryPool,
         buffers: IndexMap<OpenCLBuffer>,
+        // Buffers can have associated events that must be finished
+        // before accessing given buffer
+        events: BTreeMap<Id, Event>,
     },
     #[cfg(feature = "vulkan")]
     Vulkan {
@@ -166,6 +169,7 @@ pub enum Device {
     },
 }
 
+#[derive(Debug)]
 pub struct Event {
     id: u16,
 }

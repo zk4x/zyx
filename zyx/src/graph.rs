@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Graph {
     // First value is reference count, second is node
-    nodes: IndexMap<(u32, Node)>,
+    pub(super) nodes: IndexMap<(u32, Node)>,
     dtypes: BTreeMap<TensorId, DType>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
@@ -189,19 +189,11 @@ impl Graph {
         }
     }
 
-    pub(super) fn realization_order(&self, to_eval: &BTreeSet<TensorId>, is_realized: impl Fn(TensorId) -> bool) -> (BTreeSet<TensorId>, Vec<TensorId>) {
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut visited = BTreeSet::new();
-        let mut leafs = BTreeSet::new();
-        while let Some(param) = params.pop() {
-            if visited.insert(param) {
-                if is_realized(param) {
-                    leafs.insert(param);
-                } else {
-                    params.extend(self.nodes[param].1.parameters());
-                }
-            }
-        }
+    /*pub(super) fn realization_order(
+        &self,
+        to_eval: &BTreeSet<TensorId>,
+        //is_realized: impl Fn(TensorId) -> bool,
+    ) -> (BTreeSet<TensorId>, Vec<TensorId>) {
         // While visited only contains nodes up to realized nodes,
         // following loops visit all children nodes up to leafs,
         // because we need to know which parts of the graph can be dropped.
@@ -218,6 +210,7 @@ impl Graph {
         let mut order = Vec::new();
         let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut outside_nodes = BTreeSet::new();
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
                 if rc
@@ -226,30 +219,37 @@ impl Graph {
                         .and_modify(|rc| *rc += 1)
                         .or_insert(1)
                 {
+                    if let Some(&rc2) = rcs.get(&nid) {
+                        if self.nodes[nid].0 > rc2 {
+                            outside_nodes.insert(nid);
+                        }
+                    } else {
+                        outside_nodes.insert(nid);
+                    }
                     order.push(nid);
                     params.extend(self.nodes[nid].1.parameters());
                 }
             }
         }
         order.reverse();
-        let outside_nodes = self
-            .nodes
-            .iter()
-            .filter_map(|(id, (rc, _))| {
-                if let Some(&rc2) = rcs.get(&id) {
-                    if *rc > rc2 {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                } else {
+        /*let outside_nodes = self
+        .nodes
+        .iter()
+        .filter_map(|(id, (rc, _))| {
+            if let Some(&rc2) = rcs.get(&id) {
+                if *rc > rc2 {
                     Some(id)
+                } else {
+                    None
                 }
-            })
-            .chain(to_eval.iter().copied())
-            .collect();
+            } else {
+                Some(id)
+            }
+        })
+        .chain(to_eval.iter().copied())
+        .collect();*/
         (outside_nodes, order)
-    }
+    }*/
 
     /*pub(super) fn realize_graph(
         &self,

@@ -758,9 +758,10 @@ impl Runtime {
         if to_eval.is_empty() {
             return Ok(());
         }
-        let realized_tensors: BTreeSet<TensorId> =
-            self.tensor_buffer_map.iter().map(|(id, _)| *id).collect();
-        if to_eval.is_subset(&realized_tensors) {
+        if to_eval
+            .iter()
+            .all(|id| self.tensor_buffer_map.contains_key(id))
+        {
             return Ok(());
         }
         if self.devices.is_empty() {
@@ -769,9 +770,49 @@ impl Runtime {
         //let t = crate::Timer::new("realize create graph");
         // Outside nodes are nodes that exist in realization graph, but also are needed by other parts of the graph or by user.
         // That is outside nodes have reference counts greater than their reference counts in realization graph.
-        let (outside_nodes, order) = self
-            .graph
-            .realization_order(&to_eval, |x| realized_tensors.contains(&x));
+        let (outside_nodes, order) = {
+            let this = &self.graph;
+            let to_eval: &BTreeSet<TensorId> = &to_eval;
+            // Following loops visit all children nodes up to leafs,
+            // because we need to know which parts of the graph can be dropped.
+            // Get refcounts of all nodes
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+            while let Some(nid) = params.pop() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                    params.extend(this.nodes[nid].1.parameters());
+                    1
+                });
+            }
+            // Order them using rcs reference counts
+            let mut order = Vec::new();
+            let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            let mut outside_nodes = BTreeSet::new();
+            while let Some(nid) = params.pop() {
+                if let Some(&rc) = rcs.get(&nid) {
+                    if rc
+                        == *internal_rcs
+                            .entry(nid)
+                            .and_modify(|rc| *rc += 1)
+                            .or_insert(1)
+                    {
+                        if let Some(&rc2) = rcs.get(&nid) {
+                            if this.nodes[nid].0 > rc2 {
+                                outside_nodes.insert(nid);
+                            }
+                        } else {
+                            outside_nodes.insert(nid);
+                        }
+                        order.push(nid);
+                        params.extend(this.nodes[nid].1.parameters());
+                    }
+                }
+            }
+            order.reverse();
+            (outside_nodes, order)
+        };
+        //, |x| realized_tensors.contains(&x));
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         // New leafs never store data, so we can deallocate them if they are allocated.
         let mut to_delete = BTreeSet::new();
