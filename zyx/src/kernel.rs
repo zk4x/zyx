@@ -1,4 +1,7 @@
-use std::ops::Range;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+};
 
 use crate::{
     dtype::Constant,
@@ -387,7 +390,49 @@ impl Kernel {
     }
 
     pub(super) fn expand(&mut self, shape: &[usize]) -> bool {
-        todo!()
+        if self
+            .ops
+            .iter()
+            .any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
+        {
+            return false;
+        }
+        //println!("Expanding");
+        //kernel.debug();
+        assert_eq!(shape.len(), self.shape().len());
+        let mut expand_axes = BTreeSet::new();
+        for (a, d) in self.shape().into_iter().enumerate() {
+            if d != shape[a] {
+                assert_eq!(d, 1);
+                expand_axes.insert(a);
+            }
+        }
+        // We go over ops in reverse, increasing last loops dimension
+        //println!("expand_axes = {expand_axes:?}");
+        let mut done_expanding = BTreeSet::new();
+        for op in self.ops.iter_mut().rev() {
+            match op {
+                Op::Loop {
+                    axis,
+                    len: dimension,
+                } => {
+                    if expand_axes.contains(axis) && done_expanding.insert(*axis) {
+                        assert_eq!(*dimension, 1);
+                        *dimension = shape[*axis];
+                    }
+                }
+                Op::Load { xview: view, .. } | Op::Const { view, .. } => {
+                    // Done expanding marks which loops are behind us,
+                    // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
+                    for a in expand_axes.difference(&done_expanding) {
+                        view.expand(*a, shape[*a]);
+                    }
+                }
+                Op::Store { .. } => unreachable!(),
+                _ => {}
+            }
+        }
+        true
     }
 
     pub(super) fn permute(&mut self, axes: &[usize]) {
@@ -437,11 +482,139 @@ impl Kernel {
     }
 
     pub(super) fn pad(&mut self, padding: &[(isize, isize)]) -> bool {
-        todo!()
+        if !self.ops.iter().all(|op| match op {
+            // For now just do not pad reduce kernels
+            //matches!(rop, ROp::Sum),
+            // TODO this can be later removed, but it's a trade-off,
+            // it makes kernels bigger, but harder to reason about
+            Op::Accumulator { .. } | Op::Store { .. } => false,
+            _ => true,
+        }) {
+            return false;
+        }
+        //kernel.debug();
+        let rank = self.shape().len();
+        // Get which axes are padded
+        let mut padded_axes = BTreeMap::new();
+        for (op, &p) in self.ops[..rank].iter().rev().zip(padding) {
+            let &Op::Loop { axis, .. } = op else {
+                unreachable!()
+            };
+            padded_axes.insert(axis, p);
+        }
+        // Apply padding
+        let mut num_paddings = padding.len();
+        //println!("Padded axes: {padded_axes:?}");
+        for op in &mut self.ops {
+            match op {
+                Op::Loop { axis, len } => {
+                    if let Some((lp, rp)) = padded_axes.get(axis) {
+                        *len = usize::try_from(isize::try_from(*len).unwrap() + lp + rp).unwrap();
+                    }
+                }
+                Op::EndLoop => {
+                    num_paddings -= 1;
+                    if num_paddings == 0 {
+                        break;
+                    }
+                }
+                Op::Const { view, .. }
+                | Op::Load { xview: view, .. }
+                | Op::Store { zview: view, .. }
+                | Op::Accumulator { view, .. } => {
+                    for (&axis, &(lp, rp)) in &padded_axes {
+                        view.pad(axis, lp, rp);
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
     }
 
-    pub(super) fn reduce(&mut self, xt: TId, axes: &[usize], rop: ROp) {
-        todo!()
+    pub(super) fn reduce(
+        &mut self,
+        xt: TId,
+        shape: &[usize],
+        axes: &[usize],
+        dtype: DType,
+        rop: ROp,
+    ) {
+        let permute_axes: Vec<usize> = (0..shape.len())
+            .filter(|a| !axes.contains(a))
+            .chain(axes.iter().copied())
+            .collect();
+        //println!("Permute axes in reduce: {permute_axes:?}");
+        self.permute(&permute_axes);
+
+        // We can also just merge these reduce loops into single loop, since it gets removed
+        // from the resulting shape either way, but only if there are no ops between those loops.
+
+        // Add accumulator
+        let num_axes = shape.len();
+        let mut looped_axes: BTreeSet<usize> = (num_axes - axes.len()..num_axes).collect();
+        //println!("Looped axes: {looped_axes:?}");
+        let acc_id = self.ops.len()
+            - self
+                .ops
+                .iter()
+                .rev()
+                .position(|op| {
+                    if let Op::Loop { axis, .. } = op {
+                        looped_axes.remove(axis);
+                    }
+                    looped_axes.is_empty()
+                })
+                .unwrap()
+            - 1;
+        //println!("Acc id: {acc_id}");
+        self.ops.insert(
+            acc_id,
+            Op::Accumulator {
+                z: self.max_id,
+                rop,
+                view: View::none(),
+                dtype,
+            },
+        );
+        self.ops.push(Op::Binary {
+            z: self.max_id,
+            x: xt,
+            y: self.max_id,
+            bop: match rop {
+                ROp::Sum => BOp::Add,
+                ROp::Max => BOp::Max,
+            },
+        });
+        for _ in 0..axes.len() {
+            self.ops.push(Op::EndLoop);
+        }
+        if !matches!(self.ops[0], Op::Loop { .. }) {
+            self.insert_loop(0, 0);
+        }
+    }
+
+    /// Inserts loop at `op_id`, giving it axis id and dimension 1.
+    /// All loops and views axis equal or greater then axis are increased by 1
+    /// Does not change reduce op's `num_axes`
+    /// This function also does not change kernel's shape!
+    pub(super) fn insert_loop(&mut self, op_id: usize, axis: Axis) {
+        let naxis = axis;
+        for op in &mut self.ops {
+            match op {
+                Op::Const { view, .. }
+                | Op::Store { zview: view, .. }
+                | Op::Load { xview: view, .. }
+                | Op::Accumulator { view, .. } => view.insert_loop(naxis),
+                Op::Loop { axis, .. } => {
+                    if *axis >= naxis {
+                        *axis += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.ops.insert(op_id, Op::Loop { axis, len: 1 });
     }
 }
 

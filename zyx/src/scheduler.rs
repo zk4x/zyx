@@ -163,7 +163,7 @@ pub(super) fn realize_graph(
                 kernels[kid].ops.push(Op::Move {
                     z,
                     x: xt,
-                    mop: MOp::Expa,
+                    mop: MOp::Padd,
                 });
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
@@ -202,8 +202,7 @@ pub(super) fn realize_graph(
                 let (xt, kid) = get_kernel(x, &kernel_outputs);
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
-                let axes = graph.axes(nid);
-                kernels[kid].reduce(xt, axes, rop);
+                kernels[kid].reduce(xt, graph.shape(x), graph.axes(nid), graph.dtype(x), rop);
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
                     if *rc == 0 {

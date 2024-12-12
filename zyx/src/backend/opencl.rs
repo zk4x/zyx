@@ -92,7 +92,6 @@ pub(super) struct OpenCLDevice {
     dev_info: DeviceInfo,
     memory_pool_id: u32,
     // Functions
-    //clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> cl_int,
     clGetProgramBuildInfo: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -151,15 +150,23 @@ pub(super) struct OpenCLQueue {
         *const *mut c_void,
         *mut *mut c_void,
     ) -> OpenCLStatus,
-    //clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
+    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 }
 
+#[derive(Debug)]
+pub(super) struct OpenCLEvent {
+    event: *mut c_void,
+    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
+}
+
+// This definitely isn't correct, but for now...
 unsafe impl Send for OpenCLMemoryPool {}
 unsafe impl Send for OpenCLBuffer {}
 unsafe impl Send for OpenCLDevice {}
 unsafe impl Send for OpenCLProgram {}
 unsafe impl Send for OpenCLQueue {}
+unsafe impl Send for OpenCLEvent {}
 
 impl OpenCLDevice {
     pub(super) const fn info(&self) -> &DeviceInfo {
@@ -377,9 +384,8 @@ pub(super) fn initialize_devices(
                 queues.push(OpenCLQueue {
                     queue: unsafe { clCreateCommandQueue(context, dev, 0, &mut status) },
                     load: 0,
-                    //events: Vec::new(),
                     clSetKernelArg,
-                    //clWaitForEvents,
+                    clWaitForEvents,
                     clEnqueueNDRangeKernel,
                     clFinish,
                     //clReleaseCommandQueue,
@@ -879,7 +885,7 @@ impl OpenCLQueue {
         program: &mut OpenCLProgram,
         buffers: &mut IndexMap<OpenCLBuffer>,
         args: &[Id],
-    ) -> Result<(), OpenCLError> {
+    ) -> Result<OpenCLEvent, OpenCLError> {
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             program.kernel,
@@ -923,7 +929,10 @@ impl OpenCLQueue {
         .check("Failed to enqueue kernel.")?;
         //unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
         //self.events.push(event);
-        Ok(())
+        Ok(OpenCLEvent {
+            event,
+            clWaitForEvents: self.clWaitForEvents,
+        })
     }
 
     pub(super) fn sync(&mut self) -> Result<(), OpenCLError> {
@@ -938,6 +947,12 @@ impl OpenCLQueue {
 
     pub(super) const fn load(&self) -> usize {
         self.load
+    }
+}
+
+impl OpenCLEvent {
+    pub(super) fn finish(&self) -> Result<(), OpenCLError> {
+        unsafe { (self.clWaitForEvents)(1, [self.event].as_ptr()) }.check("Failed to finish event")
     }
 }
 

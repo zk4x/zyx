@@ -1,7 +1,7 @@
 use crate::{
     backend::{Device, DeviceInfo, MemoryPool},
     ir::{IRKernel, Scope},
-    kernel::{Kernel, Op, TId},
+    kernel::{Kernel, Op},
     shape::Dimension,
     view::View,
     DebugMask, ZyxError,
@@ -96,7 +96,7 @@ impl Optimizer {
             };*/
             let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
             // pick an optimization
-            for i in 0..search_iters.min(opts.len()) {
+            for _ in 0..search_iters.min(opts.len()) {
                 if let Some(optimization) = opts.pop() {
                     let optimized_kernel = kernel.optimize(&optimization);
                     //optimized_kernel.debug();
@@ -118,7 +118,7 @@ impl Optimizer {
                         //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
                         continue;
                     };
-                    if device.sync(event).is_err() {
+                    if event.finish().is_err() {
                         done.insert(optimization, Duration::MAX);
                         //if debug_sched { println!("Could not sync, {e:?}, skipping"); }
                         continue;

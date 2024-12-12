@@ -81,26 +81,32 @@ pub use tensor::Tensor;
 static RT: mutex::Mutex<Runtime, 1_000_000_000> = mutex::Mutex::new(Runtime::new());
 //static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
+/// Bitflags for debugging
 #[derive(Clone, Copy)]
-struct DebugMask(u32);
+pub struct DebugMask(u32);
 
 impl DebugMask {
+    /// Is device debugging enabled?
     pub const fn dev(&self) -> bool {
         self.0 % 2 == 1
     }
 
+    /// Is performance debugging enabled?
     pub const fn perf(&self) -> bool {
         (self.0 >> 1) % 2 == 1
     }
 
+    /// Is scheduler debugging enabled?
     pub const fn sched(&self) -> bool {
         (self.0 >> 2) % 2 == 1
     }
 
+    /// Is debugging of IR enabled?
     pub const fn ir(&self) -> bool {
         (self.0 >> 3) % 2 == 1
     }
 
+    /// Is assembly debugging enabled?
     pub const fn asm(&self) -> bool {
         (self.0 >> 4) % 2 == 1
     }
@@ -156,7 +162,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
 static ET: mutex::Mutex<std::collections::BTreeMap<String, u128>, 1_000_000_000> =
     mutex::Mutex::new(std::collections::BTreeMap::new());
 
-pub(crate) struct Timer {
+/*pub(crate) struct Timer {
     name: String,
     begin: std::time::Instant,
 }
@@ -177,7 +183,7 @@ impl Drop for Timer {
         *ET.lock().get_mut(&self.name).unwrap() += self.begin.elapsed().as_micros();
         //println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
-}
+}*/
 
 /*#[test]
 fn t0() {
@@ -365,13 +371,6 @@ fn t1() -> Result<(), ZyxError> {
     let y = x.exp2();
     //let y = x.sum([-1]).unwrap();
     println!("{y}");
-    Ok(())
-}
-
-#[test]
-fn t3() -> Result<(), ZyxError> {
-    let x = Tensor::from([true, true, false, true]);
-    println!("{x}");
     Ok(())
 }
 

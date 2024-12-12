@@ -135,7 +135,7 @@ impl Node {
         }
     }
 
-    pub(super) const fn is_movement(&self) -> bool {
+    /*pub(super) const fn is_movement(&self) -> bool {
         matches!(
             self,
             Node::Pad { .. } | Node::Reshape { .. } | Node::Expand { .. } | Node::Permute { .. }
@@ -144,7 +144,7 @@ impl Node {
 
     pub(super) const fn is_unary(&self) -> bool {
         matches!(self, Node::Unary { .. })
-    }
+    }*/
 }
 
 trait CastDType: Scalar {

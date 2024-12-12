@@ -11,6 +11,13 @@ fn matmul_2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn boolean_buffer() -> Result<(), ZyxError> {
+    let x = Tensor::from([true, true, false, true]);
+    assert_eq!(x, [true, true, false, true]);
+    Ok(())
+}
+
+#[test]
 fn sum1() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     assert_eq!(x.sum([0])?, [3, 9, 4]);

@@ -143,9 +143,9 @@ impl<T> IndexMap<T> {
         }
     }
 
-    pub(crate) fn swap(&mut self, x: Id, y: Id) {
+    /*pub(crate) fn swap(&mut self, x: Id, y: Id) {
         self.values.swap(x as usize, y as usize);
-    }
+    }*/
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
         (0..Id::try_from(self.values.len()).unwrap()).filter(|x| !self.empty.contains(x))
@@ -167,13 +167,13 @@ impl<T> IndexMap<T> {
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_ref() }))
     }
 
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
+    /*pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
-    }
+    }*/
 
     pub(crate) fn len(&self) -> usize {
         self.values.len() - self.empty.len()
