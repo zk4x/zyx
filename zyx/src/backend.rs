@@ -15,7 +15,7 @@ use crate::{
     kernel::Kernel,
     Scalar,
 };
-use cuda::{CUDABuffer, CUDADevice, CUDAMemoryPool, CUDAProgram, CUDAQueue};
+use cuda::{CUDABuffer, CUDADevice, CUDAEvent, CUDAMemoryPool, CUDAProgram, CUDAQueue};
 use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
 use opencl::{
     OpenCLBuffer, OpenCLDevice, OpenCLEvent, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue,
@@ -175,15 +175,15 @@ pub enum Device {
 }
 
 pub enum Event {
-    CUDA,
+    CUDA(CUDAEvent),
     HIP,
     OpenCL(OpenCLEvent),
 }
 
 impl Event {
-    pub(super) fn finish(&self) -> Result<(), ZyxError> {
+    pub(super) fn finish(self) -> Result<(), ZyxError> {
         match self {
-            Event::CUDA => todo!(),
+            Event::CUDA(event) => event.finish()?,
             Event::HIP => todo!(),
             Event::OpenCL(event) => event.finish()?,
         }
@@ -548,7 +548,7 @@ impl MemoryPool {
             MemoryPool::CUDA { .. } => todo!(),
             MemoryPool::HIP { .. } => todo!(),
             MemoryPool::OpenCL { events, .. } => {
-                if let Some(event) = events.get(&sbid) {
+                if let Some(event) = events.remove(&sbid) {
                     event.finish()?;
                 }
             }
@@ -839,8 +839,8 @@ impl Device {
                 let MemoryPool::CUDA { buffers, .. } = memory_pool else {
                     unreachable!()
                 };
-                queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                Event::CUDA
+                let event = queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
+                Event::CUDA(event)
             }
             Device::HIP {
                 kernels, queues, ..

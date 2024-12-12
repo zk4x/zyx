@@ -951,7 +951,7 @@ impl OpenCLQueue {
 }
 
 impl OpenCLEvent {
-    pub(super) fn finish(&self) -> Result<(), OpenCLError> {
+    pub(super) fn finish(self) -> Result<(), OpenCLError> {
         unsafe { (self.clWaitForEvents)(1, [self.event].as_ptr()) }.check("Failed to finish event")
     }
 }

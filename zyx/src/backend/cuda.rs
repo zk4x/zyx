@@ -113,6 +113,15 @@ pub(super) struct CUDAQueue {
     cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
+#[derive(Debug)]
+pub(super) struct CUDAEvent {}
+
+impl CUDAEvent {
+    pub(super) fn finish(self) -> Result<(), CUDAError> {
+        Ok(())
+    }
+}
+
 // This is currently just wrong, CUDA uses thread locals that can't be send ...
 unsafe impl Send for CUDAMemoryPool {}
 unsafe impl Send for CUDABuffer {}
@@ -962,7 +971,7 @@ impl CUDAQueue {
         program: &mut CUDAProgram,
         buffers: &mut IndexMap<CUDABuffer>,
         args: &[Id],
-    ) -> Result<(), CUDAError> {
+    ) -> Result<CUDAEvent, CUDAError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {
             let arg = &mut buffers[arg];
@@ -985,7 +994,8 @@ impl CUDAQueue {
                 ptr::null_mut(),
             )
         }
-        .check("Failed to launch kernel.")
+        .check("Failed to launch kernel.")?;
+        Ok(CUDAEvent {})
     }
 
     pub(super) fn sync(&mut self) -> Result<(), CUDAError> {

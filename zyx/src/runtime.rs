@@ -24,6 +24,7 @@ use std::{
 };
 
 use half::{bf16, f16};
+use no_panic::no_panic;
 use rand::rngs::SmallRng;
 
 /// Device configuration
@@ -222,6 +223,7 @@ impl Runtime {
         Ok(())
     }
 
+    #[no_panic]
     pub(super) fn manual_seed(&mut self, seed: u64) {
         use rand::SeedableRng;
         self.rng = std::cell::OnceCell::from(SmallRng::seed_from_u64(seed));
@@ -376,6 +378,7 @@ impl Runtime {
     }
 
     /// Bitcast self to other type, currently immediatelly realizes the tensor
+    #[no_panic]
     pub(super) unsafe fn bitcast(
         &mut self,
         x: TensorId,
