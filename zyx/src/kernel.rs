@@ -386,7 +386,6 @@ impl Kernel {
                 }
             }
         }
-        println!();
     }
 
     pub(super) fn expand(&mut self, shape: &[usize]) -> bool {

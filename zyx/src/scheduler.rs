@@ -35,15 +35,12 @@ pub(super) fn realize_graph(
     let mut graph_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
     let mut params = to_eval.clone();
     while let Some(param) = params.pop_last() {
-        graph_rcs
-            .entry(param)
-            .and_modify(|rc| *rc += 1)
-            .or_insert_with(|| {
-                if !tensor_buffer_map.contains_key(&param) {
-                    params.extend(graph[param].parameters());
-                }
-                1
-            });
+        graph_rcs.entry(param).and_modify(|rc| *rc += 1).or_insert_with(|| {
+            if !tensor_buffer_map.contains_key(&param) {
+                params.extend(graph[param].parameters());
+            }
+            1
+        });
     }
 
     // Unfinished kernels represented by ops
@@ -53,10 +50,16 @@ pub(super) fn realize_graph(
     // Mapping from tensor ids to unused tensors in kernels.
     // Once number of unused ids reaches zero, kernel gets scheduled to device.
     let mut kernel_outputs: Vec<BTreeMap<TensorId, TId>> = Vec::with_capacity(100);
-
     let mut free_kernels: BTreeSet<KernelId> = BTreeSet::new();
 
+    println!("To eval: {:?}", to_eval);
+
     for nid in order.iter().copied() {
+        /*println!("Current kernels:");
+        for kernel in &kernels {
+            kernel.debug();
+        }
+        println!();*/
         println!("ID({nid}): {:?}, sh: {:?}", graph[nid], graph.shape(nid));
 
         if free_kernels.is_empty() {
@@ -89,32 +92,49 @@ pub(super) fn realize_graph(
                 (kid, KernelId::MAX)
             }
             Node::Expand { x } => {
-                let (xt, mut kid) = get_kernel(x, &kernel_outputs);
+                let (xt, kid) = get_kernel(x, &kernel_outputs);
 
                 let shape = graph.shape(nid);
-                if !kernels[kid].expand(shape) {
+                if kernels[kid].expand(shape) {
+                    kernels[kid].max_id += 1;
+                    let z = kernels[kid].max_id;
+                    kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Expa });
+                    if let Some(rc) = graph_rcs.get_mut(&x) {
+                        *rc -= 1;
+                        if *rc == 0 {
+                            graph_rcs.remove(&x);
+                            kernel_outputs[kid].remove(&x).unwrap();
+                        }
+                    }
+                    kernel_outputs[kid].insert(nid, z);
+                    (kid, KernelId::MAX)
+                } else {
+                    // if it is not expandable, we need to store it and create new kernel
                     let dtype = graph.dtype(x);
                     kernels[kid].store(xt, View::contiguous(graph.shape(x)), dtype);
-                    kid = free_kernels.pop_first().unwrap();
-                    kernels[kid] = Kernel::leaf(shape, dtype);
-                }
+                    kernel_tensors[kid].insert(x, kernel_outputs[kid].remove(&x).unwrap());
 
-                kernels[kid].max_id += 1;
-                let z = kernels[kid].max_id;
-                kernels[kid].ops.push(Op::Move {
-                    z,
-                    x: xt,
-                    mop: MOp::Expa,
-                });
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        graph_rcs.remove(&x);
-                        kernel_outputs[kid].remove(&x).unwrap();
+                    let new_kid = free_kernels.pop_first().unwrap();
+                    kernels[new_kid] = Kernel::leaf(shape, dtype);
+
+                    assert!(kernels[new_kid].expand(shape));
+                    let z = kernels[new_kid].max_id;
+                    kernels[kid].max_id += 1;
+                    kernels[kid].ops.push(Op::Move { z, x: 0, mop: MOp::Expa });
+
+                    // new kernel now has both x and nid outputs
+                    kernel_tensors[new_kid] = BTreeMap::from([(x, 0)]);
+                    kernel_outputs[new_kid] = BTreeMap::from([(x, 0), (nid, 0)]);
+
+                    if let Some(rc) = graph_rcs.get_mut(&x) {
+                        *rc -= 1;
+                        if *rc == 0 {
+                            graph_rcs.remove(&x);
+                            kernel_outputs[new_kid].remove(&x).unwrap();
+                        }
                     }
+                    (new_kid, kid)
                 }
-                kernel_outputs[kid].insert(nid, z);
-                (kid, KernelId::MAX)
             }
             Node::Reshape { x } => {
                 let (xt, mut kid) = get_kernel(x, &kernel_outputs);
@@ -122,6 +142,7 @@ pub(super) fn realize_graph(
                 let shape = graph.shape(nid);
                 //println!("Reshape node from {:?} to {:?}", graph.shape(x), shape);
                 if !kernels[kid].reshape(shape) {
+                    //println!("Could not be reshaped, storing");
                     // else create new kernel after storing results of previous kernel
                     let dtype = graph.dtype(x);
                     kernels[kid].store(xt, View::contiguous(graph.shape(x)), dtype);
@@ -131,11 +152,7 @@ pub(super) fn realize_graph(
 
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
-                kernels[kid].ops.push(Op::Move {
-                    z,
-                    x: xt,
-                    mop: MOp::Resh,
-                });
+                kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Resh });
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
                     if *rc == 0 {
@@ -144,6 +161,7 @@ pub(super) fn realize_graph(
                     }
                 }
                 kernel_outputs[kid].insert(nid, z);
+                println!("After reshape outputs: {:?}", kernel_outputs[kid]);
                 (kid, KernelId::MAX)
             }
             Node::Pad { x } => {
@@ -160,11 +178,7 @@ pub(super) fn realize_graph(
 
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
-                kernels[kid].ops.push(Op::Move {
-                    z,
-                    x: xt,
-                    mop: MOp::Padd,
-                });
+                kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Padd });
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
                     if *rc == 0 {
@@ -182,11 +196,7 @@ pub(super) fn realize_graph(
 
                 let axes = graph.axes(nid);
                 kernels[kid].permute(axes);
-                kernels[kid].ops.push(Op::Move {
-                    z,
-                    x: xt,
-                    mop: MOp::Perm,
-                });
+                kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Perm });
 
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
@@ -245,88 +255,50 @@ pub(super) fn realize_graph(
                         let new_op = match kernels[kidy].ops[op_i] {
                             Op::Loop { axis, len } => Op::Loop { axis, len },
                             Op::EndLoop => Op::EndLoop,
-                            Op::Const { z, value, ref view } => Op::Const {
-                                z: z + n,
-                                value: value.clone(),
-                                view: view.clone(),
-                            },
-                            Op::Load {
-                                z,
-                                zscope,
-                                ref zview,
-                                xscope,
-                                ref xview,
-                                xdtype,
-                            } => Op::Load {
-                                z: z + n,
-                                zscope,
-                                zview: zview.clone(),
-                                xscope,
-                                xview: xview.clone(),
-                                xdtype,
-                            },
-                            Op::Store {
-                                z,
-                                zscope,
-                                ref zview,
-                                zdtype,
-                                xscope,
-                                ref xview,
-                            } => Op::Store {
-                                z: z + n,
-                                zscope,
-                                zview: zview.clone(),
-                                zdtype,
-                                xscope,
-                                xview: xview.clone(),
-                            },
-                            Op::Accumulator {
-                                z,
-                                rop,
-                                ref view,
-                                dtype,
-                            } => Op::Accumulator {
-                                z: z + n,
-                                rop,
-                                view: view.clone(),
-                                dtype,
-                            },
-                            Op::Move { z, x, mop } => Op::Move {
-                                z: z + n,
-                                x: x + n,
-                                mop,
-                            },
-                            Op::Unary { z, x, uop } => Op::Unary {
-                                z: z + n,
-                                x: x + n,
-                                uop,
-                            },
-                            Op::Binary { z, x, y, bop } => Op::Binary {
-                                z: z + n,
-                                x: x + n,
-                                y: y + n,
-                                bop,
-                            },
+                            Op::Const { z, value, ref view } => {
+                                Op::Const { z: z + n, value: value.clone(), view: view.clone() }
+                            }
+                            Op::Load { z, zscope, ref zview, xscope, ref xview, xdtype } => {
+                                Op::Load {
+                                    z: z + n,
+                                    zscope,
+                                    zview: zview.clone(),
+                                    xscope,
+                                    xview: xview.clone(),
+                                    xdtype,
+                                }
+                            }
+                            Op::Store { z, zscope, ref zview, zdtype, xscope, ref xview } => {
+                                Op::Store {
+                                    z: z + n,
+                                    zscope,
+                                    zview: zview.clone(),
+                                    zdtype,
+                                    xscope,
+                                    xview: xview.clone(),
+                                }
+                            }
+                            Op::Accumulator { z, rop, ref view, dtype } => {
+                                Op::Accumulator { z: z + n, rop, view: view.clone(), dtype }
+                            }
+                            Op::Move { z, x, mop } => Op::Move { z: z + n, x: x + n, mop },
+                            Op::Unary { z, x, uop } => Op::Unary { z: z + n, x: x + n, uop },
+                            Op::Binary { z, x, y, bop } => {
+                                Op::Binary { z: z + n, x: x + n, y: y + n, bop }
+                            }
                             Op::Barrier { scope } => Op::Barrier { scope },
                         };
                         kernels[kidx].ops.push(new_op);
                     }
                 }
 
-                let y_tensors: BTreeMap<TensorId, TId> = kernel_tensors[kidy]
-                    .iter()
-                    .map(|(t, id)| (*t, id + n))
-                    .collect();
+                let y_tensors: BTreeMap<TensorId, TId> =
+                    kernel_tensors[kidy].iter().map(|(t, id)| (*t, id + n)).collect();
                 kernel_tensors[kidx].extend(y_tensors);
 
                 kernels[kidx].max_id = kernels[kidx].max_id + kernels[kidy].max_id + 1;
                 let z = kernels[kidx].max_id;
-                kernels[kidx].ops.push(Op::Binary {
-                    z,
-                    x: xt,
-                    y: yt + n,
-                    bop,
-                });
+                kernels[kidx].ops.push(Op::Binary { z, x: xt, y: yt + n, bop });
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
                     if *rc == 0 {
@@ -363,7 +335,7 @@ pub(super) fn realize_graph(
             kernel_tensors[kidx].insert(nid, id);
         }
 
-        for kid in [kidx, kidy] {
+        for kid in [kidy, kidx] {
             if kid != KernelId::MAX
                 && !kernels[kid].ops.is_empty()
                 && kernel_outputs[kid].is_empty()
@@ -404,13 +376,8 @@ pub(super) fn realize_graph(
                                         * graph.dtype(tensor_id).byte_size(),
                                 )
                                 .unwrap();
-                            tensor_buffer_map.insert(
-                                tensor_id,
-                                BufferId {
-                                    memory_pool_id,
-                                    buffer_id,
-                                },
-                            );
+                            tensor_buffer_map
+                                .insert(tensor_id, BufferId { memory_pool_id, buffer_id });
                             buffer_id
                         }
                     })

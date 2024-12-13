@@ -1,1 +1,10 @@
 max_width = 100
+chain_width = 100
+comment_width = 100
+condense_wildcard_suffixes = true
+edition = "2024"
+fn_single_line = true
+overflow_delimited_expr = true
+struct_lit_width = 80
+struct_variant_width = 80
+single_line_let_else_max_width = 100
