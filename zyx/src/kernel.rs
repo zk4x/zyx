@@ -4,7 +4,17 @@ use std::{
 };
 
 use crate::{
-    dtype::Constant, ir::Scope, node::{BOp, ROp, UOp}, shape::{Axis, Dimension}, tensor::TensorId, view::View, DType
+    backend::{BufferId, Device, MemoryPool},
+    dtype::Constant,
+    graph::Graph,
+    ir::Scope,
+    node::{BOp, ROp, UOp},
+    optimizer::Optimizer,
+    shape::{Axis, Dimension},
+    slab::Id,
+    tensor::TensorId,
+    view::View,
+    DType, DebugMask, ZyxError,
 };
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -12,10 +22,10 @@ use crate::{
 pub(super) struct Kernel {
     pub(super) ops: Vec<Op>,
     // Mapind from tensors ids to load and store ids
-    tensors: BTreeMap<TensorId, TId>,
+    pub(super) tensors: BTreeMap<TensorId, TId>,
     // Outputs of the kernel that are unused (not stored yet)
-    outputs: BTreeMap<TensorId, TId>,
-    max_id: TId,
+    pub(super) outputs: BTreeMap<TensorId, TId>,
+    pub(super) max_id: TId,
 }
 
 // Tensor id in a kernel
@@ -25,61 +35,20 @@ pub(super) type TId = u16;
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum Op {
-    Loop {
-        axis: Axis,
-        len: Dimension,
-    },
+    Loop { axis: Axis, len: Dimension },
     // End the latest loop
     EndLoop,
-    Const {
-        z: TId,
-        value: Constant,
-        view: View,
-    },
-    Load {
-        z: TId,
-        zscope: Scope,
-        zview: View,
-        xscope: Scope,
-        xview: View,
-        xdtype: DType,
-    },
-    Store {
-        z: TId,
-        zscope: Scope,
-        zview: View,
-        zdtype: DType,
-        xscope: Scope,
-        xview: View,
-    },
-    Accumulator {
-        z: TId,
-        rop: ROp,
-        view: View,
-        dtype: DType,
-    },
+    Const { z: TId, value: Constant, view: View },
+    Load { z: TId, zscope: Scope, zview: View, xscope: Scope, xview: View, xdtype: DType },
+    Store { z: TId, zscope: Scope, zview: View, zdtype: DType, xscope: Scope, xview: View },
+    Accumulator { z: TId, rop: ROp, view: View, dtype: DType },
     // Move is noop, just a marker for easy debugging
     // and to keep track of tensor ids
-    Move {
-        z: TId,
-        x: TId,
-        mop: MOp,
-    },
-    Unary {
-        z: TId,
-        x: TId,
-        uop: UOp,
-    },
-    Binary {
-        z: TId,
-        x: TId,
-        y: TId,
-        bop: BOp,
-    },
+    Move { z: TId, x: TId, mop: MOp },
+    Unary { z: TId, x: TId, uop: UOp },
+    Binary { z: TId, x: TId, y: TId, bop: BOp },
     // Synchronization for local and global memory
-    Barrier {
-        scope: Scope,
-    },
+    Barrier { scope: Scope },
 }
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -95,21 +64,14 @@ impl Kernel {
     pub(super) fn constant(nid: TensorId, value: Constant) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         ops.push(Op::Loop { axis: 0, len: 1 });
-        ops.push(Op::Const {
-            z: 0,
-            value,
-            view: View::contiguous(&[1]),
-        });
+        ops.push(Op::Const { z: 0, value, view: View::contiguous(&[1]) });
         Kernel { max_id: 0, ops, tensors: BTreeMap::new(), outputs: BTreeMap::from([(nid, 0)]) }
     }
 
     pub(super) fn leaf(nid: TensorId, shape: &[usize], dtype: DType) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         for (axis, dimension) in shape.iter().copied().enumerate() {
-            ops.push(Op::Loop {
-                axis,
-                len: dimension,
-            });
+            ops.push(Op::Loop { axis, len: dimension });
         }
         ops.push(Op::Load {
             z: 0,
@@ -123,27 +85,8 @@ impl Kernel {
         Kernel { max_id: 0, ops, outputs: tensors.clone(), tensors }
     }
 
-    pub(super) fn store(&mut self, z: TId, zview: View, zdtype: DType) {
-        if let Some(&Op::Store {
-            z: nz,
-            zview: ref nzview,
-            ..
-        }) = self.ops.last()
-        {
-            if z == nz && &zview == nzview {
-                return;
-            }
-        }
-        debug_assert!(zview.numel() < 1024 * 1024 * 1024, "Too big store.");
-        let store_op = Op::Store {
-            z,
-            zview,
-            zscope: Scope::Global,
-            zdtype,
-            xscope: Scope::Register,
-            xview: View::none(),
-        };
-        self.ops.push(store_op);
+    pub(super) fn get_tensor_id(&self, tid: TId) -> TensorId {
+        *self.tensors.iter().find(|(_, tidx)| **tidx == tid).unwrap().0
     }
 
     pub(super) fn shape(&self) -> Vec<usize> {
@@ -299,13 +242,7 @@ impl Kernel {
         //self.debug();
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
-        let Op::Loop {
-            axis,
-            len: dimension,
-        } = &mut self.ops[op_id]
-        else {
-            unreachable!()
-        };
+        let Op::Loop { axis, len: dimension } = &mut self.ops[op_id] else { unreachable!() };
         *dimension = dimensions[0];
         let new_dim_count = dimensions.len() - 1;
         let axis = *axis;
@@ -314,13 +251,7 @@ impl Kernel {
         for dim in &dimensions[1..] {
             id += 1;
             temp_axis += 1;
-            self.ops.insert(
-                id,
-                Op::Loop {
-                    axis: temp_axis,
-                    len: *dim,
-                },
-            );
+            self.ops.insert(id, Op::Loop { axis: temp_axis, len: *dim });
         }
         let mut num_loops = 0;
         // Update loops, loads and stores
@@ -382,11 +313,7 @@ impl Kernel {
     }
 
     pub(super) fn expand(&mut self, shape: &[usize]) -> bool {
-        if self
-            .ops
-            .iter()
-            .any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
-        {
+        if self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. })) {
             return false;
         }
         //println!("Expanding");
@@ -404,10 +331,7 @@ impl Kernel {
         let mut done_expanding = BTreeSet::new();
         for op in self.ops.iter_mut().rev() {
             match op {
-                Op::Loop {
-                    axis,
-                    len: dimension,
-                } => {
+                Op::Loop { axis, len: dimension } => {
                     if expand_axes.contains(axis) && done_expanding.insert(*axis) {
                         assert_eq!(*dimension, 1);
                         *dimension = shape[*axis];
@@ -457,11 +381,7 @@ impl Kernel {
                         // and if and how those loops are permuted
                         todo!()
                     } else {
-                        axes[..=last_axis]
-                            .iter()
-                            .copied()
-                            .chain(last_axis + 1..n)
-                            .collect()
+                        axes[..=last_axis].iter().copied().chain(last_axis + 1..n).collect()
                     };
                     view.permute(&permute_axes);
                 }
@@ -489,9 +409,7 @@ impl Kernel {
         // Get which axes are padded
         let mut padded_axes = BTreeMap::new();
         for (op, &p) in self.ops[..rank].iter().rev().zip(padding) {
-            let &Op::Loop { axis, .. } = op else {
-                unreachable!()
-            };
+            let &Op::Loop { axis, .. } = op else { unreachable!() };
             padded_axes.insert(axis, p);
         }
         // Apply padding
@@ -532,10 +450,8 @@ impl Kernel {
         dtype: DType,
         rop: ROp,
     ) {
-        let permute_axes: Vec<usize> = (0..shape.len())
-            .filter(|a| !axes.contains(a))
-            .chain(axes.iter().copied())
-            .collect();
+        let permute_axes: Vec<usize> =
+            (0..shape.len()).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
         //println!("Permute axes in reduce: {permute_axes:?}");
         self.permute(&permute_axes);
 
@@ -562,12 +478,7 @@ impl Kernel {
         //println!("Acc id: {acc_id}");
         self.ops.insert(
             acc_id,
-            Op::Accumulator {
-                z: self.max_id,
-                rop,
-                view: View::none(),
-                dtype,
-            },
+            Op::Accumulator { z: self.max_id, rop, view: View::none(), dtype },
         );
         self.ops.push(Op::Binary {
             z: self.max_id,
@@ -608,6 +519,111 @@ impl Kernel {
         }
         self.ops.insert(op_id, Op::Loop { axis, len: 1 });
     }
+
+    /// Store is the only function that evaluates kernels, it just checks if outputs
+    /// are empty after store. Returns ids of evaluated tensors.
+    pub(super) fn store(
+        &mut self,
+        nid: TensorId,
+        graph: &Graph,
+        devices: &mut [Device],
+        memory_pools: &mut [MemoryPool],
+        tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
+        optimizer: &mut Optimizer,
+        search_iters: usize,
+        debug: DebugMask,
+    ) -> Result<Option<Vec<TensorId>>, ZyxError> {
+        let zview = View::contiguous(graph.shape(nid));
+        let zdtype = graph.dtype(nid);
+        let z = self.outputs[&nid];
+        if let Some(&Op::Store { z: nz, zview: ref nzview, .. }) = self.ops.last() {
+            if z == nz && &zview == nzview {
+                unreachable!();
+            }
+        }
+        debug_assert!(zview.numel() < 1024 * 1024 * 1024, "Too big store.");
+        let store_op = Op::Store {
+            z,
+            zview,
+            zscope: Scope::Global,
+            zdtype,
+            xscope: Scope::Register,
+            xview: View::none(),
+        };
+        self.ops.push(store_op);
+        self.tensors.insert(nid, self.outputs.remove(&nid).unwrap());
+
+        // Delete kernel and dispatch it to device
+        if self.outputs.is_empty() {
+            if debug.sched() {
+                println!();
+                println!("Kernel tensors: {:?}", self.tensors);
+                self.debug();
+            }
+
+            // Pick a device to run program
+            // Find in which memory pool are most of input tensors stored
+            let memory_pool_id = 0;
+            let memory_pool = &mut memory_pools[memory_pool_id as usize];
+
+            // Move all other tensors to that memory pool
+            // and finish queues with this kernel's inputs
+
+            // Get device which is associated with that memory pool
+            let device = &mut devices[0];
+
+            let buffer_ids: Vec<Id> = self
+                .tensors
+                .keys()
+                .map(|&tensor_id| {
+                    if let Some(BufferId { buffer_id, .. }) = tensor_buffer_map.get(&tensor_id) {
+                        *buffer_id
+                    } else {
+                        // Allocate bytes for outputs
+                        let buffer_id = memory_pool
+                            .allocate(
+                                graph.shape(tensor_id).iter().product::<usize>()
+                                    * graph.dtype(tensor_id).byte_size(),
+                            )
+                            .unwrap();
+                        tensor_buffer_map.insert(tensor_id, BufferId { memory_pool_id, buffer_id });
+                        buffer_id
+                    }
+                })
+                .collect();
+
+            if device.is_cached(self) {
+                device.launch(self, memory_pool, &buffer_ids)?;
+            } else {
+                let optimization = optimizer.search_optimization(
+                    self,
+                    device,
+                    memory_pool,
+                    search_iters,
+                    debug,
+                )?;
+                let optimized_kernel = self.optimize(optimization);
+                let ir_kernel = crate::ir::IRKernel::new(&optimized_kernel.ops, debug.asm());
+                device.compile(self.clone(), &ir_kernel, true)?;
+                device.launch(self, memory_pool, &buffer_ids)?;
+            }
+            // add load kernels for all outputs of this kernel
+            return Ok(Some(
+                self.ops
+                    .iter()
+                    .filter_map(|op| {
+                        if let Op::Store { z, .. } = op {
+                            Some(self.get_tensor_id(*z))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+            ));
+        } else {
+            return Ok(None);
+        }
+    }
 }
 
 impl std::fmt::Display for Op {
@@ -623,38 +639,16 @@ impl std::fmt::Display for Op {
             Op::Const { z, value, view } => f.write_fmt(format_args!(
                 "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
             )),
-            Op::Load {
-                z,
-                zscope,
-                zview: _,
-                xscope,
-                xview,
-                xdtype,
-            } => f.write_fmt(format_args!(
+            Op::Load { z, zscope, zview: _, xscope, xview, xdtype } => f.write_fmt(format_args!(
                 "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- [{xscope:?}, {xdtype}], {xview}"
             )),
-            Op::Store {
-                z,
-                zview,
-                zscope,
-                zdtype,
-                xscope,
-                xview: _,
-            } => f.write_fmt(format_args!(
+            Op::Store { z, zview, zscope, zdtype, xscope, xview: _ } => f.write_fmt(format_args!(
                 "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
             )),
-            Op::Loop {
-                axis,
-                len: dimension,
-            } => f.write_fmt(format_args!(
+            Op::Loop { axis, len: dimension } => f.write_fmt(format_args!(
                 "{C_GREEN}Loop{C_RESET}        axis: {axis}, dimension: {dimension}"
             )),
-            Op::Accumulator {
-                z,
-                rop,
-                view,
-                dtype,
-            } => f.write_fmt(format_args!(
+            Op::Accumulator { z, rop, view, dtype } => f.write_fmt(format_args!(
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, shape: {:?}, {dtype}",
                 view.shape()
             )),
@@ -762,10 +756,7 @@ fn get_reshape_pattern(
 fn shape_to_loops(shape: &[usize]) -> Vec<Op> {
     let mut res = Vec::with_capacity(20);
     for (axis, dimension) in shape.iter().copied().enumerate() {
-        res.push(Op::Loop {
-            axis,
-            len: dimension,
-        });
+        res.push(Op::Loop { axis, len: dimension });
     }
     res
 }

@@ -95,12 +95,12 @@ use std::{
 pub type Id = u32;
 
 #[derive(Debug)]
-pub struct IndexMap<T> {
+pub struct Slab<T> {
     values: Vec<MaybeUninit<T>>,
     empty: BTreeSet<Id>,
 }
 
-impl<T> Drop for IndexMap<T> {
+impl<T> Drop for Slab<T> {
     fn drop(&mut self) {
         let mut id = 0;
         #[allow(clippy::explicit_counter_loop)]
@@ -113,19 +113,13 @@ impl<T> Drop for IndexMap<T> {
     }
 }
 
-impl<T> IndexMap<T> {
+impl<T> Slab<T> {
     pub(crate) const fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            empty: BTreeSet::new(),
-        }
+        Self { values: Vec::new(), empty: BTreeSet::new() }
     }
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(capacity),
-            empty: BTreeSet::new(),
-        }
+        Self { values: Vec::with_capacity(capacity), empty: BTreeSet::new() }
     }
 
     pub(crate) fn push(&mut self, value: T) -> Id {
@@ -187,7 +181,7 @@ impl<T> IndexMap<T> {
     }
 }
 
-impl<T> Index<Id> for IndexMap<T> {
+impl<T> Index<Id> for Slab<T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
         assert!(!self.empty.contains(&index));
@@ -195,14 +189,14 @@ impl<T> Index<Id> for IndexMap<T> {
     }
 }
 
-impl<T> IndexMut<Id> for IndexMap<T> {
+impl<T> IndexMut<Id> for Slab<T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
         assert!(!self.empty.contains(&index));
         unsafe { self.values[index as usize].assume_init_mut() }
     }
 }
 
-impl<T> FromIterator<(Id, T)> for IndexMap<T> {
+impl<T> FromIterator<(Id, T)> for Slab<T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> Self {
         let mut values = Vec::new();
         let mut empty = BTreeSet::new();
@@ -220,7 +214,7 @@ impl<T> FromIterator<(Id, T)> for IndexMap<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for IndexMap<T> {
+impl<T: PartialEq> PartialEq for Slab<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             return false;
@@ -229,9 +223,9 @@ impl<T: PartialEq> PartialEq for IndexMap<T> {
     }
 }
 
-impl<T: Eq> Eq for IndexMap<T> {}
+impl<T: Eq> Eq for Slab<T> {}
 
-impl<T: PartialOrd> PartialOrd for IndexMap<T> {
+impl<T: PartialOrd> PartialOrd for Slab<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let mut iter = self.iter().zip(other.iter());
         // TODO perhaps we can do the comparison over more than one element if the first elements
@@ -244,7 +238,7 @@ impl<T: PartialOrd> PartialOrd for IndexMap<T> {
     }
 }
 
-impl<T: Ord> Ord for IndexMap<T> {
+impl<T: Ord> Ord for Slab<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let mut iter = self.iter().zip(other.iter());
         if let Some((x, y)) = iter.next() {
@@ -255,7 +249,7 @@ impl<T: Ord> Ord for IndexMap<T> {
     }
 }
 
-impl<T: Clone> Clone for IndexMap<T> {
+impl<T: Clone> Clone for Slab<T> {
     fn clone(&self) -> Self {
         Self {
             values: self

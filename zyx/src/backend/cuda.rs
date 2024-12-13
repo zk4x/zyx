@@ -13,10 +13,10 @@ use libloading::Library;
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
-use crate::index_map::{Id, IndexMap};
 use crate::ir::IRKernel;
 use crate::ir::{IROp, Reg, Scope};
 use crate::node::{BOp, UOp};
+use crate::slab::{Id, Slab};
 use crate::DType;
 
 /// CUDA configuration
@@ -137,9 +137,7 @@ pub(super) fn initialize_devices(
     let _ = config;
 
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
-    let cuda = cuda_paths
-        .iter()
-        .find_map(|path| unsafe { Library::new(path) }.ok());
+    let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         return Err(CUDAError {
             info: String::from("CUDA runtime not found."),
@@ -201,12 +199,7 @@ pub(super) fn initialize_devices(
         });
     }
     let device_ids: Vec<i32> = (0..num_devices)
-        .filter(|id| {
-            config
-                .device_ids
-                .as_ref()
-                .map_or(true, |ids| ids.contains(id))
-        })
+        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
         .collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
@@ -277,12 +270,7 @@ pub(super) fn initialize_devices(
             let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check("") else {
                 continue;
             };
-            queues.push(CUDAQueue {
-                stream,
-                load: 0,
-                cuLaunchKernel,
-                cuStreamSynchronize,
-            });
+            queues.push(CUDAQueue { stream, load: 0, cuLaunchKernel, cuStreamSynchronize });
         }
         devices.push((
             CUDADevice {
@@ -386,11 +374,7 @@ impl CUDAMemoryPool {
         let mut ptr = u64::try_from(self.device).unwrap();
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
-        Ok(CUDABuffer {
-            ptr,
-            bytes,
-            context: self.context,
-        })
+        Ok(CUDABuffer { ptr, bytes, context: self.context })
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -474,7 +458,7 @@ impl CUDADevice {
     ) -> Result<CUDAProgram, CUDAError> {
         let (global_work_size, local_work_size, name, ptx_vec) =
             self.compile_cuda(kernel, debug_asm)?;
-            //self.compile_ptx(kernel, debug_asm)?;
+        //self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
         unsafe {
@@ -710,9 +694,7 @@ impl CUDADevice {
             "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
         ];
-        let cudartc = cudartc_paths
-            .iter()
-            .find_map(|path| unsafe { Library::new(path) }.ok());
+        let cudartc = cudartc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
         let Some(cudartc) = cudartc else {
             return Err(CUDAError {
                 info: "CUDA runtime not found.".into(),
@@ -761,9 +743,12 @@ impl CUDADevice {
             "--gpu-architecture=compute_{}{}\0",
             self.compute_capability[0], self.compute_capability[1]
         );
-        let opts = [df.as_ptr().cast(), "-I/usr/local/cuda-12.6/targets/x86_64-linux/include\0".as_ptr().cast()];
-        if let Err(e) = unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }
-            .check("nvrtcCompileProgram")
+        let opts = [
+            df.as_ptr().cast(),
+            "-I/usr/local/cuda-12.6/targets/x86_64-linux/include\0".as_ptr().cast(),
+        ];
+        if let Err(e) =
+            unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }.check("nvrtcCompileProgram")
         {
             println!("CUDA compilation error {e:?}");
             let mut program_log_size: usize = 0;
@@ -787,7 +772,11 @@ impl CUDADevice {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    fn compile_ptx(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), CUDAError> {
+    fn compile_ptx(
+        &mut self,
+        kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), CUDAError> {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
@@ -961,7 +950,12 @@ impl CUDADevice {
         if debug_asm {
             println!("Compiling kernel {name}, PTX source:\n{source}");
         }
-        Ok((global_work_size, local_work_size, name, source.bytes().collect()))
+        Ok((
+            global_work_size,
+            local_work_size,
+            name,
+            source.bytes().collect(),
+        ))
     }
 }
 
@@ -969,7 +963,7 @@ impl CUDAQueue {
     pub(super) fn launch(
         &mut self,
         program: &mut CUDAProgram,
-        buffers: &mut IndexMap<CUDABuffer>,
+        buffers: &mut Slab<CUDABuffer>,
         args: &[Id],
     ) -> Result<CUDAEvent, CUDAError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
@@ -1014,10 +1008,7 @@ impl CUDAStatus {
         if self == Self::CUDA_SUCCESS {
             Ok(())
         } else {
-            Err(CUDAError {
-                info: info.into(),
-                status: self,
-            })
+            Err(CUDAError { info: info.into(), status: self })
         }
     }
 }
@@ -1360,10 +1351,7 @@ impl nvrtcResult {
         if self == Self::NVRTC_SUCCESS {
             Ok(())
         } else {
-            Err(CUDAError {
-                info: info.into(),
-                status: CUDAStatus::CUDA_ERROR_INVALID_SOURCE,
-            })
+            Err(CUDAError { info: info.into(), status: CUDAStatus::CUDA_ERROR_INVALID_SOURCE })
         }
     }
 }

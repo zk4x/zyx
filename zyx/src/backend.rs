@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 
 use super::{ir::IRKernel, DeviceConfig, ZyxError};
 use crate::{
-    index_map::{Id, IndexMap},
     kernel::Kernel,
+    slab::{Id, Slab},
     Scalar,
 };
 use cuda::{CUDABuffer, CUDADevice, CUDAEvent, CUDAMemoryPool, CUDAProgram, CUDAQueue};
@@ -94,7 +94,7 @@ trait HQueue {
     fn launch(
         &mut self,
         program: &mut Self::Program,
-        buffers: &mut IndexMap<Self::Buffer>,
+        buffers: &mut Slab<Self::Buffer>,
         args: &[Id],
     ) -> Result<(), Self::Error>;
     fn sync(&mut self) -> Result<(), Self::Error>;
@@ -106,16 +106,16 @@ trait HQueue {
 pub enum MemoryPool {
     CUDA {
         memory_pool: CUDAMemoryPool,
-        buffers: IndexMap<CUDABuffer>,
+        buffers: Slab<CUDABuffer>,
         events: BTreeMap<Id, CUDAEvent>,
     },
     HIP {
         memory_pool: HIPMemoryPool,
-        buffers: IndexMap<HIPBuffer>,
+        buffers: Slab<HIPBuffer>,
     },
     OpenCL {
         memory_pool: OpenCLMemoryPool,
-        buffers: IndexMap<OpenCLBuffer>,
+        buffers: Slab<OpenCLBuffer>,
         // Buffers can have associated events that must be finished
         // before accessing given buffer
         events: BTreeMap<Id, OpenCLEvent>,
@@ -123,12 +123,12 @@ pub enum MemoryPool {
     #[cfg(feature = "vulkan")]
     Vulkan {
         memory_pool: VulkanMemoryPool,
-        buffers: IndexMap<VulkanBuffer>,
+        buffers: Slab<VulkanBuffer>,
     },
     #[cfg(feature = "wgsl")]
     WGSL {
         memory_pool: WGSLMemoryPool,
-        buffers: IndexMap<WGSLBuffer>,
+        buffers: Slab<WGSLBuffer>,
     },
 }
 
@@ -202,7 +202,7 @@ pub fn initialize_backends(
         let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::CUDA {
             memory_pool: m,
-            buffers: IndexMap::new(),
+            buffers: Slab::new(),
             events: BTreeMap::new(),
         }));
         devices.extend(devs.into_iter().map(|(device, queues)| Device::CUDA {
@@ -214,10 +214,9 @@ pub fn initialize_backends(
     }
     if let Ok((mem_pools, devs)) = hip::initialize_device(&device_config.hip, debug_dev) {
         let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::HIP {
-            memory_pool: m,
-            buffers: IndexMap::new(),
-        }));
+        memory_pools.extend(
+            mem_pools.into_iter().map(|m| MemoryPool::HIP { memory_pool: m, buffers: Slab::new() }),
+        );
         devices.extend(devs.into_iter().map(|(device, queues)| Device::HIP {
             memory_pool_id: device.memory_pool_id() + n,
             device,
@@ -229,7 +228,7 @@ pub fn initialize_backends(
         let n = u32::try_from(memory_pools.len()).unwrap();
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::OpenCL {
             memory_pool: m,
-            buffers: IndexMap::new(),
+            buffers: Slab::new(),
             events: BTreeMap::new(),
         }));
         devices.extend(devs.into_iter().map(|(device, queues)| Device::OpenCL {
@@ -242,28 +241,30 @@ pub fn initialize_backends(
     #[cfg(feature = "vulkan")]
     if let Ok((mem_pools, devs)) = vulkan::initialize_devices(&device_config.vulkan, debug_dev) {
         let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::Vulkan {
-            memory_pool: m,
-            buffers: IndexMap::new(),
-        }));
+        memory_pools.extend(
+            mem_pools
+                .into_iter()
+                .map(|m| MemoryPool::Vulkan { memory_pool: m, buffers: Slab::new() }),
+        );
         devices.extend(devs.into_iter().map(|(device, queues)| Device::Vulkan {
             memory_pool_id: device.memory_pool_id() + n,
             device,
-            programs: IndexMap::new(),
+            programs: Slab::new(),
             queues,
         }));
     }
     #[cfg(feature = "wgsl")]
     if let Ok((mem_pools, devs)) = wgsl::initialize_backend(&device_config.wgsl, debug_dev) {
         let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::WGSL {
-            memory_pool: m,
-            buffers: IndexMap::new(),
-        }));
+        memory_pools.extend(
+            mem_pools
+                .into_iter()
+                .map(|m| MemoryPool::WGSL { memory_pool: m, buffers: Slab::new() }),
+        );
         devices.extend(devs.into_iter().map(|(device, queues)| Device::WGSL {
             memory_pool_id: device.memory_pool_id() + n,
             device,
-            programs: IndexMap::new(),
+            programs: Slab::new(),
             queues,
         }));
     }
@@ -276,11 +277,7 @@ pub fn initialize_backends(
 impl MemoryPool {
     pub(super) fn deinitialize(self) -> Result<(), ZyxError> {
         match self {
-            MemoryPool::CUDA {
-                mut memory_pool,
-                mut buffers,
-                ..
-            } => {
+            MemoryPool::CUDA { mut memory_pool, mut buffers, .. } => {
                 let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
@@ -288,10 +285,7 @@ impl MemoryPool {
                 }
                 memory_pool.deinitialize()?;
             }
-            MemoryPool::HIP {
-                mut memory_pool,
-                mut buffers,
-            } => {
+            MemoryPool::HIP { mut memory_pool, mut buffers } => {
                 let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
@@ -299,11 +293,7 @@ impl MemoryPool {
                 }
                 memory_pool.deinitialize()?;
             }
-            MemoryPool::OpenCL {
-                mut memory_pool,
-                mut buffers,
-                ..
-            } => {
+            MemoryPool::OpenCL { mut memory_pool, mut buffers, .. } => {
                 let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
@@ -312,10 +302,7 @@ impl MemoryPool {
                 memory_pool.deinitialize()?;
             }
             #[cfg(feature = "vulkan")]
-            MemoryPool::Vulkan {
-                mut memory_pool,
-                mut buffers,
-            } => {
+            MemoryPool::Vulkan { mut memory_pool, mut buffers } => {
                 let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
@@ -324,10 +311,7 @@ impl MemoryPool {
                 memory_pool.deinitialize()?;
             }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL {
-                mut memory_pool,
-                mut buffers,
-            } => {
+            MemoryPool::WGSL { mut memory_pool, mut buffers } => {
                 let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
                     let buffer = buffers.remove(id).unwrap();
@@ -354,30 +338,19 @@ impl MemoryPool {
     // Allocates bytes on memory pool and returns buffer id
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<Id, ZyxError> {
         let id = match self {
-            MemoryPool::CUDA {
-                memory_pool,
-                buffers,
-                ..
-            } => buffers.push(memory_pool.allocate(bytes)?),
-            MemoryPool::HIP {
-                memory_pool,
-                buffers,
-            } => buffers.push(memory_pool.allocate(bytes)?),
-            MemoryPool::OpenCL {
-                memory_pool,
-                buffers,
-                ..
-            } => buffers.push(memory_pool.allocate(bytes)?),
+            MemoryPool::CUDA { memory_pool, buffers, .. } => {
+                buffers.push(memory_pool.allocate(bytes)?)
+            }
+            MemoryPool::HIP { memory_pool, buffers } => buffers.push(memory_pool.allocate(bytes)?),
+            MemoryPool::OpenCL { memory_pool, buffers, .. } => {
+                buffers.push(memory_pool.allocate(bytes)?)
+            }
             #[cfg(feature = "vulkan")]
-            MemoryPool::Vulkan {
-                memory_pool,
-                buffers,
-            } => buffers.push(memory_pool.allocate(bytes)?),
+            MemoryPool::Vulkan { memory_pool, buffers } => {
+                buffers.push(memory_pool.allocate(bytes)?)
+            }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL {
-                memory_pool,
-                buffers,
-            } => buffers.push(memory_pool.allocate(bytes)?),
+            MemoryPool::WGSL { memory_pool, buffers } => buffers.push(memory_pool.allocate(bytes)?),
         };
         //println!("Allocate {bytes} bytes into buffer id {id}");
         Ok(id)
@@ -386,42 +359,25 @@ impl MemoryPool {
     pub(super) fn deallocate(&mut self, buffer_id: Id) -> Result<(), ZyxError> {
         //println!("Deallocate buffer id {buffer_id}");
         match self {
-            MemoryPool::CUDA {
-                memory_pool,
-                buffers,
-                ..
-            } => {
+            MemoryPool::CUDA { memory_pool, buffers, .. } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::HIP {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::HIP { memory_pool, buffers } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
-            MemoryPool::OpenCL {
-                memory_pool,
-                buffers,
-                ..
-            } => {
+            MemoryPool::OpenCL { memory_pool, buffers, .. } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
             #[cfg(feature = "vulkan")]
-            MemoryPool::Vulkan {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::Vulkan { memory_pool, buffers } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::WGSL { memory_pool, buffers } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
             }
@@ -436,32 +392,21 @@ impl MemoryPool {
     ) -> Result<(), ZyxError> {
         let bytes = data.len() * T::byte_size();
         match self {
-            MemoryPool::CUDA {
-                memory_pool,
-                buffers,
-                ..
-            } => {
+            MemoryPool::CUDA { memory_pool, buffers, .. } => {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
                     &buffers[buffer_id],
                 )?;
             }
-            MemoryPool::HIP {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::HIP { memory_pool, buffers } => {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
                     &buffers[buffer_id],
                 )?;
             }
-            MemoryPool::OpenCL {
-                memory_pool,
-                buffers,
-                ..
-            } => {
+            MemoryPool::OpenCL { memory_pool, buffers, .. } => {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
@@ -469,10 +414,7 @@ impl MemoryPool {
                 )?;
             }
             #[cfg(feature = "vulkan")]
-            MemoryPool::Vulkan {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::Vulkan { memory_pool, buffers } => {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
@@ -480,10 +422,7 @@ impl MemoryPool {
                 )?;
             }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::WGSL { memory_pool, buffers } => {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
                     unsafe { std::slice::from_raw_parts(ptr, bytes) },
@@ -503,44 +442,27 @@ impl MemoryPool {
             std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size())
         };
         match self {
-            MemoryPool::CUDA {
-                memory_pool,
-                buffers,
-                events,
-            } => {
+            MemoryPool::CUDA { memory_pool, buffers, events } => {
                 if let Some(event) = events.remove(&buffer_id) {
                     event.finish()?;
                 }
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
-            MemoryPool::HIP {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::HIP { memory_pool, buffers } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
-            MemoryPool::OpenCL {
-                memory_pool,
-                buffers,
-                events
-            } => {
+            MemoryPool::OpenCL { memory_pool, buffers, events } => {
                 if let Some(event) = events.remove(&buffer_id) {
                     event.finish()?;
                 }
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
             #[cfg(feature = "vulkan")]
-            MemoryPool::Vulkan {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::Vulkan { memory_pool, buffers } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
             #[cfg(feature = "wgsl")]
-            MemoryPool::WGSL {
-                memory_pool,
-                buffers,
-            } => {
+            MemoryPool::WGSL { memory_pool, buffers } => {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
         }
@@ -641,12 +563,7 @@ impl MemoryPool {
 impl Device {
     pub(super) fn deinitialize(self) -> Result<(), ZyxError> {
         match self {
-            Device::CUDA {
-                device,
-                mut queues,
-                mut kernels,
-                ..
-            } => {
+            Device::CUDA { device, mut queues, mut kernels, .. } => {
                 while let Some((_, program)) = kernels.pop_last() {
                     device.release_program(program)?;
                 }
@@ -655,12 +572,7 @@ impl Device {
                 }
                 device.deinitialize()?;
             }
-            Device::HIP {
-                device,
-                mut queues,
-                mut kernels,
-                ..
-            } => {
+            Device::HIP { device, mut queues, mut kernels, .. } => {
                 while let Some((_, program)) = kernels.pop_last() {
                     device.release_program(program)?;
                 }
@@ -669,12 +581,7 @@ impl Device {
                 }
                 device.deinitialize()?;
             }
-            Device::OpenCL {
-                device,
-                mut queues,
-                mut kernels,
-                ..
-            } => {
+            Device::OpenCL { device, mut queues, mut kernels, .. } => {
                 while let Some((_, program)) = kernels.pop_last() {
                     device.release_program(program)?;
                 }
@@ -684,12 +591,7 @@ impl Device {
                 device.deinitialize()?;
             }
             #[cfg(feature = "vulkan")]
-            Device::Vulkan {
-                device,
-                mut programs,
-                mut queues,
-                ..
-            } => {
+            Device::Vulkan { device, mut programs, mut queues, .. } => {
                 let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
@@ -701,12 +603,7 @@ impl Device {
                 device.deinitialize()?;
             }
             #[cfg(feature = "wgsl")]
-            Device::WGSL {
-                device,
-                mut programs,
-                mut queues,
-                ..
-            } => {
+            Device::WGSL { device, mut programs, mut queues, .. } => {
                 let ids: Vec<Id> = programs.ids().collect();
                 for id in ids {
                     let program = programs.remove(id).unwrap();
@@ -767,23 +664,23 @@ impl Device {
     pub(super) fn release_program(&mut self, kernel: &Kernel) -> Result<(), ZyxError> {
         //println!("Release program {program_id}");
         match self {
-            Device::CUDA {
-                device, kernels, ..
-            } => device.release_program(kernels.remove(kernel).unwrap())?,
-            Device::HIP {
-                device, kernels, ..
-            } => device.release_program(kernels.remove(kernel).unwrap())?,
-            Device::OpenCL {
-                device, kernels, ..
-            } => device.release_program(kernels.remove(kernel).unwrap())?,
+            Device::CUDA { device, kernels, .. } => {
+                device.release_program(kernels.remove(kernel).unwrap())?
+            }
+            Device::HIP { device, kernels, .. } => {
+                device.release_program(kernels.remove(kernel).unwrap())?
+            }
+            Device::OpenCL { device, kernels, .. } => {
+                device.release_program(kernels.remove(kernel).unwrap())?
+            }
             #[cfg(feature = "vulkan")]
-            Device::Vulkan {
-                device, programs, ..
-            } => device.release_program(programs.remove(program_id).unwrap())?,
+            Device::Vulkan { device, programs, .. } => {
+                device.release_program(programs.remove(program_id).unwrap())?
+            }
             #[cfg(feature = "wgsl")]
-            Device::WGSL {
-                device, programs, ..
-            } => device.release_program(programs.remove(program_id).unwrap())?,
+            Device::WGSL { device, programs, .. } => {
+                device.release_program(programs.remove(program_id).unwrap())?
+            }
         }
         Ok(())
     }
@@ -795,29 +692,23 @@ impl Device {
         debug_asm: bool,
     ) -> Result<(), ZyxError> {
         match self {
-            Device::CUDA {
-                device, kernels, ..
-            } => {
+            Device::CUDA { device, kernels, .. } => {
                 kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
             }
-            Device::HIP {
-                device, kernels, ..
-            } => {
+            Device::HIP { device, kernels, .. } => {
                 kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
             }
-            Device::OpenCL {
-                device, kernels, ..
-            } => {
+            Device::OpenCL { device, kernels, .. } => {
                 kernels.insert(kernel, device.compile(ir_kernel, debug_asm)?);
             }
             #[cfg(feature = "vulkan")]
-            Device::Vulkan {
-                device, programs, ..
-            } => programs.push(device.compile(ir_kernel, debug_asm)?),
+            Device::Vulkan { device, programs, .. } => {
+                programs.push(device.compile(ir_kernel, debug_asm)?)
+            }
             #[cfg(feature = "wgsl")]
-            Device::WGSL {
-                device, programs, ..
-            } => programs.push(device.compile(ir_kernel, debug_asm)?),
+            Device::WGSL { device, programs, .. } => {
+                programs.push(device.compile(ir_kernel, debug_asm)?)
+            }
         };
         Ok(())
     }
@@ -841,57 +732,40 @@ impl Device {
         buffer_ids: &[Id],
     ) -> Result<Event, ZyxError> {
         Ok(match self {
-            Device::CUDA {
-                kernels, queues, ..
-            } => {
+            Device::CUDA { kernels, queues, .. } => {
                 let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
                 if queue.load() > 20 {
                     queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::CUDA { buffers, .. } = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::CUDA { buffers, .. } = memory_pool else { unreachable!() };
                 let event = queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
                 Event::CUDA(event)
             }
-            Device::HIP {
-                kernels, queues, ..
-            } => {
+            Device::HIP { kernels, queues, .. } => {
                 let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
                 if queue.load() > 20 {
                     queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::HIP { buffers, .. } = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::HIP { buffers, .. } = memory_pool else { unreachable!() };
                 queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
                 Event::HIP
             }
-            Device::OpenCL {
-                kernels, queues, ..
-            } => {
+            Device::OpenCL { kernels, queues, .. } => {
                 let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
                 if queue.load() > 20 {
                     queue.sync()?;
                     queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                 }
-                let MemoryPool::OpenCL { buffers, .. } = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::OpenCL { buffers, .. } = memory_pool else { unreachable!() };
                 let event = queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
                 Event::OpenCL(event)
             }
             #[cfg(feature = "vulkan")]
-            Device::Vulkan {
-                programs, queues, ..
-            } => {
-                let (mut id, mut queue) = queues
-                    .iter_mut()
-                    .enumerate()
-                    .min_by_key(|(_, queue)| queue.load())
-                    .unwrap();
+            Device::Vulkan { programs, queues, .. } => {
+                let (mut id, mut queue) =
+                    queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
                 if queue.load() > 10 {
                     (id, queue) = queues
                         .iter_mut()
@@ -900,20 +774,13 @@ impl Device {
                         .unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::Vulkan { buffers, .. } = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::Vulkan { buffers, .. } = memory_pool else { unreachable!() };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
             }
             #[cfg(feature = "wgsl")]
-            Device::WGSL {
-                programs, queues, ..
-            } => {
-                let (mut id, mut queue) = queues
-                    .iter_mut()
-                    .enumerate()
-                    .min_by_key(|(_, queue)| queue.load())
-                    .unwrap();
+            Device::WGSL { programs, queues, .. } => {
+                let (mut id, mut queue) =
+                    queues.iter_mut().enumerate().min_by_key(|(_, queue)| queue.load()).unwrap();
                 if queue.load() > 10 {
                     (id, queue) = queues
                         .iter_mut()
@@ -922,9 +789,7 @@ impl Device {
                         .unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::WGSL { buffers, .. } = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::WGSL { buffers, .. } = memory_pool else { unreachable!() };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
             }
         })

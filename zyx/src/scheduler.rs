@@ -3,18 +3,16 @@
 use crate::{
     backend::{BufferId, Device, MemoryPool},
     graph::Graph,
-    index_map::{Id, IndexMap},
-    ir::IRKernel,
     kernel::{Kernel, MOp, Op, TId},
     node::Node,
     optimizer::Optimizer,
+    slab::{Id, Slab},
     tensor::TensorId,
-    view::View,
     DebugMask, ZyxError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-type KernelId = usize;
+type KernelId = Id;
 
 /// Convert graph into kernels and schedule them to devices.
 /// This function needs to be optimized a lot, because it always needs to run faster than async launched kernels.
@@ -25,10 +23,10 @@ pub(super) fn realize_graph(
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
     devices: &mut [Device],
-    memory_pools: &mut [MemoryPool],
-    tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
+    mps: &mut [MemoryPool],
+    tbm: &mut BTreeMap<TensorId, BufferId>,
     optimizer: &mut Optimizer,
-    search_iters: usize,
+    searches: usize,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
     // TODO perhaps we can get graph rcs from runtime realize frunction instead of this...
@@ -36,7 +34,7 @@ pub(super) fn realize_graph(
     let mut params = to_eval.clone();
     while let Some(param) = params.pop_last() {
         graph_rcs.entry(param).and_modify(|rc| *rc += 1).or_insert_with(|| {
-            if !tensor_buffer_map.contains_key(&param) {
+            if !tbm.contains_key(&param) {
                 params.extend(graph[param].parameters());
             }
             1
@@ -44,7 +42,7 @@ pub(super) fn realize_graph(
     }
 
     // Unfinished kernels represented by ops
-    let mut kernels: IndexMap<Kernel> = IndexMap::with_capacity(100);
+    let mut kernels: Slab<Kernel> = Slab::with_capacity(100);
 
     println!("To eval: {:?}", to_eval);
 
@@ -58,115 +56,112 @@ pub(super) fn realize_graph(
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
-
-        let (kidx, kidy) = match graph[nid] {
+        let kid = match graph[nid] {
             // All ops are merged except
             // Pad is not merged of kernel contains store
             // Reshape is not merged if reshaping reduce loops
             // Expand is not merged if expanding reduce kernel or kernel contains store
             // These rules will be later loosened using some heuristic
-            Node::Const { value } => (kernels.push(Kernel::constant(nid, value)), KernelId::MAX),
-            Node::Leaf => (kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid))), KernelId::MAX),
+            Node::Const { value } => kernels.push(Kernel::constant(nid, value)),
+            Node::Leaf => kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid))),
+            // Expand, reshape and pad are not always mergeable and thus can finish kernels.
+            // All other ops are always mergeable.
             Node::Expand { x } => {
-                let (xt, kid) = get_kernel(x, &kernel_outputs);
-
+                let (mut xt, mut kid) = get_kernel(x, &kernels);
                 let shape = graph.shape(nid);
-                if kernels[kid].expand(shape) {
-                    kernels[kid].max_id += 1;
-                    let z = kernels[kid].max_id;
-                    kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Expa });
-                    if let Some(rc) = graph_rcs.get_mut(&x) {
-                        *rc -= 1;
-                        if *rc == 0 {
-                            graph_rcs.remove(&x);
-                            kernel_outputs[kid].remove(&x).unwrap();
-                        }
-                    }
-                    kernel_outputs[kid].insert(nid, z);
-                    (kid, KernelId::MAX)
-                } else {
+                if !kernels[kid].expand(shape) {
                     // if it is not expandable, we need to store it and create new kernel
                     let dtype = graph.dtype(x);
-                    kernels[kid].store(xt, View::contiguous(graph.shape(x)), dtype);
-                    kernel_tensors[kid].insert(x, kernel_outputs[kid].remove(&x).unwrap());
-
-                    let new_kid = free_kernels.pop_first().unwrap();
-                    kernels[new_kid] = Kernel::leaf(shape, dtype);
-
-                    assert!(kernels[new_kid].expand(shape));
-                    let z = kernels[new_kid].max_id;
-                    kernels[kid].max_id += 1;
-                    kernels[kid].ops.push(Op::Move { z, x: 0, mop: MOp::Expa });
-
-                    // new kernel now has both x and nid outputs
-                    kernel_tensors[new_kid] = BTreeMap::from([(x, 0)]);
-                    kernel_outputs[new_kid] = BTreeMap::from([(x, 0), (nid, 0)]);
-
-                    if let Some(rc) = graph_rcs.get_mut(&x) {
-                        *rc -= 1;
-                        if *rc == 0 {
-                            graph_rcs.remove(&x);
-                            kernel_outputs[new_kid].remove(&x).unwrap();
+                    if let Some(tensors) = kernels[kid]
+                        .store(nid, graph, devices, mps, tbm, optimizer, searches, debug)?
+                    {
+                        kernels.remove(kid).unwrap();
+                        for tid in tensors {
+                            kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
                         }
                     }
-                    (new_kid, kid)
+                    kid = kernels.push(Kernel::leaf(nid, shape, dtype));
+                    assert!(kernels[kid].expand(shape));
+                    xt = 0;
                 }
+                let z = kernels[kid].max_id;
+                kernels[kid].max_id += 1;
+                kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Expa });
+                kernels[kid].outputs.insert(nid, z);
+                if let Some(rc) = graph_rcs.get_mut(&x) {
+                    *rc -= 1;
+                    if *rc == 0 {
+                        graph_rcs.remove(&x);
+                        kernels[kid].outputs.remove(&x).unwrap();
+                    }
+                }
+                kid
             }
             Node::Reshape { x } => {
-                let (xt, mut kid) = get_kernel(x, &kernel_outputs);
-
+                let (mut xt, mut kid) = get_kernel(x, &kernels);
                 let shape = graph.shape(nid);
-                //println!("Reshape node from {:?} to {:?}", graph.shape(x), shape);
                 if !kernels[kid].reshape(shape) {
-                    //println!("Could not be reshaped, storing");
-                    // else create new kernel after storing results of previous kernel
+                    // if it is not expandable, we need to store it and create new kernel
                     let dtype = graph.dtype(x);
-                    kernels[kid].store(xt, View::contiguous(graph.shape(x)), dtype);
-                    kid = free_kernels.pop_first().unwrap();
-                    kernels[kid] = Kernel::leaf(shape, dtype);
+                    if let Some(tensors) = kernels[kid]
+                        .store(nid, graph, devices, mps, tbm, optimizer, searches, debug)?
+                    {
+                        kernels.remove(kid).unwrap();
+                        for tid in tensors {
+                            kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
+                        }
+                    }
+                    kid = kernels.push(Kernel::leaf(nid, shape, dtype));
+                    assert!(kernels[kid].reshape(shape));
+                    xt = 0;
                 }
-
-                kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
+                kernels[kid].max_id += 1;
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Resh });
+                kernels[kid].outputs.insert(nid, z);
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&x);
-                        kernel_outputs[kid].remove(&x).unwrap();
+                        kernels[kid].outputs.remove(&x).unwrap();
                     }
                 }
-                kernel_outputs[kid].insert(nid, z);
-                println!("After reshape outputs: {:?}", kernel_outputs[kid]);
-                (kid, KernelId::MAX)
+                kid
             }
             Node::Pad { x } => {
-                let (xt, mut kid) = get_kernel(x, &kernel_outputs);
-
+                let (mut xt, mut kid) = get_kernel(x, &kernels);
+                let shape = graph.shape(nid);
                 let padding = graph.padding(nid);
                 if !kernels[kid].pad(padding) {
+                    // if it is not expandable, we need to store it and create new kernel
                     let dtype = graph.dtype(x);
-                    kernels[kid].store(xt, View::contiguous(graph.shape(x)), dtype);
-                    kid = free_kernels.pop_first().unwrap();
-                    let shape = graph.shape(nid);
-                    kernels[kid] = Kernel::leaf(shape, dtype);
+                    if let Some(tensors) = kernels[kid]
+                        .store(nid, graph, devices, mps, tbm, optimizer, searches, debug)?
+                    {
+                        kernels.remove(kid).unwrap();
+                        for tid in tensors {
+                            kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
+                        }
+                    }
+                    kid = kernels.push(Kernel::leaf(nid, shape, dtype));
+                    assert!(kernels[kid].pad(padding));
+                    xt = 0;
                 }
-
-                kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
+                kernels[kid].max_id += 1;
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Padd });
+                kernels[kid].outputs.insert(nid, z);
                 if let Some(rc) = graph_rcs.get_mut(&x) {
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&x);
-                        kernel_outputs[kid].remove(&x).unwrap();
+                        kernels[kid].outputs.remove(&x).unwrap();
                     }
                 }
-                kernel_outputs[kid].insert(nid, z);
-                (kid, KernelId::MAX)
+                kid
             }
             Node::Permute { x } => {
-                let (xt, kid) = get_kernel(x, &kernel_outputs);
+                let (xt, kid) = get_kernel(x, &kernels);
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
 
@@ -178,14 +173,14 @@ pub(super) fn realize_graph(
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&x);
-                        kernel_outputs[kid].remove(&x).unwrap();
+                        kernels[kid].outputs.remove(&x).unwrap();
                     }
                 }
-                kernel_outputs[kid].insert(nid, z);
-                (kid, KernelId::MAX)
+                kernels[kid].outputs.insert(nid, z);
+                kid
             }
             Node::Reduce { x, rop } => {
-                let (xt, kid) = get_kernel(x, &kernel_outputs);
+                let (xt, kid) = get_kernel(x, &kernels);
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
                 kernels[kid].reduce(xt, graph.shape(x), graph.axes(nid), graph.dtype(x), rop);
@@ -193,14 +188,14 @@ pub(super) fn realize_graph(
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&x);
-                        kernel_outputs[kid].remove(&x).unwrap();
+                        kernels[kid].outputs.remove(&x).unwrap();
                     }
                 }
-                kernel_outputs[kid].insert(nid, z);
-                (kid, KernelId::MAX)
+                kernels[kid].outputs.insert(nid, z);
+                kid
             }
             Node::Unary { x, uop } => {
-                let (xt, kid) = get_kernel(x, &kernel_outputs);
+                let (xt, kid) = get_kernel(x, &kernels);
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
                 kernels[kid].ops.push(Op::Unary { z, x: xt, uop });
@@ -208,17 +203,17 @@ pub(super) fn realize_graph(
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&x);
-                        kernel_outputs[kid].remove(&x).unwrap();
+                        kernels[kid].outputs.remove(&x).unwrap();
                     }
                 }
-                kernel_outputs[kid].insert(nid, z);
-                (kid, KernelId::MAX)
+                kernels[kid].outputs.insert(nid, z);
+                kid
             }
             Node::Binary { x, y, bop } => {
                 // x goes first, we delete y
-                let (xt, kidx) = get_kernel(x, &kernel_outputs);
+                let (xt, kidx) = get_kernel(x, &kernels);
                 kernels[kidx].max_id += 1;
-                let (yt, kidy) = get_kernel(y, &kernel_outputs);
+                let (yt, kidy) = get_kernel(y, &kernels);
 
                 // push ops from kernel y to kernel x, increasing
                 // their ids by kernels[kidx].max_id and skipping
@@ -269,8 +264,8 @@ pub(super) fn realize_graph(
                 }
 
                 let y_tensors: BTreeMap<TensorId, TId> =
-                    kernel_tensors[kidy].iter().map(|(t, id)| (*t, id + n)).collect();
-                kernel_tensors[kidx].extend(y_tensors);
+                    kernels[kidy].tensors.iter().map(|(t, id)| (*t, id + n)).collect();
+                kernels[kidx].tensors.extend(y_tensors);
 
                 kernels[kidx].max_id = kernels[kidx].max_id + kernels[kidy].max_id + 1;
                 let z = kernels[kidx].max_id;
@@ -279,16 +274,15 @@ pub(super) fn realize_graph(
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&x);
-                        kernel_outputs[kidx].remove(&x).unwrap();
+                        kernels[kidx].outputs.remove(&x).unwrap();
                     }
                 }
                 if let Some(rc) = graph_rcs.get_mut(&y) {
                     *rc -= 1;
                     if *rc == 0 {
                         graph_rcs.remove(&y);
-                        kernel_outputs[kidy].remove(&y).unwrap();
-                        std::mem::swap(&mut Kernel::empty(), &mut kernels[kidy]);
-                        free_kernels.insert(kidy);
+                        kernels[kidy].outputs.remove(&y).unwrap();
+                        kernels.remove(kidy).unwrap();
                     }
                 }
                 // Notice we are not adding kernel outputs from kernel y to kernel x,
@@ -296,99 +290,18 @@ pub(super) fn realize_graph(
                 // This is why we keep kernel y alive.
                 // Otherwise we could just delete kernel y and put everything into kernel x,
                 // which seems like an interesting idea, but would it work? Likely not.
-                kernel_outputs[kidx].insert(nid, z);
-                (kidx, kidy)
+                kernels[kidx].outputs.insert(nid, z);
+                kidx
             }
         };
 
         if to_eval.contains(&nid) {
-            kernels[kidx].store(
-                kernel_outputs[kidx][&nid],
-                View::contiguous(graph.shape(nid)),
-                graph.dtype(nid),
-            );
-            let id = kernel_outputs[kidx].remove(&nid).unwrap();
-            kernel_tensors[kidx].insert(nid, id);
-        }
-
-        for kid in [kidy, kidx] {
-            if kid != KernelId::MAX
-                && !kernels[kid].ops.is_empty()
-                && kernel_outputs[kid].is_empty()
+            if let Some(tensors) =
+                kernels[kid].store(nid, graph, devices, mps, tbm, optimizer, searches, debug)?
             {
-                // Delete kernel and dispatch it to device
-                let mut kernel = Kernel::empty();
-                std::mem::swap(&mut kernel, &mut kernels[kid]);
-                free_kernels.insert(kid);
-
-                if debug.sched() {
-                    println!();
-                    println!("Kernel tensors: {:?}", kernel_tensors[kid]);
-                    kernel.debug();
-                }
-
-                // Pick a device to run program
-                // Find in which memory pool are most of input tensors stored
-                let memory_pool_id = 0;
-                let memory_pool = &mut memory_pools[memory_pool_id as usize];
-
-                // Move all other tensors to that memory pool
-                // and finish queues with this kernel's inputs
-
-                // Get device which is associated with that memory pool
-                let device = &mut devices[0];
-
-                let buffer_ids: Vec<Id> = kernel_tensors[kid]
-                    .keys()
-                    .map(|&tensor_id| {
-                        if let Some(BufferId { buffer_id, .. }) = tensor_buffer_map.get(&tensor_id)
-                        {
-                            *buffer_id
-                        } else {
-                            // Allocate bytes for outputs
-                            let buffer_id = memory_pool
-                                .allocate(
-                                    graph.shape(tensor_id).iter().product::<usize>()
-                                        * graph.dtype(tensor_id).byte_size(),
-                                )
-                                .unwrap();
-                            tensor_buffer_map
-                                .insert(tensor_id, BufferId { memory_pool_id, buffer_id });
-                            buffer_id
-                        }
-                    })
-                    .collect();
-
-                if device.is_cached(&kernel) {
-                    device.launch(&kernel, memory_pool, &buffer_ids)?;
-                } else {
-                    let optimization = optimizer.search_optimization(
-                        &kernel,
-                        device,
-                        memory_pool,
-                        search_iters,
-                        debug,
-                    )?;
-                    let optimized_kernel = kernel.optimize(optimization);
-                    let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.asm());
-                    device.compile(kernel.clone(), &ir_kernel, true)?;
-                    device.launch(&kernel, memory_pool, &buffer_ids)?;
-                }
-
-                // add load kernels for all outputs of this kernel
-                for op in kernel.ops {
-                    if let Op::Store { z, .. } = op {
-                        kernels.push(Kernel::leaf(graph.shape(nid), graph.dtype(nid)));
-                        let tensor_id = kernel_tensors[kid]
-                            .iter()
-                            .find(|(_, tid)| **tid == z)
-                            .unwrap()
-                            .0
-                            .clone();
-                        let map = BTreeMap::from([(tensor_id, 0)]);
-                        kernel_tensors.push(map.clone());
-                        kernel_outputs.push(map);
-                    }
+                kernels.remove(kid).unwrap();
+                for tid in tensors {
+                    kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
                 }
             }
         }
@@ -397,11 +310,11 @@ pub(super) fn realize_graph(
     Ok(())
 }
 
-fn get_kernel(x: TensorId, kernel_outputs: &[BTreeMap<TensorId, TId>]) -> (TId, KernelId) {
+fn get_kernel(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
     // perhaps chose kernel with fewest ops, or not? Is there any advantage to that?
-    for (kid, outputs) in kernel_outputs.iter().enumerate() {
-        if let Some(&x_tid) = outputs.get(&x) {
-            return (x_tid, kid);
+    for (kid, kernel) in kernels.values().enumerate() {
+        if let Some(&x_tid) = kernel.outputs.get(&x) {
+            return (x_tid, kid.try_into().unwrap());
         }
     }
     unreachable!()

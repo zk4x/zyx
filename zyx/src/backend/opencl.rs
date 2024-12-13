@@ -6,9 +6,9 @@
 use super::DeviceInfo;
 use crate::{
     dtype::Constant,
-    index_map::{Id, IndexMap},
     ir::{IRKernel, IROp, Reg, Scope},
     node::{BOp, UOp},
+    slab::{Id, Slab},
     DType,
 };
 use libloading::Library;
@@ -205,9 +205,7 @@ pub(super) fn initialize_devices(
     debug_dev: bool,
 ) -> Result<(Vec<OpenCLMemoryPool>, OpenCLQueuePool), OpenCLError> {
     let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
-    let opencl = opencl_paths
-        .iter()
-        .find_map(|path| unsafe { Library::new(path) }.ok());
+    let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
         return Err(OpenCLError {
             info: "OpenCL runtime not found.".into(),
@@ -285,12 +283,11 @@ pub(super) fn initialize_devices(
     let mut devices = Vec::new();
     let mut memory_pools = Vec::new();
     let mut memory_pool_id = 0;
-    for (platform_id, platform) in platform_ids.iter().enumerate().filter(|(id, _)| {
-        config
-            .platform_ids
-            .as_ref()
-            .map_or(true, |ids| ids.contains(id))
-    }) {
+    for (platform_id, platform) in platform_ids
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| config.platform_ids.as_ref().map_or(true, |ids| ids.contains(id)))
+    {
         let platform = *platform;
         let Ok(device_ids) = {
             // Get the number of devices of device_type
@@ -469,11 +466,7 @@ impl OpenCLMemoryPool {
         status.check("Failed to allocate memory.")?;
         //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
-        Ok(OpenCLBuffer {
-            ptr,
-            bytes,
-            queue: self.queue,
-        })
+        Ok(OpenCLBuffer { ptr, bytes, queue: self.queue })
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -594,9 +587,7 @@ impl OpenCLDevice {
             max_global_work_dims[i] = max_dim_size;
         }
         let mlt = usize::from_ne_bytes(
-            self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?
-                .try_into()
-                .unwrap(),
+            self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap(),
         );
         self.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
@@ -604,15 +595,11 @@ impl OpenCLDevice {
             max_local_threads: mlt,
             max_local_work_dims: [mlt, mlt, mlt],
             preferred_vector_size: u32::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?
-                    .try_into()
-                    .unwrap(),
+                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
             ) as usize
                 * 4,
             local_mem_size: usize::try_from(u64::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?
-                    .try_into()
-                    .unwrap(),
+                self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
             ))
             .unwrap(),
             num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
@@ -870,12 +857,7 @@ impl OpenCLDevice {
         let kernel =
             unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
         status.check("Failed to create kernel.")?;
-        Ok(OpenCLProgram {
-            program,
-            kernel,
-            global_work_size,
-            local_work_size,
-        })
+        Ok(OpenCLProgram { program, kernel, global_work_size, local_work_size })
     }
 }
 
@@ -883,7 +865,7 @@ impl OpenCLQueue {
     pub(super) fn launch(
         &mut self,
         program: &mut OpenCLProgram,
-        buffers: &mut IndexMap<OpenCLBuffer>,
+        buffers: &mut Slab<OpenCLBuffer>,
         args: &[Id],
     ) -> Result<OpenCLEvent, OpenCLError> {
         /*println!(
@@ -929,10 +911,7 @@ impl OpenCLQueue {
         .check("Failed to enqueue kernel.")?;
         //unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
         //self.events.push(event);
-        Ok(OpenCLEvent {
-            event,
-            clWaitForEvents: self.clWaitForEvents,
-        })
+        Ok(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents })
     }
 
     pub(super) fn sync(&mut self) -> Result<(), OpenCLError> {
@@ -961,10 +940,7 @@ impl OpenCLStatus {
         if self == Self::CL_SUCCESS {
             Ok(())
         } else {
-            Err(OpenCLError {
-                info: info.into(),
-                status: self,
-            })
+            Err(OpenCLError { info: info.into(), status: self })
         }
     }
 }

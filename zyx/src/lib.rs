@@ -49,13 +49,13 @@ use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
 
 mod dtype;
-mod index_map;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;
 mod runtime;
 mod scalar;
 mod shape;
+mod slab;
 mod tensor;
 
 mod backend;

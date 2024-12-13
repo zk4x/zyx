@@ -3,8 +3,8 @@
 use crate::node::{BOp, Node};
 use crate::tensor::TensorId;
 use crate::{
-    index_map::IndexMap,
     shape::{Axis, Dimension},
+    slab::Slab,
     DType,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Graph {
     // First value is reference count, second is node
-    pub(super) nodes: IndexMap<(u32, Node)>,
+    pub(super) nodes: Slab<(u32, Node)>,
     dtypes: BTreeMap<TensorId, DType>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
@@ -26,7 +26,7 @@ pub struct Graph {
 impl Graph {
     pub(super) const fn new() -> Self {
         Self {
-            nodes: IndexMap::new(),
+            nodes: Slab::new(),
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
             axes: BTreeMap::new(),
@@ -196,13 +196,7 @@ impl Graph {
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
-                    && !matches!(
-                        self.nodes[nid].1,
-                        Node::Binary {
-                            bop: BOp::Cmplt,
-                            ..
-                        }
-                    )
+                    && !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
                 // or Node::Detach
                 {
                     params.extend(self.nodes[nid].1.parameters());
@@ -216,12 +210,7 @@ impl Graph {
         let mut params: Vec<TensorId> = vec![x];
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
-                if rc
-                    == *internal_rcs
-                        .entry(nid)
-                        .and_modify(|rc| *rc += 1)
-                        .or_insert(1)
-                {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
                     order.push(nid);
                     params.extend(self.nodes[nid].1.parameters());
                 }
@@ -270,12 +259,7 @@ impl Graph {
         let mut internal_rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
         while let Some(nid) = params.pop() {
-            if rcs[&nid]
-                == *internal_rcs
-                    .entry(nid)
-                    .and_modify(|rc| *rc += 1)
-                    .or_insert(1)
-            {
+            if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
                 order.push(nid);
                 if rcs.contains_key(&nid) {
                     params.extend(self.nodes[nid].1.parameters());

@@ -6,11 +6,13 @@
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
-use crate::index_map::Id;
 use crate::ir::{IROp, Reg, Scope};
 use crate::node::{BOp, UOp};
 use crate::DType;
-use crate::{index_map::IndexMap, ir::IRKernel};
+use crate::{
+    ir::IRKernel,
+    slab::{Id, Slab},
+};
 use libloading::Library;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
@@ -115,9 +117,7 @@ pub(super) fn initialize_device(
         "/lib64/libamdhip64.so",
         "/lib/x86_64-linux-gnu/libamdhip64.so",
     ];
-    let hip = hip_paths
-        .iter()
-        .find_map(|path| unsafe { Library::new(path) }.ok());
+    let hip = hip_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
         return Err(HIPError {
             info: "HIP runtime not found.".into(),
@@ -179,12 +179,7 @@ pub(super) fn initialize_device(
         });
     }
     let device_ids: Vec<_> = (0..num_devices)
-        .filter(|id| {
-            config
-                .device_ids
-                .as_ref()
-                .map_or(true, |ids| ids.contains(id))
-        })
+        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
         .collect();
     if device_ids.is_empty() {
         return Err(HIPError {
@@ -253,12 +248,7 @@ pub(super) fn initialize_device(
             else {
                 continue;
             };
-            queues.push(HIPQueue {
-                stream,
-                load: 0,
-                hipLaunchKernel,
-                hipStreamSynchronize,
-            });
+            queues.push(HIPQueue { stream, load: 0, hipLaunchKernel, hipStreamSynchronize });
         }
         devices.push((
             HIPDevice {
@@ -310,11 +300,7 @@ impl HIPMemoryPool {
         self.free_bytes -= bytes;
         let mut ptr = u64::try_from(self.device).unwrap();
         unsafe { (self.hipMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
-        Ok(HIPBuffer {
-            ptr,
-            bytes,
-            context: self.context,
-        })
+        Ok(HIPBuffer { ptr, bytes, context: self.context })
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -542,9 +528,7 @@ impl HIPDevice {
             println!("{source}");
         }
         let hiprtc_paths = ["/lib64/libhiprtc.so"];
-        let hiprtc = hiprtc_paths
-            .iter()
-            .find_map(|path| unsafe { Library::new(path) }.ok());
+        let hiprtc = hiprtc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
         let Some(hiprtc) = hiprtc else {
             return Err(HIPError {
                 info: "HIP runtime compiler (HIPRTC) not found.".into(),
@@ -631,13 +615,7 @@ impl HIPDevice {
         unsafe { (self.hipModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
             .check("Failed to load function.")?;
 
-        Ok(HIPProgram {
-            name,
-            module,
-            function,
-            global_work_size,
-            local_work_size,
-        })
+        Ok(HIPProgram { name, module, function, global_work_size, local_work_size })
     }
 }
 
@@ -645,7 +623,7 @@ impl HIPQueue {
     pub(super) fn launch(
         &mut self,
         program: &mut HIPProgram,
-        buffers: &mut IndexMap<HIPBuffer>,
+        buffers: &mut Slab<HIPBuffer>,
         args: &[Id],
     ) -> Result<(), HIPError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
