@@ -121,6 +121,13 @@ impl<T> IndexMap<T> {
         }
     }
 
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+            empty: BTreeSet::new(),
+        }
+    }
+
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop_first() {
             self.values[id as usize] = MaybeUninit::new(value);

@@ -3,7 +3,7 @@
 use crate::{
     backend::{BufferId, Device, MemoryPool},
     graph::Graph,
-    index_map::Id,
+    index_map::{Id, IndexMap},
     ir::IRKernel,
     kernel::{Kernel, MOp, Op, TId},
     node::Node,
@@ -44,13 +44,7 @@ pub(super) fn realize_graph(
     }
 
     // Unfinished kernels represented by ops
-    let mut kernels: Vec<Kernel> = Vec::with_capacity(100);
-    // Mapping from tensor ids to loads and stores in kernels
-    let mut kernel_tensors: Vec<BTreeMap<TensorId, TId>> = Vec::with_capacity(100);
-    // Mapping from tensor ids to unused tensors in kernels.
-    // Once number of unused ids reaches zero, kernel gets scheduled to device.
-    let mut kernel_outputs: Vec<BTreeMap<TensorId, TId>> = Vec::with_capacity(100);
-    let mut free_kernels: BTreeSet<KernelId> = BTreeSet::new();
+    let mut kernels: IndexMap<Kernel> = IndexMap::with_capacity(100);
 
     println!("To eval: {:?}", to_eval);
 
@@ -62,13 +56,6 @@ pub(super) fn realize_graph(
         println!();*/
         println!("ID({nid}): {:?}, sh: {:?}", graph[nid], graph.shape(nid));
 
-        if free_kernels.is_empty() {
-            kernels.push(Kernel::empty());
-            kernel_tensors.push(BTreeMap::new());
-            kernel_outputs.push(BTreeMap::new());
-            free_kernels.insert(kernels.len() - 1);
-        }
-
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
 
@@ -78,19 +65,8 @@ pub(super) fn realize_graph(
             // Reshape is not merged if reshaping reduce loops
             // Expand is not merged if expanding reduce kernel or kernel contains store
             // These rules will be later loosened using some heuristic
-            Node::Const { value } => {
-                let kid = free_kernels.pop_first().unwrap();
-                kernels[kid] = Kernel::constant(value);
-                kernel_outputs[kid] = BTreeMap::from([(nid, 0)]);
-                (kid, KernelId::MAX)
-            }
-            Node::Leaf => {
-                let kid = free_kernels.pop_first().unwrap();
-                kernels[kid] = Kernel::leaf(graph.shape(nid), graph.dtype(nid));
-                kernel_tensors[kid] = BTreeMap::from([(nid, 0)]);
-                kernel_outputs[kid] = BTreeMap::from([(nid, 0)]);
-                (kid, KernelId::MAX)
-            }
+            Node::Const { value } => (kernels.push(Kernel::constant(nid, value)), KernelId::MAX),
+            Node::Leaf => (kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid))), KernelId::MAX),
             Node::Expand { x } => {
                 let (xt, kid) = get_kernel(x, &kernel_outputs);
 

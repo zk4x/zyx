@@ -4,19 +4,18 @@ use std::{
 };
 
 use crate::{
-    dtype::Constant,
-    ir::Scope,
-    node::{BOp, ROp, UOp},
-    shape::{Axis, Dimension},
-    view::View,
-    DType,
+    dtype::Constant, ir::Scope, node::{BOp, ROp, UOp}, shape::{Axis, Dimension}, tensor::TensorId, view::View, DType
 };
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Kernel {
-    pub(super) max_id: TId,
     pub(super) ops: Vec<Op>,
+    // Mapind from tensors ids to load and store ids
+    tensors: BTreeMap<TensorId, TId>,
+    // Outputs of the kernel that are unused (not stored yet)
+    outputs: BTreeMap<TensorId, TId>,
+    max_id: TId,
 }
 
 // Tensor id in a kernel
@@ -93,14 +92,7 @@ pub enum MOp {
 }
 
 impl Kernel {
-    pub(super) fn empty() -> Kernel {
-        Kernel {
-            max_id: 0,
-            ops: Vec::new(),
-        }
-    }
-
-    pub(super) fn constant(value: Constant) -> Kernel {
+    pub(super) fn constant(nid: TensorId, value: Constant) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         ops.push(Op::Loop { axis: 0, len: 1 });
         ops.push(Op::Const {
@@ -108,10 +100,10 @@ impl Kernel {
             value,
             view: View::contiguous(&[1]),
         });
-        Kernel { max_id: 0, ops }
+        Kernel { max_id: 0, ops, tensors: BTreeMap::new(), outputs: BTreeMap::from([(nid, 0)]) }
     }
 
-    pub(super) fn leaf(shape: &[usize], dtype: DType) -> Kernel {
+    pub(super) fn leaf(nid: TensorId, shape: &[usize], dtype: DType) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         for (axis, dimension) in shape.iter().copied().enumerate() {
             ops.push(Op::Loop {
@@ -127,7 +119,8 @@ impl Kernel {
             xview: View::contiguous(&shape),
             xdtype: dtype,
         });
-        Kernel { max_id: 0, ops }
+        let tensors = BTreeMap::from([(nid, 0)]);
+        Kernel { max_id: 0, ops, outputs: tensors.clone(), tensors }
     }
 
     pub(super) fn store(&mut self, z: TId, zview: View, zdtype: DType) {
