@@ -24,7 +24,6 @@ use std::{
 };
 
 use half::{bf16, f16};
-use no_panic::no_panic;
 use rand::rngs::SmallRng;
 
 /// Device configuration
@@ -223,7 +222,6 @@ impl Runtime {
         Ok(())
     }
 
-    #[no_panic]
     pub(super) fn manual_seed(&mut self, seed: u64) {
         use rand::SeedableRng;
         self.rng = std::cell::OnceCell::from(SmallRng::seed_from_u64(seed));
@@ -378,7 +376,6 @@ impl Runtime {
     }
 
     /// Bitcast self to other type, currently immediatelly realizes the tensor
-    #[no_panic]
     pub(super) unsafe fn bitcast(
         &mut self,
         x: TensorId,
@@ -791,7 +788,6 @@ impl Runtime {
             let mut order = Vec::new();
             let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut outside_nodes = BTreeSet::new();
             while let Some(nid) = params.pop() {
                 if let Some(&rc) = rcs.get(&nid) {
                     if rc
@@ -800,19 +796,29 @@ impl Runtime {
                             .and_modify(|rc| *rc += 1)
                             .or_insert(1)
                     {
-                        if let Some(&rc2) = rcs.get(&nid) {
-                            if this.nodes[nid].0 > rc2 {
-                                outside_nodes.insert(nid);
-                            }
-                        } else {
-                            outside_nodes.insert(nid);
-                        }
                         order.push(nid);
                         params.extend(this.nodes[nid].1.parameters());
                     }
                 }
             }
             order.reverse();
+            // TODO can we get rid of this third pass?
+            let outside_nodes: BTreeSet<TensorId> = self.graph
+                .nodes
+                .iter()
+                .filter_map(|(id, (rc, _))| {
+                    if let Some(&rc2) = rcs.get(&id) {
+                        if *rc > rc2 {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(id)
+                    }
+                })
+                .chain(to_eval.iter().copied())
+                .collect();
             (outside_nodes, order)
         };
         //, |x| realized_tensors.contains(&x));
@@ -820,7 +826,7 @@ impl Runtime {
         // New leafs never store data, so we can deallocate them if they are allocated.
         let mut to_delete = BTreeSet::new();
         let mut new_leafs = BTreeSet::new();
-        //println!("Graph: {:?}", graph);
+        //println!("Graph: {:?}", self.graph);
         //println!("Outside nodes: {outside_nodes:?}");
         //println!("Order: {order:?}");
         // Calculates which tensors are not needed and which tensors need to be evaluated
@@ -850,7 +856,7 @@ impl Runtime {
             }
         }
         //println!("New leafs: {new_leafs:?}");
-        //println!("Realizing {:?}", graph.to_eval);
+        //println!("Realizing {:?}", to_eval);
 
         crate::scheduler::realize_graph(
             &self.graph,

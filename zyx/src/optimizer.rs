@@ -54,10 +54,15 @@ impl Optimizer {
             search_iters: usize,
             done: &mut BTreeMap<Optimization, Duration>,
             debug: DebugMask,
-        ) -> Result<Optimization, ZyxError> {
+        ) -> (Optimization, bool) {
             //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
             // list untried optimizations
             let mut opts = kernel.available_optimizations(device.info(), done);
+            assert!(!opts.is_empty());
+
+            // TODO if we ensure that no buffer that has been stored to is ever loaded afterwards,
+            // then we don't need to allocate and we can directly work with the actual buffers.
+            // Without worrying about data corruption.
             // Allocate temporary buffers
             let mut allocated_temps = Vec::new();
             for op in &kernel.ops {
@@ -70,7 +75,7 @@ impl Optimizer {
                     } => {
                         if *xscope == Scope::Global {
                             let buffer_id = memory_pool
-                                .allocate(xview.original_numel() * xdtype.byte_size())?;
+                                .allocate(xview.original_numel() * xdtype.byte_size()).unwrap();
                             allocated_temps.push(buffer_id);
                         }
                     }
@@ -82,26 +87,26 @@ impl Optimizer {
                     } => {
                         if *zscope == Scope::Global {
                             let buffer_id = memory_pool
-                                .allocate(zview.original_numel() * zdtype.byte_size())?;
+                                .allocate(zview.original_numel() * zdtype.byte_size()).unwrap();
                             allocated_temps.push(buffer_id);
                         }
                     }
                     _ => {}
                 }
             }
+            let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
             /*let flop_mem_rw = if debug_perf {
                 Some(kernel.flop_mem_rw())
             } else {
                 None
             };*/
-            let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
             // pick an optimization
             for _ in 0..search_iters.min(opts.len()) {
                 if let Some(optimization) = opts.pop() {
                     let optimized_kernel = kernel.optimize(&optimization);
                     //optimized_kernel.debug();
                     //panic!();
-                    let ir_kernel = IRKernel::new(&optimized_kernel.ops);
+                    let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
                     if device
                         .compile(optimized_kernel.clone(), &ir_kernel, debug.asm())
                         .is_err()
@@ -146,7 +151,8 @@ impl Optimizer {
                     }*/
                 }
             }
-            Ok(done.iter().min_by_key(|x| x.1).unwrap().0.clone())
+
+            (done.iter().min_by_key(|x| x.1).unwrap().0.clone(), opts.is_empty())
         }
 
         // TODO do not clone kernel and device info, borrowck really sucks here
@@ -156,24 +162,38 @@ impl Optimizer {
                 .cache
                 .entry(key)
                 .and_modify(|progress| {
-                    if let OptimizerProgress::Optimizing { best, done } = progress {
-                        optimize_kernel(kernel, device, memory_pool, search_iters, done, debug)
-                            .map(|opt| *best = opt)
-                            .unwrap();
+                    if search_iters != 0 {
+                        if let OptimizerProgress::Optimizing { best, done } = progress {
+                            let (optimization, finished) = optimize_kernel(kernel, device, memory_pool, search_iters, done, debug);
+                            if finished {
+                                *progress = OptimizerProgress::Finished { optimization };
+                            } else {
+                                *best = optimization;
+                            }
+                        }
                     }
                 })
                 .or_insert_with(|| {
-                    let mut done = BTreeMap::new();
-                    let best = optimize_kernel(
-                        kernel,
-                        device,
-                        memory_pool,
-                        search_iters,
-                        &mut done,
-                        debug,
-                    )
-                    .unwrap();
-                    OptimizerProgress::Optimizing { best, done }
+                    if search_iters == 0 {
+                        let best = Optimizer::default_optimizations(kernel, device.info());
+                        let done = BTreeMap::new();
+                        OptimizerProgress::Optimizing { best, done }
+                    } else {
+                        let mut done = BTreeMap::new();
+                        let (optimization, finished) = optimize_kernel(
+                            kernel,
+                            device,
+                            memory_pool,
+                            search_iters,
+                            &mut done,
+                            debug,
+                        );
+                        if finished {
+                            OptimizerProgress::Finished { optimization }
+                        } else {
+                            OptimizerProgress::Optimizing { best: optimization, done }
+                        }
+                    }
                 }) {
                 OptimizerProgress::Finished { optimization } => optimization,
                 OptimizerProgress::Optimizing { best, .. } => best,
@@ -181,7 +201,7 @@ impl Optimizer {
         )
     }
 
-    fn default_optimizations(&self, kernel: &Kernel, device_info: &DeviceInfo) -> &Optimization {
+    fn default_optimizations(kernel: &Kernel, device_info: &DeviceInfo) -> Optimization {
         let _ = kernel;
         let _ = device_info;
         todo!()

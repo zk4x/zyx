@@ -107,6 +107,7 @@ pub enum MemoryPool {
     CUDA {
         memory_pool: CUDAMemoryPool,
         buffers: IndexMap<CUDABuffer>,
+        events: BTreeMap<Id, CUDAEvent>,
     },
     HIP {
         memory_pool: HIPMemoryPool,
@@ -202,6 +203,7 @@ pub fn initialize_backends(
         memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::CUDA {
             memory_pool: m,
             buffers: IndexMap::new(),
+            events: BTreeMap::new(),
         }));
         devices.extend(devs.into_iter().map(|(device, queues)| Device::CUDA {
             memory_pool_id: device.memory_pool_id() + n,
@@ -277,6 +279,7 @@ impl MemoryPool {
             MemoryPool::CUDA {
                 mut memory_pool,
                 mut buffers,
+                ..
             } => {
                 let ids: Vec<Id> = buffers.ids().collect();
                 for id in ids {
@@ -354,6 +357,7 @@ impl MemoryPool {
             MemoryPool::CUDA {
                 memory_pool,
                 buffers,
+                ..
             } => buffers.push(memory_pool.allocate(bytes)?),
             MemoryPool::HIP {
                 memory_pool,
@@ -385,6 +389,7 @@ impl MemoryPool {
             MemoryPool::CUDA {
                 memory_pool,
                 buffers,
+                ..
             } => {
                 let buffer = buffers.remove(buffer_id).unwrap();
                 memory_pool.deallocate(buffer)?;
@@ -434,6 +439,7 @@ impl MemoryPool {
             MemoryPool::CUDA {
                 memory_pool,
                 buffers,
+                ..
             } => {
                 let ptr: *const u8 = data.as_ptr().cast();
                 memory_pool.host_to_pool(
@@ -500,7 +506,11 @@ impl MemoryPool {
             MemoryPool::CUDA {
                 memory_pool,
                 buffers,
+                events,
             } => {
+                if let Some(event) = events.remove(&buffer_id) {
+                    event.finish()?;
+                }
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
             MemoryPool::HIP {
@@ -512,8 +522,11 @@ impl MemoryPool {
             MemoryPool::OpenCL {
                 memory_pool,
                 buffers,
-                ..
+                events
             } => {
+                if let Some(event) = events.remove(&buffer_id) {
+                    event.finish()?;
+                }
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
             #[cfg(feature = "vulkan")]
@@ -555,11 +568,11 @@ impl MemoryPool {
         }
         match (self, dst_mp) {
             #[rustfmt::skip]
-            (MemoryPool::CUDA { buffers: sb, .. }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
+            (MemoryPool::CUDA { buffers: sb, .. }, MemoryPool::CUDA { memory_pool: dm, buffers: db, .. }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[rustfmt::skip]
-            (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            (MemoryPool::CUDA { memory_pool: sm, buffers: sb, .. }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
-            (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::OpenCL { memory_pool: dm, buffers: db, .. }) => { cross_backend!(sm, sb, dm, db) }
+            (MemoryPool::CUDA { memory_pool: sm, buffers: sb, .. }, MemoryPool::OpenCL { memory_pool: dm, buffers: db, .. }) => { cross_backend!(sm, sb, dm, db) }
             #[cfg(feature = "vulkan")]
             #[rustfmt::skip]
             (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::Vulkan { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
@@ -567,7 +580,7 @@ impl MemoryPool {
             #[rustfmt::skip]
             (MemoryPool::CUDA { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
-            (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::CUDA { memory_pool: dm, buffers: db, .. }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
             (MemoryPool::HIP { buffers: sb, .. }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { dm.pool_to_pool(&sb[sbid], &db[dbid])?; }
             #[rustfmt::skip]
@@ -579,7 +592,7 @@ impl MemoryPool {
             #[rustfmt::skip]
             (MemoryPool::HIP { memory_pool: sm, buffers: sb }, MemoryPool::WGSL { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
-            (MemoryPool::OpenCL { memory_pool: sm, buffers: sb, .. }, MemoryPool::CUDA { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
+            (MemoryPool::OpenCL { memory_pool: sm, buffers: sb, .. }, MemoryPool::CUDA { memory_pool: dm, buffers: db, .. }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]
             (MemoryPool::OpenCL { memory_pool: sm, buffers: sb, .. }, MemoryPool::HIP { memory_pool: dm, buffers: db }) => { cross_backend!(sm, sb, dm, db) }
             #[rustfmt::skip]

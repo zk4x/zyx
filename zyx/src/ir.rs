@@ -816,13 +816,7 @@ fn new_var(
 // Returns IRKernel and order in which tensors are passed to it as arguments
 // Axes have the same id in registers.
 impl IRKernel {
-    pub(super) fn debug(&self) {
-        for op in &self.ops {
-            println!("{op:?}");
-        }
-    }
-
-    pub(super) fn new(kernel_ops: &[Op]) -> IRKernel {
+    pub(super) fn new(kernel_ops: &[Op], debug_ir: bool) -> IRKernel {
         // What we need to calculate (outputs of this function)
         // IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
@@ -852,6 +846,12 @@ impl IRKernel {
         //println!();
         //for op in &ops { println!("{op:?}"); }
         //panic!();
+
+        if debug_ir {
+            for op in &ops {
+                println!("{op:?}");
+            }
+        }
  
         IRKernel {
             addressables,

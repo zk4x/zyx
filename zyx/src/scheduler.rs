@@ -31,7 +31,7 @@ pub(super) fn realize_graph(
     search_iters: usize,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
-    // TODO perhaps we can later avoid getting graph rcs
+    // TODO perhaps we can get graph rcs from runtime realize frunction instead of this...
     let mut graph_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
     let mut params = to_eval.clone();
     while let Some(param) = params.pop_last() {
@@ -239,7 +239,9 @@ pub(super) fn realize_graph(
                 // ops in both kernels
                 let n = kernels[kidx].max_id;
                 for op_i in 0..kernels[kidy].ops.len() {
-                    if kernels[kidy].ops[op_i] != kernels[kidx].ops[op_i] {
+                    if !matches!(kernels[kidy].ops[op_i], Op::Loop { .. })
+                        || kernels[kidy].ops[op_i] != kernels[kidx].ops[op_i]
+                    {
                         let new_op = match kernels[kidy].ops[op_i] {
                             Op::Loop { axis, len } => Op::Loop { axis, len },
                             Op::EndLoop => Op::EndLoop,
@@ -311,6 +313,12 @@ pub(super) fn realize_graph(
                     }
                 }
 
+                let y_tensors: BTreeMap<TensorId, TId> = kernel_tensors[kidy]
+                    .iter()
+                    .map(|(t, id)| (*t, id + n))
+                    .collect();
+                kernel_tensors[kidx].extend(y_tensors);
+
                 kernels[kidx].max_id = kernels[kidx].max_id + kernels[kidy].max_id + 1;
                 let z = kernels[kidx].max_id;
                 kernels[kidx].ops.push(Op::Binary {
@@ -331,8 +339,15 @@ pub(super) fn realize_graph(
                     if *rc == 0 {
                         graph_rcs.remove(&y);
                         kernel_outputs[kidy].remove(&y).unwrap();
+                        std::mem::swap(&mut Kernel::empty(), &mut kernels[kidy]);
+                        free_kernels.insert(kidy);
                     }
                 }
+                // Notice we are not adding kernel outputs from kernel y to kernel x,
+                // since those outputs may be used from kernel y, but not from kernel x.
+                // This is why we keep kernel y alive.
+                // Otherwise we could just delete kernel y and put everything into kernel x,
+                // which seems like an interesting idea, but would it work? Likely not.
                 kernel_outputs[kidx].insert(nid, z);
                 (kidx, kidy)
             }
@@ -349,12 +364,18 @@ pub(super) fn realize_graph(
         }
 
         for kid in [kidx, kidy] {
-            if kid != KernelId::MAX && kernel_outputs[kid].is_empty() {
+            if kid != KernelId::MAX
+                && !kernels[kid].ops.is_empty()
+                && kernel_outputs[kid].is_empty()
+            {
                 // Delete kernel and dispatch it to device
                 let mut kernel = Kernel::empty();
                 std::mem::swap(&mut kernel, &mut kernels[kid]);
+                free_kernels.insert(kid);
 
                 if debug.sched() {
+                    println!();
+                    println!("Kernel tensors: {:?}", kernel_tensors[kid]);
                     kernel.debug();
                 }
 
@@ -406,7 +427,7 @@ pub(super) fn realize_graph(
                         debug,
                     )?;
                     let optimized_kernel = kernel.optimize(optimization);
-                    let ir_kernel = IRKernel::new(&optimized_kernel.ops);
+                    let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.asm());
                     device.compile(kernel.clone(), &ir_kernel, true)?;
                     device.launch(&kernel, memory_pool, &buffer_ids)?;
                 }
@@ -414,19 +435,16 @@ pub(super) fn realize_graph(
                 // add load kernels for all outputs of this kernel
                 for op in kernel.ops {
                     if let Op::Store { z, .. } = op {
-                        let shape = graph.shape(nid);
-                        let dtype = graph.dtype(nid);
-                        kernel_tensors.push(BTreeMap::from([(
-                            kernel_tensors[kid]
-                                .iter()
-                                .find(|(_, tid)| **tid == z)
-                                .unwrap()
-                                .0
-                                .clone(),
-                            0,
-                        )]));
-                        kernel_outputs.push(BTreeMap::new());
-                        kernels.push(Kernel::leaf(shape, dtype));
+                        kernels.push(Kernel::leaf(graph.shape(nid), graph.dtype(nid)));
+                        let tensor_id = kernel_tensors[kid]
+                            .iter()
+                            .find(|(_, tid)| **tid == z)
+                            .unwrap()
+                            .0
+                            .clone();
+                        let map = BTreeMap::from([(tensor_id, 0)]);
+                        kernel_tensors.push(map.clone());
+                        kernel_outputs.push(map);
                     }
                 }
             }
