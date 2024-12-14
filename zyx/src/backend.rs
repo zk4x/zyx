@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use super::{ir::IRKernel, DeviceConfig, ZyxError};
 use crate::{
-    kernel::Kernel,
+    kernel::Op,
     slab::{Id, Slab},
     Scalar,
 };
@@ -145,33 +145,33 @@ pub enum Device {
         memory_pool_id: MemoryPoolId,
         device: CUDADevice,
         queues: Vec<CUDAQueue>,
-        kernels: BTreeMap<Kernel, CUDAProgram>,
+        kernels: BTreeMap<Vec<Op>, CUDAProgram>,
     },
     HIP {
         memory_pool_id: MemoryPoolId,
         device: HIPDevice,
         queues: Vec<HIPQueue>,
-        kernels: BTreeMap<Kernel, HIPProgram>,
+        kernels: BTreeMap<Vec<Op>, HIPProgram>,
     },
     OpenCL {
         memory_pool_id: MemoryPoolId,
         device: OpenCLDevice,
         queues: Vec<OpenCLQueue>,
-        kernels: BTreeMap<Kernel, OpenCLProgram>,
+        kernels: BTreeMap<Vec<Op>, OpenCLProgram>,
     },
     #[cfg(feature = "vulkan")]
     Vulkan {
         memory_pool_id: MemoryPoolId,
         device: VulkanDevice,
         queues: Vec<VulkanQueue>,
-        kernels: BTreeMap<Kernel, VulkanProgram>,
+        kernels: BTreeMap<Vec<Op>, VulkanProgram>,
     },
     #[cfg(feature = "wgsl")]
     WGSL {
         memory_pool_id: MemoryPoolId,
         device: WGSLDevice,
         queues: Vec<WGSLQueue>,
-        kernels: BTreeMap<Kernel, WGSLProgram>,
+        kernels: BTreeMap<Vec<Op>, WGSLProgram>,
     },
 }
 
@@ -661,7 +661,7 @@ impl Device {
         Ok(())
     }*/
 
-    pub(super) fn release_program(&mut self, kernel: &Kernel) -> Result<(), ZyxError> {
+    pub(super) fn release_program(&mut self, kernel: &[Op]) -> Result<(), ZyxError> {
         //println!("Release program {program_id}");
         match self {
             Device::CUDA { device, kernels, .. } => {
@@ -687,7 +687,7 @@ impl Device {
 
     pub(super) fn compile(
         &mut self,
-        kernel: Kernel,
+        kernel: Vec<Op>,
         ir_kernel: &IRKernel,
         debug_asm: bool,
     ) -> Result<(), ZyxError> {
@@ -713,7 +713,7 @@ impl Device {
         Ok(())
     }
 
-    pub(super) fn is_cached(&self, kernel: &Kernel) -> bool {
+    pub(super) fn is_cached(&self, kernel: &[Op]) -> bool {
         match self {
             Device::CUDA { kernels, .. } => kernels.contains_key(kernel),
             Device::HIP { kernels, .. } => kernels.contains_key(kernel),
@@ -727,7 +727,7 @@ impl Device {
 
     pub(super) fn launch(
         &mut self,
-        kernel: &Kernel,
+        kernel: &[Op],
         memory_pool: &mut MemoryPool,
         buffer_ids: &[Id],
     ) -> Result<Event, ZyxError> {

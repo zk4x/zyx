@@ -34,9 +34,7 @@ pub(super) struct Optimization {
 
 impl Optimizer {
     pub(super) const fn new() -> Optimizer {
-        Optimizer {
-            cache: BTreeMap::new(),
-        }
+        Optimizer { cache: BTreeMap::new() }
     }
 
     pub(super) fn search_optimization(
@@ -67,27 +65,19 @@ impl Optimizer {
             let mut allocated_temps = Vec::new();
             for op in &kernel.ops {
                 match op {
-                    Op::Load {
-                        xscope,
-                        xview,
-                        xdtype,
-                        ..
-                    } => {
+                    Op::Load { xscope, xview, xdtype, .. } => {
                         if *xscope == Scope::Global {
                             let buffer_id = memory_pool
-                                .allocate(xview.original_numel() * xdtype.byte_size()).unwrap();
+                                .allocate(xview.original_numel() * xdtype.byte_size())
+                                .unwrap();
                             allocated_temps.push(buffer_id);
                         }
                     }
-                    Op::Store {
-                        zscope,
-                        zview,
-                        zdtype,
-                        ..
-                    } => {
+                    Op::Store { zscope, zview, zdtype, .. } => {
                         if *zscope == Scope::Global {
                             let buffer_id = memory_pool
-                                .allocate(zview.original_numel() * zdtype.byte_size()).unwrap();
+                                .allocate(zview.original_numel() * zdtype.byte_size())
+                                .unwrap();
                             allocated_temps.push(buffer_id);
                         }
                     }
@@ -108,7 +98,7 @@ impl Optimizer {
                     //panic!();
                     let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
                     if device
-                        .compile(optimized_kernel.clone(), &ir_kernel, debug.asm())
+                        .compile(optimized_kernel.ops.clone(), &ir_kernel, debug.asm())
                         .is_err()
                     {
                         done.insert(optimization, Duration::MAX);
@@ -117,7 +107,8 @@ impl Optimizer {
                     }
                     // Launch kernel and measure it's performance
                     let begin = std::time::Instant::now();
-                    let Ok(event) = device.launch(&optimized_kernel, memory_pool, &allocated_temps)
+                    let Ok(event) =
+                        device.launch(&optimized_kernel.ops, memory_pool, &allocated_temps)
                     else {
                         done.insert(optimization, Duration::MAX);
                         //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
@@ -129,7 +120,7 @@ impl Optimizer {
                         continue;
                     };
                     let exec_time = begin.elapsed();
-                    let _ = device.release_program(&optimized_kernel);
+                    let _ = device.release_program(&optimized_kernel.ops);
                     done.insert(optimization, exec_time);
                     if exec_time < best_exec_time {
                         best_exec_time = exec_time;
@@ -152,7 +143,10 @@ impl Optimizer {
                 }
             }
 
-            (done.iter().min_by_key(|x| x.1).unwrap().0.clone(), opts.is_empty())
+            (
+                done.iter().min_by_key(|x| x.1).unwrap().0.clone(),
+                opts.is_empty(),
+            )
         }
 
         // TODO do not clone kernel and device info, borrowck really sucks here
@@ -164,7 +158,14 @@ impl Optimizer {
                 .and_modify(|progress| {
                     if search_iters != 0 {
                         if let OptimizerProgress::Optimizing { best, done } = progress {
-                            let (optimization, finished) = optimize_kernel(kernel, device, memory_pool, search_iters, done, debug);
+                            let (optimization, finished) = optimize_kernel(
+                                kernel,
+                                device,
+                                memory_pool,
+                                search_iters,
+                                done,
+                                debug,
+                            );
                             if finished {
                                 *progress = OptimizerProgress::Finished { optimization };
                             } else {
@@ -228,18 +229,12 @@ impl Kernel {
         };
 
         let mut reshapes = Vec::new();
-        let num_loops = self
-            .ops
-            .iter()
-            .position(|op| !matches!(op, Op::Loop { .. }))
-            .unwrap();
+        let num_loops = self.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
         assert_ne!(num_loops, 0);
         let mut gws = [1; 3];
         if num_loops < 3 {
-            let dims: Vec<usize> = core::iter::repeat(1)
-                .take(3 - num_loops)
-                .chain([self.shape()[0]])
-                .collect();
+            let dims: Vec<usize> =
+                core::iter::repeat(1).take(3 - num_loops).chain([self.shape()[0]]).collect();
             reshapes.push((0, dims));
             let mut gws_i = 3 - num_loops;
             for d in &self.shape() {
@@ -299,10 +294,8 @@ impl Kernel {
                                                 ),
                                             );
                                             // Permute, private loops last
-                                            let mut optimization = Optimization {
-                                                splits,
-                                                local_tiles: false,
-                                            };
+                                            let mut optimization =
+                                                Optimization { splits, local_tiles: false };
                                             if !done.contains_key(&optimization) {
                                                 opts.push(optimization.clone());
                                             }
@@ -325,10 +318,7 @@ impl Kernel {
                                 }
                                 if !reduce_found {
                                     // Permute, private loops last
-                                    opts.push(Optimization {
-                                        splits,
-                                        local_tiles: false,
-                                    });
+                                    opts.push(Optimization { splits, local_tiles: false });
                                 }
                             }
                         }
@@ -359,31 +349,19 @@ impl Kernel {
         }
 
         let mut lws = [0; 3];
-        let Op::Loop { len, .. } = kernel.ops[1] else {
-            unreachable!()
-        };
+        let Op::Loop { len, .. } = kernel.ops[1] else { unreachable!() };
         lws[0] = len;
-        let Op::Loop { len, .. } = kernel.ops[4] else {
-            unreachable!()
-        };
+        let Op::Loop { len, .. } = kernel.ops[4] else { unreachable!() };
         lws[1] = len;
-        let Op::Loop { len, .. } = kernel.ops[7] else {
-            unreachable!()
-        };
+        let Op::Loop { len, .. } = kernel.ops[7] else { unreachable!() };
         lws[2] = len;
 
         let mut rws = [0; 3];
-        let Op::Loop { len, .. } = kernel.ops[2] else {
-            unreachable!()
-        };
+        let Op::Loop { len, .. } = kernel.ops[2] else { unreachable!() };
         rws[0] = len;
-        let Op::Loop { len, .. } = kernel.ops[5] else {
-            unreachable!()
-        };
+        let Op::Loop { len, .. } = kernel.ops[5] else { unreachable!() };
         rws[1] = len;
-        let Op::Loop { len, .. } = kernel.ops[8] else {
-            unreachable!()
-        };
+        let Op::Loop { len, .. } = kernel.ops[8] else { unreachable!() };
         rws[2] = len;
         // Apply permutation
         //kernel.permute(&optimization.permutation);
@@ -399,11 +377,7 @@ impl Kernel {
             kernel.ops.insert(6, rlz.clone());
             kernel.ops.insert(6, rly.clone());
             kernel.ops.insert(6, rlx.clone());
-            if kernel
-                .ops
-                .iter()
-                .any(|op| matches!(op, Op::Accumulator { .. }))
-            {
+            if kernel.ops.iter().any(|op| matches!(op, Op::Accumulator { .. })) {
                 let mut id = 9;
                 while id < kernel.ops.len() {
                     if threaded && matches!(kernel.ops[id], Op::Loop { .. }) {
@@ -439,18 +413,11 @@ impl Kernel {
                 let mut i = 0;
                 while i < kernel.ops.len() {
                     match &mut kernel.ops[i] {
-                        &mut Op::Accumulator {
-                            ref mut view,
-                            z,
-                            dtype,
-                            ..
-                        } => {
+                        &mut Op::Accumulator { ref mut view, z, dtype, .. } => {
                             *view = acc_view.clone();
                             accs.insert((z, dtype));
                         }
-                        Op::Store {
-                            z, xscope, xview, ..
-                        } => {
+                        Op::Store { z, xscope, xview, .. } => {
                             if *xscope == Scope::Register && accs.iter().any(|(x, _)| x == z) {
                                 *xview = acc_view.clone();
                                 *xscope = Scope::RegTile;
@@ -592,12 +559,7 @@ impl Kernel {
                         }
                         if axis == 2 && rl_id != 0 {
                             //kernel.ops.insert(id, kernel.ops[rl_id].clone());
-                            kernel.ops.insert(
-                                id - 1,
-                                Op::Barrier {
-                                    scope: Scope::Local,
-                                },
-                            );
+                            kernel.ops.insert(id - 1, Op::Barrier { scope: Scope::Local });
                             //kernel.ops.insert(id, Op::EndLoop);
                             id += 1;
                         }
@@ -606,12 +568,7 @@ impl Kernel {
                         if let Some(axis) = axes.pop() {
                             if let Some(&Op::Loop { axis: raxis, .. }) = kernel.ops.get(rl_id) {
                                 if axis == raxis {
-                                    kernel.ops.insert(
-                                        id,
-                                        Op::Barrier {
-                                            scope: Scope::Local,
-                                        },
-                                    );
+                                    kernel.ops.insert(id, Op::Barrier { scope: Scope::Local });
                                     id += 1;
                                 }
                             }
@@ -621,14 +578,7 @@ impl Kernel {
                         }
                         lengths.pop().unwrap();
                     }
-                    Op::Load {
-                        z,
-                        zscope,
-                        zview,
-                        xscope,
-                        xview,
-                        xdtype,
-                    } => {
+                    Op::Load { z, zscope, zview, xscope, xview, xdtype } => {
                         if *zscope == Scope::Register
                             && *xscope == Scope::Global
                             && zview == &View::none()
@@ -680,22 +630,10 @@ impl Kernel {
                                     },
                                 );
                                 if used_axes.contains(&8) {
-                                    kernel.ops.insert(
-                                        rl_id + 1,
-                                        Op::Loop {
-                                            axis: 8,
-                                            len: rws[2],
-                                        },
-                                    );
+                                    kernel.ops.insert(rl_id + 1, Op::Loop { axis: 8, len: rws[2] });
                                 }
                                 if used_axes.contains(&5) {
-                                    kernel.ops.insert(
-                                        rl_id + 1,
-                                        Op::Loop {
-                                            axis: 5,
-                                            len: rws[1],
-                                        },
-                                    );
+                                    kernel.ops.insert(rl_id + 1, Op::Loop { axis: 5, len: rws[1] });
                                 }
                                 id += 3;
                             }

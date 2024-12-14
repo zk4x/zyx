@@ -288,7 +288,11 @@ impl Kernel {
     }
 
     pub(super) fn debug(&self) {
-        println!("Kernel shape: {:?}", self.shape(),);
+        println!(
+            "Kernel shape: {:?}, outputs: {:?}",
+            self.shape(),
+            self.outputs
+        );
         let mut first_loops = true;
         let mut indent = String::new();
         for vop in &self.ops {
@@ -476,6 +480,7 @@ impl Kernel {
                 .unwrap()
             - 1;
         //println!("Acc id: {acc_id}");
+        self.max_id += 1;
         self.ops.insert(
             acc_id,
             Op::Accumulator { z: self.max_id, rop, view: View::none(), dtype },
@@ -526,6 +531,7 @@ impl Kernel {
         &mut self,
         nid: TensorId,
         graph: &Graph,
+        graph_rcs: &BTreeMap<TensorId, u32>,
         devices: &mut [Device],
         memory_pools: &mut [MemoryPool],
         tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
@@ -592,8 +598,8 @@ impl Kernel {
                 })
                 .collect();
 
-            if device.is_cached(self) {
-                device.launch(self, memory_pool, &buffer_ids)?;
+            if device.is_cached(&self.ops) {
+                device.launch(&self.ops, memory_pool, &buffer_ids)?;
             } else {
                 let optimization = optimizer.search_optimization(
                     self,
@@ -603,9 +609,9 @@ impl Kernel {
                     debug,
                 )?;
                 let optimized_kernel = self.optimize(optimization);
-                let ir_kernel = crate::ir::IRKernel::new(&optimized_kernel.ops, debug.asm());
-                device.compile(self.clone(), &ir_kernel, true)?;
-                device.launch(self, memory_pool, &buffer_ids)?;
+                let ir_kernel = crate::ir::IRKernel::new(&optimized_kernel.ops, debug.ir());
+                device.compile(self.ops.clone(), &ir_kernel, debug.asm())?;
+                device.launch(&self.ops, memory_pool, &buffer_ids)?;
             }
             // add load kernels for all outputs of this kernel
             return Ok(Some(
@@ -613,7 +619,12 @@ impl Kernel {
                     .iter()
                     .filter_map(|op| {
                         if let Op::Store { z, .. } = op {
-                            Some(self.get_tensor_id(*z))
+                            let t = self.get_tensor_id(*z);
+                            if graph_rcs.contains_key(&t) {
+                                Some(t)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }

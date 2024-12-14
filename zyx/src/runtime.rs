@@ -281,24 +281,14 @@ impl Runtime {
         }
         let buffer_id = self.memory_pools[memory_pool_id as usize].allocate(bytes)?;
         self.memory_pools[memory_pool_id as usize].host_to_pool(data, buffer_id)?;
-        let id = self
-            .graph
-            .push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
-        self.tensor_buffer_map.insert(
-            id,
-            BufferId {
-                memory_pool_id,
-                buffer_id,
-            },
-        );
+        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
+        self.tensor_buffer_map.insert(id, BufferId { memory_pool_id, buffer_id });
         Ok(id)
     }
 
     #[must_use]
     pub(super) fn constant(&mut self, value: impl Scalar) -> TensorId {
-        self.graph.push(Node::Const {
-            value: Constant::new(value),
-        })
+        self.graph.push(Node::Const { value: Constant::new(value) })
     }
 
     // Initialization
@@ -366,13 +356,7 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        self.graph.push_wdtype(
-            Node::Unary {
-                x,
-                uop: UOp::Cast(dtype),
-            },
-            dtype,
-        )
+        self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
     }
 
     /// Bitcast self to other type, currently immediatelly realizes the tensor
@@ -397,9 +381,7 @@ impl Runtime {
             }
             *d /= cd;
         }
-        let id = self
-            .graph
-            .push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
+        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
         if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &x) {
             //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
             self.tensor_buffer_map.insert(id, *bid);
@@ -482,9 +464,7 @@ impl Runtime {
                     None
                 }
             }) {
-                let id = self
-                    .graph
-                    .push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+                let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
                 self.tensor_buffer_map.insert(id, buffer_id);
                 return id;
             }
@@ -512,9 +492,7 @@ impl Runtime {
                     None
                 }
             }) {
-                let id = self
-                    .graph
-                    .push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+                let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
                 self.tensor_buffer_map.insert(id, buffer_id);
                 return id;
             }
@@ -563,9 +541,7 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        let id = self
-            .graph
-            .push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
+        let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
         self.graph.push_axes(id, axes);
         id
     }
@@ -577,56 +553,34 @@ impl Runtime {
             axes = (0..sh.len()).collect();
         };
         let shape = reduce(sh, &axes);
-        let id = self
-            .graph
-            .push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
+        let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
         self.graph.push_axes(id, axes);
         id
     }
 
     #[must_use]
     pub(super) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Add,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Add })
     }
 
     #[must_use]
     pub(super) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Sub,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Sub })
     }
 
     #[must_use]
     pub(super) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Mul,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Mul })
     }
 
     #[must_use]
     pub(super) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Div,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Div })
     }
 
     #[must_use]
     pub(super) fn and(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::And,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::And })
     }
 
     #[must_use]
@@ -636,74 +590,42 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn bitor(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::BitOr,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::BitOr })
     }
 
     #[must_use]
     pub(super) fn bitxor(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::BitXor,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::BitXor })
     }
 
     #[must_use]
     pub(super) fn bitand(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::BitAnd,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::BitAnd })
     }
 
     #[must_use]
     pub(super) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Pow,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Pow })
     }
 
     #[must_use]
     pub(super) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Cmplt,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Cmplt })
     }
 
     #[must_use]
     pub(super) fn cmpgt(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Cmpgt,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Cmpgt })
     }
 
     #[must_use]
     pub(super) fn not_eq(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::NotEq,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::NotEq })
     }
 
     #[must_use]
     pub(super) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary {
-            x,
-            y,
-            bop: BOp::Max,
-        })
+        self.graph.push(Node::Binary { x, y, bop: BOp::Max })
     }
 }
 
@@ -758,10 +680,7 @@ impl Runtime {
         if to_eval.is_empty() {
             return Ok(());
         }
-        if to_eval
-            .iter()
-            .all(|id| self.tensor_buffer_map.contains_key(id))
-        {
+        if to_eval.iter().all(|id| self.tensor_buffer_map.contains_key(id)) {
             return Ok(());
         }
         if self.devices.is_empty() {
@@ -790,12 +709,7 @@ impl Runtime {
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             while let Some(nid) = params.pop() {
                 if let Some(&rc) = rcs.get(&nid) {
-                    if rc
-                        == *internal_rcs
-                            .entry(nid)
-                            .and_modify(|rc| *rc += 1)
-                            .or_insert(1)
-                    {
+                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
                         order.push(nid);
                         params.extend(this.nodes[nid].1.parameters());
                     }
@@ -803,7 +717,8 @@ impl Runtime {
             }
             order.reverse();
             // TODO can we get rid of this third pass?
-            let outside_nodes: BTreeSet<TensorId> = self.graph
+            let outside_nodes: BTreeSet<TensorId> = self
+                .graph
                 .nodes
                 .iter()
                 .filter_map(|(id, (rc, _))| {
@@ -837,10 +752,7 @@ impl Runtime {
                     to_delete.insert(*tensor);
                     continue;
                 }
-            } else if self.graph[*tensor]
-                .parameters()
-                .all(|tensor| to_delete.contains(&tensor))
-            {
+            } else if self.graph[*tensor].parameters().all(|tensor| to_delete.contains(&tensor)) {
                 if outside_nodes.contains(tensor) {
                     to_eval.insert(*tensor);
                     new_leafs.insert(*tensor);
@@ -926,11 +838,7 @@ impl Runtime {
                     let (k, prev_grad) = e.remove_entry();
                     grads.insert(
                         k,
-                        r.graph.push(Node::Binary {
-                            x: prev_grad,
-                            y: grad,
-                            bop: BOp::Add,
-                        }),
+                        r.graph.push(Node::Binary { x: prev_grad, y: grad, bop: BOp::Add }),
                     );
                     // These can never fail as it just decreses ref count,
                     // there is no deallocation.
@@ -944,11 +852,8 @@ impl Runtime {
         let topo = self.graph.build_topo(x, sources);
         //println!("Topo: {topo:?}");
 
-        let req_grad: BTreeSet<TensorId> = topo
-            .iter()
-            .copied()
-            .chain(sources.iter().copied())
-            .collect();
+        let req_grad: BTreeSet<TensorId> =
+            topo.iter().copied().chain(sources.iter().copied()).collect();
         // Node -> Grad
         let mut grads: BTreeMap<TensorId, TensorId> = BTreeMap::new();
         // Initial gradient of ones
