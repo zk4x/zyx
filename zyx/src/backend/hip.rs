@@ -14,11 +14,12 @@ use crate::{
     slab::{Id, Slab},
 };
 use libloading::Library;
+use nanoserde::DeJson;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::Arc;
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, DeJson)]
 pub struct HIPConfig {
     device_ids: Option<Vec<i32>>,
 }

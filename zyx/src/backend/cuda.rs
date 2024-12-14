@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use float8::F8E4M3;
 use libloading::Library;
+use nanoserde::DeJson;
 
 use super::DeviceInfo;
 use crate::dtype::Constant;
@@ -20,7 +21,7 @@ use crate::slab::{Id, Slab};
 use crate::DType;
 
 /// CUDA configuration
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, DeJson)]
 pub struct CUDAConfig {
     device_ids: Option<Vec<i32>>,
 }

@@ -34,7 +34,10 @@
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables
+- [ ] get phi working
 - [ ] vector dtypes in kernels
 - [ ] tensor cores support
 - [ ] flash attention
 - [ ] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
+- [ ] replace serde with nanoserde
+- [ ] remove indicatiff, write custom progress bar

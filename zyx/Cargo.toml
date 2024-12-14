@@ -18,15 +18,8 @@ maintenance = { status = "experimental" }
 [dependencies]
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.5", default-features = false } # ISC
-# serde is used to read backend config
-serde = { version = "1.0.215", default-features = false, features = [
-    "std",
-    "derive",
-] } # MIT or Apache 2.0
-# JSON is used to read backend config
-serde_json = { version = "1.0.133", default-features = false, features = [
-    "std",
-] } # MIT or Apache 2.0
+# nanoserde is used to read backend config
+nanoserde = { version = "*", default-features = false }
 # Support for random number generation
 rand = { version = "0.8.5", default-features = false, features = [
     "small_rng",
@@ -39,10 +32,10 @@ xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 float8 = { version = "0.1.1" } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1" } # MIT or Apache 2.0
-# Progress bar for loading tensors and such
-indicatif = { version = "0.17.9" }
 # Memory mapped loading of tensors from disk
 memmap2 = { version = "0.9.5" }
+# Progress bar for loading tensors and such
+#indicatif = { version = "0.17.9" }
 
 # Optional dependencies
 # For caching of searched kernels

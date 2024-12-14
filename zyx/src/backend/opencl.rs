@@ -12,13 +12,14 @@ use crate::{
     DType,
 };
 use libloading::Library;
+use nanoserde::DeJson;
 use std::{
     ffi::{c_void, CString},
     ptr,
     sync::Arc,
 };
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, DeJson)]
 pub struct OpenCLConfig {
     /// Select which platforms will be used by `OpenCL` backend
     /// If set to None, uses all available platforms.

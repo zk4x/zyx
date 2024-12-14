@@ -88,8 +88,7 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        RT.lock()
-            .realize(tensors.into_iter().map(|t| t.id).collect())
+        RT.lock().realize(tensors.into_iter().map(|t| t.id).collect())
     }
 
     /// Returns gradients of self derived w.r.t. sources
@@ -99,9 +98,8 @@ impl Tensor {
         sources: impl IntoIterator<Item = &'a Tensor>,
     ) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
-        let grads: BTreeMap<TensorId, TensorId> = RT
-            .lock()
-            .backward(self.id, &sources.iter().copied().collect());
+        let grads: BTreeMap<TensorId, TensorId> =
+            RT.lock().backward(self.id, &sources.iter().copied().collect());
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())
@@ -211,9 +209,7 @@ impl Tensor {
         name: &str,
     ) -> Result<(), std::io::Error> {
         use std::format;
-        let graph = RT
-            .lock()
-            .plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
+        let graph = RT.lock().plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
         std::fs::write(format!("{name}.dot"), graph)?;
         let output = std::process::Command::new("dot")
             .arg("-Tsvg")
@@ -252,47 +248,32 @@ impl Tensor {
             // TODO later use threefry
             let mut rt = RT.lock();
             rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-            let Some(rng) = rt.rng.get_mut() else {
-                unreachable!()
-            };
+            let Some(rng) = rt.rng.get_mut() else { unreachable!() };
             match dtype {
                 DType::BF16 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    }
-                    .cast(DType::BF16))
+                    Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::BF16))
                 }
                 DType::F8 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    }
-                    .cast(DType::F8))
+                    Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::F8))
                 }
                 DType::F16 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    }
-                    .cast(DType::F16))
+                    Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::F16))
                 }
                 DType::F32 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::F64 => {
                     let range = Uniform::new(0., 1.);
                     let data: Vec<f64> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U8
                 | DType::U16
@@ -307,65 +288,47 @@ impl Tensor {
         } else {
             let mut rt = RT.lock();
             rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-            let Some(rng) = rt.rng.get_mut() else {
-                unreachable!()
-            };
+            let Some(rng) = rt.rng.get_mut() else { unreachable!() };
             match dtype {
                 DType::U8 => {
                     let range = Uniform::new(0, u8::MAX);
                     let data: Vec<u8> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U16 => {
                     let range = Uniform::new(0, u16::MAX);
                     let data: Vec<u16> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U32 => {
                     let range = Uniform::new(0, u32::MAX);
                     let data: Vec<u32> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U64 => {
                     let range = Uniform::new(0, u64::MAX);
                     let data: Vec<u64> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I8 => {
                     let range = Uniform::new(0, i8::MAX);
                     let data: Vec<i8> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I16 => {
                     let range = Uniform::new(0, i16::MAX);
                     let data: Vec<i16> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I32 => {
                     let range = Uniform::new(0, i32::MAX);
                     let data: Vec<i32> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I64 => {
                     let range = Uniform::new(0, i64::MAX);
                     let data: Vec<i64> = (0..n).map(|_| rng.sample(range)).collect();
-                    Ok(Tensor {
-                        id: rt.variable(shape, &data)?,
-                    })
+                    Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::Bool => Err(ZyxError::DTypeError(
                     "Uniform is not supported for bool".into(),
@@ -481,15 +444,8 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
-        let n = T::from_i64(
-            shape
-                .clone()
-                .into_shape()
-                .skip(1)
-                .product::<usize>()
-                .try_into()
-                .unwrap(),
-        );
+        let n =
+            T::from_i64(shape.clone().into_shape().skip(1).product::<usize>().try_into().unwrap());
         let one = T::one();
         let x = Scalar::add(one, Scalar::mul(a, a));
         let two = Scalar::add(one, one);
@@ -514,17 +470,13 @@ impl Tensor {
     /// Create tensor filled with zeros.
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
-        Tensor {
-            id: RT.lock().zeros(shape.into_shape().collect(), dtype),
-        }
+        Tensor { id: RT.lock().zeros(shape.into_shape().collect(), dtype) }
     }
 
     /// Create tensor filled with ones.
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
-        Tensor {
-            id: RT.lock().ones(shape.into_shape().collect(), dtype),
-        }
+        Tensor { id: RT.lock().ones(shape.into_shape().collect(), dtype) }
     }
 
     /// Create tensor filled with value.
@@ -532,9 +484,7 @@ impl Tensor {
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Result<Tensor, ZyxError> {
-        Ok(Tensor {
-            id: RT.lock().full(shape.into_shape().collect(), value)?,
-        })
+        Ok(Tensor { id: RT.lock().full(shape.into_shape().collect(), value)? })
     }
 
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
@@ -573,9 +523,7 @@ impl Tensor {
     /// change during the run of the program or if there are only few repeating variations.
     #[must_use]
     pub fn constant(value: impl Scalar) -> Tensor {
-        Tensor {
-            id: RT.lock().constant(value),
-        }
+        Tensor { id: RT.lock().constant(value) }
     }
 
     // unary
@@ -588,9 +536,7 @@ impl Tensor {
     /// Casts self to [dtype](crate::DType).
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
-        return Tensor {
-            id: RT.lock().cast(self.id, dtype),
-        };
+        return Tensor { id: RT.lock().cast(self.id, dtype) };
     }
 
     /// Changes dtype of the tensor without mutating it.
@@ -619,9 +565,7 @@ impl Tensor {
     #[must_use]
     pub fn cos(&self) -> Tensor {
         let x = self.float_cast();
-        let x = Tensor {
-            id: RT.lock().cos(x.id),
-        };
+        let x = Tensor { id: RT.lock().cos(x.id) };
         x
     }
 
@@ -669,9 +613,7 @@ impl Tensor {
     #[must_use]
     pub fn exp2(&self) -> Tensor {
         let x = self.float_cast();
-        let x = Tensor {
-            id: RT.lock().exp2(x.id),
-        };
+        let x = Tensor { id: RT.lock().exp2(x.id) };
         x
     }
 
@@ -734,9 +676,7 @@ impl Tensor {
     #[must_use]
     pub fn log2(&self) -> Tensor {
         let x = self.float_cast();
-        return Tensor {
-            id: RT.lock().log2(x.id),
-        };
+        return Tensor { id: RT.lock().log2(x.id) };
     }
 
     /// Computes the natural logarithm (ln) of each element in the input tensor.
@@ -770,9 +710,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor.
     #[must_use]
     pub fn inv(&self) -> Tensor {
-        return Tensor {
-            id: RT.lock().inv(self.id),
-        };
+        return Tensor { id: RT.lock().inv(self.id) };
     }
 
     /// Computes the Mish activation function for each element in the input tensor.
@@ -814,9 +752,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor using a faster implementation.
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
-        return Tensor {
-            id: RT.lock().reciprocal(self.id),
-        };
+        return Tensor { id: RT.lock().reciprocal(self.id) };
     }
 
     /// Applies the Rectified Linear Unit (`ReLU`) activation function to each element in the input tensor.
@@ -830,9 +766,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
     pub fn relu(&self) -> Tensor {
-        return Tensor {
-            id: RT.lock().relu(self.id),
-        };
+        return Tensor { id: RT.lock().relu(self.id) };
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.
@@ -895,9 +829,7 @@ impl Tensor {
     #[must_use]
     pub fn sin(&self) -> Tensor {
         let x = self.float_cast();
-        let x = Tensor {
-            id: RT.lock().sin(x.id),
-        };
+        let x = Tensor { id: RT.lock().sin(x.id) };
         x
     }
 
@@ -934,10 +866,7 @@ impl Tensor {
     #[must_use]
     pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
         let x = self * beta;
-        x.cmplt(threshold)
-            .unwrap()
-            .where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
-            .unwrap()
+        x.cmplt(threshold).unwrap().where_(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }
 
     /// Applies the square root function to each element in the input tensor.
@@ -952,9 +881,7 @@ impl Tensor {
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         let x = self.float_cast();
-        let x = Tensor {
-            id: RT.lock().sqrt(x.id),
-        };
+        let x = Tensor { id: RT.lock().sqrt(x.id) };
         x
     }
 
@@ -1035,9 +962,7 @@ impl Tensor {
                 shape
             )));
         }
-        Ok(Tensor {
-            id: RT.lock().expand(self.id, shape),
-        })
+        Ok(Tensor { id: RT.lock().expand(self.id, shape) })
     }
 
     /// Permutes the axes of this tensor.
@@ -1066,9 +991,7 @@ impl Tensor {
                 rank
             )));
         }
-        Ok(Tensor {
-            id: RT.lock().permute(self.id, &axes),
-        })
+        Ok(Tensor { id: RT.lock().permute(self.id, &axes) })
     }
 
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
@@ -1111,9 +1034,7 @@ impl Tensor {
                 )));
             }
         }
-        Ok(Tensor {
-            id: RT.lock().pad_zeros(self.id, padding),
-        })
+        Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
     }
 
     /// Constant padding
@@ -1225,9 +1146,7 @@ impl Tensor {
                 shape
             )));
         };
-        Ok(Tensor {
-            id: RT.lock().reshape(self.id, shape),
-        })
+        Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
     }
 
     /// Transpose last two dimensions of this tensor.
@@ -1341,9 +1260,7 @@ impl Tensor {
                 return Err(ZyxError::ShapeError("Axes contain duplicates.".into()));
             }
         }
-        Ok(Tensor {
-            id: RT.lock().max_reduce(self.id, axes),
-        })
+        Ok(Tensor { id: RT.lock().max_reduce(self.id, axes) })
     }
 
     /// Returns the maximum value along the specified axes.
@@ -1394,10 +1311,7 @@ impl Tensor {
         Ok(self.sum(axes.clone())?
             / Tensor::constant(
                 i64::try_from(
-                    into_axes(axes, shape.rank())?
-                        .into_iter()
-                        .map(|a| shape[a])
-                        .product::<usize>(),
+                    into_axes(axes, shape.rank())?.into_iter().map(|a| shape[a]).product::<usize>(),
                 )
                 .unwrap(),
             )
@@ -1503,8 +1417,7 @@ impl Tensor {
         correction: usize,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        self.std(axes.clone(), correction)?
-            .reshape(self.reduce_kd_shape(axes))
+        self.std(axes.clone(), correction)?.reshape(self.reduce_kd_shape(axes))
     }
 
     /// Sum reduce. Removes tensor dimensions.
@@ -1519,9 +1432,7 @@ impl Tensor {
         // TODO handle axes out of range error
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
-        Ok(Tensor {
-            id: RT.lock().sum_reduce(self.id, axes),
-        })
+        Ok(Tensor { id: RT.lock().sum_reduce(self.id, axes) })
     }
 
     // Probably just have sum_kd, max_kd that keep tensor dimensions
@@ -1631,10 +1542,7 @@ impl Tensor {
         let shape = self.shape();
         let x = self - self.mean_kd(axes.clone())?;
         let d = i64::try_from(
-            into_axes(axes.clone(), shape.rank())?
-                .into_iter()
-                .map(|a| shape[a])
-                .product::<usize>(),
+            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a]).product::<usize>(),
         )
         .unwrap()
             - i64::try_from(correction).unwrap();
@@ -1675,8 +1583,7 @@ impl Tensor {
         correction: usize,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        self.var(axes.clone(), correction)?
-            .reshape(self.reduce_kd_shape(axes))
+        self.var(axes.clone(), correction)?.reshape(self.reduce_kd_shape(axes))
     }
 
     // index
@@ -1742,10 +1649,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
-        let n = *self
-            .shape()
-            .last()
-            .expect("Shape in invalid state. Internal bug.");
+        let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
             .pad_zeros([(0, isize::try_from(n).unwrap())])
@@ -1848,15 +1752,13 @@ impl Tensor {
             .collect::<Vec<usize>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        (self.reshape(x_shape)? * y.reshape(y_shape)?)
-            .sum([-1])?
-            .reshape(
-                xshape[0..xshape.len() - 1]
-                    .iter()
-                    .copied()
-                    .chain([yshape[yshape.len() - 2]])
-                    .collect::<Vec<usize>>(),
-            )
+        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(
+            xshape[0..xshape.len() - 1]
+                .iter()
+                .copied()
+                .chain([yshape[yshape.len() - 2]])
+                .collect::<Vec<usize>>(),
+        )
     }
 
     /// Matmul is just alias to dot
@@ -2168,9 +2070,8 @@ impl Tensor {
             }
         }
         let mut offset = 0isize;
-        let mut offset2 = tensors
-            .iter()
-            .fold(0, |acc, t| acc + isize::try_from(t.shape()[dim]).unwrap());
+        let mut offset2 =
+            tensors.iter().fold(0, |acc, t| acc + isize::try_from(t.shape()[dim]).unwrap());
         let mut shape = tensors[0].shape();
         shape[dim] = usize::try_from(offset2).unwrap();
         let mut res = None;
@@ -2318,10 +2219,7 @@ impl Tensor {
         dim: isize,
     ) -> Result<Tensor, ZyxError> {
         // TODO handle dim corretly
-        let tensors: Vec<Tensor> = tensors
-            .into_iter()
-            .map(|t| t.unsqueeze(dim).unwrap())
-            .collect();
+        let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim).unwrap()).collect();
         Tensor::cat(&tensors, dim)
     }
 
@@ -2452,10 +2350,8 @@ impl Tensor {
             )
             .collect();
         //println!("repeats {repeats:?}");
-        let pad_b: Vec<Range<isize>> = shape[..rank - k_.len()]
-            .iter()
-            .map(|&d| 0..isize::try_from(d).unwrap())
-            .collect();
+        let pad_b: Vec<Range<isize>> =
+            shape[..rank - k_.len()].iter().map(|&d| 0..isize::try_from(d).unwrap()).collect();
         let sh_b: Vec<usize> = shape[..rank - k_.len()].into();
         let mut xup = self.repeat(repeats)?;
 
@@ -2496,16 +2392,14 @@ impl Tensor {
             .iter()
             .cloned()
             .chain(
-                k_.iter()
-                    .copied()
-                    .zip(o_.iter().copied())
-                    .zip(s_.iter().copied())
-                    .flat_map(|((k, o), s)| {
+                k_.iter().copied().zip(o_.iter().copied()).zip(s_.iter().copied()).flat_map(
+                    |((k, o), s)| {
                         [
                             (0..isize::try_from(k).unwrap()),
                             (0..isize::try_from(o * s).unwrap()),
                         ]
-                    }),
+                    },
+                ),
             )
             .collect();
         xup = xup.get(padding)?;
@@ -2529,16 +2423,13 @@ impl Tensor {
             .iter()
             .cloned()
             .chain(
-                k_.iter()
-                    .copied()
-                    .zip(o_.iter().copied())
-                    .flat_map(|(k, o)| {
-                        [
-                            (0..isize::try_from(k).unwrap()),
-                            (0..isize::try_from(o).unwrap()),
-                            (0..1),
-                        ]
-                    }),
+                k_.iter().copied().zip(o_.iter().copied()).flat_map(|(k, o)| {
+                    [
+                        (0..isize::try_from(k).unwrap()),
+                        (0..isize::try_from(o).unwrap()),
+                        (0..1),
+                    ]
+                }),
             )
             .collect();
         xup = xup.get(padding)?;
@@ -2547,12 +2438,7 @@ impl Tensor {
         let sh: Vec<usize> = sh_b
             .iter()
             .copied()
-            .chain(
-                k_.iter()
-                    .copied()
-                    .zip(o_.iter().copied())
-                    .flat_map(Into::<[usize; 2]>::into),
-            )
+            .chain(k_.iter().copied().zip(o_.iter().copied()).flat_map(Into::<[usize; 2]>::into))
             .collect();
         xup = xup.reshape(sh)?;
 
@@ -2599,27 +2485,18 @@ impl Tensor {
                 "Repeats must be greater or equal to rank of the tensor.".into(),
             ));
         }
-        let base_shape: Vec<usize> = repeat(1)
-            .take(repeats.len() - rank)
-            .chain(shape.iter().copied())
-            .collect();
-        let new_shape: Vec<usize> = repeat(1)
-            .take(repeats.len() - rank)
-            .chain(shape)
-            .flat_map(|d| [1, d])
-            .collect();
+        let base_shape: Vec<usize> =
+            repeat(1).take(repeats.len() - rank).chain(shape.iter().copied()).collect();
+        let new_shape: Vec<usize> =
+            repeat(1).take(repeats.len() - rank).chain(shape).flat_map(|d| [1, d]).collect();
         let expand_shape: Vec<usize> = repeats
             .iter()
             .copied()
             .zip(base_shape.iter().copied())
             .flat_map(Into::<[usize; 2]>::into)
             .collect();
-        let final_shape: Vec<usize> = repeats
-            .iter()
-            .copied()
-            .zip(base_shape.iter().copied())
-            .map(|(r, d)| r * d)
-            .collect();
+        let final_shape: Vec<usize> =
+            repeats.iter().copied().zip(base_shape.iter().copied()).map(|(r, d)| r * d).collect();
         //println!("base_shape {base_shape:?} {new_shape:?} {expand_shape:?} {final_shape:?}");
         let mut x = self.reshape(new_shape).unwrap();
         x = x.expand(expand_shape).unwrap();
@@ -2667,11 +2544,7 @@ impl Tensor {
     pub fn load<Module: FromIterator<(String, Tensor)>>(
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
-        let e = path
-            .as_ref()
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap();
+        let e = path.as_ref().extension().and_then(std::ffi::OsStr::to_str).unwrap();
         match e {
             "safetensors" => Self::load_safetensors(path),
             #[cfg(feature = "gguf")]
@@ -2700,10 +2573,8 @@ impl Tensor {
                 //unsafe { buf.set_len(n_bytes) }
                 //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
                 //f.read_exact(&mut buf)?;
-                let vec: Vec<T> = buf
-                    .chunks_exact(dtype.byte_size())
-                    .map(Scalar::from_le_bytes)
-                    .collect();
+                let vec: Vec<T> =
+                    buf.chunks_exact(dtype.byte_size()).map(Scalar::from_le_bytes).collect();
                 Tensor::from(vec).reshape(shape)
             } else {
                 //let mut buf: Vec<T> = Vec::with_capacity(n);
@@ -2719,7 +2590,6 @@ impl Tensor {
         }
         use std::io::Read;
         RT.lock().initialize_devices()?;
-        let debug_print: bool = RT.lock().debug.dev();
         let mut f = std::fs::File::open(path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
@@ -2741,7 +2611,7 @@ impl Tensor {
         let mut shape = vec![1];
         let mut label = String::new();
         let mut metadata = true;
-        let progress_bar = if debug_print {
+        /*let progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
             let bar = indicatif::ProgressBar::new(
                 header.chars().filter(|&c| c == '[').count() as u64 / 2,
@@ -2755,7 +2625,7 @@ impl Tensor {
             Some(bar)
         } else {
             None
-        };
+        };*/
         let mmap = unsafe { memmap2::Mmap::map(&f)? };
         let mut mptr = mmap.as_ptr();
         mptr = mptr.wrapping_add(8 + header.len());
@@ -2810,10 +2680,10 @@ impl Tensor {
                                 "Safetensors shapes and offsets are incorrect.".into(),
                             ));
                         }
-                        if let Some(bar) = &progress_bar {
+                        /*if let Some(bar) = &progress_bar {
                             bar.inc(1);
                             bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
-                        }
+                        }*/
                         tensors.insert(
                             label.clone(),
                             match dtype {
@@ -3094,16 +2964,10 @@ impl Tensor {
         let mut ny_shape = y_shape.clone();
         match rx.cmp(&ry) {
             Ordering::Less => {
-                nx_shape = core::iter::repeat(1)
-                    .take(ry - rx)
-                    .chain(nx_shape)
-                    .collect();
+                nx_shape = core::iter::repeat(1).take(ry - rx).chain(nx_shape).collect();
             }
             Ordering::Greater => {
-                ny_shape = core::iter::repeat(1)
-                    .take(rx - ry)
-                    .chain(ny_shape)
-                    .collect();
+                ny_shape = core::iter::repeat(1).take(rx - ry).chain(ny_shape).collect();
             }
             Ordering::Equal => {}
         }
@@ -3283,8 +3147,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TryFrom<Tenso
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         let mut data = [[[T::zero(); D2]; D1]; D0];
-        RT.lock()
-            .load(value.id, data.as_flattened_mut().as_flattened_mut())?;
+        RT.lock().load(value.id, data.as_flattened_mut().as_flattened_mut())?;
         Ok(data)
     }
 }
@@ -3297,9 +3160,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         let mut data = [[[[T::zero(); D3]; D2]; D1]; D0];
         RT.lock().load(
             value.id,
-            data.as_flattened_mut()
-                .as_flattened_mut()
-                .as_flattened_mut(),
+            data.as_flattened_mut().as_flattened_mut().as_flattened_mut(),
         )?;
         Ok(data)
     }
@@ -3319,10 +3180,7 @@ impl<
         let mut data = [[[[[T::zero(); D4]; D3]; D2]; D1]; D0];
         RT.lock().load(
             value.id,
-            data.as_flattened_mut()
-                .as_flattened_mut()
-                .as_flattened_mut()
-                .as_flattened_mut(),
+            data.as_flattened_mut().as_flattened_mut().as_flattened_mut().as_flattened_mut(),
         )?;
         Ok(data)
     }
@@ -3709,51 +3567,39 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        Tensor {
-            id: RT.lock().variable(vec![1], &[value]).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![1], &[value]).unwrap() }
     }
 }
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
-        Tensor {
-            id: RT.lock().variable(vec![data.len()], &data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![data.len()], &data).unwrap() }
     }
 }
 
 impl<T: Scalar> From<&Vec<T>> for Tensor {
     fn from(data: &Vec<T>) -> Self {
-        Tensor {
-            id: RT.lock().variable(vec![data.len()], data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![data.len()], data).unwrap() }
     }
 }
 
 impl<T: Scalar> From<&[T]> for Tensor {
     fn from(data: &[T]) -> Self {
         let n = data.len();
-        Tensor {
-            id: RT.lock().variable(vec![n], data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![n], data).unwrap() }
     }
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        Tensor {
-            id: RT.lock().variable(vec![D0], &data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![D0], &data).unwrap() }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        Tensor {
-            id: RT.lock().variable(vec![D0, D1], data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![D0, D1], data).unwrap() }
     }
 }
 
@@ -3762,9 +3608,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        Tensor {
-            id: RT.lock().variable(vec![D0, D1, D2], data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![D0, D1, D2], data).unwrap() }
     }
 }
 
@@ -3774,33 +3618,25 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        Tensor {
-            id: RT.lock().variable(vec![D0, D1, D2, D3], data).unwrap(),
-        }
+        Tensor { id: RT.lock().variable(vec![D0, D1, D2, D3], data).unwrap() }
     }
 }
 
 impl PartialEq<f32> for Tensor {
     fn eq(&self, other: &f32) -> bool {
-        self.clone()
-            .try_into()
-            .map_or(false, |data| Scalar::is_equal(data, *other))
+        self.clone().try_into().map_or(false, |data| Scalar::is_equal(data, *other))
     }
 }
 
 impl PartialEq<f64> for Tensor {
     fn eq(&self, other: &f64) -> bool {
-        self.clone()
-            .try_into()
-            .map_or(false, |data| Scalar::is_equal(data, *other))
+        self.clone().try_into().map_or(false, |data| Scalar::is_equal(data, *other))
     }
 }
 
 impl PartialEq<i32> for Tensor {
     fn eq(&self, other: &i32) -> bool {
-        self.clone()
-            .try_into()
-            .map_or(false, |data| Scalar::is_equal(data, *other))
+        self.clone().try_into().map_or(false, |data| Scalar::is_equal(data, *other))
     }
 }
 
@@ -3828,9 +3664,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for T
         if self.shape() != [D0, D1] {
             return false;
         }
-        self.clone()
-            .try_into()
-            .map_or(false, |data: [[T; D1]; D0]| &data == other)
+        self.clone().try_into().map_or(false, |data: [[T; D1]; D0]| &data == other)
     }
 }
 
@@ -3841,9 +3675,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
         if self.shape() != [D0, D1, D2] {
             return false;
         }
-        self.clone()
-            .try_into()
-            .map_or(false, |data: [[[T; D2]; D1]; D0]| &data == other)
+        self.clone().try_into().map_or(false, |data: [[[T; D2]; D1]; D0]| &data == other)
     }
 }
 
@@ -3854,9 +3686,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         if self.shape() != [D0, D1, D2, D3] {
             return false;
         }
-        self.clone()
-            .try_into()
-            .map_or(false, |data: [[[[T; D3]; D2]; D1]; D0]| &data == other)
+        self.clone().try_into().map_or(false, |data: [[[[T; D3]; D2]; D1]; D0]| &data == other)
     }
 }
 
@@ -3873,11 +3703,9 @@ impl<
         if self.shape() != [D0, D1, D2, D3, D4] {
             return false;
         }
-        self.clone()
-            .try_into()
-            .map_or(false, |data: [[[[[T; D4]; D3]; D2]; D1]; D0]| {
-                &data == other
-            })
+        self.clone().try_into().map_or(false, |data: [[[[[T; D4]; D3]; D2]; D1]; D0]| {
+            &data == other
+        })
     }
 }
 
@@ -3889,9 +3717,7 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor {
-            id: RT.lock().add(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
         tensor
     }
 }
@@ -3904,9 +3730,7 @@ impl<IT: Into<Tensor>> Add<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor {
-            id: RT.lock().add(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
         tensor
     }
 }
@@ -3919,9 +3743,7 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor {
-            id: RT.lock().sub(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
         tensor
     }
 }
@@ -3934,9 +3756,7 @@ impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor {
-            id: RT.lock().sub(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
         tensor
     }
 }
@@ -3951,9 +3771,7 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
         //println!("Multiply by {y}");
-        let tensor = Tensor {
-            id: RT.lock().mul(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
         tensor
     }
 }
@@ -3967,9 +3785,7 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor {
-            id: RT.lock().mul(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
         tensor
     }
 }
@@ -3978,9 +3794,7 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().div(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
         tensor
     }
 }
@@ -3989,9 +3803,7 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().div(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
         tensor
     }
 }
@@ -4000,9 +3812,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().bitor(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().bitor(x.id, y.id) };
         tensor
     }
 }
@@ -4011,9 +3821,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().bitor(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().bitor(x.id, y.id) };
         tensor
     }
 }
@@ -4022,9 +3830,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().bitxor(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().bitxor(x.id, y.id) };
         tensor
     }
 }
@@ -4033,9 +3839,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().bitxor(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().bitxor(x.id, y.id) };
         tensor
     }
 }
@@ -4044,9 +3848,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().bitand(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().bitand(x.id, y.id) };
         tensor
     }
 }
@@ -4055,9 +3857,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor {
-            id: RT.lock().bitand(x.id, y.id),
-        };
+        let tensor = Tensor { id: RT.lock().bitand(x.id, y.id) };
         tensor
     }
 }
@@ -4065,36 +3865,28 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
 impl Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor {
-            id: RT.lock().neg(self.id),
-        }
+        Tensor { id: RT.lock().neg(self.id) }
     }
 }
 
 impl Neg for &Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor {
-            id: RT.lock().neg(self.id),
-        }
+        Tensor { id: RT.lock().neg(self.id) }
     }
 }
 
 impl Not for Tensor {
     type Output = Tensor;
     fn not(self) -> Self::Output {
-        Tensor {
-            id: RT.lock().not(self.id),
-        }
+        Tensor { id: RT.lock().not(self.id) }
     }
 }
 
 impl Not for &Tensor {
     type Output = Tensor;
     fn not(self) -> Self::Output {
-        Tensor {
-            id: RT.lock().not(self.id),
-        }
+        Tensor { id: RT.lock().not(self.id) }
     }
 }
 

@@ -24,11 +24,12 @@ use std::{
 };
 
 use half::{bf16, f16};
+use nanoserde::DeJson;
 use rand::rngs::SmallRng;
 
 /// Device configuration
 #[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(serde::Deserialize, Debug, Default)]
+#[derive(DeJson, Debug, Default)]
 pub struct DeviceConfig {
     /// CUDA configuration
     pub cuda: CUDAConfig,
@@ -154,7 +155,7 @@ impl Runtime {
                 })
             })
             .and_then(|file| {
-                serde_json::from_str(&file)
+                DeJson::deserialize_json(&file)
                     .map_err(|e| {
                         if self.debug.dev() {
                             println!("Failed to parse device_config.json, {e}");
