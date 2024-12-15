@@ -22,8 +22,7 @@ impl Scalar for f32 {
     }
 
     fn from_u64(t: u64) -> Self {
-        let _ = t;
-        todo!()
+        t as f32
     }
 
     fn from_f32(t: f32) -> Self {

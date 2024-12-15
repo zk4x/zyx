@@ -66,22 +66,60 @@ impl Rng {
         res
     }
 
+    const fn next_u32(&mut self) -> u32 {
+        let x = self.next_u64().to_ne_bytes();
+        u32::from_ne_bytes([x[0], x[1], x[2], x[3]])
+    }
+
+    const fn next_u16(&mut self) -> u16 {
+        let x = self.next_u64().to_ne_bytes();
+        u16::from_ne_bytes([x[0], x[1]])
+    }
+
+    const fn next_u8(&mut self) -> u8 {
+        let x = self.next_u64().to_ne_bytes();
+        u8::from_ne_bytes([x[0]])
+    }
+
+    const fn next_f32(&mut self) -> f32 {
+        let seed = self.next_u32();
+
+        const A: u32 = 1664525;
+        const C: u32 = 1013904223;
+        const M: u32 = u32::MAX;
+
+        // Generate the next random number using the seed and LCG formula
+        let next_seed = (A.wrapping_mul(seed).wrapping_add(C)) % M;
+
+        // Convert the u32 result to a float in the range [0, 1)
+        next_seed as f32 / M as f32
+    }
+
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
-            DType::BF16 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
-            DType::F8 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
-            DType::F16 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
-            DType::F32 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
-            DType::F64 => (self.next_u64() as f64 * 2.3283064365386963E-10).cast(),
-            DType::U8 => self.next_u64().cast(),
-            DType::U16 => self.next_u64().cast(),
-            DType::U32 => self.next_u64().cast(),
+            DType::BF16 => self.next_f32().cast(),
+            DType::F8 => self.next_f32().cast(),
+            DType::F16 => self.next_f32().cast(),
+            DType::F32 => self.next_f32().cast(),
+            DType::F64 => self.next_f32().cast(),
+            DType::U8 => self.next_u8().cast(),
+            DType::U16 => self.next_u16().cast(),
+            DType::U32 => self.next_u32().cast(),
             DType::U64 => self.next_u64().cast(),
-            DType::I8 => self.next_u64().cast(),
-            DType::I16 => self.next_u64().cast(),
-            DType::I32 => self.next_u64().cast(),
+            DType::I8 => self.next_u8().cast(),
+            DType::I16 => self.next_u16().cast(),
+            DType::I32 => self.next_u32().cast(),
             DType::I64 => self.next_u64().cast(),
-            DType::Bool => self.next_u64().cast(),
+            DType::Bool => self.next_u8().cast(),
         }
     }
 }
+
+/*#[test]
+fn rng1() {
+    let mut rng = Rng::seed_from_u64(42069);
+    for _ in 0..10 {
+        let x: f32 = rng.rand();
+        println!("{x}");
+    }
+}*/
