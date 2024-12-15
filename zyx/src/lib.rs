@@ -64,6 +64,7 @@ mod ir;
 mod kernel;
 mod node;
 mod optimizer;
+mod rng;
 mod scheduler;
 mod view;
 

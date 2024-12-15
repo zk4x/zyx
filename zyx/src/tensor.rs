@@ -237,42 +237,30 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
-        const SEED: u64 = 69420;
-        use rand::distributions::Uniform;
-        use rand::rngs::SmallRng;
-        use rand::Rng;
-        use rand::SeedableRng;
         let shape: Vec<usize> = shape.into_shape().collect();
         let n = shape.iter().product();
         if dtype.is_float() {
             // TODO later use threefry
             let mut rt = RT.lock();
-            rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-            let Some(rng) = rt.rng.get_mut() else { unreachable!() };
             match dtype {
                 DType::BF16 => {
-                    let range = Uniform::new(0., 1.);
-                    let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::BF16))
                 }
                 DType::F8 => {
-                    let range = Uniform::new(0., 1.);
-                    let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::F8))
                 }
                 DType::F16 => {
-                    let range = Uniform::new(0., 1.);
-                    let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::F16))
                 }
                 DType::F32 => {
-                    let range = Uniform::new(0., 1.);
-                    let data: Vec<f32> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::F64 => {
-                    let range = Uniform::new(0., 1.);
-                    let data: Vec<f64> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U8
@@ -287,47 +275,37 @@ impl Tensor {
             }
         } else {
             let mut rt = RT.lock();
-            rt.rng.get_or_init(|| SmallRng::seed_from_u64(SEED));
-            let Some(rng) = rt.rng.get_mut() else { unreachable!() };
             match dtype {
                 DType::U8 => {
-                    let range = Uniform::new(0, u8::MAX);
-                    let data: Vec<u8> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U16 => {
-                    let range = Uniform::new(0, u16::MAX);
-                    let data: Vec<u16> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U32 => {
-                    let range = Uniform::new(0, u32::MAX);
-                    let data: Vec<u32> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::U64 => {
-                    let range = Uniform::new(0, u64::MAX);
-                    let data: Vec<u64> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I8 => {
-                    let range = Uniform::new(0, i8::MAX);
-                    let data: Vec<i8> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I16 => {
-                    let range = Uniform::new(0, i16::MAX);
-                    let data: Vec<i16> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I32 => {
-                    let range = Uniform::new(0, i32::MAX);
-                    let data: Vec<i32> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::I64 => {
-                    let range = Uniform::new(0, i64::MAX);
-                    let data: Vec<i64> = (0..n).map(|_| rng.sample(range)).collect();
+                    let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, &data)? })
                 }
                 DType::Bool => Err(ZyxError::DTypeError(

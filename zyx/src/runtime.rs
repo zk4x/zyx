@@ -12,6 +12,7 @@ use crate::dtype::{Constant, DType};
 use crate::graph::Graph;
 use crate::node::{BOp, Node, ROp, UOp};
 use crate::optimizer::Optimizer;
+use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
 use crate::tensor::TensorId;
@@ -25,7 +26,6 @@ use std::{
 
 use half::{bf16, f16};
 use nanoserde::DeJson;
-use rand::rngs::SmallRng;
 
 /// Device configuration
 #[cfg_attr(feature = "py", pyo3::pyclass)]
@@ -61,7 +61,7 @@ pub struct Runtime {
     // Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Random number generator
-    pub(super) rng: std::cell::OnceCell<SmallRng>,
+    pub(super) rng: Rng,
     // Are we in training mode?
     pub(super) training: bool,
     /// How many variations of one kernel to try during optimization
@@ -78,7 +78,7 @@ impl Runtime {
             graph: Graph::new(),
             devices: Vec::new(),
             memory_pools: Vec::new(),
-            rng: std::cell::OnceCell::new(),
+            rng: Rng::seed_from_u64(42069),
             config_dir: None,
             optimizer: Optimizer::new(),
             training: false,
@@ -224,8 +224,7 @@ impl Runtime {
     }
 
     pub(super) fn manual_seed(&mut self, seed: u64) {
-        use rand::SeedableRng;
-        self.rng = std::cell::OnceCell::from(SmallRng::seed_from_u64(seed));
+        self.rng = Rng::seed_from_u64(seed);
     }
 
     /// Creates dot plot of graph between given tensors

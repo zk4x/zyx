@@ -16,24 +16,26 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
+# Good, well written minimal dependencies
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.5", default-features = false } # ISC
+
+# To be removed
+# Memory mapped loading of tensors from disk
+memmap2 = { version = "0.9.5" }
 # nanoserde is used to read backend config
 nanoserde = { version = "*", default-features = false }
-# Support for random number generation
-rand = { version = "0.8.5", default-features = false, features = [
-    "small_rng",
-] } # MIT or Apache 2.0
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
-# For nice colorful debug logging
-#inline_colorization = { version = "0.1.6", default-features = false } # MIT
 # Support for f16 and bf16 dtypes
 float8 = { version = "0.1.1" } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1" } # MIT or Apache 2.0
-# Memory mapped loading of tensors from disk
-memmap2 = { version = "0.9.5" }
+# Support for random number generation
+#rand = { version = "0.8.5", default-features = false, features = [
+#"small_rng",
+#] } # MIT or Apache 2.0
+
 # Progress bar for loading tensors and such
 #indicatif = { version = "0.17.9" }
 

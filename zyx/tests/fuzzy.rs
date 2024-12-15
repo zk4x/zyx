@@ -1,7 +1,22 @@
 #![allow(unused)]
-use rand::{distributions::Uniform, Rng, SeedableRng};
-use std::rc::Rc;
+use std::{ops::RangeBounds, rc::Rc};
 use zyx::{DType, Float, Scalar, Tensor, ZyxError};
+
+struct Rng(u64);
+
+impl Rng {
+    const fn seed_from_u64(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn rand<T: Scalar>(&mut self) -> T {
+        todo!()
+    }
+
+    fn gen_range<T: Scalar>(&mut self, r: impl RangeBounds<T>) -> T {
+        todo!()
+    }
+}
 
 #[allow(unused)]
 //#[test]
@@ -12,8 +27,8 @@ fn fuzzy() -> Result<(), ZyxError> {
     let max_dims = 3;
     let num_nodes = 5;
 
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(rand_seed);
-    let num_t = rng.gen_range(0..max_tensors);
+    let mut rng = Rng::seed_from_u64(rand_seed);
+    let num_t: u64 = rng.gen_range(0..max_tensors);
     let mut tensors = Vec::new();
     let mut cpu_tensors = Vec::new();
 
@@ -27,15 +42,14 @@ fn fuzzy() -> Result<(), ZyxError> {
                 max_numel / 10
             };
             if n > 1 {
-                shape.insert(0, rng.gen_range(1..n));
+                shape.insert(0, rng.gen_range(1..n as u64) as usize);
             } else {
                 break;
             }
         }
         //tensors.push(Tensor::randn(&shape, DType::F32));
         let numel = shape.iter().product();
-        let r = Uniform::new(-100., 100.);
-        let data: Vec<f32> = (0..numel).map(|_| rng.sample(&r)).collect();
+        let data: Vec<f32> = (0..numel).map(|_| rng.gen_range(-100f32..100f32)).collect();
         tensors.push(Tensor::from(&data).reshape(&shape)?);
         cpu_tensors.push(CPUTensor::new(&data).reshape(&shape));
     }
@@ -46,8 +60,8 @@ fn fuzzy() -> Result<(), ZyxError> {
         // cast if necessary
         // apply that op
         // Assert that CPUTensor and zyx::Tensor give the same result
-        let x = rng.gen_range(0..num_t);
-        let y = rng.gen_range(0..num_t);
+        let x = rng.gen_range(0..num_t) as usize;
+        let y = rng.gen_range(0..num_t) as usize;
         match rng.gen_range(0..12) {
             // Unary
             0 => {
@@ -166,23 +180,17 @@ macro_rules! binary_op {
             view: $x.view.clone(),
             data: match &$x.data {
                 Data::F32(xdata) => {
-                    let Data::F32(ydata) = &$y.data else {
-                        unreachable!()
-                    };
+                    let Data::F32(ydata) = &$y.data else { unreachable!() };
                     //Data::F32(binary(&$x.view, xdata, &$y.view, ydata, $op))
                     todo!()
                 }
                 Data::F64(xdata) => {
-                    let Data::F64(ydata) = &$y.data else {
-                        unreachable!()
-                    };
+                    let Data::F64(ydata) = &$y.data else { unreachable!() };
                     //Data::F64(binary(&$x.view, xdata, &$y.view, ydata, $op))
                     todo!()
                 }
                 Data::I32(xdata) => {
-                    let Data::I32(ydata) = &$y.data else {
-                        unreachable!()
-                    };
+                    let Data::I32(ydata) = &$y.data else { unreachable!() };
                     //Data::I32(binary(&$x.view, xdata, &$y.view, ydata, $op))
                     todo!()
                 }
@@ -222,25 +230,13 @@ impl CPUTensor {
         let numel = self.view.numel();
         match &self.data {
             Data::F32(data) => unsafe {
-                t(self
-                    .view
-                    .iterate_padded(data)
-                    .take(numel)
-                    .collect::<Vec<f32>>())
+                t(self.view.iterate_padded(data).take(numel).collect::<Vec<f32>>())
             },
             Data::F64(data) => unsafe {
-                t(self
-                    .view
-                    .iterate_padded(data)
-                    .take(numel)
-                    .collect::<Vec<f64>>())
+                t(self.view.iterate_padded(data).take(numel).collect::<Vec<f64>>())
             },
             Data::I32(data) => unsafe {
-                t(self
-                    .view
-                    .iterate_padded(data)
-                    .take(numel)
-                    .collect::<Vec<i32>>())
+                t(self.view.iterate_padded(data).take(numel).collect::<Vec<i32>>())
             },
         }
     }
@@ -270,10 +266,7 @@ impl CPUTensor {
                 _ => todo!(),
             },
         };
-        CPUTensor {
-            view: self.view.clone(),
-            data,
-        }
+        CPUTensor { view: self.view.clone(), data }
     }
 
     pub fn relu(&self) -> CPUTensor {
@@ -445,11 +438,7 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
     ydata: &[YT],
     op: impl Fn(XT, YT) -> T2 + Sync + Send,
 ) -> Rc<[T2]> {
-    xview
-        .iterate_padded(xdata)
-        .zip(yview.iterate_padded(ydata))
-        .map(|(x, y)| op(x, y))
-        .collect()
+    xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).map(|(x, y)| op(x, y)).collect()
 }
 
 fn reduce_op<T: Scalar>(
@@ -536,12 +525,7 @@ impl<'a, T: Scalar> Iterator for CPUPaddedIter<'a, T> {
         }
         let mut idx = self.idx;
         self.idx += 1;
-        for InnerView {
-            shape,
-            strides,
-            padding,
-        } in &self.view.views
-        {
+        for InnerView { shape, strides, padding } in &self.view.views {
             let mut res = 0;
             for ((d, st), (lp, rp)) in shape.into_iter().zip(strides).zip(padding.iter()).rev() {
                 let mut dim_idx = idx % d;
@@ -572,13 +556,7 @@ impl View {
     pub fn new(shape: &[usize]) -> View {
         let shape: Vec<usize> = shape.into();
         let strides = shape.strides();
-        View {
-            views: vec![InnerView {
-                shape,
-                strides,
-                padding: Vec::new(),
-            }],
-        }
+        View { views: vec![InnerView { shape, strides, padding: Vec::new() }] }
     }
 
     #[must_use]
@@ -598,27 +576,18 @@ impl View {
 
     #[must_use]
     pub fn iterate_padded<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
-        CPUPaddedIter {
-            data,
-            view: self,
-            idx: 0,
-            num_iters: self.numel() - 1,
-        }
+        CPUPaddedIter { data, view: self, idx: 0, num_iters: self.numel() - 1 }
     }
 
     #[must_use]
     pub fn expand(&self, shape: &[usize]) -> Self {
         let mut views = self.views.clone();
         //std::println!("Expanding {views:?}");
-        views[0].strides = views[0]
-            .shape
-            .expand_strides(shape, views[0].strides.clone());
+        views[0].strides = views[0].shape.expand_strides(shape, views[0].strides.clone());
         views[0].shape = shape.into();
         let n = shape.len() - views[0].padding.len();
-        views[0].padding = core::iter::repeat((0, 0))
-            .take(n)
-            .chain(views[0].padding.iter().copied())
-            .collect();
+        views[0].padding =
+            core::iter::repeat((0, 0)).take(n).chain(views[0].padding.iter().copied()).collect();
         //std::println!("To {views:?}");
         Self { views }
     }
@@ -627,12 +596,7 @@ impl View {
     pub fn pad(&self, new_padding: &[(isize, isize)]) -> Self {
         //std::println!("{:?}\n{new_padding:?}", self);
         let mut views = self.views.clone();
-        if let Some(InnerView {
-            shape,
-            strides: _,
-            padding,
-        }) = views.first_mut()
-        {
+        if let Some(InnerView { shape, strides: _, padding }) = views.first_mut() {
             // Invert padding order
             for (i, d) in shape.iter_mut().rev().enumerate() {
                 if let Some((left, right)) = new_padding.get(i) {
@@ -689,20 +653,11 @@ impl View {
         } else {
             let shape = self.shape();
             if n_shape.len() > shape.len()
-                && n_shape
-                    .iter()
-                    .filter(|d| **d != 1)
-                    .zip(shape.iter())
-                    .all(|(nd, d)| nd == d)
+                && n_shape.iter().filter(|d| **d != 1).zip(shape.iter()).all(|(nd, d)| nd == d)
             {
                 // If not  contiguous, then merge, this merges if reshape is unsqueeze
                 //std::println!("Ok to merge {n_shape} with {}", self.shape());
-                if let Some(InnerView {
-                    shape,
-                    strides,
-                    padding,
-                }) = views.first_mut()
-                {
+                if let Some(InnerView { shape, strides, padding }) = views.first_mut() {
                     //std::println!("Merging");
                     *shape = n_shape.into();
                     let mut n_strides: Vec<usize> = strides.clone().into();
