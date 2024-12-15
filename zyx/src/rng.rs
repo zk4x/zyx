@@ -68,20 +68,20 @@ impl Rng {
 
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
-            DType::BF16 => todo!(),
-            DType::F8 => todo!(),
-            DType::F16 => todo!(),
-            DType::F32 => todo!(),
-            DType::F64 => todo!(),
-            DType::U8 => todo!(),
-            DType::U16 => todo!(),
-            DType::U32 => todo!(),
+            DType::BF16 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
+            DType::F8 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
+            DType::F16 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
+            DType::F32 => (self.next_u64().cast::<f32>() * 2.3283064E-10).cast(),
+            DType::F64 => (self.next_u64() as f64 * 2.3283064365386963E-10).cast(),
+            DType::U8 => self.next_u64().cast(),
+            DType::U16 => self.next_u64().cast(),
+            DType::U32 => self.next_u64().cast(),
             DType::U64 => self.next_u64().cast(),
-            DType::I8 => todo!(),
-            DType::I16 => todo!(),
-            DType::I32 => todo!(),
-            DType::I64 => todo!(),
-            DType::Bool => todo!(),
+            DType::I8 => self.next_u64().cast(),
+            DType::I16 => self.next_u64().cast(),
+            DType::I32 => self.next_u64().cast(),
+            DType::I64 => self.next_u64().cast(),
+            DType::Bool => self.next_u64().cast(),
         }
     }
 }
