@@ -322,21 +322,21 @@ pub(super) fn realize_graph(
                     kernels[kidx].outputs.insert(nid, z);
                     kidx
                 };
-                if rcs[&x] < 2 {
+                if x == y && rcs[&x] < 3 {
                     kernels[kidx].outputs.remove(&x);
-                }
-                if rcs[&y] < 2 {
-                    kernels[kidx].outputs.remove(&y);
+                } else {
+                    if rcs[&x] < 2 {
+                        kernels[kidx].outputs.remove(&x);
+                    }
+                    if rcs[&y] < 2 {
+                        kernels[kidx].outputs.remove(&y);
+                    }
                 }
                 kid
             }
         };
 
-        /*for kernel in kernels.values() {
-            println!("Kernel tensors: {:?}", kernel.tensors);
-            kernel.debug();
-            println!();
-        }*/
+        //for kernel in kernels.values() { kernel.debug(); println!(); }
 
         for param in graph[nid].parameters() {
             if let Some(rc) = rcs.get_mut(&param) {
@@ -365,7 +365,14 @@ pub(super) fn realize_graph(
         }
     }
 
-    debug_assert_eq!(kernels.len(), 0);
+    #[cfg(debug_assertions)]
+    if kernels.len() != 0 {
+        for kernel in kernels.values() {
+            kernel.debug();
+            println!();
+        }
+        panic!("Kernels in scheduler are not empty.");
+    }
 
     Ok(())
 }

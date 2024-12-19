@@ -1,3 +1,9 @@
+//! Kernel represents hardware programs.
+
+// TODO loosen requirements for is_expandable
+// and posdsibly remove requirements for is_paddable
+// is_reshapable more or less cannot be loosened.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
@@ -304,9 +310,10 @@ impl Kernel {
 
     pub(super) fn debug(&self) {
         println!(
-            "Kernel shape: {:?}, outputs: {:?}",
+            "Kernel shape: {:?}, outputs: {:?}, tensors: {:?}",
             self.shape(),
-            self.outputs
+            self.outputs,
+            self.tensors
         );
         let mut first_loops = true;
         let mut indent = String::new();
