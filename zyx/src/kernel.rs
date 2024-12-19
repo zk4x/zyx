@@ -336,6 +336,7 @@ impl Kernel {
                 }
             }
         }
+        println!();
     }
 
     pub(super) fn is_expandable(&self) -> bool {
@@ -583,8 +584,6 @@ impl Kernel {
         // Delete kernel and dispatch it to device
         if self.outputs.is_empty() {
             if debug.sched() {
-                println!();
-                println!("Kernel tensors: {:?}", self.tensors);
                 self.debug();
             }
 
@@ -641,6 +640,9 @@ impl Kernel {
                     .iter()
                     .filter_map(|op| {
                         if let Op::Store { z, .. } = op {
+                            //tensor_buffer_map
+                            //memory_pool.pool_to_host(buffer_id, data);
+                            //self.tensors.get(z)
                             Some(*self.tensors.get(z).unwrap())
                         } else {
                             None

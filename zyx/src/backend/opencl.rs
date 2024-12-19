@@ -910,7 +910,7 @@ impl OpenCLQueue {
             )
         }
         .check("Failed to enqueue kernel.")?;
-        //unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
+        unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
         //self.events.push(event);
         Ok(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents })
     }

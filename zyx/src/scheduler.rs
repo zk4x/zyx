@@ -255,12 +255,12 @@ pub(super) fn realize_graph(
                 let (xt, kidx) = get_kernel_max(x, &kernels);
                 let (yt, kidy) = get_kernel_max(y, &kernels);
 
-                if kernels[kidx].shape() != graph.shape(x) {
+                /*if kernels[kidx].shape() != graph.shape(x) {
                     for kernel in kernels.values() {
                         kernel.debug();
                         println!();
                     }
-                }
+                }*/
                 debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                 debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
 

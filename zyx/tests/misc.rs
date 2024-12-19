@@ -50,6 +50,8 @@ fn expand_reduce() -> Result<(), ZyxError> {
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
     Tensor::realize([&x, &y])?;
+    println!("{y}");
+    println!("{x}");
     assert_eq!(y, [[9i32, 7], [9, 7]]);
     assert_eq!(x, [[9i32, 9], [7, 7]]);
     Ok(())
