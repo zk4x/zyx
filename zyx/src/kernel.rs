@@ -531,7 +531,6 @@ impl Kernel {
         &mut self,
         nid: TensorId,
         graph: &Graph,
-        graph_rcs: &BTreeMap<TensorId, u32>,
         devices: &mut [Device],
         memory_pools: &mut [MemoryPool],
         tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
@@ -619,12 +618,7 @@ impl Kernel {
                     .iter()
                     .filter_map(|op| {
                         if let Op::Store { z, .. } = op {
-                            let t = self.get_tensor_id(*z);
-                            if graph_rcs.contains_key(&t) {
-                                Some(t)
-                            } else {
-                                None
-                            }
+                            Some(self.get_tensor_id(*z))
                         } else {
                             None
                         }

@@ -11,10 +11,12 @@ use std::{
     time::Duration,
 };
 
+#[derive(Debug)]
 pub(super) struct Optimizer {
     cache: BTreeMap<(Kernel, DeviceInfo), OptimizerProgress>,
 }
 
+#[derive(Debug)]
 enum OptimizerProgress {
     Finished {
         optimization: Optimization,
@@ -26,7 +28,7 @@ enum OptimizerProgress {
     },
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Optimization {
     splits: Vec<(usize, Vec<Dimension>)>,
     local_tiles: bool,
@@ -93,6 +95,7 @@ impl Optimizer {
             // pick an optimization
             for _ in 0..search_iters.min(opts.len()) {
                 if let Some(optimization) = opts.pop() {
+                    //println!("{optimization:?}");
                     let optimized_kernel = kernel.optimize(&optimization);
                     //optimized_kernel.debug();
                     //panic!();
@@ -346,6 +349,7 @@ impl Kernel {
         // Apply axis splits
         for (op_id, dimensions) in &optimization.splits {
             kernel.split_axis(*op_id, dimensions);
+            //kernel.debug();
         }
 
         let mut lws = [0; 3];

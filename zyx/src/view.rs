@@ -31,12 +31,7 @@ impl View {
             .map(|&d| {
                 let temp = stride;
                 stride *= d;
-                RDim {
-                    st: temp,
-                    d,
-                    lp: 0,
-                    rp: 0,
-                }
+                RDim { st: temp, d, lp: 0, rp: 0 }
             })
             .collect();
         res.reverse();
@@ -54,19 +49,9 @@ impl View {
                 let st = stride;
                 let d = shape[i];
                 stride *= d;
-                res.push(RDim {
-                    d,
-                    st,
-                    lp: 0,
-                    rp: 0,
-                });
+                res.push(RDim { d, st, lp: 0, rp: 0 });
             } else {
-                res.push(RDim {
-                    d: 1,
-                    st: 0,
-                    lp: 0,
-                    rp: 0,
-                });
+                res.push(RDim { d: 1, st: 0, lp: 0, rp: 0 });
             }
         }
         res.reverse();
@@ -78,9 +63,7 @@ impl View {
     }
 
     pub(crate) fn shape(&self) -> Vec<usize> {
-        self.0
-            .last()
-            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
+        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
     pub(crate) fn original_numel(&self) -> usize {
@@ -99,17 +82,13 @@ impl View {
     }
 
     pub(crate) fn numel(&self) -> usize {
-        self.0
-            .last()
-            .map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
+        self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
         self.0.last().map_or(true, |inner| {
             let stride = 1;
-            inner
-                .iter()
-                .all(|dim| dim.lp == 0 && dim.rp == 0 && dim.st == stride)
+            inner.iter().all(|dim| dim.lp == 0 && dim.rp == 0 && dim.st == stride)
         })
     }
 
@@ -125,20 +104,12 @@ impl View {
         if let Some(inner) = self.0.last_mut() {
             assert!(axis < inner.len());
             let st = inner[axis].st;
-            inner.insert(
-                axis,
-                RDim {
-                    d: 1,
-                    st,
-                    lp: 0,
-                    rp: 0,
-                },
-            );
+            inner.insert(axis, RDim { d: 1, st, lp: 0, rp: 0 });
         }
         //println!("After insert loop {self:?}");
     }
 
-    // This is used for both reshape and merge and split
+    // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<usize>, shape: &[usize]) {
         if self.0.is_empty() {
             return;
@@ -146,10 +117,7 @@ impl View {
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         assert!(axes.end <= self.0.last().map_or(1, Vec::len));
         assert_eq!(
-            self.0.last().unwrap()[axes.clone()]
-                .iter()
-                .map(|dim| dim.d)
-                .product::<usize>(),
+            self.0.last().unwrap()[axes.clone()].iter().map(|dim| dim.d).product::<usize>(),
             shape.iter().product::<usize>()
         );
         if let Some(inner) = self.0.last_mut() {
@@ -199,15 +167,7 @@ impl View {
                 for &d in shape.iter().rev() {
                     let st = if expanded_reshape { 0 } else { ost };
                     ost *= d;
-                    inner.insert(
-                        axes.start,
-                        RDim {
-                            d,
-                            st,
-                            lp: 0,
-                            rp: 0,
-                        },
-                    );
+                    inner.insert(axes.start, RDim { d, st, lp: 0, rp: 0 });
                 }
             } else {
                 //println!("Reshape non-contiguous");
@@ -220,12 +180,7 @@ impl View {
                     .map(|dim| {
                         let st = stride;
                         stride *= dim;
-                        RDim {
-                            st,
-                            d: *dim,
-                            lp: 0,
-                            rp: 0,
-                        }
+                        RDim { st, d: *dim, lp: 0, rp: 0 }
                     })
                     .collect();
                 res.reverse();
@@ -268,8 +223,6 @@ impl View {
             let mut dim = &mut inner[axis];
             dim.d =
                 usize::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
-            // TODO this is possible only if original padding has the same sign or is zero
-            // otherwise we need to create a new inner
             if dim.lp < 0 && left_pad > 0 {
                 dim.d = (dim.d as isize - left_pad) as usize;
                 let mut stride = 1;
@@ -474,11 +427,7 @@ impl View {
                 }
             }
         }
-        c.ops.push(IROp::Store {
-            address,
-            x: var,
-            offset,
-        });
+        c.ops.push(IROp::Store { address, x: var, offset });
     }
 }
 
@@ -489,10 +438,7 @@ impl Display for View {
                 "V(sh{:?} st{:?} pd{:?})",
                 inner.iter().map(|d| d.d).collect::<Vec<usize>>(),
                 inner.iter().map(|d| d.st).collect::<Vec<usize>>(),
-                inner
-                    .iter()
-                    .map(|d| (d.lp, d.rp))
-                    .collect::<Vec<(isize, isize)>>()
+                inner.iter().map(|d| (d.lp, d.rp)).collect::<Vec<(isize, isize)>>()
             ))?;
         }
         Ok(())
@@ -574,56 +520,16 @@ fn view_pad2() {
         view,
         View(vec![
             vec![
-                RDim {
-                    d: 1,
-                    st: 12,
-                    lp: 0,
-                    rp: 0
-                },
-                RDim {
-                    d: 1,
-                    st: 12,
-                    lp: 0,
-                    rp: 0
-                },
-                RDim {
-                    d: 2,
-                    st: 6,
-                    lp: 0,
-                    rp: 0
-                },
-                RDim {
-                    d: 3,
-                    st: 1,
-                    lp: -3,
-                    rp: 0
-                }
+                RDim { d: 1, st: 12, lp: 0, rp: 0 },
+                RDim { d: 1, st: 12, lp: 0, rp: 0 },
+                RDim { d: 2, st: 6, lp: 0, rp: 0 },
+                RDim { d: 3, st: 1, lp: -3, rp: 0 }
             ],
             vec![
-                RDim {
-                    d: 1,
-                    st: 6,
-                    lp: 0,
-                    rp: 0
-                },
-                RDim {
-                    d: 1,
-                    st: 6,
-                    lp: 0,
-                    rp: 0
-                },
-                RDim {
-                    d: 2,
-                    st: 3,
-                    lp: 0,
-                    rp: 0
-                },
-                RDim {
-                    d: 5,
-                    st: 1,
-                    lp: 2,
-                    rp: 0
-                }
+                RDim { d: 1, st: 6, lp: 0, rp: 0 },
+                RDim { d: 1, st: 6, lp: 0, rp: 0 },
+                RDim { d: 2, st: 3, lp: 0, rp: 0 },
+                RDim { d: 5, st: 1, lp: 2, rp: 0 }
             ]
         ])
     );

@@ -27,7 +27,7 @@ memmap2 = { version = "0.9.5" }
 nanoserde = { version = "*", default-features = false }
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
-# Support for f16 and bf16 dtypes
+# Support for f8 dtypes
 float8 = { version = "0.1.1" } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1" } # MIT or Apache 2.0

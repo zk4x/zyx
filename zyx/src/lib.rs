@@ -48,24 +48,24 @@
 use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
 
-mod dtype;
-mod mutex;
-#[cfg(feature = "py")]
-mod py_bindings;
-mod runtime;
-mod scalar;
-mod shape;
-mod slab;
-mod tensor;
-
 mod backend;
+mod dtype;
+mod error;
 mod graph;
 mod ir;
 mod kernel;
+mod mutex;
 mod node;
 mod optimizer;
+#[cfg(feature = "py")]
+mod py_bindings;
 mod rng;
+mod runtime;
+mod scalar;
 mod scheduler;
+mod shape;
+mod slab;
+mod tensor;
 mod view;
 
 // Constant initializable hasher because apparently noone invented that yet...
