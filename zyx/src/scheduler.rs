@@ -45,34 +45,7 @@ pub(super) fn realize_graph(
     searches: usize,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
-    // TODO merge these rc calculations with rc calculations in realize function.
-    // TODO test if HashMap is faster than BTreeMap
     // Unary and binary ops do not require duplication of kernels
-    /*let mut graph_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-    let mut special_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-    for nid in order.iter().copied() {
-        match graph[nid] {
-            Node::Const { .. } | Node::Leaf => {}
-            Node::Unary { x, .. } => {
-                graph_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            Node::Binary { x, y, .. } => {
-                graph_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                graph_rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            Node::Expand { x }
-            | Node::Permute { x }
-            | Node::Reshape { x }
-            | Node::Pad { x }
-            | Node::Reduce { x, .. } => {
-                graph_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                special_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-        }
-    }
-    for &x in to_eval {
-        graph_rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-    }*/
 
     // Unfinished kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(100);
@@ -127,12 +100,6 @@ pub(super) fn realize_graph(
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Expa });
                 kernels[kid].outputs.clear();
                 kernels[kid].outputs.insert(nid, z);
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
                 kid
             }
             Node::Reshape { x } => {
@@ -141,9 +108,9 @@ pub(super) fn realize_graph(
                 let shape = graph.shape(nid);
                 if !kernels[kid].reshape(shape) {
                     // if it is not expandable, we need to store it and create new kernel
-                    if let Some(tensors) = kernels[kid].store(
-                        x, graph, &graph_rcs, devices, mps, tbm, optimizer, searches, debug,
-                    )? {
+                    if let Some(tensors) = kernels[kid]
+                        .store(x, graph, devices, mps, tbm, optimizer, searches, debug)?
+                    {
                         kernels.remove(kid).unwrap();
                         for tid in tensors {
                             let tkid =
@@ -162,12 +129,6 @@ pub(super) fn realize_graph(
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Resh });
                 kernels[kid].outputs.clear();
                 kernels[kid].outputs.insert(nid, z);
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
                 kid
             }
             Node::Pad { x } => {
@@ -179,9 +140,9 @@ pub(super) fn realize_graph(
                 let padding = graph.padding(nid);
                 if !kernels[kid].pad(padding) {
                     // if it is not expandable, we need to store it and create new kernel
-                    if let Some(tensors) = kernels[kid].store(
-                        x, graph, &graph_rcs, devices, mps, tbm, optimizer, searches, debug,
-                    )? {
+                    if let Some(tensors) = kernels[kid]
+                        .store(x, graph, devices, mps, tbm, optimizer, searches, debug)?
+                    {
                         kernels.remove(kid).unwrap();
                         for tid in tensors {
                             let tkid =
@@ -199,12 +160,6 @@ pub(super) fn realize_graph(
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Padd });
                 kernels[kid].outputs.clear();
                 kernels[kid].outputs.insert(nid, z);
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
                 kid
             }
             Node::Permute { x } => {
@@ -217,12 +172,6 @@ pub(super) fn realize_graph(
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Perm });
                 kernels[kid].outputs.insert(nid, z);
                 kernels[kid].outputs.clear();
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
                 kid
             }
             Node::Reduce { x, rop } => {
@@ -232,12 +181,6 @@ pub(super) fn realize_graph(
                 let z = kernels[kid].max_id;
                 kernels[kid].outputs.clear();
                 kernels[kid].outputs.insert(nid, z);
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
                 kid
             }
             Node::Unary { x, uop } => {
@@ -247,13 +190,6 @@ pub(super) fn realize_graph(
                 let z = kernels[kid].max_id;
                 kernels[kid].ops.push(Op::Unary { z, x: xt, uop });
                 kernels[kid].outputs.insert(nid, z);
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        kernels[kid].outputs.remove(&x).unwrap();
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
                 kid
             }
             Node::Binary { x, y, bop } => {
@@ -328,20 +264,6 @@ pub(super) fn realize_graph(
                     kernels[kidx].outputs.insert(nid, z);
                     kidx
                 };
-                if let Some(rc) = graph_rcs.get_mut(&x) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        kernels[kidx].outputs.remove(&x).unwrap();
-                        graph_rcs.remove(&x).unwrap();
-                    }
-                }
-                if let Some(rc) = graph_rcs.get_mut(&y) {
-                    *rc -= 1;
-                    if *rc == 0 {
-                        kernels[kidx].outputs.remove(&y).unwrap();
-                        graph_rcs.remove(&y).unwrap();
-                    }
-                }
                 kid
             }
         };
@@ -351,30 +273,12 @@ pub(super) fn realize_graph(
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
 
         if to_eval.contains(&nid) {
-            if let Some(rc) = graph_rcs.get_mut(&nid) {
-                *rc -= 1;
-                if *rc == 0 {
-                    graph_rcs.remove(&nid).unwrap();
-                }
-            }
-            if let Some(tensors) = kernels[kid].store(
-                nid, graph, &graph_rcs, devices, mps, tbm, optimizer, searches, debug,
-            )? {
+            if let Some(tensors) =
+                kernels[kid].store(nid, graph, devices, mps, tbm, optimizer, searches, debug)?
+            {
                 kernels.remove(kid).unwrap();
                 for tid in tensors {
                     kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                }
-            }
-        }
-
-        // check if nid is used elsewhere, if yes, then duplicate it
-        if let Some(&rc) = special_rcs.get(&nid) {
-            if let Some(&grc) = graph_rcs.get(&nid) {
-                // TODO if kid is very complex kernel, then realize it immediatelly
-                // and duplicate the resulting load kernels as needed.
-                for _ in 0..rc - u32::from(grc == rc) {
-                    //println!("Duplicating {nid}");
-                    kernels.push(kernels[kid].clone());
                 }
             }
         }
