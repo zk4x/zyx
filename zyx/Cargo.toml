@@ -95,9 +95,9 @@ py = ["dep:pyo3"]
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.
 opt-level = 0 # Optimization level.
-debug = true  # Include debug info.
+debug = false # Include debug info.
 #split-debuginfo = '...'  # Debug info splitting behavior.
-strip = false           # Removes symbols or debuginfo.
+strip = true            # Removes symbols or debuginfo.
 debug-assertions = true # Enables debug assertions.
 overflow-checks = true  # Enables runtime integer overflow checks.
 lto = false             # Sets link-time optimization.

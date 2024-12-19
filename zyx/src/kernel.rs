@@ -22,7 +22,7 @@ use crate::{
 pub(super) struct Kernel {
     pub(super) ops: Vec<Op>,
     // Mapind from tensors ids to load and store ids
-    pub(super) tensors: BTreeMap<TensorId, TId>,
+    pub(super) tensors: BTreeMap<TId, TensorId>,
     // Outputs of the kernel that are unused (not stored yet)
     pub(super) outputs: BTreeMap<TensorId, TId>,
     pub(super) max_id: TId,
@@ -81,13 +81,17 @@ impl Kernel {
             xview: View::contiguous(&shape),
             xdtype: dtype,
         });
-        let tensors = BTreeMap::from([(nid, 0)]);
-        Kernel { max_id: 0, ops, outputs: tensors.clone(), tensors }
+        Kernel {
+            max_id: 0,
+            ops,
+            outputs: BTreeMap::from([(nid, 0)]),
+            tensors: BTreeMap::from([(0, nid)]),
+        }
     }
 
-    pub(super) fn get_tensor_id(&self, tid: TId) -> TensorId {
-        *self.tensors.iter().find(|(_, tidx)| **tidx == tid).unwrap().0
-    }
+    /*pub(super) fn get_tensor_id(&self, tid: TId) -> TensorId {
+        *self.tensors.iter().find(|(tidx, _)| **tidx == tid).unwrap().0
+    }*/
 
     pub(super) fn shape(&self) -> Vec<usize> {
         self.ops
@@ -102,7 +106,22 @@ impl Kernel {
             .collect()
     }
 
-    pub(super) fn reshape(&mut self, shape: &[usize]) -> bool {
+    pub(super) fn is_reshapable(&self, shape: &[usize]) -> bool {
+        // TODO remove the first case
+        self.ops.iter().all(|op| match op {
+            Op::Loop { .. }
+            | Op::Unary { .. }
+            | Op::Binary { .. }
+            | Op::Barrier { .. }
+            | Op::Move { .. } => true,
+            Op::Load { xview: view, .. }
+            | Op::Store { zview: view, .. }
+            | Op::Const { view, .. } => view.is_contiguous(),
+            Op::Accumulator { .. } | Op::EndLoop => false,
+        }) | self.get_reshape_pattern(shape).is_some()
+    }
+
+    pub(super) fn reshape(&mut self, shape: &[usize]) {
         // If this is just a reshape of kernel with only unary ops and contiguous loads
         // and stores, we can remove old loops and replace them with new loops.
         //println!("Reshape");
@@ -141,7 +160,6 @@ impl Kernel {
             }
             //println!("Reshaping continuous.");
             //kernel.debug();
-            true
         } else if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
             let _ = new_loops; // TODO get new_loops working
                                //println!("Reshapes: {reshapes:?}");
@@ -210,9 +228,6 @@ impl Kernel {
                 shape,
                 "Shape after reshape split is incorrect."
             );
-            true
-        } else {
-            false
         }
     }
 
@@ -316,10 +331,11 @@ impl Kernel {
         }
     }
 
-    pub(super) fn expand(&mut self, shape: &[usize]) -> bool {
-        if self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. })) {
-            return false;
-        }
+    pub(super) fn is_expandable(&self) -> bool {
+        self.ops.iter().all(|op| !matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
+    }
+
+    pub(super) fn expand(&mut self, shape: &[usize]) {
         //println!("Expanding");
         //kernel.debug();
         assert_eq!(shape.len(), self.shape().len());
@@ -352,7 +368,6 @@ impl Kernel {
                 _ => {}
             }
         }
-        true
     }
 
     pub(super) fn permute(&mut self, axes: &[usize]) {
@@ -397,17 +412,18 @@ impl Kernel {
         }
     }
 
-    pub(super) fn pad(&mut self, padding: &[(isize, isize)]) -> bool {
-        if !self.ops.iter().all(|op| match op {
+    pub(super) fn is_paddable(&self) -> bool {
+        self.ops.iter().all(|op| match op {
             // For now just do not pad reduce kernels
             //matches!(rop, ROp::Sum),
             // TODO this can be later removed, but it's a trade-off,
             // it makes kernels bigger, but harder to reason about
             Op::Accumulator { .. } | Op::Store { .. } => false,
             _ => true,
-        }) {
-            return false;
-        }
+        })
+    }
+
+    pub(super) fn pad(&mut self, padding: &[(isize, isize)]) {
         //kernel.debug();
         let rank = self.shape().len();
         // Get which axes are padded
@@ -443,7 +459,6 @@ impl Kernel {
                 _ => {}
             }
         }
-        true
     }
 
     pub(super) fn reduce(
@@ -556,7 +571,7 @@ impl Kernel {
             xview: View::none(),
         };
         self.ops.push(store_op);
-        self.tensors.insert(nid, self.outputs.remove(&nid).unwrap());
+        self.tensors.insert(self.outputs.remove(&nid).unwrap(), nid);
 
         // Delete kernel and dispatch it to device
         if self.outputs.is_empty() {
@@ -577,9 +592,10 @@ impl Kernel {
             // Get device which is associated with that memory pool
             let device = &mut devices[0];
 
+            // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
             let buffer_ids: Vec<Id> = self
                 .tensors
-                .keys()
+                .values()
                 .map(|&tensor_id| {
                     if let Some(BufferId { buffer_id, .. }) = tensor_buffer_map.get(&tensor_id) {
                         *buffer_id
@@ -618,7 +634,7 @@ impl Kernel {
                     .iter()
                     .filter_map(|op| {
                         if let Op::Store { z, .. } = op {
-                            Some(self.get_tensor_id(*z))
+                            Some(*self.tensors.get(z).unwrap())
                         } else {
                             None
                         }

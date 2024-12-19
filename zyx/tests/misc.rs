@@ -241,7 +241,7 @@ fn pad3() -> Result<(), ZyxError> {
     let z = &a * &sin - &b * &cos;
     let z2 = a * sin + b * cos;
     let z = z.pad_zeros([(0, 2)])? + z2.pad_zeros([(2, 0)])?;
-    println!("{z}");
+    assert_eq!(z, [[8, 18, 4, 6], [36, 14, 6, 2]]);
     Ok(())
 }
 
@@ -402,9 +402,8 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
         .exp()
         .ln()
         .reshape([2, 3, 2, 1])?;
-    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
-        .reshape([2, 3, 1, 1])?
-        .expand([2, 3, 2, 1])?;
+    let y =
+        Tensor::from([[2f32, 3., 1.], [4., 3., 2.]]).reshape([2, 3, 1, 1])?.expand([2, 3, 2, 1])?;
     let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
     let z = z.exp().ln().permute([1, 0])?.sum([0])?;
     assert_eq!(z, [52f32, 52., 40.]);

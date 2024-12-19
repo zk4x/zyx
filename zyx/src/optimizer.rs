@@ -343,7 +343,7 @@ impl Kernel {
                 .chain(sh[sh.len() - 2..].iter())
                 .copied()
                 .collect();
-            assert!(kernel.reshape(&sh));
+            kernel.reshape(&sh);
         }
 
         // Apply axis splits
