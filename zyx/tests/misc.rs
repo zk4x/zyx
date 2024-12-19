@@ -28,30 +28,30 @@ fn sum1() -> Result<(), ZyxError> {
 
 #[test]
 fn pad_reduce() -> Result<(), ZyxError> {
-    let mut x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
+    let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
     x = x.pad_zeros([(0, 1)])?;
-    assert_eq!(x, [9, 7, 0]);
+    assert_eq!(x, [9i32, 7, 0]);
     Ok(())
 }
 
 #[test]
 fn permute_pad() -> Result<(), ZyxError> {
-    let mut x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
+    let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.pad_zeros([(1, 0)])?.t();
-    assert_eq!(x, [[0, 0], [2, 1], [4, 5], [3, 1]]);
+    assert_eq!(x, [[0i32, 0], [2, 1], [4, 5], [3, 1]]);
     Ok(())
 }
 
 #[test]
 fn expand_reduce() -> Result<(), ZyxError> {
-    let mut x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
+    let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
     Tensor::realize([&x, &y])?;
-    assert_eq!(y, [[9, 7], [9, 7]]);
-    assert_eq!(x, [[9, 9], [7, 7]]);
+    assert_eq!(y, [[9i32, 7], [9, 7]]);
+    assert_eq!(x, [[9i32, 9], [7, 7]]);
     Ok(())
 }
 
