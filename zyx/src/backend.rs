@@ -7,11 +7,11 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{ir::IRKernel, DeviceConfig, ZyxError};
 use crate::{
-    kernel::Op,
+    kernel::{Kernel, Op},
     slab::{Id, Slab},
     Scalar,
 };
@@ -64,42 +64,28 @@ pub struct DeviceInfo {
 
 pub type MemoryPoolId = u32;
 
-/*trait HMemoryPool {
+trait HMemoryPool {
     type Error;
-    type Buffer;
     fn deinitialize(self) -> Result<(), Self::Error>;
     fn free_bytes(&self) -> usize;
-    fn allocate(&mut self, bytes: usize) -> Result<Self::Buffer, Self::Error>;
-    fn host_to_pool(&mut self, src: &[u8], dst: &Self::Buffer) -> Result<(), Self::Error>;
-    fn pool_to_host(&mut self, src: &Self::Buffer, dst: &mut [u8]) -> Result<(), Self::Error>;
+    fn allocate(&mut self, bytes: usize) -> Result<Id, Self::Error>;
+    fn deallocate(&mut self, buffer: Id) -> Result<(), Self::Error>;
+    fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), Self::Error>;
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), Self::Error>;
+    fn pool_to_pool(&mut self, src: Id, dst_pool: &mut Self, dst: Id) -> Result<(), Self::Error>;
 }
 
 trait HDevice {
-    type Error;
-    type Program;
-    type Queue: HQueue<Program = Self::Program>;
     fn deinitialize(self) -> Result<(), Self::Error>;
     fn info(&self) -> &DeviceInfo;
     fn memory_pool_id(&self) -> usize;
-    fn release_program(&self, program: Self::Program) -> Result<(), Self::Error>;
-    fn release_queue(&self, queue: Self::Queue) -> Result<(), Self::Error>;
-    fn compile(&mut self, kernel: &IRKernel, debug_asm: bool)
-        -> Result<Self::Program, Self::Error>;
-}
-
-trait HQueue {
-    type Buffer;
-    type Program;
-    type Error;
     fn launch(
         &mut self,
-        program: &mut Self::Program,
+        kernel: &Kernel,
         buffers: &mut Slab<Self::Buffer>,
         args: &[Id],
     ) -> Result<(), Self::Error>;
-    fn sync(&mut self) -> Result<(), Self::Error>;
-    fn load(&self) -> usize;
-}*/
+}
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
@@ -107,7 +93,8 @@ pub enum MemoryPool {
     CUDA {
         memory_pool: CUDAMemoryPool,
         buffers: Slab<CUDABuffer>,
-        events: BTreeMap<Id, CUDAEvent>,
+        // Buffers that depend on events
+        events: BTreeMap<BTreeSet<Id>, CUDAEvent>,
     },
     HIP {
         memory_pool: HIPMemoryPool,
@@ -116,9 +103,7 @@ pub enum MemoryPool {
     OpenCL {
         memory_pool: OpenCLMemoryPool,
         buffers: Slab<OpenCLBuffer>,
-        // Buffers can have associated events that must be finished
-        // before accessing given buffer
-        events: BTreeMap<Id, OpenCLEvent>,
+        events: BTreeMap<BTreeSet<Id>, OpenCLEvent>,
     },
     #[cfg(feature = "vulkan")]
     Vulkan {
@@ -173,23 +158,6 @@ pub enum Device {
         queues: Vec<WGSLQueue>,
         kernels: BTreeMap<Vec<Op>, WGSLProgram>,
     },
-}
-
-pub enum Event {
-    CUDA(CUDAEvent),
-    HIP,
-    OpenCL(OpenCLEvent),
-}
-
-impl Event {
-    pub(super) fn finish(self) -> Result<(), ZyxError> {
-        match self {
-            Event::CUDA(event) => event.finish()?,
-            Event::HIP => todo!(),
-            Event::OpenCL(event) => event.finish()?,
-        }
-        Ok(())
-    }
 }
 
 pub fn initialize_backends(
@@ -443,8 +411,13 @@ impl MemoryPool {
         };
         match self {
             MemoryPool::CUDA { memory_pool, buffers, events } => {
-                if let Some(event) = events.remove(&buffer_id) {
-                    event.finish()?;
+                for key in events.keys() {
+                    if key.contains(&buffer_id) {
+                        // Useless clone because of borrowck ...
+                        let event = events.remove(&key.clone()).unwrap();
+                        event.finish()?;
+                        break;
+                    }
                 }
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
@@ -452,8 +425,13 @@ impl MemoryPool {
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
             MemoryPool::OpenCL { memory_pool, buffers, events } => {
-                if let Some(event) = events.remove(&buffer_id) {
-                    event.finish()?;
+                for key in events.keys() {
+                    if key.contains(&buffer_id) {
+                        // Useless clone because of borrowck ...
+                        let event = events.remove(&key.clone()).unwrap();
+                        event.finish()?;
+                        break;
+                    }
                 }
                 memory_pool.pool_to_host(&buffers[buffer_id], slice)?;
             }
@@ -480,11 +458,25 @@ impl MemoryPool {
         }
         // Finish necessary events
         match self {
-            MemoryPool::CUDA { .. } => todo!(),
+            MemoryPool::CUDA { events, .. } => {
+                for key in events.keys() {
+                    if key.contains(&sbid) {
+                        // Useless clone because of borrowck ...
+                        let event = events.remove(&key.clone()).unwrap();
+                        event.finish()?;
+                        break;
+                    }
+                }
+            },
             MemoryPool::HIP { .. } => todo!(),
             MemoryPool::OpenCL { events, .. } => {
-                if let Some(event) = events.remove(&sbid) {
-                    event.finish()?;
+                for key in events.keys() {
+                    if key.contains(&sbid) {
+                        // Useless clone because of borrowck ...
+                        let event = events.remove(&key.clone()).unwrap();
+                        event.finish()?;
+                        break;
+                    }
                 }
             }
         }
@@ -730,17 +722,23 @@ impl Device {
         kernel: &[Op],
         memory_pool: &mut MemoryPool,
         buffer_ids: &[Id],
-    ) -> Result<Event, ZyxError> {
-        Ok(match self {
+        output_buffers: BTreeSet<Id>,
+    ) -> Result<(), ZyxError> {
+        match self {
             Device::CUDA { kernels, queues, .. } => {
                 let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
                 if queue.load() > 20 {
                     queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                     queue.sync()?;
                 }
-                let MemoryPool::CUDA { buffers, .. } = memory_pool else { unreachable!() };
-                let event = queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                Event::CUDA(event)
+                let MemoryPool::CUDA { buffers, events, .. } = memory_pool else { unreachable!() };
+                let event = queue.launch(
+                    kernels.get_mut(kernel).unwrap(),
+                    buffers,
+                    buffer_ids,
+                    output_buffers.is_empty(),
+                )?;
+                events.insert(output_buffers, event);
             }
             Device::HIP { kernels, queues, .. } => {
                 let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
@@ -750,7 +748,6 @@ impl Device {
                 }
                 let MemoryPool::HIP { buffers, .. } = memory_pool else { unreachable!() };
                 queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                Event::HIP
             }
             Device::OpenCL { kernels, queues, .. } => {
                 let mut queue = queues.iter_mut().min_by_key(|queue| queue.load()).unwrap();
@@ -758,9 +755,16 @@ impl Device {
                     queue.sync()?;
                     queue = queues.iter_mut().max_by_key(|queue| queue.load()).unwrap();
                 }
-                let MemoryPool::OpenCL { buffers, .. } = memory_pool else { unreachable!() };
-                let event = queue.launch(kernels.get_mut(kernel).unwrap(), buffers, buffer_ids)?;
-                Event::OpenCL(event)
+                let MemoryPool::OpenCL { buffers, events, .. } = memory_pool else {
+                    unreachable!()
+                };
+                let event = queue.launch(
+                    kernels.get_mut(kernel).unwrap(),
+                    buffers,
+                    buffer_ids,
+                    output_buffers.is_empty(),
+                )?;
+                events.insert(output_buffers, event);
             }
             #[cfg(feature = "vulkan")]
             Device::Vulkan { programs, queues, .. } => {
@@ -792,7 +796,8 @@ impl Device {
                 let MemoryPool::WGSL { buffers, .. } = memory_pool else { unreachable!() };
                 queue.launch(&mut programs[program_id], buffers, buffer_ids)?;
             }
-        })
+        }
+        Ok(())
     }
 }
 

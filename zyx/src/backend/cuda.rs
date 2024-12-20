@@ -114,7 +114,8 @@ pub(super) struct CUDAQueue {
     cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
-#[derive(Debug)]
+// TODO remove clone once btreemap is implemented properly
+#[derive(Debug, Clone)]
 pub(super) struct CUDAEvent {}
 
 impl CUDAEvent {
@@ -966,6 +967,7 @@ impl CUDAQueue {
         program: &mut CUDAProgram,
         buffers: &mut Slab<CUDABuffer>,
         args: &[Id],
+        sync: bool,
     ) -> Result<CUDAEvent, CUDAError> {
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {
@@ -990,6 +992,9 @@ impl CUDAQueue {
             )
         }
         .check("Failed to launch kernel.")?;
+        if sync {
+            todo!()
+        }
         Ok(CUDAEvent {})
     }
 

@@ -110,9 +110,12 @@ impl Optimizer {
                     }
                     // Launch kernel and measure it's performance
                     let begin = std::time::Instant::now();
-                    let Ok(event) =
-                        device.launch(&optimized_kernel.ops, memory_pool, &allocated_temps)
-                    else {
+                    let Ok(()) = device.launch(
+                        &optimized_kernel.ops,
+                        memory_pool,
+                        &allocated_temps,
+                        BTreeSet::new(),
+                    ) else {
                         done.insert(optimization, Duration::MAX);
                         //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
                         continue;

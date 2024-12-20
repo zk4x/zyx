@@ -620,7 +620,7 @@ impl Kernel {
                 .collect();
 
             if device.is_cached(&self.ops) {
-                device.launch(&self.ops, memory_pool, &buffer_ids)?;
+                device.launch(&self.ops, memory_pool, &buffer_ids, false)?;
             } else {
                 let optimization = optimizer.search_optimization(
                     self,
@@ -632,7 +632,7 @@ impl Kernel {
                 let optimized_kernel = self.optimize(optimization);
                 let ir_kernel = crate::ir::IRKernel::new(&optimized_kernel.ops, debug.ir());
                 device.compile(self.ops.clone(), &ir_kernel, debug.asm())?;
-                device.launch(&self.ops, memory_pool, &buffer_ids)?;
+                device.launch(&self.ops, memory_pool, &buffer_ids, false)?;
             }
             // add load kernels for all outputs of this kernel
             return Ok(Some(

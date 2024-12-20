@@ -155,7 +155,8 @@ pub(super) struct OpenCLQueue {
     clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 }
 
-#[derive(Debug)]
+// TODO remove clone once btreemap is implemented properly
+#[derive(Debug, Clone)]
 pub(super) struct OpenCLEvent {
     event: *mut c_void,
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
@@ -868,6 +869,7 @@ impl OpenCLQueue {
         program: &mut OpenCLProgram,
         buffers: &mut Slab<OpenCLBuffer>,
         args: &[Id],
+        sync: bool,
     ) -> Result<OpenCLEvent, OpenCLError> {
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
@@ -910,7 +912,12 @@ impl OpenCLQueue {
             )
         }
         .check("Failed to enqueue kernel.")?;
-        unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
+        println!("Launch event: {event:?}");
+        if sync {
+            //unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
+            let events = [event];
+            unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }.check("finish fail").unwrap();
+        }
         //self.events.push(event);
         Ok(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents })
     }
@@ -932,6 +939,7 @@ impl OpenCLQueue {
 
 impl OpenCLEvent {
     pub(super) fn finish(self) -> Result<(), OpenCLError> {
+        println!("Finish event {:?}", self.event);
         unsafe { (self.clWaitForEvents)(1, [self.event].as_ptr()) }.check("Failed to finish event")
     }
 }
