@@ -3,17 +3,22 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use super::{BackendError, Device, DeviceInfo, ErrorStatus, MemoryPool};
+use super::{BackendError, Buffer, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 use crate::{
     dtype::Constant,
-    ir::Reg,
-    kernel::Op,
+    ir::{IROp, Reg, Scope},
+    node::{BOp, UOp},
     slab::{Id, Slab},
     DType,
 };
 use libloading::Library;
 use nanoserde::DeJson;
-use std::{collections::BTreeSet, ffi::c_void, ptr, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::{c_void, CString},
+    ptr,
+    sync::Arc,
+};
 
 #[derive(Debug, Default, DeJson)]
 pub struct OpenCLConfig {
@@ -36,6 +41,8 @@ pub(super) struct OpenCLMemoryPool {
     context: *mut c_void,
     queue: *mut c_void,
     buffers: Slab<OpenCLBuffer>,
+    // buffers which depend on events
+    events: BTreeMap<BTreeSet<Id>, *mut c_void>,
     // Functions
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
@@ -84,6 +91,8 @@ pub(super) struct OpenCLDevice {
     context: *mut c_void,
     dev_info: DeviceInfo,
     memory_pool_id: u32,
+    programs: Slab<OpenCLProgram>,
+    queues: Vec<OpenCLQueue>,
     // Functions
     clGetProgramBuildInfo: unsafe extern "C" fn(
         *mut c_void,
@@ -102,10 +111,11 @@ pub(super) struct OpenCLDevice {
         *mut c_void,
     ) -> OpenCLStatus,
     clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-    clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clCreateKernel: unsafe extern "C" fn(*mut c_void, *const i8, *mut OpenCLStatus) -> *mut c_void,
     clGetDeviceInfo:
         unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
+    clSetKernelArg:
+        unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
     clCreateProgramWithSource: unsafe extern "C" fn(
         *mut c_void,
         cl_uint,
@@ -113,6 +123,20 @@ pub(super) struct OpenCLDevice {
         *const usize,
         *mut OpenCLStatus,
     ) -> *mut c_void,
+    clEnqueueNDRangeKernel: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        cl_uint,
+        *const usize,
+        *const usize,
+        *const usize,
+        cl_uint,
+        *const *mut c_void,
+        *mut *mut c_void,
+    ) -> OpenCLStatus,
+    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
+    clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+    //clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 }
 
 #[derive(Debug)]
@@ -127,31 +151,10 @@ pub(super) struct OpenCLProgram {
 pub(super) struct OpenCLQueue {
     queue: *mut c_void, // points to device queue
     load: usize,
-    //events: Vec<*mut c_void>,
-    // Functions
-    //clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-    clSetKernelArg:
-        unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
-    clEnqueueNDRangeKernel: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        cl_uint,
-        *const usize,
-        *const usize,
-        *const usize,
-        cl_uint,
-        *const *mut c_void,
-        *mut *mut c_void,
-    ) -> OpenCLStatus,
-    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
-    clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 }
 
-// TODO remove clone once btreemap is implemented properly
-#[derive(Debug, Clone)]
-pub(super) struct OpenCLEvent {
-    event: *mut c_void,
-    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
+pub struct OpenCLEvent {
+    ptr: *mut c_void,
 }
 
 // This definitely isn't correct, but for now...
@@ -339,35 +342,37 @@ pub(super) fn initialize_device(
         if device_ids.is_empty() {
             continue;
         }
+        let mut queue = None;
         for dev in device_ids.iter().copied() {
             // TODO get max queues per device and limit this to that number
             let mut queues = Vec::new();
             for _ in 0..8 {
-                queues.push(OpenCLQueue {
-                    queue: unsafe { clCreateCommandQueue(context, dev, 0, &mut status) },
-                    load: 0,
-                    clSetKernelArg,
-                    clWaitForEvents,
-                    clEnqueueNDRangeKernel,
-                    clFinish,
-                    //clReleaseCommandQueue,
-                });
+                let new_queue = unsafe { clCreateCommandQueue(context, dev, 0, &mut status) };
+                queues.push(OpenCLQueue { queue: new_queue, load: 0 });
                 let Ok(()) = status.check(ErrorStatus::Initialization) else {
                     continue;
                 };
+                if queue.is_none() {
+                    queue = Some(new_queue);
+                }
             }
             let mut device = OpenCLDevice {
                 ptr: dev,
                 context,
                 dev_info: DeviceInfo::default(),
                 memory_pool_id,
+                programs: Slab::new(),
+                queues,
                 clGetProgramBuildInfo,
                 clBuildProgram,
                 clReleaseProgram,
-                clReleaseCommandQueue,
                 clCreateKernel,
                 clGetDeviceInfo,
+                clSetKernelArg,
                 clCreateProgramWithSource,
+                clEnqueueNDRangeKernel,
+                clWaitForEvents,
+                clFinish,
             };
             let Ok(()) = device.set_info(debug_dev) else {
                 continue;
@@ -378,8 +383,6 @@ pub(super) fn initialize_device(
                 devices.push(Box::new(device));
             }
         }
-        let queue =
-            unsafe { clCreateCommandQueue(context, devices.last().unwrap().ptr, 0, &mut status) };
         let Ok(()) = status.check(ErrorStatus::Initialization) else {
             continue;
         };
@@ -388,8 +391,9 @@ pub(super) fn initialize_device(
             total_bytes,
             free_bytes: total_bytes,
             context,
-            queue,
+            queue: queue.unwrap(),
             buffers: Slab::new(),
+            events: BTreeMap::new(),
             clWaitForEvents,
             clReleaseCommandQueue,
             clReleaseContext,
@@ -404,7 +408,7 @@ pub(super) fn initialize_device(
 }
 
 impl MemoryPool for OpenCLMemoryPool {
-    fn deinitialize(self) -> Result<(), BackendError> {
+    fn deinitialize(&mut self) -> Result<(), BackendError> {
         unsafe { (self.clReleaseContext)(self.context) }.check(ErrorStatus::Deinitialization)?;
         unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization)?;
         Ok(())
@@ -435,30 +439,106 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(self.buffers.push(OpenCLBuffer { ptr, bytes }))
     }
 
-    fn deallocate(&mut self, buffer: Id) -> Result<(), BackendError> {
-        todo!()
+    fn deallocate(&mut self, buffer_id: Id) -> Result<(), BackendError> {
+        //println!("Deallocate {:?}", buffer.ptr);
+        if let Some(buffer) = self.buffers.remove(buffer_id) {
+            debug_assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
+            unsafe { (self.clReleaseMemObject)(buffer.ptr) }
+                .check(ErrorStatus::Deinitialization)?;
+            self.free_bytes += buffer.bytes;
+        }
+        Ok(())
     }
 
     fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError> {
-        todo!()
+        //println!("Storing {src:?} to {dst:?}");
+        let dst = &self.buffers[dst];
+        let mut event = ptr::null_mut();
+        unsafe {
+            (self.clEnqueueWriteBuffer)(
+                self.queue,
+                dst.ptr,
+                CL_NON_BLOCKING,
+                0,
+                src.len(),
+                src.as_ptr().cast(),
+                0,
+                ptr::null(),
+                &mut event,
+            )
+        }
+        .check(ErrorStatus::MemoryCopy)?;
+        // Immediattely synchronize because we do not know the lifetime of data
+        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }.check(ErrorStatus::MemoryCopy)
     }
 
     fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError> {
-        todo!()
+        //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
+        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
+            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
+                .check(ErrorStatus::MemoryCopy)?;
+        }
+        let src = &self.buffers[src];
+        assert!(
+            !src.ptr.is_null(),
+            "Trying to read null memory. Internal bug."
+        );
+        let mut event: *mut c_void = ptr::null_mut();
+        unsafe {
+            (self.clEnqueueReadBuffer)(
+                self.queue,
+                src.ptr,
+                CL_NON_BLOCKING,
+                0,
+                dst.len(),
+                dst.as_mut_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                &mut event,
+            )
+        }
+        .check(ErrorStatus::MemoryCopy)?;
+        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }
+            .check(ErrorStatus::MemoryCopy)?;
+        Ok(())
     }
 
-    fn pool_to_pool(
+    /*fn pool_to_pool(
         &mut self,
         src: Id,
         dst_pool: &mut dyn MemoryPool,
         dst: Id,
     ) -> Result<(), BackendError> {
-        todo!()
+        //println!("Moving from {src:?} to {dst:?}");
+        // TODO going through host is slow, but likely only way
+        //debug_assert_eq!(self.buffers[src].bytes, dst_pool.buffers[dst].bytes);
+        let mut data: Vec<u8> = vec![0; self.buffers[src].bytes];
+        self.pool_to_host(src, &mut data)?;
+        //println!("Copied data: {data:?}");
+        dst_pool.host_to_pool(&data, dst)?;
+        Ok(())
+    }*/
+
+    fn get_buffer(&self, buffer: Id) -> Buffer {
+        Buffer::OpenCL(&self.buffers[buffer])
+    }
+
+    fn bind_event(&mut self, event: super::Event, buffers: BTreeSet<Id>) {
+        let Event::OpenCL(OpenCLEvent { ptr }) = event;
+        self.events.insert(buffers, ptr);
+    }
+
+    fn synchronize(&self, buffers: &BTreeSet<Id>) -> Result<(), BackendError> {
+        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.is_disjoint(buffers)) {
+            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
+                .check(ErrorStatus::MemoryCopy)?;
+        }
+        Ok(())
     }
 }
 
 impl Device for OpenCLDevice {
-    fn deinitialize(self) -> Result<(), BackendError> {
+    fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
@@ -470,8 +550,260 @@ impl Device for OpenCLDevice {
         self.memory_pool_id
     }
 
-    fn compile(&self, kernel: &crate::ir::IRKernel, debug_asm: bool) -> Result<Id, Program> {
-        todo!()
+    fn compile(
+        &mut self,
+        kernel: &crate::ir::IRKernel,
+        debug_asm: bool,
+    ) -> Result<Id, BackendError> {
+        let mut source = String::from("(\n");
+        let mut indent = String::from("  ");
+
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
+
+        let mut loops = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
+            if let IROp::Loop { id, len } = op {
+                if i % 2 == 0 {
+                    global_work_size[i / 2] = *len;
+                } else {
+                    local_work_size[i / 2] = *len;
+                }
+                loops[i] = *id;
+            } else {
+                unreachable!()
+            }
+        }
+
+        // Declare global variables
+        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "{indent}__global {}{}* p{id},\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.ocl(),
+                );
+            }
+        }
+
+        source.pop();
+        source.pop();
+        source += "\n) {\n";
+
+        // Declare local variables
+        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Local {
+                source += &format!("{indent}__local {} p{id}[{len}];\n", dtype.ocl(),);
+            }
+        }
+
+        // Declare register accumulators
+        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::RegTile {
+                source += &format!(
+                    "{indent}{}{} p{id}[{len}];\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.ocl(),
+                );
+            }
+        }
+
+        // Declare register variables
+        for (id, dtype) in kernel.registers.iter().enumerate() {
+            source += &format!("{indent}{} r{id};\n", dtype.ocl(),);
+        }
+
+        // Add indices for global and local loops
+        source += &format!(
+            "{indent}r{} = get_group_id(0);   /* 0..{} */\n",
+            loops[0], global_work_size[0]
+        );
+        source += &format!(
+            "{indent}r{} = get_local_id(0); /* 0..{} */\n",
+            loops[1], local_work_size[0]
+        );
+        source += &format!(
+            "{indent}r{} = get_group_id(1); /* 0..{} */\n",
+            loops[2], global_work_size[1]
+        );
+        source += &format!(
+            "{indent}r{} = get_local_id(1); /* 0..{} */\n",
+            loops[3], local_work_size[1]
+        );
+        source += &format!(
+            "{indent}r{} = get_group_id(2); /* 0..{} */\n",
+            loops[4], global_work_size[2]
+        );
+        source += &format!(
+            "{indent}r{} = get_local_id(2); /* 0..{} */\n",
+            loops[5], local_work_size[2]
+        );
+        //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
+
+        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+            match op {
+                IROp::Load { z, address, offset } => {
+                    if let Reg::Var(id) = offset {
+                        if id == 11 {
+                            //source += &format!("{indent}printf(\"%u, \", r11);\n");
+                        }
+                    }
+                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
+                    //source += &format!( "  printf(\"r{z}, p{address} = %f r2 = %u r4 = %u\\n\", r{z}, r2, r4);\n" );
+                }
+                IROp::Store { address, offset, x } => {
+                    source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
+                }
+                IROp::Unary { z, x, uop } => {
+                    let dtype = kernel.registers[z as usize];
+                    source += &match uop {
+                        UOp::Cast(_) => {
+                            format!("{indent}r{z} = ({})r{x};\n", dtype.ocl())
+                        }
+                        UOp::ReLU => format!(
+                            "{indent}r{z} = max(r{x}, {});\n",
+                            dtype.zero_constant().ocl()
+                        ),
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!(
+                            "{indent}r{z} = sqrt({}r{x});\n",
+                            if matches!(dtype, DType::F16) {
+                                "(float)"
+                            } else {
+                                ""
+                            }
+                        ),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
+                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
+                    };
+                }
+                IROp::Binary { z, x, y, bop } => {
+                    source += &format!(
+                        "{indent}r{z} = {};\n",
+                        match bop {
+                            BOp::Add => format!("{} + {}", x.ocl(), y.ocl()),
+                            BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
+                            BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
+                            BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
+                            BOp::Mod => format!("{} % {}", x.ocl(), y.ocl()),
+                            BOp::Pow => format!("pow({}, {})", x.ocl(), y.ocl()),
+                            BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
+                            BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),
+                            BOp::NotEq => format!("{} != {}", x.ocl(), y.ocl()),
+                            BOp::Max => format!("max({}, {})", x.ocl(), y.ocl()),
+                            BOp::Or => format!("{} || {}", x.ocl(), y.ocl()),
+                            BOp::And => format!("{} && {}", x.ocl(), y.ocl()),
+                            BOp::BitOr => format!("{} | {}", x.ocl(), y.ocl()),
+                            BOp::BitAnd => format!("{} & {}", x.ocl(), y.ocl()),
+                            BOp::BitXor => format!("{} ^ {}", x.ocl(), y.ocl()),
+                        }
+                    );
+                    //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
+                }
+                IROp::MAdd { z, a, b, c } => {
+                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
+                }
+                IROp::Loop { id, len } => {
+                    source += &format!(
+                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
+                    );
+                    indent += "  ";
+                }
+                IROp::EndLoop { .. } => {
+                    indent.pop();
+                    indent.pop();
+                    source += &format!("{indent}}}\n");
+                }
+                IROp::Barrier { scope } => {
+                    source += &format!(
+                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                        match scope {
+                            Scope::Global => "GLOB",
+                            Scope::Local => "LOC",
+                            Scope::Register | Scope::RegTile => unreachable!(),
+                        }
+                    );
+                }
+            }
+        }
+        source += "}\n";
+
+        let local_work_size = local_work_size;
+        let name = format!(
+            "k_{}_{}_{}__{}_{}_{}",
+            global_work_size[0],
+            global_work_size[1],
+            global_work_size[2],
+            local_work_size[0],
+            local_work_size[1],
+            local_work_size[2],
+        );
+        for (i, lwd) in local_work_size.iter().enumerate() {
+            global_work_size[i] *= lwd;
+        }
+        let mut pragma = String::new();
+        if source.contains("half") {
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
+        }
+        if source.contains("double") {
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
+        let source = format!("{pragma}__kernel void {name}{source}");
+        //println!("{source}");
+        if debug_asm {
+            println!("{source}");
+        }
+        let context = self.context;
+        let device = self.ptr;
+        let sources: &[&str] = &[source.as_str()];
+        let mut status = OpenCLStatus::CL_SUCCESS;
+        let program = unsafe {
+            (self.clCreateProgramWithSource)(
+                context,
+                1,
+                sources.as_ptr().cast(),
+                [source.len()].as_ptr(),
+                &mut status,
+            )
+        };
+        status.check(ErrorStatus::KernelCompilation)?;
+        if let Err(e) = unsafe {
+            (self.clBuildProgram)(
+                program,
+                1,
+                [device].as_ptr(),
+                c"-cl-fast-relaxed-math".as_ptr().cast(),
+                None,
+                ptr::null_mut(),
+            )
+        }
+        .check(ErrorStatus::KernelCompilation)
+        {
+            let build_log = self.get_program_build_data(program, CL_PROGRAM_BUILD_LOG);
+            match build_log {
+                Ok(build_log) => {
+                    panic!("{e:?} {}", String::from_utf8_lossy(&build_log));
+                }
+                Err(status) => status.check(ErrorStatus::KernelCompilation)?,
+            }
+        }
+        let mut status = OpenCLStatus::CL_SUCCESS;
+        let program_name = &CString::new(name).unwrap();
+        let kernel =
+            unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
+        status.check(ErrorStatus::KernelCompilation)?;
+        Ok(
+            self.programs.push(OpenCLProgram {
+                program,
+                kernel,
+                global_work_size,
+                local_work_size,
+            }),
+        )
     }
 
     fn launch(
@@ -479,10 +811,76 @@ impl Device for OpenCLDevice {
         program_id: Id,
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
-        sync: &BTreeSet<Id>,
-        cache: bool,
+        // If sync is empty, kernel will be immediatelly synchronized
+        sync: BTreeSet<Id>,
     ) -> Result<(), BackendError> {
-        todo!()
+        /*println!(
+            "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
+            program.kernel,
+            program.program,
+            self.queue,
+            program.global_work_size,
+            program.local_work_size
+        );*/
+        memory_pool.synchronize(&sync)?;
+        let queue_id = self.next_queue()?;
+        let program = &self.programs[program_id];
+        let mut i = 0;
+        #[allow(clippy::explicit_counter_loop)]
+        for arg in args {
+            let arg = &mut memory_pool.get_buffer(*arg);
+            let Buffer::OpenCL(arg) = arg;
+            //println!("Kernel arg: {arg:?} at index {i}");
+            let ptr: *const _ = &arg.ptr;
+            unsafe {
+                (self.clSetKernelArg)(
+                    program.kernel,
+                    i,
+                    core::mem::size_of::<*mut c_void>(),
+                    ptr.cast(),
+                )
+            }
+            .check(ErrorStatus::IncorrectKernelArg)?;
+            i += 1;
+        }
+        let mut event: *mut c_void = ptr::null_mut();
+        unsafe {
+            (self.clEnqueueNDRangeKernel)(
+                self.queues[queue_id].queue,
+                program.kernel,
+                u32::try_from(program.global_work_size.len()).unwrap(),
+                ptr::null(),
+                program.global_work_size.as_ptr(),
+                program.local_work_size.as_ptr(),
+                0,
+                ptr::null(),
+                &mut event,
+            )
+        }
+        .check(ErrorStatus::KernelLaunch)?;
+        if sync.is_empty() {
+            let events = [event];
+            unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }
+                .check(ErrorStatus::KernelSync)
+                .unwrap();
+        } else {
+            memory_pool.bind_event(Event::OpenCL(OpenCLEvent { ptr: event }), sync);
+        }
+        //println!("Launch event: {event:?}");
+        Ok(())
+    }
+
+    fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+        //println!("Releasing {:?}", program);
+        if let Some(program) = self.programs.remove(program_id) {
+            unsafe { (self.clReleaseProgram)(program.program) }
+                .check(ErrorStatus::Deinitialization)?;
+        }
+        Ok(())
+    }
+
+    fn compute(&self) -> u128 {
+        self.dev_info.compute
     }
 }
 
@@ -586,453 +984,6 @@ impl OpenCLDevice {
             Ok(Vec::default())
         }
     }
-}
-
-/*impl OpenCLMemoryPool {
-    pub(super) const fn free_bytes(&self) -> usize {
-        self.free_bytes
-    }
-
-    pub(super) fn allocate(&mut self, bytes: usize) -> Result<OpenCLBuffer, OpenCLError> {
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn deallocate(&mut self, buffer: OpenCLBuffer) -> Result<(), OpenCLError> {
-        //println!("Deallocate {:?}", buffer.ptr);
-        assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
-        unsafe { (self.clReleaseMemObject)(buffer.ptr) }
-            .check("Failed to free allocated memory")?;
-        self.free_bytes += buffer.bytes;
-        Ok(())
-    }
-
-    pub(super) fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: &OpenCLBuffer,
-    ) -> Result<(), OpenCLError> {
-        //println!("Storing {src:?} to {dst:?}");
-        let mut event = ptr::null_mut();
-        unsafe {
-            (self.clEnqueueWriteBuffer)(
-                dst.queue,
-                dst.ptr,
-                CL_NON_BLOCKING,
-                0,
-                src.len(),
-                src.as_ptr().cast(),
-                0,
-                ptr::null(),
-                &mut event,
-            )
-        }
-        .check("Failed to write buffer.")?;
-        // Immediattely synchronize because we do not know the lifetime of data
-        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }
-            .check("Failed to finish buffer write event.")
-    }
-
-    pub(super) fn pool_to_host(
-        &mut self,
-        src: &OpenCLBuffer,
-        dst: &mut [u8],
-    ) -> Result<(), OpenCLError> {
-        //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
-        assert!(
-            !src.ptr.is_null(),
-            "Trying to read null memory. Internal bug."
-        );
-        let mut event: *mut c_void = ptr::null_mut();
-        unsafe {
-            (self.clEnqueueReadBuffer)(
-                src.queue,
-                src.ptr,
-                CL_NON_BLOCKING,
-                0,
-                dst.len(),
-                dst.as_mut_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                &mut event,
-            )
-        }
-        .check("Failed to read buffer.")?;
-        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }
-            .check("Failed to finish buffer write event.")?;
-        Ok(())
-    }
-
-    pub(super) fn pool_to_pool(
-        &mut self,
-        src: &OpenCLBuffer,
-        dst: &OpenCLBuffer,
-    ) -> Result<(), OpenCLError> {
-        //println!("Moving from {src:?} to {dst:?}");
-        // TODO going through host is slow, but likely only way
-        // LOL, is maybe unint really better than without it???
-        // the only reason to use it is to stop it from running destructor, but u8 does not run it anyway ...
-        assert_eq!(src.bytes, dst.bytes);
-        let mut data: Vec<u8> = vec![0; dst.bytes];
-        self.pool_to_host(src, &mut data)?;
-        //println!("Copied data: {data:?}");
-        self.host_to_pool(&data, dst)?;
-        Ok(())
-    }
-}
-
-    #[allow(clippy::cognitive_complexity)]
-    pub(super) fn compile(
-        &mut self,
-        kernel: &IRKernel,
-        debug_asm: bool,
-    ) -> Result<OpenCLProgram, OpenCLError> {
-        let mut source = String::from("(\n");
-        let mut indent = String::from("  ");
-
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
-
-        let mut loops = [0; 6];
-        for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = *len;
-                } else {
-                    local_work_size[i / 2] = *len;
-                }
-                loops[i] = *id;
-            } else {
-                unreachable!()
-            }
-        }
-
-        // Declare global variables
-        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source += &format!(
-                    "{indent}__global {}{}* p{id},\n",
-                    if *read_only { "const " } else { "" },
-                    dtype.ocl(),
-                );
-            }
-        }
-
-        source.pop();
-        source.pop();
-        source += "\n) {\n";
-
-        // Declare local variables
-        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Local {
-                source += &format!("{indent}__local {} p{id}[{len}];\n", dtype.ocl(),);
-            }
-        }
-
-        // Declare register accumulators
-        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::RegTile {
-                source += &format!(
-                    "{indent}{}{} p{id}[{len}];\n",
-                    if *read_only { "const " } else { "" },
-                    dtype.ocl(),
-                );
-            }
-        }
-
-        // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}{} r{id};\n", dtype.ocl(),);
-        }
-
-        // Add indices for global and local loops
-        source += &format!(
-            "{indent}r{} = get_group_id(0);   /* 0..{} */
-\n",
-            loops[0], global_work_size[0]
-        );
-        source += &format!(
-"{indent}r{} = get_local_id(0); /* 0..{} */
-\n",
-            loops[1], local_work_size[0]
-        );
-        source += &format!(
-"{indent}r{} = get_group_id(1); /* 0..{} */
-\n",
-            loops[2], global_work_size[1]
-        );
-        source += &format!(
-"{indent}r{} = get_local_id(1); /* 0..{} */
-\n",
-            loops[3], local_work_size[1]
-        );
-        source += &format!(
-"{indent}r{} = get_group_id(2); /* 0..{} */
-\n",
-            loops[4], global_work_size[2]
-        );
-        source += &format!(
-"{indent}r{} = get_local_id(2); /* 0..{} */
-\n",
-            loops[5], local_work_size[2]
-        );
-        //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
-
-        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
-            match op {
-                IROp::Load { z, address, offset } => {
-                    if let Reg::Var(id) = offset {
-                        if id == 11 {
-//source += &format!("{indent}printf(\"%u, \", r11);\n");
-                        }
-                    }
-                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
-//source += &format!( "  printf(\"r{z}, p{address} = %f r2 = %u r4 = %u\\n\", r{z}, r2, r4);\n" );
-                }
-                IROp::Store { address, offset, x } => {
-                    source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
-                }
-                IROp::Unary { z, x, uop } => {
-                    let dtype = kernel.registers[z as usize];
-                    source += &match uop {
-                        UOp::Cast(_) => {
-                            format!("{indent}r{z} = ({})r{x};\n", dtype.ocl())
-                        }
-                        UOp::ReLU => format!(
-                            "{indent}r{z} = max(r{x}, {});\n",
-                            dtype.zero_constant().ocl()
-                        ),
-                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
-                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
-                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
-                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
-                        UOp::Sqrt => format!(
-                            "{indent}r{z} = sqrt({}r{x});\n",
-                            if matches!(dtype, DType::F16) {
-                                "(float)"
-                            } else {
-                                ""
-                            }
-                        ),
-                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
-                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
-                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
-                    };
-                }
-                IROp::Binary { z, x, y, bop } => {
-                    source += &format!(
-                        "{indent}r{z} = {};\n",
-                        match bop {
-                            BOp::Add => format!("{} + {}", x.ocl(), y.ocl()),
-                            BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
-                            BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
-                            BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
-                            BOp::Mod => format!("{} % {}", x.ocl(), y.ocl()),
-                            BOp::Pow => format!("pow({}, {})", x.ocl(), y.ocl()),
-                            BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
-                            BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),
-                            BOp::NotEq => format!("{} != {}", x.ocl(), y.ocl()),
-                            BOp::Max => format!("max({}, {})", x.ocl(), y.ocl()),
-                            BOp::Or => format!("{} || {}", x.ocl(), y.ocl()),
-                            BOp::And => format!("{} && {}", x.ocl(), y.ocl()),
-                            BOp::BitOr => format!("{} | {}", x.ocl(), y.ocl()),
-                            BOp::BitAnd => format!("{} & {}", x.ocl(), y.ocl()),
-                            BOp::BitXor => format!("{} ^ {}", x.ocl(), y.ocl()),
-                        }
-                    );
-//if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
-                }
-                IROp::MAdd { z, a, b, c } => {
-                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
-                }
-                IROp::Loop { id, len } => {
-                    source += &format!(
-                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
-                    );
-                    indent += "  ";
-                }
-                IROp::EndLoop { .. } => {
-                    indent.pop();
-                    indent.pop();
-                    source += &format!("{indent}}}\n");
-                }
-                IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
-                        match scope {
-                            Scope::Global => "GLOB",
-                            Scope::Local => "LOC",
-                            Scope::Register | Scope::RegTile => unreachable!(),
-                        }
-                    );
-                }
-            }
-        }
-        source += "}\n";
-
-        let local_work_size = local_work_size;
-        let name = format!(
-            "k_{}_{}_{}__{}_{}_{}",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2],
-        );
-        for (i, lwd) in local_work_size.iter().enumerate() {
-            global_work_size[i] *= lwd;
-        }
-        let mut pragma = String::new();
-        if source.contains("half") {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
-        }
-        if source.contains("double") {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
-        }
-        let source = format!("{pragma}__kernel void {name}{source}");
-//println!("{source}");
-        if debug_asm {
-            println!("{source}");
-        }
-        let context = self.context;
-        let device = self.ptr;
-        let sources: &[&str] = &[source.as_str()];
-        let mut status = OpenCLStatus::CL_SUCCESS;
-        let program = unsafe {
-            (self.clCreateProgramWithSource)(
-                context,
-                1,
-                sources.as_ptr().cast(),
-                [source.len()].as_ptr(),
-                &mut status,
-            )
-        };
-        status.check("Failed to compile program.")?;
-        if let Err(e) = unsafe {
-            (self.clBuildProgram)(
-                program,
-                1,
-                [device].as_ptr(),
-                c"-cl-fast-relaxed-math".as_ptr().cast(),
-                None,
-                ptr::null_mut(),
-            )
-        }
-        .check("Failed to build program.")
-        {
-            let build_log = self.get_program_build_data(program, CL_PROGRAM_BUILD_LOG);
-            match build_log {
-                Ok(build_log) => {
-                    panic!("{e:?} {}", String::from_utf8_lossy(&build_log));
-                }
-                Err(status) => status.check(&format!(
-                    "Failed to get info about failed compilation. {e:?}"
-                ))?,
-            }
-        }
-        let mut status = OpenCLStatus::CL_SUCCESS;
-        let program_name = &CString::new(name).unwrap();
-        let kernel =
-            unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
-        status.check("Failed to create kernel.")?;
-        Ok(OpenCLProgram { program, kernel, global_work_size, local_work_size })
-    }
-}
-
-impl OpenCLQueue {
-    pub(super) fn launch(
-        &mut self,
-        program: &mut OpenCLProgram,
-        buffers: &mut Slab<OpenCLBuffer>,
-        args: &[Id],
-        sync: bool,
-    ) -> Result<OpenCLEvent, OpenCLError> {
-/*println!(
-    "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
-    program.kernel,
-    program.program,
-    self.queue,
-    program.global_work_size,
-    program.local_work_size
-);*/
-        let mut i = 0;
-        #[allow(clippy::explicit_counter_loop)]
-        for arg in args {
-            let arg = &mut buffers[*arg];
-//println!("Kernel arg: {arg:?} at index {i}");
-            let ptr: *const _ = &arg.ptr;
-            unsafe {
-                (self.clSetKernelArg)(
-                    program.kernel,
-                    i,
-                    core::mem::size_of::<*mut c_void>(),
-                    ptr.cast(),
-                )
-            }
-            .check("Failed to set kernel arg.")?;
-            i += 1;
-        }
-        let mut event: *mut c_void = ptr::null_mut();
-        self.load += 1;
-        unsafe {
-            (self.clEnqueueNDRangeKernel)(
-                self.queue,
-                program.kernel,
-                u32::try_from(program.global_work_size.len()).unwrap(),
-                ptr::null(),
-                program.global_work_size.as_ptr(),
-                program.local_work_size.as_ptr(),
-                0,
-                ptr::null(),
-                &mut event,
-            )
-        }
-        .check("Failed to enqueue kernel.")?;
-        println!("Launch event: {event:?}");
-        if sync {
-//unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
-            let events = [event];
-            unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }.check("finish fail").unwrap();
-        }
-//self.events.push(event);
-        Ok(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents })
-    }
-
-    pub(super) fn sync(&mut self) -> Result<(), OpenCLError> {
-//println!("Syncing {:?}", self);
-        unsafe { (self.clFinish)(self.queue) }.check("Failed to synchronize device queue.")?;
-        self.load = 0;
-//self.events.clear();
-//unsafe { (self.clWaitForEvents)(self.events.len() as u32, self.events.as_ptr()) }.check("Failed to synchronize device queue.")?;
-//panic!();
-        Ok(())
-    }
-
-    pub(super) const fn load(&self) -> usize {
-        self.load
-    }
-}
-
-impl OpenCLEvent {
-    pub(super) fn finish(self) -> Result<(), OpenCLError> {
-        println!("Finish event {:?}", self.event);
-        unsafe { (self.clWaitForEvents)(1, [self.event].as_ptr()) }.check("Failed to finish event")
-    }
-}
-
-impl OpenCLDevice {
-    #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn release_program(&self, program: OpenCLProgram) -> Result<(), OpenCLError> {
-//println!("Releasing {:?}", program);
-        unsafe { (self.clReleaseProgram)(program.program) }
-            .check("Failed to release OpenCL program")
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn release_queue(&self, queue: OpenCLQueue) -> Result<(), OpenCLError> {
-        unsafe { (self.clReleaseCommandQueue)(queue.queue) }
-            .check("Failed to release OpenCL queue.")
-    }
 
     fn get_program_build_data(
         &mut self,
@@ -1081,16 +1032,17 @@ impl OpenCLDevice {
             Ok(Vec::default())
         }
     }
-}
 
-impl std::fmt::Display for OpenCLError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "OpenCLError {{ info: {:?}, status: {:?} }}",
-            self.info, self.status
-        ))
+    fn next_queue(&mut self) -> Result<usize, BackendError> {
+        let mut id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
+        if self.queues[id].load > 20 {
+            unsafe { (self.clFinish)(self.queues[id].queue) }.check(ErrorStatus::KernelSync)?;
+            self.queues[id].load = 0;
+            id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
+        }
+        Ok(id)
     }
-}*/
+}
 
 impl DType {
     fn ocl(self) -> String {

@@ -590,16 +590,17 @@ impl Kernel {
             // Pick a device to run program
             // Find in which memory pool are most of input tensors stored
             let memory_pool_id = 0;
-            let memory_pool = &mut memory_pools[memory_pool_id as usize];
+            let memory_pool = memory_pools[memory_pool_id as usize].as_mut();
 
             // Move all other tensors to that memory pool
             // and finish queues with this kernel's inputs
 
             // Get device which is associated with that memory pool
-            let device = &mut devices[0];
+            let device = devices[0].as_mut();
+            let mut sync = BTreeSet::new();
 
             // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
-            let buffer_ids: Vec<Id> = self
+            let args: Vec<Id> = self
                 .tensors
                 .values()
                 .map(|&tensor_id| {
@@ -614,12 +615,13 @@ impl Kernel {
                             )
                             .unwrap();
                         tensor_buffer_map.insert(tensor_id, BufferId { memory_pool_id, buffer_id });
+                        sync.insert(buffer_id);
                         buffer_id
                     }
                 })
                 .collect();
 
-            optimizer.launch(&self.ops, device, memory_pool, &buffer_ids, search_iters)?;
+            optimizer.launch(self, device, memory_pool, &args, sync, search_iters, debug)?;
 
             // add load kernels for all outputs of this kernel
             return Ok(Some(

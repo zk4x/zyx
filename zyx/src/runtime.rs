@@ -188,11 +188,11 @@ impl Runtime {
         // drop graph
         self.graph = Graph::new();
         // drop devices
-        while let Some(dev) = self.devices.pop() {
+        while let Some(mut dev) = self.devices.pop() {
             dev.deinitialize()?;
         }
         // drop memory pools
-        while let Some(mp) = self.memory_pools.pop() {
+        while let Some(mut mp) = self.memory_pools.pop() {
             mp.deinitialize()?;
         }
         // Timer
@@ -259,7 +259,10 @@ impl Runtime {
             }
         }
         let buffer_id = self.memory_pools[memory_pool_id as usize].allocate(bytes)?;
-        self.memory_pools[memory_pool_id as usize].host_to_pool(data, buffer_id)?;
+        let byte_slice: &[u8] = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * T::byte_size())
+        };
+        self.memory_pools[memory_pool_id as usize].host_to_pool(byte_slice, buffer_id)?;
         let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
         self.tensor_buffer_map.insert(id, BufferId { memory_pool_id, buffer_id });
         Ok(id)
@@ -640,8 +643,14 @@ impl Runtime {
         // the rest of the tensor in other devices
         for (tensor_id, buffer_id) in &self.tensor_buffer_map {
             if *tensor_id == x {
+                let byte_slice: &mut [u8] = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        data.as_ptr() as *mut u8,
+                        data.len() * T::byte_size(),
+                    )
+                };
                 self.memory_pools[buffer_id.memory_pool_id as usize]
-                    .pool_to_host(buffer_id.buffer_id, data)?;
+                    .pool_to_host(buffer_id.buffer_id, byte_slice)?;
                 break;
             }
         }
@@ -1147,13 +1156,7 @@ impl std::fmt::Display for ZyxError {
             ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
             ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
-            ZyxError::CUDAError(e) => f.write_fmt(format_args!("CUDA {e:?}")),
-            ZyxError::HIPError(e) => f.write_fmt(format_args!("HIP {e:?}")),
-            ZyxError::OpenCLError(e) => f.write_fmt(format_args!("OpenCL {e:?}")),
-            #[cfg(feature = "vulkan")]
-            ZyxError::VulkanError(e) => f.write_fmt(format_args!("Vulkan {e:?}")),
-            #[cfg(feature = "wgsl")]
-            ZyxError::WGSLError(_) => todo!(),
+            ZyxError::BackendError(e) => f.write_fmt(format_args!("Backend {e:?}")),
         }
     }
 }

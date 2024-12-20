@@ -7,7 +7,7 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt::Display};
 
 use nanoserde::DeJson;
 #[cfg(feature = "wgsl")]
@@ -21,13 +21,7 @@ mod vulkan;
 #[cfg(feature = "wgsl")]
 mod wgsl;*/
 
-use crate::{
-    ir::IRKernel,
-    kernel::{Kernel, Op},
-    optimizer::Optimization,
-    slab::Id,
-    ZyxError,
-};
+use crate::{ir::IRKernel, slab::Id, ZyxError};
 
 #[derive(Debug)]
 pub enum ErrorStatus {
@@ -41,6 +35,10 @@ pub enum ErrorStatus {
     DeviceQuery,
     /// Failed to allocate memory
     MemoryAllocation,
+    /// Failed to copy memory
+    MemoryCopy,
+    /// Kernel argument was not correct
+    IncorrectKernelArg,
     /// Failed to compile kernel
     KernelCompilation,
     /// Failed to launch kernel
@@ -73,9 +71,10 @@ pub struct DeviceConfig {
     pub wgsl: wgsl::WGSLConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId {
-    memory_pool_id: u32,
-    buffer_id: Id,
+    pub memory_pool_id: u32,
+    pub buffer_id: Id,
 }
 
 /// Hardware information needed for applying optimizations
@@ -100,25 +99,23 @@ pub struct DeviceInfo {
 }
 
 pub trait MemoryPool: Send {
-    fn deinitialize(self) -> Result<(), BackendError>;
+    fn deinitialize(&mut self) -> Result<(), BackendError>;
     fn free_bytes(&self) -> usize;
     fn allocate(&mut self, bytes: usize) -> Result<Id, BackendError>;
-    fn deallocate(&mut self, buffer: Id) -> Result<(), BackendError>;
+    fn deallocate(&mut self, buffer_id: Id) -> Result<(), BackendError>;
     fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError>;
     fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError>;
-    fn pool_to_pool(
-        &mut self,
-        src: Id,
-        dst_pool: &mut dyn MemoryPool,
-        dst: Id,
-    ) -> Result<(), BackendError>;
+    fn get_buffer(&self, buffer: Id) -> Buffer;
+    fn synchronize(&self, buffers: &BTreeSet<Id>) -> Result<(), BackendError>;
+    fn bind_event(&mut self, event: Event, buffers: BTreeSet<Id>);
 }
 
 pub trait Device: Send {
-    fn deinitialize(self) -> Result<(), BackendError>;
+    fn deinitialize(&mut self) -> Result<(), BackendError>;
     fn info(&self) -> &DeviceInfo;
     fn memory_pool_id(&self) -> u32;
-    fn compile(&self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError>;
+    fn compute(&self) -> u128;
+    fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError>;
     // Returns if this is the first time running the kernel
     fn launch(
         &mut self,
@@ -126,9 +123,17 @@ pub trait Device: Send {
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
         // If sync is empty, kernel will be immediatelly synchronized
-        sync: &BTreeSet<Id>,
+        sync: BTreeSet<Id>,
     ) -> Result<(), BackendError>;
-    fn release(&self, program_id: Id) -> Result<(), BackendError>;
+    fn release(&mut self, program_id: Id) -> Result<(), BackendError>;
+}
+
+enum Buffer<'a> {
+    OpenCL(&'a opencl::OpenCLBuffer),
+}
+
+enum Event {
+    OpenCL(opencl::OpenCLEvent),
 }
 
 pub fn initialize_backends(
@@ -156,6 +161,18 @@ pub fn initialize_backends(
         });
     }
     Ok(())
+}
+
+impl From<BackendError> for ZyxError {
+    fn from(value: BackendError) -> Self {
+        ZyxError::BackendError(value)
+    }
+}
+
+impl Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}: {}", self.status, self.context))
+    }
 }
 
 /*impl MemoryPool {

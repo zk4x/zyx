@@ -62,7 +62,7 @@ impl Optimizer {
         device: &mut dyn Device,
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
-        sync: &BTreeSet<Id>,
+        sync: BTreeSet<Id>,
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<(), BackendError> {
@@ -182,7 +182,7 @@ fn optimize_kernel(
             };
             // Launch kernel and measure it's performance
             let begin = std::time::Instant::now();
-            if device.launch(program_id, memory_pool, &args, &BTreeSet::new()).is_err() {
+            if device.launch(program_id, memory_pool, &args, BTreeSet::new()).is_err() {
                 done.insert(optimization, Duration::MAX);
                 continue;
             }
