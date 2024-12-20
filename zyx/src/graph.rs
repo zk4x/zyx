@@ -9,9 +9,6 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-// TODO implement PartialOrd such that tensor id does not matter
-// This is probably not very high priority. It probably works fine
-// even this way.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct Graph {
     // First value is reference count, second is node

@@ -153,6 +153,7 @@ pub(super) struct OpenCLQueue {
     load: usize,
 }
 
+#[derive(Debug)]
 pub struct OpenCLEvent {
     ptr: *mut c_void,
 }
@@ -524,7 +525,7 @@ impl MemoryPool for OpenCLMemoryPool {
     }
 
     fn bind_event(&mut self, event: super::Event, buffers: BTreeSet<Id>) {
-        let Event::OpenCL(OpenCLEvent { ptr }) = event;
+        let Event::OpenCL(OpenCLEvent { ptr }) = event else { unreachable!() };
         self.events.insert(buffers, ptr);
     }
 
@@ -829,7 +830,7 @@ impl Device for OpenCLDevice {
         #[allow(clippy::explicit_counter_loop)]
         for arg in args {
             let arg = &mut memory_pool.get_buffer(*arg);
-            let Buffer::OpenCL(arg) = arg;
+            let Buffer::OpenCL(arg) = arg else { unreachable!() };
             //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.ptr;
             unsafe {

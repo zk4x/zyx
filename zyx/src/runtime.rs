@@ -1156,7 +1156,7 @@ impl std::fmt::Display for ZyxError {
             ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
             ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
-            ZyxError::BackendError(e) => f.write_fmt(format_args!("Backend {e:?}")),
+            ZyxError::BackendError(e) => f.write_fmt(format_args!("Backend {e}")),
         }
     }
 }

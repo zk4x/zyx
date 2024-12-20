@@ -1,44 +1,18 @@
-//! Cuda backend
-
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(unused)]
-
-use std::ffi::{c_char, c_int, c_uint, c_void};
-use std::ptr;
-use std::sync::Arc;
+use std::{collections::{BTreeMap, BTreeSet}, ffi::{c_char, c_int, c_uint, c_void}, ptr, sync::Arc};
 
 use float8::F8E4M3;
 use libloading::Library;
 use nanoserde::DeJson;
 
-use super::{Device, DeviceInfo, MemoryPool};
-use crate::dtype::Constant;
-use crate::ir::IRKernel;
-use crate::ir::{IROp, Reg, Scope};
-use crate::node::{BOp, UOp};
-use crate::slab::{Id, Slab};
-use crate::{DType, ZyxError};
+use crate::{dtype::Constant, ir::Reg, slab::{Id, Slab}, DType};
+
+use super::{BackendError, Buffer, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
 pub struct CUDAConfig {
     device_ids: Option<Vec<i32>>,
-}
-
-#[derive(Debug)]
-pub struct CUDAError {
-    info: String,
-    status: CUDAStatus,
-}
-
-impl std::fmt::Display for CUDAError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "CUDAError {{ info: {:?}, status: {:?} }}",
-            self.info, self.status
-        ))
-    }
 }
 
 #[derive(Debug)]
@@ -49,6 +23,8 @@ pub(super) struct CUDAMemoryPool {
     context: CUcontext,
     device: CUdevice,
     free_bytes: usize,
+    buffers: Slab<CUDABuffer>,
+    events: BTreeMap<BTreeSet<Id>, *mut c_void>,
     cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
     cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
     cuMemcpyDtoH: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUDAStatus,
@@ -62,7 +38,6 @@ pub(super) struct CUDAMemoryPool {
 #[derive(Debug)]
 pub(super) struct CUDABuffer {
     ptr: u64,
-    context: CUcontext,
     bytes: usize,
 }
 
@@ -72,7 +47,8 @@ pub(super) struct CUDADevice {
     memory_pool_id: u32,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
-    queues: [CUDAQueue; 8],
+    queues: Vec<CUDAQueue>,
+    programs: Slab<CUDAProgram>,
     cuModuleLoadDataEx: unsafe extern "C" fn(
         *mut CUmodule,
         *const c_void,
@@ -115,350 +91,97 @@ pub(super) struct CUDAQueue {
     load: usize,
 }
 
-// TODO remove clone once btreemap is implemented properly
-#[derive(Debug, Clone)]
-pub(super) struct CUDAEvent {}
+#[derive(Debug)]
+pub struct CUDAEvent {}
 
-impl CUDAEvent {
-    pub(super) fn finish(self) -> Result<(), CUDAError> {
-        Ok(())
-    }
-}
-
-// This is currently just wrong, CUDA uses thread locals that can't be send ...
 unsafe impl Send for CUDAMemoryPool {}
+unsafe impl Send for CUDADevice {}
 unsafe impl Send for CUDABuffer {}
 unsafe impl Send for CUDAProgram {}
 unsafe impl Send for CUDAQueue {}
+unsafe impl Send for CUDAEvent {}
 
-pub(super) fn initialize_device(
-    config: &CUDAConfig,
-    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
-    devices: &mut Vec<Box<dyn Device>>,
-    debug_dev: bool,
-) -> Result<(), ZyxError> {
-    let _ = config;
-
-    let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
-    let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
-    let Some(cuda) = cuda else {
-        return Err(CUDAError {
-            info: String::from("CUDA runtime not found."),
-            status: CUDAStatus::CUDA_ERROR_UNKNOWN,
-        }
-        .into());
-    };
-
-    let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuInit\0") }.unwrap();
-    let cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDriverGetVersion\0") }.unwrap();
-    let cuDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceGetCount\0") }.unwrap();
-    let cuDeviceGet: unsafe extern "C" fn(*mut CUdevice, c_int) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceGet\0") }.unwrap();
-    let cuDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceGetName\0") }.unwrap();
-    let cuDeviceComputeCapability: unsafe extern "C" fn(
-        *mut c_int,
-        *mut c_int,
-        CUdevice,
-    ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
-    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceTotalMem\0") }.unwrap();
-    let cuDeviceGetAttribute: unsafe extern "C" fn(
-        *mut c_int,
-        CUdevice_attribute,
-        CUdevice,
-    ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }.unwrap();
-    let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
-    let cuMemAlloc = *unsafe { cuda.get(b"cuMemAlloc\0") }.unwrap();
-    let cuMemcpyHtoD = *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
-    let cuMemFree = *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
-    let cuMemcpyDtoH = *unsafe { cuda.get(b"cuMemcpyDtoH\0") }.unwrap();
-    let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
-    //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
-    //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
-    let cuModuleLoadDataEx = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
-    let cuModuleGetFunction = *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
-    let cuLaunchKernel = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
-    let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuStreamCreate\0") }.unwrap();
-    let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
-    let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
-    let cuModuleUnload = *unsafe { cuda.get(b"cuModuleUnload\0") }.unwrap();
-    //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
-
-    unsafe { cuInit(0) }.check("Failed to init CUDA")?;
-    let mut driver_version = 0;
-    unsafe { cuDriverGetVersion(&mut driver_version) }
-        .check("Failed to get CUDA driver version")?;
-    let mut num_devices = 0;
-    unsafe { cuDeviceGetCount(&mut num_devices) }.check("Failed to get CUDA device count")?;
-    if num_devices == 0 {
-        return Err(CUDAError {
-            info: "No available cuda device.".into(),
-            status: CUDAStatus::CUDA_ERROR_UNKNOWN,
-        }
-        .into());
-    }
-    let device_ids: Vec<i32> = (0..num_devices)
-        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
-        .collect();
-    if debug_dev && !device_ids.is_empty() {
-        println!(
-            "Using CUDA driver, driver version: {}.{} on devices:",
-            driver_version / 1000,
-            (driver_version - (driver_version / 1000 * 1000)) / 10
-        );
-    }
-
-    let cuda = Arc::new(cuda);
-    for dev_id in device_ids {
-        let mut device = 0;
-        unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
-        let mut device_name = [0; 100];
-        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }
-            .check("Failed to get CUDA device name")
-        else {
-            continue;
-        };
-        let mut major = 0;
-        let mut minor = 0;
-        let Ok(()) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }
-            .check("Failed to get CUDA device compute capability.")
-        else {
-            continue;
-        };
-        if debug_dev {
-            println!("{:?}, compute capability: {major}.{minor}", unsafe {
-                std::ffi::CStr::from_ptr(device_name.as_ptr())
-            });
-        }
-        let mut free_bytes = 0;
-        let Ok(()) =
-            unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check("Failed to get dev mem.")
-        else {
-            continue;
-        };
-        let mut context: CUcontext = ptr::null_mut();
-        if let Err(e) =
-            unsafe { cuCtxCreate(&mut context, 0, device) }.check("Failed to create CUDA context.")
-        {
-            println!("{e:?}");
-            continue;
-        }
-        /*if let Err(e) = unsafe { cuDevicePrimaryCtxRetain(&mut context, device) }.check("Failed to create CUDA context.") {
-            println!("{e:?}");
-            continue;
-        }*/
-        //println!("Using context {context:?} and device {device:?}");
-        memory_pools.push(Box::new(CUDAMemoryPool {
-            cuda: cuda.clone(),
-            context,
-            device,
-            free_bytes,
-            cuMemAlloc,
-            cuMemcpyHtoD,
-            cuMemFree,
-            cuMemcpyDtoH,
-            cuMemcpyPeer,
-            //cuCtxSetCurrent,
-            //cuCtxDestroy,
-        }));
-        let mut queues = Vec::new();
-        for _ in 0..8 {
-            let mut stream = ptr::null_mut();
-            let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check("") else {
-                continue;
-            };
-            queues.push(CUDAQueue { stream, load: 0 });
-        }
-        devices.push(Box::new(CUDADevice {
-            device,
-            dev_info: DeviceInfo {
-                compute: 1024 * 1024 * 1024 * 1024,
-                max_global_work_dims: [64, 64, 64],
-                max_local_threads: 1,
-                max_local_work_dims: [1, 1, 1],
-                local_mem_size: 0,
-                num_registers: 96,
-                preferred_vector_size: 16,
-                tensor_cores: major > 7,
-            },
-            memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
-            cuModuleLoadDataEx,
-            cuModuleGetFunction,
-            cuModuleUnload,
-            cuStreamDestroy,
-            compute_capability: [major, minor],
-        }));
-        let dev = &mut devices.last_mut().unwrap().0;
-        dev.dev_info = DeviceInfo {
-            compute: 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: [
-                usize::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                usize::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                usize::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-            ],
-            max_local_threads: usize::try_from(dev.get(
-                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-                cuDeviceGetAttribute,
-            )?)
-            .unwrap(),
-            max_local_work_dims: [
-                usize::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                usize::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                usize::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-            ],
-            local_mem_size: usize::try_from(dev.get(
-                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
-                cuDeviceGetAttribute,
-            )?)
-            .unwrap(),
-            num_registers: 96,
-            preferred_vector_size: 16,
-            tensor_cores: major > 7,
-        }
-    }
-    Ok(())
-}
-
-impl MemoryPool for CUDAMemoryPool {}
-
-impl Device for CUDADevice {}
-
-impl CUDAMemoryPool {
-    #[allow(clippy::unused_self)]
-    #[allow(clippy::unnecessary_wraps)]
-    pub(super) fn deinitialize(self) -> Result<(), CUDAError> {
-        //unsafe { (self.cuCtxDestroy)(self.context) }.check("Failed to destroy CUDA context.")?;
+impl MemoryPool for CUDAMemoryPool {
+    fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    pub(super) const fn free_bytes(&self) -> usize {
+    fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    pub(super) fn allocate(&mut self, bytes: usize) -> Result<CUDABuffer, CUDAError> {
+    fn allocate(&mut self, bytes: usize) -> Result<crate::slab::Id, BackendError> {
         if bytes > self.free_bytes {
-            return Err(CUDAError {
-                info: "Insufficient free memory.".into(),
-                status: CUDAStatus::CUDA_ERROR_OUT_OF_MEMORY,
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
-        self.free_bytes -= bytes;
         let mut ptr = u64::try_from(self.device).unwrap();
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
-        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check("Failed to allocate memory.")?;
-        Ok(CUDABuffer { ptr, bytes, context: self.context })
+        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check(ErrorStatus::MemoryAllocation)?;
+        self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
+        Ok(self.buffers.push(CUDABuffer { ptr, bytes }))
     }
 
-    #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn deallocate(&mut self, buffer: CUDABuffer) -> Result<(), CUDAError> {
-        unsafe { (self.cuMemFree)(buffer.ptr) }.check("Failed to free memory.")?;
-        self.free_bytes += buffer.bytes;
+    fn deallocate(&mut self, buffer_id: crate::slab::Id) -> Result<(), BackendError> {
+        if let Some(buffer) = self.buffers.remove(buffer_id) {
+            unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::Deinitialization)?;
+            self.free_bytes += buffer.bytes;
+        }
         Ok(())
     }
 
-    pub(super) fn host_to_pool(&mut self, src: &[u8], dst: &CUDABuffer) -> Result<(), CUDAError> {
-        //println!("Copying {src:?} to {dst:?}");
-        //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
+    fn host_to_pool(&mut self, src: &[u8], dst: crate::slab::Id) -> Result<(), BackendError> {
+        let dst = &self.buffers[dst];
         unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }
-            .check("Failed to copy memory from host to pool.")
+            .check(ErrorStatus::MemoryCopy)
     }
 
-    pub(super) fn pool_to_host(
-        &mut self,
-        src: &CUDABuffer,
-        dst: &mut [u8],
-    ) -> Result<(), CUDAError> {
+    fn pool_to_host(&mut self, src: crate::slab::Id, dst: &mut [u8]) -> Result<(), BackendError> {
+        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
+            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
+                .check(ErrorStatus::MemoryCopy)?;
+        }
+        let src = &self.buffers[src];
         unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }
-            .check("Failed to copy memory from pool to host.")
+            .check(ErrorStatus::MemoryCopy)
     }
 
-    pub(super) fn pool_to_pool(
-        &mut self,
-        src: &CUDABuffer,
-        dst: &CUDABuffer,
-    ) -> Result<(), CUDAError> {
-        unsafe { (self.cuMemcpyPeer)(dst.ptr, dst.context, src.ptr, src.context, dst.bytes) }
-            .check("Failed copy memory from pool to pool.")
+    fn get_buffer(&self, buffer: crate::slab::Id) -> super::Buffer {
+        Buffer::CUDA(&self.buffers[buffer])
+    }
+
+    fn synchronize(&self, buffers: &std::collections::BTreeSet<crate::slab::Id>) -> Result<(), BackendError> {
+        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.is_disjoint(buffers)) {
+            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
+                .check(ErrorStatus::MemoryCopy)?;
+        }
+        Ok(())
+    }
+
+    fn bind_event(&mut self, event: super::Event, buffers: std::collections::BTreeSet<crate::slab::Id>) {
+        let Event::CUDA(CUDAEvent { ptr }) = event else { unreachable!() };
+        self.events.insert(buffers, ptr);
     }
 }
 
-impl CUDADevice {
-    #[allow(clippy::unused_self)]
-    #[allow(clippy::unnecessary_wraps)]
-    pub(super) const fn deinitialize(self) -> Result<(), CUDAError> {
+impl Device for CUDADevice {
+    fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn get(
-        &mut self,
-        attr: CUdevice_attribute,
-        cuDeviceGetAttribute: unsafe extern "C" fn(
-            *mut c_int,
-            CUdevice_attribute,
-            CUdevice,
-        ) -> CUDAStatus,
-    ) -> Result<c_int, CUDAError> {
-        let mut v = 0;
-        unsafe { cuDeviceGetAttribute(&mut v, attr, self.device) }
-            .check("Failed to get device attribute.")?;
-        Ok(v)
-    }
-
-    pub(super) const fn info(&self) -> &DeviceInfo {
+    fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
-    // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> u32 {
+    fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 
-    #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn release_program(&self, program: CUDAProgram) -> Result<(), CUDAError> {
-        unsafe { (self.cuModuleUnload)(program.module) }.check("Failed to release CUDA program.")
+    fn compute(&self) -> u128 {
+        self.dev_info.compute
     }
 
-    #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn release_queue(&self, queue: CUDAQueue) -> Result<(), CUDAError> {
-        unsafe { (self.cuStreamDestroy)(queue.stream) }.check("Failed to release CUDA stream.")
-    }
-
-    pub(super) fn compile(
-        &mut self,
-        kernel: &IRKernel,
-        debug_asm: bool,
-    ) -> Result<CUDAProgram, CUDAError> {
+    fn compile(&mut self, kernel: &crate::ir::IRKernel, debug_asm: bool) -> Result<crate::slab::Id, BackendError> {
         let (global_work_size, local_work_size, name, ptx_vec) =
             self.compile_cuda(kernel, debug_asm)?;
         //self.compile_ptx(kernel, debug_asm)?;
@@ -473,503 +196,33 @@ impl CUDADevice {
                 ptr::null_mut(),
             )
         }
-        .check("Module load failed.")?;
+        .check(ErrorStatus::KernelCompilation)?;
         let mut function: CUfunction = ptr::null_mut();
         // Don't forget that the name is null terminated string
         unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
-            .check("Failed to load function.")?;
+            .check(ErrorStatus::KernelLaunch)?;
 
-        Ok(CUDAProgram {
+        let program_id = self.programs.insert(CUDAProgram {
             //name,
             module,
             function,
             global_work_size,
             local_work_size,
-        })
+        });
+        Ok(program_id)
     }
 
-    #[allow(clippy::type_complexity)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn compile_cuda(
+    fn launch(
         &mut self,
-        kernel: &IRKernel,
-        debug_asm: bool,
-    ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), CUDAError> {
-        let mut source = String::from("(\n");
-        let mut indent = String::from("  ");
-
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
-
-        let mut loop_ids = [0; 6];
-        for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = *len;
-                } else {
-                    local_work_size[i / 2] = *len;
-                }
-                loop_ids[i] = *id;
-            } else {
-                unreachable!()
-            }
-        }
-
-        // Declare global variables
-        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source.push_str(&format!(
-                    "{indent}{}{}* p{id},\n",
-                    if *read_only { "const " } else { "" },
-                    dtype.cu(),
-                ));
-            }
-        }
-
-        source.pop();
-        source.pop();
-        source.push_str("\n) {\n");
-
-        // Declare local variables
-        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Local {
-                source.push_str(&format!(
-                    "{indent}__shared__ {} p{id}[{len}];\n",
-                    //if *read_only { "const " } else { "" },
-                    dtype.cu(),
-                ));
-            }
-        }
-
-        // Declare accumulators
-        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::RegTile {
-                source.push_str(&format!(
-                    "{indent}{}{} p{id}[{len}];\n",
-                    if *read_only { "const " } else { "" },
-                    dtype.cu(),
-                ));
-            }
-        }
-
-        // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
-            source.push_str(&format!("{indent}{} r{id};\n", dtype.cu()));
-        }
-
-        // Add indices for global and local loops
-        source.push_str(&format!(
-            "  r{} = blockIdx.x;   /* 0..{} */\n",
-            loop_ids[0], global_work_size[0]
-        ));
-        source.push_str(&format!(
-            "  r{} = threadIdx.x;   /* 0..{} */\n",
-            loop_ids[1], local_work_size[0]
-        ));
-        source.push_str(&format!(
-            "  r{} = blockIdx.y;   /* 0..{} */\n",
-            loop_ids[2], global_work_size[1]
-        ));
-        source.push_str(&format!(
-            "  r{} = threadIdx.y;   /* 0..{} */\n",
-            loop_ids[3], local_work_size[1]
-        ));
-        source.push_str(&format!(
-            "  r{} = blockIdx.z;   /* 0..{} */\n",
-            loop_ids[4], global_work_size[2]
-        ));
-        source.push_str(&format!(
-            "  r{} = threadIdx.z;   /* 0..{} */\n",
-            loop_ids[5], local_work_size[2]
-        ));
-
-        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
-            match op {
-                IROp::Load { z, address, offset } => {
-                    source.push_str(&format!("{indent}r{z} = p{address}[{}];\n", offset.cu()));
-                }
-                IROp::Store { address, offset, x } => {
-                    source.push_str(&format!(
-                        "{indent}p{address}[{}] = {};\n",
-                        offset.cu(),
-                        x.cu()
-                    ));
-                }
-                IROp::Unary { z, x, uop } => {
-                    let dtype = kernel.registers[z as usize];
-                    let zero = Constant::new(0).unary(UOp::Cast(dtype)).cu();
-                    source.push_str(&match uop {
-                        UOp::Cast(_) => {
-                            format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
-                        }
-                        UOp::ReLU => {
-                            if dtype == DType::F16 {
-                                format!("{indent}r{z} = r{x} * __float2half(r{x} > {zero});\n")
-                            } else {
-                                format!("{indent}r{z} = r{x} * (r{x} > {zero});\n")
-                            }
-                        }
-                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
-                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
-                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
-                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
-                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
-                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
-                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
-                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
-                    });
-                }
-                IROp::Binary { z, x, y, bop } => {
-                    source.push_str(&format!(
-                        "{indent}r{z} = {};\n",
-                        match bop {
-                            BOp::Add => format!("{} + {}", x.cu(), y.cu()),
-                            BOp::Sub => format!("{} - {}", x.cu(), y.cu()),
-                            BOp::Mul => format!("{} * {}", x.cu(), y.cu()),
-                            BOp::Div => format!("{} / {}", x.cu(), y.cu()),
-                            BOp::Mod => format!("{} % {}", x.cu(), y.cu()),
-                            BOp::Pow => format!("pow({}, {})", x.cu(), y.cu()),
-                            BOp::Cmplt => format!("{} < {}", x.cu(), y.cu()),
-                            BOp::Cmpgt => format!("{} > {}", x.cu(), y.cu()),
-                            BOp::Max => format!("max({}, {})", x.cu(), y.cu()),
-                            BOp::Or => format!("{} || {}", x.cu(), y.cu()),
-                            BOp::And => format!("{} && {}", x.cu(), y.cu()),
-                            BOp::BitOr => format!("{} | {}", x.cu(), y.cu()),
-                            BOp::BitAnd => format!("{} & {}", x.cu(), y.cu()),
-                            BOp::BitXor => format!("{} ^ {}", x.cu(), y.cu()),
-                            BOp::NotEq => format!("{} != {}", x.cu(), y.cu()),
-                        }
-                    ));
-                }
-                IROp::MAdd { z, a, b, c } => {
-                    source.push_str(&format!(
-                        "{indent}r{z} = {} * {} + {};\n",
-                        a.cu(),
-                        b.cu(),
-                        c.cu()
-                    ));
-                }
-                IROp::Loop { id, len } => {
-                    source.push_str(&format!(
-                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
-                    ));
-                    indent.push_str("  ");
-                }
-                IROp::EndLoop { .. } => {
-                    indent.pop();
-                    indent.pop();
-                    source.push_str(&format!("{indent}}}\n"));
-                }
-                IROp::Barrier { scope } => {
-                    source.push_str(&format!(
-                        "{};\n",
-                        match scope {
-                            Scope::Global => "__threadfence()",
-                            Scope::Local => "__syncthreads()",
-                            Scope::Register | Scope::RegTile => unreachable!(),
-                        }
-                    ));
-                }
-            }
-        }
-        source += "}\n";
-
-        let mut name = format!(
-            "k_{}_{}_{}__{}_{}_{}",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2],
-        );
-        let mut pragma = String::new();
-        if source.contains("__half") {
-            pragma += "#include <cuda_fp16.h>\n";
-        }
-        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
-        name += "\0";
-        if debug_asm {
-            println!("{source}");
-        }
-
-        let cudartc_paths = [
-            "/lib/x86_64-linux-gnu/libnvrtc.so",
-            "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
-        ];
-        let cudartc = cudartc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
-        let Some(cudartc) = cudartc else {
-            return Err(CUDAError {
-                info: "CUDA runtime not found.".into(),
-                status: CUDAStatus::CUDA_ERROR_UNKNOWN,
-            });
-        };
-        let nvrtcCreateProgram: unsafe extern "C" fn(
-            *mut nvrtcProgram,
-            *const c_char,
-            *const c_char,
-            c_int,
-            *const *const c_char,
-            *const *const c_char,
-        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCreateProgram\0") }.unwrap();
-        let nvrtcCompileProgram: unsafe extern "C" fn(
-            nvrtcProgram,
-            c_int,
-            *const *const c_char,
-        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCompileProgram\0") }.unwrap();
-        let nvrtcGetPTXSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetPTXSize\0") }.unwrap();
-        let nvrtcGetPTX: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetPTX\0") }.unwrap();
-        let nvrtcGetProgramLogSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetProgramLogSize\0") }.unwrap();
-        let nvrtcGetProgramLog: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetProgramLog\0") }.unwrap();
-        let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
-
-        //let include_folders = ["/usr/local/cuda-12.6/targets/x86_64-linux/include/\0".as_ptr().cast()];
-        //let include_files = ["cuda_fp16.h\0".as_ptr().cast()];
-        let mut program = ptr::null_mut();
-        unsafe {
-            nvrtcCreateProgram(
-                &mut program,
-                source.as_ptr().cast(),
-                name.as_ptr().cast(),
-                0,
-                ptr::null_mut(), //include_folders.as_ptr(),
-                ptr::null_mut(), //include_files.as_ptr(),
-            )
-        }
-        .check("nvrtcCreateProgram")?;
-        let df = format!(
-            "--gpu-architecture=compute_{}{}\0",
-            self.compute_capability[0], self.compute_capability[1]
-        );
-        let opts = [
-            df.as_ptr().cast(),
-            "-I/usr/local/cuda-12.6/targets/x86_64-linux/include\0".as_ptr().cast(),
-        ];
-        if let Err(e) =
-            unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }.check("nvrtcCompileProgram")
-        {
-            println!("CUDA compilation error {e:?}");
-            let mut program_log_size: usize = 0;
-            unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }
-                .check("nvrtcGetProgramLogSize")?;
-            let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
-            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }
-                .check("nvrtcGetProgramLog")?;
-            if let Ok(log) = String::from_utf8(program_log_vec) {
-                println!("NVRTC program log:\n{log}",);
-            } else {
-                println!("NVRTC program log is not valid utf8");
-            }
-        }
-        let mut ptx_size: usize = 0;
-        unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check("nvrtcGetPTXSize")?;
-        let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
-        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check("nvrtcGetPTX")?;
-        unsafe { nvrtcDestroyProgram(&mut program) }.check("nvrtcDestoyProgram")?;
-        Ok((global_work_size, local_work_size, name, ptx_vec))
-    }
-
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn compile_ptx(
-        &mut self,
-        kernel: &IRKernel,
-        debug_asm: bool,
-    ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), CUDAError> {
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
-        for op in &kernel.ops[..6] {
-            if let IROp::Loop { id, len } = op {
-                if id % 2 == 0 {
-                    global_work_size[*id as usize / 2] = *len;
-                } else {
-                    local_work_size[*id as usize / 2] = *len;
-                }
-            }
-        }
-        let name = format!(
-            "k__{}_{}__{}_{}__{}_{}",
-            global_work_size[0],
-            local_work_size[0],
-            global_work_size[1],
-            local_work_size[1],
-            global_work_size[2],
-            local_work_size[2],
-        );
-
-        let indent = "    ";
-        let mut source = format!(
-            ".version {0}.{1}
-.target sm_{0}{1}
-.address_size 64
-.visible .entry {name}(\n",
-            self.compute_capability[0], self.compute_capability[1]
-        );
-        // Declare global variables
-        for (id, (scope, _, _, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source += &format!("{indent}.param    .u64 g{id},\n");
-            }
-        }
-        source.pop();
-        source.pop();
-        source += "\n) {\n";
-
-        // TOOD declare local variables
-
-        // Temporaries
-        source += &format!("{indent}.reg  .pred    p;\n");
-        source += &format!("{indent}.reg  .s64    a0;\n");
-        source += &format!("{indent}.reg  .s64    a1;\n");
-        // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}.reg  .{}    r{id};\n", dtype.ptx());
-        }
-        // Add indices for global and local loops
-        source += &format!("{indent}mov.u32    r0, %ctaid.x;\n");
-        source += &format!("{indent}mov.u32    r1, %tid.x;\n");
-        source += &format!("{indent}mov.u32    r2, %ctaid.y;\n");
-        source += &format!("{indent}mov.u32    r3, %tid.y;\n");
-        source += &format!("{indent}mov.u32    r4, %ctaid.z;\n");
-        source += &format!("{indent}mov.u32    r5, %tid.z;\n");
-
-        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
-            match op {
-                IROp::Load { z, address, offset } => {
-                    let dtype = kernel.registers[z as usize];
-                    // Get address
-                    source += &format!(
-                        "{indent}ld.param.u64    a0, [a{address}+{}];\n",
-                        offset.ptx()
-                    );
-                    // Convert address to global
-                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
-                    // Load from global to register
-                    source += &format!("{indent}ld.global.{}    r{}, [a1];\n", dtype.ptx(), z);
-                }
-                IROp::Store { address, offset, x } => {
-                    let dtype = match x {
-                        Reg::Var(id) => kernel.registers[id as usize],
-                        Reg::Const(constant) => constant.dtype(),
-                    };
-                    // Get address
-                    source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
-                    // Convert address to global
-                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
-                    // Load from global to register
-                    source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.ptx());
-                }
-                IROp::Unary { z, x, uop } => {
-                    let dtype = kernel.registers[z as usize];
-                    source += &match uop {
-                        UOp::Cast(cdt) => format!(
-                            "{indent}cvt.{}.{}    r{z}, r{x};\n",
-                            <DType as Into<DType>>::into(cdt).ptx(),
-                            dtype.ptx(),
-                        ),
-                        UOp::ReLU => todo!(),
-                        UOp::Neg => {
-                            format!("{indent}neg.{}   r{z}, r{x};\n", dtype.ptx())
-                        }
-                        UOp::Exp2 => format!("{indent}ex2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
-                        UOp::Log2 => format!("{indent}lg2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
-                        UOp::Inv => todo!(),
-                        UOp::Sqrt => {
-                            format!("{indent}sqrt.approx.{}   r{z}, r{x};\n", dtype.ptx(),)
-                        }
-                        UOp::Sin => format!("{indent}sin.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
-                        UOp::Cos => format!("{indent}cos.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
-                        UOp::Not => {
-                            format!("{indent}not.{}   r{z}, r{x};\n", dtype.ptx())
-                        }
-                    };
-                }
-                IROp::Binary { z, x, y, bop } => {
-                    let dtype = kernel.registers[z as usize];
-                    //println!("Adding binary {bop:?}");
-                    source += &format!(
-                        "{indent}{}.{}   r{z}, {}, {};\n",
-                        match bop {
-                            BOp::Add => "add",
-                            BOp::Sub => "sub",
-                            BOp::Mul => "mul",
-                            BOp::Div => "div",
-                            BOp::Mod => "mod",
-                            BOp::Pow => todo!(),
-                            BOp::Cmplt => "set.lt",
-                            BOp::Cmpgt => "set.gt",
-                            BOp::NotEq => "set.ne",
-                            BOp::Max => todo!(),
-                            BOp::Or => todo!(),
-                            BOp::And => todo!(),
-                            BOp::BitOr => todo!(),
-                            BOp::BitAnd => todo!(),
-                            BOp::BitXor => todo!(),
-                        },
-                        dtype.ptx(),
-                        x.ptx(),
-                        y.ptx()
-                    );
-                }
-                IROp::MAdd { z, a, b, c } => {
-                    let dtype = kernel.registers[z as usize];
-                    source += &format!(
-                        "{indent}mad.lo.{}    r{z}, {}, {}, {};\n",
-                        dtype.ptx(),
-                        a.ptx(),
-                        b.ptx(),
-                        c.ptx()
-                    );
-                }
-                IROp::Loop { id, .. } => {
-                    source += &format!("LOOP_{id}:\n");
-                }
-                IROp::EndLoop { id, len } => {
-                    // Increment counter
-                    source += &format!("{indent}add.u32    r{id}, r{id}, 1;\n");
-                    // Set condition
-                    source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
-                    // Branch
-                    source += &format!("@p  bra    LOOP_{id};\n");
-                }
-                IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{};\n",
-                        match scope {
-                            Scope::Global => "__threadfence()",
-                            Scope::Local => "__syncthreads()",
-                            Scope::Register | Scope::RegTile => unreachable!(),
-                        }
-                    );
-                }
-            }
-        }
-        // End kernel
-        source += &format!("{indent}ret;\n}}\0");
-        if debug_asm {
-            println!("Compiling kernel {name}, PTX source:\n{source}");
-        }
-        Ok((
-            global_work_size,
-            local_work_size,
-            name,
-            source.bytes().collect(),
-        ))
-    }
-}
-
-impl CUDAQueue {
-    pub(super) fn launch(
-        &mut self,
-        program: &mut CUDAProgram,
-        buffers: &mut Slab<CUDABuffer>,
-        args: &[Id],
-        sync: bool,
-    ) -> Result<CUDAEvent, CUDAError> {
+        program_id: crate::slab::Id,
+        memory_pool: &mut dyn MemoryPool,
+        args: &[crate::slab::Id],
+        // If sync is empty, kernel will be immediatelly synchronized
+        sync: std::collections::BTreeSet<crate::slab::Id>,
+    ) -> Result<(), BackendError> {
+        memory_pool.synchronize(&sync)?;
+        let queue_id = self.next_queue()?;
+        let program = &self.programs[program_id];
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {
             let arg = &mut buffers[arg];
@@ -999,24 +252,11 @@ impl CUDAQueue {
         Ok(CUDAEvent {})
     }
 
-    pub(super) fn sync(&mut self) -> Result<(), CUDAError> {
-        self.load = 0;
-        unsafe { (self.cuStreamSynchronize)(self.stream) }
-            .check("Failed to synchronize CUDA stream.")
-    }
-
-    pub(super) const fn load(&self) -> usize {
-        self.load
-    }
-}
-
-impl CUDAStatus {
-    fn check(self, info: &str) -> Result<(), CUDAError> {
-        if self == Self::CUDA_SUCCESS {
-            Ok(())
-        } else {
-            Err(CUDAError { info: info.into(), status: self })
+    fn release(&mut self, program_id: crate::slab::Id) -> Result<(), BackendError> {
+        if let Some(program) = self.programs.get(program_id) {
+            unsafe { (self.cuModuleUnload)(program.module) }.check(ErrorStatus::Deinitialization)?;
         }
+        Ok(())
     }
 }
 
@@ -1354,11 +594,11 @@ enum nvrtcResult {
 }
 
 impl nvrtcResult {
-    fn check(self, info: &str) -> Result<(), CUDAError> {
+    fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
         if self == Self::NVRTC_SUCCESS {
             Ok(())
         } else {
-            Err(CUDAError { info: info.into(), status: CUDAStatus::CUDA_ERROR_INVALID_SOURCE })
+            Err(BackendError { status, context: format!("{self:?}") })
         }
     }
 }
@@ -1443,4 +683,14 @@ enum CUDAStatus {
     CUDA_ERROR_TIMEOUT = 909,
     CUDA_ERROR_GRAPH_EXEC_UPDATE_FAILURE = 910,
     CUDA_ERROR_UNKNOWN = 999,
+}
+
+impl CUDAStatus {
+    fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
+        if self == Self::CUDA_SUCCESS {
+            Ok(())
+        } else {
+            Err(BackendError { status, context: format!("{self:?}") })
+        }
+    }
 }
