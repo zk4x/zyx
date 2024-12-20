@@ -7,39 +7,76 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 #![allow(private_interfaces)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use super::{ir::IRKernel, DeviceConfig, ZyxError};
-use crate::{
-    kernel::{Kernel, Op},
-    slab::{Id, Slab},
-    Scalar,
-};
-use cuda::{CUDABuffer, CUDADevice, CUDAEvent, CUDAMemoryPool, CUDAProgram, CUDAQueue};
-use hip::{HIPBuffer, HIPDevice, HIPMemoryPool, HIPProgram, HIPQueue};
-use opencl::{
-    OpenCLBuffer, OpenCLDevice, OpenCLEvent, OpenCLMemoryPool, OpenCLProgram, OpenCLQueue,
-};
-
+use nanoserde::DeJson;
 #[cfg(feature = "wgsl")]
 use wgsl::{WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue};
 
-mod cuda;
-mod hip;
 mod opencl;
+/*mod cuda;
+mod hip;
 #[cfg(feature = "vulkan")]
 mod vulkan;
 #[cfg(feature = "wgsl")]
-mod wgsl;
+mod wgsl;*/
 
-// Export configs and errors, nothing more
-pub use cuda::{CUDAConfig, CUDAError};
-pub use hip::{HIPConfig, HIPError};
-pub use opencl::{OpenCLConfig, OpenCLError};
-#[cfg(feature = "vulkan")]
-pub use vulkan::{VulkanConfig, VulkanError};
-#[cfg(feature = "wgsl")]
-pub use wgsl::{WGSLConfig, WGSLError};
+use crate::{
+    ir::IRKernel,
+    kernel::{Kernel, Op},
+    optimizer::Optimization,
+    slab::Id,
+    ZyxError,
+};
+
+#[derive(Debug)]
+pub enum ErrorStatus {
+    /// Backend initialization failure
+    Initialization,
+    /// Backend deinitialization failure
+    Deinitialization,
+    /// Failed to enumerate devices
+    DeviceEnumeration,
+    /// Failed to query device for information
+    DeviceQuery,
+    /// Failed to allocate memory
+    MemoryAllocation,
+    /// Failed to compile kernel
+    KernelCompilation,
+    /// Failed to launch kernel
+    KernelLaunch,
+    /// Failed to synchronize kernel
+    KernelSync,
+}
+
+#[derive(Debug)]
+pub struct BackendError {
+    status: ErrorStatus,
+    context: String,
+}
+
+/// Device configuration
+#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(DeJson, Debug, Default)]
+pub struct DeviceConfig {
+    /// CUDA configuration
+    //pub cuda: cuda::CUDAConfig,
+    /// HIP configuration
+    //pub hip: hip::HIPConfig,
+    /// `OpenCL` configuration
+    pub opencl: opencl::OpenCLConfig,
+    /// Vulkan configuration
+    #[cfg(feature = "vulkan")]
+    pub vulkan: vulkan::VulkanConfig,
+    /// WGSL configuration
+    #[cfg(feature = "wgsl")]
+    pub wgsl: wgsl::WGSLConfig,
+}
+
+pub struct BufferId {
+    memory_pool_id: u32,
+    buffer_id: Id,
+}
 
 /// Hardware information needed for applying optimizations
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -62,187 +99,66 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
-pub type MemoryPoolId = u32;
-
-trait HMemoryPool {
-    type Error;
-    fn deinitialize(self) -> Result<(), Self::Error>;
+pub trait MemoryPool: Send {
+    fn deinitialize(self) -> Result<(), BackendError>;
     fn free_bytes(&self) -> usize;
-    fn allocate(&mut self, bytes: usize) -> Result<Id, Self::Error>;
-    fn deallocate(&mut self, buffer: Id) -> Result<(), Self::Error>;
-    fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), Self::Error>;
-    fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), Self::Error>;
-    fn pool_to_pool(&mut self, src: Id, dst_pool: &mut Self, dst: Id) -> Result<(), Self::Error>;
+    fn allocate(&mut self, bytes: usize) -> Result<Id, BackendError>;
+    fn deallocate(&mut self, buffer: Id) -> Result<(), BackendError>;
+    fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError>;
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError>;
+    fn pool_to_pool(
+        &mut self,
+        src: Id,
+        dst_pool: &mut dyn MemoryPool,
+        dst: Id,
+    ) -> Result<(), BackendError>;
 }
 
-trait HDevice {
-    fn deinitialize(self) -> Result<(), Self::Error>;
+pub trait Device: Send {
+    fn deinitialize(self) -> Result<(), BackendError>;
     fn info(&self) -> &DeviceInfo;
-    fn memory_pool_id(&self) -> usize;
+    fn memory_pool_id(&self) -> u32;
+    fn compile(&self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError>;
+    // Returns if this is the first time running the kernel
     fn launch(
         &mut self,
-        kernel: &Kernel,
-        buffers: &mut Slab<Self::Buffer>,
+        program_id: Id,
+        memory_pool: &mut dyn MemoryPool,
         args: &[Id],
-    ) -> Result<(), Self::Error>;
-}
-
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug)]
-pub enum MemoryPool {
-    CUDA {
-        memory_pool: CUDAMemoryPool,
-        buffers: Slab<CUDABuffer>,
-        // Buffers that depend on events
-        events: BTreeMap<BTreeSet<Id>, CUDAEvent>,
-    },
-    HIP {
-        memory_pool: HIPMemoryPool,
-        buffers: Slab<HIPBuffer>,
-    },
-    OpenCL {
-        memory_pool: OpenCLMemoryPool,
-        buffers: Slab<OpenCLBuffer>,
-        events: BTreeMap<BTreeSet<Id>, OpenCLEvent>,
-    },
-    #[cfg(feature = "vulkan")]
-    Vulkan {
-        memory_pool: VulkanMemoryPool,
-        buffers: Slab<VulkanBuffer>,
-    },
-    #[cfg(feature = "wgsl")]
-    WGSL {
-        memory_pool: WGSLMemoryPool,
-        buffers: Slab<WGSLBuffer>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BufferId {
-    pub(super) memory_pool_id: u32,
-    pub(super) buffer_id: Id,
-}
-
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug)]
-pub enum Device {
-    CUDA {
-        memory_pool_id: MemoryPoolId,
-        device: CUDADevice,
-        queues: Vec<CUDAQueue>,
-        kernels: BTreeMap<Vec<Op>, CUDAProgram>,
-    },
-    HIP {
-        memory_pool_id: MemoryPoolId,
-        device: HIPDevice,
-        queues: Vec<HIPQueue>,
-        kernels: BTreeMap<Vec<Op>, HIPProgram>,
-    },
-    OpenCL {
-        memory_pool_id: MemoryPoolId,
-        device: OpenCLDevice,
-        queues: Vec<OpenCLQueue>,
-        kernels: BTreeMap<Vec<Op>, OpenCLProgram>,
-    },
-    #[cfg(feature = "vulkan")]
-    Vulkan {
-        memory_pool_id: MemoryPoolId,
-        device: VulkanDevice,
-        queues: Vec<VulkanQueue>,
-        kernels: BTreeMap<Vec<Op>, VulkanProgram>,
-    },
-    #[cfg(feature = "wgsl")]
-    WGSL {
-        memory_pool_id: MemoryPoolId,
-        device: WGSLDevice,
-        queues: Vec<WGSLQueue>,
-        kernels: BTreeMap<Vec<Op>, WGSLProgram>,
-    },
+        // If sync is empty, kernel will be immediatelly synchronized
+        sync: &BTreeSet<Id>,
+    ) -> Result<(), BackendError>;
+    fn release(&self, program_id: Id) -> Result<(), BackendError>;
 }
 
 pub fn initialize_backends(
     device_config: &DeviceConfig,
-    memory_pools: &mut Vec<MemoryPool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
-) -> Result<(), ZyxError> {
-    if let Ok((mem_pools, devs)) = cuda::initialize_devices(&device_config.cuda, debug_dev) {
-        let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::CUDA {
-            memory_pool: m,
-            buffers: Slab::new(),
-            events: BTreeMap::new(),
-        }));
-        devices.extend(devs.into_iter().map(|(device, queues)| Device::CUDA {
-            memory_pool_id: device.memory_pool_id() + n,
-            device,
-            queues,
-            kernels: BTreeMap::new(),
-        }));
-    }
-    if let Ok((mem_pools, devs)) = hip::initialize_device(&device_config.hip, debug_dev) {
-        let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(
-            mem_pools.into_iter().map(|m| MemoryPool::HIP { memory_pool: m, buffers: Slab::new() }),
-        );
-        devices.extend(devs.into_iter().map(|(device, queues)| Device::HIP {
-            memory_pool_id: device.memory_pool_id() + n,
-            device,
-            queues,
-            kernels: BTreeMap::new(),
-        }));
-    }
-    if let Ok((mem_pools, devs)) = opencl::initialize_devices(&device_config.opencl, debug_dev) {
-        let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(mem_pools.into_iter().map(|m| MemoryPool::OpenCL {
-            memory_pool: m,
-            buffers: Slab::new(),
-            events: BTreeMap::new(),
-        }));
-        devices.extend(devs.into_iter().map(|(device, queues)| Device::OpenCL {
-            memory_pool_id: device.memory_pool_id() + n,
-            device,
-            queues,
-            kernels: BTreeMap::new(),
-        }));
-    }
+) -> Result<(), BackendError> {
+    //let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
+
+    //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
+
+    let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_dev);
+
     #[cfg(feature = "vulkan")]
-    if let Ok((mem_pools, devs)) = vulkan::initialize_devices(&device_config.vulkan, debug_dev) {
-        let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(
-            mem_pools
-                .into_iter()
-                .map(|m| MemoryPool::Vulkan { memory_pool: m, buffers: Slab::new() }),
-        );
-        devices.extend(devs.into_iter().map(|(device, queues)| Device::Vulkan {
-            memory_pool_id: device.memory_pool_id() + n,
-            device,
-            programs: Slab::new(),
-            queues,
-        }));
-    }
+    let _ = vulkan::initialize_devices(&device_config.opencl, memory_pools, devices, debug_dev);
+
     #[cfg(feature = "wgsl")]
-    if let Ok((mem_pools, devs)) = wgsl::initialize_backend(&device_config.wgsl, debug_dev) {
-        let n = u32::try_from(memory_pools.len()).unwrap();
-        memory_pools.extend(
-            mem_pools
-                .into_iter()
-                .map(|m| MemoryPool::WGSL { memory_pool: m, buffers: Slab::new() }),
-        );
-        devices.extend(devs.into_iter().map(|(device, queues)| Device::WGSL {
-            memory_pool_id: device.memory_pool_id() + n,
-            device,
-            programs: Slab::new(),
-            queues,
-        }));
-    }
-    if devices.is_empty() {
-        return Err(ZyxError::NoBackendAvailable);
+    let _ = wgsl::initialize_devices(&device_config.opencl, memory_pools, devices, debug_dev);
+
+    if devices.is_empty() || memory_pools.is_empty() {
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: "All backends failed to initialize or were configured out.".into(),
+        });
     }
     Ok(())
 }
 
-impl MemoryPool {
+/*impl MemoryPool {
     pub(super) fn deinitialize(self) -> Result<(), ZyxError> {
         match self {
             MemoryPool::CUDA { mut memory_pool, mut buffers, .. } => {
@@ -824,3 +740,76 @@ impl std::fmt::Display for Device {
         }
     }
 }
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug)]
+pub enum MemoryPool {
+    CUDA {
+        memory_pool: CUDAMemoryPool,
+        buffers: Slab<CUDABuffer>,
+        // Buffers that depend on events
+        events: BTreeMap<BTreeSet<Id>, CUDAEvent>,
+    },
+    HIP {
+        memory_pool: HIPMemoryPool,
+        buffers: Slab<HIPBuffer>,
+    },
+    OpenCL {
+        memory_pool: OpenCLMemoryPool,
+        buffers: Slab<OpenCLBuffer>,
+        events: BTreeMap<BTreeSet<Id>, OpenCLEvent>,
+    },
+    #[cfg(feature = "vulkan")]
+    Vulkan {
+        memory_pool: VulkanMemoryPool,
+        buffers: Slab<VulkanBuffer>,
+    },
+    #[cfg(feature = "wgsl")]
+    WGSL {
+        memory_pool: WGSLMemoryPool,
+        buffers: Slab<WGSLBuffer>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferId {
+    pub(super) memory_pool_id: u32,
+    pub(super) buffer_id: Id,
+}
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug)]
+pub enum Device {
+    CUDA {
+        memory_pool_id: MemoryPoolId,
+        device: CUDADevice,
+        queues: Vec<CUDAQueue>,
+        kernels: BTreeMap<Vec<Op>, CUDAProgram>,
+    },
+    HIP {
+        memory_pool_id: MemoryPoolId,
+        device: HIPDevice,
+        queues: Vec<HIPQueue>,
+        kernels: BTreeMap<Vec<Op>, HIPProgram>,
+    },
+    OpenCL {
+        memory_pool_id: MemoryPoolId,
+        device: OpenCLDevice,
+        queues: Vec<OpenCLQueue>,
+        kernels: BTreeMap<Vec<Op>, OpenCLProgram>,
+    },
+    #[cfg(feature = "vulkan")]
+    Vulkan {
+        memory_pool_id: MemoryPoolId,
+        device: VulkanDevice,
+        queues: Vec<VulkanQueue>,
+        kernels: BTreeMap<Vec<Op>, VulkanProgram>,
+    },
+    #[cfg(feature = "wgsl")]
+    WGSL {
+        memory_pool_id: MemoryPoolId,
+        device: WGSLDevice,
+        queues: Vec<WGSLQueue>,
+        kernels: BTreeMap<Vec<Op>, WGSLProgram>,
+    },
+}*/

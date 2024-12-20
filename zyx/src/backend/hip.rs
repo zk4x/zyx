@@ -4,15 +4,15 @@
 #![allow(non_camel_case_types)]
 #![allow(unused)]
 
-use super::DeviceInfo;
+use super::{Device, DeviceInfo, MemoryPool};
 use crate::dtype::Constant;
 use crate::ir::{IROp, Reg, Scope};
 use crate::node::{BOp, UOp};
-use crate::DType;
 use crate::{
     ir::IRKernel,
     slab::{Id, Slab},
 };
+use crate::{DType, ZyxError};
 use libloading::Library;
 use nanoserde::DeJson;
 use std::ffi::{c_char, c_int, c_uint, c_void};
@@ -110,8 +110,10 @@ type HIPQueuePool = Vec<(HIPDevice, Vec<HIPQueue>)>;
 
 pub(super) fn initialize_device(
     config: &HIPConfig,
+    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
-) -> Result<(Vec<HIPMemoryPool>, HIPQueuePool), HIPError> {
+) -> Result<(), ZyxError> {
     let _ = config;
 
     let hip_paths = [

@@ -12,13 +12,13 @@ use float8::F8E4M3;
 use libloading::Library;
 use nanoserde::DeJson;
 
-use super::DeviceInfo;
+use super::{Device, DeviceInfo, MemoryPool};
 use crate::dtype::Constant;
 use crate::ir::IRKernel;
 use crate::ir::{IROp, Reg, Scope};
 use crate::node::{BOp, UOp};
 use crate::slab::{Id, Slab};
-use crate::DType;
+use crate::{DType, ZyxError};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -72,6 +72,7 @@ pub(super) struct CUDADevice {
     memory_pool_id: u32,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
+    queues: [CUDAQueue; 8],
     cuModuleLoadDataEx: unsafe extern "C" fn(
         *mut CUmodule,
         *const c_void,
@@ -83,6 +84,20 @@ pub(super) struct CUDADevice {
         unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
     cuModuleUnload: unsafe extern "C" fn(CUmodule) -> CUDAStatus,
     cuStreamDestroy: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    /*cuLaunchKernel: unsafe extern "C" fn(
+        CUfunction,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        CUstream,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> CUDAStatus,
+    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,*/
 }
 
 #[derive(Debug)]
@@ -98,20 +113,6 @@ pub(super) struct CUDAProgram {
 pub(super) struct CUDAQueue {
     stream: CUstream,
     load: usize,
-    cuLaunchKernel: unsafe extern "C" fn(
-        CUfunction,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        CUstream,
-        *mut *mut c_void,
-        *mut *mut c_void,
-    ) -> CUDAStatus,
-    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
 }
 
 // TODO remove clone once btreemap is implemented properly
@@ -130,12 +131,12 @@ unsafe impl Send for CUDABuffer {}
 unsafe impl Send for CUDAProgram {}
 unsafe impl Send for CUDAQueue {}
 
-type CUDAQueuePool = Vec<(CUDADevice, Vec<CUDAQueue>)>;
-
-pub(super) fn initialize_devices(
+pub(super) fn initialize_device(
     config: &CUDAConfig,
+    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
-) -> Result<(Vec<CUDAMemoryPool>, CUDAQueuePool), CUDAError> {
+) -> Result<(), ZyxError> {
     let _ = config;
 
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
@@ -144,7 +145,8 @@ pub(super) fn initialize_devices(
         return Err(CUDAError {
             info: String::from("CUDA runtime not found."),
             status: CUDAStatus::CUDA_ERROR_UNKNOWN,
-        });
+        }
+        .into());
     };
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus =
@@ -198,7 +200,8 @@ pub(super) fn initialize_devices(
         return Err(CUDAError {
             info: "No available cuda device.".into(),
             status: CUDAStatus::CUDA_ERROR_UNKNOWN,
-        });
+        }
+        .into());
     }
     let device_ids: Vec<i32> = (0..num_devices)
         .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
@@ -212,8 +215,6 @@ pub(super) fn initialize_devices(
     }
 
     let cuda = Arc::new(cuda);
-    let mut memory_pools = Vec::new();
-    let mut devices = Vec::new();
     for dev_id in device_ids {
         let mut device = 0;
         unsafe { cuDeviceGet(&mut device, dev_id) }.check("Failed to access CUDA device")?;
@@ -253,7 +254,7 @@ pub(super) fn initialize_devices(
             continue;
         }*/
         //println!("Using context {context:?} and device {device:?}");
-        memory_pools.push(CUDAMemoryPool {
+        memory_pools.push(Box::new(CUDAMemoryPool {
             cuda: cuda.clone(),
             context,
             device,
@@ -265,37 +266,34 @@ pub(super) fn initialize_devices(
             cuMemcpyPeer,
             //cuCtxSetCurrent,
             //cuCtxDestroy,
-        });
+        }));
         let mut queues = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
             let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check("") else {
                 continue;
             };
-            queues.push(CUDAQueue { stream, load: 0, cuLaunchKernel, cuStreamSynchronize });
+            queues.push(CUDAQueue { stream, load: 0 });
         }
-        devices.push((
-            CUDADevice {
-                device,
-                dev_info: DeviceInfo {
-                    compute: 1024 * 1024 * 1024 * 1024,
-                    max_global_work_dims: [64, 64, 64],
-                    max_local_threads: 1,
-                    max_local_work_dims: [1, 1, 1],
-                    local_mem_size: 0,
-                    num_registers: 96,
-                    preferred_vector_size: 16,
-                    tensor_cores: major > 7,
-                },
-                memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
-                cuModuleLoadDataEx,
-                cuModuleGetFunction,
-                cuModuleUnload,
-                cuStreamDestroy,
-                compute_capability: [major, minor],
+        devices.push(Box::new(CUDADevice {
+            device,
+            dev_info: DeviceInfo {
+                compute: 1024 * 1024 * 1024 * 1024,
+                max_global_work_dims: [64, 64, 64],
+                max_local_threads: 1,
+                max_local_work_dims: [1, 1, 1],
+                local_mem_size: 0,
+                num_registers: 96,
+                preferred_vector_size: 16,
+                tensor_cores: major > 7,
             },
-            queues,
-        ));
+            memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
+            cuModuleLoadDataEx,
+            cuModuleGetFunction,
+            cuModuleUnload,
+            cuStreamDestroy,
+            compute_capability: [major, minor],
+        }));
         let dev = &mut devices.last_mut().unwrap().0;
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
@@ -348,9 +346,12 @@ pub(super) fn initialize_devices(
             tensor_cores: major > 7,
         }
     }
-
-    Ok((memory_pools, devices))
+    Ok(())
 }
+
+impl MemoryPool for CUDAMemoryPool {}
+
+impl Device for CUDADevice {}
 
 impl CUDAMemoryPool {
     #[allow(clippy::unused_self)]

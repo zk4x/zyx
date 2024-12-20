@@ -554,8 +554,8 @@ impl Kernel {
         &mut self,
         nid: TensorId,
         graph: &Graph,
-        devices: &mut [Device],
-        memory_pools: &mut [MemoryPool],
+        devices: &mut [Box<dyn Device>],
+        memory_pools: &mut [Box<dyn MemoryPool>],
         tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
         optimizer: &mut Optimizer,
         search_iters: usize,
@@ -619,21 +619,8 @@ impl Kernel {
                 })
                 .collect();
 
-            if device.is_cached(&self.ops) {
-                device.launch(&self.ops, memory_pool, &buffer_ids, false)?;
-            } else {
-                let optimization = optimizer.search_optimization(
-                    self,
-                    device,
-                    memory_pool,
-                    search_iters,
-                    debug,
-                )?;
-                let optimized_kernel = self.optimize(optimization);
-                let ir_kernel = crate::ir::IRKernel::new(&optimized_kernel.ops, debug.ir());
-                device.compile(self.ops.clone(), &ir_kernel, debug.asm())?;
-                device.launch(&self.ops, memory_pool, &buffer_ids, false)?;
-            }
+            optimizer.launch(&self.ops, device, memory_pool, &buffer_ids, search_iters)?;
+
             // add load kernels for all outputs of this kernel
             return Ok(Some(
                 self.ops

@@ -1,9 +1,5 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
-
-use crate::backend::{
-    BufferId, CUDAConfig, CUDAError, Device, HIPConfig, HIPError, MemoryPool, OpenCLConfig,
-    OpenCLError,
-};
+use crate::backend::{BackendError, BufferId, Device, DeviceConfig, MemoryPool};
 #[cfg(feature = "vulkan")]
 use crate::backend::{VulkanConfig, VulkanError};
 #[cfg(feature = "wgsl")]
@@ -27,35 +23,17 @@ use std::{
 use half::{bf16, f16};
 use nanoserde::DeJson;
 
-/// Device configuration
-#[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(DeJson, Debug, Default)]
-pub struct DeviceConfig {
-    /// CUDA configuration
-    pub cuda: CUDAConfig,
-    /// HIP configuration
-    pub hip: HIPConfig,
-    /// `OpenCL` configuration
-    pub opencl: OpenCLConfig,
-    /// Vulkan configuration
-    #[cfg(feature = "vulkan")]
-    pub vulkan: VulkanConfig,
-    /// WGSL configuration
-    #[cfg(feature = "wgsl")]
-    pub wgsl: WGSLConfig,
-}
-
 // This is the whole global state of zyx
 pub struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
     // TODO perhaps remove tensor_buffer_map and put it inside each device
     // Physical memory pools
-    memory_pools: Vec<MemoryPool>,
+    memory_pools: Vec<Box<dyn MemoryPool>>,
     // Where are tensors stored
     tensor_buffer_map: BTreeMap<TensorId, BufferId>,
     // Physical compute devices, each has their own program cache
-    devices: Vec<Device>,
+    devices: Vec<Box<dyn Device>>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer: Optimizer,
     // Zyx configuration directory path
@@ -190,14 +168,15 @@ impl Runtime {
                 }
             }
         }
-        //println!("Initializing");
-        let debug_dev = self.debug.dev();
         crate::backend::initialize_backends(
             &device_config,
             &mut self.memory_pools,
             &mut self.devices,
-            debug_dev,
-        )
+            self.debug.dev(),
+        )?;
+        self.memory_pools.shrink_to_fit();
+        self.devices.shrink_to_fit();
+        Ok(())
     }
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
@@ -1147,18 +1126,8 @@ pub enum ZyxError {
     AllocationError,
     /// There are no available backends
     NoBackendAvailable,
-    /// Error returned by the CUDA driver
-    CUDAError(CUDAError),
-    /// Error returned by the HIP runtime
-    HIPError(HIPError),
-    /// Error returned by the `OpenCL` runtime
-    OpenCLError(OpenCLError),
-    /// Error returned by the Vulkan runtime
-    #[cfg(feature = "vulkan")]
-    VulkanError(VulkanError),
-    /// This error is only applicable when the `wgsl` feature is enabled.
-    #[cfg(feature = "wgsl")]
-    WGSLError(WGSLError),
+    /// Error returned by backends
+    BackendError(BackendError),
 }
 
 /*impl<Err: std::fmt::Display> From<Err> for ZyxError {
@@ -1190,38 +1159,6 @@ impl std::fmt::Display for ZyxError {
 }
 
 impl std::error::Error for ZyxError {}
-
-impl From<CUDAError> for ZyxError {
-    fn from(value: CUDAError) -> Self {
-        ZyxError::CUDAError(value)
-    }
-}
-
-impl From<HIPError> for ZyxError {
-    fn from(value: HIPError) -> Self {
-        ZyxError::HIPError(value)
-    }
-}
-
-impl From<OpenCLError> for ZyxError {
-    fn from(value: OpenCLError) -> Self {
-        ZyxError::OpenCLError(value)
-    }
-}
-
-#[cfg(feature = "vulkan")]
-impl From<VulkanError> for ZyxError {
-    fn from(value: VulkanError) -> Self {
-        ZyxError::VulkanError(value)
-    }
-}
-
-#[cfg(feature = "wgsl")]
-impl From<WGSLError> for ZyxError {
-    fn from(value: WGSLError) -> Self {
-        ZyxError::WGSLError(value)
-    }
-}
 
 impl From<std::io::Error> for ZyxError {
     fn from(value: std::io::Error) -> Self {

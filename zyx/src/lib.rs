@@ -72,7 +72,6 @@ mod view;
 //mod chasher;
 
 pub use dtype::DType;
-pub use runtime::DeviceConfig;
 pub use runtime::ZyxError;
 pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;

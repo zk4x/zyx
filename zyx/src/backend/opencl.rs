@@ -3,21 +3,17 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use super::DeviceInfo;
+use super::{BackendError, Device, DeviceInfo, ErrorStatus, MemoryPool};
 use crate::{
     dtype::Constant,
-    ir::{IRKernel, IROp, Reg, Scope},
-    node::{BOp, UOp},
+    ir::Reg,
+    kernel::Op,
     slab::{Id, Slab},
     DType,
 };
 use libloading::Library;
 use nanoserde::DeJson;
-use std::{
-    ffi::{c_void, CString},
-    ptr,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, ffi::c_void, ptr, sync::Arc};
 
 #[derive(Debug, Default, DeJson)]
 pub struct OpenCLConfig {
@@ -39,6 +35,7 @@ pub(super) struct OpenCLMemoryPool {
     free_bytes: usize,
     context: *mut c_void,
     queue: *mut c_void,
+    buffers: Slab<OpenCLBuffer>,
     // Functions
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
@@ -75,15 +72,10 @@ pub(super) struct OpenCLMemoryPool {
     ) -> *mut c_void,
 }
 
-// Ideally we would want Buffer to have lifetime of MemoryPool
-// and Program to have lifetime of Device, but self referential
-// lifetimes are not in rust, so we have to do manual memory management
-// as they did it in stone age.
 #[derive(Debug)]
 pub(super) struct OpenCLBuffer {
     ptr: *mut c_void,
     bytes: usize,
-    queue: *mut c_void, // This is the queue held by memory pool
 }
 
 #[derive(Debug)]
@@ -170,48 +162,18 @@ unsafe impl Send for OpenCLProgram {}
 unsafe impl Send for OpenCLQueue {}
 unsafe impl Send for OpenCLEvent {}
 
-impl OpenCLDevice {
-    pub(super) const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
-    }
-
-    // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> u32 {
-        self.memory_pool_id
-    }
-
-    #[allow(clippy::unused_self)]
-    #[allow(clippy::unnecessary_wraps)]
-    pub(super) const fn deinitialize(self) -> Result<(), OpenCLError> {
-        // cuReleaseDevice is OpenCL 1.2 only, but we support 1.0, so nothing to do here?
-        // TODO better do it conditionally, if the function exists in .so, then load it, do nothing
-        // otherwise
-        Ok(())
-    }
-}
-
-impl OpenCLMemoryPool {
-    pub(super) fn deinitialize(self) -> Result<(), OpenCLError> {
-        unsafe { (self.clReleaseContext)(self.context) }
-            .check("Failed to release OpenCL context.")?;
-        unsafe { (self.clReleaseCommandQueue)(self.queue) }
-            .check("Failed to release OpenCL command queue.")?;
-        Ok(())
-    }
-}
-
-type OpenCLQueuePool = Vec<(OpenCLDevice, Vec<OpenCLQueue>)>;
-
-pub(super) fn initialize_devices(
+pub(super) fn initialize_device(
     config: &OpenCLConfig,
+    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
-) -> Result<(Vec<OpenCLMemoryPool>, OpenCLQueuePool), OpenCLError> {
+) -> Result<(), BackendError> {
     let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
     let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
-        return Err(OpenCLError {
-            info: "OpenCL runtime not found.".into(),
-            status: OpenCLStatus::UNKNOWN,
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: "OpenCL runtime not found.".into(),
         });
     };
     let clGetPlatformIDs: unsafe extern "C" fn(
@@ -269,21 +231,19 @@ pub(super) fn initialize_devices(
         // Get the number of platforms
         let mut count: cl_uint = 0;
         unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut count) }
-            .check("Failed to get OpenCL platform ids.")?;
+            .check(ErrorStatus::DeviceEnumeration)?;
         if count > 0 {
             // Get the platform ids.
             let len = count as usize;
             let mut ids: Vec<*mut c_void> = Vec::with_capacity(len);
             unsafe { clGetPlatformIDs(count, ids.as_mut_ptr(), ptr::null_mut()) }
-                .check("Failed to get OpenCL platform ids.")?;
+                .check(ErrorStatus::DeviceEnumeration)?;
             unsafe { ids.set_len(len) };
             ids
         } else {
             Vec::new()
         }
     };
-    let mut devices = Vec::new();
-    let mut memory_pools = Vec::new();
     let mut memory_pool_id = 0;
     for (platform_id, platform) in platform_ids
         .iter()
@@ -323,7 +283,7 @@ pub(super) fn initialize_devices(
                 Ok(Vec::default())
             }
         }
-        .map_err(|err| err.check("Failed to get OpenCL device ids").err().unwrap()) else {
+        .map_err(|err| err.check(ErrorStatus::DeviceEnumeration).err().unwrap()) else {
             continue;
         };
         let mut status = OpenCLStatus::CL_SUCCESS;
@@ -337,7 +297,7 @@ pub(super) fn initialize_devices(
                 &mut status,
             )
         };
-        let Ok(()) = status.check("Failed to create OpenCL context") else {
+        let Ok(()) = status.check(ErrorStatus::Initialization) else {
             continue;
         };
         let mut total_bytes = 0;
@@ -347,7 +307,7 @@ pub(super) fn initialize_devices(
                 let Ok(()) = unsafe {
                     clGetPlatformInfo(platform, CL_PLATFORM_NAME, 0, ptr::null_mut(), &mut size)
                 }
-                .check("Failed to get platform info.") else {
+                .check(ErrorStatus::Initialization) else {
                     continue;
                 };
                 if size > 0 {
@@ -363,7 +323,7 @@ pub(super) fn initialize_devices(
                             ptr::null_mut(),
                         )
                     }
-                    .check("Failed to get platform info.") else {
+                    .check(ErrorStatus::Initialization) else {
                         continue;
                     };
                     data
@@ -375,6 +335,9 @@ pub(super) fn initialize_devices(
                 "Using OpenCL platform, platform id {platform_id}, name {} on devices:",
                 String::from_utf8(platform_name).unwrap()
             );
+        }
+        if device_ids.is_empty() {
+            continue;
         }
         for dev in device_ids.iter().copied() {
             // TODO get max queues per device and limit this to that number
@@ -389,7 +352,7 @@ pub(super) fn initialize_devices(
                     clFinish,
                     //clReleaseCommandQueue,
                 });
-                let Ok(()) = status.check("Failed to create device command queue") else {
+                let Ok(()) = status.check(ErrorStatus::Initialization) else {
                     continue;
                 };
             }
@@ -412,23 +375,21 @@ pub(super) fn initialize_devices(
             if let Ok(bytes) = device.get_device_data(CL_DEVICE_GLOBAL_MEM_SIZE) {
                 total_bytes +=
                     usize::try_from(u64::from_ne_bytes(bytes.try_into().unwrap())).unwrap();
-                devices.push((device, queues));
+                devices.push(Box::new(device));
             }
         }
-        if device_ids.is_empty() {
-            continue;
-        }
         let queue =
-            unsafe { clCreateCommandQueue(context, devices.last().unwrap().0.ptr, 0, &mut status) };
-        let Ok(()) = status.check("Failed to create device command queue") else {
+            unsafe { clCreateCommandQueue(context, devices.last().unwrap().ptr, 0, &mut status) };
+        let Ok(()) = status.check(ErrorStatus::Initialization) else {
             continue;
         };
-        memory_pools.push(OpenCLMemoryPool {
+        memory_pools.push(Box::new(OpenCLMemoryPool {
             library: library.clone(),
             total_bytes,
             free_bytes: total_bytes,
             context,
             queue,
+            buffers: Slab::new(),
             clWaitForEvents,
             clReleaseCommandQueue,
             clReleaseContext,
@@ -436,23 +397,26 @@ pub(super) fn initialize_devices(
             clEnqueueReadBuffer,
             clEnqueueWriteBuffer,
             clCreateBuffer,
-        });
+        }));
         memory_pool_id += 1;
     }
-    Ok((memory_pools, devices))
+    Ok(())
 }
 
-impl OpenCLMemoryPool {
-    pub(super) const fn free_bytes(&self) -> usize {
+impl MemoryPool for OpenCLMemoryPool {
+    fn deinitialize(self) -> Result<(), BackendError> {
+        unsafe { (self.clReleaseContext)(self.context) }.check(ErrorStatus::Deinitialization)?;
+        unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization)?;
+        Ok(())
+    }
+
+    fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    pub(super) fn allocate(&mut self, bytes: usize) -> Result<OpenCLBuffer, OpenCLError> {
+    fn allocate(&mut self, bytes: usize) -> Result<Id, BackendError> {
         if bytes > self.free_bytes {
-            return Err(OpenCLError {
-                info: "Insufficient free memory.".into(),
-                status: OpenCLStatus::CL_MEM_OBJECT_ALLOCATION_FAILURE,
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
         //println!("Allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
@@ -465,10 +429,171 @@ impl OpenCLMemoryPool {
                 &mut status,
             )
         };
-        status.check("Failed to allocate memory.")?;
+        status.check(ErrorStatus::MemoryAllocation)?;
         //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
-        Ok(OpenCLBuffer { ptr, bytes, queue: self.queue })
+        Ok(self.buffers.push(OpenCLBuffer { ptr, bytes }))
+    }
+
+    fn deallocate(&mut self, buffer: Id) -> Result<(), BackendError> {
+        todo!()
+    }
+
+    fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError> {
+        todo!()
+    }
+
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError> {
+        todo!()
+    }
+
+    fn pool_to_pool(
+        &mut self,
+        src: Id,
+        dst_pool: &mut dyn MemoryPool,
+        dst: Id,
+    ) -> Result<(), BackendError> {
+        todo!()
+    }
+}
+
+impl Device for OpenCLDevice {
+    fn deinitialize(self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
+
+    fn memory_pool_id(&self) -> u32 {
+        self.memory_pool_id
+    }
+
+    fn compile(&self, kernel: &crate::ir::IRKernel, debug_asm: bool) -> Result<Id, Program> {
+        todo!()
+    }
+
+    fn launch(
+        &mut self,
+        program_id: Id,
+        memory_pool: &mut dyn MemoryPool,
+        args: &[Id],
+        sync: &BTreeSet<Id>,
+        cache: bool,
+    ) -> Result<(), BackendError> {
+        todo!()
+    }
+}
+
+impl OpenCLStatus {
+    fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
+        if self == Self::CL_SUCCESS {
+            Ok(())
+        } else {
+            Err(BackendError { status, context: format!("{self:?}") })
+        }
+    }
+}
+
+impl OpenCLDevice {
+    fn set_info(&mut self, debug_dev: bool) -> Result<(), BackendError> {
+        let device_name = self.get_device_data(CL_DEVICE_NAME)?;
+        let device_name = String::from_utf8(device_name).unwrap();
+        let max_work_item_dims = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
+        if debug_dev {
+            println!("{device_name}");
+        }
+        let mut max_work_item_dims =
+            u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
+        let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
+        let mut max_global_work_dims = [0; 3];
+        if max_work_item_dims > 3 {
+            println!(
+                "Found device with more than 3 work dimesions, WOW. Please report this. Using only 3 dims for now."
+            );
+            max_work_item_dims = 3;
+        }
+        for i in 0..max_work_item_dims {
+            let max_dim_size: usize = unsafe {
+                core::mem::transmute([
+                    mwis[i * 8],
+                    mwis[i * 8 + 1],
+                    mwis[i * 8 + 2],
+                    mwis[i * 8 + 3],
+                    mwis[i * 8 + 4],
+                    mwis[i * 8 + 5],
+                    mwis[i * 8 + 6],
+                    mwis[i * 8 + 7],
+                ])
+            };
+            max_global_work_dims[i] = max_dim_size;
+        }
+        let mlt = usize::from_ne_bytes(
+            self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap(),
+        );
+        self.dev_info = DeviceInfo {
+            compute: 1024 * 1024 * 1024 * 1024,
+            max_global_work_dims,
+            max_local_threads: mlt,
+            max_local_work_dims: [mlt, mlt, mlt],
+            preferred_vector_size: u32::from_ne_bytes(
+                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
+            ) as usize
+                * 4,
+            local_mem_size: usize::try_from(u64::from_ne_bytes(
+                self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
+            ))
+            .unwrap(),
+            num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
+            tensor_cores: false,
+        };
+        Ok(())
+    }
+
+    fn get_device_data(&mut self, param_name: cl_uint) -> Result<Vec<u8>, BackendError> {
+        let size = {
+            let object = self.ptr;
+            let mut size: usize = 0;
+            let ocl_status = unsafe {
+                (self.clGetDeviceInfo)(object, param_name, 0, ptr::null_mut(), &mut size)
+            };
+            if OpenCLStatus::CL_SUCCESS != ocl_status {
+                return Err(BackendError {
+                    status: ErrorStatus::DeviceQuery,
+                    context: format!("Failed to get device info {param_name}, {ocl_status:?}"),
+                });
+            }
+            Ok(size)
+        }?;
+        let object = self.ptr;
+        if 0 < size {
+            let count = size / core::mem::size_of::<u8>();
+            let mut data: Vec<u8> = Vec::with_capacity(count);
+            unsafe {
+                data.set_len(count);
+                (self.clGetDeviceInfo)(
+                    object,
+                    param_name,
+                    size,
+                    data.as_mut_ptr().cast(),
+                    ptr::null_mut(),
+                )
+            }
+            .check(ErrorStatus::DeviceQuery)?;
+            Ok(data)
+        } else {
+            Ok(Vec::default())
+        }
+    }
+}
+
+/*impl OpenCLMemoryPool {
+    pub(super) const fn free_bytes(&self) -> usize {
+        self.free_bytes
+    }
+
+    pub(super) fn allocate(&mut self, bytes: usize) -> Result<OpenCLBuffer, OpenCLError> {
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -555,61 +680,6 @@ impl OpenCLMemoryPool {
     }
 }
 
-impl OpenCLDevice {
-    fn set_info(&mut self, debug_dev: bool) -> Result<(), OpenCLError> {
-        let device_name = self.get_device_data(CL_DEVICE_NAME)?;
-        let device_name = String::from_utf8(device_name).unwrap();
-        let max_work_item_dims = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
-        if debug_dev {
-            println!("{device_name}");
-        }
-        let mut max_work_item_dims =
-            u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
-        let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
-        let mut max_global_work_dims = [0; 3];
-        if max_work_item_dims > 3 {
-            println!(
-                "Found device with more than 3 work dimesions, WOW. Please report this. Using only 3 dims for now."
-            );
-            max_work_item_dims = 3;
-        }
-        for i in 0..max_work_item_dims {
-            let max_dim_size: usize = unsafe {
-                core::mem::transmute([
-                    mwis[i * 8],
-                    mwis[i * 8 + 1],
-                    mwis[i * 8 + 2],
-                    mwis[i * 8 + 3],
-                    mwis[i * 8 + 4],
-                    mwis[i * 8 + 5],
-                    mwis[i * 8 + 6],
-                    mwis[i * 8 + 7],
-                ])
-            };
-            max_global_work_dims[i] = max_dim_size;
-        }
-        let mlt = usize::from_ne_bytes(
-            self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap(),
-        );
-        self.dev_info = DeviceInfo {
-            compute: 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims,
-            max_local_threads: mlt,
-            max_local_work_dims: [mlt, mlt, mlt],
-            preferred_vector_size: u32::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
-            ) as usize
-                * 4,
-            local_mem_size: usize::try_from(u64::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
-            ))
-            .unwrap(),
-            num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
-            tensor_cores: false,
-        };
-        Ok(())
-    }
-
     #[allow(clippy::cognitive_complexity)]
     pub(super) fn compile(
         &mut self,
@@ -676,27 +746,33 @@ impl OpenCLDevice {
 
         // Add indices for global and local loops
         source += &format!(
-            "{indent}r{} = get_group_id(0);   /* 0..{} */\n",
+            "{indent}r{} = get_group_id(0);   /* 0..{} */
+\n",
             loops[0], global_work_size[0]
         );
         source += &format!(
-            "{indent}r{} = get_local_id(0);   /* 0..{} */\n",
+"{indent}r{} = get_local_id(0); /* 0..{} */
+\n",
             loops[1], local_work_size[0]
         );
         source += &format!(
-            "{indent}r{} = get_group_id(1);   /* 0..{} */\n",
+"{indent}r{} = get_group_id(1); /* 0..{} */
+\n",
             loops[2], global_work_size[1]
         );
         source += &format!(
-            "{indent}r{} = get_local_id(1);   /* 0..{} */\n",
+"{indent}r{} = get_local_id(1); /* 0..{} */
+\n",
             loops[3], local_work_size[1]
         );
         source += &format!(
-            "{indent}r{} = get_group_id(2);   /* 0..{} */\n",
+"{indent}r{} = get_group_id(2); /* 0..{} */
+\n",
             loops[4], global_work_size[2]
         );
         source += &format!(
-            "{indent}r{} = get_local_id(2);   /* 0..{} */\n",
+"{indent}r{} = get_local_id(2); /* 0..{} */
+\n",
             loops[5], local_work_size[2]
         );
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
@@ -706,11 +782,11 @@ impl OpenCLDevice {
                 IROp::Load { z, address, offset } => {
                     if let Reg::Var(id) = offset {
                         if id == 11 {
-                            //source += &format!("{indent}printf(\"%u, \", r11);\n");
+//source += &format!("{indent}printf(\"%u, \", r11);\n");
                         }
                     }
                     source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
-                    //source += &format!( "  printf(\"r{z}, p{address} = %f r2 = %u r4 = %u\\n\", r{z}, r2, r4);\n" );
+//source += &format!( "  printf(\"r{z}, p{address} = %f r2 = %u r4 = %u\\n\", r{z}, r2, r4);\n" );
                 }
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
@@ -763,7 +839,7 @@ impl OpenCLDevice {
                             BOp::BitXor => format!("{} ^ {}", x.ocl(), y.ocl()),
                         }
                     );
-                    //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
+//if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
                 }
                 IROp::MAdd { z, a, b, c } => {
                     source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
@@ -814,7 +890,7 @@ impl OpenCLDevice {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
         let source = format!("{pragma}__kernel void {name}{source}");
-        //println!("{source}");
+//println!("{source}");
         if debug_asm {
             println!("{source}");
         }
@@ -871,19 +947,19 @@ impl OpenCLQueue {
         args: &[Id],
         sync: bool,
     ) -> Result<OpenCLEvent, OpenCLError> {
-        /*println!(
-            "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
-            program.kernel,
-            program.program,
-            self.queue,
-            program.global_work_size,
-            program.local_work_size
-        );*/
+/*println!(
+    "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
+    program.kernel,
+    program.program,
+    self.queue,
+    program.global_work_size,
+    program.local_work_size
+);*/
         let mut i = 0;
         #[allow(clippy::explicit_counter_loop)]
         for arg in args {
             let arg = &mut buffers[*arg];
-            //println!("Kernel arg: {arg:?} at index {i}");
+//println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.ptr;
             unsafe {
                 (self.clSetKernelArg)(
@@ -914,21 +990,21 @@ impl OpenCLQueue {
         .check("Failed to enqueue kernel.")?;
         println!("Launch event: {event:?}");
         if sync {
-            //unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
+//unsafe { (self.clFinish)(self.queue) }.check("finish fail").unwrap();
             let events = [event];
             unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }.check("finish fail").unwrap();
         }
-        //self.events.push(event);
+//self.events.push(event);
         Ok(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents })
     }
 
     pub(super) fn sync(&mut self) -> Result<(), OpenCLError> {
-        //println!("Syncing {:?}", self);
+//println!("Syncing {:?}", self);
         unsafe { (self.clFinish)(self.queue) }.check("Failed to synchronize device queue.")?;
         self.load = 0;
-        //self.events.clear();
-        //unsafe { (self.clWaitForEvents)(self.events.len() as u32, self.events.as_ptr()) }.check("Failed to synchronize device queue.")?;
-        //panic!();
+//self.events.clear();
+//unsafe { (self.clWaitForEvents)(self.events.len() as u32, self.events.as_ptr()) }.check("Failed to synchronize device queue.")?;
+//panic!();
         Ok(())
     }
 
@@ -944,20 +1020,10 @@ impl OpenCLEvent {
     }
 }
 
-impl OpenCLStatus {
-    fn check(self, info: &str) -> Result<(), OpenCLError> {
-        if self == Self::CL_SUCCESS {
-            Ok(())
-        } else {
-            Err(OpenCLError { info: info.into(), status: self })
-        }
-    }
-}
-
 impl OpenCLDevice {
     #[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_program(&self, program: OpenCLProgram) -> Result<(), OpenCLError> {
-        //println!("Releasing {:?}", program);
+//println!("Releasing {:?}", program);
         unsafe { (self.clReleaseProgram)(program.program) }
             .check("Failed to release OpenCL program")
     }
@@ -1015,40 +1081,64 @@ impl OpenCLDevice {
             Ok(Vec::default())
         }
     }
+}
 
-    fn get_device_data(&mut self, param_name: cl_uint) -> Result<Vec<u8>, OpenCLError> {
-        let size = {
-            let object = self.ptr;
-            let mut size: usize = 0;
-            let status = unsafe {
-                (self.clGetDeviceInfo)(object, param_name, 0, ptr::null_mut(), &mut size)
-            };
-            if OpenCLStatus::CL_SUCCESS != status {
-                return Err(OpenCLError {
-                    status,
-                    info: format!("Failed to get device info {param_name}"),
-                });
-            }
-            Ok(size)
-        }?;
-        let object = self.ptr;
-        if 0 < size {
-            let count = size / core::mem::size_of::<u8>();
-            let mut data: Vec<u8> = Vec::with_capacity(count);
-            unsafe {
-                data.set_len(count);
-                (self.clGetDeviceInfo)(
-                    object,
-                    param_name,
-                    size,
-                    data.as_mut_ptr().cast(),
-                    ptr::null_mut(),
-                )
-            }
-            .check(&format!("Failed to get {param_name}"))?;
-            Ok(data)
-        } else {
-            Ok(Vec::default())
+impl std::fmt::Display for OpenCLError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "OpenCLError {{ info: {:?}, status: {:?} }}",
+            self.info, self.status
+        ))
+    }
+}*/
+
+impl DType {
+    fn ocl(self) -> String {
+        match self {
+            Self::BF16 => todo!("bf16 should be casted to f16 or f32"),
+            Self::F8 => format!("f8"),
+            Self::F16 => format!("half"),
+            Self::F32 => format!("float"),
+            Self::F64 => format!("double"),
+            Self::U8 => format!("unsigned char"),
+            Self::U16 => format!("unsigned short"),
+            Self::I8 => format!("char"),
+            Self::I16 => format!("short"),
+            Self::I32 => format!("int"),
+            Self::I64 => format!("long"),
+            Self::Bool => "bool".into(),
+            Self::U32 => format!("unsigned int"),
+            Self::U64 => format!("unsigned long"),
+        }
+    }
+}
+
+impl Constant {
+    fn ocl(&self) -> String {
+        match self {
+            &Self::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
+            &Self::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
+            &Self::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
+            &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
+            &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
+            Self::U8(x) => format!("{x}"),
+            Self::I8(x) => format!("{x}"),
+            Self::I16(x) => format!("{x}"),
+            Self::U16(x) => format!("{x}"),
+            Self::U32(x) => format!("{x}"),
+            Self::U64(x) => format!("{x}"),
+            Self::I32(x) => format!("{x}"),
+            Self::I64(x) => format!("{x}"),
+            Self::Bool(x) => format!("{x}"),
+        }
+    }
+}
+
+impl Reg {
+    fn ocl(&self) -> String {
+        match self {
+            Self::Var(id) => format!("r{id}"),
+            Self::Const(value) => value.ocl(),
         }
     }
 }
@@ -1071,22 +1161,6 @@ const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
 const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_NON_BLOCKING: cl_uint = 0;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
-
-//#[allow(dead_code)] // Rust for some reason thinks these fields are unused
-#[derive(Debug)]
-pub struct OpenCLError {
-    info: String,
-    status: OpenCLStatus,
-}
-
-impl std::fmt::Display for OpenCLError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "OpenCLError {{ info: {:?}, status: {:?} }}",
-            self.info, self.status
-        ))
-    }
-}
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Copy, Clone, PartialEq, Debug, Eq)]
@@ -1167,57 +1241,6 @@ impl From<cl_int> for OpenCLStatus {
             -64 => Self::CL_INVALID_PROPERTY,
             -72 => Self::CL_MAX_SIZE_RESTRICTION_EXCEEDED,
             _ => Self::UNKNOWN,
-        }
-    }
-}
-
-impl DType {
-    fn ocl(self) -> String {
-        match self {
-            Self::BF16 => todo!("bf16 should be casted to f16 or f32"),
-            Self::F8 => format!("f8"),
-            Self::F16 => format!("half"),
-            Self::F32 => format!("float"),
-            Self::F64 => format!("double"),
-            Self::U8 => format!("unsigned char"),
-            Self::U16 => format!("unsigned short"),
-            Self::I8 => format!("char"),
-            Self::I16 => format!("short"),
-            Self::I32 => format!("int"),
-            Self::I64 => format!("long"),
-            Self::Bool => "bool".into(),
-            Self::U32 => format!("unsigned int"),
-            Self::U64 => format!("unsigned long"),
-        }
-    }
-}
-
-impl Constant {
-    fn ocl(&self) -> String {
-        match self {
-            &Self::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
-            &Self::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
-            &Self::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
-            &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
-            &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
-            Self::U8(x) => format!("{x}"),
-            Self::I8(x) => format!("{x}"),
-            Self::I16(x) => format!("{x}"),
-            Self::U16(x) => format!("{x}"),
-            Self::U32(x) => format!("{x}"),
-            Self::U64(x) => format!("{x}"),
-            Self::I32(x) => format!("{x}"),
-            Self::I64(x) => format!("{x}"),
-            Self::Bool(x) => format!("{x}"),
-        }
-    }
-}
-
-impl Reg {
-    fn ocl(&self) -> String {
-        match self {
-            Self::Var(id) => format!("r{id}"),
-            Self::Const(value) => value.ocl(),
         }
     }
 }

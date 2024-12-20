@@ -1,10 +1,11 @@
 use crate::{
-    backend::{Device, DeviceInfo, MemoryPool},
+    backend::{BackendError, Device, DeviceInfo, MemoryPool},
     ir::{IRKernel, Scope},
     kernel::{Kernel, Op},
     shape::Dimension,
+    slab::Id,
     view::View,
-    DebugMask, ZyxError,
+    DebugMask,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,7 +14,13 @@ use std::{
 
 #[derive(Debug)]
 pub(super) struct Optimizer {
-    cache: BTreeMap<(Kernel, DeviceInfo), OptimizerProgress>,
+    device_infos: BTreeMap<DeviceInfo, u32>,
+    kernels: BTreeMap<Vec<Op>, u32>,
+    // kernel id, device info id => optimization progress
+    progress: BTreeMap<(u32, Id), OptimizerProgress>,
+    // This last one is not stored to disk
+    // kernel id, device id => program id
+    programs: BTreeMap<(u32, u32), Id>,
 }
 
 #[derive(Debug)]
@@ -36,176 +43,101 @@ pub(super) struct Optimization {
 
 impl Optimizer {
     pub(super) const fn new() -> Optimizer {
-        Optimizer { cache: BTreeMap::new() }
+        Optimizer {
+            device_infos: BTreeMap::new(),
+            kernels: BTreeMap::new(),
+            progress: BTreeMap::new(),
+            programs: BTreeMap::new(),
+        }
     }
 
-    pub(super) fn search_optimization(
+    // If the kernel is cached, then launches kernel, otherwise if search_iters is zero,
+    // compiles kernel with default optimizations and launches it, otherwise
+    // searches over search_iters iterations, compiling and running each optimization
+    // and saves the best optimization. The kernel is run at most search_iter.min(1) times.
+    // Kernel is optimized on original data, so all buffers must be read only or write only.
+    pub(super) fn launch(
         &mut self,
         kernel: &Kernel,
-        device: &mut Device,
-        memory_pool: &mut MemoryPool,
+        device: &mut dyn Device,
+        memory_pool: &mut dyn MemoryPool,
+        args: &[Id],
+        sync: &BTreeSet<Id>,
         search_iters: usize,
         debug: DebugMask,
-    ) -> Result<&Optimization, ZyxError> {
-        fn optimize_kernel(
-            kernel: &Kernel,
-            device: &mut Device,
-            memory_pool: &mut MemoryPool,
-            search_iters: usize,
-            done: &mut BTreeMap<Optimization, Duration>,
-            debug: DebugMask,
-        ) -> (Optimization, bool) {
-            //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
-            // list untried optimizations
-            let mut opts = kernel.available_optimizations(device.info(), done);
-            assert!(!opts.is_empty());
+    ) -> Result<(), BackendError> {
+        // TODO if optimizer is not initialized yet, then first load from disk.
 
-            // TODO if we ensure that no buffer that has been stored to is ever loaded afterwards,
-            // then we don't need to allocate and we can directly work with the actual buffers.
-            // Without worrying about data corruption.
-            // Allocate temporary buffers
-            let mut allocated_temps = Vec::new();
-            for op in &kernel.ops {
-                match op {
-                    Op::Load { xscope, xview, xdtype, .. } => {
-                        if *xscope == Scope::Global {
-                            let buffer_id = memory_pool
-                                .allocate(xview.original_numel() * xdtype.byte_size())
-                                .unwrap();
-                            allocated_temps.push(buffer_id);
-                        }
+        let dev_info_id = self.device_infos.last_key_value().map(|(_, x)| x + 1).unwrap_or(0);
+        let dev_info_id =
+            *self.device_infos.entry(device.info().clone()).or_insert_with(|| dev_info_id);
+        if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
+            // if kernel was already optimized
+            if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
+                // if it was compiled for the given device
+                device.launch(program_id, memory_pool, args, sync)?;
+            } else if let Some(progress) = self.progress.get_mut(&(kernel_id, dev_info_id)) {
+                // if it was optimized for similar device, but not compiled for the given device,
+                // or if it was in disk cache.
+                match progress {
+                    OptimizerProgress::Finished { optimization } => {
+                        // compile and launch with best available optimizations/disk cached optimizations
+                        let optimized_kernel = kernel.optimize(optimization);
+                        let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
+                        let program_id = device.compile(&ir_kernel, debug.asm())?;
+                        device.launch(program_id, memory_pool, args, sync)?;
                     }
-                    Op::Store { zscope, zview, zdtype, .. } => {
-                        if *zscope == Scope::Global {
-                            let buffer_id = memory_pool
-                                .allocate(zview.original_numel() * zdtype.byte_size())
-                                .unwrap();
-                            allocated_temps.push(buffer_id);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
-            /*let flop_mem_rw = if debug_perf {
-                Some(kernel.flop_mem_rw())
-            } else {
-                None
-            };*/
-            // pick an optimization
-            for _ in 0..search_iters.min(opts.len()) {
-                if let Some(optimization) = opts.pop() {
-                    //println!("{optimization:?}");
-                    let optimized_kernel = kernel.optimize(&optimization);
-                    //optimized_kernel.debug();
-                    //panic!();
-                    let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
-                    if device
-                        .compile(optimized_kernel.ops.clone(), &ir_kernel, debug.asm())
-                        .is_err()
-                    {
-                        done.insert(optimization, Duration::MAX);
-                        //if debug_sched { println!("Could not compile, {e:?}, skipping"); }
-                        continue;
-                    }
-                    // Launch kernel and measure it's performance
-                    let begin = std::time::Instant::now();
-                    let Ok(()) = device.launch(
-                        &optimized_kernel.ops,
-                        memory_pool,
-                        &allocated_temps,
-                        BTreeSet::new(),
-                    ) else {
-                        done.insert(optimization, Duration::MAX);
-                        //if debug_sched { println!("Could not launch, {e:?}, skipping"); }
-                        continue;
-                    };
-                    if event.finish().is_err() {
-                        done.insert(optimization, Duration::MAX);
-                        //if debug_sched { println!("Could not sync, {e:?}, skipping"); }
-                        continue;
-                    };
-                    let exec_time = begin.elapsed();
-                    let _ = device.release_program(&optimized_kernel.ops);
-                    done.insert(optimization, exec_time);
-                    if exec_time < best_exec_time {
-                        best_exec_time = exec_time;
-                    }
-                    /*if let Some((f, mr, mw)) = flop_mem_rw {
-                        if let Some(bar) = &progress_bar {
-                            bar.set_message(format!(
-                                "{}/{} {}",
-                                i + 1,
-                                search_iters.min(opts.len()),
-                                perf_string(f, mr, mw, best_exec_time)
-                            ));
-                        }
-                    }
-                    #[cfg(feature = "disk_cache")]
-                    if timer.elapsed().as_secs() > 60 {
-                        store_optimizer_cache(optimizer_cache, config_dir, debug_sched);
-                        timer = std::time::Instant::now();
-                    }*/
-                }
-            }
-
-            (
-                done.iter().min_by_key(|x| x.1).unwrap().0.clone(),
-                opts.is_empty(),
-            )
-        }
-
-        // TODO do not clone kernel and device info, borrowck really sucks here
-        let key = (kernel.clone(), device.info().clone());
-        Ok(
-            match self
-                .cache
-                .entry(key)
-                .and_modify(|progress| {
-                    if search_iters != 0 {
-                        if let OptimizerProgress::Optimizing { best, done } = progress {
-                            let (optimization, finished) = optimize_kernel(
-                                kernel,
-                                device,
-                                memory_pool,
-                                search_iters,
-                                done,
-                                debug,
-                            );
-                            if finished {
-                                *progress = OptimizerProgress::Finished { optimization };
-                            } else {
-                                *best = optimization;
-                            }
-                        }
-                    }
-                })
-                .or_insert_with(|| {
-                    if search_iters == 0 {
-                        let best = Optimizer::default_optimizations(kernel, device.info());
-                        let done = BTreeMap::new();
-                        OptimizerProgress::Optimizing { best, done }
-                    } else {
-                        let mut done = BTreeMap::new();
+                    OptimizerProgress::Optimizing { best, done } => {
+                        // Continue optimizing
                         let (optimization, finished) = optimize_kernel(
                             kernel,
                             device,
                             memory_pool,
+                            args,
                             search_iters,
-                            &mut done,
+                            done,
                             debug,
                         );
                         if finished {
-                            OptimizerProgress::Finished { optimization }
+                            *progress = OptimizerProgress::Finished { optimization };
                         } else {
-                            OptimizerProgress::Optimizing { best: optimization, done }
+                            *best = optimization;
                         }
                     }
-                }) {
-                OptimizerProgress::Finished { optimization } => optimization,
-                OptimizerProgress::Optimizing { best, .. } => best,
-            },
-        )
+                }
+            } else {
+                // kernel cannot exist in self.kernels unless there have been some optimizations applied already
+                unreachable!();
+            }
+        } else {
+            // if kernel was not optimized yet
+            let kernel_id = self.kernels.last_key_value().map(|(_, x)| x + 1).unwrap_or(0);
+            self.kernels.insert(kernel.ops.clone(), kernel_id);
+            let progress = if search_iters == 0 {
+                // if optimizations are not requested, use default optimizations
+                let best = Optimizer::default_optimizations(kernel, device.info());
+                let done = BTreeMap::new();
+                OptimizerProgress::Optimizing { best, done }
+            } else {
+                let mut done = BTreeMap::new();
+                let (optimization, finished) = optimize_kernel(
+                    kernel,
+                    device,
+                    memory_pool,
+                    args,
+                    search_iters,
+                    &mut done,
+                    debug,
+                );
+                if finished {
+                    OptimizerProgress::Finished { optimization }
+                } else {
+                    OptimizerProgress::Optimizing { best: optimization, done }
+                }
+            };
+            self.progress.insert((kernel_id, dev_info_id), progress);
+        }
+        Ok(())
     }
 
     fn default_optimizations(kernel: &Kernel, device_info: &DeviceInfo) -> Optimization {
@@ -213,6 +145,70 @@ impl Optimizer {
         let _ = device_info;
         todo!()
     }
+}
+
+// Optimize kernel further, search_iters times
+fn optimize_kernel(
+    kernel: &Kernel,
+    device: &mut dyn Device,
+    memory_pool: &mut dyn MemoryPool,
+    args: &[Id],
+    search_iters: usize,
+    done: &mut BTreeMap<Optimization, Duration>,
+    debug: DebugMask,
+) -> (Optimization, bool) {
+    //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
+    // list untried optimizations
+    let mut opts = kernel.available_optimizations(device.info(), done);
+    assert!(!opts.is_empty());
+
+    let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
+    /*let flop_mem_rw = if debug_perf {
+        Some(kernel.flop_mem_rw())
+    } else {
+        None
+    };*/
+    // pick an optimization
+    for _ in 0..search_iters.min(opts.len()) {
+        if let Some(optimization) = opts.pop() {
+            //println!("{optimization:?}");
+            let optimized_kernel = kernel.optimize(&optimization);
+            //optimized_kernel.debug();
+            //panic!();
+            let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
+            let Ok(program_id) = device.compile(&ir_kernel, debug.asm()) else {
+                done.insert(optimization, Duration::MAX);
+                continue;
+            };
+            // Launch kernel and measure it's performance
+            let begin = std::time::Instant::now();
+            if device.launch(program_id, memory_pool, &args, &BTreeSet::new()).is_err() {
+                done.insert(optimization, Duration::MAX);
+                continue;
+            }
+            let exec_time = begin.elapsed();
+            let _ = device.release(program_id);
+            done.insert(optimization, exec_time);
+            if exec_time < best_exec_time {
+                best_exec_time = exec_time;
+            }
+            /*if let Some((f, mr, mw)) = flop_mem_rw {
+                if let Some(bar) = &progress_bar {
+                    bar.set_message(format!(
+                        "{}/{} {}",
+                        i + 1,
+                        search_iters.min(opts.len()),
+                        perf_string(f, mr, mw, best_exec_time)
+                    ));
+                }
+            }*/
+        }
+    }
+
+    (
+        done.iter().min_by_key(|x| x.1).unwrap().0.clone(),
+        opts.is_empty(),
+    )
 }
 
 impl Kernel {
