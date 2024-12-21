@@ -36,9 +36,7 @@ let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
 ## Backends
 
 - [x] CUDA
-- [x] HIP
 - [x] `OpenCL`
-- [x] WGSL
 
 Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md)
 for detailed info how to tell Zyx which hardware it should utilize.

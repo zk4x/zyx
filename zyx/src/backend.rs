@@ -25,6 +25,8 @@ use crate::{ir::IRKernel, slab::Id, ZyxError};
 
 #[derive(Debug)]
 pub enum ErrorStatus {
+    /// Dynamic library was not found on the disk
+    DyLibNotFound,
     /// Backend initialization failure
     Initialization,
     /// Backend deinitialization failure
@@ -58,7 +60,7 @@ pub struct BackendError {
 #[derive(DeJson, Debug, Default)]
 pub struct DeviceConfig {
     /// CUDA configuration
-    //pub cuda: cuda::CUDAConfig,
+    pub cuda: cuda::CUDAConfig,
     /// HIP configuration
     //pub hip: hip::HIPConfig,
     /// `OpenCL` configuration
@@ -105,8 +107,8 @@ pub trait MemoryPool: Send {
     fn deallocate(&mut self, buffer_id: Id) -> Result<(), BackendError>;
     fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError>;
     fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError>;
-    fn get_buffer(&self, buffer: Id) -> Buffer;
-    fn synchronize(&self, buffers: &BTreeSet<Id>) -> Result<(), BackendError>;
+    fn get_buffer(&mut self, buffer: Id) -> BufferMut;
+    fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event>;
     fn bind_event(&mut self, event: Event, buffers: BTreeSet<Id>);
 }
 
@@ -128,9 +130,9 @@ pub trait Device: Send {
     fn release(&mut self, program_id: Id) -> Result<(), BackendError>;
 }
 
-enum Buffer<'a> {
-    OpenCL(&'a opencl::OpenCLBuffer),
-    CUDA(&'a cuda::CUDABuffer),
+enum BufferMut<'a> {
+    OpenCL(&'a mut opencl::OpenCLBuffer),
+    CUDA(&'a mut cuda::CUDABuffer),
 }
 
 enum Event {
@@ -144,7 +146,7 @@ pub fn initialize_backends(
     devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    //let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
+    let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
 
     //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
 

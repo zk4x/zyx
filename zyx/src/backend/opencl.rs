@@ -3,7 +3,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use super::{BackendError, Buffer, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 use crate::{
     dtype::Constant,
     ir::{IROp, Reg, Scope},
@@ -176,7 +176,7 @@ pub(super) fn initialize_device(
     let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
         return Err(BackendError {
-            status: ErrorStatus::Initialization,
+            status: ErrorStatus::DyLibNotFound,
             context: "OpenCL runtime not found.".into(),
         });
     };
@@ -475,9 +475,10 @@ impl MemoryPool for OpenCLMemoryPool {
 
     fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError> {
         //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
-        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
+        if let Some((key, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
             unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
                 .check(ErrorStatus::MemoryCopy)?;
+            self.events.remove(&key.clone());
         }
         let src = &self.buffers[src];
         assert!(
@@ -520,8 +521,8 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }*/
 
-    fn get_buffer(&self, buffer: Id) -> Buffer {
-        Buffer::OpenCL(&self.buffers[buffer])
+    fn get_buffer(&mut self, buffer: Id) -> BufferMut {
+        BufferMut::OpenCL(&mut self.buffers[buffer])
     }
 
     fn bind_event(&mut self, event: super::Event, buffers: BTreeSet<Id>) {
@@ -529,12 +530,14 @@ impl MemoryPool for OpenCLMemoryPool {
         self.events.insert(buffers, ptr);
     }
 
-    fn synchronize(&self, buffers: &BTreeSet<Id>) -> Result<(), BackendError> {
-        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.is_disjoint(buffers)) {
-            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
-                .check(ErrorStatus::MemoryCopy)?;
+    fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event> {
+        let mut to_remove = Vec::new();
+        for key in self.events.keys() {
+            if !key.is_disjoint(buffers) {
+                to_remove.push(key.clone());
+            }
         }
-        Ok(())
+        to_remove.into_iter().map(|key| Event::OpenCL(OpenCLEvent { ptr: self.events.remove(&key).unwrap() })).collect()
     }
 }
 
@@ -823,14 +826,13 @@ impl Device for OpenCLDevice {
             program.global_work_size,
             program.local_work_size
         );*/
-        memory_pool.synchronize(&sync)?;
         let queue_id = self.next_queue()?;
         let program = &self.programs[program_id];
         let mut i = 0;
         #[allow(clippy::explicit_counter_loop)]
-        for arg in args {
-            let arg = &mut memory_pool.get_buffer(*arg);
-            let Buffer::OpenCL(arg) = arg else { unreachable!() };
+        for &arg in args {
+            let arg = memory_pool.get_buffer(arg);
+            let BufferMut::OpenCL(arg) = arg else { unreachable!() };
             //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.ptr;
             unsafe {
@@ -845,6 +847,11 @@ impl Device for OpenCLDevice {
             i += 1;
         }
         let mut event: *mut c_void = ptr::null_mut();
+        let event_wait_list = memory_pool.event_wait_list(&sync);
+        let event_wait_list: Vec<*mut c_void> = event_wait_list.into_iter().map(|event| {
+            let Event::OpenCL(OpenCLEvent { ptr }) = event else { unreachable!() };
+            ptr
+        }).collect();
         unsafe {
             (self.clEnqueueNDRangeKernel)(
                 self.queues[queue_id].queue,
@@ -853,8 +860,8 @@ impl Device for OpenCLDevice {
                 ptr::null(),
                 program.global_work_size.as_ptr(),
                 program.local_work_size.as_ptr(),
-                0,
-                ptr::null(),
+                event_wait_list.len() as u32,
+                event_wait_list.as_ptr(),
                 &mut event,
             )
         }
@@ -866,6 +873,7 @@ impl Device for OpenCLDevice {
                 .unwrap();
         } else {
             memory_pool.bind_event(Event::OpenCL(OpenCLEvent { ptr: event }), sync);
+            self.queues[queue_id].load += 1;
         }
         //println!("Launch event: {event:?}");
         Ok(())

@@ -1,12 +1,15 @@
+#![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
+
 use std::{collections::{BTreeMap, BTreeSet}, ffi::{c_char, c_int, c_uint, c_void}, ptr, sync::Arc};
 
 use float8::F8E4M3;
 use libloading::Library;
 use nanoserde::DeJson;
 
-use crate::{dtype::Constant, ir::Reg, slab::{Id, Slab}, DType};
+use crate::{dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, slab::{Id, Slab}, DType};
 
-use super::{BackendError, Buffer, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 
 
 /// CUDA configuration
@@ -19,18 +22,18 @@ pub struct CUDAConfig {
 pub(super) struct CUDAMemoryPool {
     // Just to close the connection
     #[allow(unused)]
-    cuda: Arc<Library>,
+    lib: Arc<Library>,
     context: CUcontext,
     device: CUdevice,
     free_bytes: usize,
     buffers: Slab<CUDABuffer>,
-    events: BTreeMap<BTreeSet<Id>, *mut c_void>,
-    cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
-    cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
-    cuMemcpyDtoH: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUDAStatus,
-    cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
-    cuMemcpyPeer:
-        unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
+    events: BTreeMap<BTreeSet<Id>, CUevent>,
+    stream: CUstream,
+    cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
+    cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus,
+    cuMemcpyDtoHAsync: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus,
+    cuMemFreeAsync: unsafe extern "C" fn(CUdeviceptr, CUstream) -> CUDAStatus,
+    //cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
     //cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
     //cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
 }
@@ -47,7 +50,7 @@ pub(super) struct CUDADevice {
     memory_pool_id: u32,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
-    queues: Vec<CUDAQueue>,
+    streams: Vec<CUDAStream>,
     programs: Slab<CUDAProgram>,
     cuModuleLoadDataEx: unsafe extern "C" fn(
         *mut CUmodule,
@@ -59,8 +62,10 @@ pub(super) struct CUDADevice {
     cuModuleGetFunction:
         unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus,
     cuModuleUnload: unsafe extern "C" fn(CUmodule) -> CUDAStatus,
-    cuStreamDestroy: unsafe extern "C" fn(CUstream) -> CUDAStatus,
-    /*cuLaunchKernel: unsafe extern "C" fn(
+    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    //cuStreamDestroy: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    cuEventCreate: unsafe extern "C" fn(*mut CUevent, c_uint) -> CUDAStatus,
+    cuLaunchKernel: unsafe extern "C" fn(
         CUfunction,
         c_uint,
         c_uint,
@@ -73,7 +78,8 @@ pub(super) struct CUDADevice {
         *mut *mut c_void,
         *mut *mut c_void,
     ) -> CUDAStatus,
-    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,*/
+    cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus,
+    cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -86,20 +92,257 @@ pub(super) struct CUDAProgram {
 }
 
 #[derive(Debug)]
-pub(super) struct CUDAQueue {
+pub(super) struct CUDAStream {
     stream: CUstream,
     load: usize,
 }
 
 #[derive(Debug)]
-pub struct CUDAEvent {}
+pub struct CUDAEvent {
+    event: CUevent,
+}
 
 unsafe impl Send for CUDAMemoryPool {}
 unsafe impl Send for CUDADevice {}
 unsafe impl Send for CUDABuffer {}
 unsafe impl Send for CUDAProgram {}
-unsafe impl Send for CUDAQueue {}
+unsafe impl Send for CUDAStream {}
 unsafe impl Send for CUDAEvent {}
+
+pub(super) fn initialize_device(
+    config: &CUDAConfig,
+    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    devices: &mut Vec<Box<dyn Device>>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
+    let _ = config;
+
+    let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
+    let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
+    let Some(cuda) = cuda else {
+        return Err(BackendError {
+            status: ErrorStatus::DyLibNotFound,
+            context: "CUDA runtime not found.".into(),
+        }
+        .into());
+    };
+
+    let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuInit\0") }.unwrap();
+    let cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDriverGetVersion\0") }.unwrap();
+    let cuDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDeviceGetCount\0") }.unwrap();
+    let cuDeviceGet: unsafe extern "C" fn(*mut CUdevice, c_int) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDeviceGet\0") }.unwrap();
+    let cuDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDeviceGetName\0") }.unwrap();
+    let cuDeviceComputeCapability: unsafe extern "C" fn(
+        *mut c_int,
+        *mut c_int,
+        CUdevice,
+    ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }.unwrap();
+    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuDeviceTotalMem\0") }.unwrap();
+    let cuDeviceGetAttribute: unsafe extern "C" fn(
+        *mut c_int,
+        CUdevice_attribute,
+        CUdevice,
+    ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }.unwrap();
+    let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
+    let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }.unwrap();
+    let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }.unwrap();
+    let cuMemcpyHtoDAsync = *unsafe { cuda.get(b"cuMemcpyHtoDAsync\0") }.unwrap();
+    let cuMemcpyDtoHAsync = *unsafe { cuda.get(b"cuMemcpyDtoHAsync\0") }.unwrap();
+    //let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
+    //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
+    //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
+    let cuModuleLoadDataEx = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
+    let cuModuleGetFunction = *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
+    let cuLaunchKernel = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
+    let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
+        *unsafe { cuda.get(b"cuStreamCreate\0") }.unwrap();
+    let cuStreamSynchronize = *unsafe { cuda.get(b"cuStreamSynchronize\0") }.unwrap();
+    //let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
+    let cuModuleUnload = *unsafe { cuda.get(b"cuModuleUnload\0") }.unwrap();
+    let cuEventCreate = *unsafe { cuda.get(b"cuEventCreate\0") }.unwrap();
+    let cuEventRecord = *unsafe { cuda.get(b"cuEventRecord\0") }.unwrap();
+    let cuEventSynchronize = *unsafe { cuda.get(b"cuEventSynchronize\0") }.unwrap();
+    //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
+
+    unsafe { cuInit(0) }.check(ErrorStatus::Initialization)?;
+    let mut driver_version = 0;
+    unsafe { cuDriverGetVersion(&mut driver_version) }
+        .check(ErrorStatus::DeviceQuery)?;
+    let mut num_devices = 0;
+    unsafe { cuDeviceGetCount(&mut num_devices) }.check(ErrorStatus::DeviceQuery)?;
+    if num_devices == 0 {
+        return Err(BackendError {
+            status: ErrorStatus::DeviceEnumeration,
+            context: "No available cuda device.".into(),
+        }
+        .into());
+    }
+    let device_ids: Vec<i32> = (0..num_devices)
+        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
+        .collect();
+    if debug_dev && !device_ids.is_empty() {
+        println!(
+            "Using CUDA driver, driver version: {}.{} on devices:",
+            driver_version / 1000,
+            (driver_version - (driver_version / 1000 * 1000)) / 10
+        );
+    }
+
+    let cuda = Arc::new(cuda);
+    for dev_id in device_ids {
+        let mut device = 0;
+        unsafe { cuDeviceGet(&mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration)?;
+        let mut device_name = [0; 100];
+        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }
+            .check(ErrorStatus::DeviceQuery)
+        else {
+            continue;
+        };
+        let mut major = 0;
+        let mut minor = 0;
+        let Ok(()) = unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }
+            .check(ErrorStatus::DeviceQuery)
+        else {
+            continue;
+        };
+        if debug_dev {
+            println!("{:?}, compute capability: {major}.{minor}", unsafe {
+                std::ffi::CStr::from_ptr(device_name.as_ptr())
+            });
+        }
+        let mut free_bytes = 0;
+        let Ok(()) =
+            unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check(ErrorStatus::DeviceQuery)
+        else {
+            continue;
+        };
+        let mut context: CUcontext = ptr::null_mut();
+        if let Err(e) =
+            unsafe { cuCtxCreate(&mut context, 0, device) }.check(ErrorStatus::Initialization)
+        {
+            println!("{e:?}");
+            continue;
+        }
+        /*if let Err(e) = unsafe { cuDevicePrimaryCtxRetain(&mut context, device) }.check("Failed to create CUDA context.") {
+            println!("{e:?}");
+            continue;
+        }*/
+        //println!("Using context {context:?} and device {device:?}");
+        let mut stream = ptr::null_mut();
+        let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization) else {
+            continue;
+        };
+        memory_pools.push(Box::new(CUDAMemoryPool {
+            lib: cuda.clone(),
+            context,
+            device,
+            free_bytes,
+            buffers: Slab::new(),
+            events: BTreeMap::new(),
+            stream,
+            cuMemAllocAsync,
+            cuMemcpyHtoDAsync,
+            cuMemFreeAsync,
+            cuMemcpyDtoHAsync,
+            //cuMemcpyPeer,
+            //cuCtxSetCurrent,
+            //cuCtxDestroy,
+        }));
+        let mut streams = Vec::new();
+        for _ in 0..8 {
+            let mut stream = ptr::null_mut();
+            let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization) else {
+                continue;
+            };
+            streams.push(CUDAStream { stream, load: 0 });
+        }
+        let mut dev = CUDADevice {
+            device,
+            dev_info: DeviceInfo {
+                compute: 1024 * 1024 * 1024 * 1024,
+                max_global_work_dims: [64, 64, 64],
+                max_local_threads: 1,
+                max_local_work_dims: [1, 1, 1],
+                local_mem_size: 0,
+                num_registers: 96,
+                preferred_vector_size: 16,
+                tensor_cores: major > 7,
+            },
+            streams: Vec::new(),
+            programs: Slab::new(),
+            memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
+            cuModuleLoadDataEx,
+            cuModuleGetFunction,
+            cuModuleUnload,
+            //cuStreamDestroy,
+            compute_capability: [major, minor],
+            cuLaunchKernel,
+            cuStreamSynchronize,
+            cuEventCreate,
+            cuEventRecord,
+            cuEventSynchronize,
+        };
+        dev.dev_info = DeviceInfo {
+            compute: 1024 * 1024 * 1024 * 1024,
+            max_global_work_dims: [
+                usize::try_from(dev.get(
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
+                    cuDeviceGetAttribute,
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
+                    cuDeviceGetAttribute,
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
+                    cuDeviceGetAttribute,
+                )?)
+                .unwrap(),
+            ],
+            max_local_threads: usize::try_from(dev.get(
+                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+                cuDeviceGetAttribute,
+            )?)
+            .unwrap(),
+            max_local_work_dims: [
+                usize::try_from(dev.get(
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
+                    cuDeviceGetAttribute,
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
+                    cuDeviceGetAttribute,
+                )?)
+                .unwrap(),
+                usize::try_from(dev.get(
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
+                    cuDeviceGetAttribute,
+                )?)
+                .unwrap(),
+            ],
+            local_mem_size: usize::try_from(dev.get(
+                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
+                cuDeviceGetAttribute,
+            )?)
+            .unwrap(),
+            num_registers: 96,
+            preferred_vector_size: 16,
+            tensor_cores: major > 7,
+        };
+        devices.push(Box::new(dev));
+    }
+    Ok(())
+}
 
 impl MemoryPool for CUDAMemoryPool {
     fn deinitialize(&mut self) -> Result<(), BackendError> {
@@ -117,14 +360,14 @@ impl MemoryPool for CUDAMemoryPool {
         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
         let mut ptr = u64::try_from(self.device).unwrap();
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
-        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok(self.buffers.push(CUDABuffer { ptr, bytes }))
     }
 
     fn deallocate(&mut self, buffer_id: crate::slab::Id) -> Result<(), BackendError> {
         if let Some(buffer) = self.buffers.remove(buffer_id) {
-            unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::Deinitialization)?;
+            unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::Deinitialization)?;
             self.free_bytes += buffer.bytes;
         }
         Ok(())
@@ -132,35 +375,38 @@ impl MemoryPool for CUDAMemoryPool {
 
     fn host_to_pool(&mut self, src: &[u8], dst: crate::slab::Id) -> Result<(), BackendError> {
         let dst = &self.buffers[dst];
-        unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }
+        unsafe { (self.cuMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }
             .check(ErrorStatus::MemoryCopy)
     }
 
     fn pool_to_host(&mut self, src: crate::slab::Id, dst: &mut [u8]) -> Result<(), BackendError> {
-        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
+        /*if let Some((key, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
             unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
                 .check(ErrorStatus::MemoryCopy)?;
-        }
+            self.events.remove(&key.clone());
+        }*/
         let src = &self.buffers[src];
-        unsafe { (self.cuMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }
+        unsafe { (self.cuMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }
             .check(ErrorStatus::MemoryCopy)
     }
 
-    fn get_buffer(&self, buffer: crate::slab::Id) -> super::Buffer {
-        Buffer::CUDA(&self.buffers[buffer])
+    fn get_buffer(&mut self, buffer: crate::slab::Id) -> super::BufferMut {
+        BufferMut::CUDA(&mut self.buffers[buffer])
     }
 
-    fn synchronize(&self, buffers: &std::collections::BTreeSet<crate::slab::Id>) -> Result<(), BackendError> {
-        if let Some((_, event)) = self.events.iter().find(|(key, _)| key.is_disjoint(buffers)) {
-            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
-                .check(ErrorStatus::MemoryCopy)?;
+    fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event> {
+        let mut to_remove = Vec::new();
+        for key in self.events.keys() {
+            if !key.is_disjoint(buffers) {
+                to_remove.push(key.clone());
+            }
         }
-        Ok(())
+        to_remove.into_iter().map(|key| Event::CUDA(CUDAEvent { event: self.events.remove(&key).unwrap() })).collect()
     }
 
     fn bind_event(&mut self, event: super::Event, buffers: std::collections::BTreeSet<crate::slab::Id>) {
-        let Event::CUDA(CUDAEvent { ptr }) = event else { unreachable!() };
-        self.events.insert(buffers, ptr);
+        let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
+        self.events.insert(buffers, event);
     }
 }
 
@@ -202,7 +448,7 @@ impl Device for CUDADevice {
         unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
             .check(ErrorStatus::KernelLaunch)?;
 
-        let program_id = self.programs.insert(CUDAProgram {
+        let program_id = self.programs.push(CUDAProgram {
             //name,
             module,
             function,
@@ -220,16 +466,25 @@ impl Device for CUDADevice {
         // If sync is empty, kernel will be immediatelly synchronized
         sync: std::collections::BTreeSet<crate::slab::Id>,
     ) -> Result<(), BackendError> {
-        memory_pool.synchronize(&sync)?;
-        let queue_id = self.next_queue()?;
+        let stream_id = self.next_stream()?;
         let program = &self.programs[program_id];
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {
-            let arg = &mut buffers[arg];
+            let arg = memory_pool.get_buffer(arg);
+            let BufferMut::CUDA(arg) = arg else { unreachable!() };
             //let ptr = &mut arg.mem;
             let ptr: *mut _ = &mut arg.ptr;
             kernel_params.push(ptr.cast());
         }
+
+        let event_wait_list = memory_pool.event_wait_list(&sync);
+        let event_wait_list: Vec<CUevent> = event_wait_list.into_iter().map(|event| {
+            let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
+            event
+        }).collect();
+
+        let mut event = ptr::null_mut(); 
+        unsafe { (self.cuEventCreate)(&mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
         unsafe {
             (self.cuLaunchKernel)(
                 program.function,
@@ -240,23 +495,338 @@ impl Device for CUDADevice {
                 u32::try_from(program.local_work_size[1]).unwrap(),
                 u32::try_from(program.local_work_size[2]).unwrap(),
                 0,
-                self.stream,
+                self.streams[stream_id].stream,
                 kernel_params.as_mut_ptr(),
                 ptr::null_mut(),
             )
         }
-        .check("Failed to launch kernel.")?;
-        if sync {
-            todo!()
+        .check(ErrorStatus::KernelLaunch)?;
+        unsafe { (self.cuEventRecord)(event, self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
+        if sync.is_empty() {
+            unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelLaunch)?;
+        } else {
+            memory_pool.bind_event(Event::CUDA(CUDAEvent { event }), sync);
+            self.streams[stream_id].load += 1;
         }
-        Ok(CUDAEvent {})
+        Ok(())
     }
 
     fn release(&mut self, program_id: crate::slab::Id) -> Result<(), BackendError> {
-        if let Some(program) = self.programs.get(program_id) {
+        if let Some(program) = self.programs.remove(program_id) {
             unsafe { (self.cuModuleUnload)(program.module) }.check(ErrorStatus::Deinitialization)?;
         }
         Ok(())
+    }
+}
+
+impl CUDADevice {
+    fn next_stream(&mut self) -> Result<usize, BackendError> {
+        let mut id = self.streams.iter().enumerate().min_by_key(|(_, s)| s.load).unwrap().0;
+        if self.streams[id].load > 20 {
+            unsafe { (self.cuStreamSynchronize)(self.streams[id].stream) }.check(ErrorStatus::KernelSync)?;
+            self.streams[id].load = 0;
+            id = self.streams.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
+        }
+        Ok(id)
+    }
+
+    fn get(
+        &mut self,
+        attr: CUdevice_attribute,
+        cuDeviceGetAttribute: unsafe extern "C" fn(
+            *mut c_int,
+            CUdevice_attribute,
+            CUdevice,
+        ) -> CUDAStatus,
+    ) -> Result<c_int, BackendError> {
+        let mut v = 0;
+        unsafe { cuDeviceGetAttribute(&mut v, attr, self.device) }
+            .check(ErrorStatus::DeviceQuery)?;
+        Ok(v)
+    }
+
+    fn compile_cuda(
+        &mut self,
+        kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), BackendError> {
+        let mut source = String::from("(\n");
+        let mut indent = String::from("  ");
+
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
+
+        let mut loop_ids = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
+            if let IROp::Loop { id, len } = op {
+                if i % 2 == 0 {
+                    global_work_size[i / 2] = *len;
+                } else {
+                    local_work_size[i / 2] = *len;
+                }
+                loop_ids[i] = *id;
+            } else {
+                unreachable!()
+            }
+        }
+
+        // Declare global variables
+        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source.push_str(&format!(
+                    "{indent}{}{}* p{id},\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.cu(),
+                ));
+            }
+        }
+
+        source.pop();
+        source.pop();
+        source.push_str("\n) {\n");
+
+        // Declare local variables
+        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Local {
+                source.push_str(&format!(
+                    "{indent}__shared__ {} p{id}[{len}];\n",
+                    //if *read_only { "const " } else { "" },
+                    dtype.cu(),
+                ));
+            }
+        }
+
+        // Declare accumulators
+        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::RegTile {
+                source.push_str(&format!(
+                    "{indent}{}{} p{id}[{len}];\n",
+                    if *read_only { "const " } else { "" },
+                    dtype.cu(),
+                ));
+            }
+        }
+
+        // Declare register variables
+        for (id, dtype) in kernel.registers.iter().enumerate() {
+            source.push_str(&format!("{indent}{} r{id};\n", dtype.cu()));
+        }
+
+        // Add indices for global and local loops
+        source.push_str(&format!(
+            "  r{} = blockIdx.x;   /* 0..{} */\n",
+            loop_ids[0], global_work_size[0]
+        ));
+        source.push_str(&format!(
+            "  r{} = threadIdx.x;   /* 0..{} */\n",
+            loop_ids[1], local_work_size[0]
+        ));
+        source.push_str(&format!(
+            "  r{} = blockIdx.y;   /* 0..{} */\n",
+            loop_ids[2], global_work_size[1]
+        ));
+        source.push_str(&format!(
+            "  r{} = threadIdx.y;   /* 0..{} */\n",
+            loop_ids[3], local_work_size[1]
+        ));
+        source.push_str(&format!(
+            "  r{} = blockIdx.z;   /* 0..{} */\n",
+            loop_ids[4], global_work_size[2]
+        ));
+        source.push_str(&format!(
+            "  r{} = threadIdx.z;   /* 0..{} */\n",
+            loop_ids[5], local_work_size[2]
+        ));
+
+        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+            match op {
+                IROp::Load { z, address, offset } => {
+                    source.push_str(&format!("{indent}r{z} = p{address}[{}];\n", offset.cu()));
+                }
+                IROp::Store { address, offset, x } => {
+                    source.push_str(&format!(
+                        "{indent}p{address}[{}] = {};\n",
+                        offset.cu(),
+                        x.cu()
+                    ));
+                }
+                IROp::Unary { z, x, uop } => {
+                    let dtype = kernel.registers[z as usize];
+                    let zero = Constant::new(0).unary(UOp::Cast(dtype)).cu();
+                    source.push_str(&match uop {
+                        UOp::Cast(_) => {
+                            format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
+                        }
+                        UOp::ReLU => {
+                            if dtype == DType::F16 {
+                                format!("{indent}r{z} = r{x} * __float2half(r{x} > {zero});\n")
+                            } else {
+                                format!("{indent}r{z} = r{x} * (r{x} > {zero});\n")
+                            }
+                        }
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
+                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
+                    });
+                }
+                IROp::Binary { z, x, y, bop } => {
+                    source.push_str(&format!(
+                        "{indent}r{z} = {};\n",
+                        match bop {
+                            BOp::Add => format!("{} + {}", x.cu(), y.cu()),
+                            BOp::Sub => format!("{} - {}", x.cu(), y.cu()),
+                            BOp::Mul => format!("{} * {}", x.cu(), y.cu()),
+                            BOp::Div => format!("{} / {}", x.cu(), y.cu()),
+                            BOp::Mod => format!("{} % {}", x.cu(), y.cu()),
+                            BOp::Pow => format!("pow({}, {})", x.cu(), y.cu()),
+                            BOp::Cmplt => format!("{} < {}", x.cu(), y.cu()),
+                            BOp::Cmpgt => format!("{} > {}", x.cu(), y.cu()),
+                            BOp::Max => format!("max({}, {})", x.cu(), y.cu()),
+                            BOp::Or => format!("{} || {}", x.cu(), y.cu()),
+                            BOp::And => format!("{} && {}", x.cu(), y.cu()),
+                            BOp::BitOr => format!("{} | {}", x.cu(), y.cu()),
+                            BOp::BitAnd => format!("{} & {}", x.cu(), y.cu()),
+                            BOp::BitXor => format!("{} ^ {}", x.cu(), y.cu()),
+                            BOp::NotEq => format!("{} != {}", x.cu(), y.cu()),
+                        }
+                    ));
+                }
+                IROp::MAdd { z, a, b, c } => {
+                    source.push_str(&format!(
+                        "{indent}r{z} = {} * {} + {};\n",
+                        a.cu(),
+                        b.cu(),
+                        c.cu()
+                    ));
+                }
+                IROp::Loop { id, len } => {
+                    source.push_str(&format!(
+                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
+                    ));
+                    indent.push_str("  ");
+                }
+                IROp::EndLoop { .. } => {
+                    indent.pop();
+                    indent.pop();
+                    source.push_str(&format!("{indent}}}\n"));
+                }
+                IROp::Barrier { scope } => {
+                    source.push_str(&format!(
+                        "{};\n",
+                        match scope {
+                            Scope::Global => "__threadfence()",
+                            Scope::Local => "__syncthreads()",
+                            Scope::Register | Scope::RegTile => unreachable!(),
+                        }
+                    ));
+                }
+            }
+        }
+        source += "}\n";
+
+        let mut name = format!(
+            "k_{}_{}_{}__{}_{}_{}",
+            global_work_size[0],
+            global_work_size[1],
+            global_work_size[2],
+            local_work_size[0],
+            local_work_size[1],
+            local_work_size[2],
+        );
+        let mut pragma = String::new();
+        if source.contains("__half") {
+            pragma += "#include <cuda_fp16.h>\n";
+        }
+        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
+        name += "\0";
+        if debug_asm {
+            println!("{source}");
+        }
+
+        let cudartc_paths = [
+            "/lib/x86_64-linux-gnu/libnvrtc.so",
+            "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
+        ];
+        let cudartc = cudartc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
+        let Some(cudartc) = cudartc else {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "CUDA runtime not found.".into(),
+            });
+        };
+        let nvrtcCreateProgram: unsafe extern "C" fn(
+            *mut nvrtcProgram,
+            *const c_char,
+            *const c_char,
+            c_int,
+            *const *const c_char,
+            *const *const c_char,
+        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCreateProgram\0") }.unwrap();
+        let nvrtcCompileProgram: unsafe extern "C" fn(
+            nvrtcProgram,
+            c_int,
+            *const *const c_char,
+        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCompileProgram\0") }.unwrap();
+        let nvrtcGetPTXSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetPTXSize\0") }.unwrap();
+        let nvrtcGetPTX: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetPTX\0") }.unwrap();
+        let nvrtcGetProgramLogSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetProgramLogSize\0") }.unwrap();
+        let nvrtcGetProgramLog: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcGetProgramLog\0") }.unwrap();
+        let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
+            *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
+
+        //let include_folders = ["/usr/local/cuda-12.6/targets/x86_64-linux/include/\0".as_ptr().cast()];
+        //let include_files = ["cuda_fp16.h\0".as_ptr().cast()];
+        let mut program = ptr::null_mut();
+        unsafe {
+            nvrtcCreateProgram(
+                &mut program,
+                source.as_ptr().cast(),
+                name.as_ptr().cast(),
+                0,
+                ptr::null_mut(), //include_folders.as_ptr(),
+                ptr::null_mut(), //include_files.as_ptr(),
+            )
+        }
+        .check(ErrorStatus::KernelCompilation)?;
+        let df = format!(
+            "--gpu-architecture=compute_{}{}\0",
+            self.compute_capability[0], self.compute_capability[1]
+        );
+        let opts = [
+            df.as_ptr().cast(),
+            "-I/usr/local/cuda-12.6/targets/x86_64-linux/include\0".as_ptr().cast(),
+        ];
+        if let Err(e) =
+            unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }.check(ErrorStatus::KernelCompilation)
+        {
+            println!("CUDA compilation error {e:?}");
+            let mut program_log_size: usize = 0;
+            unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }
+                .check(ErrorStatus::KernelCompilation)?;
+            let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
+            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }
+                .check(ErrorStatus::KernelCompilation)?;
+            if let Ok(log) = String::from_utf8(program_log_vec) {
+                println!("NVRTC program log:\n{log}",);
+            } else {
+                println!("NVRTC program log is not valid utf8");
+            }
+        }
+        let mut ptx_size: usize = 0;
+        unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;
+        let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
+        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
+        unsafe { nvrtcDestroyProgram(&mut program) }.check(ErrorStatus::KernelCompilation)?;
+        Ok((global_work_size, local_work_size, name, ptx_vec))
     }
 }
 
@@ -286,6 +856,12 @@ struct CUstream_st {
     _unused: [u8; 0],
 }
 type CUstream = *mut CUstream_st;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct CUevent_st {
+    _unused: [u8; 0],
+}
+type CUevent = *mut CUevent_st;
 #[allow(unused)]
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -447,73 +1023,6 @@ enum CUdevice_attribute {
     CU_DEVICE_ATTRIBUTE_HOST_NUMA_ID = 134,
     CU_DEVICE_ATTRIBUTE_D3D12_CIG_SUPPORTED = 135,
     CU_DEVICE_ATTRIBUTE_MAX,
-}
-
-impl DType {
-    pub(super) fn ptx(&self) -> &str {
-        match self {
-            Self::BF16 => panic!("BF16 is not native to OpenCL, workaround is WIP."),
-            Self::F8 => "f8",
-            Self::F16 => "f16",
-            Self::F32 => "f32",
-            Self::F64 => "f64",
-            Self::U8 => "u8",
-            Self::I8 => "s8",
-            Self::I16 => "s16",
-            Self::I32 => "s32",
-            Self::I64 => "s64",
-            Self::Bool => "b8",
-            Self::U16 => "u16",
-            Self::U32 => "u32",
-            Self::U64 => "u64",
-        }
-    }
-}
-
-impl Constant {
-    fn ptx(&self) -> String {
-        match self {
-            &Self::F16(x) => format!("{:.12}", half::f16::from_bits(x)),
-            &Self::BF16(x) => format!("{:.12}", half::bf16::from_bits(x)),
-            Self::F8(x) => {
-                /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
-                let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
-                format!("0f{}", hex)*/
-                use float8::F8E4M3 as f8;
-                format!("{:.12}", f8::from_bits(*x))
-            }
-            &Self::F32(x) => {
-                /*let bytes = unsafe { t::<_, f32>(*x).to_ne_bytes() };
-                let hex = format!("{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3]);
-                format!("0f{}", hex)*/
-                format!("{:.12}", f32::from_bits(x))
-            }
-            &Self::F64(x) => {
-                /*let bytes = unsafe { t::<_, f64>(*x).to_ne_bytes() };
-                let hex = format!("{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
-                format!("0d{}", hex)*/
-                format!("{:.12}", f64::from_bits(x))
-            }
-            Self::U8(_) => todo!(),
-            Self::I8(_) => todo!(),
-            Self::I16(_) => todo!(),
-            Self::U16(x) => format!("{x}"),
-            Self::U32(x) => format!("{x}"),
-            Self::U64(x) => format!("{x}"),
-            Self::I32(x) => format!("{x}"),
-            Self::I64(x) => format!("{x}"),
-            Self::Bool(_) => todo!(),
-        }
-    }
-}
-
-impl Reg {
-    fn ptx(&self) -> String {
-        match self {
-            Self::Var(id) => format!("r{id}"),
-            Self::Const(value) => value.ptx(),
-        }
-    }
 }
 
 impl DType {
