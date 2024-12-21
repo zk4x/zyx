@@ -3,7 +3,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
 use crate::{
     dtype::Constant,
     ir::{IROp, Reg, Scope},
@@ -14,7 +14,7 @@ use crate::{
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ffi::{c_void, CString},
     ptr,
     sync::Arc,
@@ -42,7 +42,6 @@ pub(super) struct OpenCLMemoryPool {
     queue: *mut c_void,
     buffers: Slab<OpenCLBuffer>,
     // buffers which depend on events
-    events: BTreeMap<BTreeSet<Id>, *mut c_void>,
     // Functions
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
@@ -155,7 +154,8 @@ pub(super) struct OpenCLQueue {
 
 #[derive(Debug)]
 pub struct OpenCLEvent {
-    ptr: *mut c_void,
+    event: *mut c_void,
+    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
 }
 
 // This definitely isn't correct, but for now...
@@ -168,7 +168,7 @@ unsafe impl Send for OpenCLEvent {}
 
 pub(super) fn initialize_device(
     config: &OpenCLConfig,
-    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    memory_pools: &mut Vec<Pool>,
     devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -387,14 +387,13 @@ pub(super) fn initialize_device(
         let Ok(()) = status.check(ErrorStatus::Initialization) else {
             continue;
         };
-        memory_pools.push(Box::new(OpenCLMemoryPool {
+        let pool = OpenCLMemoryPool {
             library: library.clone(),
             total_bytes,
             free_bytes: total_bytes,
             context,
             queue: queue.unwrap(),
             buffers: Slab::new(),
-            events: BTreeMap::new(),
             clWaitForEvents,
             clReleaseCommandQueue,
             clReleaseContext,
@@ -402,10 +401,23 @@ pub(super) fn initialize_device(
             clEnqueueReadBuffer,
             clEnqueueWriteBuffer,
             clCreateBuffer,
-        }));
+        };
+        memory_pools.push(Pool { pool: Box::new(pool), events: BTreeMap::new(), buffer_map: BTreeMap::new() });
         memory_pool_id += 1;
     }
     Ok(())
+}
+
+impl OpenCLEvent {
+    pub fn sync(self) -> Result<(), BackendError> {
+        if self.event.is_null() {
+            return Ok(())
+        }
+        let events = [self.event];
+        unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }
+            .check(ErrorStatus::KernelSync)?;
+        Ok(())
+    }
 }
 
 impl MemoryPool for OpenCLMemoryPool {
@@ -419,7 +431,7 @@ impl MemoryPool for OpenCLMemoryPool {
         self.free_bytes
     }
 
-    fn allocate(&mut self, bytes: usize) -> Result<Id, BackendError> {
+    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -437,13 +449,21 @@ impl MemoryPool for OpenCLMemoryPool {
         status.check(ErrorStatus::MemoryAllocation)?;
         //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
-        Ok(self.buffers.push(OpenCLBuffer { ptr, bytes }))
+        Ok((self.buffers.push(OpenCLBuffer { ptr, bytes }), Event::OpenCL(OpenCLEvent { event: ptr::null_mut(), clWaitForEvents: self.clWaitForEvents })))
     }
 
-    fn deallocate(&mut self, buffer_id: Id) -> Result<(), BackendError> {
+    fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         //println!("Deallocate {:?}", buffer.ptr);
         if let Some(buffer) = self.buffers.remove(buffer_id) {
             debug_assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
+            let event_wait_list: Vec<*mut c_void> = event_wait_list.into_iter().map(|event| {
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                event
+            }).filter(|event| !event.is_null()).collect();
+            let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
+            if !event_wait_list.is_empty() {
+                unsafe { (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list_ptr) }.check(ErrorStatus::Deinitialization)?;
+            }
             unsafe { (self.clReleaseMemObject)(buffer.ptr) }
                 .check(ErrorStatus::Deinitialization)?;
             self.free_bytes += buffer.bytes;
@@ -451,9 +471,14 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }
 
-    fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError> {
+    fn host_to_pool(&mut self, src: &[u8], dst: Id, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         //println!("Storing {src:?} to {dst:?}");
         let dst = &self.buffers[dst];
+        let event_wait_list: Vec<*mut c_void> = event_wait_list.into_iter().map(|event| {
+            let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+            event
+        }).filter(|event| !event.is_null()).collect();
+        let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
         let mut event = ptr::null_mut();
         unsafe {
             (self.clEnqueueWriteBuffer)(
@@ -463,28 +488,25 @@ impl MemoryPool for OpenCLMemoryPool {
                 0,
                 src.len(),
                 src.as_ptr().cast(),
-                0,
-                ptr::null(),
+                event_wait_list.len() as u32,
+                event_wait_list_ptr,
                 &mut event,
             )
         }
-        .check(ErrorStatus::MemoryCopy)?;
+        .check(ErrorStatus::MemoryCopyH2P)?;
         // Immediattely synchronize because we do not know the lifetime of data
-        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }.check(ErrorStatus::MemoryCopy)
+        Ok(Event::OpenCL(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents }))
     }
 
-    fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError> {
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
-        if let Some((key, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
-            unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
-                .check(ErrorStatus::MemoryCopy)?;
-            self.events.remove(&key.clone());
-        }
         let src = &self.buffers[src];
-        assert!(
-            !src.ptr.is_null(),
-            "Trying to read null memory. Internal bug."
-        );
+        debug_assert!(!src.ptr.is_null(), "Trying to read null memory. Internal bug.");
+        let event_wait_list: Vec<*mut c_void> = event_wait_list.into_iter().map(|event| {
+            let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+            event
+        }).filter(|event| !event.is_null()).collect();
+        let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
         let mut event: *mut c_void = ptr::null_mut();
         unsafe {
             (self.clEnqueueReadBuffer)(
@@ -494,15 +516,13 @@ impl MemoryPool for OpenCLMemoryPool {
                 0,
                 dst.len(),
                 dst.as_mut_ptr().cast(),
-                0,
-                ptr::null_mut(),
+                event_wait_list.len() as u32,
+                event_wait_list_ptr,
                 &mut event,
             )
         }
-        .check(ErrorStatus::MemoryCopy)?;
-        unsafe { (self.clWaitForEvents)(1, [event].as_ptr().cast()) }
-            .check(ErrorStatus::MemoryCopy)?;
-        Ok(())
+        .check(ErrorStatus::MemoryCopyP2H)?;
+        Ok(Event::OpenCL(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents }))
     }
 
     /*fn pool_to_pool(
@@ -523,21 +543,6 @@ impl MemoryPool for OpenCLMemoryPool {
 
     fn get_buffer(&mut self, buffer: Id) -> BufferMut {
         BufferMut::OpenCL(&mut self.buffers[buffer])
-    }
-
-    fn bind_event(&mut self, event: super::Event, buffers: BTreeSet<Id>) {
-        let Event::OpenCL(OpenCLEvent { ptr }) = event else { unreachable!() };
-        self.events.insert(buffers, ptr);
-    }
-
-    fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event> {
-        let mut to_remove = Vec::new();
-        for key in self.events.keys() {
-            if !key.is_disjoint(buffers) {
-                to_remove.push(key.clone());
-            }
-        }
-        to_remove.into_iter().map(|key| Event::OpenCL(OpenCLEvent { ptr: self.events.remove(&key).unwrap() })).collect()
     }
 }
 
@@ -815,9 +820,8 @@ impl Device for OpenCLDevice {
         program_id: Id,
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
-        // If sync is empty, kernel will be immediatelly synchronized
-        sync: BTreeSet<Id>,
-    ) -> Result<(), BackendError> {
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             program.kernel,
@@ -847,11 +851,11 @@ impl Device for OpenCLDevice {
             i += 1;
         }
         let mut event: *mut c_void = ptr::null_mut();
-        let event_wait_list = memory_pool.event_wait_list(&sync);
         let event_wait_list: Vec<*mut c_void> = event_wait_list.into_iter().map(|event| {
-            let Event::OpenCL(OpenCLEvent { ptr }) = event else { unreachable!() };
-            ptr
-        }).collect();
+            let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+            event
+        }).filter(|event| !event.is_null()).collect();
+        let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
         unsafe {
             (self.clEnqueueNDRangeKernel)(
                 self.queues[queue_id].queue,
@@ -861,22 +865,14 @@ impl Device for OpenCLDevice {
                 program.global_work_size.as_ptr(),
                 program.local_work_size.as_ptr(),
                 event_wait_list.len() as u32,
-                event_wait_list.as_ptr(),
+                event_wait_list_ptr,
                 &mut event,
             )
         }
         .check(ErrorStatus::KernelLaunch)?;
-        if sync.is_empty() {
-            let events = [event];
-            unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }
-                .check(ErrorStatus::KernelSync)
-                .unwrap();
-        } else {
-            memory_pool.bind_event(Event::OpenCL(OpenCLEvent { ptr: event }), sync);
-            self.queues[queue_id].load += 1;
-        }
+        self.queues[queue_id].load += 1;
         //println!("Launch event: {event:?}");
-        Ok(())
+        Ok(Event::OpenCL(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents }))
     }
 
     fn release(&mut self, program_id: Id) -> Result<(), BackendError> {

@@ -9,7 +9,7 @@ use nanoserde::DeJson;
 
 use crate::{dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, slab::{Id, Slab}, DType};
 
-use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
 
 
 /// CUDA configuration
@@ -111,7 +111,7 @@ unsafe impl Send for CUDAEvent {}
 
 pub(super) fn initialize_device(
     config: &CUDAConfig,
-    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    memory_pools: &mut Vec<Pool>,
     devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -239,7 +239,7 @@ pub(super) fn initialize_device(
         let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization) else {
             continue;
         };
-        memory_pools.push(Box::new(CUDAMemoryPool {
+        let pool = Box::new(CUDAMemoryPool {
             lib: cuda.clone(),
             context,
             device,
@@ -254,7 +254,8 @@ pub(super) fn initialize_device(
             //cuMemcpyPeer,
             //cuCtxSetCurrent,
             //cuCtxDestroy,
-        }));
+        });
+        memory_pools.push(Pool { pool, events: BTreeMap::new(), buffer_map: BTreeMap::new() });
         let mut streams = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
@@ -344,6 +345,12 @@ pub(super) fn initialize_device(
     Ok(())
 }
 
+impl CUDAEvent {
+    pub fn sync(self) -> Result<(), BackendError> {
+        todo!()
+    }
+}
+
 impl MemoryPool for CUDAMemoryPool {
     fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
@@ -353,7 +360,7 @@ impl MemoryPool for CUDAMemoryPool {
         self.free_bytes
     }
 
-    fn allocate(&mut self, bytes: usize) -> Result<crate::slab::Id, BackendError> {
+    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -362,10 +369,11 @@ impl MemoryPool for CUDAMemoryPool {
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
-        Ok(self.buffers.push(CUDABuffer { ptr, bytes }))
+        let event = todo!();
+        Ok((self.buffers.push(CUDABuffer { ptr, bytes }), event))
     }
 
-    fn deallocate(&mut self, buffer_id: crate::slab::Id) -> Result<(), BackendError> {
+    fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         if let Some(buffer) = self.buffers.remove(buffer_id) {
             unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::Deinitialization)?;
             self.free_bytes += buffer.bytes;
@@ -373,13 +381,15 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(())
     }
 
-    fn host_to_pool(&mut self, src: &[u8], dst: crate::slab::Id) -> Result<(), BackendError> {
+    fn host_to_pool(&mut self, src: &[u8], dst: Id, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let dst = &self.buffers[dst];
         unsafe { (self.cuMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }
-            .check(ErrorStatus::MemoryCopy)
+            .check(ErrorStatus::MemoryCopyH2P)?;
+        let event = todo!();
+        Ok(event)
     }
 
-    fn pool_to_host(&mut self, src: crate::slab::Id, dst: &mut [u8]) -> Result<(), BackendError> {
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         /*if let Some((key, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
             unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
                 .check(ErrorStatus::MemoryCopy)?;
@@ -387,14 +397,16 @@ impl MemoryPool for CUDAMemoryPool {
         }*/
         let src = &self.buffers[src];
         unsafe { (self.cuMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }
-            .check(ErrorStatus::MemoryCopy)
+            .check(ErrorStatus::MemoryCopyP2H)?;
+        let event = todo!();
+        Ok(event)
     }
 
     fn get_buffer(&mut self, buffer: crate::slab::Id) -> super::BufferMut {
         BufferMut::CUDA(&mut self.buffers[buffer])
     }
 
-    fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event> {
+    /*fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event> {
         let mut to_remove = Vec::new();
         for key in self.events.keys() {
             if !key.is_disjoint(buffers) {
@@ -407,7 +419,7 @@ impl MemoryPool for CUDAMemoryPool {
     fn bind_event(&mut self, event: super::Event, buffers: std::collections::BTreeSet<crate::slab::Id>) {
         let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
         self.events.insert(buffers, event);
-    }
+    }*/
 }
 
 impl Device for CUDADevice {
@@ -464,8 +476,8 @@ impl Device for CUDADevice {
         memory_pool: &mut dyn MemoryPool,
         args: &[crate::slab::Id],
         // If sync is empty, kernel will be immediatelly synchronized
-        sync: std::collections::BTreeSet<crate::slab::Id>,
-    ) -> Result<(), BackendError> {
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
         let stream_id = self.next_stream()?;
         let program = &self.programs[program_id];
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
@@ -477,7 +489,6 @@ impl Device for CUDADevice {
             kernel_params.push(ptr.cast());
         }
 
-        let event_wait_list = memory_pool.event_wait_list(&sync);
         let event_wait_list: Vec<CUevent> = event_wait_list.into_iter().map(|event| {
             let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
             event
@@ -502,13 +513,8 @@ impl Device for CUDADevice {
         }
         .check(ErrorStatus::KernelLaunch)?;
         unsafe { (self.cuEventRecord)(event, self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
-        if sync.is_empty() {
-            unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelLaunch)?;
-        } else {
-            memory_pool.bind_event(Event::CUDA(CUDAEvent { event }), sync);
-            self.streams[stream_id].load += 1;
-        }
-        Ok(())
+        self.streams[stream_id].load += 1;
+        Ok(Event::CUDA(CUDAEvent { event }))
     }
 
     fn release(&mut self, program_id: crate::slab::Id) -> Result<(), BackendError> {

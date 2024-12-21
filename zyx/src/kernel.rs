@@ -10,17 +10,7 @@ use std::{
 };
 
 use crate::{
-    backend::{BufferId, Device, MemoryPool},
-    dtype::Constant,
-    graph::Graph,
-    ir::Scope,
-    node::{BOp, ROp, UOp},
-    optimizer::Optimizer,
-    shape::{Axis, Dimension},
-    slab::Id,
-    tensor::TensorId,
-    view::View,
-    DType, DebugMask, ZyxError,
+    backend::Device, dtype::Constant, graph::Graph, ir::Scope, node::{BOp, ROp, UOp}, optimizer::Optimizer, runtime::Pool, shape::{Axis, Dimension}, slab::Id, tensor::TensorId, view::View, DType, DebugMask, ZyxError
 };
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -555,8 +545,7 @@ impl Kernel {
         nid: TensorId,
         graph: &Graph,
         devices: &mut [Box<dyn Device>],
-        memory_pools: &mut [Box<dyn MemoryPool>],
-        tensor_buffer_map: &mut BTreeMap<TensorId, BufferId>,
+        memory_pools: &mut [Pool],
         optimizer: &mut Optimizer,
         search_iters: usize,
         debug: DebugMask,
@@ -590,38 +579,40 @@ impl Kernel {
             // Pick a device to run program
             // Find in which memory pool are most of input tensors stored
             let memory_pool_id = 0;
-            let memory_pool = memory_pools[memory_pool_id as usize].as_mut();
+            let pool = &mut memory_pools[memory_pool_id];
 
             // Move all other tensors to that memory pool
             // and finish queues with this kernel's inputs
 
             // Get device which is associated with that memory pool
             let device = devices[0].as_mut();
-            let mut sync = BTreeSet::new();
 
             // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
+            let mut event_wait_list = Vec::new();
             let args: Vec<Id> = self
                 .tensors
                 .values()
                 .map(|&tensor_id| {
-                    if let Some(BufferId { buffer_id, .. }) = tensor_buffer_map.get(&tensor_id) {
+                    if let Some(buffer_id) = pool.buffer_map.get(&tensor_id) {
+                        if let Some(key) = pool.events.keys().find(|key| key.contains(buffer_id)) {
+                            let event = pool.events.remove(&key.clone()).unwrap();
+                            event_wait_list.push(event);
+                        }
                         *buffer_id
                     } else {
                         // Allocate bytes for outputs
-                        let buffer_id = memory_pool
-                            .allocate(
-                                graph.shape(tensor_id).iter().product::<usize>()
-                                    * graph.dtype(tensor_id).byte_size(),
-                            )
-                            .unwrap();
-                        tensor_buffer_map.insert(tensor_id, BufferId { memory_pool_id, buffer_id });
-                        sync.insert(buffer_id);
+                        let (buffer_id, event) = pool.pool.allocate(
+                            graph.shape(tensor_id).iter().product::<usize>()
+                                * graph.dtype(tensor_id).byte_size(),
+                        ).unwrap();
+                        pool.buffer_map.insert(tensor_id, buffer_id);
+                        event_wait_list.push(event);
                         buffer_id
                     }
                 })
                 .collect();
 
-            optimizer.launch(self, device, memory_pool, &args, sync, search_iters, debug)?;
+            optimizer.launch(self, device, pool.pool.as_mut(), &args, event_wait_list, search_iters, debug)?;
 
             // add load kernels for all outputs of this kernel
             return Ok(Some(

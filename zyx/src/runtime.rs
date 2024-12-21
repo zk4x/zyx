@@ -1,5 +1,5 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{BackendError, BufferId, Device, DeviceConfig, MemoryPool};
+use crate::backend::{BackendError, Device, DeviceConfig, Event, MemoryPool};
 #[cfg(feature = "vulkan")]
 use crate::backend::{VulkanConfig, VulkanError};
 #[cfg(feature = "wgsl")]
@@ -11,6 +11,7 @@ use crate::optimizer::Optimizer;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Dimension};
+use crate::slab::Id;
 use crate::tensor::TensorId;
 use crate::DebugMask;
 use std::path::PathBuf;
@@ -27,11 +28,8 @@ use nanoserde::DeJson;
 pub struct Runtime {
     // Current graph of tensor operations as nodes
     graph: Graph,
-    // TODO perhaps remove tensor_buffer_map and put it inside each device
     // Physical memory pools
-    memory_pools: Vec<Box<dyn MemoryPool>>,
-    // Where are tensors stored
-    tensor_buffer_map: BTreeMap<TensorId, BufferId>,
+    pools: Vec<Pool>,
     // Physical compute devices, each has their own program cache
     devices: Vec<Box<dyn Device>>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
@@ -48,14 +46,28 @@ pub struct Runtime {
     pub(super) debug: DebugMask,
 }
 
+pub(super) struct Pool {
+    pub pool: Box<dyn MemoryPool>,
+    pub events: BTreeMap<BTreeSet<Id>, Event>,
+    pub buffer_map: BTreeMap<TensorId, Id>,
+}
+
+fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> (&mut Pool, Id) {
+    for pool in pools {
+        if let Some(&id) = pool.buffer_map.get(&tensor_id) {
+            return (pool, id);
+        }
+    }
+    unreachable!()
+}
+
 impl Runtime {
     #[must_use]
     pub(super) const fn new() -> Self {
         Runtime {
-            tensor_buffer_map: BTreeMap::new(),
             graph: Graph::new(),
             devices: Vec::new(),
-            memory_pools: Vec::new(),
+            pools: Vec::new(),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
             optimizer: Optimizer::new(),
@@ -74,7 +86,7 @@ impl Runtime {
         self.deallocate_tensors(&to_remove)?;
         // TODO Check the number of tensors. If there are no tensors remaining, deinitialize the runtime,
         // since rust does not implement drop for us.
-        if self.graph.is_empty() && self.tensor_buffer_map.is_empty() {
+        if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
             self.deinitialize()?;
         }
         Ok(())
@@ -170,11 +182,11 @@ impl Runtime {
         }
         crate::backend::initialize_backends(
             &device_config,
-            &mut self.memory_pools,
+            &mut self.pools,
             &mut self.devices,
             self.debug.dev(),
         )?;
-        self.memory_pools.shrink_to_fit();
+        self.pools.shrink_to_fit();
         self.devices.shrink_to_fit();
         Ok(())
     }
@@ -183,8 +195,6 @@ impl Runtime {
     /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
     fn deinitialize(&mut self) -> Result<(), ZyxError> {
         //println!("Deinitialize");
-        // drop tensor buffer_map
-        self.tensor_buffer_map = BTreeMap::new();
         // drop graph
         self.graph = Graph::new();
         // drop devices
@@ -192,8 +202,9 @@ impl Runtime {
             dev.deinitialize()?;
         }
         // drop memory pools
-        while let Some(mut mp) = self.memory_pools.pop() {
-            mp.deinitialize()?;
+        while let Some(mut mp) = self.pools.pop() {
+            //for (_, event) in mp.events { event.sync()?; }
+            mp.pool.deinitialize()?;
         }
         // Timer
         for (name, time) in crate::ET.lock().iter() {
@@ -235,11 +246,11 @@ impl Runtime {
         // order and we use first one that does not fail.
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
         let mem_pools: Vec<u32> = self
-            .memory_pools
+            .pools
             .iter()
             .enumerate()
             .filter_map(|(id, mp)| {
-                if mp.free_bytes() > bytes {
+                if mp.pool.free_bytes() > bytes {
                     Some(u32::try_from(id).unwrap())
                 } else {
                     None
@@ -258,13 +269,15 @@ impl Runtime {
                 memory_pool_id = dev.memory_pool_id();
             }
         }
-        let buffer_id = self.memory_pools[memory_pool_id as usize].allocate(bytes)?;
+        let mpid = memory_pool_id as usize;
+        let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
         let byte_slice: &[u8] = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * T::byte_size())
         };
-        self.memory_pools[memory_pool_id as usize].host_to_pool(byte_slice, buffer_id)?;
+        let event = self.pools[mpid].pool.host_to_pool(byte_slice, buffer_id, vec![event])?;
         let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
-        self.tensor_buffer_map.insert(id, BufferId { memory_pool_id, buffer_id });
+        self.pools[mpid].buffer_map.insert(id, buffer_id);
+        event.sync()?;
         Ok(id)
     }
 
@@ -341,7 +354,9 @@ impl Runtime {
         self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
     }
 
-    /// Bitcast self to other type, currently immediatelly realizes the tensor
+    /// Bitcast self to other type, currently immediatelly realizes the tensor.
+    /// The caller is responsible for ensuring that destination dtype is representable
+    /// with bytes of source data.
     pub(super) unsafe fn bitcast(
         &mut self,
         x: TensorId,
@@ -364,11 +379,10 @@ impl Runtime {
             *d /= cd;
         }
         let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
-        if let Some((_, bid)) = self.tensor_buffer_map.iter().find(|(k, _)| *k == &x) {
+        if let Some(pool) = self.pools.iter_mut().find(|pool| pool.buffer_map.contains_key(&x)) {
             //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
-            self.tensor_buffer_map.insert(id, *bid);
-        } else {
-            panic!("Tensor sharded across multiple devices can't be currently bitcasted. Internal bug.");
+            let x = *pool.buffer_map.get(&x).unwrap();
+            pool.buffer_map.insert(id, x);
         }
         //println!("TBM:\n{:?}", self.tensor_buffer_map);
         Ok(id)
@@ -438,18 +452,10 @@ impl Runtime {
         }
         // Reshape on leaf is NOOP, tensor_buffer_map traces ownership
         if self.graph[x] == Node::Leaf {
-            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|(id, bid)| {
-                // If it is the correct id and isn't sharded
-                if *id == x {
-                    Some(bid)
-                } else {
-                    None
-                }
-            }) {
-                let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
-                self.tensor_buffer_map.insert(id, buffer_id);
-                return id;
-            }
+            let (pool, bid) = get_mut_buffer(&mut self.pools, x);
+            let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+            pool.buffer_map.insert(id, bid);
+            return id;
         }
         self.graph.push_wshape(Node::Reshape { x }, shape)
     }
@@ -466,18 +472,11 @@ impl Runtime {
         if self.graph[x] == Node::Leaf
             && sh.iter().product::<usize>() == shape.iter().product::<usize>()
         {
-            if let Some(&buffer_id) = self.tensor_buffer_map.iter().find_map(|(id, bid)| {
-                // If it is the correct id and isn't sharded
-                if *id == x {
-                    Some(bid)
-                } else {
-                    None
-                }
-            }) {
-                let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
-                self.tensor_buffer_map.insert(id, buffer_id);
-                return id;
-            }
+            let (pool, bid) = get_mut_buffer(&mut self.pools, x);
+            let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+            pool.buffer_map.insert(id, bid);
+            return id;
+
         }
         if shape.len() > sh.len() {
             let sh: Vec<usize> = std::iter::repeat(1)
@@ -636,26 +635,23 @@ impl Runtime {
         }
         assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
-        if self.tensor_buffer_map.iter().all(|(id, _)| *id != x) {
+        if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             self.realize(BTreeSet::from([x]))?;
         }
-        // If at least part of tensor exists in some device, there must be
-        // the rest of the tensor in other devices
-        for (tensor_id, buffer_id) in &self.tensor_buffer_map {
-            if *tensor_id == x {
-                let byte_slice: &mut [u8] = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        data.as_ptr() as *mut u8,
-                        data.len() * T::byte_size(),
-                    )
-                };
-                self.memory_pools[buffer_id.memory_pool_id as usize]
-                    .pool_to_host(buffer_id.buffer_id, byte_slice)?;
-                break;
+
+        let byte_slice: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(data.as_ptr() as *mut u8, data.len() * T::byte_size())
+        };
+
+        let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x);
+        for buffers in pool.events.keys() {
+            if buffers.contains(&x) {
+                let event = pool.events.remove(&buffers.clone()).unwrap();
+                pool.pool.pool_to_host(buffer_id, byte_slice, vec![event])?.sync()?;
+                return Ok(());
             }
         }
-        //println!("{data:?}, {}", data.len());
-        // for each device where tensor is stored load it
+        pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?.sync()?;
         Ok(())
     }
 
@@ -668,7 +664,7 @@ impl Runtime {
         if to_eval.is_empty() {
             return Ok(());
         }
-        if to_eval.iter().all(|id| self.tensor_buffer_map.contains_key(id)) {
+        if to_eval.iter().all(|id| self.pools.iter().any(|pool| pool.buffer_map.contains_key(id))) {
             return Ok(());
         }
         if self.devices.is_empty() {
@@ -763,8 +759,7 @@ impl Runtime {
             &order,
             &to_eval,
             &mut self.devices,
-            &mut self.memory_pools,
-            &mut self.tensor_buffer_map,
+            &mut self.pools,
             &mut self.optimizer,
             self.search_iterations,
             self.debug,
@@ -788,19 +783,18 @@ impl Runtime {
         // This is basically tracing GC, seems faster than reference counting
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
-        let mut buffers = BTreeSet::new();
-        for (t, b) in self.tensor_buffer_map.iter() {
-            if to_remove.contains(t) {
-                buffers.insert(*b);
-            }
-        }
-        // Remove unnedded tensors from the map
-        self.tensor_buffer_map.retain(|t, _| !to_remove.contains(t));
-        // Check if buffers are needed elsewhere in the map,
-        // otherwise deallocate them
-        for buffer in buffers {
-            if self.tensor_buffer_map.values().all(|b| *b != buffer) {
-                self.memory_pools[buffer.memory_pool_id as usize].deallocate(buffer.buffer_id)?;
+        for pool in &mut self.pools {
+            for tensor_id in to_remove {
+                if let Some(buffer_id) = pool.buffer_map.remove(tensor_id) {
+                    if !pool.buffer_map.values().any(|bid| *bid == buffer_id) {
+                        if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
+                            let event = pool.events.remove(&key.clone()).unwrap();
+                            pool.pool.deallocate(buffer_id, vec![event])?;
+                        } else {
+                            pool.pool.deallocate(buffer_id, Vec::new())?;
+                        }
+                    }
+                }
             }
         }
         Ok(())

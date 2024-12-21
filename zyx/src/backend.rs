@@ -1,13 +1,13 @@
 //! This file creates backend agnostic API to backends
 //! That is it contains enums that dispatch function calls to appropriate backends.
-//! Backend automatically keeps track of hardware queues and events
-//! and synchronizes events as needed at latest possible moment
-//! for maximum concurrency.
+//! Backend automatically keeps track of hardware queues.
+//! Interfaces use events independent from underlying implementation.
+//! Events are used to achieve maximum asynchronous execution.
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
-#![allow(private_interfaces)]
+//#![allow(private_interfaces)]
 
-use std::{collections::BTreeSet, fmt::Display};
+use std::fmt::Display;
 
 use nanoserde::DeJson;
 #[cfg(feature = "wgsl")]
@@ -21,7 +21,7 @@ mod vulkan;
 #[cfg(feature = "wgsl")]
 mod wgsl;*/
 
-use crate::{ir::IRKernel, slab::Id, ZyxError};
+use crate::{ir::IRKernel, runtime::Pool, slab::Id, ZyxError};
 
 #[derive(Debug)]
 pub enum ErrorStatus {
@@ -37,8 +37,10 @@ pub enum ErrorStatus {
     DeviceQuery,
     /// Failed to allocate memory
     MemoryAllocation,
-    /// Failed to copy memory
-    MemoryCopy,
+    /// Failed to copy memory to pool
+    MemoryCopyH2P,
+    /// Failed to copy memory to host
+    MemoryCopyP2H,
     /// Kernel argument was not correct
     IncorrectKernelArg,
     /// Failed to compile kernel
@@ -73,12 +75,6 @@ pub struct DeviceConfig {
     pub wgsl: wgsl::WGSLConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BufferId {
-    pub memory_pool_id: u32,
-    pub buffer_id: Id,
-}
-
 /// Hardware information needed for applying optimizations
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,13 +99,11 @@ pub struct DeviceInfo {
 pub trait MemoryPool: Send {
     fn deinitialize(&mut self) -> Result<(), BackendError>;
     fn free_bytes(&self) -> usize;
-    fn allocate(&mut self, bytes: usize) -> Result<Id, BackendError>;
-    fn deallocate(&mut self, buffer_id: Id) -> Result<(), BackendError>;
-    fn host_to_pool(&mut self, src: &[u8], dst: Id) -> Result<(), BackendError>;
-    fn pool_to_host(&mut self, src: Id, dst: &mut [u8]) -> Result<(), BackendError>;
     fn get_buffer(&mut self, buffer: Id) -> BufferMut;
-    fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event>;
-    fn bind_event(&mut self, event: Event, buffers: BTreeSet<Id>);
+    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError>;
+    fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) -> Result<(), BackendError>;
+    fn host_to_pool(&mut self, src: &[u8], dst: Id, event_wait_list: Vec<Event>) -> Result<Event, BackendError>;
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<Event, BackendError>;
 }
 
 pub trait Device: Send {
@@ -118,31 +112,41 @@ pub trait Device: Send {
     fn memory_pool_id(&self) -> u32;
     fn compute(&self) -> u128;
     fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError>;
-    // Returns if this is the first time running the kernel
+    fn release(&mut self, program_id: Id) -> Result<(), BackendError>;
     fn launch(
         &mut self,
         program_id: Id,
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
-        // If sync is empty, kernel will be immediatelly synchronized
-        sync: BTreeSet<Id>,
-    ) -> Result<(), BackendError>;
-    fn release(&mut self, program_id: Id) -> Result<(), BackendError>;
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError>;
 }
 
-enum BufferMut<'a> {
+#[allow(private_interfaces)]
+pub enum BufferMut<'a> {
     OpenCL(&'a mut opencl::OpenCLBuffer),
     CUDA(&'a mut cuda::CUDABuffer),
 }
 
-enum Event {
+#[derive(Debug)]
+pub enum Event {
     OpenCL(opencl::OpenCLEvent),
     CUDA(cuda::CUDAEvent),
 }
 
+impl Event {
+    // Wait for execution of tasks associated with this event
+    pub fn sync(self) -> Result<(), BackendError> {
+        match self {
+            Event::OpenCL(open_clevent) => open_clevent.sync(),
+            Event::CUDA(cudaevent) => cudaevent.sync(),
+        }
+    }
+}
+
 pub fn initialize_backends(
     device_config: &DeviceConfig,
-    memory_pools: &mut Vec<Box<dyn MemoryPool>>,
+    memory_pools: &mut Vec<Pool>,
     devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {

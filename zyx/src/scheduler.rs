@@ -1,14 +1,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::{BufferId, Device, MemoryPool},
-    graph::Graph,
-    kernel::{Kernel, MOp, Op, TId},
-    node::Node,
-    optimizer::Optimizer,
-    slab::{Id, Slab},
-    tensor::TensorId,
-    DebugMask, ZyxError,
+    backend::Device, graph::Graph, kernel::{Kernel, MOp, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, DebugMask, ZyxError
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,8 +32,7 @@ pub(super) fn realize_graph(
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
     devices: &mut [Box<dyn Device>],
-    mps: &mut [Box<dyn MemoryPool>],
-    tbm: &mut BTreeMap<TensorId, BufferId>,
+    mps: &mut [Pool],
     optimizer: &mut Optimizer,
     searches: usize,
     debug: DebugMask,
@@ -102,7 +94,7 @@ pub(super) fn realize_graph(
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
                     if let Some(tensors) = kernels[kid]
-                        .store(x, graph, devices, mps, tbm, optimizer, searches, debug)?
+                        .store(x, graph, devices, mps, optimizer, searches, debug)?
                     {
                         kernels.remove(kid).unwrap();
                         for tid in tensors {
@@ -142,7 +134,7 @@ pub(super) fn realize_graph(
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
                     if let Some(tensors) = kernels[kid]
-                        .store(x, graph, devices, mps, tbm, optimizer, searches, debug)?
+                        .store(x, graph, devices, mps, optimizer, searches, debug)?
                     {
                         kernels.remove(kid).unwrap();
                         for tid in tensors {
@@ -182,7 +174,7 @@ pub(super) fn realize_graph(
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
                     if let Some(tensors) = kernels[kid]
-                        .store(x, graph, devices, mps, tbm, optimizer, searches, debug)?
+                        .store(x, graph, devices, mps, optimizer, searches, debug)?
                     {
                         kernels.remove(kid).unwrap();
                         for tid in tensors {
@@ -351,7 +343,7 @@ pub(super) fn realize_graph(
 
         if to_eval.contains(&nid) {
             if let Some(tensors) =
-                kernels[kid].store(nid, graph, devices, mps, tbm, optimizer, searches, debug)?
+                kernels[kid].store(nid, graph, devices, mps, optimizer, searches, debug)?
             {
                 kernels.remove(kid).unwrap();
                 for tid in tensors {
