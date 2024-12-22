@@ -5,7 +5,7 @@
 #![allow(clippy::fallible_impl_from)]
 
 use crate::dtype::DType;
-use crate::runtime::{apply_padding, ZyxError};
+use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{into_axes, into_axis, IntoShape};
 use core::cmp::Ordering;
@@ -249,23 +249,23 @@ impl Tensor {
             match dtype {
                 DType::BF16 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::BF16))
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::BF16))
                 }
                 DType::F8 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::F8))
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::F8))
                 }
                 DType::F16 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? }.cast(DType::F16))
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::F16))
                 }
                 DType::F32 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::F64 => {
                     let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::U8
                 | DType::U16
@@ -282,35 +282,35 @@ impl Tensor {
             match dtype {
                 DType::U8 => {
                     let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::U16 => {
                     let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::U32 => {
                     let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::U64 => {
                     let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::I8 => {
                     let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::I16 => {
                     let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::I32 => {
                     let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::I64 => {
                     let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, &data)? })
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::Bool => Err(ZyxError::DTypeError(
                     "Uniform is not supported for bool".into(),
@@ -3549,39 +3549,109 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        Tensor { id: RT.lock().variable(vec![1], &[value]).unwrap() }
+        Tensor { id: RT.lock().variable(vec![1], Box::new(value)).unwrap() }
+    }
+}
+
+impl<T: Scalar> TempData for T {
+    fn bytes(&self) -> usize {
+        T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const T = self;
+        let ptr: *const u8 = ptr.cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
-        Tensor { id: RT.lock().variable(vec![data.len()], &data).unwrap() }
+        Tensor { id: RT.lock().variable(vec![data.len()], Box::new(data)).unwrap() }
     }
 }
 
-impl<T: Scalar> From<&Vec<T>> for Tensor {
-    fn from(data: &Vec<T>) -> Self {
-        Tensor { id: RT.lock().variable(vec![data.len()], data).unwrap() }
+impl<T: Scalar> TempData for Vec<T> {
+    fn bytes(&self) -> usize {
+        self.len() * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 
-impl<T: Scalar> From<&[T]> for Tensor {
-    fn from(data: &[T]) -> Self {
+impl<T: Scalar> From<&'static [T]> for Tensor {
+    fn from(data: &'static [T]) -> Self {
         let n = data.len();
-        Tensor { id: RT.lock().variable(vec![n], data).unwrap() }
+        Tensor { id: RT.lock().variable(vec![n], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar> TempData for &'static [T] {
+    fn bytes(&self) -> usize {
+        self.len() * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        Tensor { id: RT.lock().variable(vec![D0], &data).unwrap() }
+        Tensor { id: RT.lock().variable(vec![D0], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar, const D0: usize> TempData for [T; D0] {
+    fn bytes(&self) -> usize {
+        D0 * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        Tensor { id: RT.lock().variable(vec![D0, D1], data).unwrap() }
+        Tensor { id: RT.lock().variable(vec![D0, D1], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
+    fn bytes(&self) -> usize {
+        D0 * D1 * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 
@@ -3590,7 +3660,22 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        Tensor { id: RT.lock().variable(vec![D0, D1, D2], data).unwrap() }
+        Tensor { id: RT.lock().variable(vec![D0, D1, D2], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for [[[T; D2]; D1]; D0] {
+    fn bytes(&self) -> usize {
+        D0 * D1 * D2 * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 
@@ -3600,7 +3685,22 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        Tensor { id: RT.lock().variable(vec![D0, D1, D2, D3], data).unwrap() }
+        Tensor { id: RT.lock().variable(vec![D0, D1, D2, D3], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData for [[[[T; D3]; D2]; D1]; D0] {
+    fn bytes(&self) -> usize {
+        D0 * D1 * D2 * D3 * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
     }
 }
 

@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 
-use std::{collections::{BTreeMap, BTreeSet}, ffi::{c_char, c_int, c_uint, c_void}, ptr, sync::Arc};
+use std::{collections::BTreeMap, ffi::{c_char, c_int, c_uint, c_void}, ptr, sync::Arc};
 
 use float8::F8E4M3;
 use libloading::Library;
@@ -27,7 +27,6 @@ pub(super) struct CUDAMemoryPool {
     device: CUdevice,
     free_bytes: usize,
     buffers: Slab<CUDABuffer>,
-    events: BTreeMap<BTreeSet<Id>, CUevent>,
     stream: CUstream,
     cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
     cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus,
@@ -245,7 +244,6 @@ pub(super) fn initialize_device(
             device,
             free_bytes,
             buffers: Slab::new(),
-            events: BTreeMap::new(),
             stream,
             cuMemAllocAsync,
             cuMemcpyHtoDAsync,
@@ -389,7 +387,7 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(event)
     }
 
-    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         /*if let Some((key, event)) = self.events.iter().find(|(key, _)| key.contains(&src)) {
             unsafe { (self.clWaitForEvents)(1, std::slice::from_ref(&event).as_ptr().cast()) }
                 .check(ErrorStatus::MemoryCopy)?;
@@ -477,6 +475,7 @@ impl Device for CUDADevice {
         args: &[crate::slab::Id],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
+        sync: bool,
     ) -> Result<Event, BackendError> {
         let stream_id = self.next_stream()?;
         let program = &self.programs[program_id];
@@ -520,6 +519,19 @@ impl Device for CUDADevice {
     fn release(&mut self, program_id: crate::slab::Id) -> Result<(), BackendError> {
         if let Some(program) = self.programs.remove(program_id) {
             unsafe { (self.cuModuleUnload)(program.module) }.check(ErrorStatus::Deinitialization)?;
+        }
+        Ok(())
+    }
+    
+    fn sync(&mut self, event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+        let event_wait_list: Vec<CUevent> = event_wait_list.into_iter().map(|event| {
+            let Event::CUDA(CUDAEvent { event, .. }) = event else { unreachable!() };
+            event
+        }).filter(|event| !event.is_null()).collect();
+        let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
+        if !event_wait_list.is_empty() {
+            //unsafe { (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list_ptr) }.check(ErrorStatus::KernelSync)?;
+            todo!()
         }
         Ok(())
     }

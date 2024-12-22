@@ -44,6 +44,14 @@ pub struct Runtime {
     pub(super) search_iterations: usize,
     /// Debug mask
     pub(super) debug: DebugMask,
+    /// Temporary storage
+    temp_data: Vec<Box<dyn TempData>>,
+}
+
+pub trait TempData: Send {
+    fn read(&self) -> &[u8];
+    fn bytes(&self) -> usize;
+    fn dtype(&self) -> DType;
 }
 
 pub(super) struct Pool {
@@ -74,6 +82,7 @@ impl Runtime {
             training: false,
             search_iterations: 5,
             debug: DebugMask(0),
+            temp_data: Vec::new(),
         }
     }
 
@@ -234,14 +243,15 @@ impl Runtime {
         self.graph.dtype(x)
     }
 
-    pub(super) fn variable<T: Scalar>(
+    pub(super) fn variable(
         &mut self,
         shape: Vec<Dimension>,
-        data: &[T],
+        data: Box<dyn TempData>,
     ) -> Result<TensorId, ZyxError> {
-        assert_eq!(shape.iter().product::<usize>(), data.len());
+        let bytes = data.bytes();
+        let dtype = data.dtype();
+        debug_assert_eq!(shape.iter().product::<usize>() * dtype.byte_size(), bytes);
         self.initialize_devices()?;
-        let bytes = data.len() * T::byte_size();
         // TODO rewrite this such that we try to allocate memory pools in fastest device
         // order and we use first one that does not fail.
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
@@ -271,13 +281,11 @@ impl Runtime {
         }
         let mpid = memory_pool_id as usize;
         let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
-        let byte_slice: &[u8] = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * T::byte_size())
-        };
-        let event = self.pools[mpid].pool.host_to_pool(byte_slice, buffer_id, vec![event])?;
-        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, T::dtype());
+        self.temp_data.push(data);
+        let event = self.pools[mpid].pool.host_to_pool(self.temp_data.last().unwrap().read(), buffer_id, vec![event])?;
+        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, dtype);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
-        event.sync()?;
+        self.pools[mpid].events.insert(BTreeSet::from([buffer_id]), event);
         Ok(id)
     }
 
@@ -647,11 +655,11 @@ impl Runtime {
         for buffers in pool.events.keys() {
             if buffers.contains(&x) {
                 let event = pool.events.remove(&buffers.clone()).unwrap();
-                pool.pool.pool_to_host(buffer_id, byte_slice, vec![event])?.sync()?;
+                pool.pool.pool_to_host(buffer_id, byte_slice, vec![event])?;
                 return Ok(());
             }
         }
-        pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?.sync()?;
+        pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?;
         Ok(())
     }
 

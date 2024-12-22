@@ -1,11 +1,5 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool},
-    ir::{IRKernel, Scope},
-    kernel::{Kernel, Op},
-    shape::Dimension,
-    slab::Id,
-    view::View,
-    DebugMask,
+    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::{IRKernel, Scope}, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, view::View, DebugMask
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -60,8 +54,9 @@ impl Optimizer {
         &mut self,
         kernel: &Kernel,
         device: &mut dyn Device,
-        memory_pool: &mut dyn MemoryPool,
+        pool: &mut Pool,
         args: &[Id],
+        outputs: BTreeSet<Id>,
         event_wait_list: Vec<Event>,
         search_iters: usize,
         debug: DebugMask,
@@ -75,7 +70,8 @@ impl Optimizer {
             // if kernel was already optimized
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 // if it was compiled for the given device
-                device.launch(program_id, memory_pool, args, event_wait_list)?;
+                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                pool.events.insert(outputs, event);
             } else if let Some(progress) = self.progress.get_mut(&(kernel_id, dev_info_id)) {
                 // if it was optimized for similar device, but not compiled for the given device,
                 // or if it was in disk cache.
@@ -85,17 +81,19 @@ impl Optimizer {
                         let optimized_kernel = kernel.optimize(optimization);
                         let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
                         let program_id = device.compile(&ir_kernel, debug.asm())?;
-                        device.launch(program_id, memory_pool, args, event_wait_list)?;
+                        let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                        pool.events.insert(outputs, event);
                     }
                     OptimizerProgress::Optimizing { best, done } => {
                         // Continue optimizing
                         let (optimization, finished) = optimize_kernel(
                             kernel,
                             device,
-                            memory_pool,
+                            pool.pool.as_mut(),
                             args,
                             search_iters,
                             done,
+                            event_wait_list,
                             debug,
                         );
                         if finished {
@@ -123,10 +121,11 @@ impl Optimizer {
                 let (optimization, finished) = optimize_kernel(
                     kernel,
                     device,
-                    memory_pool,
+                    pool.pool.as_mut(),
                     args,
                     search_iters,
                     &mut done,
+                    event_wait_list,
                     debug,
                 );
                 if finished {
@@ -155,12 +154,15 @@ fn optimize_kernel(
     args: &[Id],
     search_iters: usize,
     done: &mut BTreeMap<Optimization, Duration>,
+    event_wait_list: Vec<Event>,
     debug: DebugMask,
 ) -> (Optimization, bool) {
     //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
     // list untried optimizations
     let mut opts = kernel.available_optimizations(device.info(), done);
     assert!(!opts.is_empty());
+
+    device.sync(event_wait_list);
 
     let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
     /*let flop_mem_rw = if debug_perf {
@@ -182,14 +184,10 @@ fn optimize_kernel(
             };
             // Launch kernel and measure it's performance
             let begin = std::time::Instant::now();
-            let Ok(event) = device.launch(program_id, memory_pool, &args, Vec::new()) else {
+            let Ok(_) = device.launch(program_id, memory_pool, &args, Vec::new(), true) else {
                 done.insert(optimization, Duration::MAX);
                 continue;
             };
-            if event.sync().is_err() {
-                done.insert(optimization, Duration::MAX);
-                continue;
-            }
             let exec_time = begin.elapsed();
             let _ = device.release(program_id);
             done.insert(optimization, exec_time);

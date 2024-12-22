@@ -103,7 +103,8 @@ pub trait MemoryPool: Send {
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError>;
     fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) -> Result<(), BackendError>;
     fn host_to_pool(&mut self, src: &[u8], dst: Id, event_wait_list: Vec<Event>) -> Result<Event, BackendError>;
-    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<Event, BackendError>;
+    /// Pool to host is blocking operation
+    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError>;
 }
 
 pub trait Device: Send {
@@ -119,7 +120,10 @@ pub trait Device: Send {
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
+        // Immediatelly synchronize?
+        sync: bool,
     ) -> Result<Event, BackendError>;
+    fn sync(&mut self, event_wait_list: Vec<Event>) -> Result<(), BackendError>;
 }
 
 #[allow(private_interfaces)]
@@ -134,7 +138,7 @@ pub enum Event {
     CUDA(cuda::CUDAEvent),
 }
 
-impl Event {
+/*impl Event {
     // Wait for execution of tasks associated with this event
     pub fn sync(self) -> Result<(), BackendError> {
         match self {
@@ -142,7 +146,7 @@ impl Event {
             Event::CUDA(cudaevent) => cudaevent.sync(),
         }
     }
-}
+}*/
 
 pub fn initialize_backends(
     device_config: &DeviceConfig,

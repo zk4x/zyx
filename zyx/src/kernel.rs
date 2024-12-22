@@ -588,6 +588,7 @@ impl Kernel {
             let device = devices[0].as_mut();
 
             // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
+            let mut outputs = BTreeSet::new();
             let mut event_wait_list = Vec::new();
             let args: Vec<Id> = self
                 .tensors
@@ -607,12 +608,13 @@ impl Kernel {
                         ).unwrap();
                         pool.buffer_map.insert(tensor_id, buffer_id);
                         event_wait_list.push(event);
+                        outputs.insert(tensor_id);
                         buffer_id
                     }
                 })
                 .collect();
 
-            optimizer.launch(self, device, pool.pool.as_mut(), &args, event_wait_list, search_iters, debug)?;
+            optimizer.launch(self, device, pool, &args, outputs, event_wait_list, search_iters, debug)?;
 
             // add load kernels for all outputs of this kernel
             return Ok(Some(

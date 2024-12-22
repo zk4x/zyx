@@ -50,8 +50,8 @@ fn fuzzy() -> Result<(), ZyxError> {
         //tensors.push(Tensor::randn(&shape, DType::F32));
         let numel = shape.iter().product();
         let data: Vec<f32> = (0..numel).map(|_| rng.gen_range(-100f32..100f32)).collect();
-        tensors.push(Tensor::from(&data).reshape(&shape)?);
         cpu_tensors.push(CPUTensor::new(&data).reshape(&shape));
+        tensors.push(Tensor::from(data).reshape(&shape)?);
     }
 
     for _ in 0..num_nodes {
