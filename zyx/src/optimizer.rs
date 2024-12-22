@@ -86,6 +86,7 @@ impl Optimizer {
                     }
                     OptimizerProgress::Optimizing { best, done } => {
                         // Continue optimizing
+                        device.sync(event_wait_list).unwrap();
                         let (optimization, finished) = optimize_kernel(
                             kernel,
                             device,
@@ -93,7 +94,6 @@ impl Optimizer {
                             args,
                             search_iters,
                             done,
-                            event_wait_list,
                             debug,
                         );
                         if finished {
@@ -118,6 +118,7 @@ impl Optimizer {
                 OptimizerProgress::Optimizing { best, done }
             } else {
                 let mut done = BTreeMap::new();
+                device.sync(event_wait_list).unwrap();
                 let (optimization, finished) = optimize_kernel(
                     kernel,
                     device,
@@ -125,7 +126,6 @@ impl Optimizer {
                     args,
                     search_iters,
                     &mut done,
-                    event_wait_list,
                     debug,
                 );
                 if finished {
@@ -154,15 +154,12 @@ fn optimize_kernel(
     args: &[Id],
     search_iters: usize,
     done: &mut BTreeMap<Optimization, Duration>,
-    event_wait_list: Vec<Event>,
     debug: DebugMask,
 ) -> (Optimization, bool) {
     //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
     // list untried optimizations
     let mut opts = kernel.available_optimizations(device.info(), done);
     assert!(!opts.is_empty());
-
-    device.sync(event_wait_list);
 
     let mut best_exec_time = done.values().max().copied().unwrap_or(Duration::MAX);
     /*let flop_mem_rw = if debug_perf {

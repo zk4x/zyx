@@ -138,16 +138,6 @@ pub enum Event {
     CUDA(cuda::CUDAEvent),
 }
 
-/*impl Event {
-    // Wait for execution of tasks associated with this event
-    pub fn sync(self) -> Result<(), BackendError> {
-        match self {
-            Event::OpenCL(open_clevent) => open_clevent.sync(),
-            Event::CUDA(cudaevent) => cudaevent.sync(),
-        }
-    }
-}*/
-
 pub fn initialize_backends(
     device_config: &DeviceConfig,
     memory_pools: &mut Vec<Pool>,
@@ -155,14 +145,10 @@ pub fn initialize_backends(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
-
     //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
-
     let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_dev);
-
     #[cfg(feature = "vulkan")]
     let _ = vulkan::initialize_devices(&device_config.opencl, memory_pools, devices, debug_dev);
-
     #[cfg(feature = "wgsl")]
     let _ = wgsl::initialize_devices(&device_config.opencl, memory_pools, devices, debug_dev);
 
