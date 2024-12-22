@@ -84,7 +84,11 @@ impl Tensor {
         RT.lock().training = training;
     }
 
-    /// Immediatelly evaluate passed tensors
+    /// Immediatelly evaluate passed tensors This will asynchronously enqueue the computational graph
+    /// to the device, but it will not block (await). This is for performance reasons. Actual
+    /// blocking only happens when you access a tensor by printing it, converting it to vector,
+    /// or some other operation that requires host to have access to data stored in the tensor.
+    /// 
     /// # Errors
     /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
