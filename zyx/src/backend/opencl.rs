@@ -154,7 +154,6 @@ pub(super) struct OpenCLQueue {
 #[derive(Debug)]
 pub struct OpenCLEvent {
     event: *mut c_void,
-    clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
 }
 
 // This definitely isn't correct, but for now...
@@ -436,7 +435,7 @@ impl MemoryPool for OpenCLMemoryPool {
         status.check(ErrorStatus::MemoryAllocation)?;
         //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
-        Ok((self.buffers.push(OpenCLBuffer { ptr, bytes }), Event::OpenCL(OpenCLEvent { event: ptr::null_mut(), clWaitForEvents: self.clWaitForEvents })))
+        Ok((self.buffers.push(OpenCLBuffer { ptr, bytes }), Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
     }
 
     fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) -> Result<(), BackendError> {
@@ -482,7 +481,7 @@ impl MemoryPool for OpenCLMemoryPool {
         }
         .check(ErrorStatus::MemoryCopyH2P)?;
         // Immediattely synchronize because we do not know the lifetime of data
-        Ok(Event::OpenCL(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents }))
+        Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
     fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
@@ -862,11 +861,11 @@ impl Device for OpenCLDevice {
         if sync {
             let events = [event];
             unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }.check(ErrorStatus::KernelSync)?;
-            Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut(), clWaitForEvents: self.clWaitForEvents }))
+            Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
         } else {
             self.queues[queue_id].load += 1;
             //println!("Launch event: {event:?}");
-            Ok(Event::OpenCL(OpenCLEvent { event, clWaitForEvents: self.clWaitForEvents }))
+            Ok(Event::OpenCL(OpenCLEvent { event }))
         }
     }
 

@@ -9,6 +9,7 @@ use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{into_axes, into_axis, IntoShape};
 use core::cmp::Ordering;
+use std::sync::Arc;
 use float8::F8E4M3 as f8;
 use half::{bf16, f16};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2540,10 +2541,33 @@ impl Tensor {
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
         fn read_into_tensor<T: Scalar>(
+            mmap: Arc<memmap2::Mmap>,
             //f: &mut std::fs::File,
             mptr: &mut *const u8,
             shape: &[usize],
         ) -> Result<Tensor, ZyxError> {
+            struct MmappedTensorData {
+                #[allow(unused)]
+                mmap: Arc<memmap2::Mmap>,
+                dtype: DType,
+                ptr: *const u8,
+                bytes: usize,
+            }
+            unsafe impl Send for MmappedTensorData {}
+            impl TempData for MmappedTensorData {
+                fn bytes(&self) -> usize {
+                    self.bytes
+                }
+
+                fn dtype(&self) -> DType {
+                    self.dtype
+                }
+
+                fn read(&self) -> &[u8] {
+                    unsafe { std::slice::from_raw_parts(self.ptr, self.bytes) }
+                }
+            }
+
             // TODO later switch to mmapped memory
             let dtype = T::dtype();
             let n: usize = shape.iter().product();
@@ -2563,8 +2587,13 @@ impl Tensor {
                 //unsafe { buf.set_len(n) }
                 //let mut buf: Vec<T> = vec![T::zero(); n];
                 //f.read_exact(unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), n_bytes) })?;
-                let buf: &[T] = unsafe { std::slice::from_raw_parts((*mptr).cast(), n) };
-                Tensor::from(buf).reshape(shape)
+
+                //let buf: &[T] = unsafe { std::slice::from_raw_parts((*mptr).cast(), n) };
+                //Tensor::from(buf).reshape(shape)
+
+                let data = MmappedTensorData { mmap, ptr: *mptr, bytes: n_bytes, dtype: T::dtype() };
+                let id = RT.lock().variable(shape.into(), Box::new(data))?;
+                Ok(Tensor { id })
             };
             //println!("Adding {} bytes", n*dtype.byte_size());
             *mptr = (*mptr).wrapping_add(n_bytes);
@@ -2608,7 +2637,7 @@ impl Tensor {
         } else {
             None
         };*/
-        let mmap = unsafe { memmap2::Mmap::map(&f)? };
+        let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f)? });
         let mut mptr = mmap.as_ptr();
         mptr = mptr.wrapping_add(8 + header.len());
         for x in header.chars() {
@@ -2669,20 +2698,20 @@ impl Tensor {
                         tensors.insert(
                             label.clone(),
                             match dtype {
-                                DType::F8 => read_into_tensor::<f8>(&mut mptr, &shape)?,
-                                DType::BF16 => read_into_tensor::<bf16>(&mut mptr, &shape)?,
-                                DType::F16 => read_into_tensor::<f16>(&mut mptr, &shape)?,
-                                DType::F32 => read_into_tensor::<f32>(&mut mptr, &shape)?,
-                                DType::F64 => read_into_tensor::<f64>(&mut mptr, &shape)?,
-                                DType::U8 => read_into_tensor::<u8>(&mut mptr, &shape)?,
-                                DType::I8 => read_into_tensor::<i8>(&mut mptr, &shape)?,
-                                DType::I16 => read_into_tensor::<i16>(&mut mptr, &shape)?,
-                                DType::I32 => read_into_tensor::<i32>(&mut mptr, &shape)?,
-                                DType::U16 => read_into_tensor::<u16>(&mut mptr, &shape)?,
-                                DType::U32 => read_into_tensor::<u32>(&mut mptr, &shape)?,
-                                DType::U64 => read_into_tensor::<u64>(&mut mptr, &shape)?,
-                                DType::I64 => read_into_tensor::<i64>(&mut mptr, &shape)?,
-                                DType::Bool => read_into_tensor::<bool>(&mut mptr, &shape)?,
+                                DType::F8 => read_into_tensor::<f8>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::BF16 => read_into_tensor::<bf16>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::F16 => read_into_tensor::<f16>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::F32 => read_into_tensor::<f32>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::F64 => read_into_tensor::<f64>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::U8 => read_into_tensor::<u8>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::I8 => read_into_tensor::<i8>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::I16 => read_into_tensor::<i16>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::I32 => read_into_tensor::<i32>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::U16 => read_into_tensor::<u16>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::U32 => read_into_tensor::<u32>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::U64 => read_into_tensor::<u64>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::I64 => read_into_tensor::<i64>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::Bool => read_into_tensor::<bool>(mmap.clone(), &mut mptr, &shape)?,
                             },
                         );
                     }
