@@ -818,8 +818,8 @@ impl TextGeneration {
         let start_gen = std::time::Instant::now();
         //let mut pos = 0;
         for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
+            let context_size: usize = if index > 0 { 1 } else { tokens.len() };
+            let ctxt: Vec<u32> = tokens[tokens.len().saturating_sub(context_size)..].into();
             let input = Tensor::from(ctxt).unsqueeze(0).unwrap();
             let logits = self.model.forward(&input);
             //println!("Realizing.");
