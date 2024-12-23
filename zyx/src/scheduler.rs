@@ -1,7 +1,15 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device, graph::Graph, kernel::{Kernel, MOp, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, DebugMask, ZyxError
+    backend::Device,
+    graph::Graph,
+    kernel::{Kernel, MOp, Op, TId},
+    node::Node,
+    optimizer::Optimizer,
+    runtime::Pool,
+    slab::{Id, Slab},
+    tensor::TensorId,
+    DebugMask, ZyxError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,9 +39,9 @@ pub(super) fn realize_graph(
     graph: &Graph,
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
-    devices: &mut [Box<dyn Device>],
+    devs: &mut [Box<dyn Device>],
     mps: &mut [Pool],
-    optimizer: &mut Optimizer,
+    opt: &mut Optimizer,
     searches: usize,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
@@ -66,7 +74,7 @@ pub(super) fn realize_graph(
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
-        let kid = match graph[nid] {
+        let mut kid = match graph[nid] {
             // All ops are merged except
             // Pad is not merged of kernel contains store
             // Reshape is not merged if reshaping reduce loops
@@ -93,18 +101,7 @@ pub(super) fn realize_graph(
                     kernels[kid].expand(shape);
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
-                    if let Some(tensors) = kernels[kid]
-                        .store(x, graph, devices, mps, optimizer, searches, debug)?
-                    {
-                        kernels.remove(kid).unwrap();
-                        for tid in tensors {
-                            let tkid =
-                                kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                            if tid == x {
-                                kid = tkid;
-                            }
-                        }
-                    }
+                    sto(&mut kernels, &mut kid, x, graph, devs, mps, opt, searches, &rcs, debug)?;
                     kernels[kid].expand(shape);
                     xt = 0;
                 }
@@ -133,18 +130,7 @@ pub(super) fn realize_graph(
                     kernels[kid].reshape(shape);
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
-                    if let Some(tensors) = kernels[kid]
-                        .store(x, graph, devices, mps, optimizer, searches, debug)?
-                    {
-                        kernels.remove(kid).unwrap();
-                        for tid in tensors {
-                            let tkid =
-                                kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                            if tid == x {
-                                kid = tkid;
-                            }
-                        }
-                    }
+                    sto(&mut kernels, &mut kid, x, graph, devs, mps, opt, searches, &rcs, debug)?;
                     kernels[kid].reshape(shape);
                     xt = 0;
                 }
@@ -173,18 +159,7 @@ pub(super) fn realize_graph(
                     kernels[kid].pad(padding);
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
-                    if let Some(tensors) = kernels[kid]
-                        .store(x, graph, devices, mps, optimizer, searches, debug)?
-                    {
-                        kernels.remove(kid).unwrap();
-                        for tid in tensors {
-                            let tkid =
-                                kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                            if tid == x {
-                                kid = tkid;
-                            }
-                        }
-                    }
+                    sto(&mut kernels, &mut kid, x, graph, devs, mps, opt, searches, &rcs, debug)?;
                     kernels[kid].pad(padding);
                     xt = 0;
                 }
@@ -274,34 +249,28 @@ pub(super) fn realize_graph(
                                 Op::Const { z, value, ref view } => {
                                     Op::Const { z: z + n, value: value.clone(), view: view.clone() }
                                 }
-                                Op::Load { z, zscope, ref zview, xscope, ref xview, xdtype } => {
-                                    Op::Load {
-                                        z: z + n,
-                                        zscope,
-                                        zview: zview.clone(),
-                                        xscope,
-                                        xview: xview.clone(),
-                                        xdtype,
-                                    }
-                                }
-                                Op::Store { z, zscope, ref zview, zdtype, xscope, ref xview } => {
-                                    Op::Store {
-                                        z: z + n,
-                                        zscope,
-                                        zview: zview.clone(),
-                                        zdtype,
-                                        xscope,
-                                        xview: xview.clone(),
-                                    }
-                                }
+                                Op::Load { z, zscope, ref zview, xscope, ref xview, xdtype } => Op::Load {
+                                    z: z + n,
+                                    zscope,
+                                    zview: zview.clone(),
+                                    xscope,
+                                    xview: xview.clone(),
+                                    xdtype,
+                                },
+                                Op::Store { z, zscope, ref zview, zdtype, xscope, ref xview } => Op::Store {
+                                    z: z + n,
+                                    zscope,
+                                    zview: zview.clone(),
+                                    zdtype,
+                                    xscope,
+                                    xview: xview.clone(),
+                                },
                                 Op::Accumulator { z, rop, ref view, dtype } => {
                                     Op::Accumulator { z: z + n, rop, view: view.clone(), dtype }
                                 }
                                 Op::Move { z, x, mop } => Op::Move { z: z + n, x: x + n, mop },
                                 Op::Unary { z, x, uop } => Op::Unary { z: z + n, x: x + n, uop },
-                                Op::Binary { z, x, y, bop } => {
-                                    Op::Binary { z: z + n, x: x + n, y: y + n, bop }
-                                }
+                                Op::Binary { z, x, y, bop } => Op::Binary { z: z + n, x: x + n, y: y + n, bop },
                                 Op::Barrier { scope } => Op::Barrier { scope },
                             })
                         }
@@ -342,9 +311,7 @@ pub(super) fn realize_graph(
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
 
         if to_eval.contains(&nid) {
-            if let Some(tensors) =
-                kernels[kid].store(nid, graph, devices, mps, optimizer, searches, debug)?
-            {
+            /*if let Some(tensors) = kernels[kid].store(nid, graph, devs, mps, opt, searches, debug)? {
                 kernels.remove(kid).unwrap();
                 for tid in tensors {
                     if rcs.contains_key(&tid) {
@@ -353,7 +320,19 @@ pub(super) fn realize_graph(
                 }
             } else {
                 unreachable!();
-            }
+            }*/
+            sto(
+                &mut kernels,
+                &mut kid,
+                nid,
+                graph,
+                devs,
+                mps,
+                opt,
+                searches,
+                &rcs,
+                debug,
+            )?;
         }
     }
 
@@ -367,6 +346,47 @@ pub(super) fn realize_graph(
     }
 
     Ok(())
+}
+
+fn sto(
+    kernels: &mut Slab<Kernel>,
+    kid: &mut u32,
+    x: u32,
+    graph: &Graph,
+    devices: &mut [Box<dyn Device>],
+    mps: &mut [Pool],
+    optimizer: &mut Optimizer,
+    searches: usize,
+    rcs: &BTreeMap<u32, u32>,
+    debug: DebugMask,
+) -> Result<(), ZyxError> {
+    Ok(
+        if let Some(tensors) = kernels[*kid].store(x, graph, devices, mps, optimizer, searches, debug)? {
+            kernels.remove(*kid).unwrap();
+            for kernel in kernels.values_mut() {
+                for tid in &tensors {
+                    kernel.outputs.remove(tid);
+                }
+            }
+            for tid in tensors {
+                if rcs.contains_key(&tid) {
+                    let tkid = kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
+                    if tid == x {
+                        *kid = tkid;
+                    }
+                }
+            }
+            let mut kid_ = 0u32;
+            while kid_ < kernels.len() as u32 {
+                if let Some(kernel) = kernels.get(kid_) {
+                    if kernel.outputs.is_empty() {
+                        kernels.remove(kid_);
+                    }
+                }
+                kid_ += 1;
+            }
+        },
+    )
 }
 
 // Choose kernel with most outputs (binary, unary)

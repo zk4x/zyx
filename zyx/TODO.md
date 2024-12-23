@@ -14,14 +14,14 @@
   - [x] change ir register id to u16
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
-  - [ ] add optimizations for ops, merges
-  - [ ] add ops reordering, all ops that can be moved before loops should be moved (loop invariant code motion)
+  - [x] add new reference counting that accounts for all variables, including indexing variables
   - [ ] deduplicate all calculations
-  - [ ] deletion of redundant ops
+  - [ ] expression folding, optimizations for ops, merges
+  - [ ] loop invariant code motion
+  - [ ] dead code elimination
   - [ ] loop unrolling
   - [ ] vector dtypes
-  - [ ] one pass through IR to evaluate all operations with constants
-  - [x] add new reference counting that accounts for all variables, including indexing variables
+  - [ ] constant evaluation
 - [x] vops remove unary view
 - [x] vops remove binary views
 - [x] manual for adding new backends
@@ -30,14 +30,22 @@
     - [x] merges, splits, reshapes of non reduce axes
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
+  - [ ] expand reduce bug
+- [ ] backends
+  - [ ] cuda
+    - [ ] fix async memcopy
+  - [ ] hip
+  - [x] opencl
+  - [ ] vulkan
+  - [ ] wgpu
 - [ ] use stable-vec instead of index_map? But what about node reuse order?
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
 - [ ] local tiling of all variables
 - [ ] get phi working
-- [ ] vector dtypes in kernels
 - [ ] tensor cores support
 - [ ] flash attention
-- [ ] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
-- [ ] replace serde with nanoserde
-- [ ] remove indicatiff, write custom progress bar
+- [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
+- [x] replace serde with nanoserde
+- [ ] write custom progress bar
+- [x] remove indicatiff

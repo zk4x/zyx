@@ -50,8 +50,8 @@ fn expand_reduce() -> Result<(), ZyxError> {
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
     Tensor::realize([&x, &y])?;
-    println!("{y}");
-    println!("{x}");
+    //println!("{y}");
+    //println!("{x}");
     assert_eq!(y, [[9i32, 7], [9, 7]]);
     assert_eq!(x, [[9i32, 9], [7, 7]]);
     Ok(())
@@ -59,23 +59,18 @@ fn expand_reduce() -> Result<(), ZyxError> {
 
 #[test]
 fn rope1() -> Result<(), ZyxError> {
-    let xs =
-        Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
+    let xs = Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
     let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let z = xs.rope(&cos, &sin)?;
-    assert_eq!(
-        z,
-        [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
-    );
+    assert_eq!(z, [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]);
     Ok(())
 }
 
 #[test]
 fn rope2() -> Result<(), ZyxError> {
     let z = {
-        let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]])
-            .reshape([1, 1, 2, 6])?;
+        let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]]).reshape([1, 1, 2, 6])?;
         let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
         let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
         let sh = xs.shape();
@@ -92,10 +87,7 @@ fn rope2() -> Result<(), ZyxError> {
         //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
         Tensor::cat([&co, &ro], -1).unwrap()
     };
-    assert_eq!(
-        z,
-        [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
-    );
+    assert_eq!(z, [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]);
     Ok(())
 }
 
@@ -226,10 +218,7 @@ fn pad2() -> Result<(), ZyxError> {
     let a = Tensor::from([[1, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
     let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
     let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
-    assert_eq!(
-        c,
-        [[[[6, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]
-    );
+    assert_eq!(c, [[[[6, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]);
     Ok(())
 }
 
@@ -252,10 +241,7 @@ fn expand1() -> Result<(), ZyxError> {
     let a = Tensor::from([[1, 2], [3, 4]]).reshape([1, 1, 1, 4])?;
     let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 4, 1])?;
     let c = a + b;
-    assert_eq!(
-        c,
-        [[[[6, 7, 8, 9], [7, 8, 9, 10], [8, 9, 10, 11], [9, 10, 11, 12]]]]
-    );
+    assert_eq!(c, [[[[6, 7, 8, 9], [7, 8, 9, 10], [8, 9, 10, 11], [9, 10, 11, 12]]]]);
     Ok(())
 }
 
@@ -321,11 +307,7 @@ fn softmax() -> Result<(), ZyxError> {
     let y = x.softmax([])?;
     //println!("{y}");
     let y_data: Vec<f32> = y.try_into()?;
-    for (x, y) in y_data.into_iter().zip([
-        0.09003056585788726807,
-        0.66524088382720947266,
-        0.24472846090793609619,
-    ]) {
+    for (x, y) in y_data.into_iter().zip([0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]) {
         //assert!((x - y).abs() < 0.00001);
         assert!(x.is_equal(y));
     }
@@ -399,13 +381,8 @@ fn split() {
 
 #[test]
 fn complex_movement_reduce() -> Result<(), ZyxError> {
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
-        .expand([2, 3, 2])?
-        .exp()
-        .ln()
-        .reshape([2, 3, 2, 1])?;
-    let y =
-        Tensor::from([[2f32, 3., 1.], [4., 3., 2.]]).reshape([2, 3, 1, 1])?.expand([2, 3, 2, 1])?;
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2])?.exp().ln().reshape([2, 3, 2, 1])?;
+    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]]).reshape([2, 3, 1, 1])?.expand([2, 3, 2, 1])?;
     let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
     let z = z.exp().ln().permute([1, 0])?.sum([0])?;
     assert_eq!(z, [52f32, 52., 40.]);
